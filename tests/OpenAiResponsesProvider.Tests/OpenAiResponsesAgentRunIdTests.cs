@@ -86,7 +86,9 @@ public sealed class OpenAiResponsesAgentRunIdTests
             new ResponseLifecycleEvent
             {
                 Type = ResponseEventTypes.ResponseCompleted,
-                Response = El("{\"id\":\"resp_OPAQUE\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}"),
+                Response = El(
+                    "{\"id\":\"resp_OPAQUE\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}"
+                ),
             },
         ];
 
@@ -185,9 +187,7 @@ public sealed class OpenAiResponsesAgentRunIdTests
                 "every Responses-path message emitted during a run must carry the run's RunId "
                     + "(parity with OpenAgent/AnthropicAgent .WithIds(options))"
             );
-        messages
-            .Should()
-            .OnlyContain(m => m.ThreadId == threadId, "WithIds stamps ThreadId on every emitted type");
+        messages.Should().OnlyContain(m => m.ThreadId == threadId, "WithIds stamps ThreadId on every emitted type");
         messages
             .Where(m => m is not UsageMessage)
             .Should()
@@ -312,9 +312,7 @@ public sealed class OpenAiResponsesAgentRunIdTests
         ];
 
         using var agent = new OpenAiResponsesAgent("test", new ScriptedClient(events));
-        var stream = await agent.GenerateReplyStreamingAsync(
-            [new TextMessage { Role = Role.User, Text = "go" }]
-        );
+        var stream = await agent.GenerateReplyStreamingAsync([new TextMessage { Role = Role.User, Text = "go" }]);
 
         var messages = new List<IMessage>();
         await foreach (var message in stream)
@@ -322,9 +320,10 @@ public sealed class OpenAiResponsesAgentRunIdTests
             messages.Add(message);
         }
 
-        messages.OfType<TextMessage>().Should().BeEmpty(
-            "an empty terminal output-text event must not poison persisted cross-provider history"
-        );
+        messages
+            .OfType<TextMessage>()
+            .Should()
+            .BeEmpty("an empty terminal output-text event must not poison persisted cross-provider history");
     }
 
     [Fact]

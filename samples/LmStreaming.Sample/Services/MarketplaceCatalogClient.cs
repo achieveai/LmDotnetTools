@@ -80,7 +80,9 @@ public sealed class MarketplaceCatalogClient : IMarketplaceCatalogClient
             {
                 _logger.LogWarning(ex, "Marketplace catalog returned a 200 with an unparseable body.");
                 throw new MarketplaceCatalogUnavailableException(
-                    "Sandbox gateway returned a malformed marketplace catalog body.", ex);
+                    "Sandbox gateway returned a malformed marketplace catalog body.",
+                    ex
+                );
             }
 
             // Any other status (non-2xx) → unavailable. The SDK never reads gateway error bodies, so
@@ -89,14 +91,18 @@ public sealed class MarketplaceCatalogClient : IMarketplaceCatalogClient
             {
                 _logger.LogWarning("Marketplace catalog request failed: {StatusCode}", statusCode);
                 throw new MarketplaceCatalogUnavailableException(
-                    $"Sandbox gateway returned {statusCode} for the marketplace catalog.", ex);
+                    $"Sandbox gateway returned {statusCode} for the marketplace catalog.",
+                    ex
+                );
             }
 
             // No status code → the gateway was unreachable (connection refused / DNS / transport
             // timeout). Distinct from caller cancellation, which the SDK re-throws as
             // OperationCanceledException and this catch never touches.
             throw new MarketplaceCatalogUnavailableException(
-                $"Could not reach the sandbox gateway at {baseUrl} to list marketplaces.", ex);
+                $"Could not reach the sandbox gateway at {baseUrl} to list marketplaces.",
+                ex
+            );
         }
     }
 
@@ -109,23 +115,35 @@ public sealed class MarketplaceCatalogClient : IMarketplaceCatalogClient
         new(
             catalog.Selected,
             [
-                .. catalog.Marketplaces.Select(marketplace =>
-                    new CatalogMarketplace(
-                        marketplace.Alias,
-                        marketplace.Error,
-                        [
-                            .. marketplace.Plugins.Select(plugin =>
-                                new CatalogPlugin(
-                                    plugin.Name,
-                                    plugin.Version,
-                                    plugin.Description,
-                                    [.. plugin.Skills.Select(s => new CatalogSkill(s.Name, s.Description, s.Plugin, s.Marketplace, s.Path))],
-                                    [.. plugin.Agents.Select(a => new CatalogAgent(a.Name, a.Description, a.Plugin, a.Marketplace, a.Path))]
-                                )
-                            ),
-                        ]
-                    )
-                ),
+                .. catalog.Marketplaces.Select(marketplace => new CatalogMarketplace(
+                    marketplace.Alias,
+                    marketplace.Error,
+                    [
+                        .. marketplace.Plugins.Select(plugin => new CatalogPlugin(
+                            plugin.Name,
+                            plugin.Version,
+                            plugin.Description,
+                            [
+                                .. plugin.Skills.Select(s => new CatalogSkill(
+                                    s.Name,
+                                    s.Description,
+                                    s.Plugin,
+                                    s.Marketplace,
+                                    s.Path
+                                )),
+                            ],
+                            [
+                                .. plugin.Agents.Select(a => new CatalogAgent(
+                                    a.Name,
+                                    a.Description,
+                                    a.Plugin,
+                                    a.Marketplace,
+                                    a.Path
+                                )),
+                            ]
+                        )),
+                    ]
+                )),
             ]
         )
         {

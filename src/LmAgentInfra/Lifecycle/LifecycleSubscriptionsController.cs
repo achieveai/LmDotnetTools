@@ -134,8 +134,7 @@ public sealed class LifecycleSubscriptionsController(
 ) : ControllerBase
 {
     /// <summary>The one body every unanswerable case returns, so none of them can be told apart.</summary>
-    private static readonly LifecycleSubscriptionResponse NotFoundBody =
-        new() { Error = "unknown subscription" };
+    private static readonly LifecycleSubscriptionResponse NotFoundBody = new() { Error = "unknown subscription" };
 
     /// <summary>Registers a subscription and mints its signing secret.</summary>
     /// <param name="registration">The requested callback, capabilities, and event types.</param>
@@ -155,9 +154,7 @@ public sealed class LifecycleSubscriptionsController(
             {
                 if (registration is null)
                 {
-                    return BadRequest(
-                        new LifecycleSubscriptionResponse { Error = "malformed registration" }
-                    );
+                    return BadRequest(new LifecycleSubscriptionResponse { Error = "malformed registration" });
                 }
 
                 // Parsed permissively and handed on even when it fails: a string that is not a URL at
@@ -179,9 +176,7 @@ public sealed class LifecycleSubscriptionsController(
 
                 // 201 without a Location header: there is no route that reads a subscription back, so
                 // pointing at one would advertise an endpoint that deliberately does not exist.
-                return await Task.FromResult<IActionResult>(
-                    StatusCode(StatusCodes.Status201Created, Describe(grant))
-                );
+                return await Task.FromResult<IActionResult>(StatusCode(StatusCodes.Status201Created, Describe(grant)));
             },
             cancellationToken
         );
@@ -191,15 +186,9 @@ public sealed class LifecycleSubscriptionsController(
     /// <param name="cancellationToken">Cancels owner resolution.</param>
     /// <returns>200 with the new secret; 403 as above; 404 when the subscription is unknown or not the caller's.</returns>
     [HttpPost("{subscriptionId}/secret")]
-    public Task<IActionResult> RotateSecret(
-        string subscriptionId,
-        CancellationToken cancellationToken = default
-    ) =>
+    public Task<IActionResult> RotateSecret(string subscriptionId, CancellationToken cancellationToken = default) =>
         AuthorizedAsync(
-            (owner, _) =>
-                Task.FromResult<IActionResult>(
-                    Ok(Describe(subscriptions.Rotate(owner, subscriptionId)))
-                ),
+            (owner, _) => Task.FromResult<IActionResult>(Ok(Describe(subscriptions.Rotate(owner, subscriptionId)))),
             cancellationToken
         );
 
@@ -236,10 +225,7 @@ public sealed class LifecycleSubscriptionsController(
     /// and frees the admission slots, instead of leaving calls blocked until they time out.
     /// </remarks>
     [HttpDelete("{subscriptionId}")]
-    public Task<IActionResult> Unregister(
-        string subscriptionId,
-        CancellationToken cancellationToken = default
-    ) =>
+    public Task<IActionResult> Unregister(string subscriptionId, CancellationToken cancellationToken = default) =>
         AuthorizedAsync(
             (owner, _) =>
             {
@@ -312,15 +298,10 @@ public sealed class LifecycleSubscriptionsController(
             return Denied("caller does not name an application");
         }
 
-        var owner = await ownerResolver
-            .ResolveCallerAsync(appId, cancellationToken)
-            .ConfigureAwait(false);
+        var owner = await ownerResolver.ResolveCallerAsync(appId, cancellationToken).ConfigureAwait(false);
         if (owner is null)
         {
-            logger.LogWarning(
-                "Refusing a lifecycle subscription operation: app {AppId} resolves to no owner.",
-                appId
-            );
+            logger.LogWarning("Refusing a lifecycle subscription operation: app {AppId} resolves to no owner.", appId);
             return Denied("caller has no resolvable owner");
         }
 
@@ -389,8 +370,7 @@ public sealed class LifecycleSubscriptionsController(
     /// secret (#433). "Authenticated" is therefore no longer the operative rule at this endpoint;
     /// "carries the app-id claim" is.
     /// </remarks>
-    private LifecycleAppIdentity.AppIdResolution AuthenticatedAppId() =>
-        LifecycleAppIdentity.ResolveAppId(User);
+    private LifecycleAppIdentity.AppIdResolution AuthenticatedAppId() => LifecycleAppIdentity.ResolveAppId(User);
 
     /// <summary>
     /// A 403 written directly rather than via <c>Forbid()</c>, which would delegate to an
@@ -398,8 +378,5 @@ public sealed class LifecycleSubscriptionsController(
     /// would turn an authorization refusal into a 500.
     /// </summary>
     private ObjectResult Denied(string error) =>
-        StatusCode(
-            StatusCodes.Status403Forbidden,
-            new LifecycleSubscriptionResponse { Error = error }
-        );
+        StatusCode(StatusCodes.Status403Forbidden, new LifecycleSubscriptionResponse { Error = error });
 }

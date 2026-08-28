@@ -11,9 +11,7 @@ namespace LmStreaming.Sample.E2E.Tests.Infrastructure;
 public static class ScriptedSseAssertions
 {
     /// <summary>Filter frames by their <c>$type</c> discriminator (case-sensitive).</summary>
-    public static IEnumerable<JsonElement> OfMessageType(
-        this IEnumerable<JsonDocument> frames,
-        string typeName)
+    public static IEnumerable<JsonElement> OfMessageType(this IEnumerable<JsonDocument> frames, string typeName)
     {
         return OfMessageType(frames, [typeName]);
     }
@@ -25,7 +23,8 @@ public static class ScriptedSseAssertions
     /// </summary>
     public static IEnumerable<JsonElement> OfMessageType(
         this IEnumerable<JsonDocument> frames,
-        params string[] typeNames)
+        params string[] typeNames
+    )
     {
         if (typeNames == null || typeNames.Length == 0)
         {
@@ -39,8 +38,10 @@ public static class ScriptedSseAssertions
                 continue;
             }
 
-            if (!frame.RootElement.TryGetProperty("$type", out var typeProp)
-                || typeProp.ValueKind != JsonValueKind.String)
+            if (
+                !frame.RootElement.TryGetProperty("$type", out var typeProp)
+                || typeProp.ValueKind != JsonValueKind.String
+            )
             {
                 continue;
             }
@@ -66,9 +67,11 @@ public static class ScriptedSseAssertions
         var assistantTexts = frames
             .OfMessageType("text", "text_update")
             .Where(IsAssistant)
-            .Select(f => f.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String
-                ? t.GetString() ?? string.Empty
-                : string.Empty);
+            .Select(f =>
+                f.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String
+                    ? t.GetString() ?? string.Empty
+                    : string.Empty
+            );
         return string.Concat(assistantTexts);
     }
 
@@ -82,9 +85,11 @@ public static class ScriptedSseAssertions
         var names = new List<string>();
         foreach (var frame in frames)
         {
-            if (frame.RootElement.ValueKind != JsonValueKind.Object
+            if (
+                frame.RootElement.ValueKind != JsonValueKind.Object
                 || !frame.RootElement.TryGetProperty("$type", out var typeProp)
-                || typeProp.ValueKind != JsonValueKind.String)
+                || typeProp.ValueKind != JsonValueKind.String
+            )
             {
                 continue;
             }
@@ -96,8 +101,10 @@ public static class ScriptedSseAssertions
             }
 
             // Container: { $type: "tools_call", tool_calls: [ { function_name: "..." } ] }
-            if (frame.RootElement.TryGetProperty("tool_calls", out var toolCalls)
-                && toolCalls.ValueKind == JsonValueKind.Array)
+            if (
+                frame.RootElement.TryGetProperty("tool_calls", out var toolCalls)
+                && toolCalls.ValueKind == JsonValueKind.Array
+            )
             {
                 foreach (var call in toolCalls.EnumerateArray())
                 {
@@ -129,9 +136,11 @@ public static class ScriptedSseAssertions
         var results = new List<string>();
         foreach (var frame in frames)
         {
-            if (frame.RootElement.ValueKind != JsonValueKind.Object
+            if (
+                frame.RootElement.ValueKind != JsonValueKind.Object
                 || !frame.RootElement.TryGetProperty("$type", out var typeProp)
-                || typeProp.ValueKind != JsonValueKind.String)
+                || typeProp.ValueKind != JsonValueKind.String
+            )
             {
                 continue;
             }
@@ -142,13 +151,14 @@ public static class ScriptedSseAssertions
                 continue;
             }
 
-            if (frame.RootElement.TryGetProperty("tool_call_results", out var arr)
-                && arr.ValueKind == JsonValueKind.Array)
+            if (
+                frame.RootElement.TryGetProperty("tool_call_results", out var arr)
+                && arr.ValueKind == JsonValueKind.Array
+            )
             {
                 foreach (var item in arr.EnumerateArray())
                 {
-                    if (item.TryGetProperty("result", out var r)
-                        && r.ValueKind == JsonValueKind.String)
+                    if (item.TryGetProperty("result", out var r) && r.ValueKind == JsonValueKind.String)
                     {
                         results.Add(r.GetString()!);
                     }
@@ -156,8 +166,7 @@ public static class ScriptedSseAssertions
                 continue;
             }
 
-            if (frame.RootElement.TryGetProperty("result", out var direct)
-                && direct.ValueKind == JsonValueKind.String)
+            if (frame.RootElement.TryGetProperty("result", out var direct) && direct.ValueKind == JsonValueKind.String)
             {
                 results.Add(direct.GetString()!);
             }
@@ -179,18 +188,17 @@ public static class ScriptedSseAssertions
 
     private static bool IsToolCallFrame(string type)
     {
-        return type is "tool_call"
-            or "tools_call"
-            or "tool_call_update"
-            or "tools_call_update"
-            or "tools_call_aggregate";
+        return type
+            is "tool_call"
+                or "tools_call"
+                or "tool_call_update"
+                or "tools_call_update"
+                or "tools_call_aggregate";
     }
 
     private static bool IsToolCallResultFrame(string type)
     {
-        return type is "tool_call_result"
-            or "tools_call_result"
-            or "tools_call_aggregate";
+        return type is "tool_call_result" or "tools_call_result" or "tools_call_aggregate";
     }
 
     private static string? TryReadFunctionName(JsonElement element)

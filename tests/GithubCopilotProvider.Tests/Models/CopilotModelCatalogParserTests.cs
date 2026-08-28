@@ -197,7 +197,8 @@ public sealed class CopilotModelCatalogParserTests
             "gpt-test",
             "GPT Test",
             CopilotModelVendor.OpenAI,
-            CopilotModelTransport.Responses)
+            CopilotModelTransport.Responses
+        )
         {
             ReasoningEfforts = null!,
         };

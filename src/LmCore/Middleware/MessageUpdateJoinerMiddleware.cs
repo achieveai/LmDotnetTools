@@ -163,15 +163,23 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
 
             // Check if tool call ID/Index changed for singular ToolCallUpdateMessage
             // (ToolCallMessage builder handles single tool call, so we need to complete it when a new one starts)
-            if (message is ToolCallUpdateMessage toolCallMsg
+            if (
+                message is ToolCallUpdateMessage toolCallMsg
                 && activeBuilder is ToolCallMessageBuilder currentBuilder
-                && activeBuilderType == typeof(ToolCallMessage))
+                && activeBuilderType == typeof(ToolCallMessage)
+            )
             {
                 var isDifferentToolCall =
-                    (currentBuilder.CurrentToolCallId != null && toolCallMsg.ToolCallId != null
-                        && currentBuilder.CurrentToolCallId != toolCallMsg.ToolCallId)
-                    || (currentBuilder.CurrentIndex != null && toolCallMsg.Index != null
-                        && currentBuilder.CurrentIndex != toolCallMsg.Index);
+                    (
+                        currentBuilder.CurrentToolCallId != null
+                        && toolCallMsg.ToolCallId != null
+                        && currentBuilder.CurrentToolCallId != toolCallMsg.ToolCallId
+                    )
+                    || (
+                        currentBuilder.CurrentIndex != null
+                        && toolCallMsg.Index != null
+                        && currentBuilder.CurrentIndex != toolCallMsg.Index
+                    );
 
                 if (isDifferentToolCall)
                 {
@@ -214,10 +222,12 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 // Drop the empty server-tool RESULT whose query-less call the joiner just skipped.
                 // Without its matching call it is an orphan tool_result the provider rejects on replay,
                 // and keeping it would defeat the point of not recording the empty search at all.
-                if (processedMessage is ToolCallResultMessage serverResult
+                if (
+                    processedMessage is ToolCallResultMessage serverResult
                     && serverResult.ExecutionTarget == ExecutionTarget.ProviderServer
                     && !string.IsNullOrEmpty(serverResult.ToolCallId)
-                    && skippedServerToolCallIds.Contains(serverResult.ToolCallId))
+                    && skippedServerToolCallIds.Contains(serverResult.ToolCallId)
+                )
                 {
                     continue;
                 }
@@ -342,8 +352,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         try
         {
             using var doc = JsonDocument.Parse(args);
-            return doc.RootElement.ValueKind == JsonValueKind.Object
-                && !doc.RootElement.EnumerateObject().MoveNext();
+            return doc.RootElement.ValueKind == JsonValueKind.Object && !doc.RootElement.EnumerateObject().MoveNext();
         }
         catch (JsonException)
         {

@@ -3,7 +3,6 @@ using System.Text;
 
 namespace CodeReviewDaemon.Sample.Workspace;
 
-
 /// <summary>
 /// Canonicalizes attacker-influenced relative paths (submodule paths from <c>.gitmodules</c>,
 /// artifact subjects, repo-created paths) before they are used for policy matching or filesystem
@@ -27,11 +26,7 @@ internal static class PathCanonicalizer
     /// otherwise an empty string.</param>
     /// <param name="error">A human-readable rejection reason when the result is <c>false</c>.</param>
     /// <returns><c>true</c> when the path is a safe in-scope relative path; <c>false</c> otherwise.</returns>
-    public static bool TryCanonicalizeRelative(
-        string? raw,
-        out string canonical,
-        out string? error
-    )
+    public static bool TryCanonicalizeRelative(string? raw, out string canonical, out string? error)
     {
         canonical = string.Empty;
 
@@ -57,11 +52,7 @@ internal static class PathCanonicalizer
         }
 
         // Drive-letter absolute path (C:/...). Backslash UNC is already rejected above.
-        if (
-            normalized.Length >= 2
-            && char.IsLetter(normalized[0])
-            && normalized[1] == ':'
-        )
+        if (normalized.Length >= 2 && char.IsLetter(normalized[0]) && normalized[1] == ':')
         {
             error = "path is a drive-qualified absolute path";
             return false;

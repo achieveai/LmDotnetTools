@@ -49,7 +49,8 @@ internal static class AtCloseExtractionSeam
 
         if (knowledgeWrote || feedbackWrote)
         {
-            var dropped = knowledgeFailed ? KnowledgePass
+            var dropped =
+                knowledgeFailed ? KnowledgePass
                 : feedbackFailed ? ReviewFeedbackPass
                 : null;
             return new AtCloseExtraction(knowledgeWrote ? knowledge : feedback, dropped);

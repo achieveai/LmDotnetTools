@@ -30,22 +30,22 @@ public sealed class TokenValidatedChainingTests
         _ = services.Configure<IdentityOptions>(_ => { });
         _ = services.AddSingleton<PrincipalFactory>();
 
-        var httpContext = new DefaultHttpContext
-        {
-            RequestServices = services.BuildServiceProvider(),
-        };
+        var httpContext = new DefaultHttpContext { RequestServices = services.BuildServiceProvider() };
 
         var scheme = new AuthenticationScheme(
             JwtBearerDefaults.AuthenticationScheme,
             displayName: null,
-            handlerType: typeof(JwtBearerHandler));
+            handlerType: typeof(JwtBearerHandler)
+        );
 
         return new TokenValidatedContext(httpContext, scheme, new JwtBearerOptions())
         {
             Principal = new ClaimsPrincipal(
                 new ClaimsIdentity(
                     [new Claim("tid", "tenant-1"), new Claim("oid", "user-1")],
-                    authenticationType: "Bearer")),
+                    authenticationType: "Bearer"
+                )
+            ),
         };
     }
 
@@ -63,12 +63,14 @@ public sealed class TokenValidatedChainingTests
             {
                 ctx.Fail("the inner handler refused this token");
                 return Task.CompletedTask;
-            });
+            }
+        );
 
         Assert.False(
             context.HttpContext.Items.ContainsKey(IdentityHttpItems.ResolutionKey),
             "A rejected token must not leave a resolution behind - the middleware admits a request "
-                + "on the presence of one.");
+                + "on the presence of one."
+        );
     }
 
     [Fact]
@@ -79,7 +81,8 @@ public sealed class TokenValidatedChainingTests
 
         await LmStreaming.Sample.Identity.IdentityServiceCollectionExtensions.OnTokenValidatedAsync(
             context,
-            _ => Task.CompletedTask);
+            _ => Task.CompletedTask
+        );
 
         Assert.True(context.HttpContext.Items.ContainsKey(IdentityHttpItems.ResolutionKey));
     }
@@ -89,7 +92,10 @@ public sealed class TokenValidatedChainingTests
     {
         var context = CreateContext();
 
-        await LmStreaming.Sample.Identity.IdentityServiceCollectionExtensions.OnTokenValidatedAsync(context, inner: null);
+        await LmStreaming.Sample.Identity.IdentityServiceCollectionExtensions.OnTokenValidatedAsync(
+            context,
+            inner: null
+        );
 
         Assert.True(context.HttpContext.Items.ContainsKey(IdentityHttpItems.ResolutionKey));
     }

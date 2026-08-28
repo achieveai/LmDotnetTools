@@ -129,7 +129,8 @@ public sealed class LiveGatewayFixture : IAsyncLifetime
             );
         }
 
-        SkipReason = $"Live sandbox gateway unavailable ({reason}). Set SANDBOX_BASE_URL/SANDBOX_APP_ID/SANDBOX_APP_KEY "
+        SkipReason =
+            $"Live sandbox gateway unavailable ({reason}). Set SANDBOX_BASE_URL/SANDBOX_APP_ID/SANDBOX_APP_KEY "
             + "(and SANDBOX_CONTRACT_REQUIRED to make absence fail) to run the live contract matrix.";
     }
 

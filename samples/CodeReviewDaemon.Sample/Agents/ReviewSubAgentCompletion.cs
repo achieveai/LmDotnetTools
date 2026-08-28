@@ -107,7 +107,8 @@ internal sealed record ReviewAgentTranscriptEntry(
     string Role,
     string? FromAgent,
     DateTimeOffset? TimestampUtc,
-    string Body);
+    string Body
+);
 
 /// <summary>
 /// Provider-neutral read half of the agent directory: the transcript of one agent named by a
@@ -125,7 +126,8 @@ internal interface IReviewAgentTranscriptSource
     Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetTranscriptAsync(
         string rootThreadId,
         string agentId,
-        CancellationToken ct);
+        CancellationToken ct
+    );
 
     /// <summary>
     /// The lead reviewer's own transcript — the root conversation itself, not one of its descendants.
@@ -137,9 +139,7 @@ internal interface IReviewAgentTranscriptSource
     /// reasoning and nothing from the reviewer that actually decided the verdict.
     /// </para>
     /// </summary>
-    Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetRootTranscriptAsync(
-        string rootThreadId,
-        CancellationToken ct);
+    Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetRootTranscriptAsync(string rootThreadId, CancellationToken ct);
 }
 
 /// <summary>One observation of the whole descendant roster, flattened across every depth.</summary>
@@ -176,9 +176,11 @@ internal sealed record ReviewSubAgentTreeSnapshot(IReadOnlyList<ReviewSubAgentNo
             .ThenBy(static n => n.Template, StringComparer.Ordinal)
             .ThenBy(static n => n.Status, StringComparer.Ordinal)
             .ThenBy(static n => n.FailureCode, StringComparer.Ordinal)
-            .Select(static n => string.IsNullOrWhiteSpace(n.FailureCode)
-                ? $"- {n.Name} ({n.Template}): {n.Status}"
-                : $"- {n.Name} ({n.Template}): {n.Status} — failure: {n.FailureCode}")
+            .Select(static n =>
+                string.IsNullOrWhiteSpace(n.FailureCode)
+                    ? $"- {n.Name} ({n.Template}): {n.Status}"
+                    : $"- {n.Name} ({n.Template}): {n.Status} — failure: {n.FailureCode}"
+            )
             .ToArray();
 
         return lines.Length == 0 ? NoSubAgents : string.Join("\n", lines);
@@ -330,8 +332,7 @@ internal sealed class ReviewSubAgentCompletionBarrier
             {
                 snapshot = await snapshotTask.WaitAsync(remaining, _timeProvider, ct).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
-                when (deadlineCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (deadlineCts.IsCancellationRequested && !ct.IsCancellationRequested)
             {
                 // The deadline-linked token cancelled the round trip; loop so the top throws with the roster.
                 ObserveAbandonedSnapshot(snapshotTask, run, parentThreadId);
@@ -384,7 +385,12 @@ internal sealed class ReviewSubAgentCompletionBarrier
     /// <summary>Sorts a flattened roster by <c>(Depth, ParentThreadId, AgentId)</c> so two observations of
     /// the same logical roster compare equal regardless of the order the source happened to return them in.</summary>
     private static IReadOnlyList<ReviewSubAgentNode> Canonicalize(IReadOnlyList<ReviewSubAgentNode> nodes) =>
-        [.. nodes.OrderBy(n => n.Depth).ThenBy(n => n.ParentThreadId, StringComparer.Ordinal).ThenBy(n => n.AgentId, StringComparer.Ordinal)];
+        [
+            .. nodes
+                .OrderBy(n => n.Depth)
+                .ThenBy(n => n.ParentThreadId, StringComparer.Ordinal)
+                .ThenBy(n => n.AgentId, StringComparer.Ordinal),
+        ];
 
     private bool AllSettled(IReadOnlyList<ReviewSubAgentNode> canonical, DateTimeOffset now) =>
         canonical.All(node => IsSettled(node, now));

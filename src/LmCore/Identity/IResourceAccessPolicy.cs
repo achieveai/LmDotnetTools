@@ -128,7 +128,8 @@ public interface IResourceAccessPolicy
         Principal principal,
         ResourceDescriptor resource,
         AccessAction action,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Evaluates a display-time CAPABILITY - "may this principal take this action?" asked to shape a
@@ -164,5 +165,6 @@ public interface IResourceAccessPolicy
         ResourceDescriptor resource,
         AccessAction action,
         GrantRole? suppliedGrant,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 }

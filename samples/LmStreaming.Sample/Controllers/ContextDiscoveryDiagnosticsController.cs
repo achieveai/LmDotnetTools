@@ -16,7 +16,8 @@ namespace LmStreaming.Sample.Controllers;
 [Route("api/diagnostics")]
 public sealed class ContextDiscoveryDiagnosticsController(
     SandboxSessionRegistry registry,
-    ContextDiscoveryDiagnostics diagnostics) : ControllerBase
+    ContextDiscoveryDiagnostics diagnostics
+) : ControllerBase
 {
     [HttpGet("context-discovery")]
     public IActionResult Get()
@@ -39,15 +40,19 @@ public sealed class ContextDiscoveryDiagnosticsController(
                     ReceivedCount: r?.Count ?? 0,
                     LastReceivedAt: r?.LastReceivedAt,
                     LastKind: r?.LastKind,
-                    LastPath: r?.LastPath);
+                    LastPath: r?.LastPath
+                );
             })
             .ToList();
 
-        return Ok(new ContextDiscoveryDiagnosticsResponse(
-            DiscoveryEnabled: registry.DiscoveryEnabled,
-            WebhookUrl: registry.DiscoveryWebhookUrl,
-            Sessions: sessions,
-            Routing: diagnostics.RoutingSnapshot()));
+        return Ok(
+            new ContextDiscoveryDiagnosticsResponse(
+                DiscoveryEnabled: registry.DiscoveryEnabled,
+                WebhookUrl: registry.DiscoveryWebhookUrl,
+                Sessions: sessions,
+                Routing: diagnostics.RoutingSnapshot()
+            )
+        );
     }
 }
 
@@ -56,7 +61,8 @@ public sealed record ContextDiscoveryDiagnosticsResponse(
     bool DiscoveryEnabled,
     string WebhookUrl,
     IReadOnlyList<ContextDiscoverySessionInfo> Sessions,
-    RoutingOutcomeCounts Routing);
+    RoutingOutcomeCounts Routing
+);
 
 /// <summary>Per-session discovery state. <see cref="ReceivedCount"/> is 0 (with null timestamps)
 /// for a live session that has not yet received any discovery webhook.</summary>
@@ -66,4 +72,5 @@ public sealed record ContextDiscoverySessionInfo(
     long ReceivedCount,
     DateTimeOffset? LastReceivedAt,
     string? LastKind,
-    string? LastPath);
+    string? LastPath
+);

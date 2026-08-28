@@ -21,10 +21,7 @@ public class AgentCollaborationBundleTests
 
     private static AgentCollaborationBundle CreateBundle(AgentCollaborationOptions? options = null)
     {
-        return new AgentCollaborationBundle(
-            CollaborationId,
-            options ?? new AgentCollaborationOptions()
-        );
+        return new AgentCollaborationBundle(CollaborationId, options ?? new AgentCollaborationOptions());
     }
 
     private static AgentCollaborationContext Populate(AgentCollaborationBundle bundle)
@@ -72,10 +69,7 @@ public class AgentCollaborationBundleTests
 
         // The whole point of a root-owned directory: neither of these agents' own managers knows the
         // other exists, so without it this send has nowhere to look.
-        bundle
-            .TrySend(left.AgentId, "tester", AgentMessageType.Question)
-            .Succeeded.Should()
-            .BeTrue();
+        bundle.TrySend(left.AgentId, "tester", AgentMessageType.Question).Succeeded.Should().BeTrue();
     }
 
     [Fact]
@@ -145,9 +139,7 @@ public class AgentCollaborationBundleTests
         var bundle = CreateBundle();
         var root = Populate(bundle);
         _ = AddChild(bundle, root, "agent-a", "reviewer");
-        var question = bundle
-            .TrySend("agent-root", "reviewer", AgentMessageType.Question)
-            .MessageId!;
+        var question = bundle.TrySend("agent-root", "reviewer", AgentMessageType.Question).MessageId!;
 
         var answer = bundle.TrySend("agent-a", "root", AgentMessageType.Response, question);
 
@@ -184,9 +176,7 @@ public class AgentCollaborationBundleTests
         bundle.Ledger.Count.Should().Be(0);
 
         _ = bundle.Directory.TryUpdateStatus("agent-a", AgentCollaborationStatuses.Running);
-        bundle.TrySend("agent-root", "reviewer", AgentMessageType.Question)
-            .Succeeded.Should()
-            .BeTrue();
+        bundle.TrySend("agent-root", "reviewer", AgentMessageType.Question).Succeeded.Should().BeTrue();
     }
 
     [Fact]
@@ -203,10 +193,7 @@ public class AgentCollaborationBundleTests
             .TrySend("agent-root", "reviewer", AgentMessageType.Steer)
             .FailureCode.Should()
             .Be(AgentMessageFailureCodes.TargetNotActive);
-        bundle
-            .TrySend("agent-root", "reviewer", AgentMessageType.Question)
-            .Succeeded.Should()
-            .BeTrue();
+        bundle.TrySend("agent-root", "reviewer", AgentMessageType.Question).Succeeded.Should().BeTrue();
     }
 
     [Fact]
@@ -301,9 +288,7 @@ public class AgentCollaborationBundleTests
     public void EvaluateTranscriptAccess_AppliesTheConfiguredMode()
     {
         var restricted = CreateBundle();
-        var open = CreateBundle(
-            new AgentCollaborationOptions { TranscriptVisibility = TranscriptVisibilityMode.Open }
-        );
+        var open = CreateBundle(new AgentCollaborationOptions { TranscriptVisibility = TranscriptVisibilityMode.Open });
 
         foreach (var bundle in new[] { restricted, open })
         {
@@ -341,9 +326,7 @@ public class AgentCollaborationBundleTests
         var bundle = CreateBundle();
         var root = Populate(bundle);
         _ = AddChild(bundle, root, "agent-a", "reviewer");
-        var question = bundle
-            .TrySend("agent-root", "reviewer", AgentMessageType.Question)
-            .MessageId!;
+        var question = bundle.TrySend("agent-root", "reviewer", AgentMessageType.Question).MessageId!;
 
         var closed = bundle.RetireAgent("agent-a", "stopped");
 
@@ -351,10 +334,7 @@ public class AgentCollaborationBundleTests
         // released, and the departed agent must stay describable.
         closed.Should().Equal(question);
         bundle.Ledger.Find(question)!.State.Should().Be(AgentMessageDeliveryState.Abandoned);
-        bundle
-            .Ledger.Find(question)!
-            .ReasonCode.Should()
-            .Be(AgentCollaborationBundle.TargetLeftReasonCode);
+        bundle.Ledger.Find(question)!.ReasonCode.Should().Be(AgentCollaborationBundle.TargetLeftReasonCode);
 
         var entry = bundle.Directory.Resolve("agent-a").Entry!;
         entry.Status.Should().Be("stopped");
@@ -376,19 +356,11 @@ public class AgentCollaborationBundleTests
         // it can spend a wait interrupt on it and write a reply — for an asker that has gone.
         closed.Should().Equal(question);
         bundle.Ledger.Find(question)!.State.Should().Be(AgentMessageDeliveryState.Abandoned);
-        bundle
-            .Ledger.Find(question)!
-            .ReasonCode.Should()
-            .Be(AgentCollaborationBundle.SenderLeftReasonCode);
+        bundle.Ledger.Find(question)!.ReasonCode.Should().Be(AgentCollaborationBundle.SenderLeftReasonCode);
         bundle.Ledger.GetOpenInbound("agent-b").Should().BeEmpty();
         bundle
             .Ledger.TryAdmit(
-                new AgentMessageAdmissionRequest(
-                    "agent-b",
-                    asker.AgentId,
-                    AgentMessageType.Response,
-                    question
-                ),
+                new AgentMessageAdmissionRequest("agent-b", asker.AgentId, AgentMessageType.Response, question),
                 new AgentInbox(8)
             )
             .FailureCode.Should()

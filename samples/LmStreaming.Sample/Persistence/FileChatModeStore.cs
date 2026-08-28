@@ -37,11 +37,7 @@ public sealed class FileChatModeStore : IChatModeStore
         var userModes = await LoadUserModesAsync(ct);
 
         // Return system modes first, then user modes sorted by name
-        return
-        [
-            .. SystemChatModes.All,
-            .. userModes.OrderBy(m => m.Name)
-        ];
+        return [.. SystemChatModes.All, .. userModes.OrderBy(m => m.Name)];
     }
 
     /// <inheritdoc />
@@ -101,7 +97,11 @@ public sealed class FileChatModeStore : IChatModeStore
     }
 
     /// <inheritdoc />
-    public async Task<ChatMode> UpdateModeAsync(string modeId, ChatModeCreateUpdate mode, CancellationToken ct = default)
+    public async Task<ChatMode> UpdateModeAsync(
+        string modeId,
+        ChatModeCreateUpdate mode,
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(modeId);
         ArgumentNullException.ThrowIfNull(mode);
@@ -176,8 +176,8 @@ public sealed class FileChatModeStore : IChatModeStore
         ArgumentNullException.ThrowIfNull(modeId);
         ArgumentNullException.ThrowIfNull(newName);
 
-        var sourceMode = await GetModeAsync(modeId, ct)
-            ?? throw new KeyNotFoundException($"Mode '{modeId}' not found.");
+        var sourceMode =
+            await GetModeAsync(modeId, ct) ?? throw new KeyNotFoundException($"Mode '{modeId}' not found.");
 
         await _lock.WaitAsync(ct);
         try

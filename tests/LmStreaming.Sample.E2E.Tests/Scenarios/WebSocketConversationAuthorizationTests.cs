@@ -52,20 +52,22 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
         await ProvisionOwnedThreadAsync(factory, AlicesThread, Alice);
 
         // Bob is signed in. Before #419 that was the entire check, and this handshake completed.
-        Func<Task> handshake = () => factory.ConnectWebSocketAsync(
-            AlicesThread,
-            subProtocols: CredentialFor(Bob));
+        Func<Task> handshake = () => factory.ConnectWebSocketAsync(AlicesThread, subProtocols: CredentialFor(Bob));
 
-        _ = await handshake.Should().ThrowAsync<InvalidOperationException>(
-            "a signed-in caller with no grant on the conversation must not get a socket on it");
+        _ = await handshake
+            .Should()
+            .ThrowAsync<InvalidOperationException>(
+                "a signed-in caller with no grant on the conversation must not get a socket on it"
+            );
 
         // The refusal must also leave NOTHING behind. #399's owner freeze is per pooled entry, so a
         // refusal that still created the entry would hand Bob the freeze on Alice's thread - the
         // ownership half of the bug rather than the disclosure half.
-        var pool = factory.Services.GetRequiredService<
-            AchieveAi.LmDotnetTools.LmAgentInfra.Agents.MultiTurnAgentPool>();
-        _ = pool.TryGet(AlicesThread, out _).Should().BeFalse(
-            "a refused handshake must not create the thread's pooled agent");
+        var pool =
+            factory.Services.GetRequiredService<AchieveAi.LmDotnetTools.LmAgentInfra.Agents.MultiTurnAgentPool>();
+        _ = pool.TryGet(AlicesThread, out _)
+            .Should()
+            .BeFalse("a refused handshake must not create the thread's pooled agent");
     }
 
     [Fact]
@@ -79,13 +81,15 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
         // refused, and the pair would be an existence oracle over a deployment's thread ids. The
         // refusal BYTES are pinned at the unit level, in WebSocketConversationGateTests - the
         // handshake exposes neither status nor body to a browser, so only the gate can be asked.
-        Func<Task> handshake = () => factory.ConnectWebSocketAsync(
-            "thread-never-minted-aaa",
-            subProtocols: CredentialFor(Bob));
+        Func<Task> handshake = () =>
+            factory.ConnectWebSocketAsync("thread-never-minted-aaa", subProtocols: CredentialFor(Bob));
 
-        _ = await handshake.Should().ThrowAsync<InvalidOperationException>(
-            "an id that names nothing must refuse exactly as an id that names someone else's "
-                + "conversation - the client provisions through POST /api/conversations first");
+        _ = await handshake
+            .Should()
+            .ThrowAsync<InvalidOperationException>(
+                "an id that names nothing must refuse exactly as an id that names someone else's "
+                    + "conversation - the client provisions through POST /api/conversations first"
+            );
     }
 
     [Fact]
@@ -97,16 +101,15 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
 
         await ProvisionOwnedThreadAsync(factory, AlicesThread, Alice);
 
-        using var socket = await factory.ConnectWebSocketAsync(
-            AlicesThread,
-            subProtocols: CredentialFor(Alice));
+        using var socket = await factory.ConnectWebSocketAsync(AlicesThread, subProtocols: CredentialFor(Alice));
 
         _ = socket.State.Should().Be(System.Net.WebSockets.WebSocketState.Open);
 
         await socket.CloseAsync(
             System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
             "done",
-            CancellationToken.None);
+            CancellationToken.None
+        );
     }
 
     [Fact]
@@ -118,21 +121,23 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
 
         await ProvisionOwnedThreadAsync(factory, AlicesParent, Alice);
 
-        Func<Task> handshake = () => factory.ConnectSubAgentWebSocketAsync(
-            AlicesParent,
-            "agent-1",
-            subProtocols: CredentialFor(Bob));
+        Func<Task> handshake = () =>
+            factory.ConnectSubAgentWebSocketAsync(AlicesParent, "agent-1", subProtocols: CredentialFor(Bob));
 
-        _ = await handshake.Should().ThrowAsync<InvalidOperationException>(
-            "the sub-agent socket relays the parent conversation's content and must ask the parent's "
-                + "own authorization first");
+        _ = await handshake
+            .Should()
+            .ThrowAsync<InvalidOperationException>(
+                "the sub-agent socket relays the parent conversation's content and must ask the parent's "
+                    + "own authorization first"
+            );
 
         // Non-vacuity: the same handshake by the parent's OWNER must complete, or a host that
         // refused every sub-agent handshake would satisfy the assertion above.
         using var socket = await factory.ConnectSubAgentWebSocketAsync(
             AlicesParent,
             "agent-1",
-            subProtocols: CredentialFor(Alice));
+            subProtocols: CredentialFor(Alice)
+        );
         _ = socket.State.Should().Be(System.Net.WebSockets.WebSocketState.Open);
     }
 
@@ -156,19 +161,26 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
         var socket = await factory.ConnectSubAgentWebSocketAsync(
             BobsParent,
             AlicesAgentId,
-            subProtocols: CredentialFor(Bob));
+            subProtocols: CredentialFor(Bob)
+        );
         await using var client = new WebSocketTestClient(socket);
 
         using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(15));
 
-        _ = frames.OfMessageType("done").Should().BeEmpty(
-            "the done sentinel is what a caller entitled to the replay receives, and receiving it "
-                + "would tell Bob the agent id names something");
-        var error = frames.SingleOrDefault(
-            frame => frame.RootElement.TryGetProperty("code", out var code)
-                && string.Equals(code.GetString(), "subagent_unavailable", StringComparison.Ordinal));
-        _ = error.Should().NotBeNull(
-            "a child that is not this parent's must answer exactly as an agent id that names nothing");
+        _ = frames
+            .OfMessageType("done")
+            .Should()
+            .BeEmpty(
+                "the done sentinel is what a caller entitled to the replay receives, and receiving it "
+                    + "would tell Bob the agent id names something"
+            );
+        var error = frames.SingleOrDefault(frame =>
+            frame.RootElement.TryGetProperty("code", out var code)
+            && string.Equals(code.GetString(), "subagent_unavailable", StringComparison.Ordinal)
+        );
+        _ = error
+            .Should()
+            .NotBeNull("a child that is not this parent's must answer exactly as an agent id that names nothing");
 
         // ...and the socket closes, as it does for a genuinely unknown agent. A held-open socket
         // would be the same oracle in a different field.
@@ -193,16 +205,19 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
         var socket = await factory.ConnectSubAgentWebSocketAsync(
             AlicesParent,
             AlicesAgentId,
-            subProtocols: CredentialFor(Alice));
+            subProtocols: CredentialFor(Alice)
+        );
         await using var client = new WebSocketTestClient(socket);
 
         using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(15));
 
-        _ = frames.OfMessageType("done").Should().ContainSingle(
-            "the owning parent's completed child settles the focused client with the done sentinel");
-        _ = socket.State.Should().Be(
-            System.Net.WebSockets.WebSocketState.Open,
-            "read-only replay holds the socket open");
+        _ = frames
+            .OfMessageType("done")
+            .Should()
+            .ContainSingle("the owning parent's completed child settles the focused client with the done sentinel");
+        _ = socket
+            .State.Should()
+            .Be(System.Net.WebSockets.WebSocketState.Open, "read-only replay holds the socket open");
     }
 
     /// <summary>
@@ -236,24 +251,34 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
         // reason, and no mutation of the no-row branch can redden it.
         var store = factory.Services.GetRequiredService<IConversationStore>();
         var childThreadId = SubAgentProvenance.ThreadIdPrefix + alicesAgentId;
-        _ = (await store.LoadMessagesAsync(childThreadId)).Should().NotBeEmpty(
-            "the mid-run child must have a transcript for withholding it to mean anything");
-        _ = (await store.LoadMetadataAsync(childThreadId)).Should().BeNull(
-            "this case is about a child with NO metadata row - a row would route it down the "
-                + "provenance branch instead");
+        _ = (await store.LoadMessagesAsync(childThreadId))
+            .Should()
+            .NotBeEmpty("the mid-run child must have a transcript for withholding it to mean anything");
+        _ = (await store.LoadMetadataAsync(childThreadId))
+            .Should()
+            .BeNull(
+                "this case is about a child with NO metadata row - a row would route it down the "
+                    + "provenance branch instead"
+            );
 
         var midRun = await AnswerForAsync(factory, BobsParent, alicesAgentId);
         var nothing = await AnswerForAsync(factory, BobsParent, neverExistedAgentId);
 
-        _ = midRun.Frames.Should().Equal(
-            nothing.Frames,
-            "a foreign child mid-run and an agent id that names nothing must be indistinguishable "
-                + "frame for frame - the done sentinel on one and an error on the other is an "
-                + "existence oracle over sub-agent ids");
-        _ = midRun.StillOpen.Should().Be(
-            nothing.StillOpen,
-            "a held-open socket for one and a closed socket for the other is the same oracle read "
-                + "off the transport instead of off the frames");
+        _ = midRun
+            .Frames.Should()
+            .Equal(
+                nothing.Frames,
+                "a foreign child mid-run and an agent id that names nothing must be indistinguishable "
+                    + "frame for frame - the done sentinel on one and an error on the other is an "
+                    + "existence oracle over sub-agent ids"
+            );
+        _ = midRun
+            .StillOpen.Should()
+            .Be(
+                nothing.StillOpen,
+                "a held-open socket for one and a closed socket for the other is the same oracle read "
+                    + "off the transport instead of off the frames"
+            );
     }
 
     /// <summary>What one sub-agent handshake answered: its frames, with the caller's own agent id
@@ -264,12 +289,14 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
     private static async Task<SubAgentAnswer> AnswerForAsync(
         E2EWebAppFactory factory,
         string parentThreadId,
-        string agentId)
+        string agentId
+    )
     {
         var socket = await factory.ConnectSubAgentWebSocketAsync(
             parentThreadId,
             agentId,
-            subProtocols: CredentialFor(Bob));
+            subProtocols: CredentialFor(Bob)
+        );
         await using var client = new WebSocketTestClient(socket);
 
         using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(15));
@@ -293,7 +320,8 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
         var persisted = MessagePersistenceConverter.ToPersistedMessage(
             new TextMessage { Role = Role.Assistant, Text = "half-written-child-answer" },
             childThreadId,
-            runId: "run-1");
+            runId: "run-1"
+        );
         await store.AppendMessagesAsync(childThreadId, [persisted]);
     }
 
@@ -304,10 +332,7 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
     /// it - tenant, owner, private - because a row missing any of those is refused for a DIFFERENT
     /// reason and would make these tests pass for the wrong one.
     /// </summary>
-    private static Task ProvisionOwnedThreadAsync(
-        E2EWebAppFactory factory,
-        string threadId,
-        string userId)
+    private static Task ProvisionOwnedThreadAsync(E2EWebAppFactory factory, string threadId, string userId)
     {
         var store = factory.Services.GetRequiredService<IConversationStore>();
         return store.SaveMetadataAsync(
@@ -319,7 +344,8 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
                 TenantId = Tenant,
                 OwnerUserId = userId,
                 Visibility = Visibility.Private,
-            });
+            }
+        );
     }
 
     /// <summary>
@@ -327,10 +353,7 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
     /// durable parent link <see cref="SubAgentProvenance"/> stamps. Both halves matter - the
     /// transcript is what the handler would replay, and the link is what says whose it is.
     /// </summary>
-    private static async Task SeedPersistedChildAsync(
-        E2EWebAppFactory factory,
-        string agentId,
-        string parentThreadId)
+    private static async Task SeedPersistedChildAsync(E2EWebAppFactory factory, string agentId, string parentThreadId)
     {
         var store = factory.Services.GetRequiredService<IConversationStore>();
         var childThreadId = SubAgentProvenance.ThreadIdPrefix + agentId;
@@ -338,7 +361,8 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
         var persisted = MessagePersistenceConverter.ToPersistedMessage(
             new TextMessage { Role = Role.Assistant, Text = "persisted-child-answer" },
             childThreadId,
-            runId: "run-1");
+            runId: "run-1"
+        );
         await store.AppendMessagesAsync(childThreadId, [persisted]);
 
         await store.SaveMetadataAsync(
@@ -351,7 +375,8 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
                 OwnerUserId = Alice,
                 Visibility = Visibility.Private,
                 Properties = SubAgentProvenance.Build(parentThreadId, snapshot: null),
-            });
+            }
+        );
     }
 
     /// <summary>
@@ -359,18 +384,11 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
     /// subprotocol the server is allowed to echo back.
     /// </summary>
     private static string[] CredentialFor(string userId) =>
-        [
-            IdentityMiddleware.WebSocketCredentialSubProtocolPrefix + userId,
-            IdentityMiddleware.WebSocketSubProtocol,
-        ];
+        [IdentityMiddleware.WebSocketCredentialSubProtocolPrefix + userId, IdentityMiddleware.WebSocketSubProtocol];
 
     private static E2EWebAppFactory NewFactory()
     {
-        var responder = ScriptedSseResponder
-            .New()
-            .ForRole("noop", _ => true)
-            .Turn(t => t.Text("ok"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("noop", _ => true).Turn(t => t.Text("ok")).Build();
 
         return new E2EWebAppFactory(
             "test",
@@ -378,11 +396,10 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
             new Dictionary<string, string?>(StringComparer.Ordinal)
             {
                 ["Identity:Enforce"] = "true",
-                ["Identity:DatabasePath"] = Path.Combine(
-                    Path.GetTempPath(),
-                    $"identity_ws419_{Guid.NewGuid():N}.db"),
+                ["Identity:DatabasePath"] = Path.Combine(Path.GetTempPath(), $"identity_ws419_{Guid.NewGuid():N}.db"),
             },
-            services => services.AddSingleton<IRequestPrincipalSource, BearerUserPrincipalSource>());
+            services => services.AddSingleton<IRequestPrincipalSource, BearerUserPrincipalSource>()
+        );
     }
 
     /// <summary>
@@ -408,13 +425,16 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
                 return ValueTask.FromResult<PrincipalResolution?>(null);
             }
 
-            return ValueTask.FromResult<PrincipalResolution?>(PrincipalResolution.Success(
-                new Principal
-                {
-                    TenantId = Tenant,
-                    Actor = new PrincipalRef(PrincipalKind.EndUser, userId),
-                    Source = PrincipalSource.Interactive,
-                }));
+            return ValueTask.FromResult<PrincipalResolution?>(
+                PrincipalResolution.Success(
+                    new Principal
+                    {
+                        TenantId = Tenant,
+                        Actor = new PrincipalRef(PrincipalKind.EndUser, userId),
+                        Source = PrincipalSource.Interactive,
+                    }
+                )
+            );
         }
     }
 }

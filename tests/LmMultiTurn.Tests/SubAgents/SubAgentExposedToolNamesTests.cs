@@ -45,7 +45,8 @@ public class SubAgentExposedToolNamesTests
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: source);
+            source: source
+        );
 
         return new SubAgentToolProvider(manager, source, options.ExposedToolNames);
     }
@@ -59,14 +60,12 @@ public class SubAgentExposedToolNamesTests
         // The legacy path: a host that never narrows must see no change at all.
         NamesFrom(CreateProvider(null))
             .Should()
-            .BeEquivalentTo(
-                [
-                    SubAgentToolProvider.SpawnToolName,
-                    SubAgentToolProvider.SendMessageToolName,
-                    SubAgentToolProvider.CheckAgentToolName,
-                    SubAgentToolProvider.WaitAgentToolName,
-                ]
-            );
+            .BeEquivalentTo([
+                SubAgentToolProvider.SpawnToolName,
+                SubAgentToolProvider.SendMessageToolName,
+                SubAgentToolProvider.CheckAgentToolName,
+                SubAgentToolProvider.WaitAgentToolName,
+            ]);
     }
 
     [Fact]

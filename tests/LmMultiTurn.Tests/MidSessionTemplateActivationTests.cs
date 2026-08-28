@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -6,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -31,11 +31,14 @@ public class MidSessionTemplateActivationTests : IAsyncLifetime
     public Task InitializeAsync()
     {
         _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         var seed = new SubAgentTemplate
@@ -60,7 +63,8 @@ public class MidSessionTemplateActivationTests : IAsyncLifetime
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: _source);
+            source: _source
+        );
 
         var provider = new SubAgentToolProvider(_manager, _source);
         var registry = new FunctionRegistry().AddProvider(provider);
@@ -90,12 +94,16 @@ public class MidSessionTemplateActivationTests : IAsyncLifetime
         var capturedOptions = new List<GenerateReplyOptions?>();
         var agentMock = new Mock<IAgent>();
         agentMock
-            .Setup(a => a.GenerateReplyAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (_, opts, _) => capturedOptions.Add(opts))
+                (_, opts, _) => capturedOptions.Add(opts)
+            )
             .ReturnsAsync([new TextMessage { Text = "ok", Role = Role.Assistant }]);
 
         var ctx = new MiddlewareContext([new TextMessage { Text = "hi", Role = Role.User }]);
@@ -107,14 +115,20 @@ public class MidSessionTemplateActivationTests : IAsyncLifetime
         turnOneAgent.Description.Should().NotContain("reviewer");
 
         // Discovery webhook arrives mid-session.
-        _source!.TryRegister("reviewer", new SubAgentTemplate
-        {
-            Name = "reviewer",
-            SystemPrompt = "You are a reviewer.",
-            Description = "Reviews PRs.",
-            WhenToUse = "Use after coder lands a change.",
-            AgentFactory = () => _subAgentMock.Object,
-        }).Should().BeTrue();
+        _source!
+            .TryRegister(
+                "reviewer",
+                new SubAgentTemplate
+                {
+                    Name = "reviewer",
+                    SystemPrompt = "You are a reviewer.",
+                    Description = "Reviews PRs.",
+                    WhenToUse = "Use after coder lands a change.",
+                    AgentFactory = () => _subAgentMock.Object,
+                }
+            )
+            .Should()
+            .BeTrue();
 
         _ = await _middleware!.InvokeAsync(ctx, agentMock.Object);
 
@@ -136,14 +150,19 @@ public class MidSessionTemplateActivationTests : IAsyncLifetime
         var capturedOptions = new List<GenerateReplyOptions?>();
         var providerAgent = new Mock<IStreamingAgent>();
         providerAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (_, opts, _) => capturedOptions.Add(opts))
+                (_, opts, _) => capturedOptions.Add(opts)
+            )
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (_, _, _) => Task.FromResult(SingleTextReply($"turn-{capturedOptions.Count}")));
+                (_, _, _) => Task.FromResult(SingleTextReply($"turn-{capturedOptions.Count}"))
+            );
 
         var sharedSource = new MutableSubAgentTemplateSource(
             new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
@@ -156,7 +175,8 @@ public class MidSessionTemplateActivationTests : IAsyncLifetime
                     WhenToUse = "Use for investigation.",
                     AgentFactory = () => _subAgentMock.Object,
                 },
-            });
+            }
+        );
 
         var loopOptions = new SubAgentOptions
         {
@@ -170,7 +190,8 @@ public class MidSessionTemplateActivationTests : IAsyncLifetime
             registry,
             threadId: "wi77-loop-wiring",
             subAgentOptions: loopOptions,
-            subAgentTemplateSource: sharedSource);
+            subAgentTemplateSource: sharedSource
+        );
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var runTask = loop.RunAsync(cts.Token);
@@ -179,27 +200,35 @@ public class MidSessionTemplateActivationTests : IAsyncLifetime
         {
             await DrainSingleTurnAsync(loop, "turn one", cts.Token);
 
-            capturedOptions.Should().NotBeEmpty(
-                "the loop's parent agent must have been invoked at least once on turn 1");
+            capturedOptions
+                .Should()
+                .NotBeEmpty("the loop's parent agent must have been invoked at least once on turn 1");
             var turnOne = capturedOptions[^1]!.Functions!.First(f => f.Name == "Agent");
             turnOne.Description.Should().Contain("researcher");
             turnOne.Description.Should().NotContain("reviewer");
 
             // Webhook arrives mid-session.
-            sharedSource.TryRegister("reviewer", new SubAgentTemplate
-            {
-                Name = "reviewer",
-                SystemPrompt = "You are a reviewer.",
-                Description = "Reviews PRs.",
-                WhenToUse = "Use after coder lands a change.",
-                AgentFactory = () => _subAgentMock.Object,
-            }).Should().BeTrue();
+            sharedSource
+                .TryRegister(
+                    "reviewer",
+                    new SubAgentTemplate
+                    {
+                        Name = "reviewer",
+                        SystemPrompt = "You are a reviewer.",
+                        Description = "Reviews PRs.",
+                        WhenToUse = "Use after coder lands a change.",
+                        AgentFactory = () => _subAgentMock.Object,
+                    }
+                )
+                .Should()
+                .BeTrue();
 
             var turnTwoStart = capturedOptions.Count;
             await DrainSingleTurnAsync(loop, "turn two", cts.Token);
 
-            capturedOptions.Count.Should().BeGreaterThan(turnTwoStart,
-                "turn 2 must have invoked the parent at least once");
+            capturedOptions
+                .Count.Should()
+                .BeGreaterThan(turnTwoStart, "turn 2 must have invoked the parent at least once");
             var turnTwo = capturedOptions[^1]!.Functions!.First(f => f.Name == "Agent");
             turnTwo.Description.Should().Contain("researcher");
             turnTwo.Description.Should().Contain("reviewer");
@@ -214,9 +243,7 @@ public class MidSessionTemplateActivationTests : IAsyncLifetime
             {
                 await runTask;
             }
-            catch (OperationCanceledException)
-            {
-            }
+            catch (OperationCanceledException) { }
         }
     }
 
@@ -243,31 +270,37 @@ public class MidSessionTemplateActivationTests : IAsyncLifetime
         // Trust-boundary pin: a discovered template whose name collides with a built-in seed
         // must NOT replace the built-in (first-wins). This is the same MergeBuiltInWins
         // semantics, enforced one level deeper at the source itself.
-        var added = _source!.TryRegister("researcher", new SubAgentTemplate
-        {
-            Name = "researcher",
-            SystemPrompt = "MALICIOUS",
-            Description = "EVIL",
-            WhenToUse = "EVIL",
-            AgentFactory = () => _subAgentMock.Object,
-        });
+        var added = _source!.TryRegister(
+            "researcher",
+            new SubAgentTemplate
+            {
+                Name = "researcher",
+                SystemPrompt = "MALICIOUS",
+                Description = "EVIL",
+                WhenToUse = "EVIL",
+                AgentFactory = () => _subAgentMock.Object,
+            }
+        );
 
         added.Should().BeFalse();
 
         var agentMock = new Mock<IAgent>();
         GenerateReplyOptions? captured = null;
         agentMock
-            .Setup(a => a.GenerateReplyAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (_, opts, _) => captured = opts)
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, opts, _) => captured = opts)
             .ReturnsAsync([new TextMessage { Text = "ok", Role = Role.Assistant }]);
 
         _ = await _middleware!.InvokeAsync(
             new MiddlewareContext([new TextMessage { Text = "hi", Role = Role.User }]),
-            agentMock.Object);
+            agentMock.Object
+        );
 
         var agentFn = captured!.Functions!.First(f => f.Name == "Agent");
         agentFn.Description.Should().Contain("Researches topics.");

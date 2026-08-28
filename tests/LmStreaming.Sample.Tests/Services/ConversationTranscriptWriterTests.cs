@@ -181,7 +181,8 @@ public sealed class ConversationTranscriptWriterTests
         IConversationStore store,
         FakeFileBrowser browser,
         ILogger<ConversationTranscriptWriter>? logger = null,
-        int maxSubAgentFilesPerFlush = ConversationTranscriptWriter.DefaultMaxSubAgentFilesPerFlush) =>
+        int maxSubAgentFilesPerFlush = ConversationTranscriptWriter.DefaultMaxSubAgentFilesPerFlush
+    ) =>
         new(
             ThreadId,
             store,
@@ -197,7 +198,8 @@ public sealed class ConversationTranscriptWriterTests
     private static Task SeedConversationAsync(
         IConversationStore store,
         string? title = Title,
-        string? workspaceId = WorkspaceId)
+        string? workspaceId = WorkspaceId
+    )
     {
         var properties = ImmutableDictionary.CreateBuilder<string, object>(StringComparer.Ordinal);
         if (workspaceId is not null)
@@ -226,7 +228,8 @@ public sealed class ConversationTranscriptWriterTests
         IConversationStore store,
         string agentId,
         string? name,
-        params PersistedMessage[] messages)
+        params PersistedMessage[] messages
+    )
     {
         var childThreadId = SubAgentProvenance.ThreadIdPrefix + agentId;
         await store.SaveMetadataAsync(
@@ -261,7 +264,8 @@ public sealed class ConversationTranscriptWriterTests
         string threadId = ThreadId,
         string runId = "run-1",
         string messageType = "TextMessage",
-        string? messageJson = null) =>
+        string? messageJson = null
+    ) =>
         new()
         {
             Id = id,
@@ -284,7 +288,8 @@ public sealed class ConversationTranscriptWriterTests
         IReadOnlyList<PersistedMessage> all,
         int skip = 0,
         string? agent = null,
-        string? rootParentUid = null)
+        string? rootParentUid = null
+    )
     {
         var lines = WorkspaceTranscriptLine.ChainMessages(
             TranscriptProjection.Normalize(all, excludeReasoning: false),
@@ -312,10 +317,22 @@ public sealed class ConversationTranscriptWriterTests
         ];
 
     private static SandboxCommandResult Ok(string stdout = "") =>
-        new() { ExitCode = 0, StandardOutput = stdout, StandardError = "", OperationId = "op" };
+        new()
+        {
+            ExitCode = 0,
+            StandardOutput = stdout,
+            StandardError = "",
+            OperationId = "op",
+        };
 
     private static SandboxCommandResult Fail(string stderr = "boom") =>
-        new() { ExitCode = 1, StandardOutput = "", StandardError = stderr, OperationId = "op" };
+        new()
+        {
+            ExitCode = 1,
+            StandardOutput = "",
+            StandardError = stderr,
+            OperationId = "op",
+        };
 
     /// <summary>
     /// What the watermark probe reports when the destination is DEFINITELY not there. The literal 42 is
@@ -331,10 +348,22 @@ public sealed class ConversationTranscriptWriterTests
     /// off the production constant could not notice it drifting onto a value <c>sh</c> also produces.
     /// </summary>
     private static SandboxCommandResult Refused() =>
-        new() { ExitCode = 44, StandardOutput = "", StandardError = "", OperationId = "op" };
+        new()
+        {
+            ExitCode = 44,
+            StandardOutput = "",
+            StandardError = "",
+            OperationId = "op",
+        };
 
     private static SandboxCommandResult Missing() =>
-        new() { ExitCode = 42, StandardOutput = "", StandardError = "", OperationId = "op" };
+        new()
+        {
+            ExitCode = 42,
+            StandardOutput = "",
+            StandardError = "",
+            OperationId = "op",
+        };
 
     /// <summary>
     /// What the probe reports when the window was read but the destination's last byte is NOT a newline —
@@ -430,8 +459,8 @@ public sealed class ConversationTranscriptWriterTests
 
         _ = browser.Writes.Select(w => w.Path).Should().Equal(GitignorePath, TempPath);
         _ = Written(browser, 0).Should().Be(payload);
-        _ = browser.Writes
-            .Select(w => w.Path)
+        _ = browser
+            .Writes.Select(w => w.Path)
             .Should()
             .NotContain(p => p.EndsWith(ConversationTranscriptWriter.TranscriptExtension, StringComparison.Ordinal));
 
@@ -440,10 +469,14 @@ public sealed class ConversationTranscriptWriterTests
         // of a write the gateway PUTs, which no script can check because no script has run yet.
         _ = browser.Commands.Should().HaveCount(4);
         _ = browser.Commands[0].Arguments.Should().Equal("sh", "-c", ExpectedGuardScript, "sh", GitignorePath);
-        _ = browser.Commands[1].Arguments.Should()
+        _ = browser
+            .Commands[1]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5", "256");
         _ = browser.Commands[2].Arguments.Should().Equal("sh", "-c", ExpectedGuardScript, "sh", TempPath);
-        _ = browser.Commands[3].Arguments.Should()
+        _ = browser
+            .Commands[3]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedSpliceScript, "sh", ".conversations", TempPath, MainPath(Title));
         _ = browser.LastPersistedWorkspaceId.Should().Be(WorkspaceId);
     }
@@ -478,7 +511,9 @@ public sealed class ConversationTranscriptWriterTests
         // No second probe: the watermark survived in process, keyed by thread. Nor a second containment
         // guard: the ignore file is written once per writer. The staging guard DOES run again — it runs
         // before EVERY staging PUT, because a symlink can be planted between any two of them.
-        _ = browser.Commands.Select(c => c.Arguments[2]).Should()
+        _ = browser
+            .Commands.Select(c => c.Arguments[2])
+            .Should()
             .Equal(
                 ExpectedGuardScript,
                 ExpectedProbeScript,
@@ -512,9 +547,9 @@ public sealed class ConversationTranscriptWriterTests
 
         // What a previous process left on disk: m1, m2, then a half-written m3.
         var onDisk = ExpectedAppend(messages, skip: 0);
-        var intact = string.Concat(onDisk.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Take(2)
-            .Select(l => l + "\n"));
+        var intact = string.Concat(
+            onDisk.Split('\n', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(l => l + "\n")
+        );
         var torn = onDisk.Split('\n', StringSplitOptions.RemoveEmptyEntries)[2][..20];
 
         var browser = new FakeFileBrowser
@@ -524,7 +559,9 @@ public sealed class ConversationTranscriptWriterTests
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
-        _ = browser.Commands[1].Arguments.Should()
+        _ = browser
+            .Commands[1]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5", "256");
         _ = Written(browser, 0).Should().Be(ExpectedAppend(messages, skip: 2));
         _ = browser.ReadCalls.Should().Be(0);
@@ -573,7 +610,8 @@ public sealed class ConversationTranscriptWriterTests
         var outcome = await CreateWriter(store, browser).FlushAsync();
 
         // The bound itself, in bytes the gateway would have had to carry.
-        _ = probeOutput.Length.Should()
+        _ = probeOutput
+            .Length.Should()
             .BeLessThan(
                 4096,
                 "the probe's output has to be bounded by a constant, not by the size of the rows it reads"
@@ -611,13 +649,12 @@ public sealed class ConversationTranscriptWriterTests
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Select(line => (line.Length <= 256 ? line : line[..256]) + "\n")
         );
-        _ = truncated.Split('\n', StringSplitOptions.RemoveEmptyEntries)[1].Should()
+        _ = truncated
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)[1]
+            .Should()
             .HaveLength(256, "the row the watermark sits on is the one that got cut");
 
-        var browser = new FakeFileBrowser
-        {
-            ExecuteHandler = command => IsProbe(command) ? Ok(truncated) : Ok(),
-        };
+        var browser = new FakeFileBrowser { ExecuteHandler = command => IsProbe(command) ? Ok(truncated) : Ok() };
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = Written(browser, 0).Should().Be(ExpectedAppend(messages, skip: 2));
@@ -739,10 +776,7 @@ public sealed class ConversationTranscriptWriterTests
         PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2)];
         await store.AppendMessagesAsync(ThreadId, messages);
 
-        var browser = new FakeFileBrowser
-        {
-            ExecuteHandler = command => IsProbe(command) ? Missing() : Ok(),
-        };
+        var browser = new FakeFileBrowser { ExecuteHandler = command => IsProbe(command) ? Missing() : Ok() };
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = Written(browser, 0).Should().Be(ExpectedAppend(messages));
@@ -919,13 +953,20 @@ public sealed class ConversationTranscriptWriterTests
 
         // The descendant's transcript really did reach the workspace, so the ordering assertion below is
         // about a flush that wrote something rather than one that happened to do nothing.
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Equal(AgentPath(Title, "a1", "alpha"));
+        _ = browser
+            .Commands.Where(c => IsSplice(c))
+            .Select(c => c.Arguments[6])
+            .Should()
+            .Equal(AgentPath(Title, "a1", "alpha"));
 
-        _ = browser.Writes[0].Path.Should().Be(
-            GitignorePath,
-            "a descendant's transcript is as exposed as the root's — containment must precede the first "
-                + "byte of EITHER, and the root contributed none of them here");
+        _ = browser
+            .Writes[0]
+            .Path.Should()
+            .Be(
+                GitignorePath,
+                "a descendant's transcript is as exposed as the root's — containment must precede the first "
+                    + "byte of EITHER, and the root contributed none of them here"
+            );
         _ = browser.Writes[1].Path.Should().Be(TempPath);
     }
 
@@ -958,13 +999,17 @@ public sealed class ConversationTranscriptWriterTests
 
         var rootUid = WorkspaceTranscriptLine.DeriveUid("m2");
         var splices = browser.Commands.Where(c => IsSplice(c)).ToList();
-        _ = splices.Select(c => c.Arguments[6]).Should().Equal(
-            MainPath(Title),
-            AgentPath(Title, "nameless", null),
-            AgentPath(Title, "r1", "reviewer"),
-            AgentPath(Title, "r2", "reviewer")
-        );
-        _ = AgentPath(Title, "nameless", null).Should()
+        _ = splices
+            .Select(c => c.Arguments[6])
+            .Should()
+            .Equal(
+                MainPath(Title),
+                AgentPath(Title, "nameless", null),
+                AgentPath(Title, "r1", "reviewer"),
+                AgentPath(Title, "r2", "reviewer")
+            );
+        _ = AgentPath(Title, "nameless", null)
+            .Should()
             .EndWith($"/agent-{WorkspaceTranscriptLine.ShortId("nameless")}.jsonl");
         _ = AgentPath(Title, "r1", "reviewer").Should().NotBe(AgentPath(Title, "r2", "reviewer"));
 
@@ -1003,24 +1048,25 @@ public sealed class ConversationTranscriptWriterTests
         var browser = new FakeFileBrowser
         {
             ExecuteHandler = command =>
-                IsSplice(command) && command.Arguments[6] == MainPath(Title)
-                    ? Fail("no space left on device")
-                    : Ok(),
+                IsSplice(command) && command.Arguments[6] == MainPath(Title) ? Fail("no space left on device") : Ok(),
         };
         var writer = CreateWriter(store, browser);
 
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Equal(MainPath(Title));
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6]).Should().Equal(MainPath(Title));
 
         browser.ExecuteHandler = null;
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
         // The child's first line chains off the main file's real tail — a row that genuinely exists in the
         // main file — instead of off nothing.
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Equal(MainPath(Title), MainPath(Title), AgentPath(Title, "a1", "alpha"));
-        _ = Written(browser, 2).Should()
+        _ = browser
+            .Commands.Where(c => IsSplice(c))
+            .Select(c => c.Arguments[6])
+            .Should()
+            .Equal(MainPath(Title), MainPath(Title), AgentPath(Title, "a1", "alpha"));
+        _ = Written(browser, 2)
+            .Should()
             .Be(ExpectedAppend(child, agent: "alpha", rootParentUid: WorkspaceTranscriptLine.DeriveUid("m2")));
     }
 
@@ -1081,13 +1127,19 @@ public sealed class ConversationTranscriptWriterTests
         var writer = CreateWriter(store, browser, maxSubAgentFilesPerFlush: 1);
 
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Progressing);
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
+        _ = browser
+            .Commands.Where(c => IsSplice(c))
+            .Select(c => c.Arguments[6])
+            .Should()
+            .Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
 
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Equal(AgentPath(Title, "b2", "beta"));
+        _ = browser
+            .Commands.Where(c => IsSplice(c))
+            .Select(c => c.Arguments[6])
+            .Should()
+            .Equal(AgentPath(Title, "b2", "beta"));
 
         // The sweep has now visited every descendant, so the writer stops asking. Reporting Deferred here
         // instead — as a capped pass once did — would spend the caller's FAILURE budget on a conversation
@@ -1132,8 +1184,11 @@ public sealed class ConversationTranscriptWriterTests
 
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Equal(AgentPath(Title, "b2", "beta"));
+        _ = browser
+            .Commands.Where(c => IsSplice(c))
+            .Select(c => c.Arguments[6])
+            .Should()
+            .Equal(AgentPath(Title, "b2", "beta"));
     }
 
     /// <summary>
@@ -1242,10 +1297,12 @@ public sealed class ConversationTranscriptWriterTests
         }
 
         _ = burned.Should().BeTrue("the scenario is only meaningful if a descendant's splice actually failed");
-        _ = spliced.Should().Contain(
-            firstAgentPath,
-            "the descendant whose splice failed in the first slice was never retried, so its transcript does not exist"
-        );
+        _ = spliced
+            .Should()
+            .Contain(
+                firstAgentPath,
+                "the descendant whose splice failed in the first slice was never retried, so its transcript does not exist"
+            );
 
         var expected = Enumerable.Range(0, roster).Select(i => AgentPath(Title, $"a{i:00}", $"agent-{i:00}"));
         _ = spliced.Should().Contain(expected);
@@ -1273,14 +1330,16 @@ public sealed class ConversationTranscriptWriterTests
 
         browser.Commands.Clear();
         _ = await writer.FlushAsync();
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Equal(MainPath(Title));
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6]).Should().Equal(MainPath(Title));
 
         writer.NoteSubAgentActivity();
         browser.Commands.Clear();
         _ = await writer.FlushAsync();
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Equal(AgentPath(Title, "late", "latecomer"));
+        _ = browser
+            .Commands.Where(c => IsSplice(c))
+            .Select(c => c.Arguments[6])
+            .Should()
+            .Equal(AgentPath(Title, "late", "latecomer"));
     }
 
     // ---------------------------------------------------------------- AC 10, 11
@@ -1310,12 +1369,18 @@ public sealed class ConversationTranscriptWriterTests
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
         _ = browser.Commands.Should().HaveCount(4);
-        _ = browser.Commands[0].Arguments.Should()
+        _ = browser
+            .Commands[0]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedMoveScript, "sh", MainPath(Title), MainPath(RetitledTo));
-        _ = browser.Commands[1].Arguments.Should()
+        _ = browser
+            .Commands[1]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedMoveScript, "sh", AgentsDirectory(Title), AgentsDirectory(RetitledTo));
         _ = browser.Commands[2].Arguments.Should().Equal("sh", "-c", ExpectedGuardScript, "sh", TempPath);
-        _ = browser.Commands[3].Arguments.Should()
+        _ = browser
+            .Commands[3]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedSpliceScript, "sh", ".conversations", TempPath, MainPath(RetitledTo));
     }
 
@@ -1342,7 +1407,9 @@ public sealed class ConversationTranscriptWriterTests
 
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands[0].Arguments.Should()
+        _ = browser
+            .Commands[0]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedMoveScript, "sh", MainPath(Title), MainPath(RetitledTo));
         _ = browser.Commands.Single(IsSplice).Arguments[6].Should().Be(MainPath(Title));
         _ = Written(browser, 1).Should().Be(ExpectedAppend(all, skip: 1));
@@ -1353,7 +1420,9 @@ public sealed class ConversationTranscriptWriterTests
 
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands[0].Arguments.Should()
+        _ = browser
+            .Commands[0]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedMoveScript, "sh", MainPath(Title), MainPath(RetitledTo));
         _ = browser.Commands.Single(IsSplice).Arguments[6].Should().Be(MainPath(RetitledTo));
         _ = Written(browser, 2).Should().Be(ExpectedAppend(everything, skip: 2));
@@ -1402,17 +1471,26 @@ public sealed class ConversationTranscriptWriterTests
         // Adopted by the same move the warm path uses, and BEFORE the tail that recovers the watermark —
         // otherwise the watermark is read from a file this flush is about to stop writing to. The call
         // between them is the guard ahead of the ignore file's write, which reads and writes nothing.
-        _ = browser.Commands[0].Arguments.Should()
+        _ = browser
+            .Commands[0]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedMoveScript, "sh", MainPath(RetitledTo), MainPath(Title));
-        _ = browser.Commands[1].Arguments.Should()
+        _ = browser
+            .Commands[1]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedMoveScript, "sh", AgentsDirectory(RetitledTo), AgentsDirectory(Title));
         _ = browser.Commands[2].Arguments.Should().Equal("sh", "-c", ExpectedGuardScript, "sh", GitignorePath);
-        _ = browser.Commands[3].Arguments.Should()
+        _ = browser
+            .Commands[3]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5", "256");
 
         // One transcript, and the sub-agent file lands under it rather than beside the abandoned name.
-        _ = browser.Commands.Where(IsSplice).Select(c => c.Arguments[6])
-            .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
+        _ = browser
+            .Commands.Where(IsSplice)
+            .Select(c => c.Arguments[6])
+            .Should()
+            .Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
     }
 
     /// <summary>
@@ -1456,10 +1534,11 @@ public sealed class ConversationTranscriptWriterTests
         // And once the gateway answers, the SAME writer adopts the file that was there all along.
         browser.ListThrows = null;
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands[0].Arguments.Should()
+        _ = browser
+            .Commands[0]
+            .Arguments.Should()
             .Equal("sh", "-c", ExpectedMoveScript, "sh", MainPath(RetitledTo), MainPath(Title));
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Equal(MainPath(Title));
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6]).Should().Equal(MainPath(Title));
     }
 
     /// <summary>
@@ -1485,8 +1564,7 @@ public sealed class ConversationTranscriptWriterTests
         };
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Equal(MainPath(Title));
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6]).Should().Equal(MainPath(Title));
     }
 
     /// <summary>
@@ -1540,14 +1618,20 @@ public sealed class ConversationTranscriptWriterTests
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
         // Nothing the writer hands the container may leave the transcript directory, by any route.
-        _ = browser.Commands.SelectMany(c => c.Arguments).Concat(browser.Writes.Select(w => w.Path))
-            .Should().NotContain(argument => argument.Contains("..", StringComparison.Ordinal));
+        _ = browser
+            .Commands.SelectMany(c => c.Arguments)
+            .Concat(browser.Writes.Select(w => w.Path))
+            .Should()
+            .NotContain(argument => argument.Contains("..", StringComparison.Ordinal));
 
         // The traversing name is ignored rather than renamed onto: adopting it and then MOVING it would
         // read the file from outside the workspace just as surely as writing to it would.
         _ = browser.Commands.Should().NotContain(command => IsMove(command));
-        _ = browser.Commands.Where(IsSplice).Select(c => c.Arguments[6])
-            .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
+        _ = browser
+            .Commands.Where(IsSplice)
+            .Select(c => c.Arguments[6])
+            .Should()
+            .Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
     }
 
     // ---------------------------------------------------------------- AC 19
@@ -1592,8 +1676,7 @@ public sealed class ConversationTranscriptWriterTests
         _ = line.GetProperty("message_type").GetString().Should().Be(nameof(ReasoningMessage));
 
         var round = JsonSerializer.Deserialize<IMessage>(line.GetProperty("message_json").GetString()!, options);
-        _ = round.Should().BeOfType<ReasoningMessage>()
-            .Which.Reasoning.Should().Be("weigh option A against option B");
+        _ = round.Should().BeOfType<ReasoningMessage>().Which.Reasoning.Should().Be("weigh option A against option B");
     }
 
     // ---------------------------------------------------------------- AC 23, 24
@@ -1733,8 +1816,7 @@ public sealed class ConversationTranscriptWriterTests
 
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = Written(browser, 0).Should().Be(ExpectedAppend(messages));
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Contain(MainPath(Title));
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6]).Should().Contain(MainPath(Title));
     }
 
     /// <summary>
@@ -1755,7 +1837,8 @@ public sealed class ConversationTranscriptWriterTests
         var refused = await browser.ResolveThreadWorkspaceSessionAsync(
             ThreadId,
             WorkspaceId,
-            new SandboxCredential("some-other-app", "key"));
+            new SandboxCredential("some-other-app", "key")
+        );
 
         _ = refused.Outcome.Should().Be(SandboxSessionResolutionOutcome.CredentialConflict);
         _ = refused.ExistingAppId.Should().Be("review-daemon");
@@ -1787,10 +1870,10 @@ public sealed class ConversationTranscriptWriterTests
 
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
-        var expected = $"{ConversationTranscriptWriter.TranscriptDirectory}/{ShortThreadId}"
+        var expected =
+            $"{ConversationTranscriptWriter.TranscriptDirectory}/{ShortThreadId}"
             + ConversationTranscriptWriter.TranscriptExtension;
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Contain(expected);
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6]).Should().Contain(expected);
         _ = expected.Should().NotContain($"/-{ShortThreadId}");
     }
 
@@ -1813,11 +1896,15 @@ public sealed class ConversationTranscriptWriterTests
         var writer = CreateWriter(store, browser);
 
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
-            .Should().Contain(
+        _ = browser
+            .Commands.Where(c => IsSplice(c))
+            .Select(c => c.Arguments[6])
+            .Should()
+            .Contain(
                 AgentPath(Title, "agent-a", "Explorer"),
                 "the descendant fan-out keys off persisted metadata, not credentials, so once the "
-                    + "root resolves its children must be mirrored too");
+                    + "root resolves its children must be mirrored too"
+            );
     }
 
     // ---------------------------------------------------------------- #254: externalized tool results
@@ -1828,7 +1915,8 @@ public sealed class ConversationTranscriptWriterTests
             id,
             timestamp,
             ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100,
-            threadId);
+            threadId
+        );
 
     /// <summary>
     /// A tool result whose <c>message_json</c> is EXACTLY <paramref name="bytes"/> UTF-8 bytes. The two
@@ -1839,14 +1927,16 @@ public sealed class ConversationTranscriptWriterTests
         string id,
         long timestamp,
         int bytes,
-        string threadId = ThreadId) =>
+        string threadId = ThreadId
+    ) =>
         Msg(
             id,
             timestamp,
             role: "Tool",
             threadId: threadId,
             messageType: nameof(ToolsCallResultMessage),
-            messageJson: "\"" + new string('x', bytes - 2) + "\"");
+            messageJson: "\"" + new string('x', bytes - 2) + "\""
+        );
 
     /// <summary>
     /// Where <paramref name="path"/> ends up after the directory renames in <paramref name="commands"/>
@@ -1918,7 +2008,8 @@ public sealed class ConversationTranscriptWriterTests
 
         var payload = Written(browser, 0);
         var uid = WorkspaceTranscriptLine.DeriveUid(big.Id);
-        var expectedRef = $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+        var expectedRef =
+            $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
             + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json";
 
         // The content left the line...
@@ -1926,7 +2017,8 @@ public sealed class ConversationTranscriptWriterTests
         _ = Field(payload, 0, "message_json_ref").Should().Be(expectedRef);
 
         // ...and landed in the sidecar, whole.
-        var sidecar = browser.Writes.Should()
+        var sidecar = browser
+            .Writes.Should()
             .ContainSingle(w => w.Path == $"{ConversationTranscriptWriter.TranscriptDirectory}/{expectedRef}")
             .Which;
         _ = Encoding.UTF8.GetString(sidecar.Bytes).Should().Be(big.MessageJson);
@@ -1956,8 +2048,11 @@ public sealed class ConversationTranscriptWriterTests
         var payload = Written(browser, 0);
         _ = Field(payload, 0, "message_json").Should().Be(small.MessageJson);
         _ = Field(payload, 0, "message_json_ref").Should().BeNull();
-        _ = browser.Writes.Should().NotContain(w =>
-            w.Path.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal));
+        _ = browser
+            .Writes.Should()
+            .NotContain(w =>
+                w.Path.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal)
+            );
     }
 
     /// <summary>
@@ -1975,7 +2070,10 @@ public sealed class ConversationTranscriptWriterTests
             "m1",
             1,
             messageType: "TextMessage",
-            messageJson: "\"" + new string('y', ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100) + "\"");
+            messageJson: "\""
+                + new string('y', ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100)
+                + "\""
+        );
         await store.AppendMessagesAsync(ThreadId, [wordy]);
 
         var browser = new FakeFileBrowser();
@@ -1999,9 +2097,7 @@ public sealed class ConversationTranscriptWriterTests
     {
         var store = new InMemoryConversationStore();
         await SeedConversationAsync(store);
-        await store.AppendMessagesAsync(
-            ThreadId,
-            [Msg("m1", 1, "User"), BigToolResult("m2", 2), Msg("m3", 3)]);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User"), BigToolResult("m2", 2), Msg("m3", 3)]);
 
         var browser = new FakeFileBrowser();
         var writer = CreateWriter(store, browser);
@@ -2023,9 +2119,13 @@ public sealed class ConversationTranscriptWriterTests
         }
 
         // Non-vacuity: exactly one of the three was actually externalised.
-        _ = lines.Count(l => JsonSerializer.Deserialize<JsonElement>(l)
-            .GetProperty("message_json_ref").ValueKind != JsonValueKind.Null)
-            .Should().Be(1);
+        _ = lines
+            .Count(l =>
+                JsonSerializer.Deserialize<JsonElement>(l).GetProperty("message_json_ref").ValueKind
+                != JsonValueKind.Null
+            )
+            .Should()
+            .Be(1);
     }
 
     /// <summary>
@@ -2057,21 +2157,24 @@ public sealed class ConversationTranscriptWriterTests
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
-        var moves = browser.Commands.Where(IsMove)
-            .Select(c => (From: c.Arguments[^2], To: c.Arguments[^1]))
-            .ToList();
+        var moves = browser.Commands.Where(IsMove).Select(c => (From: c.Arguments[^2], To: c.Arguments[^1])).ToList();
 
-        _ = moves.Should().Equal(
-            [
-                (MainPath(Title), MainPath(RetitledTo)),
-                (AgentsDirectory(Title), AgentsDirectory(RetitledTo)),
-            ],
-            "the file and the sub-agent directory follow the slug, and nothing else does");
+        _ = moves
+            .Should()
+            .Equal(
+                [(MainPath(Title), MainPath(RetitledTo)), (AgentsDirectory(Title), AgentsDirectory(RetitledTo))],
+                "the file and the sub-agent directory follow the slug, and nothing else does"
+            );
 
         // Said again against the suffix itself, so a rename of the helpers cannot hide a third move.
-        _ = browser.Commands.SelectMany(c => c.Arguments).Should().NotContain(
-            argument => argument.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal),
-            "no shell call may touch the sidecar directory during a retitle");
+        _ = browser
+            .Commands.SelectMany(c => c.Arguments)
+            .Should()
+            .NotContain(
+                argument =>
+                    argument.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal),
+                "no shell call may touch the sidecar directory during a retitle"
+            );
     }
 
     /// <summary>
@@ -2109,13 +2212,19 @@ public sealed class ConversationTranscriptWriterTests
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
         // The retitle really happened - otherwise this asserts nothing.
-        _ = browser.Commands.Where(IsMove).Select(c => (c.Arguments[^2], c.Arguments[^1]))
-            .Should().Contain((MainPath(Title), MainPath(RetitledTo)));
+        _ = browser
+            .Commands.Where(IsMove)
+            .Select(c => (c.Arguments[^2], c.Arguments[^1]))
+            .Should()
+            .Contain((MainPath(Title), MainPath(RetitledTo)));
 
-        _ = AfterRenames(payloadPath, browser.Commands).Should().Be(
-            payloadPath,
-            "the reference was stamped with the leaf in force when it was written and nothing rewrites "
-                + "a line afterwards, so moving the sidecar out from under it strands the payload");
+        _ = AfterRenames(payloadPath, browser.Commands)
+            .Should()
+            .Be(
+                payloadPath,
+                "the reference was stamped with the leaf in force when it was written and nothing rewrites "
+                    + "a line afterwards, so moving the sidecar out from under it strands the payload"
+            );
     }
 
     /// <summary>
@@ -2134,23 +2243,27 @@ public sealed class ConversationTranscriptWriterTests
         await store.AppendMessagesAsync(ThreadId, [exact]);
 
         // The fixture IS the assertion's premise, so it is measured rather than assumed.
-        _ = Encoding.UTF8.GetByteCount(exact.MessageJson).Should()
+        _ = Encoding
+            .UTF8.GetByteCount(exact.MessageJson)
+            .Should()
             .Be(ConversationTranscriptWriter.ToolResultSidecarThresholdBytes);
 
         var browser = new FakeFileBrowser();
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
-        var expectedRef = $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+        var expectedRef =
+            $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
             + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}"
             + $"/{WorkspaceTranscriptLine.DeriveUid(exact.Id)}.json";
 
         var payload = Written(browser, 0);
-        _ = Field(payload, 0, "message_json_ref").Should().Be(
-            expectedRef,
-            "\"at or above\" puts the row that weighs exactly the threshold on the sidecar side");
+        _ = Field(payload, 0, "message_json_ref")
+            .Should()
+            .Be(expectedRef, "\"at or above\" puts the row that weighs exactly the threshold on the sidecar side");
         _ = Field(payload, 0, "message_json").Should().BeNull();
 
-        var sidecar = browser.Writes.Should()
+        var sidecar = browser
+            .Writes.Should()
             .ContainSingle(w => w.Path == $"{ConversationTranscriptWriter.TranscriptDirectory}/{expectedRef}")
             .Which;
         _ = Encoding.UTF8.GetString(sidecar.Bytes).Should().Be(exact.MessageJson);
@@ -2185,9 +2298,10 @@ public sealed class ConversationTranscriptWriterTests
         var stale = WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId);
         var uid = WorkspaceTranscriptLine.DeriveUid(big.Id);
         var oldReference = Field(Written(browser, 0), 0, "message_json_ref");
-        _ = browser.Writes.Select(w => w.Path).Should().Contain(
-            Resolve(oldReference),
-            "the fixture is only a cold start if a sidecar was really left behind");
+        _ = browser
+            .Writes.Select(w => w.Path)
+            .Should()
+            .Contain(Resolve(oldReference), "the fixture is only a cold start if a sidecar was really left behind");
 
         // What that process left behind, as the listing a fresh writer sees it through.
         browser.Listings[ConversationTranscriptWriter.TranscriptDirectory] =
@@ -2214,21 +2328,30 @@ public sealed class ConversationTranscriptWriterTests
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
         // The adoption this path exists for really ran...
-        _ = browser.Commands.Where(IsMove).Select(c => (c.Arguments[^2], c.Arguments[^1]))
-            .Should().Contain((MainPath(Title), MainPath(RetitledTo)));
+        _ = browser
+            .Commands.Where(IsMove)
+            .Select(c => (c.Arguments[^2], c.Arguments[^1]))
+            .Should()
+            .Contain((MainPath(Title), MainPath(RetitledTo)));
 
         // ...and the reference the previous process wrote still names its payload.
-        _ = AfterRenames(Resolve(oldReference), browser.Commands).Should().Be(
-            Resolve(oldReference),
-            "a cold writer knows nothing about the references already in the file, so the only safe "
-                + "thing it can do with the sidecar directory is nothing");
+        _ = AfterRenames(Resolve(oldReference), browser.Commands)
+            .Should()
+            .Be(
+                Resolve(oldReference),
+                "a cold writer knows nothing about the references already in the file, so the only safe "
+                    + "thing it can do with the sidecar directory is nothing"
+            );
 
         // The other half: what this writer externalises now lands under the CURRENT leaf, so the two
         // directories coexist rather than one being rewritten into the other.
         var newReference = Field(Written(browser, 0), 0, "message_json_ref");
-        _ = newReference.Should().Be(
-            $"{WorkspaceTranscriptLine.MainFileLeaf(RetitledTo, ShortThreadId)}"
-            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json");
+        _ = newReference
+            .Should()
+            .Be(
+                $"{WorkspaceTranscriptLine.MainFileLeaf(RetitledTo, ShortThreadId)}"
+                    + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json"
+            );
         _ = browser.Writes.Select(w => w.Path).Should().Contain(Resolve(newReference));
     }
 
@@ -2256,14 +2379,20 @@ public sealed class ConversationTranscriptWriterTests
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
         // The sub-agent's own file is the SECOND staged payload; the main transcript is the first.
-        _ = browser.Commands.Where(IsSplice).Select(c => c.Arguments[6])
-            .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
+        _ = browser
+            .Commands.Where(IsSplice)
+            .Select(c => c.Arguments[6])
+            .Should()
+            .Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
 
         var uid = WorkspaceTranscriptLine.DeriveUid(big.Id);
         var reference = Field(Written(browser, 1), 0, "message_json_ref");
-        _ = reference.Should().Be(
-            $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
-            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json");
+        _ = reference
+            .Should()
+            .Be(
+                $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+                    + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json"
+            );
 
         // Resolved from the conversation root it lands on the file that was written; resolved from the
         // sub-agent file's own directory it lands on nothing.
@@ -2293,7 +2422,10 @@ public sealed class ConversationTranscriptWriterTests
             1,
             role: "Tool",
             messageType: nameof(ToolCallResultMessage),
-            messageJson: "\"" + new string('x', ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100) + "\"");
+            messageJson: "\""
+                + new string('x', ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100)
+                + "\""
+        );
         await store.AppendMessagesAsync(ThreadId, [big]);
 
         // The premise: this is the OTHER name, not the one every other test in this section uses.
@@ -2302,14 +2434,17 @@ public sealed class ConversationTranscriptWriterTests
         var browser = new FakeFileBrowser();
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
-        var expectedRef = $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+        var expectedRef =
+            $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
             + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}"
             + $"/{WorkspaceTranscriptLine.DeriveUid(big.Id)}.json";
 
         var payload = Written(browser, 0);
         _ = Field(payload, 0, "message_json_ref").Should().Be(expectedRef);
         _ = Field(payload, 0, "message_json").Should().BeNull();
-        _ = browser.Writes.Select(w => w.Path).Should()
+        _ = browser
+            .Writes.Select(w => w.Path)
+            .Should()
             .Contain($"{ConversationTranscriptWriter.TranscriptDirectory}/{expectedRef}");
     }
 
@@ -2337,8 +2472,7 @@ public sealed class ConversationTranscriptWriterTests
         var sidecarPath = $"{BlobsDirectory(Title)}/{WorkspaceTranscriptLine.DeriveUid(big.Id)}.json";
         var browser = new FakeFileBrowser
         {
-            ExecuteHandler = command =>
-                IsGuard(command) && command.Arguments[^1] == sidecarPath ? Refused() : Ok(),
+            ExecuteHandler = command => IsGuard(command) && command.Arguments[^1] == sidecarPath ? Refused() : Ok(),
         };
 
         // The flush still succeeds - a refused sidecar costs the record nothing.
@@ -2346,18 +2480,23 @@ public sealed class ConversationTranscriptWriterTests
 
         // The guard really was consulted for this path; without that, the refusal above is inert and the
         // assertions below would hold for the wrong reason.
-        _ = browser.Commands.Any(c => IsGuard(c) && c.Arguments[^1] == sidecarPath).Should().BeTrue(
-            "the sidecar PUT must be guarded before the bytes go through, not after");
+        _ = browser
+            .Commands.Any(c => IsGuard(c) && c.Arguments[^1] == sidecarPath)
+            .Should()
+            .BeTrue("the sidecar PUT must be guarded before the bytes go through, not after");
 
         // The payload stayed on the line, whole.
         var payload = Written(browser, 0);
         _ = Field(payload, 0, "message_json").Should().Be(big.MessageJson);
-        _ = Field(payload, 0, "message_json_ref").Should().BeNull(
-            "a reference to a file that was refused would point at nothing");
+        _ = Field(payload, 0, "message_json_ref")
+            .Should()
+            .BeNull("a reference to a file that was refused would point at nothing");
 
         // And nothing was written through the refused path - refused, not followed, not repaired.
-        _ = browser.Writes.Select(w => w.Path).Should().NotContain(
-            p => p.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal));
+        _ = browser
+            .Writes.Select(w => w.Path)
+            .Should()
+            .NotContain(p => p.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -2437,9 +2576,8 @@ public sealed class ConversationTranscriptWriterTests
         var store = new ScriptedLoadStore(inner)
         {
             // The in-flight assistant row lands during the first read and then stops changing.
-            BeforeLoad = (threadId, call) => call == 1
-                ? inner.AppendMessagesAsync(threadId, [committed[1]])
-                : Task.CompletedTask,
+            BeforeLoad = (threadId, call) =>
+                call == 1 ? inner.AppendMessagesAsync(threadId, [committed[1]]) : Task.CompletedTask,
         };
 
         var browser = new FakeFileBrowser();
@@ -2476,16 +2614,20 @@ public sealed class ConversationTranscriptWriterTests
         var shell = browser.Commands.Where(c => c.Arguments[0] == "sh").ToList();
         var splices = shell.Where(IsSplice).ToList();
         _ = splices.Should().HaveCount(2);
-        _ = shell.Should().HaveCountGreaterThan(
-            splices.Count,
-            "the watermark probe and the path guard are the other shell call sites and are covered by this "
-                + "invariant too"
-        );
+        _ = shell
+            .Should()
+            .HaveCountGreaterThan(
+                splices.Count,
+                "the watermark probe and the path guard are the other shell call sites and are covered by this "
+                    + "invariant too"
+            );
 
         foreach (var command in shell)
         {
             _ = command.Arguments[1].Should().Be("-c");
-            _ = command.Arguments[2].Should()
+            _ = command
+                .Arguments[2]
+                .Should()
                 .BeOneOf(ExpectedProbeScript, ExpectedSpliceScript, ExpectedGuardScript, ExpectedMoveScript);
             _ = command.Arguments[3].Should().Be("sh");
 
@@ -2528,7 +2670,8 @@ public sealed class ConversationTranscriptWriterTests
 
         public async Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
             string threadId,
-            CancellationToken ct = default)
+            CancellationToken ct = default
+        )
         {
             _ = _loads.TryGetValue(threadId, out var count);
             _loads[threadId] = ++count;
@@ -2544,17 +2687,17 @@ public sealed class ConversationTranscriptWriterTests
         public Task AppendMessagesAsync(
             string threadId,
             IReadOnlyList<PersistedMessage> messages,
-            CancellationToken ct = default) => inner.AppendMessagesAsync(threadId, messages, ct);
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
 
         public Task ReplaceMessageAsync(
             string threadId,
             PersistedMessage replacement,
-            CancellationToken ct = default) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
 
-        public Task SaveMetadataAsync(
-            string threadId,
-            ThreadMetadata metadata,
-            CancellationToken ct = default) => inner.SaveMetadataAsync(threadId, metadata, ct);
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
 
         public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
             inner.LoadMetadataAsync(threadId, ct);
@@ -2562,7 +2705,8 @@ public sealed class ConversationTranscriptWriterTests
         public Task UpdateMetadataAsync(
             string threadId,
             Func<ThreadMetadata?, ThreadMetadata> update,
-            CancellationToken ct = default) => inner.UpdateMetadataAsync(threadId, update, ct);
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
 
         public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
             inner.DeleteThreadAsync(threadId, ct);
@@ -2571,6 +2715,7 @@ public sealed class ConversationTranscriptWriterTests
             int limit = 50,
             int offset = 0,
             ConversationListOptions? options = null,
-            CancellationToken ct = default) => inner.ListThreadsAsync(limit, offset, options, ct);
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 }

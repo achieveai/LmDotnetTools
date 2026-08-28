@@ -25,7 +25,8 @@ public sealed class GatewayWorkspaceCatalogResolver
     public async Task<GatewayWorkspaceCatalogResolution> ResolveAsync(
         string rootDirectory,
         GatewayWorkspaceCatalogIdentity identity,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         ArgumentNullException.ThrowIfNull(identity);
@@ -34,17 +35,9 @@ public sealed class GatewayWorkspaceCatalogResolver
         var legacyDirectory = Path.Combine(rootDirectory, "legacy");
         _ = Directory.CreateDirectory(legacyDirectory);
 
-        await using var migrationLock = await AcquireLockAsync(
-            Path.Combine(legacyDirectory, "migration.lock"),
-            ct
-        );
+        await using var migrationLock = await AcquireLockAsync(Path.Combine(legacyDirectory, "migration.lock"), ct);
 
-        var archivePath = await CompleteOrRunLegacyMigrationAsync(
-            rootDirectory,
-            legacyDirectory,
-            identity,
-            ct
-        );
+        var archivePath = await CompleteOrRunLegacyMigrationAsync(rootDirectory, legacyDirectory, identity, ct);
 
         var catalogDirectory = Path.Combine(rootDirectory, "gateways", identity.CatalogKey);
         _ = Directory.CreateDirectory(catalogDirectory);
@@ -121,9 +114,7 @@ public sealed class GatewayWorkspaceCatalogResolver
         {
             if (File.Exists(archivePath))
             {
-                throw new InvalidOperationException(
-                    $"Legacy workspace archive already exists at '{archivePath}'."
-                );
+                throw new InvalidOperationException($"Legacy workspace archive already exists at '{archivePath}'.");
             }
 
             File.Move(legacyPath, archivePath);
@@ -131,9 +122,7 @@ public sealed class GatewayWorkspaceCatalogResolver
 
         if (!File.Exists(archivePath))
         {
-            throw new InvalidOperationException(
-                $"Pending workspace migration archive '{archivePath}' is missing."
-            );
+            throw new InvalidOperationException($"Pending workspace migration archive '{archivePath}' is missing.");
         }
 
         _ = await ReadJsonAsync<List<Workspace>>(archivePath, ct);

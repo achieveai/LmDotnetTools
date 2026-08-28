@@ -69,10 +69,7 @@ internal sealed class ScoringJudge : IJudge, IConfigurationFingerprint
                 JudgeId = JudgeId,
                 ModelId = ModelId,
                 ModelFamily = ModelFamily,
-                CriterionScores = rubric.Criteria.ToDictionary(
-                    c => c.CriterionId,
-                    _ => (int)Math.Round(score ?? 0.0)
-                ),
+                CriterionScores = rubric.Criteria.ToDictionary(c => c.CriterionId, _ => (int)Math.Round(score ?? 0.0)),
                 WeightedScore = score ?? 0.0,
                 Reasoning = $"{JudgeId} on {candidate.CandidateId}",
                 Confidence = 0.9,
@@ -118,10 +115,7 @@ internal sealed class MarkerGate : IGate, IConfigurationFingerprint
 
     public string? ConfigurationFingerprint { get; }
 
-    public ValueTask<GateDecision> EvaluateAsync(
-        Candidate candidate,
-        CancellationToken cancellationToken
-    )
+    public ValueTask<GateDecision> EvaluateAsync(Candidate candidate, CancellationToken cancellationToken)
     {
         if (
             _throwOnCandidateId is not null
@@ -160,10 +154,7 @@ internal sealed class CancellingGate : IGate, IConfigurationFingerprint
 
     public string? ConfigurationFingerprint => "cancels=true";
 
-    public ValueTask<GateDecision> EvaluateAsync(
-        Candidate candidate,
-        CancellationToken cancellationToken
-    )
+    public ValueTask<GateDecision> EvaluateAsync(Candidate candidate, CancellationToken cancellationToken)
     {
         _source.Cancel();
         throw new OperationCanceledException(_source.Token);
@@ -189,9 +180,7 @@ internal sealed class CancellingGate : IGate, IConfigurationFingerprint
 /// with no other refusal reachable.
 /// </para>
 /// </summary>
-internal sealed class CheckoutGate(string gateId, bool checkoutPresent = false)
-    : IGate,
-        IConfigurationFingerprint
+internal sealed class CheckoutGate(string gateId, bool checkoutPresent = false) : IGate, IConfigurationFingerprint
 {
     public string GateId { get; } = gateId;
 
@@ -199,10 +188,7 @@ internal sealed class CheckoutGate(string gateId, bool checkoutPresent = false)
 
     public string? ConfigurationFingerprint { get; } = $"reads-checkout={gateId}";
 
-    public ValueTask<GateDecision> EvaluateAsync(
-        Candidate candidate,
-        CancellationToken cancellationToken
-    ) =>
+    public ValueTask<GateDecision> EvaluateAsync(Candidate candidate, CancellationToken cancellationToken) =>
         checkoutPresent
             ? ValueTask.FromResult(GateDecision.Pass(GateId, "the checkout resolved"))
             : throw new IOException("the checkout this gate reads is gone");
@@ -215,10 +201,8 @@ internal sealed class OpaqueGate : IGate
 
     public IReadOnlySet<string> AppliesTo { get; } = new HashSet<string>(StringComparer.Ordinal);
 
-    public ValueTask<GateDecision> EvaluateAsync(
-        Candidate candidate,
-        CancellationToken cancellationToken
-    ) => ValueTask.FromResult(GateDecision.Pass(GateId, "always"));
+    public ValueTask<GateDecision> EvaluateAsync(Candidate candidate, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(GateDecision.Pass(GateId, "always"));
 }
 
 /// <summary>Shared setup for the eval-runner tests.</summary>
@@ -226,11 +210,7 @@ internal static class EvalFixtures
 {
     public const string RejectMarker = "REJECT-ME";
 
-    public static Candidate Item(
-        string id,
-        string content = "a review",
-        string? generatorFamily = "meta"
-    ) =>
+    public static Candidate Item(string id, string content = "a review", string? generatorFamily = "meta") =>
         new()
         {
             CandidateId = id,
@@ -240,8 +220,7 @@ internal static class EvalFixtures
             GeneratorFamily = generatorFamily,
         };
 
-    public static CorpusSnapshot Snapshot(params Candidate[] items) =>
-        CorpusSnapshot.Create("corpus-1", items);
+    public static CorpusSnapshot Snapshot(params Candidate[] items) => CorpusSnapshot.Create("corpus-1", items);
 
     public static EvaluatorConfig Config(
         IReadOnlyList<IGate>? gates = null,
@@ -253,11 +232,7 @@ internal static class EvalFixtures
     ) =>
         EvaluatorConfig.Create(
             gates ?? [],
-            judges
-                ?? [
-                    new ScoringJudge("j-a", "anthropic", _ => 8.0),
-                    new ScoringJudge("j-b", "google", _ => 8.0),
-                ],
+            judges ?? [new ScoringJudge("j-a", "anthropic", _ => 8.0), new ScoringJudge("j-b", "google", _ => 8.0)],
             aggregator ?? new WeightedMeanAggregator(),
             options ?? new HarnessOptions(),
             reliabilitySnapshotId,

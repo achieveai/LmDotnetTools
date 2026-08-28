@@ -207,11 +207,7 @@ public record NotifyMessage : IMessage, ICanGetText
 
     private static string EscapeAttribute(string value)
     {
-        return value
-            .Replace("&", "&amp;")
-            .Replace("<", "&lt;")
-            .Replace(">", "&gt;")
-            .Replace("\"", "&quot;");
+        return value.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
     }
 
     /// <summary>

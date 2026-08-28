@@ -34,12 +34,10 @@ public sealed record GateDecision(GateOutcome Outcome, string GateId, string Rea
     public bool IsPass => Outcome == GateOutcome.Pass;
 
     /// <summary>The candidate cleared this gate.</summary>
-    public static GateDecision Pass(string gateId, string reason) =>
-        new(GateOutcome.Pass, gateId, reason);
+    public static GateDecision Pass(string gateId, string reason) => new(GateOutcome.Pass, gateId, reason);
 
     /// <summary>The candidate failed outright. Short-circuits the gauntlet before any judge runs.</summary>
-    public static GateDecision Reject(string gateId, string reason) =>
-        new(GateOutcome.Reject, gateId, reason);
+    public static GateDecision Reject(string gateId, string reason) => new(GateOutcome.Reject, gateId, reason);
 
     /// <summary>
     /// The gate could not run (a tool missing, a checkout absent). NOT a pass and NOT a reject: it

@@ -18,10 +18,7 @@ namespace LmStreaming.Sample.Tests;
 public sealed class ProgramModeToolNarrowingTests
 {
     /// <summary>Capabilities whose two allow-lists DIFFER, so confusing them cannot go unnoticed.</summary>
-    private static ModeCapabilities Caps(
-        IReadOnlySet<string>? workflow,
-        IReadOnlySet<string>? subAgents
-    ) =>
+    private static ModeCapabilities Caps(IReadOnlySet<string>? workflow, IReadOnlySet<string>? subAgents) =>
         ModeCapabilities.LegacyDefaults with
         {
             WorkflowToolAllowList = workflow,
@@ -29,12 +26,9 @@ public sealed class ProgramModeToolNarrowingTests
         };
 
     private static IFunctionProvider WorkflowFamily() =>
-        new WorkflowToolProvider(
-            WorkflowRuntime.CreateNew(logger: NullLogger<WorkflowRuntime>.Instance)
-        );
+        new WorkflowToolProvider(WorkflowRuntime.CreateNew(logger: NullLogger<WorkflowRuntime>.Instance));
 
-    private static SubAgentOptions Options() =>
-        new() { Templates = new Dictionary<string, SubAgentTemplate>() };
+    private static SubAgentOptions Options() => new() { Templates = new Dictionary<string, SubAgentTemplate>() };
 
     private static string[] NamesOf(IFunctionProvider provider) =>
         [.. provider.GetFunctions().Select(f => f.Contract.Name)];
@@ -74,10 +68,7 @@ public sealed class ProgramModeToolNarrowingTests
         // a mode nothing at all here while silently widening delegation elsewhere.
         var scoped = global::Program.ScopeWorkflowProvider(
             WorkflowFamily(),
-            Caps(
-                new HashSet<string> { WorkflowToolProvider.AllToolNames[0] },
-                new HashSet<string> { "Agent" }
-            )
+            Caps(new HashSet<string> { WorkflowToolProvider.AllToolNames[0] }, new HashSet<string> { "Agent" })
         );
 
         NamesOf(scoped).Should().Equal(WorkflowToolProvider.AllToolNames[0]);
@@ -88,19 +79,13 @@ public sealed class ProgramModeToolNarrowingTests
     {
         var options = Options();
 
-        global::Program
-            .ApplySubAgentToolNarrowing(options, Caps(null, null))
-            .Should()
-            .BeSameAs(options);
+        global::Program.ApplySubAgentToolNarrowing(options, Caps(null, null)).Should().BeSameAs(options);
     }
 
     [Fact]
     public void ApplySubAgentToolNarrowing_KeepsNullWhenTheConversationHasNoDelegation()
     {
-        global::Program
-            .ApplySubAgentToolNarrowing(null, Caps(null, new HashSet<string> { "Agent" }))
-            .Should()
-            .BeNull();
+        global::Program.ApplySubAgentToolNarrowing(null, Caps(null, new HashSet<string> { "Agent" })).Should().BeNull();
     }
 
     [Fact]

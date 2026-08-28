@@ -26,9 +26,8 @@ namespace CodeReviewDaemon.Sample.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/discovery")]
-public sealed class DiscoveryController(
-    SessionSecretStore sessionSecretStore,
-    ILogger<DiscoveryController> logger) : ControllerBase
+public sealed class DiscoveryController(SessionSecretStore sessionSecretStore, ILogger<DiscoveryController> logger)
+    : ControllerBase
 {
     /// <summary>
     /// Authenticated gateway callback carrying a batch of discovered items. Returns 200 for any
@@ -38,7 +37,8 @@ public sealed class DiscoveryController(
     [HttpPost("context_discovery")]
     public async Task<IActionResult> ContextDiscovery(
         [FromBody] DiscoveryAuthEnvelope? body,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         if (body is null || string.IsNullOrEmpty(body.SessionId))
         {
@@ -46,14 +46,23 @@ public sealed class DiscoveryController(
             return Unauthorized();
         }
 
-        if (!await sessionSecretStore.MatchesAsync(body.SessionId, Request.Headers.Authorization.ToString(), cancellationToken))
+        if (
+            !await sessionSecretStore.MatchesAsync(
+                body.SessionId,
+                Request.Headers.Authorization.ToString(),
+                cancellationToken
+            )
+        )
         {
             // Do not reveal whether the header was missing, malformed, or simply wrong.
             logger.LogWarning("Rejected unauthorized context-discovery webhook call.");
             return Unauthorized();
         }
 
-        logger.LogDebug("Context-discovery webhook accepted (accept-and-ignore) for session {SessionId}.", body.SessionId);
+        logger.LogDebug(
+            "Context-discovery webhook accepted (accept-and-ignore) for session {SessionId}.",
+            body.SessionId
+        );
         return Ok();
     }
 }

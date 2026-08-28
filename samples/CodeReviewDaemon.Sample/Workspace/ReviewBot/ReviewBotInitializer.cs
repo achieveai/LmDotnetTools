@@ -19,9 +19,7 @@ internal enum ReviewBotInitOutcome
 /// <summary>The result of <see cref="ReviewBotInitializer.InitializeAsync"/>.</summary>
 /// <param name="Outcome">What the initializer did (or refused to do).</param>
 /// <param name="MissingPaths">For <see cref="ReviewBotInitOutcome.Malformed"/>, the required paths that are absent.</param>
-internal sealed record ReviewBotInitResult(
-    ReviewBotInitOutcome Outcome,
-    IReadOnlyList<string> MissingPaths);
+internal sealed record ReviewBotInitResult(ReviewBotInitOutcome Outcome, IReadOnlyList<string> MissingPaths);
 
 /// <summary>
 /// Implements the plan §1 idempotent ReviewBot setup. Setup is a one-time, human-run subcommand; this
@@ -48,11 +46,7 @@ internal sealed class ReviewBotInitializer
     private readonly ISandboxFileSystem _fileSystem;
     private readonly ILogger<ReviewBotInitializer> _logger;
 
-    public ReviewBotInitializer(
-        GitRunner git,
-        ISandboxFileSystem fileSystem,
-        ILogger<ReviewBotInitializer> logger
-    )
+    public ReviewBotInitializer(GitRunner git, ISandboxFileSystem fileSystem, ILogger<ReviewBotInitializer> logger)
     {
         _git = git ?? throw new ArgumentNullException(nameof(git));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
@@ -80,7 +74,10 @@ internal sealed class ReviewBotInitializer
             // merely too big would report the repo as half-seeded and rewrite a file that is already there.
             var read = await _fileSystem
                 .ReadFileAsync(
-                    JoinPath(repoRoot, relativePath), SandboxReadLimits.RepositoryFileBytes, cancellationToken)
+                    JoinPath(repoRoot, relativePath),
+                    SandboxReadLimits.RepositoryFileBytes,
+                    cancellationToken
+                )
                 .ConfigureAwait(false);
             if (read.Exists)
             {
@@ -101,7 +98,8 @@ internal sealed class ReviewBotInitializer
                 "ReviewBot repo at '{Root}' is malformed; missing {Count} required path(s): {Missing}",
                 repoRoot,
                 missing.Count,
-                string.Join(", ", missing));
+                string.Join(", ", missing)
+            );
             // Never mutate a partially-populated repo — surface the corruption to the operator.
             return new ReviewBotInitResult(ReviewBotInitOutcome.Malformed, missing);
         }
@@ -113,8 +111,7 @@ internal sealed class ReviewBotInitializer
 
     private async Task SeedAsync(string repoRoot, string defaultBranch, CancellationToken cancellationToken)
     {
-        _ = await _git.RunAsync(["checkout", "-B", defaultBranch], repoRoot, cancellationToken)
-            .ConfigureAwait(false);
+        _ = await _git.RunAsync(["checkout", "-B", defaultBranch], repoRoot, cancellationToken).ConfigureAwait(false);
 
         foreach (var (relativePath, content) in SeedFiles())
         {
@@ -151,6 +148,5 @@ internal sealed class ReviewBotInitializer
 
     private const string TocStub = "# Knowledge Base\n\n_Table of contents (generated)._\n";
 
-    private static string JoinPath(string root, string relative) =>
-        $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
+    private static string JoinPath(string root, string relative) => $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
 }

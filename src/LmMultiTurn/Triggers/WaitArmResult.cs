@@ -25,5 +25,10 @@ public sealed record WaitArmResult
 
     /// <summary>Builds a rejected result.</summary>
     public static WaitArmResult Reject(string reason, string message) =>
-        new() { IsArmed = false, Reason = reason, Message = message };
+        new()
+        {
+            IsArmed = false,
+            Reason = reason,
+            Message = message,
+        };
 }

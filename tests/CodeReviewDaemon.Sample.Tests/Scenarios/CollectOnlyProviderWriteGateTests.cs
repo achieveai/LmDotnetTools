@@ -36,9 +36,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
 {
     public CollectOnlyProviderWriteGateTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private const string AdoRepoEntry = "contoso/Platform/core";
     private const string PrThreadsRoute =
@@ -53,11 +51,7 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
     }
 
     private static CodeReviewDaemonOptions Options(bool enableCommentPosting) =>
-        new()
-        {
-            EnabledRepos = [AdoRepoEntry],
-            EnableCommentPosting = enableCommentPosting,
-        };
+        new() { EnabledRepos = [AdoRepoEntry], EnableCommentPosting = enableCommentPosting };
 
     /// <summary>
     /// Builds the handler over the policies the PRODUCTION factory would build for this posture — not a
@@ -66,14 +60,16 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
     /// about whether the daemon ever passes it the flag.
     /// </summary>
     private (HttpClient Client, FakeHttpMessageHandler Inner, RecordingRefusals Refusals) BuildAdoClient(
-        bool enableCommentPosting)
+        bool enableCommentPosting
+    )
     {
         var refusals = new RecordingRefusals();
         var factory = new PolicyEnforcedHttpClientFactory(
             Options(enableCommentPosting),
             LoggerFactory.CreateLogger<OperationPolicyHandler>(),
             LoggerFactory.CreateLogger<RetryHandler>(),
-            refusals);
+            refusals
+        );
 
         var inner = new FakeHttpMessageHandler();
         _ = inner.On(_ => true, _ => new HttpResponseMessage(HttpStatusCode.OK));
@@ -81,7 +77,8 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
             factory.BuildPolicies("ado"),
             "ado",
             LoggerFactory.CreateLogger<OperationPolicyHandler>(),
-            refusals)
+            refusals
+        )
         {
             InnerHandler = inner,
         };
@@ -96,8 +93,9 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
 
         // The exact shape a posting agent would produce: a comment thread POST on the reviewed PR's own,
         // fully in-scope route. Nothing about the ROUTE is wrong here — the capability is what is missing.
-        using var request = new HttpRequestMessage(HttpMethod.Post, PrThreadsRoute)
-            .WithOperation(SandboxOperation.PostReviewComment);
+        using var request = new HttpRequestMessage(HttpMethod.Post, PrThreadsRoute).WithOperation(
+            SandboxOperation.PostReviewComment
+        );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "bot-token");
 
         var act = () => client.SendAsync(request, CancellationToken.None);
@@ -105,7 +103,8 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
         var thrown = (await act.Should().ThrowAsync<OperationDeniedException>()).Which;
         thrown.Operation.Should().Be(SandboxOperation.PostReviewComment);
         inner.Requests.Should().BeEmpty("a refused write must never reach the network");
-        request.Headers.Authorization.Should()
+        request
+            .Headers.Authorization.Should()
             .BeNull("a refused write must also be credential-withheld (fail closed both ways)");
 
         refusals.Recorded.Should().ContainSingle("a refusal that leaves no trace is not auditable");
@@ -129,16 +128,20 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
         // exists to serve CI status and work items.
         var (client, inner, refusals) = BuildAdoClient(enableCommentPosting: false);
 
-        using var request = new HttpRequestMessage(new HttpMethod(method), PrThreadsRoute)
-            .WithOperation(SandboxOperation.ReadProviderMetadata);
+        using var request = new HttpRequestMessage(new HttpMethod(method), PrThreadsRoute).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "bot-token");
 
         var act = () => client.SendAsync(request, CancellationToken.None);
 
         var thrown = (await act.Should().ThrowAsync<OperationDeniedException>()).Which;
-        thrown.Reason.Should().Contain(
-            "collect-only",
-            "the refusal must name the capability that was missing, not merely the method mismatch");
+        thrown
+            .Reason.Should()
+            .Contain(
+                "collect-only",
+                "the refusal must name the capability that was missing, not merely the method mismatch"
+            );
         inner.Requests.Should().BeEmpty();
         refusals.Recorded.Should().ContainSingle();
         refusals.Recorded[0].Kind.Should().Be(PolicyRefusalKind.ProviderWrite);
@@ -166,15 +169,18 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
     {
         var (client, inner, refusals) = BuildAdoClient(enableCommentPosting: false);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, url)
-            .WithOperation(SandboxOperation.ReadProviderMetadata);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "bot-token");
 
         using var response = await client.SendAsync(request, CancellationToken.None);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         inner.Requests.Should().ContainSingle("a collect-only run reads provider metadata exactly as before");
-        inner.Requests[0].Authorization.Should()
+        inner
+            .Requests[0]
+            .Authorization.Should()
             .Be("Bearer bot-token", "the read keeps its credential; only writes lose theirs");
         refusals.Recorded.Should().BeEmpty();
     }
@@ -186,8 +192,9 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
         // differs. If this ever fails, the gate has stopped being a gate and become a ban.
         var (client, inner, refusals) = BuildAdoClient(enableCommentPosting: true);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, PrThreadsRoute)
-            .WithOperation(SandboxOperation.PostReviewComment);
+        using var request = new HttpRequestMessage(HttpMethod.Post, PrThreadsRoute).WithOperation(
+            SandboxOperation.PostReviewComment
+        );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "bot-token");
 
         using var response = await client.SendAsync(request, CancellationToken.None);
@@ -214,9 +221,7 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
     public void A_policy_built_with_no_explicit_grant_cannot_push_to_the_reviewbot_repo() =>
         AssertNoWriteCapabilityWithoutAnExplicitGrant(SandboxOperation.PushReviewBot, "POST");
 
-    private static void AssertNoWriteCapabilityWithoutAnExplicitGrant(
-        SandboxOperation operation,
-        string method)
+    private static void AssertNoWriteCapabilityWithoutAnExplicitGrant(SandboxOperation operation, string method)
     {
         var policy = DaemonOperationPolicy.BuildForRun(
             new RepoIdentity
@@ -226,25 +231,32 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
                 Project = "Platform",
                 RepoName = "core",
             },
-            reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/ReviewBot");
+            reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/ReviewBot"
+        );
 
-        policy.AllowsWriteOperations.Should()
-            .BeFalse("absence of an explicit grant must mean no writes");
+        policy.AllowsWriteOperations.Should().BeFalse("absence of an explicit grant must mean no writes");
 
-        var decision = policy.Decide(new OperationRequest(
-            operation,
-            "ado",
-            "dev.azure.com",
-            method,
-            "/contoso/Platform/_apis/git/repositories/core/pullRequests/5501220/threads"));
-
-        decision.IsAllowed.Should().BeFalse();
-        policy.ShouldInjectCredential(new OperationRequest(
+        var decision = policy.Decide(
+            new OperationRequest(
                 operation,
                 "ado",
                 "dev.azure.com",
                 method,
-                "/contoso/Platform/_apis/git/repositories/core/pullRequests/5501220/threads"))
+                "/contoso/Platform/_apis/git/repositories/core/pullRequests/5501220/threads"
+            )
+        );
+
+        decision.IsAllowed.Should().BeFalse();
+        policy
+            .ShouldInjectCredential(
+                new OperationRequest(
+                    operation,
+                    "ado",
+                    "dev.azure.com",
+                    method,
+                    "/contoso/Platform/_apis/git/repositories/core/pullRequests/5501220/threads"
+                )
+            )
             .Should()
             .BeFalse("a denied operation must also be credential-withheld");
     }
@@ -256,18 +268,19 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
         // back to reading logs that have already rolled.
         using var database = new TempSqliteDatabase();
         using var store = new ReviewStore(database.ConnectionString);
-        var recorder = new StorePolicyRefusalRecorder(
-            store,
-            LoggerFactory.CreateLogger<StorePolicyRefusalRecorder>());
+        var recorder = new StorePolicyRefusalRecorder(store, LoggerFactory.CreateLogger<StorePolicyRefusalRecorder>());
 
-        recorder.Record(new PolicyRefusalRecord(
-            new DateTimeOffset(2026, 8, 10, 4, 5, 6, TimeSpan.Zero),
-            PolicyRefusalKind.ProviderWrite,
-            "ado",
-            nameof(SandboxOperation.PostReviewComment),
-            "POST",
-            PrThreadsRoute,
-            "this policy is collect-only and has no provider-API write capability"));
+        recorder.Record(
+            new PolicyRefusalRecord(
+                new DateTimeOffset(2026, 8, 10, 4, 5, 6, TimeSpan.Zero),
+                PolicyRefusalKind.ProviderWrite,
+                "ado",
+                nameof(SandboxOperation.PostReviewComment),
+                "POST",
+                PrThreadsRoute,
+                "this policy is collect-only and has no provider-API write capability"
+            )
+        );
 
         var rows = store.ListPolicyRefusals();
 
@@ -299,29 +312,35 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
         using var database = new TempSqliteDatabase();
         var store = new ReviewStore(database.ConnectionString);
         var logs = new CapturingLoggerFactory();
-        var recorder = new StorePolicyRefusalRecorder(
-            store,
-            logs.CreateLogger<StorePolicyRefusalRecorder>());
+        var recorder = new StorePolicyRefusalRecorder(store, logs.CreateLogger<StorePolicyRefusalRecorder>());
 
         // Break it: the connection the store writes through is gone, so the INSERT cannot be attempted.
         store.Dispose();
 
-        var act = () => recorder.Record(new PolicyRefusalRecord(
-            DateTimeOffset.UtcNow,
-            PolicyRefusalKind.ProviderWrite,
-            "ado",
-            nameof(SandboxOperation.PostReviewComment),
-            "POST",
-            PrThreadsRoute,
-            "this policy is collect-only and has no provider-API write capability"));
+        var act = () =>
+            recorder.Record(
+                new PolicyRefusalRecord(
+                    DateTimeOffset.UtcNow,
+                    PolicyRefusalKind.ProviderWrite,
+                    "ado",
+                    nameof(SandboxOperation.PostReviewComment),
+                    "POST",
+                    PrThreadsRoute,
+                    "this policy is collect-only and has no provider-API write capability"
+                )
+            );
 
-        act.Should().NotThrow(
-            "the write was already refused; letting the RECORDING fail the call turns an audit gap into an "
-                + "outage at the enforcement site");
+        act.Should()
+            .NotThrow(
+                "the write was already refused; letting the RECORDING fail the call turns an audit gap into an "
+                    + "outage at the enforcement site"
+            );
 
-        logs.Capturing.CountAtLevel(LogLevel.Error, "not in the ledger").Should()
+        logs.Capturing.CountAtLevel(LogLevel.Error, "not in the ledger")
+            .Should()
             .Be(1, "a refusal that could not be persisted must say so, or the gap is itself silent");
-        logs.Capturing.CountAtLevel(LogLevel.Warning, nameof(SandboxOperation.PostReviewComment)).Should()
+        logs.Capturing.CountAtLevel(LogLevel.Warning, nameof(SandboxOperation.PostReviewComment))
+            .Should()
             .Be(1, "the refusal line itself is still emitted — the log is the fallback record");
     }
 }
@@ -335,9 +354,7 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
 public sealed class ReviewSpawnGateTests : LoggingTestBase
 {
     public ReviewSpawnGateTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private sealed class RecordingRefusals : IPolicyRefusalRecorder
     {
@@ -358,15 +375,13 @@ public sealed class ReviewSpawnGateTests : LoggingTestBase
     {
         var logs = new CapturingLoggerFactory();
         var refusals = new RecordingRefusals();
-        var gate = new ReviewSpawnGate(
-            postingEnabled: false,
-            logs.CreateLogger("spawn-gate"),
-            refusals);
+        var gate = new ReviewSpawnGate(postingEnabled: false, logs.CreateLogger("spawn-gate"), refusals);
 
         var allowed = gate.IsSpawnAllowed(146, template, "thread abc (agent def)");
 
         allowed.Should().BeFalse();
-        logs.Capturing.CountAtLevel(LogLevel.Error, template).Should()
+        logs.Capturing.CountAtLevel(LogLevel.Error, template)
+            .Should()
             .Be(1, "the refusal must NAME the template, or an operator cannot tell which agent was stopped");
         logs.Capturing.CountAtLevel(LogLevel.Error, "REFUSED").Should().Be(1);
 
@@ -414,15 +429,15 @@ public sealed class ReviewSpawnGateTests : LoggingTestBase
     {
         private readonly ReviewSubAgentTreeSnapshot _snapshot;
 
-        public ScriptedRoster(params ReviewSubAgentNode[] nodes) =>
-            _snapshot = new ReviewSubAgentTreeSnapshot(nodes);
+        public ScriptedRoster(params ReviewSubAgentNode[] nodes) => _snapshot = new ReviewSubAgentTreeSnapshot(nodes);
 
         public int Polls { get; private set; }
 
         public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
             ReviewRun run,
             string parentThreadId,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             Polls++;
             return Task.FromResult(_snapshot);
@@ -465,10 +480,12 @@ public sealed class ReviewSpawnGateTests : LoggingTestBase
         var inner = new ScriptedRoster(
             Node("a1", "code-reviewer:performance-review"),
             Node("a2", "ado:ado-devops-assistant"),
-            Node("a3", "code-reviewer:test-coverage-review"));
+            Node("a3", "code-reviewer:test-coverage-review")
+        );
         var source = new SpawnGatedSubAgentCompletionSource(
             inner,
-            new ReviewSpawnGate(postingEnabled: false, logs.CreateLogger("spawn-gate"), refusals));
+            new ReviewSpawnGate(postingEnabled: false, logs.CreateLogger("spawn-gate"), refusals)
+        );
 
         var first = await source.GetSnapshotAsync(TestRun(), "root", CancellationToken.None);
         var second = await source.GetSnapshotAsync(TestRun(), "root", CancellationToken.None);
@@ -480,17 +497,21 @@ public sealed class ReviewSpawnGateTests : LoggingTestBase
         inner.Polls.Should().Be(2);
 
         source.RefusedTemplates.Should().ContainSingle().Which.Should().Be("ado:ado-devops-assistant");
-        refusals.Recorded.Should().ContainSingle(
-            "a barrier polls for minutes; one refusal per template per review, not one per poll");
+        refusals
+            .Recorded.Should()
+            .ContainSingle("a barrier polls for minutes; one refusal per template per review, not one per poll");
         logs.Capturing.CountAtLevel(LogLevel.Error, "ado:ado-devops-assistant").Should().Be(1);
 
         // The run id has to reach the DURABLE row, not only the log. policy_refusal carries no run column and
         // nothing maps a thread id back to a run, so a target naming only the thread leaves an operator
         // holding a refusal they cannot attribute to a review.
-        refusals.Recorded[0].Target.Should()
+        refusals
+            .Recorded[0]
+            .Target.Should()
             .Be(
                 "run 5501220 thread thread-a2 (agent a2)",
-                "the refusal target is the only place the run id survives into the ledger");
+                "the refusal target is the only place the run id survives into the ledger"
+            );
     }
 
     [Fact]
@@ -500,7 +521,8 @@ public sealed class ReviewSpawnGateTests : LoggingTestBase
         var refusals = new RecordingRefusals();
         var source = new SpawnGatedSubAgentCompletionSource(
             new ScriptedRoster(Node("a2", "ado:ado-devops-assistant")),
-            new ReviewSpawnGate(postingEnabled: true, logs.CreateLogger("spawn-gate"), refusals));
+            new ReviewSpawnGate(postingEnabled: true, logs.CreateLogger("spawn-gate"), refusals)
+        );
 
         var snapshot = await source.GetSnapshotAsync(TestRun(), "root", CancellationToken.None);
 

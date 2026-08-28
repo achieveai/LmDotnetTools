@@ -55,10 +55,7 @@ public sealed class LifecycleDestinationPolicyTests
     [InlineData("fec0::1")]
     public void Space_a_callback_has_no_business_reaching_is_refused(string address)
     {
-        LifecycleDestinationPolicy
-            .IsAllowedAddress(IPAddress.Parse(address), Options())
-            .Should()
-            .BeFalse();
+        LifecycleDestinationPolicy.IsAllowedAddress(IPAddress.Parse(address), Options()).Should().BeFalse();
     }
 
     [Theory]
@@ -82,10 +79,7 @@ public sealed class LifecycleDestinationPolicyTests
     [InlineData("2001:db8::1")]
     public void An_ordinary_public_address_is_dialled(string address)
     {
-        LifecycleDestinationPolicy
-            .IsAllowedAddress(IPAddress.Parse(address), Options())
-            .Should()
-            .BeTrue();
+        LifecycleDestinationPolicy.IsAllowedAddress(IPAddress.Parse(address), Options()).Should().BeTrue();
     }
 
     [Theory]
@@ -94,9 +88,7 @@ public sealed class LifecycleDestinationPolicyTests
     [InlineData("224.0.0.1")]
     [InlineData("239.255.255.255")]
     [InlineData("ff02::1")]
-    public void Addresses_that_are_never_a_destination_are_refused_even_where_private_space_is_open(
-        string address
-    )
+    public void Addresses_that_are_never_a_destination_are_refused_even_where_private_space_is_open(string address)
     {
         // The escape hatch below exists for a subscriber genuinely on this machine or its network.
         // Neither of these is that: nothing answers on the unspecified address, and a multicast
@@ -184,10 +176,7 @@ public sealed class LifecycleDestinationPolicyTests
 
         unicode
             .Host.Should()
-            .NotBe(
-                unicode.IdnHost,
-                "this test is vacuous unless the two spellings really are different strings"
-            );
+            .NotBe(unicode.IdnHost, "this test is vacuous unless the two spellings really are different strings");
 
         // Matching only the spelling in the URL would make an allow-list entry admit or refuse the
         // same machine depending on how the subscriber happened to type it.
@@ -218,9 +207,7 @@ public sealed class LifecycleDestinationPolicyTests
     [InlineData("a..b")] // an empty label, i.e. a typo
     [InlineData("xn--")] // the ACE prefix with nothing behind it
     [InlineData("host_with_underscores.example")] // legal in some resolvers, not a valid IDN label
-    public void An_allow_list_entry_that_cannot_be_canonicalized_refuses_rather_than_throws(
-        string malformed
-    )
+    public void An_allow_list_entry_that_cannot_be_canonicalized_refuses_rather_than_throws(string malformed)
     {
         // Punycode canonicalization is the only thing standing between two spellings of one host, so
         // it runs over every entry — including the ones an operator got wrong. It has to answer for
@@ -228,10 +215,7 @@ public sealed class LifecycleDestinationPolicyTests
         // delivery attempt, and an exception there would escape into a delivery worker and take out a
         // subscriber's queue over a typo in someone else's configuration line.
         var refuse = () =>
-            LifecycleDestinationPolicy.Evaluate(
-                new Uri($"https://{AllowedHost}/hook"),
-                Options(hosts: [malformed])
-            );
+            LifecycleDestinationPolicy.Evaluate(new Uri($"https://{AllowedHost}/hook"), Options(hosts: [malformed]));
 
         // Failing closed is the other half: a mistyped entry matches nothing, so it cannot widen the
         // allow-list by accident. Only an entry that means the host admits the host.
@@ -245,10 +229,7 @@ public sealed class LifecycleDestinationPolicyTests
             .Be(LifecycleDestinationVerdict.Allowed);
     }
 
-    private static LifecycleDeliveryOptions Options(
-        bool allowPrivate = false,
-        string[]? hosts = null
-    ) =>
+    private static LifecycleDeliveryOptions Options(bool allowPrivate = false, string[]? hosts = null) =>
         new()
         {
             Enabled = true,

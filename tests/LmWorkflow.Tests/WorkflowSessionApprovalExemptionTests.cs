@@ -60,7 +60,10 @@ public class WorkflowSessionApprovalExemptionTests
             subAgentOptions: EmptyControllerOptions(),
             controllerAgent: ScriptedController(DriveMinimalToTerminal).Object,
             threadId: "wf-approval-observed-thread",
-            lifecycleServices: GatedBy(gate) with { Publisher = publisher }
+            lifecycleServices: GatedBy(gate) with
+            {
+                Publisher = publisher,
+            }
         );
 
         await handle.Completion.WaitAsync(TimeSpan.FromSeconds(30));
@@ -116,17 +119,11 @@ public class WorkflowSessionApprovalExemptionTests
         var services = GatedBy(RecordingToolApprovalGate.Denying());
 
         services.Approval.IsEnabled.Should().BeTrue();
-        MultiTurnLifecycleServices
-            .ForObservationOnly(services)
-            .Approval.IsEnabled.Should()
-            .BeFalse();
+        MultiTurnLifecycleServices.ForObservationOnly(services).Approval.IsEnabled.Should().BeFalse();
     }
 
     private static MultiTurnLifecycleServices GatedBy(IToolApprovalGate gate) =>
-        new()
-        {
-            Approval = new ToolInvocationPreparer(new ToolApprovalOptions { Gates = [gate] }),
-        };
+        new() { Approval = new ToolInvocationPreparer(new ToolApprovalOptions { Gates = [gate] }) };
 
     /// <summary>
     ///     Counts published events. A counter rather than the richer recorder in LmMultiTurn.Tests: the
@@ -138,9 +135,7 @@ public class WorkflowSessionApprovalExemptionTests
 
         public int Count => Volatile.Read(ref _count);
 
-        public ValueTask PublishAsync(
-            LifecycleEventEnvelope envelope,
-            CancellationToken ct = default)
+        public ValueTask PublishAsync(LifecycleEventEnvelope envelope, CancellationToken ct = default)
         {
             _ = Interlocked.Increment(ref _count);
             return ValueTask.CompletedTask;

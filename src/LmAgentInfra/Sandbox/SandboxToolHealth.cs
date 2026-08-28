@@ -1,5 +1,5 @@
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 
@@ -90,8 +90,7 @@ internal static class SandboxToolHealth
         {
             var result = await inner(argsJson, context, cancellationToken).ConfigureAwait(false);
 
-            return result is ToolHandlerResult.Resolved resolved
-                && IsContainerUnhealthy(resolved.Payload.Text)
+            return result is ToolHandlerResult.Resolved resolved && IsContainerUnhealthy(resolved.Payload.Text)
                 ? ToolHandlerResult.FromError(UnhealthyMessage, UnhealthyErrorCode)
                 : result;
         };

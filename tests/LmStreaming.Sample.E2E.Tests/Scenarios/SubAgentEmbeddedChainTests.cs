@@ -36,21 +36,19 @@ public sealed class SubAgentEmbeddedChainTests
     [InlineData("test-anthropic")]
     public async Task Parent_passes_nested_chain_and_subagent_uses_tool_then_replies(string providerMode)
     {
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.ToolCall(
-                    "Agent",
-                    new { subagent_type = "general-purpose", prompt = InnerChain }))
-                .Turn(t => t.Text("Summary: the sub-agent replied 'hi from agent'."))
+            .Turn(t => t.ToolCall("Agent", new { subagent_type = "general-purpose", prompt = InnerChain }))
+            .Turn(t => t.Text("Summary: the sub-agent replied 'hi from agent'."))
             .Build();
 
-        var handler = providerMode == "test-anthropic"
-            ? responder.AsAnthropicHandler()
-            : responder.AsOpenAiHandler();
+        var handler = providerMode == "test-anthropic" ? responder.AsAnthropicHandler() : responder.AsOpenAiHandler();
 
         var builder = new ScriptedBuilder(
             handler,
-            subAgentFactory: (loggerFactory, _) => BuildSubAgentOptions(providerMode, loggerFactory));
+            subAgentFactory: (loggerFactory, _) => BuildSubAgentOptions(providerMode, loggerFactory)
+        );
 
         using var factory = new E2EWebAppFactory(providerMode, builder);
 
@@ -66,9 +64,13 @@ public sealed class SubAgentEmbeddedChainTests
 
         // Synchronous Agent: the sub-agent ran its nested chain (calculate -> text) and its final
         // text comes back as the Agent tool result — proving the embedded chain executed end to end.
-        frames.ToolCallResults().Should().Contain(
-            r => r.Contains("hi from agent", StringComparison.Ordinal),
-            "the Agent tool result is the sub-agent's final text from the nested instruction chain");
+        frames
+            .ToolCallResults()
+            .Should()
+            .Contain(
+                r => r.Contains("hi from agent", StringComparison.Ordinal),
+                "the Agent tool result is the sub-agent's final text from the nested instruction chain"
+            );
 
         frames.ConcatText().Should().Contain("the sub-agent replied");
 
@@ -90,11 +92,7 @@ public sealed class SubAgentEmbeddedChainTests
             },
         };
 
-        return new SubAgentOptions
-        {
-            Templates = templates,
-            MaxConcurrentSubAgents = 5,
-        };
+        return new SubAgentOptions { Templates = templates, MaxConcurrentSubAgents = 5 };
     }
 
     // Builds a sub-agent backed by the embedded-chain test handler (parses
@@ -105,16 +103,19 @@ public sealed class SubAgentEmbeddedChainTests
         if (providerMode == "test-anthropic")
         {
             var handler = new AnthropicTestSseMessageHandler(
-                loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>());
+                loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>()
+            );
             var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://test-mode/v1") };
             var anthropicClient = new AnthropicClient(
                 httpClient,
                 baseUrl: "http://test-mode/v1",
-                logger: loggerFactory.CreateLogger<AnthropicClient>());
+                logger: loggerFactory.CreateLogger<AnthropicClient>()
+            );
             return new AnthropicAgent(
                 "MockAnthropicSub",
                 anthropicClient,
-                loggerFactory.CreateLogger<AnthropicAgent>());
+                loggerFactory.CreateLogger<AnthropicAgent>()
+            );
         }
 
         var openHandler = new TestSseMessageHandler(loggerFactory.CreateLogger<TestSseMessageHandler>());
@@ -122,7 +123,8 @@ public sealed class SubAgentEmbeddedChainTests
         var openClient = new OpenClient(
             openHttpClient,
             "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<OpenClient>());
+            logger: loggerFactory.CreateLogger<OpenClient>()
+        );
         return new OpenClientAgent("MockSub", openClient, loggerFactory.CreateLogger<OpenClientAgent>());
     }
 }

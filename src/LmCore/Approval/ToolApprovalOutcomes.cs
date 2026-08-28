@@ -78,6 +78,5 @@ public static class ToolApprovalOutcomes
     /// The comparison is ordinal and case-sensitive on purpose. A case-insensitive or lenient match
     /// would let a malformed or hostile approver approach "allow" by accident.
     /// </remarks>
-    public static bool IsAllowed(string? outcome) =>
-        string.Equals(outcome, Allowed, StringComparison.Ordinal);
+    public static bool IsAllowed(string? outcome) => string.Equals(outcome, Allowed, StringComparison.Ordinal);
 }

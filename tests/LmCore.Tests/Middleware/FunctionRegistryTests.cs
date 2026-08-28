@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class FunctionRegistryTests
@@ -222,7 +223,8 @@ public class FunctionRegistryTests
 
         Assert.Equal(
             buildContracts.Select(c => c.Name).OrderBy(n => n),
-            standaloneContracts.Select(c => c.Name).OrderBy(n => n));
+            standaloneContracts.Select(c => c.Name).OrderBy(n => n)
+        );
     }
 
     [Fact]
@@ -545,7 +547,8 @@ public class FunctionRegistryTests
                     Description = $"Test function {name}",
                     Parameters = [],
                 },
-                Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
+                Handler = (_, _, _) =>
+                    Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
                 ProviderName = ProviderName,
             });
         }
@@ -579,7 +582,8 @@ public class FunctionRegistryTests
                         Description = $"Test function {_functionName}",
                         Parameters = [],
                     },
-                    Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
+                    Handler = (_, _, _) =>
+                        Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
                     ProviderName = ProviderName,
                 },
             ];
@@ -614,7 +618,8 @@ public class FunctionRegistryTests
                         Description = $"Test function {_functionName}",
                         Parameters = [],
                     },
-                    Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
+                    Handler = (_, _, _) =>
+                        Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
                     ProviderName = ProviderName,
                 },
             ];

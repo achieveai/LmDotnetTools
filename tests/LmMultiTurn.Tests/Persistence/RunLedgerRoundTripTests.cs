@@ -33,7 +33,8 @@ public class RunLedgerRoundTripTests
 
         var persisted = await WaitUntilAsync(
             async () => (await store.ListRunLedgerAsync(threadId)).Count > 0,
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(5)
+        );
 
         persisted.Should().BeTrue("a persistRunLedger:true agent must write a ledger row for its run");
         (await store.ListRunLedgerAsync(threadId)).Should().ContainSingle(e => e.InputIds.Contains("input-1"));
@@ -80,11 +81,7 @@ public class RunLedgerRoundTripTests
         var store = new InMemoryConversationStore();
         const string threadId = "roundtrip-inprogress";
 
-        var agent = new LedgerTestAgent(
-            threadId,
-            store: store,
-            persistRunLedger: true,
-            pauseBeforeComplete: true);
+        var agent = new LedgerTestAgent(threadId, store: store, persistRunLedger: true, pauseBeforeComplete: true);
         using var cts = new CancellationTokenSource();
 
         // Enqueue BOTH inputs before starting the loop so they drain into a single batch deterministically.
@@ -119,16 +116,20 @@ public class RunLedgerRoundTripTests
             threadId,
             store: store,
             persistRunLedger: true,
-            messagesToReturn: [new TextMessage { Text = "Reply", Role = Role.Assistant }]);
+            messagesToReturn: [new TextMessage { Text = "Reply", Role = Role.Assistant }]
+        );
         using var cts = new CancellationTokenSource();
         _ = agent.RunAsync(cts.Token);
 
         await agent.SendAsync([new TextMessage { Text = "Hi", Role = Role.User }], inputId: "input-C");
 
         var completed = await WaitUntilAsync(
-            async () => (await store.ListRunLedgerAsync(threadId))
-                .Any(e => e.InputIds.Contains("input-C") && e.Status == RunStatus.Completed),
-            TimeSpan.FromSeconds(5));
+            async () =>
+                (await store.ListRunLedgerAsync(threadId)).Any(e =>
+                    e.InputIds.Contains("input-C") && e.Status == RunStatus.Completed
+                ),
+            TimeSpan.FromSeconds(5)
+        );
 
         completed.Should().BeTrue();
         var entry = (await store.ListRunLedgerAsync(threadId)).Single(e => e.InputIds.Contains("input-C"));
@@ -145,20 +146,19 @@ public class RunLedgerRoundTripTests
         var store = new InMemoryConversationStore();
         const string threadId = "roundtrip-errored";
 
-        var agent = new LedgerTestAgent(
-            threadId,
-            store: store,
-            persistRunLedger: true,
-            completeWithError: true);
+        var agent = new LedgerTestAgent(threadId, store: store, persistRunLedger: true, completeWithError: true);
         using var cts = new CancellationTokenSource();
         _ = agent.RunAsync(cts.Token);
 
         await agent.SendAsync([new TextMessage { Text = "Hi", Role = Role.User }], inputId: "input-D");
 
         var errored = await WaitUntilAsync(
-            async () => (await store.ListRunLedgerAsync(threadId))
-                .Any(e => e.InputIds.Contains("input-D") && e.Status == RunStatus.Errored),
-            TimeSpan.FromSeconds(5));
+            async () =>
+                (await store.ListRunLedgerAsync(threadId)).Any(e =>
+                    e.InputIds.Contains("input-D") && e.Status == RunStatus.Errored
+                ),
+            TimeSpan.FromSeconds(5)
+        );
 
         errored.Should().BeTrue();
         var entry = (await store.ListRunLedgerAsync(threadId)).Single(e => e.InputIds.Contains("input-D"));
@@ -180,8 +180,9 @@ public class RunLedgerRoundTripTests
         const string threadId = "roundtrip-inject";
         const string runId = "run-inject";
         var createdAt = DateTimeOffset.UtcNow;
-        await store.UpsertRunLedgerAsync(new RunLedgerEntry(
-            threadId, runId, RunStatus.InProgress, ["orig-1", "orig-2"], createdAt, createdAt));
+        await store.UpsertRunLedgerAsync(
+            new RunLedgerEntry(threadId, runId, RunStatus.InProgress, ["orig-1", "orig-2"], createdAt, createdAt)
+        );
 
         await using var agent = new LedgerTestAgent(threadId, store: store, persistRunLedger: true);
 
@@ -199,8 +200,9 @@ public class RunLedgerRoundTripTests
         const string threadId = "roundtrip-inject-dup";
         const string runId = "run-inject-dup";
         var createdAt = DateTimeOffset.UtcNow;
-        await store.UpsertRunLedgerAsync(new RunLedgerEntry(
-            threadId, runId, RunStatus.InProgress, ["orig-1"], createdAt, createdAt));
+        await store.UpsertRunLedgerAsync(
+            new RunLedgerEntry(threadId, runId, RunStatus.InProgress, ["orig-1"], createdAt, createdAt)
+        );
 
         await using var agent = new LedgerTestAgent(threadId, store: store, persistRunLedger: true);
 
@@ -233,8 +235,9 @@ public class RunLedgerRoundTripTests
         const string threadId = "roundtrip-inject-empty";
         const string runId = "run-inject-empty";
         var createdAt = DateTimeOffset.UtcNow;
-        await store.UpsertRunLedgerAsync(new RunLedgerEntry(
-            threadId, runId, RunStatus.InProgress, ["orig-1"], createdAt, createdAt));
+        await store.UpsertRunLedgerAsync(
+            new RunLedgerEntry(threadId, runId, RunStatus.InProgress, ["orig-1"], createdAt, createdAt)
+        );
 
         await using var agent = new LedgerTestAgent(threadId, store: store, persistRunLedger: true);
 
@@ -280,10 +283,8 @@ public class RunLedgerRoundTripTests
         private readonly List<IMessage> _messagesToReturn;
         private readonly bool _completeWithError;
         private readonly bool _pauseBeforeComplete;
-        private readonly TaskCompletionSource _runStarted =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource _releaseGate =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _runStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public LedgerTestAgent(
             string threadId,
@@ -291,7 +292,8 @@ public class RunLedgerRoundTripTests
             bool persistRunLedger = false,
             List<IMessage>? messagesToReturn = null,
             bool completeWithError = false,
-            bool pauseBeforeComplete = false)
+            bool pauseBeforeComplete = false
+        )
             : base(threadId, store: store, persistRunLedger: persistRunLedger)
         {
             _messagesToReturn = messagesToReturn ?? [];
@@ -309,8 +311,8 @@ public class RunLedgerRoundTripTests
         public Task TestRecordInjectedInputsAsync(
             string runId,
             IReadOnlyList<string> injectedInputIds,
-            CancellationToken ct = default)
-            => RecordInjectedInputsAsync(runId, injectedInputIds, ct);
+            CancellationToken ct = default
+        ) => RecordInjectedInputsAsync(runId, injectedInputIds, ct);
 
         protected override TimeSpan FallbackGracePeriod => TimeSpan.FromMilliseconds(100);
 
@@ -332,9 +334,7 @@ public class RunLedgerRoundTripTests
                 LastRunId = assignment.RunId;
                 _runStarted.TrySetResult();
 
-                await PublishToAllAsync(
-                    new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId },
-                    ct);
+                await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
                 if (_pauseBeforeComplete)
                 {
@@ -359,7 +359,8 @@ public class RunLedgerRoundTripTests
                         0,
                         isError: _completeWithError,
                         errorMessage: _completeWithError ? "boom" : null,
-                        ct: ct);
+                        ct: ct
+                    );
                 }
             }
         }
@@ -372,29 +373,43 @@ public class RunLedgerRoundTripTests
     /// </summary>
     private sealed class ConversationOnlyStore : IConversationStore
     {
-        public Task AppendMessagesAsync(string threadId, IReadOnlyList<PersistedMessage> messages, CancellationToken ct = default)
-            => Task.CompletedTask;
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => Task.CompletedTask;
 
-        public Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default)
-            => Task.CompletedTask;
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => Task.CompletedTask;
 
-        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<PersistedMessage>>([]);
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => Task.FromResult<IReadOnlyList<PersistedMessage>>([]);
 
-        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default)
-            => Task.CompletedTask;
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            Task.CompletedTask;
 
-        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default)
-            => Task.FromResult<ThreadMetadata?>(null);
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            Task.FromResult<ThreadMetadata?>(null);
 
-        public Task UpdateMetadataAsync(string threadId, Func<ThreadMetadata?, ThreadMetadata> update, CancellationToken ct = default)
-            => Task.CompletedTask;
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => Task.CompletedTask;
 
-        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default)
-            => Task.CompletedTask;
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) => Task.CompletedTask;
 
-        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(int limit = 50, int offset = 0, ConversationListOptions? options = null, CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<ThreadMetadata>>([]);
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => Task.FromResult<IReadOnlyList<ThreadMetadata>>([]);
     }
 
     #endregion

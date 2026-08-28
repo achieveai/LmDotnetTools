@@ -13,9 +13,7 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 public sealed class FileOAuthTokenStoreTests : LoggingTestBase
 {
     public FileOAuthTokenStoreTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private FileOAuthTokenStore NewStore(string dir)
     {
@@ -26,14 +24,16 @@ public sealed class FileOAuthTokenStoreTests : LoggingTestBase
     private static OAuthTokenRecord SampleRecord(
         string provider = "github",
         string refresh = "refresh-abc",
-        string? access = "access-xyz") =>
+        string? access = "access-xyz"
+    ) =>
         new(
             Provider: provider,
             Account: "octocat",
             RefreshToken: refresh,
             AccessToken: access,
             AccessTokenExpiresAtUtc: new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero),
-            Scopes: ["repo", "read:org"]);
+            Scopes: ["repo", "read:org"]
+        );
 
     [Fact]
     public async Task Save_then_Get_round_trips_all_fields()
@@ -49,7 +49,8 @@ public sealed class FileOAuthTokenStoreTests : LoggingTestBase
             "Round-trip loaded provider={Provider}, account={Account}, scopes=[{Scopes}] (token values not logged)",
             loaded?.Provider,
             loaded?.Account,
-            loaded is null ? string.Empty : string.Join(", ", loaded.Scopes));
+            loaded is null ? string.Empty : string.Join(", ", loaded.Scopes)
+        );
 
         loaded.Should().NotBeNull();
         loaded!.Provider.Should().Be(record.Provider);
@@ -113,7 +114,8 @@ public sealed class FileOAuthTokenStoreTests : LoggingTestBase
         {
             Path = System.IO.Path.Combine(
                 System.IO.Path.GetTempPath(),
-                "oauth-store-test-" + Guid.NewGuid().ToString("N"));
+                "oauth-store-test-" + Guid.NewGuid().ToString("N")
+            );
         }
 
         public string Path { get; }

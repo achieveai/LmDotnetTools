@@ -27,7 +27,8 @@ public sealed class GatewaySkillProbeTests
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
             PreviewUrl,
-            Catalog(Marketplace("gb-plugins", error: null, ReviewerPlugin(skills: ["pr-review"], agents: 16))));
+            Catalog(Marketplace("gb-plugins", error: null, ReviewerPlugin(skills: ["pr-review"], agents: 16)))
+        );
         await using var probe = BuildProbe(handler);
 
         var support = await probe.ProbeAsync(["gb-plugins"], CancellationToken.None);
@@ -47,8 +48,14 @@ public sealed class GatewaySkillProbeTests
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
             PreviewUrl,
-            Catalog(Marketplace(
-                "gb-plugins", error: null, ReviewerPlugin(skills: ["code-review", "post-pr-review"], agents: 16))));
+            Catalog(
+                Marketplace(
+                    "gb-plugins",
+                    error: null,
+                    ReviewerPlugin(skills: ["code-review", "post-pr-review"], agents: 16)
+                )
+            )
+        );
         await using var probe = BuildProbe(handler);
 
         var support = await probe.ProbeAsync(["gb-plugins"], CancellationToken.None);
@@ -67,7 +74,8 @@ public sealed class GatewaySkillProbeTests
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
             PreviewUrl,
-            Catalog(Marketplace("gb-plugins", error: null, ReviewerPlugin(skills: ["pr-review"], agents: 0))));
+            Catalog(Marketplace("gb-plugins", error: null, ReviewerPlugin(skills: ["pr-review"], agents: 0)))
+        );
         await using var probe = BuildProbe(handler);
 
         var support = await probe.ProbeAsync(["gb-plugins"], CancellationToken.None);
@@ -86,11 +94,15 @@ public sealed class GatewaySkillProbeTests
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
             PreviewUrl,
-            Catalog(Marketplace(
-                "gb-plugins",
-                error: null,
-                Plugin("debugging", skills: ["pr-review"], agents: 2),
-                Plugin("orleans-dev", skills: ["pr-review"], agents: 1))));
+            Catalog(
+                Marketplace(
+                    "gb-plugins",
+                    error: null,
+                    Plugin("debugging", skills: ["pr-review"], agents: 2),
+                    Plugin("orleans-dev", skills: ["pr-review"], agents: 1)
+                )
+            )
+        );
         await using var probe = BuildProbe(handler);
 
         var support = await probe.ProbeAsync(["gb-plugins"], CancellationToken.None);
@@ -109,14 +121,19 @@ public sealed class GatewaySkillProbeTests
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
             PreviewUrl,
-            Catalog(Marketplace("gb-plugins", error: "clone failed: authentication required")));
+            Catalog(Marketplace("gb-plugins", error: "clone failed: authentication required"))
+        );
         await using var probe = BuildProbe(handler);
 
         var support = await probe.ProbeAsync(["gb-plugins"], CancellationToken.None);
 
         support.IsSupported.Should().BeFalse();
-        support.MarketplaceErrors.Should().ContainSingle()
-            .Which.Should().Contain("gb-plugins").And.Contain("authentication required");
+        support
+            .MarketplaceErrors.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Contain("gb-plugins")
+            .And.Contain("authentication required");
         support.Describe().Should().Contain("authentication required");
     }
 
@@ -130,7 +147,9 @@ public sealed class GatewaySkillProbeTests
             PreviewUrl,
             Catalog(
                 Marketplace("gb-plugins", error: null, ReviewerPlugin(skills: ["pr-review"], agents: 0)),
-                Marketplace("superpowers", error: null, ReviewerPlugin(skills: [], agents: 3))));
+                Marketplace("superpowers", error: null, ReviewerPlugin(skills: [], agents: 3))
+            )
+        );
         await using var probe = BuildProbe(handler);
 
         var support = await probe.ProbeAsync(["gb-plugins", "superpowers"], CancellationToken.None);
@@ -145,7 +164,8 @@ public sealed class GatewaySkillProbeTests
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
             PreviewUrl,
-            Catalog(Marketplace("gb-plugins", error: null, Plugin("Code-Reviewer", ["PR-Review"], agents: 4))));
+            Catalog(Marketplace("gb-plugins", error: null, Plugin("Code-Reviewer", ["PR-Review"], agents: 4)))
+        );
         await using var probe = BuildProbe(handler);
 
         var support = await probe.ProbeAsync(["gb-plugins"], CancellationToken.None);
@@ -161,7 +181,8 @@ public sealed class GatewaySkillProbeTests
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
             PreviewUrl,
-            Catalog(Marketplace("gb-plugins", error: null, ReviewerPlugin(skills: ["pr-review"], agents: 1))));
+            Catalog(Marketplace("gb-plugins", error: null, ReviewerPlugin(skills: ["pr-review"], agents: 1)))
+        );
         await using var probe = BuildProbe(handler);
 
         _ = await probe.ProbeAsync(["gb-plugins", "superpowers"], CancellationToken.None);
@@ -177,14 +198,19 @@ public sealed class GatewaySkillProbeTests
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
             PreviewUrl,
-            Catalog(Marketplace("gb-plugins", error: null, ReviewerPlugin(skills: ["pr-review"], agents: 1))));
+            Catalog(Marketplace("gb-plugins", error: null, ReviewerPlugin(skills: ["pr-review"], agents: 1)))
+        );
         await using var probe = BuildProbe(handler);
 
         var support = await probe.ProbeAsync([], CancellationToken.None);
 
         support.IsSupported.Should().BeTrue();
-        handler.Requests.Should().ContainSingle().Which.Uri.ToString()
-            .Should().NotContain("marketplaces=", "an empty configured set means 'whatever the gateway defaults to'");
+        handler
+            .Requests.Should()
+            .ContainSingle()
+            .Which.Uri.ToString()
+            .Should()
+            .NotContain("marketplaces=", "an empty configured set means 'whatever the gateway defaults to'");
     }
 
     [Fact]
@@ -194,7 +220,11 @@ public sealed class GatewaySkillProbeTests
         // from an unsupported one. If the probe answered "unsupported" here, a momentary gateway blip would
         // stop the daemon and demand a marketplace fix that was never wrong.
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, PreviewUrl, "{\"error\":\"boom\"}", HttpStatusCode.InternalServerError);
+            HttpMethod.Get,
+            PreviewUrl,
+            "{\"error\":\"boom\"}",
+            HttpStatusCode.InternalServerError
+        );
         await using var probe = BuildProbe(handler);
 
         var act = () => probe.ProbeAsync(["gb-plugins"], CancellationToken.None);
@@ -209,7 +239,8 @@ public sealed class GatewaySkillProbeTests
             // the fixture credential has to be well-formed even though the scripted transport never checks it.
             new SandboxCredential("code-review-daemon", Convert.ToBase64String(new byte[32])),
             NullLogger<GatewaySkillProbe>.Instance,
-            transport);
+            transport
+        );
 
     // --- catalog JSON builders (the gateway's api/v1/marketplaces/preview wire shape) ---
 
@@ -218,21 +249,24 @@ public sealed class GatewaySkillProbeTests
 
     private static string Marketplace(string alias, string? error, params string[] plugins) =>
         $$"""
-        {"alias":"{{alias}}","error":{{(error is null ? "null" : $"\"{error}\"")}},"plugins":[{{string.Join(",", plugins)}}]}
-        """;
+            {"alias":"{{alias}}","error":{{(error is null ? "null" : $"\"{error}\"")}},"plugins":[{{string.Join(
+                ",",
+                plugins
+            )}}]}
+            """;
 
     private static string ReviewerPlugin(IReadOnlyList<string> skills, int agents) =>
         Plugin("code-reviewer", skills, agents);
 
     private static string Plugin(string name, IReadOnlyList<string> skills, int agents) =>
         $$"""
-        {"name":"{{name}}","version":"1.0.0","description":"{{name}} plugin",
-         "skills":[{{string.Join(",", skills.Select(s => Item(s, name)))}}],
-         "agents":[{{string.Join(",", Enumerable.Range(0, agents).Select(i => Item($"agent-{i}", name)))}}]}
-        """;
+            {"name":"{{name}}","version":"1.0.0","description":"{{name}} plugin",
+             "skills":[{{string.Join(",", skills.Select(s => Item(s, name)))}}],
+             "agents":[{{string.Join(",", Enumerable.Range(0, agents).Select(i => Item($"agent-{i}", name)))}}]}
+            """;
 
     private static string Item(string name, string plugin) =>
         $$"""
-        {"name":"{{name}}","description":"d","plugin":"{{plugin}}","marketplace":"gb-plugins","path":"/x/{{name}}.md"}
-        """;
+            {"name":"{{name}}","description":"d","plugin":"{{plugin}}","marketplace":"gb-plugins","path":"/x/{{name}}.md"}
+            """;
 }

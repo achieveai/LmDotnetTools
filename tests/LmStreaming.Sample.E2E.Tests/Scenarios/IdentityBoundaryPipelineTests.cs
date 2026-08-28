@@ -78,15 +78,18 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
 
         // The exempt half is the security-relevant one, so it is pinned by name. A route that joins
         // it does so by an author editing this list, never by a prefix quietly matching.
-        _ = exempt.Should().BeEquivalentTo(
-            [
-                "api/identity/config",
-                "api/admin/tenants",
-                "api/admin/tenants/{tenantId}/adopt-legacy",
-                "api/auth/webhook/{provider}",
-            ],
-            "every /api route outside the identity boundary is a deliberate, reviewed decision - "
-                + "see IdentityMiddleware.InfrastructureApiPaths for why each one is there");
+        _ = exempt
+            .Should()
+            .BeEquivalentTo(
+                [
+                    "api/identity/config",
+                    "api/admin/tenants",
+                    "api/admin/tenants/{tenantId}/adopt-legacy",
+                    "api/auth/webhook/{provider}",
+                ],
+                "every /api route outside the identity boundary is a deliberate, reviewed decision - "
+                    + "see IdentityMiddleware.InfrastructureApiPaths for why each one is there"
+            );
 
         // The forward direction, which the partition above cannot see. This test enumerates routes
         // and asks whether each is guarded or exempt; a DEAD exemption contributes no route, so it is
@@ -102,11 +105,14 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         {
             var prefix = unguarded.TrimStart('/');
 
-            _ = apiRoutes.Should().Contain(
-                route => route == prefix || route.StartsWith(prefix + "/", StringComparison.Ordinal),
-                "every entry in IdentityMiddleware.UnguardedApiPaths must name a route this host "
-                    + $"actually maps, and '{unguarded}' names none - a dead exemption grants nothing "
-                    + "today and silently reserves its whole subtree for tomorrow (#350)");
+            _ = apiRoutes
+                .Should()
+                .Contain(
+                    route => route == prefix || route.StartsWith(prefix + "/", StringComparison.Ordinal),
+                    "every entry in IdentityMiddleware.UnguardedApiPaths must name a route this host "
+                        + $"actually maps, and '{unguarded}' names none - a dead exemption grants nothing "
+                        + "today and silently reserves its whole subtree for tomorrow (#350)"
+                );
         }
 
         // Both egress-key routes are INSIDE the boundary, not exempt (BE1). The controller presents
@@ -134,16 +140,13 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             .ToArray();
         LogData("nonApiRoutes", nonApiRoutes);
 
-        _ = nonApiRoutes.Should().BeEquivalentTo(
-            [
-                "auth/m365/callback",
-                "auth/{providerId}",
-                "ws",
-                "ws/subagent",
-                "{*path:nonfile}",
-            ],
-            "a route family outside /api joins this list by an author editing it, never by nobody "
-                + "looking - #342 is what the absence of this enumeration cost");
+        _ = nonApiRoutes
+            .Should()
+            .BeEquivalentTo(
+                ["auth/m365/callback", "auth/{providerId}", "ws", "ws/subagent", "{*path:nonfile}"],
+                "a route family outside /api joins this list by an author editing it, never by nobody "
+                    + "looking - #342 is what the absence of this enumeration cost"
+            );
 
         // The transports are inside the boundary now, asked of the real predicate.
         _ = IdentityMiddleware.IsGuardedPath(new PathString("/ws")).Should().BeTrue();
@@ -199,12 +202,16 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // The reviewed decision, asked of the real predicate: lifecycle is a service-to-service
         // surface with a front door that can speak for it (ServiceCallerPrincipalSource), so it is
         // guarded like every other one.
-        _ = IsGuarded("api/lifecycle/subscriptions").Should().BeTrue(
-            "the lifecycle control plane sits inside the identity boundary and honours tenant "
-                + "refusal (#402)");
-        _ = IsGuarded("api/lifecycle/approvals/decisions").Should().BeTrue(
-            "the lifecycle control plane sits inside the identity boundary and honours tenant "
-                + "refusal (#402)");
+        _ = IsGuarded("api/lifecycle/subscriptions")
+            .Should()
+            .BeTrue(
+                "the lifecycle control plane sits inside the identity boundary and honours tenant " + "refusal (#402)"
+            );
+        _ = IsGuarded("api/lifecycle/approvals/decisions")
+            .Should()
+            .BeTrue(
+                "the lifecycle control plane sits inside the identity boundary and honours tenant " + "refusal (#402)"
+            );
     }
 
     [Fact]
@@ -224,8 +231,12 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // first the preflight is 401'd, no Access-Control-Allow-Origin is written, and the browser
         // abandons the real request before sending it.
         _ = response.StatusCode.Should().NotBe(HttpStatusCode.Unauthorized);
-        _ = response.Headers.GetValues("Access-Control-Allow-Origin").Should().ContainSingle()
-            .Which.Should().Be(ClientOrigin);
+        _ = response
+            .Headers.GetValues("Access-Control-Allow-Origin")
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(ClientOrigin);
     }
 
     [Fact]
@@ -246,14 +257,23 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         var response = await client.SendAsync(request);
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
-            .Which.Should().Be(ServiceCallerPrincipalSource.AppNotRegisteredCode);
-        _ = response.Headers.GetValues("Access-Control-Allow-Origin").Should().ContainSingle()
-            .Which.Should().Be(
+        _ = response
+            .Headers.GetValues(IdentityMiddleware.RefusalCodeHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(ServiceCallerPrincipalSource.AppNotRegisteredCode);
+        _ = response
+            .Headers.GetValues("Access-Control-Allow-Origin")
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(
                 ClientOrigin,
                 "a refusal written downstream of the CORS middleware leaves without this header, "
                     + "and a cross-origin client then sees an opaque network error instead of the "
-                    + "explanation the refusal exists to give it");
+                    + "explanation the refusal exists to give it"
+            );
     }
 
     [Fact]
@@ -287,8 +307,12 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         var response = await client.GetAsync(new Uri(GuardedRoute, UriKind.Relative));
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
-            .Which.Should().Be("authentication_required");
+        _ = response
+            .Headers.GetValues(IdentityMiddleware.RefusalCodeHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("authentication_required");
     }
 
     [Fact]
@@ -311,11 +335,14 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         var body = await response.Content.ReadAsStringAsync();
         LogData("registrationBody", body);
 
-        _ = response.StatusCode.Should().Be(
-            HttpStatusCode.Created,
-            "a caller the identity boundary admitted as {0} must be authenticated to the controllers "
-                + "behind it, not just to the middleware in front of them",
-            DaemonAppId);
+        _ = response
+            .StatusCode.Should()
+            .Be(
+                HttpStatusCode.Created,
+                "a caller the identity boundary admitted as {0} must be authenticated to the controllers "
+                    + "behind it, not just to the middleware in front of them",
+                DaemonAppId
+            );
 
         // Non-vacuity for the status alone: a 201 proves the action ran, and the minted subscription
         // proves it ran as an owner rather than reaching some shared, ownerless path.
@@ -345,36 +372,46 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         var registrationBody = await registrationResponse.Content.ReadAsStringAsync();
         LogData("humanRegistrationBody", registrationBody);
 
-        _ = registrationResponse.StatusCode.Should().Be(
-            HttpStatusCode.Forbidden,
-            "a signed-in person is not an app, and the lifecycle plane's entire authorization model "
-                + "is that the caller names one");
-        _ = registrationBody.Should().NotContain(
-            "signing_secret",
-            "a refused caller must not be handed signing material");
+        _ = registrationResponse
+            .StatusCode.Should()
+            .Be(
+                HttpStatusCode.Forbidden,
+                "a signed-in person is not an app, and the lifecycle plane's entire authorization model "
+                    + "is that the caller names one"
+            );
+        _ = registrationBody
+            .Should()
+            .NotContain("signing_secret", "a refused caller must not be handed signing material");
 
         // And the refusal has to describe what actually happened. This caller authenticated - a real
         // bearer scheme validated their token and populated HttpContext.User - so answering "caller is
         // not authenticated" sends whoever reads it to inspect the one part of the pipeline that is
         // demonstrably working, while the real cause (a person is not an app) goes unnamed.
-        _ = registrationBody.Should().Contain(
-            "does not name an application",
-            "the refusal must name the reason the caller was refused, not a different one");
-        _ = registrationBody.Should().NotContain(
-            "not authenticated",
-            "authentication succeeded; saying otherwise misdirects the operator reading this");
+        _ = registrationBody
+            .Should()
+            .Contain(
+                "does not name an application",
+                "the refusal must name the reason the caller was refused, not a different one"
+            );
+        _ = registrationBody
+            .Should()
+            .NotContain(
+                "not authenticated",
+                "authentication succeeded; saying otherwise misdirects the operator reading this"
+            );
 
         // The sibling endpoint, pinned independently. Both controllers derived the app id the same
         // way and each carries its own copy of the derivation, so one of them fixed is not the fix.
         var decision = new HttpRequestMessage(
             HttpMethod.Post,
-            new Uri("/api/lifecycle/approvals/decisions", UriKind.Relative))
+            new Uri("/api/lifecycle/approvals/decisions", UriKind.Relative)
+        )
         {
             // Every required field present. Model validation runs before the action, so a malformed
             // body is answered 400 and never reaches the identity check this test is about — which
             // would make the assertion below pass for the wrong reason.
             Content = new StringContent(
-                /*lang=json,strict*/ """
+                /*lang=json,strict*/"""
                 {
                   "request_id": "req-1",
                   "subscription_id": "sub-1",
@@ -383,7 +420,8 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
                 }
                 """,
                 Encoding.UTF8,
-                "application/json"),
+                "application/json"
+            ),
         };
         decision.Headers.TryAddWithoutValidation("Authorization", $"Bearer {HumanSubject}");
 
@@ -391,21 +429,29 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         var decisionBody = await decisionResponse.Content.ReadAsStringAsync();
         LogData("humanDecisionBody", decisionBody);
 
-
-        _ = decisionResponse.StatusCode.Should().Be(
-            HttpStatusCode.Forbidden,
-            "the approval endpoint reads the caller's app identity the same way and must refuse the "
-                + "same caller");
+        _ = decisionResponse
+            .StatusCode.Should()
+            .Be(
+                HttpStatusCode.Forbidden,
+                "the approval endpoint reads the caller's app identity the same way and must refuse the "
+                    + "same caller"
+            );
         // Same misdescription, same correction, pinned separately because the two controllers each
         // carried their own copy of the check - one of them fixed was never the fix.
-        _ = decisionBody.Should().Contain(
-            "does not name an application",
-            "the refusal must be the identity one, not a validation or not-found answer that would "
-                + "make this assertion pass without the fix - and it must name the reason that "
-                + "actually applied");
-        _ = decisionBody.Should().NotContain(
-            "not authenticated",
-            "authentication succeeded; saying otherwise misdirects the operator reading this");
+        _ = decisionBody
+            .Should()
+            .Contain(
+                "does not name an application",
+                "the refusal must be the identity one, not a validation or not-found answer that would "
+                    + "make this assertion pass without the fix - and it must name the reason that "
+                    + "actually applied"
+            );
+        _ = decisionBody
+            .Should()
+            .NotContain(
+                "not authenticated",
+                "authentication succeeded; saying otherwise misdirects the operator reading this"
+            );
     }
 
     [Fact]
@@ -427,8 +473,12 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         var response = await client.SendAsync(request);
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
-            .Which.Should().Be(ServiceCallerPrincipalSource.AppNotRegisteredCode);
+        _ = response
+            .Headers.GetValues(IdentityMiddleware.RefusalCodeHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(ServiceCallerPrincipalSource.AppNotRegisteredCode);
     }
 
     [Fact]
@@ -444,19 +494,20 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // feature flag into an open subscription endpoint. The development principal names no app,
         // ToClaimsPrincipalOrNull returns null for it, and this is what that decision costs and buys.
         var settings = LifecycleSettings();
-        settings["Identity:DatabasePath"] = Path.Combine(
-            Path.GetTempPath(),
-            $"identity_e2e_{Guid.NewGuid():N}.db");
+        settings["Identity:DatabasePath"] = Path.Combine(Path.GetTempPath(), $"identity_e2e_{Guid.NewGuid():N}.db");
 
         using var factory = NewFactory(settings);
         using var client = factory.CreateClient();
 
         var response = await client.SendAsync(RegistrationRequest(daemonHeaders: false));
 
-        _ = response.StatusCode.Should().Be(
-            HttpStatusCode.Forbidden,
-            "the lifecycle control plane refuses a caller that names no app, and an unenforced host "
-                + "mints exactly such a principal for an anonymous request");
+        _ = response
+            .StatusCode.Should()
+            .Be(
+                HttpStatusCode.Forbidden,
+                "the lifecycle control plane refuses a caller that names no app, and an unenforced host "
+                    + "mints exactly such a principal for an anonymous request"
+            );
         // The OTHER refusal, and the non-vacuity partner of the signed-in-human test above: with no
         // scheme wired there is no principal at all, so "not authenticated" is the accurate answer
         // here. The two cases having two messages is the whole point - one message for both told
@@ -477,14 +528,20 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // this route was in InfrastructureApiPaths, so this GET returned 200 and leaked the masked
         // inventory (and POST/DELETE could plant and destroy keys); with the carve-out removed the
         // identity middleware refuses it exactly like any other management route.
-        var response = await client.GetAsync(
-            new Uri("/api/auth/egress-keys", UriKind.Relative));
+        var response = await client.GetAsync(new Uri("/api/auth/egress-keys", UriKind.Relative));
 
-        _ = response.StatusCode.Should().Be(
-            HttpStatusCode.Unauthorized,
-            "an unauthenticated caller must not reach egress-key management under Identity:Enforce");
-        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
-            .Which.Should().Be("authentication_required");
+        _ = response
+            .StatusCode.Should()
+            .Be(
+                HttpStatusCode.Unauthorized,
+                "an unauthenticated caller must not reach egress-key management under Identity:Enforce"
+            );
+        _ = response
+            .Headers.GetValues(IdentityMiddleware.RefusalCodeHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("authentication_required");
     }
 
     [Fact]
@@ -499,21 +556,31 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // channel open beside it.
         Func<Task> handshake = () => factory.ConnectWebSocketAsync("thread-anon");
 
-        _ = await handshake.Should().ThrowAsync<InvalidOperationException>(
-            "an unauthenticated /ws handshake must not complete under Identity:Enforce");
+        _ = await handshake
+            .Should()
+            .ThrowAsync<InvalidOperationException>(
+                "an unauthenticated /ws handshake must not complete under Identity:Enforce"
+            );
 
         // And the refusal's shape, read off the same request without the handshake machinery in the
         // way. 401 is the one status a browser answers by re-authenticating, which cannot conjure a
         // WebSocket credential and therefore loops (#341's finding).
         var response = await client.GetAsync(new Uri("/ws?threadId=thread-anon", UriKind.Relative));
 
-        _ = response.StatusCode.Should().NotBe(
-            HttpStatusCode.Unauthorized,
-            "a 401 on the WebSocket transport restarts sign-in, and sign-in does not fix a missing "
-                + "handshake credential");
+        _ = response
+            .StatusCode.Should()
+            .NotBe(
+                HttpStatusCode.Unauthorized,
+                "a 401 on the WebSocket transport restarts sign-in, and sign-in does not fix a missing "
+                    + "handshake credential"
+            );
         _ = response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
-            .Which.Should().Be(IdentityMiddleware.WebSocketRefusalCode);
+        _ = response
+            .Headers.GetValues(IdentityMiddleware.RefusalCodeHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(IdentityMiddleware.WebSocketRefusalCode);
     }
 
     [Fact]
@@ -547,8 +614,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
 
         using (var enforcing = NewFactory(EnforcingSettings(), WithTestPrincipalSource))
         {
-            Func<Task> handshake = () =>
-                enforcing.ConnectWebSocketAsync(" ", subProtocols: AliceCredential());
+            Func<Task> handshake = () => enforcing.ConnectWebSocketAsync(" ", subProtocols: AliceCredential());
             var thrown = await handshake.Should().ThrowAsync<InvalidOperationException>();
             AssertRefusedAsMalformed(thrown.Which);
         }
@@ -557,13 +623,16 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // which is why these assertions live in this suite at all.
         static void AssertRefusedAsMalformed(InvalidOperationException thrown)
         {
-            _ = thrown.Message.Should().NotContain(
-                "500",
-                "a blank threadId is a client mistake, and answering it with a fault lets a caller "
-                    + "make the host log an unhandled exception at will");
-            _ = thrown.Message.Should().Contain(
-                "400",
-                "the malformed query is what is wrong, and the caller has to be told that");
+            _ = thrown
+                .Message.Should()
+                .NotContain(
+                    "500",
+                    "a blank threadId is a client mistake, and answering it with a fault lets a caller "
+                        + "make the host log an unhandled exception at will"
+                );
+            _ = thrown
+                .Message.Should()
+                .Contain("400", "the malformed query is what is wrong, and the caller has to be told that");
         }
     }
 
@@ -595,9 +664,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // DOES choose the Sec-WebSocket-Protocol list, so the credential travels there and is
         // promoted into Authorization before UseAuthentication - which is what makes /ws resolve its
         // principal through the SAME front doors as REST rather than a second, parallel one.
-        using var socket = await factory.ConnectWebSocketAsync(
-            "thread-authenticated",
-            subProtocols: AliceCredential());
+        using var socket = await factory.ConnectWebSocketAsync("thread-authenticated", subProtocols: AliceCredential());
 
         _ = socket.State.Should().Be(System.Net.WebSockets.WebSocketState.Open);
 
@@ -608,7 +675,8 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         await socket.CloseAsync(
             System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
             "done",
-            CancellationToken.None);
+            CancellationToken.None
+        );
     }
 
     [Fact]
@@ -619,9 +687,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         const string ThreadId = "thread-owned-over-ws";
         await ProvisionOwnedThreadAsync(factory, ThreadId, "dir-a:alice");
 
-        using var socket = await factory.ConnectWebSocketAsync(
-            ThreadId,
-            subProtocols: AliceCredential());
+        using var socket = await factory.ConnectWebSocketAsync(ThreadId, subProtocols: AliceCredential());
 
         var pool = factory.Services.GetRequiredService<MultiTurnAgentPool>();
 
@@ -631,7 +697,8 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         await Wait.UntilAsync(
             () => pool.TryGet(ThreadId, out _),
             because: "the WebSocket connection creates the thread's pooled agent",
-            timeout: TimeSpan.FromSeconds(20));
+            timeout: TimeSpan.FromSeconds(20)
+        );
 
         // #399: in the browser the FIRST toucher of a thread is /ws, opened on load before any REST
         // turn. An entry created unowned freezes OwnerUserId to null for the entry's whole life, and
@@ -642,15 +709,19 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // The behavioural half, because the value alone does not prove the guard is armed by it.
         Func<Task> bobsTurn = () => pool.EnsureCurrentAgentAsync(ThreadId, ownerUserId: "dir-b:bob");
 
-        var conflict = await bobsTurn.Should().ThrowAsync<PrincipalConflictException>(
-            "a second human's turn on a socket-created thread must conflict exactly as it does on a "
-                + "REST-created one");
+        var conflict = await bobsTurn
+            .Should()
+            .ThrowAsync<PrincipalConflictException>(
+                "a second human's turn on a socket-created thread must conflict exactly as it does on a "
+                    + "REST-created one"
+            );
         _ = conflict.Which.ExistingUserId.Should().Be("dir-a:alice");
 
         await socket.CloseAsync(
             System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
             "done",
-            CancellationToken.None);
+            CancellationToken.None
+        );
     }
 
     /// <summary>
@@ -679,24 +750,25 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
 
         using var alicesSocket = await factory.ConnectWebSocketAsync(
             ThreadId,
-            subProtocols: CredentialFor("dir-a:alice"));
+            subProtocols: CredentialFor("dir-a:alice")
+        );
 
         var pool = factory.Services.GetRequiredService<MultiTurnAgentPool>();
         await Wait.UntilAsync(
             () => pool.TryGet(ThreadId, out _),
             because: "the first connection creates the thread's pooled agent",
-            timeout: TimeSpan.FromSeconds(20));
+            timeout: TimeSpan.FromSeconds(20)
+        );
 
-        var bobsSocket = await factory.ConnectWebSocketAsync(
-            ThreadId,
-            subProtocols: CredentialFor("dir-b:bob"));
+        var bobsSocket = await factory.ConnectWebSocketAsync(ThreadId, subProtocols: CredentialFor("dir-b:bob"));
         await using var bob = new WebSocketTestClient(bobsSocket);
 
         using var refusal = await bob.WaitForFrameAsync(
             frame =>
                 frame.RootElement.TryGetProperty("code", out var code)
                 && string.Equals(code.GetString(), "principal_conflict", StringComparison.Ordinal),
-            TimeSpan.FromSeconds(20));
+            TimeSpan.FromSeconds(20)
+        );
 
         // The refusal is not the whole claim: the owner's agent must still be hers afterwards.
         _ = pool.GetAgentOwnerUserId(ThreadId).Should().Be("dir-a:alice");
@@ -704,15 +776,15 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         await alicesSocket.CloseAsync(
             System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
             "done",
-            CancellationToken.None);
+            CancellationToken.None
+        );
     }
 
     /// <summary>
     /// Asks the real predicate rather than restating the rule, so an edit to the exemption list
     /// cannot agree with a copy of itself.
     /// </summary>
-    private static bool IsGuarded(string route) =>
-        IdentityMiddleware.IsGuardedApiPath(new PathString("/" + route));
+    private static bool IsGuarded(string route) => IdentityMiddleware.IsGuardedApiPath(new PathString("/" + route));
 
     /// <summary>
     /// Every route the host publishes, normalised the same way <see cref="ApiRoutes"/> normalises
@@ -720,8 +792,8 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     /// publishes as ordinary minimal-API endpoints.
     /// </summary>
     private static IReadOnlyList<string> AllRoutes(E2EWebAppFactory factory) =>
-        [..
-            factory
+        [
+            .. factory
                 .Services.GetRequiredService<EndpointDataSource>()
                 .Endpoints.OfType<RouteEndpoint>()
                 .Select(endpoint => (endpoint.RoutePattern.RawText ?? string.Empty).TrimStart('/'))
@@ -730,8 +802,8 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         ];
 
     private static IReadOnlyList<string> ApiRoutes(E2EWebAppFactory factory) =>
-        [..
-            factory
+        [
+            .. factory
                 .Services.GetRequiredService<EndpointDataSource>()
                 .Endpoints.OfType<RouteEndpoint>()
                 // TrimStart the leading slash before filtering. A controller route's RawText is
@@ -749,9 +821,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         new(StringComparer.Ordinal)
         {
             ["Identity:Enforce"] = "true",
-            ["Identity:DatabasePath"] = Path.Combine(
-                Path.GetTempPath(),
-                $"identity_e2e_{Guid.NewGuid():N}.db"),
+            ["Identity:DatabasePath"] = Path.Combine(Path.GetTempPath(), $"identity_e2e_{Guid.NewGuid():N}.db"),
             ["Identity:Apps:" + DaemonAppId + ":TenantId"] = DaemonTenant,
             ["Auth:S2SInboundSecret"] = Secret,
             ["LmStreaming:AllowedOrigins:0"] = ClientOrigin,
@@ -788,14 +858,13 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     /// </summary>
     private static HttpRequestMessage RegistrationRequest(bool daemonHeaders)
     {
-        var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            new Uri("/api/lifecycle/subscriptions", UriKind.Relative))
+        var request = new HttpRequestMessage(HttpMethod.Post, new Uri("/api/lifecycle/subscriptions", UriKind.Relative))
         {
             Content = new StringContent(
                 $$"""{"callback_uri":"https://{{CallbackHost}}/hook"}""",
                 Encoding.UTF8,
-                "application/json"),
+                "application/json"
+            ),
         };
 
         if (daemonHeaders)
@@ -816,10 +885,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
 
     /// <summary>The same list for any user id, so a test can play a second human.</summary>
     private static string[] CredentialFor(string userId) =>
-        [
-            IdentityMiddleware.WebSocketCredentialSubProtocolPrefix + userId,
-            IdentityMiddleware.WebSocketSubProtocol,
-        ];
+        [IdentityMiddleware.WebSocketCredentialSubProtocolPrefix + userId, IdentityMiddleware.WebSocketSubProtocol];
 
     /// <summary>
     /// Registers a front door that turns <c>Authorization: Bearer &lt;userId&gt;</c> into an end-user
@@ -850,7 +916,8 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             .AddAuthentication()
             .AddScheme<AuthenticationSchemeOptions, SignedInHumanHandler>(
                 JwtBearerDefaults.AuthenticationScheme,
-                _ => { });
+                _ => { }
+            );
     }
 
     /// <summary>
@@ -865,8 +932,8 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     private sealed class SignedInHumanHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
-        UrlEncoder encoder)
-        : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+        UrlEncoder encoder
+    ) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
     {
         protected override Task<AuthenticateResult> HandleAuthenticateAsync()
         {
@@ -883,16 +950,15 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             }
 
             var identity = new ClaimsIdentity(
-                [
-                    new Claim(ClaimTypes.NameIdentifier, subject),
-                    new Claim(ClaimTypes.Name, subject),
-                ],
-                JwtBearerDefaults.AuthenticationScheme);
+                [new Claim(ClaimTypes.NameIdentifier, subject), new Claim(ClaimTypes.Name, subject)],
+                JwtBearerDefaults.AuthenticationScheme
+            );
 
-            return Task.FromResult(AuthenticateResult.Success(
-                new AuthenticationTicket(
-                    new ClaimsPrincipal(identity),
-                    JwtBearerDefaults.AuthenticationScheme)));
+            return Task.FromResult(
+                AuthenticateResult.Success(
+                    new AuthenticationTicket(new ClaimsPrincipal(identity), JwtBearerDefaults.AuthenticationScheme)
+                )
+            );
         }
     }
 
@@ -914,13 +980,16 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
                 return ValueTask.FromResult<PrincipalResolution?>(null);
             }
 
-            return ValueTask.FromResult<PrincipalResolution?>(PrincipalResolution.Success(
-                new Principal
-                {
-                    TenantId = DaemonTenant,
-                    Actor = new PrincipalRef(PrincipalKind.EndUser, userId),
-                    Source = PrincipalSource.Interactive,
-                }));
+            return ValueTask.FromResult<PrincipalResolution?>(
+                PrincipalResolution.Success(
+                    new Principal
+                    {
+                        TenantId = DaemonTenant,
+                        Actor = new PrincipalRef(PrincipalKind.EndUser, userId),
+                        Source = PrincipalSource.Interactive,
+                    }
+                )
+            );
         }
     }
 
@@ -930,10 +999,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     /// since #419: <c>/ws</c> now authorizes the conversation, and an unstamped thread id is refused
     /// exactly as another tenant's is.
     /// </summary>
-    private static Task ProvisionOwnedThreadAsync(
-        E2EWebAppFactory factory,
-        string threadId,
-        string userId)
+    private static Task ProvisionOwnedThreadAsync(E2EWebAppFactory factory, string threadId, string userId)
     {
         var store = factory.Services.GetRequiredService<IConversationStore>();
         return store.SaveMetadataAsync(
@@ -945,39 +1011,40 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
                 TenantId = DaemonTenant,
                 OwnerUserId = userId,
                 Visibility = Visibility.Private,
-            });
+            }
+        );
     }
 
     /// <summary>Shares a conversation with a second human as an editor (write, not just read).</summary>
     private static Task GrantEditorAsync(E2EWebAppFactory factory, string threadId, string subjectId)
     {
         var grants = factory.Services.GetRequiredService<IResourceGrantStore>();
-        return grants.GrantAsync(new ResourceGrant
-        {
-            TenantId = DaemonTenant,
-            Resource = ConversationAuthorizer.ConversationRef(threadId),
-            SubjectId = subjectId,
-            Role = GrantRole.Editor,
-            GrantedBy = "dir-a:alice",
-            GrantedAt = DateTimeOffset.UtcNow,
-        });
+        return grants.GrantAsync(
+            new ResourceGrant
+            {
+                TenantId = DaemonTenant,
+                Resource = ConversationAuthorizer.ConversationRef(threadId),
+                SubjectId = subjectId,
+                Role = GrantRole.Editor,
+                GrantedBy = "dir-a:alice",
+                GrantedAt = DateTimeOffset.UtcNow,
+            }
+        );
     }
 
     private static E2EWebAppFactory NewFactory(
         IDictionary<string, string?>? settings = null,
-        Action<IServiceCollection>? configureServices = null)
+        Action<IServiceCollection>? configureServices = null
+    )
     {
         // Any scripted handler works - nothing here creates an agent.
-        var responder = ScriptedSseResponder
-            .New()
-            .ForRole("noop", _ => true)
-            .Turn(t => t.Text("ok"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("noop", _ => true).Turn(t => t.Text("ok")).Build();
 
         return new E2EWebAppFactory(
             "test",
             new ScriptedBuilder(responder.AsAnthropicHandler()),
             settings,
-            configureServices);
+            configureServices
+        );
     }
 }

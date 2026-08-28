@@ -80,13 +80,16 @@ public sealed class FileBrowserScopingTests
             {
                 ThreadId = AliceThread,
                 LastUpdated = 1_000,
-                Properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty)
-                    .SetItem(MultiTurnAgentPool.WorkspacePropertyKey, "alice-workspace"),
+                Properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
+                    MultiTurnAgentPool.WorkspacePropertyKey,
+                    "alice-workspace"
+                ),
                 TenantId = TenantA,
                 OwnerUserId = Alice,
                 Visibility = Visibility.Private,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
     /// <summary>
     /// Builds the controller acting as <paramref name="principal"/> with enforcement ON, over a workspace
@@ -94,17 +97,15 @@ public sealed class FileBrowserScopingTests
     /// </summary>
     private (FileBrowserController Controller, FakeFileBrowser Browser) Build(Principal principal)
     {
-        var browser = new FakeFileBrowser
-        {
-            FileBytes = Encoding.UTF8.GetBytes("alice's private notes"),
-        };
+        var browser = new FakeFileBrowser { FileBytes = Encoding.UTF8.GetBytes("alice's private notes") };
         browser.Listings[string.Empty] = [new(SecretFile, SandboxEntryType.File, 21, false)];
 
         var controller = new FileBrowserController(
             _store,
             browser,
             TestAuthorizers.Enforcing(principal, _grants),
-            NullLogger<FileBrowserController>.Instance)
+            NullLogger<FileBrowserController>.Instance
+        )
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };
@@ -130,10 +131,10 @@ public sealed class FileBrowserScopingTests
         var missing = Assert.IsType<NotFoundObjectResult>(unknown);
 
         _ = refused.StatusCode.Should().Be(404);
-        _ = JsonSerializer.Serialize(refused.Value)
-            .Should().Be(
-                JsonSerializer.Serialize(missing.Value)
-                    .Replace(MissingThread, AliceThread, StringComparison.Ordinal));
+        _ = JsonSerializer
+            .Serialize(refused.Value)
+            .Should()
+            .Be(JsonSerializer.Serialize(missing.Value).Replace(MissingThread, AliceThread, StringComparison.Ordinal));
     }
 
     // -------- Non-vacuity: the same fixture answers the OWNER --------
@@ -149,25 +150,39 @@ public sealed class FileBrowserScopingTests
         var (controller, browser) = Build(Signed(TenantA, Alice));
 
         var listing = Assert.IsType<OkObjectResult>(
-            await controller.List(AliceThread, path: null, CancellationToken.None));
-        _ = Assert.IsType<DirectoryListingDto>(listing.Value).Entries
-            .Select(e => e.Name).Should().Contain(SecretFile);
+            await controller.List(AliceThread, path: null, CancellationToken.None)
+        );
+        _ = Assert.IsType<DirectoryListingDto>(listing.Value).Entries.Select(e => e.Name).Should().Contain(SecretFile);
 
         _ = Assert.IsType<FileContentResult>(
-            await controller.Download(AliceThread, SecretFile, CancellationToken.None));
+            await controller.Download(AliceThread, SecretFile, CancellationToken.None)
+        );
 
         var preview = Assert.IsType<OkObjectResult>(
-            await controller.Preview(AliceThread, SecretFile, CancellationToken.None));
+            await controller.Preview(AliceThread, SecretFile, CancellationToken.None)
+        );
         _ = Assert.IsType<PreviewResultDto>(preview.Value).Previewable.Should().BeTrue();
 
         _ = Assert.IsType<OkObjectResult>(
-            await controller.Upload(AliceThread, path: null, new FakeFormFile("added.txt", [1, 2, 3]), relativePath: null, CancellationToken.None));
+            await controller.Upload(
+                AliceThread,
+                path: null,
+                new FakeFormFile("added.txt", [1, 2, 3]),
+                relativePath: null,
+                CancellationToken.None
+            )
+        );
 
         _ = Assert.IsType<OkObjectResult>(
-            await controller.CreateDirectory(AliceThread, path: null, new CreateDirectoryRequest("newdir"), CancellationToken.None));
+            await controller.CreateDirectory(
+                AliceThread,
+                path: null,
+                new CreateDirectoryRequest("newdir"),
+                CancellationToken.None
+            )
+        );
 
-        _ = Assert.IsType<NoContentResult>(
-            await controller.Delete(AliceThread, SecretFile, CancellationToken.None));
+        _ = Assert.IsType<NoContentResult>(await controller.Delete(AliceThread, SecretFile, CancellationToken.None));
 
         _ = browser.Writes.Should().ContainSingle();
         _ = browser.Commands.Should().HaveCount(2);
@@ -229,9 +244,19 @@ public sealed class FileBrowserScopingTests
         var (controller, browser) = Build(Signed(TenantB, Mallory));
 
         var crossTenant = await controller.Upload(
-            AliceThread, path: null, new FakeFormFile("planted.txt", [1, 2, 3]), relativePath: null, CancellationToken.None);
+            AliceThread,
+            path: null,
+            new FakeFormFile("planted.txt", [1, 2, 3]),
+            relativePath: null,
+            CancellationToken.None
+        );
         var neverExisted = await controller.Upload(
-            MissingThread, path: null, new FakeFormFile("planted.txt", [1, 2, 3]), relativePath: null, CancellationToken.None);
+            MissingThread,
+            path: null,
+            new FakeFormFile("planted.txt", [1, 2, 3]),
+            relativePath: null,
+            CancellationToken.None
+        );
 
         AssertIndistinguishable(crossTenant, neverExisted);
         AssertSandboxUntouched(browser);
@@ -245,9 +270,17 @@ public sealed class FileBrowserScopingTests
         var (controller, browser) = Build(Signed(TenantB, Mallory));
 
         var crossTenant = await controller.CreateDirectory(
-            AliceThread, path: null, new CreateDirectoryRequest("planted"), CancellationToken.None);
+            AliceThread,
+            path: null,
+            new CreateDirectoryRequest("planted"),
+            CancellationToken.None
+        );
         var neverExisted = await controller.CreateDirectory(
-            MissingThread, path: null, new CreateDirectoryRequest("planted"), CancellationToken.None);
+            MissingThread,
+            path: null,
+            new CreateDirectoryRequest("planted"),
+            CancellationToken.None
+        );
 
         AssertIndistinguishable(crossTenant, neverExisted);
         AssertSandboxUntouched(browser);
@@ -309,11 +342,13 @@ public sealed class FileBrowserScopingTests
         var forbidden = await CountListLookupsAsync(Signed(TenantB, Mallory), AliceThread);
         var missing = await CountListLookupsAsync(Signed(TenantB, Mallory), MissingThread);
 
-        _ = forbidden.Should().BeGreaterThan(
-            0, "a cross-tenant listing runs the authorizer's equalising grant lookup");
-        _ = missing.Should().Be(
-            forbidden,
-            "a thread that was never minted must cost the same grant-lookup work, or the round-trip count is an existence oracle");
+        _ = forbidden.Should().BeGreaterThan(0, "a cross-tenant listing runs the authorizer's equalising grant lookup");
+        _ = missing
+            .Should()
+            .Be(
+                forbidden,
+                "a thread that was never minted must cost the same grant-lookup work, or the round-trip count is an existence oracle"
+            );
     }
 
     /// <summary>
@@ -323,17 +358,15 @@ public sealed class FileBrowserScopingTests
     private async Task<int> CountListLookupsAsync(Principal principal, string threadId)
     {
         var grants = new CountingResourceGrantStore(_grants);
-        var browser = new FakeFileBrowser
-        {
-            FileBytes = Encoding.UTF8.GetBytes("alice's private notes"),
-        };
+        var browser = new FakeFileBrowser { FileBytes = Encoding.UTF8.GetBytes("alice's private notes") };
         browser.Listings[string.Empty] = [new(SecretFile, SandboxEntryType.File, 21, false)];
 
         var controller = new FileBrowserController(
             _store,
             browser,
             TestAuthorizers.Enforcing(principal, grants),
-            NullLogger<FileBrowserController>.Instance)
+            NullLogger<FileBrowserController>.Instance
+        )
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };

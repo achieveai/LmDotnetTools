@@ -49,17 +49,23 @@ internal sealed class UnreadableEntry : IDisposable
         }
 
         var parent = Directory.CreateDirectory(
-            System.IO.Path.Combine(root, "denied-" + Guid.NewGuid().ToString("N")[..8]));
+            System.IO.Path.Combine(root, "denied-" + Guid.NewGuid().ToString("N")[..8])
+        );
         var path = System.IO.Path.Combine(parent.FullName, "unreadable");
         File.WriteAllText(path, "protected");
         Deny(parent);
 
-        new FileInfo(path).Exists.Should().BeFalse(
-            "the whole point of this input is that it reads as absent — if it does not, the test is not "
-                + "exercising the case the guard gets wrong");
+        new FileInfo(path)
+            .Exists.Should()
+            .BeFalse(
+                "the whole point of this input is that it reads as absent — if it does not, the test is not "
+                    + "exercising the case the guard gets wrong"
+            );
         var read = () => new FileInfo(path).Attributes;
-        _ = read.Should().Throw<UnauthorizedAccessException>(
-            "the attributes are the only place the difference between absent and unreadable survives");
+        _ = read.Should()
+            .Throw<UnauthorizedAccessException>(
+                "the attributes are the only place the difference between absent and unreadable survives"
+            );
 
         return new UnreadableEntry(parent, path);
     }
@@ -91,11 +97,18 @@ internal sealed class UnreadableEntry : IDisposable
         Deny(denied, FileSystemRights.ListDirectory, InheritanceFlags.None);
 
         var enumerate = () => Directory.GetFileSystemEntries(directory);
-        _ = enumerate.Should().Throw<UnauthorizedAccessException>(
-            "a directory the test could still enumerate would leave the body proving nothing");
-        Directory.Exists(directory).Should().BeTrue(
-            "the walk only descends into what it believes is a directory, so a denial that hid it entirely "
-                + "would route the test past the case instead of into it");
+        _ = enumerate
+            .Should()
+            .Throw<UnauthorizedAccessException>(
+                "a directory the test could still enumerate would leave the body proving nothing"
+            );
+        Directory
+            .Exists(directory)
+            .Should()
+            .BeTrue(
+                "the walk only descends into what it believes is a directory, so a denial that hid it entirely "
+                    + "would route the test past the case instead of into it"
+            );
 
         return new UnreadableEntry(denied, directory);
     }
@@ -143,12 +156,17 @@ internal sealed class UnreadableEntry : IDisposable
         Deny(
             parent,
             FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles,
-            InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit);
+            InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit
+        );
         DirectoryLink.Create(link, target);
 
-        Directory.Exists(link).Should().BeTrue(
-            "the walk only meets entries it can see, and a link the guard reads as absent would route the test "
-                + "past the case instead of into it");
+        Directory
+            .Exists(link)
+            .Should()
+            .BeTrue(
+                "the walk only meets entries it can see, and a link the guard reads as absent would route the test "
+                    + "past the case instead of into it"
+            );
         Exception? refusedRemoval = null;
         try
         {
@@ -159,13 +177,18 @@ internal sealed class UnreadableEntry : IDisposable
             refusedRemoval = ex;
         }
 
-        (refusedRemoval is IOException or UnauthorizedAccessException).Should().BeTrue(
-            "the input IS the unremovable link, but removing it produced {0} — measured on Windows 11 the "
-                + "denial surfaces as IOException, not the UnauthorizedAccessException the File.Delete shape "
-                + "suggests, which is why the production catch has to keep both",
-            refusedRemoval?.GetType().Name ?? "no exception at all");
-        Directory.Exists(link).Should().BeTrue(
-            "a link the delete actually removed would leave the walk with nothing to fail on");
+        (refusedRemoval is IOException or UnauthorizedAccessException)
+            .Should()
+            .BeTrue(
+                "the input IS the unremovable link, but removing it produced {0} — measured on Windows 11 the "
+                    + "denial surfaces as IOException, not the UnauthorizedAccessException the File.Delete shape "
+                    + "suggests, which is why the production catch has to keep both",
+                refusedRemoval?.GetType().Name ?? "no exception at all"
+            );
+        Directory
+            .Exists(link)
+            .Should()
+            .BeTrue("a link the delete actually removed would leave the walk with nothing to fail on");
 
         return new UnreadableEntry(parent, link, link);
     }
@@ -205,7 +228,8 @@ internal sealed class UnreadableEntry : IDisposable
         }
 
         var root = Directory.CreateDirectory(
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), "crd-probe-" + Guid.NewGuid().ToString("N")));
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), "crd-probe-" + Guid.NewGuid().ToString("N"))
+        );
         try
         {
             var path = System.IO.Path.Combine(root.FullName, "probe");
@@ -237,7 +261,8 @@ internal sealed class UnreadableEntry : IDisposable
         Deny(
             directory,
             FileSystemRights.FullControl,
-            InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit);
+            InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit
+        );
 
     [SupportedOSPlatform("windows")]
     private static void Deny(DirectoryInfo directory, FileSystemRights rights, InheritanceFlags inheritance)
@@ -258,10 +283,7 @@ internal sealed class UnreadableEntry : IDisposable
 
     [SupportedOSPlatform("windows")]
     private static FileSystemAccessRule Rule(
-        InheritanceFlags inheritance, FileSystemRights rights = FileSystemRights.FullControl) => new(
-        WindowsIdentity.GetCurrent().User!,
-        rights,
-        inheritance,
-        PropagationFlags.None,
-        AccessControlType.Deny);
+        InheritanceFlags inheritance,
+        FileSystemRights rights = FileSystemRights.FullControl
+    ) => new(WindowsIdentity.GetCurrent().User!, rights, inheritance, PropagationFlags.None, AccessControlType.Deny);
 }

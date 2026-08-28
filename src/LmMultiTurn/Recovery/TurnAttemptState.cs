@@ -96,8 +96,7 @@ internal sealed class TurnAttemptState(string generationId)
     ///     turn that already showed the user something and replays it from the top, duplicating the very
     ///     visible effect recovery exists to protect. Over-counting merely asks the model to continue.
     /// </remarks>
-    private static bool IsDeliveredContentOrEffect(IMessage message) =>
-        message is not UsageMessage;
+    private static bool IsDeliveredContentOrEffect(IMessage message) => message is not UsageMessage;
 
     /// <summary>
     ///     Records a dispatched tool execution so recovery can wait for it.

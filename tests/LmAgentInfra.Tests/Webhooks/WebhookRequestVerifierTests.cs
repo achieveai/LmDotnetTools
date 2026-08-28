@@ -15,7 +15,9 @@ public sealed class WebhookRequestVerifierTests
 {
     private const string Secret = "test-signing-secret-0123456789";
     private static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeSeconds(1_750_000_000);
-    private static readonly byte[] Body = Encoding.UTF8.GetBytes("""{"provider_id":"github","destination_host":"api.github.com"}""");
+    private static readonly byte[] Body = Encoding.UTF8.GetBytes(
+        """{"provider_id":"github","destination_host":"api.github.com"}"""
+    );
 
     private static WebhookRequestVerifier Verifier() =>
         new(new WebhookSigningSecret(Secret), ["github", "ado"], TimeSpan.FromMinutes(5), 1_048_576);
@@ -25,7 +27,8 @@ public sealed class WebhookRequestVerifierTests
         string? contentType = "application/json",
         byte[]? body = null,
         DateTimeOffset? timestamp = null,
-        string deliveryId = "delivery-1")
+        string deliveryId = "delivery-1"
+    )
     {
         body ??= Body;
         var ts = (timestamp ?? Now).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -44,7 +47,10 @@ public sealed class WebhookRequestVerifierTests
     {
         var input = SignedInput();
         // The signature was computed over the original Body; the caller-claimed body is different.
-        var tampered = input with { Body = Encoding.UTF8.GetBytes("""{"provider_id":"github","destination_host":"evil.example"}""") };
+        var tampered = input with
+        {
+            Body = Encoding.UTF8.GetBytes("""{"provider_id":"github","destination_host":"evil.example"}"""),
+        };
 
         Verifier().Verify(tampered, Now).Rejection.Should().Be(WebhookRejection.InvalidSignature);
     }
@@ -55,7 +61,10 @@ public sealed class WebhookRequestVerifierTests
         // Capture a valid request, then swap only the timestamp to dodge the staleness check. Because the
         // timestamp is bound into the signed payload, the signature no longer matches.
         var original = SignedInput(timestamp: Now.AddMinutes(-10));
-        var swapped = original with { Timestamp = Now.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture) };
+        var swapped = original with
+        {
+            Timestamp = Now.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture),
+        };
 
         Verifier().Verify(swapped, Now).Rejection.Should().Be(WebhookRejection.InvalidSignature);
     }
@@ -84,8 +93,10 @@ public sealed class WebhookRequestVerifierTests
     [InlineData(null)]
     public void A_non_json_content_type_is_rejected(string? contentType)
     {
-        Verifier().Verify(SignedInput(contentType: contentType), Now).Rejection
-            .Should().Be(WebhookRejection.UnsupportedContentType);
+        Verifier()
+            .Verify(SignedInput(contentType: contentType), Now)
+            .Rejection.Should()
+            .Be(WebhookRejection.UnsupportedContentType);
     }
 
     [Fact]
@@ -98,9 +109,21 @@ public sealed class WebhookRequestVerifierTests
     public void An_oversized_body_is_rejected()
     {
         var big = new byte[8];
-        var verifier = new WebhookRequestVerifier(new WebhookSigningSecret(Secret), ["github"], TimeSpan.FromMinutes(5), maxBodyBytes: 4);
+        var verifier = new WebhookRequestVerifier(
+            new WebhookSigningSecret(Secret),
+            ["github"],
+            TimeSpan.FromMinutes(5),
+            maxBodyBytes: 4
+        );
         var ts = Now.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var input = new WebhookVerificationInput("github", "application/json", big, new WebhookSigningSecret(Secret).ComputeHex(ts, "d", big), ts, "d");
+        var input = new WebhookVerificationInput(
+            "github",
+            "application/json",
+            big,
+            new WebhookSigningSecret(Secret).ComputeHex(ts, "d", big),
+            ts,
+            "d"
+        );
 
         verifier.Verify(input, Now).Rejection.Should().Be(WebhookRejection.BodyTooLarge);
     }
@@ -119,21 +142,32 @@ public sealed class WebhookRequestVerifierTests
     [Fact]
     public void A_stale_timestamp_outside_the_tolerance_is_rejected()
     {
-        Verifier().Verify(SignedInput(timestamp: Now.AddMinutes(-10)), Now).Rejection
-            .Should().Be(WebhookRejection.StaleTimestamp);
+        Verifier()
+            .Verify(SignedInput(timestamp: Now.AddMinutes(-10)), Now)
+            .Rejection.Should()
+            .Be(WebhookRejection.StaleTimestamp);
     }
 
     [Fact]
     public void A_future_timestamp_outside_the_tolerance_is_rejected()
     {
-        Verifier().Verify(SignedInput(timestamp: Now.AddMinutes(10)), Now).Rejection
-            .Should().Be(WebhookRejection.StaleTimestamp);
+        Verifier()
+            .Verify(SignedInput(timestamp: Now.AddMinutes(10)), Now)
+            .Rejection.Should()
+            .Be(WebhookRejection.StaleTimestamp);
     }
 
     [Fact]
     public void An_unparseable_timestamp_is_rejected_as_stale()
     {
-        var input = new WebhookVerificationInput("github", "application/json", Body, "deadbeef", "not-a-timestamp", "d");
+        var input = new WebhookVerificationInput(
+            "github",
+            "application/json",
+            Body,
+            "deadbeef",
+            "not-a-timestamp",
+            "d"
+        );
 
         Verifier().Verify(input, Now).Rejection.Should().Be(WebhookRejection.StaleTimestamp);
     }

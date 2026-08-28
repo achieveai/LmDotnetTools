@@ -358,9 +358,7 @@ public static class UiHelpers
     public static Task<string[]> ConversationThreadIdsAsync(this IPage page)
     {
         return page.ConversationItems()
-            .EvaluateAllAsync<string[]>(
-                "nodes => nodes.map(n => n.getAttribute('data-thread-id') || '')"
-            );
+            .EvaluateAllAsync<string[]>("nodes => nodes.map(n => n.getAttribute('data-thread-id') || '')");
     }
 
     /// <summary>Rendered sidebar titles, in display order.</summary>
@@ -399,11 +397,7 @@ public static class UiHelpers
     /// Waits until the sidebar holds EXACTLY <paramref name="expectedCount"/> rows. Exactness is the
     /// point at a page boundary: "at least 30" cannot tell one page from two concatenated ones.
     /// </summary>
-    public static Task WaitForConversationCountAsync(
-        this IPage page,
-        int expectedCount,
-        float timeoutMs = 15_000
-    )
+    public static Task WaitForConversationCountAsync(this IPage page, int expectedCount, float timeoutMs = 15_000)
     {
         return Assertions
             .Expect(page.ConversationItems())

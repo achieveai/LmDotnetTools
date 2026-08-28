@@ -77,10 +77,7 @@ public sealed class WorkflowValidator
     }
 
     // Rule 2 (existence half): at least one terminal node. Reachability is checked in rule 6.
-    private static void ValidateTerminalExists(
-        IReadOnlyList<WorkflowNode> nodes,
-        List<string> errors
-    )
+    private static void ValidateTerminalExists(IReadOnlyList<WorkflowNode> nodes, List<string> errors)
     {
         if (!nodes.OfType<TerminalNode>().Any())
         {
@@ -89,10 +86,7 @@ public sealed class WorkflowValidator
     }
 
     // Rule 4 + Rule 5: start has exactly one next; procedural has >= 1 next; conditional has non-empty else.
-    private static void ValidateNodeStructure(
-        IReadOnlyList<WorkflowNode> nodes,
-        List<string> errors
-    )
+    private static void ValidateNodeStructure(IReadOnlyList<WorkflowNode> nodes, List<string> errors)
     {
         foreach (var node in nodes)
         {
@@ -104,14 +98,10 @@ public sealed class WorkflowValidator
                     );
                     break;
                 case ProceduralNode procedural when procedural.Next.Count < 1:
-                    errors.Add(
-                        $"Procedural node '{procedural.Id}' must have at least one 'next' target."
-                    );
+                    errors.Add($"Procedural node '{procedural.Id}' must have at least one 'next' target.");
                     break;
                 case ConditionalNode conditional when string.IsNullOrEmpty(conditional.Else):
-                    errors.Add(
-                        $"Conditional node '{conditional.Id}' must declare a non-empty 'else' target."
-                    );
+                    errors.Add($"Conditional node '{conditional.Id}' must declare a non-empty 'else' target.");
                     break;
                 default:
                     break;
@@ -144,18 +134,13 @@ public sealed class WorkflowValidator
     // upsert writes). Also gates the forward-compat authoring props that are accepted by the model but
     // never honored in V1 (task.parallel, node.maxParallel, joinPolicy.threshold, writes.key) so they
     // fail loudly instead of silently no-op'ing.
-    private static void ValidateV1Restrictions(
-        IReadOnlyList<WorkflowNode> nodes,
-        List<string> errors
-    )
+    private static void ValidateV1Restrictions(IReadOnlyList<WorkflowNode> nodes, List<string> errors)
     {
         foreach (var node in nodes)
         {
             if (node is UnknownNode unknown)
             {
-                errors.Add(
-                    $"Node '{unknown.Id}' has type '{unknown.RawType}' which is not supported in V1."
-                );
+                errors.Add($"Node '{unknown.Id}' has type '{unknown.RawType}' which is not supported in V1.");
                 continue;
             }
 
@@ -256,10 +241,7 @@ public sealed class WorkflowValidator
         {
             foreach (var task in procedural.TaskList ?? [])
             {
-                if (
-                    task.Writes is { } writes
-                    && !writes.To.StartsWith(StatePrefix, StringComparison.Ordinal)
-                )
+                if (task.Writes is { } writes && !writes.To.StartsWith(StatePrefix, StringComparison.Ordinal))
                 {
                     errors.Add(
                         $"Task '{task.Id}' in node '{procedural.Id}' writes to '{writes.To}' "
@@ -271,11 +253,7 @@ public sealed class WorkflowValidator
     }
 
     // Rule 11 (budgets): maxStepBudget > 0; maxVisits > 0 where present.
-    private static void ValidateBudgets(
-        WorkflowDefinition def,
-        IReadOnlyList<WorkflowNode> nodes,
-        List<string> errors
-    )
+    private static void ValidateBudgets(WorkflowDefinition def, IReadOnlyList<WorkflowNode> nodes, List<string> errors)
     {
         if (def.MaxStepBudget <= 0)
         {
@@ -293,19 +271,13 @@ public sealed class WorkflowValidator
 
             if (maxVisits is <= 0)
             {
-                errors.Add(
-                    $"Node '{node.Id}' maxVisits must be greater than 0, but was {maxVisits}."
-                );
+                errors.Add($"Node '{node.Id}' maxVisits must be greater than 0, but was {maxVisits}.");
             }
         }
     }
 
     // Rule 9: every '#/$defs/<name>' reference in a schema fragment must resolve to a known definition.
-    private static void ValidateRefs(
-        WorkflowDefinition def,
-        IReadOnlyList<WorkflowNode> nodes,
-        List<string> errors
-    )
+    private static void ValidateRefs(WorkflowDefinition def, IReadOnlyList<WorkflowNode> nodes, List<string> errors)
     {
         var defNames = def.Defs is null
             ? new HashSet<string>(StringComparer.Ordinal)
@@ -328,12 +300,7 @@ public sealed class WorkflowValidator
                 case ProceduralNode procedural:
                     foreach (var task in procedural.TaskList ?? [])
                     {
-                        CheckRefs(
-                            task.OutputSchema,
-                            $"task '{task.Id}' outputSchema",
-                            defNames,
-                            errors
-                        );
+                        CheckRefs(task.OutputSchema, $"task '{task.Id}' outputSchema", defNames, errors);
                     }
 
                     break;
@@ -343,12 +310,7 @@ public sealed class WorkflowValidator
         }
     }
 
-    private static void CheckRefs(
-        JsonNode? schema,
-        string context,
-        HashSet<string> defNames,
-        List<string> errors
-    )
+    private static void CheckRefs(JsonNode? schema, string context, HashSet<string> defNames, List<string> errors)
     {
         foreach (var reference in CollectRefs(schema))
         {
@@ -437,8 +399,7 @@ public sealed class WorkflowValidator
             (condition.All is not null ? 1 : 0)
             + (condition.Any is not null ? 1 : 0)
             + (condition.Not is not null ? 1 : 0);
-        var isLeaf =
-            condition.Op is not null || condition.UnknownOp is not null || condition.Path is not null;
+        var isLeaf = condition.Op is not null || condition.UnknownOp is not null || condition.Path is not null;
         if (composites > 1 || (composites == 1 && isLeaf))
         {
             errors.Add(
@@ -478,9 +439,7 @@ public sealed class WorkflowValidator
         {
             if (!ids.Contains(target))
             {
-                errors.Add(
-                    $"Dangling edge: {kind} target '{target}' (from {source}) does not resolve to any node."
-                );
+                errors.Add($"Dangling edge: {kind} target '{target}' (from {source}) does not resolve to any node.");
             }
         }
 
@@ -516,10 +475,7 @@ public sealed class WorkflowValidator
             }
         }
 
-        if (
-            nodes.OfType<TerminalNode>().Any()
-            && !nodes.OfType<TerminalNode>().Any(t => visited.Contains(t.Id))
-        )
+        if (nodes.OfType<TerminalNode>().Any() && !nodes.OfType<TerminalNode>().Any(t => visited.Contains(t.Id)))
         {
             errors.Add("No terminal node is reachable from the start node.");
         }
@@ -562,9 +518,7 @@ public sealed class WorkflowValidator
                     {
                         if (!string.IsNullOrEmpty(task.OnFailure))
                         {
-                            edges.Add(
-                                (procedural.Id, $"task '{task.Id}' onFailure", task.OnFailure)
-                            );
+                            edges.Add((procedural.Id, $"task '{task.Id}' onFailure", task.OnFailure));
                         }
                     }
 

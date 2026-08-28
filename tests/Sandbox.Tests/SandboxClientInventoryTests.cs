@@ -10,8 +10,7 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Tests;
 /// </summary>
 public class SandboxClientInventoryTests
 {
-    private const string SessionAndVolumes =
-        """
+    private const string SessionAndVolumes = """
         "session_id":"sess-1","container_id":"container-1","volumes":{"workspace":{"container_path":"/workspace","read_only":false}}
         """;
 
@@ -35,9 +34,10 @@ public class SandboxClientInventoryTests
         info.Inventory.Should().NotBeNull("a caller must never have to null-check the inventory");
         info.Inventory.Status.Should().Be(SandboxInventoryStatuses.Unavailable);
         info.Inventory.Items.Should().BeEmpty();
-        info.Inventory.UnavailableReason.Should().NotBeNullOrWhiteSpace(
-            "'unavailable' without a reason cannot be told apart from a session that loaded nothing"
-        );
+        info.Inventory.UnavailableReason.Should()
+            .NotBeNullOrWhiteSpace(
+                "'unavailable' without a reason cannot be told apart from a session that loaded nothing"
+            );
     }
 
     [Fact]
@@ -51,9 +51,11 @@ public class SandboxClientInventoryTests
     [Fact]
     public async Task CreateAsync_GatewayReportsStatus_SurfacesItVerbatim()
     {
-        var info = await CreateWithAsync("""
+        var info = await CreateWithAsync(
+            """
             "status":"running"
-            """);
+            """
+        );
 
         info.Status.Should().Be("running");
     }
@@ -65,13 +67,15 @@ public class SandboxClientInventoryTests
     [Fact]
     public async Task CreateAsync_ConfirmedInventory_SurfacesKindIdAndVersion()
     {
-        var info = await CreateWithAsync("""
+        var info = await CreateWithAsync(
+            """
             "inventory":{"status":"confirmed","items":[
                 {"kind":"plugin","id":"development","version":"1.4.0"},
                 {"kind":"skill","id":"development:implement"},
                 {"kind":"agent","id":"code-reviewer:pr-review","version":"2.0.1"}
             ]}
-            """);
+            """
+        );
 
         info.Inventory.Status.Should().Be(SandboxInventoryStatuses.Confirmed);
         info.Inventory.UnavailableReason.Should().BeNull("a confirmed inventory has nothing to explain");
@@ -90,15 +94,18 @@ public class SandboxClientInventoryTests
     [Fact]
     public async Task CreateAsync_ConfirmedButEmpty_IsAnAnswerNotASilence()
     {
-        var info = await CreateWithAsync("""
+        var info = await CreateWithAsync(
+            """
             "inventory":{"status":"confirmed","items":[]}
-            """);
+            """
+        );
 
         info.Inventory.Status.Should().Be(SandboxInventoryStatuses.Confirmed);
         info.Inventory.Items.Should().BeEmpty();
-        info.Inventory.UnavailableReason.Should().BeNull(
-            "the gateway positively confirmed that nothing is loaded, which is not the same as being unable to say"
-        );
+        info.Inventory.UnavailableReason.Should()
+            .BeNull(
+                "the gateway positively confirmed that nothing is loaded, which is not the same as being unable to say"
+            );
     }
 
     #endregion
@@ -110,34 +117,44 @@ public class SandboxClientInventoryTests
     {
         // The shape a gateway would produce if it echoed the create request's marketplace selection
         // — what was asked for, not what loaded.
-        var info = await CreateWithAsync("""
+        var info = await CreateWithAsync(
+            """
             "inventory":{"items":[{"kind":"plugin","id":"development","version":"1.4.0"}]}
-            """);
+            """
+        );
 
         info.Inventory.Status.Should().Be(SandboxInventoryStatuses.Unavailable);
-        info.Inventory.Items.Should().BeEmpty("an unconfirmed list read without checking the status would pass as confirmed");
+        info.Inventory.Items.Should()
+            .BeEmpty("an unconfirmed list read without checking the status would pass as confirmed");
         info.Inventory.UnavailableReason.Should().NotBeNullOrWhiteSpace();
     }
 
     [Fact]
     public async Task CreateAsync_UnrecognizedStatus_IsUnavailableAndNamesTheStatus()
     {
-        var info = await CreateWithAsync("""
+        var info = await CreateWithAsync(
+            """
             "inventory":{"status":"partial","items":[{"kind":"plugin","id":"development"}]}
-            """);
+            """
+        );
 
         info.Inventory.Status.Should().Be(SandboxInventoryStatuses.Unavailable);
         info.Inventory.Items.Should().BeEmpty();
         info.Inventory.UnavailableReason.Should()
-            .Contain("partial", "an operator has to be able to tell an old gateway from one that answered but would not confirm");
+            .Contain(
+                "partial",
+                "an operator has to be able to tell an old gateway from one that answered but would not confirm"
+            );
     }
 
     [Fact]
     public async Task CreateAsync_ExplicitlyUnavailable_KeepsTheGatewaysOwnReason()
     {
-        var info = await CreateWithAsync("""
+        var info = await CreateWithAsync(
+            """
             "inventory":{"status":"unavailable","unavailable_reason":"marketplace resolution timed out"}
-            """);
+            """
+        );
 
         info.Inventory.Status.Should().Be(SandboxInventoryStatuses.Unavailable);
         info.Inventory.UnavailableReason.Should().Be("marketplace resolution timed out");
@@ -150,7 +167,8 @@ public class SandboxClientInventoryTests
     [Fact]
     public async Task CreateAsync_ItemMissingKindOrId_IsDroppedRatherThanHalfIdentified()
     {
-        var info = await CreateWithAsync("""
+        var info = await CreateWithAsync(
+            """
             "inventory":{"status":"confirmed","items":[
                 {"kind":"plugin","id":"development"},
                 {"kind":"skill"},
@@ -158,7 +176,8 @@ public class SandboxClientInventoryTests
                 {"kind":"  ","id":"blank-kind"},
                 {"kind":null,"id":"explicit-null-kind"}
             ]}
-            """);
+            """
+        );
 
         // The last entry lands on the same `null` Kind as the omitted-field entry above it — an
         // explicit JSON null and an absent member are indistinguishable once the record's parameter
@@ -181,28 +200,38 @@ public class SandboxClientInventoryTests
         handler.OnJson(
             HttpMethod.Post,
             "/api/v1/sandboxes",
-            CreateResponse("""
+            CreateResponse(
+                """
                 "inventory":{"status":"confirmed","items":[{"kind":"plugin","id":"development"},null]}
-                """)
+                """
+            )
         );
 
         var thrown = await Record.ExceptionAsync(() => client.CreateAsync(new SandboxCreateRequest("my-workspace")));
 
-        thrown.Should().BeOfType<SandboxException>("a malformed 2xx payload is a protocol defect, not an unhandled NullReferenceException");
+        thrown
+            .Should()
+            .BeOfType<SandboxException>(
+                "a malformed 2xx payload is a protocol defect, not an unhandled NullReferenceException"
+            );
         var sandboxException = (SandboxException)thrown;
         sandboxException.Kind.Should().Be(SandboxErrorKind.Protocol);
         sandboxException.StatusCode.Should().Be(200);
-        sandboxException.Message.Should().Contain("inventory", "the message has to say which of the response's arrays was malformed");
+        sandboxException
+            .Message.Should()
+            .Contain("inventory", "the message has to say which of the response's arrays was malformed");
     }
 
     [Fact]
     public async Task CreateAsync_UnknownInventoryFields_AreIgnoredNotFatal()
     {
-        var info = await CreateWithAsync("""
+        var info = await CreateWithAsync(
+            """
             "inventory":{"status":"confirmed","source":"marketplace","items":[
                 {"kind":"plugin","id":"development","version":"1.4.0","install_path":"/opt/plugins/development","manifest":{"x":1}}
             ]}
-            """);
+            """
+        );
 
         info.Inventory.Status.Should().Be(SandboxInventoryStatuses.Confirmed);
         info.Inventory.Items.Should().ContainSingle().Which.Id.Should().Be("development");

@@ -246,6 +246,5 @@ public static class LifecycleCapabilities
     /// <see langword="true"/> when the capability is grantable; <see langword="false"/> for
     /// <see langword="null"/>, blank, or unrecognized values, all of which must be refused.
     /// </returns>
-    public static bool IsKnown(string? capability) =>
-        capability is not null && Known.Contains(capability);
+    public static bool IsKnown(string? capability) => capability is not null && Known.Contains(capability);
 }

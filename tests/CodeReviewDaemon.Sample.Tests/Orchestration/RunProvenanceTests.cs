@@ -38,7 +38,9 @@ public sealed class RunProvenanceTests
     /// digest claims to cover can be named here rather than taken on the factory's word.
     /// </summary>
     private static readonly IPromptReader Prompts = new PromptReader(
-        typeof(DaemonAgentFactory).Assembly, "CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml");
+        typeof(DaemonAgentFactory).Assembly,
+        "CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml"
+    );
 
     [Fact]
     public async Task Dispatching_a_review_records_the_prompt_template_hash_on_the_persisted_run()
@@ -48,18 +50,22 @@ public sealed class RunProvenanceTests
         var executor = Executor(store);
         var run = SeedRun(store, promptTemplateHash: null);
 
-        run.PromptTemplateHash.Should().BeNull(
-            "discovery runs in the poller, before a prompt is rendered — there is nothing true to write yet");
+        run.PromptTemplateHash.Should()
+            .BeNull("discovery runs in the poller, before a prompt is rendered — there is nothing true to write yet");
 
         await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var recorded = store.GetReviewRun(run.Id)!;
-        recorded.PromptTemplateHash.Should().NotBeNull(
-            "the production dispatch path is the producer for this column; without it the row stays NULL");
-        recorded.PromptTemplateHash.Should().Be(
-            DaemonAgentFactory.ReviewPromptTemplateHash,
-            "the review was dispatched under this build's review+synthesis templates");
+        recorded
+            .PromptTemplateHash.Should()
+            .NotBeNull("the production dispatch path is the producer for this column; without it the row stays NULL");
+        recorded
+            .PromptTemplateHash.Should()
+            .Be(
+                DaemonAgentFactory.ReviewPromptTemplateHash,
+                "the review was dispatched under this build's review+synthesis templates"
+            );
     }
 
     /// <summary>
@@ -84,19 +90,25 @@ public sealed class RunProvenanceTests
         // Why creation cannot own this write, stated as an assertion rather than as a comment: re-polling the
         // same identity with today's hash in the seed leaves the row exactly as it was. Creation is an
         // "insert or return the existing row", and the existing row is the one being resumed.
-        store.CreateOrGetReviewRun(SeedFor(run.RepoId, DaemonAgentFactory.ReviewPromptTemplateHash))
-            .PromptTemplateHash.Should().Be(
+        store
+            .CreateOrGetReviewRun(SeedFor(run.RepoId, DaemonAgentFactory.ReviewPromptTemplateHash))
+            .PromptTemplateHash.Should()
+            .Be(
                 PromptHashFromAnEarlierBuild,
-                "an identity match returns the stored row untouched, so a seed can never correct it");
+                "an identity match returns the stored row untouched, so a seed can never correct it"
+            );
 
         await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var recorded = store.GetReviewRun(run.Id)!;
-        recorded.PromptTemplateHash.Should().NotBe(
-            PromptHashFromAnEarlierBuild,
-            "the review of record was produced by the prompt this process is running, not the one the row was "
-                + "created under");
+        recorded
+            .PromptTemplateHash.Should()
+            .NotBe(
+                PromptHashFromAnEarlierBuild,
+                "the review of record was produced by the prompt this process is running, not the one the row was "
+                    + "created under"
+            );
         recorded.PromptTemplateHash.Should().Be(DaemonAgentFactory.ReviewPromptTemplateHash);
     }
 
@@ -114,8 +126,7 @@ public sealed class RunProvenanceTests
         store.RecordRunProvenance(run.Id, DaemonAgentFactory.ReviewPromptTemplateHash);
         store.RecordRunProvenance(run.Id, null);
 
-        store.GetReviewRun(run.Id)!.PromptTemplateHash.Should().Be(
-            DaemonAgentFactory.ReviewPromptTemplateHash);
+        store.GetReviewRun(run.Id)!.PromptTemplateHash.Should().Be(DaemonAgentFactory.ReviewPromptTemplateHash);
     }
 
     /// <summary>
@@ -127,8 +138,8 @@ public sealed class RunProvenanceTests
     {
         var hash = DaemonAgentFactory.ReviewPromptTemplateHash;
 
-        hash.Should().Be(
-            DaemonAgentFactory.ReviewPromptTemplateHash, "it identifies the build's templates, not a call");
+        hash.Should()
+            .Be(DaemonAgentFactory.ReviewPromptTemplateHash, "it identifies the build's templates, not a call");
         hash.Should().HaveLength(16);
         hash.Should().MatchRegex("^[0-9a-f]{16}$", "lowercase hex, matching the daemon's short-digest idiom");
     }
@@ -144,24 +155,37 @@ public sealed class RunProvenanceTests
         var review = Prompts.GetPrompt("review").Value;
         var synthesis = Prompts.GetPrompt("synthesis").Value;
 
-        DaemonAgentFactory.ReviewPromptTemplateHash.Should().Be(
-            DaemonAgentFactory.ComputeTemplateHash(review, synthesis),
-            "the published value is the digest of the review+synthesis templates this build actually ships, "
-                + "not of some other input that merely happens to be constant");
+        DaemonAgentFactory
+            .ReviewPromptTemplateHash.Should()
+            .Be(
+                DaemonAgentFactory.ComputeTemplateHash(review, synthesis),
+                "the published value is the digest of the review+synthesis templates this build actually ships, "
+                    + "not of some other input that merely happens to be constant"
+            );
 
-        DaemonAgentFactory.ComputeTemplateHash(review, synthesis).Should().Be(
-            DaemonAgentFactory.ComputeTemplateHash(review, synthesis),
-            "an unchanged pair of templates keeps its label, or two runs of one build cannot be grouped");
+        DaemonAgentFactory
+            .ComputeTemplateHash(review, synthesis)
+            .Should()
+            .Be(
+                DaemonAgentFactory.ComputeTemplateHash(review, synthesis),
+                "an unchanged pair of templates keeps its label, or two runs of one build cannot be grouped"
+            );
 
-        DaemonAgentFactory.ComputeTemplateHash(review + "\nAlso: never say 'delve'.", synthesis)
-            .Should().NotBe(
+        DaemonAgentFactory
+            .ComputeTemplateHash(review + "\nAlso: never say 'delve'.", synthesis)
+            .Should()
+            .NotBe(
                 DaemonAgentFactory.ReviewPromptTemplateHash,
-                "editing the review template changes what the first turn was asked");
+                "editing the review template changes what the first turn was asked"
+            );
 
-        DaemonAgentFactory.ComputeTemplateHash(review, synthesis + "\nAlso: never say 'delve'.")
-            .Should().NotBe(
+        DaemonAgentFactory
+            .ComputeTemplateHash(review, synthesis + "\nAlso: never say 'delve'.")
+            .Should()
+            .NotBe(
                 DaemonAgentFactory.ReviewPromptTemplateHash,
-                "editing the synthesis template changes what the turn that writes the review was asked");
+                "editing the synthesis template changes what the turn that writes the review was asked"
+            );
     }
 
     /// <summary>
@@ -181,14 +205,20 @@ public sealed class RunProvenanceTests
         const string ReviewOwnsIt = "Report blockers.\nDeliver the answer.";
         const string SynthesisOwnsIt = "Deliver the answer.";
 
-        (ReviewOwnsIt + string.Empty).Should().Be(
-            "Report blockers.\n" + SynthesisOwnsIt,
-            "the case is only worth anything if the joined text is byte-identical");
+        (ReviewOwnsIt + string.Empty)
+            .Should()
+            .Be(
+                "Report blockers.\n" + SynthesisOwnsIt,
+                "the case is only worth anything if the joined text is byte-identical"
+            );
 
-        DaemonAgentFactory.ComputeTemplateHash(ReviewOwnsIt, string.Empty)
-            .Should().NotBe(
+        DaemonAgentFactory
+            .ComputeTemplateHash(ReviewOwnsIt, string.Empty)
+            .Should()
+            .NotBe(
                 DaemonAgentFactory.ComputeTemplateHash("Report blockers.\n", SynthesisOwnsIt),
-                "which turn was told to deliver is a real difference, and the digest has to carry it");
+                "which turn was told to deliver is a real difference, and the digest has to carry it"
+            );
     }
 
     // ── fixtures ──────────────────────────────────────────────────────────────────────────────────
@@ -197,9 +227,13 @@ public sealed class RunProvenanceTests
     {
         var sandbox = new FakeSandboxCommandRunner()
             .OnArgvContains(
-                "rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a git repo"))
+                "rev-parse --is-inside-work-tree",
+                new SandboxCommandResult(1, string.Empty, "not a git repo")
+            )
             .OnArgvContains(
-                "diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty));
+                "diff",
+                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty)
+            );
 
         return new DaemonReviewStageExecutor(
             store,
@@ -208,34 +242,38 @@ public sealed class RunProvenanceTests
             new FakeSandboxFileSystem(),
             new CodeReviewDaemonOptions(),
             [new FakeReviewCommentPublisher("github")],
-            NullLoggerFactory.Instance);
+            NullLoggerFactory.Instance
+        );
     }
 
     private static ReviewRun SeedRun(ReviewStore store, string? promptTemplateHash)
     {
-        var repoId = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "repo-stable-1",
-        });
+        var repoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-stable-1",
+            }
+        );
         return store.CreateOrGetReviewRun(SeedFor(repoId, promptTemplateHash));
     }
 
-    private static ReviewRun SeedFor(long repoId, string? promptTemplateHash) => new()
-    {
-        RepoId = repoId,
-        PrId = "118",
-        HeadSha = "head-sha",
-        BaseSha = "base-sha",
-        TriggerWatermark = "2026-06-29T12:34:56Z",
-        ReviewKind = "full",
-        VariantId = "primary",
-        Mode = "collect-only",
-        Stage = ReviewStage.Discovered,
-        WorkflowStatus = WorkflowStatus.Running,
-        PrLifecycleState = PrLifecycleState.Open,
-        PromptTemplateHash = promptTemplateHash,
-    };
+    private static ReviewRun SeedFor(long repoId, string? promptTemplateHash) =>
+        new()
+        {
+            RepoId = repoId,
+            PrId = "118",
+            HeadSha = "head-sha",
+            BaseSha = "base-sha",
+            TriggerWatermark = "2026-06-29T12:34:56Z",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "collect-only",
+            Stage = ReviewStage.Discovered,
+            WorkflowStatus = WorkflowStatus.Running,
+            PrLifecycleState = PrLifecycleState.Open,
+            PromptTemplateHash = promptTemplateHash,
+        };
 }

@@ -16,8 +16,7 @@ public class TemplateRendererTests
         new()
         {
             Inputs = (JsonObject)JsonNode.Parse("""{ "name": "alice" }""")!,
-            State = (JsonObject)
-                JsonNode.Parse("""{ "count": 5, "obj": { "a": 1, "b": 2 } }""")!,
+            State = (JsonObject)JsonNode.Parse("""{ "count": 5, "obj": { "a": 1, "b": 2 } }""")!,
         };
 
     [Fact]
@@ -42,10 +41,7 @@ public class TemplateRendererTests
     {
         var ctx = CreateContext();
 
-        TemplateRenderer
-            .Render("n={{state.count}} who={{inputs.name}}", ctx)
-            .Should()
-            .Be("n=5 who=alice");
+        TemplateRenderer.Render("n={{state.count}} who={{inputs.name}}", ctx).Should().Be("n=5 who=alice");
     }
 
     [Fact]

@@ -10,9 +10,7 @@ internal sealed class TeeHandler : DelegatingHandler
     private readonly MemoryStream _captured = new();
 
     public TeeHandler(HttpMessageHandler inner)
-        : base(inner)
-    {
-    }
+        : base(inner) { }
 
     /// <summary>Bytes written to the response stream by the inner handler.</summary>
     public byte[] CapturedBytes
@@ -28,7 +26,8 @@ internal sealed class TeeHandler : DelegatingHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (response.Content is null)

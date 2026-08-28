@@ -64,57 +64,62 @@ public sealed class WorkspacePluginSelectionTests
     [Fact]
     public async Task Explicit_empty_and_legacy_null_selections_stay_distinct_end_to_end()
     {
-        await RunAsync(pluginFiltering: true, async session =>
-        {
-            var page = session.Page;
-            var workspaceId = await CreateWorkspaceAsync(
-                page,
-                $$"""{ "name": "Tri State", "directoryRelPath": "tri-state", "marketplaces": ["{{MarketplaceA}}", "{{MarketplaceB}}"] }""");
+        await RunAsync(
+            pluginFiltering: true,
+            async session =>
+            {
+                var page = session.Page;
+                var workspaceId = await CreateWorkspaceAsync(
+                    page,
+                    $$"""{ "name": "Tri State", "directoryRelPath": "tri-state", "marketplaces": ["{{MarketplaceA}}", "{{MarketplaceB}}"] }"""
+                );
 
-            var seeded = await ReadWorkspaceAsync(page, workspaceId);
-            seeded.Shape.Should().Be("null", "a workspace created without a selection expresses NO preference");
-            seeded.Revision.Should().Be(0);
+                var seeded = await ReadWorkspaceAsync(page, workspaceId);
+                seeded.Shape.Should().Be("null", "a workspace created without a selection expresses NO preference");
+                seeded.Revision.Should().Be(0);
 
-            await page.ReloadAsync();
-            await page.Textarea().WaitForAsync();
-            await OpenEditFormAsync(page, workspaceId);
+                await page.ReloadAsync();
+                await page.Textarea().WaitForAsync();
+                await OpenEditFormAsync(page, workspaceId);
 
-            // `null` renders as every plugin checked (truthfully: the gateway reads it as all-plugins),
-            // and the reset control is absent because there is nothing explicit to reset.
-            await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, true), (PluginB1, true));
-            (await page.GetByTestId("workspace-edit-plugins-reset").CountAsync())
-                .Should().Be(0, "the reset is offered only while the selection is EXPLICIT");
+                // `null` renders as every plugin checked (truthfully: the gateway reads it as all-plugins),
+                // and the reset control is absent because there is nothing explicit to reset.
+                await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, true), (PluginB1, true));
+                (await page.GetByTestId("workspace-edit-plugins-reset").CountAsync())
+                    .Should()
+                    .Be(0, "the reset is offered only while the selection is EXPLICIT");
 
-            // 1) Drive to an explicitly empty selection by unchecking everything.
-            await SetCheckboxAsync(page, EditPlugin(MarketplaceA, PluginA1), false);
-            await SetCheckboxAsync(page, EditPlugin(MarketplaceA, PluginA2), false);
-            await SetCheckboxAsync(page, EditPlugin(MarketplaceB, PluginB1), false);
-            (await SubmitEditFormAsync(page)).Should().BeNull("the empty-selection save must succeed");
+                // 1) Drive to an explicitly empty selection by unchecking everything.
+                await SetCheckboxAsync(page, EditPlugin(MarketplaceA, PluginA1), false);
+                await SetCheckboxAsync(page, EditPlugin(MarketplaceA, PluginA2), false);
+                await SetCheckboxAsync(page, EditPlugin(MarketplaceB, PluginB1), false);
+                (await SubmitEditFormAsync(page)).Should().BeNull("the empty-selection save must succeed");
 
-            var afterEmpty = await ReadWorkspaceAsync(page, workspaceId);
-            afterEmpty.Shape.Should().Be("empty", "an explicit [] must NOT be collapsed to null");
-            afterEmpty.Revision.Should().Be(1, "an explicit selection change bumps the CAS revision");
+                var afterEmpty = await ReadWorkspaceAsync(page, workspaceId);
+                afterEmpty.Shape.Should().Be("empty", "an explicit [] must NOT be collapsed to null");
+                afterEmpty.Revision.Should().Be(1, "an explicit selection change bumps the CAS revision");
 
-            // 2) Return to the legacy `null` — the one state no checkbox can reach.
-            await OpenEditFormAsync(page, workspaceId);
-            await ExpectPluginBoxesAsync(page, "edit", (PluginA1, false), (PluginA2, false), (PluginB1, false));
-            var reset = page.GetByTestId("workspace-edit-plugins-reset");
-            await reset.WaitForAsync();
-            await reset.ClickAsync();
-            // The control is `v-if`'d on the selection being explicit, so its disappearance IS the
-            // signal that state went back to null — waiting on that leaves the checkbox assertion
-            // below an independent claim that can still fail.
-            await reset.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Detached });
-            await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, true), (PluginB1, true));
+                // 2) Return to the legacy `null` — the one state no checkbox can reach.
+                await OpenEditFormAsync(page, workspaceId);
+                await ExpectPluginBoxesAsync(page, "edit", (PluginA1, false), (PluginA2, false), (PluginB1, false));
+                var reset = page.GetByTestId("workspace-edit-plugins-reset");
+                await reset.WaitForAsync();
+                await reset.ClickAsync();
+                // The control is `v-if`'d on the selection being explicit, so its disappearance IS the
+                // signal that state went back to null — waiting on that leaves the checkbox assertion
+                // below an independent claim that can still fail.
+                await reset.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Detached });
+                await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, true), (PluginB1, true));
 
-            (await SubmitEditFormAsync(page)).Should().BeNull("the reset save must succeed");
+                (await SubmitEditFormAsync(page)).Should().BeNull("the reset save must succeed");
 
-            var afterReset = await ReadWorkspaceAsync(page, workspaceId);
-            afterReset.Shape.Should().Be("null", "\"use all plugins\" must persist as null, NOT as []");
-            afterReset.Revision.Should().Be(2);
+                var afterReset = await ReadWorkspaceAsync(page, workspaceId);
+                afterReset.Shape.Should().Be("null", "\"use all plugins\" must persist as null, NOT as []");
+                afterReset.Revision.Should().Be(2);
 
-            await session.SaveSuccessScreenshotAsync("WorkspacePluginSelection.EmptyVsNull");
-        });
+                await session.SaveSuccessScreenshotAsync("WorkspacePluginSelection.EmptyVsNull");
+            }
+        );
     }
 
     /// <summary>
@@ -133,76 +138,87 @@ public sealed class WorkspacePluginSelectionTests
     [Fact]
     public async Task Stale_revision_conflict_reports_the_discard_and_reseeds_the_form_from_server_state()
     {
-        await RunAsync(pluginFiltering: true, async session =>
-        {
-            var page = session.Page;
-            var workspaceId = await CreateWorkspaceAsync(
-                page,
-                $$"""
-                {
-                  "name": "Conflict", "directoryRelPath": "conflict",
-                  "marketplaces": ["{{MarketplaceA}}"],
-                  "pluginSelection": [
-                    { "marketplace": "{{MarketplaceA}}", "plugin": "{{PluginA1}}" },
-                    { "marketplace": "{{MarketplaceA}}", "plugin": "{{PluginA2}}" }
-                  ]
-                }
-                """);
+        await RunAsync(
+            pluginFiltering: true,
+            async session =>
+            {
+                var page = session.Page;
+                var workspaceId = await CreateWorkspaceAsync(
+                    page,
+                    $$"""
+                    {
+                      "name": "Conflict", "directoryRelPath": "conflict",
+                      "marketplaces": ["{{MarketplaceA}}"],
+                      "pluginSelection": [
+                        { "marketplace": "{{MarketplaceA}}", "plugin": "{{PluginA1}}" },
+                        { "marketplace": "{{MarketplaceA}}", "plugin": "{{PluginA2}}" }
+                      ]
+                    }
+                    """
+                );
 
-            await page.ReloadAsync();
-            await page.Textarea().WaitForAsync();
+                await page.ReloadAsync();
+                await page.Textarea().WaitForAsync();
 
-            // Opening the form is what seeds the client with revision 0.
-            await OpenEditFormAsync(page, workspaceId);
-            await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, true));
+                // Opening the form is what seeds the client with revision 0.
+                await OpenEditFormAsync(page, workspaceId);
+                await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, true));
 
-            // Move the server underneath the OPEN form: leave exactly A1 selected, revision → 1.
-            var outOfBand = await RawPutAsync(
-                page,
-                workspaceId,
-                $$"""
-                {
-                  "marketplaces": ["{{MarketplaceA}}"],
-                  "pluginSelection": [{ "marketplace": "{{MarketplaceA}}", "plugin": "{{PluginA1}}" }],
-                  "pluginsRevision": 0
-                }
-                """);
-            outOfBand.Status.Should().Be(200, "the out-of-band write is setup, not the behaviour under test");
-            (await ReadWorkspaceAsync(page, workspaceId)).Revision.Should().Be(1);
+                // Move the server underneath the OPEN form: leave exactly A1 selected, revision → 1.
+                var outOfBand = await RawPutAsync(
+                    page,
+                    workspaceId,
+                    $$"""
+                    {
+                      "marketplaces": ["{{MarketplaceA}}"],
+                      "pluginSelection": [{ "marketplace": "{{MarketplaceA}}", "plugin": "{{PluginA1}}" }],
+                      "pluginsRevision": 0
+                    }
+                    """
+                );
+                outOfBand.Status.Should().Be(200, "the out-of-band write is setup, not the behaviour under test");
+                (await ReadWorkspaceAsync(page, workspaceId)).Revision.Should().Be(1);
 
-            // The open form must still hold the PRE-conflict seed; otherwise there is no stale
-            // revision left to collide and everything below would prove nothing.
-            await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, true));
+                // The open form must still hold the PRE-conflict seed; otherwise there is no stale
+                // revision left to collide and everything below would prove nothing.
+                await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, true));
 
-            // The "user" unchecks A1, so their pending state is exactly {A2} — disjoint from the
-            // server's exactly-{A1}.
-            await SetCheckboxAsync(page, EditPlugin(MarketplaceA, PluginA1), false);
+                // The "user" unchecks A1, so their pending state is exactly {A2} — disjoint from the
+                // server's exactly-{A1}.
+                await SetCheckboxAsync(page, EditPlugin(MarketplaceA, PluginA1), false);
 
-            var conflictError = await SubmitEditFormAsync(page);
-            conflictError.Should().NotBeNull("a stale revision must surface an error, not fail silently");
-            conflictError.Should().Contain(
-                "discarded",
-                "the message is what makes the discard honest — \"the list was refreshed\" would hide it");
-            (await page.GetByTestId("workspace-edit-form").CountAsync())
-                .Should().Be(1, "the form stays open so the user can re-apply the change");
+                var conflictError = await SubmitEditFormAsync(page);
+                conflictError.Should().NotBeNull("a stale revision must surface an error, not fail silently");
+                conflictError
+                    .Should()
+                    .Contain(
+                        "discarded",
+                        "the message is what makes the discard honest — \"the list was refreshed\" would hide it"
+                    );
+                (await page.GetByTestId("workspace-edit-form").CountAsync())
+                    .Should()
+                    .Be(1, "the form stays open so the user can re-apply the change");
 
-            // The load-bearing half: the form now shows the SERVER's selection, not the rejected edit.
-            await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, false));
+                // The load-bearing half: the form now shows the SERVER's selection, not the rejected edit.
+                await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, false));
 
-            var afterConflict = await ReadWorkspaceAsync(page, workspaceId);
-            afterConflict.Shape.Should().Be($"list:{MarketplaceA}/{PluginA1}", "the rejected write must change nothing");
-            afterConflict.Revision.Should().Be(1);
+                var afterConflict = await ReadWorkspaceAsync(page, workspaceId);
+                afterConflict
+                    .Shape.Should()
+                    .Be($"list:{MarketplaceA}/{PluginA1}", "the rejected write must change nothing");
+                afterConflict.Revision.Should().Be(1);
 
-            // Recovery: re-applying the change on the refreshed CAS token succeeds.
-            await SetCheckboxAsync(page, EditPlugin(MarketplaceA, PluginA2), true);
-            (await SubmitEditFormAsync(page)).Should().BeNull("the retry must land");
+                // Recovery: re-applying the change on the refreshed CAS token succeeds.
+                await SetCheckboxAsync(page, EditPlugin(MarketplaceA, PluginA2), true);
+                (await SubmitEditFormAsync(page)).Should().BeNull("the retry must land");
 
-            var recovered = await ReadWorkspaceAsync(page, workspaceId);
-            recovered.Shape.Should().Be($"list:{MarketplaceA}/{PluginA1},{MarketplaceA}/{PluginA2}");
-            recovered.Revision.Should().Be(2);
+                var recovered = await ReadWorkspaceAsync(page, workspaceId);
+                recovered.Shape.Should().Be($"list:{MarketplaceA}/{PluginA1},{MarketplaceA}/{PluginA2}");
+                recovered.Revision.Should().Be(2);
 
-            await session.SaveSuccessScreenshotAsync("WorkspacePluginSelection.RevisionConflict");
-        });
+                await session.SaveSuccessScreenshotAsync("WorkspacePluginSelection.RevisionConflict");
+            }
+        );
     }
 
     /// <summary>
@@ -222,38 +238,50 @@ public sealed class WorkspacePluginSelectionTests
     [InlineData(null, 0)]
     public async Task Per_plugin_ui_renders_only_when_the_gateway_advertises_plugin_filtering(
         bool? pluginFiltering,
-        int expectedPluginBoxes)
+        int expectedPluginBoxes
+    )
     {
-        await RunAsync(pluginFiltering, async session =>
-        {
-            var page = session.Page;
-            await OpenCreateFormAsync(page);
-
-            await SetCheckboxAsync(page, $"workspace-create-marketplace-{MarketplaceA}", true);
-            await SetCheckboxAsync(page, $"workspace-create-marketplace-{MarketplaceB}", true);
-
-            // The marketplace half of the form is the control: it must render and be enabled in EVERY
-            // row, so a zero plugin-box count can only mean the gate hid the per-plugin UI.
-            await Assertions.Expect(page.GetByTestId($"workspace-create-marketplace-{MarketplaceA}")).ToBeCheckedAsync();
-            await Assertions.Expect(page.GetByTestId($"workspace-create-marketplace-{MarketplaceB}")).ToBeCheckedAsync();
-
-            if (expectedPluginBoxes > 0)
+        await RunAsync(
+            pluginFiltering,
+            async session =>
             {
-                await page.GetByTestId($"workspace-create-plugins-{MarketplaceA}").WaitForAsync();
-                await page.GetByTestId($"workspace-create-plugins-{MarketplaceB}").WaitForAsync();
-            }
+                var page = session.Page;
+                await OpenCreateFormAsync(page);
 
-            // Page-wide, so a plugin control rendered ANYWHERE (including outside its marketplace's
-            // subtree) still counts against a gate that claims to hide all of them.
-            (await page.Locator("[data-plugin-checkbox]").CountAsync())
-                .Should().Be(expectedPluginBoxes);
-            (await page.GetByTestId($"workspace-create-plugins-{MarketplaceA}").CountAsync())
-                .Should().Be(expectedPluginBoxes > 0 ? 1 : 0);
-            (await page.GetByTestId($"workspace-create-plugins-{MarketplaceB}").CountAsync())
-                .Should().Be(expectedPluginBoxes > 0 ? 1 : 0);
-            (await page.GetByTestId("workspace-create-plugins-reset").CountAsync())
-                .Should().Be(0, "the reset belongs to the per-plugin UI and a fresh form is never explicit");
-        });
+                await SetCheckboxAsync(page, $"workspace-create-marketplace-{MarketplaceA}", true);
+                await SetCheckboxAsync(page, $"workspace-create-marketplace-{MarketplaceB}", true);
+
+                // The marketplace half of the form is the control: it must render and be enabled in EVERY
+                // row, so a zero plugin-box count can only mean the gate hid the per-plugin UI.
+                await Assertions
+                    .Expect(page.GetByTestId($"workspace-create-marketplace-{MarketplaceA}"))
+                    .ToBeCheckedAsync();
+                await Assertions
+                    .Expect(page.GetByTestId($"workspace-create-marketplace-{MarketplaceB}"))
+                    .ToBeCheckedAsync();
+
+                if (expectedPluginBoxes > 0)
+                {
+                    await page.GetByTestId($"workspace-create-plugins-{MarketplaceA}").WaitForAsync();
+                    await page.GetByTestId($"workspace-create-plugins-{MarketplaceB}").WaitForAsync();
+                }
+
+                // Page-wide, so a plugin control rendered ANYWHERE (including outside its marketplace's
+                // subtree) still counts against a gate that claims to hide all of them.
+                (await page.Locator("[data-plugin-checkbox]").CountAsync())
+                    .Should()
+                    .Be(expectedPluginBoxes);
+                (await page.GetByTestId($"workspace-create-plugins-{MarketplaceA}").CountAsync())
+                    .Should()
+                    .Be(expectedPluginBoxes > 0 ? 1 : 0);
+                (await page.GetByTestId($"workspace-create-plugins-{MarketplaceB}").CountAsync())
+                    .Should()
+                    .Be(expectedPluginBoxes > 0 ? 1 : 0);
+                (await page.GetByTestId("workspace-create-plugins-reset").CountAsync())
+                    .Should()
+                    .Be(0, "the reset belongs to the per-plugin UI and a fresh form is never explicit");
+            }
+        );
     }
 
     /// <summary>
@@ -270,73 +298,82 @@ public sealed class WorkspacePluginSelectionTests
     [Fact]
     public async Task Marketplace_only_edit_omits_pluginSelection_and_leaves_the_revision_alone()
     {
-        await RunAsync(pluginFiltering: true, async session =>
-        {
-            var page = session.Page;
-            var workspaceId = await CreateWorkspaceAsync(
-                page,
-                $$"""
-                {
-                  "name": "Marketplace Only", "directoryRelPath": "marketplace-only",
-                  "marketplaces": ["{{MarketplaceA}}"],
-                  "pluginSelection": [{ "marketplace": "{{MarketplaceA}}", "plugin": "{{PluginA1}}" }]
-                }
-                """);
-
-            var before = await ReadWorkspaceAsync(page, workspaceId);
-            before.Shape.Should().Be($"list:{MarketplaceA}/{PluginA1}", "the omission must be a real choice");
-            before.Revision.Should().Be(0);
-
-            await page.ReloadAsync();
-            await page.Textarea().WaitForAsync();
-
-            var puts = new List<string>();
-            void OnRequest(object? sender, IRequest request)
+        await RunAsync(
+            pluginFiltering: true,
+            async session =>
             {
-                if (request.Method == "PUT" && request.Url.Contains("/api/workspaces/", StringComparison.Ordinal))
-                {
-                    lock (puts)
+                var page = session.Page;
+                var workspaceId = await CreateWorkspaceAsync(
+                    page,
+                    $$"""
                     {
-                        puts.Add(request.PostData ?? string.Empty);
+                      "name": "Marketplace Only", "directoryRelPath": "marketplace-only",
+                      "marketplaces": ["{{MarketplaceA}}"],
+                      "pluginSelection": [{ "marketplace": "{{MarketplaceA}}", "plugin": "{{PluginA1}}" }]
+                    }
+                    """
+                );
+
+                var before = await ReadWorkspaceAsync(page, workspaceId);
+                before.Shape.Should().Be($"list:{MarketplaceA}/{PluginA1}", "the omission must be a real choice");
+                before.Revision.Should().Be(0);
+
+                await page.ReloadAsync();
+                await page.Textarea().WaitForAsync();
+
+                var puts = new List<string>();
+                void OnRequest(object? sender, IRequest request)
+                {
+                    if (request.Method == "PUT" && request.Url.Contains("/api/workspaces/", StringComparison.Ordinal))
+                    {
+                        lock (puts)
+                        {
+                            puts.Add(request.PostData ?? string.Empty);
+                        }
                     }
                 }
-            }
 
-            page.Request += OnRequest;
-            try
-            {
-                await OpenEditFormAsync(page, workspaceId);
-                await SetCheckboxAsync(page, $"workspace-edit-marketplace-{MarketplaceB}", true);
-                (await SubmitEditFormAsync(page)).Should().BeNull("a marketplace-only edit must save");
-            }
-            finally
-            {
-                page.Request -= OnRequest;
-            }
+                page.Request += OnRequest;
+                try
+                {
+                    await OpenEditFormAsync(page, workspaceId);
+                    await SetCheckboxAsync(page, $"workspace-edit-marketplace-{MarketplaceB}", true);
+                    (await SubmitEditFormAsync(page)).Should().BeNull("a marketplace-only edit must save");
+                }
+                finally
+                {
+                    page.Request -= OnRequest;
+                }
 
-            string body;
-            lock (puts)
-            {
-                puts.Should().HaveCount(1, "the save must send exactly one workspace PUT");
-                body = puts[0];
+                string body;
+                lock (puts)
+                {
+                    puts.Should().HaveCount(1, "the save must send exactly one workspace PUT");
+                    body = puts[0];
+                }
+
+                using var document = JsonDocument.Parse(body);
+                var root = document.RootElement;
+                root.TryGetProperty("pluginSelection", out _)
+                    .Should()
+                    .BeFalse("an omitted key is the backend's four-state \"leave unchanged\"; body was: " + body);
+                root.TryGetProperty("pluginsRevision", out _)
+                    .Should()
+                    .BeFalse("the CAS token travels only alongside a selection; body was: " + body);
+                root.GetProperty("marketplaces")
+                    .EnumerateArray()
+                    .Select(element => element.GetString())
+                    .Should()
+                    .Contain(MarketplaceB, "the very same body must carry the change that WAS made");
+
+                var after = await ReadWorkspaceAsync(page, workspaceId);
+                after
+                    .Marketplaces.Should()
+                    .Be($"{MarketplaceA},{MarketplaceB}", "the marketplace edit must take effect");
+                after.Shape.Should().Be($"list:{MarketplaceA}/{PluginA1}", "the stored selection must be untouched");
+                after.Revision.Should().Be(0, "no plugin changed, so no CAS bump and no session migration");
             }
-
-            using var document = JsonDocument.Parse(body);
-            var root = document.RootElement;
-            root.TryGetProperty("pluginSelection", out _)
-                .Should().BeFalse("an omitted key is the backend's four-state \"leave unchanged\"; body was: " + body);
-            root.TryGetProperty("pluginsRevision", out _)
-                .Should().BeFalse("the CAS token travels only alongside a selection; body was: " + body);
-            root.GetProperty("marketplaces")
-                .EnumerateArray()
-                .Select(element => element.GetString())
-                .Should().Contain(MarketplaceB, "the very same body must carry the change that WAS made");
-
-            var after = await ReadWorkspaceAsync(page, workspaceId);
-            after.Marketplaces.Should().Be($"{MarketplaceA},{MarketplaceB}", "the marketplace edit must take effect");
-            after.Shape.Should().Be($"list:{MarketplaceA}/{PluginA1}", "the stored selection must be untouched");
-            after.Revision.Should().Be(0, "no plugin changed, so no CAS bump and no session migration");
-        });
+        );
     }
 
     /// <summary>
@@ -353,40 +390,46 @@ public sealed class WorkspacePluginSelectionTests
     [Fact]
     public async Task Subset_spanning_two_marketplaces_persists_exactly_and_survives_a_reload()
     {
-        await RunAsync(pluginFiltering: true, async session =>
-        {
-            var page = session.Page;
-            var workspaceId = await CreateWorkspaceAsync(
-                page,
-                $$"""{ "name": "Subset", "directoryRelPath": "subset", "marketplaces": ["{{MarketplaceA}}", "{{MarketplaceB}}"] }""");
+        await RunAsync(
+            pluginFiltering: true,
+            async session =>
+            {
+                var page = session.Page;
+                var workspaceId = await CreateWorkspaceAsync(
+                    page,
+                    $$"""{ "name": "Subset", "directoryRelPath": "subset", "marketplaces": ["{{MarketplaceA}}", "{{MarketplaceB}}"] }"""
+                );
 
-            await page.ReloadAsync();
-            await page.Textarea().WaitForAsync();
-            await OpenEditFormAsync(page, workspaceId);
-            await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, true), (PluginB1, true));
+                await page.ReloadAsync();
+                await page.Textarea().WaitForAsync();
+                await OpenEditFormAsync(page, workspaceId);
+                await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, true), (PluginB1, true));
 
-            // Skip ONE plugin of the larger marketplace, so the saved subset still spans both.
-            await SetCheckboxAsync(page, EditPlugin(MarketplaceA, PluginA2), false);
-            (await SubmitEditFormAsync(page)).Should().BeNull();
+                // Skip ONE plugin of the larger marketplace, so the saved subset still spans both.
+                await SetCheckboxAsync(page, EditPlugin(MarketplaceA, PluginA2), false);
+                (await SubmitEditFormAsync(page)).Should().BeNull();
 
-            var saved = await ReadWorkspaceAsync(page, workspaceId);
-            saved.Shape.Should().Be($"list:{MarketplaceA}/{PluginA1},{MarketplaceB}/{PluginB1}");
-            saved.Revision.Should().Be(1);
+                var saved = await ReadWorkspaceAsync(page, workspaceId);
+                saved.Shape.Should().Be($"list:{MarketplaceA}/{PluginA1},{MarketplaceB}/{PluginB1}");
+                saved.Revision.Should().Be(1);
 
-            // A full reload re-derives the form from the server, so this is the persistence claim and
-            // not a re-read of the state the click left behind.
-            await page.ReloadAsync();
-            await page.Textarea().WaitForAsync();
-            await OpenEditFormAsync(page, workspaceId);
-            await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, false), (PluginB1, true));
+                // A full reload re-derives the form from the server, so this is the persistence claim and
+                // not a re-read of the state the click left behind.
+                await page.ReloadAsync();
+                await page.Textarea().WaitForAsync();
+                await OpenEditFormAsync(page, workspaceId);
+                await ExpectPluginBoxesAsync(page, "edit", (PluginA1, true), (PluginA2, false), (PluginB1, true));
 
-            (await IsIndeterminateAsync(page, $"workspace-edit-marketplace-{MarketplaceA}"))
-                .Should().BeTrue("SOME but not all of A's plugins are selected");
-            (await IsIndeterminateAsync(page, $"workspace-edit-marketplace-{MarketplaceB}"))
-                .Should().BeFalse("all of B's plugins are selected, which is a determinate state");
+                (await IsIndeterminateAsync(page, $"workspace-edit-marketplace-{MarketplaceA}"))
+                    .Should()
+                    .BeTrue("SOME but not all of A's plugins are selected");
+                (await IsIndeterminateAsync(page, $"workspace-edit-marketplace-{MarketplaceB}"))
+                    .Should()
+                    .BeFalse("all of B's plugins are selected, which is a determinate state");
 
-            await session.SaveSuccessScreenshotAsync("WorkspacePluginSelection.SubsetSurvivesReload");
-        });
+                await session.SaveSuccessScreenshotAsync("WorkspacePluginSelection.SubsetSurvivesReload");
+            }
+        );
     }
 
     /// <summary>
@@ -403,59 +446,70 @@ public sealed class WorkspacePluginSelectionTests
     [Fact]
     public async Task Unknown_and_unenabled_plugin_refs_are_rejected_as_unsupported_plugins()
     {
-        await RunAsync(pluginFiltering: true, async session =>
-        {
-            var page = session.Page;
-            var workspaceId = await CreateWorkspaceAsync(
-                page,
-                $$"""{ "name": "Unsupported", "directoryRelPath": "unsupported", "marketplaces": ["{{MarketplaceA}}"] }""");
+        await RunAsync(
+            pluginFiltering: true,
+            async session =>
+            {
+                var page = session.Page;
+                var workspaceId = await CreateWorkspaceAsync(
+                    page,
+                    $$"""{ "name": "Unsupported", "directoryRelPath": "unsupported", "marketplaces": ["{{MarketplaceA}}"] }"""
+                );
 
-            foreach (var (marketplace, plugin, why) in new[]
-            {
-                ("__nope__", "__nope__", "a plugin that exists nowhere in the catalog"),
-                (MarketplaceB, PluginB1, "a real plugin under a marketplace this workspace has not enabled"),
-            })
-            {
-                var rejected = await RawPutAsync(
+                foreach (
+                    var (marketplace, plugin, why) in new[]
+                    {
+                        ("__nope__", "__nope__", "a plugin that exists nowhere in the catalog"),
+                        (MarketplaceB, PluginB1, "a real plugin under a marketplace this workspace has not enabled"),
+                    }
+                )
+                {
+                    var rejected = await RawPutAsync(
+                        page,
+                        workspaceId,
+                        $$"""
+                        {
+                          "marketplaces": ["{{MarketplaceA}}"],
+                          "pluginSelection": [{ "marketplace": "{{marketplace}}", "plugin": "{{plugin}}" }],
+                          "pluginsRevision": 0
+                        }
+                        """
+                    );
+
+                    rejected.Status.Should().Be(400, why);
+                    using var error = JsonDocument.Parse(rejected.Body);
+                    error.RootElement.GetProperty("code").GetString().Should().Be("unsupported_plugins");
+                    error
+                        .RootElement.GetProperty("unsupportedPlugins")
+                        .EnumerateArray()
+                        .Should()
+                        .NotBeEmpty("the rejection must name what it rejected");
+
+                    var untouched = await ReadWorkspaceAsync(page, workspaceId);
+                    untouched.Shape.Should().Be("null", "a rejected write must change nothing");
+                    untouched.Revision.Should().Be(0);
+                }
+
+                // The control: same body shape, legal plugin. Its success is what makes the two 400s
+                // attributable to the plugin refs rather than to the request.
+                var accepted = await RawPutAsync(
                     page,
                     workspaceId,
                     $$"""
                     {
                       "marketplaces": ["{{MarketplaceA}}"],
-                      "pluginSelection": [{ "marketplace": "{{marketplace}}", "plugin": "{{plugin}}" }],
+                      "pluginSelection": [{ "marketplace": "{{MarketplaceA}}", "plugin": "{{PluginA1}}" }],
                       "pluginsRevision": 0
                     }
-                    """);
+                    """
+                );
+                accepted.Status.Should().Be(200);
 
-                rejected.Status.Should().Be(400, why);
-                using var error = JsonDocument.Parse(rejected.Body);
-                error.RootElement.GetProperty("code").GetString().Should().Be("unsupported_plugins");
-                error.RootElement.GetProperty("unsupportedPlugins")
-                    .EnumerateArray().Should().NotBeEmpty("the rejection must name what it rejected");
-
-                var untouched = await ReadWorkspaceAsync(page, workspaceId);
-                untouched.Shape.Should().Be("null", "a rejected write must change nothing");
-                untouched.Revision.Should().Be(0);
+                var final = await ReadWorkspaceAsync(page, workspaceId);
+                final.Shape.Should().Be($"list:{MarketplaceA}/{PluginA1}");
+                final.Revision.Should().Be(1);
             }
-
-            // The control: same body shape, legal plugin. Its success is what makes the two 400s
-            // attributable to the plugin refs rather than to the request.
-            var accepted = await RawPutAsync(
-                page,
-                workspaceId,
-                $$"""
-                {
-                  "marketplaces": ["{{MarketplaceA}}"],
-                  "pluginSelection": [{ "marketplace": "{{MarketplaceA}}", "plugin": "{{PluginA1}}" }],
-                  "pluginsRevision": 0
-                }
-                """);
-            accepted.Status.Should().Be(200);
-
-            var final = await ReadWorkspaceAsync(page, workspaceId);
-            final.Shape.Should().Be($"list:{MarketplaceA}/{PluginA1}");
-            final.Revision.Should().Be(1);
-        });
+        );
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -486,11 +540,7 @@ public sealed class WorkspacePluginSelectionTests
         };
 
         // Never exercised: these scenarios drive the workspace dropdown only and send no message.
-        var responder = ScriptedSseResponder
-            .New()
-            .ForRole("unused", _ => true)
-            .Turn(t => t.Text("unused"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("unused", _ => true).Turn(t => t.Text("unused")).Build();
 
         try
         {
@@ -502,7 +552,9 @@ public sealed class WorkspacePluginSelectionTests
                 catalogClient: FakeMarketplaceCatalogClient.WithPlugins(
                     pluginFiltering,
                     (MarketplaceA, [PluginA1, PluginA2]),
-                    (MarketplaceB, [PluginB1])));
+                    (MarketplaceB, [PluginB1])
+                )
+            );
 
             await body(session);
         }
@@ -555,13 +607,15 @@ public sealed class WorkspacePluginSelectionTests
                 });
             }
             """,
-            workspaceId);
+            workspaceId
+        );
 
         using var document = JsonDocument.Parse(json);
         return new WorkspaceSnapshot(
             document.RootElement.GetProperty("shape").GetString()!,
             document.RootElement.GetProperty("revision").GetInt32(),
-            document.RootElement.GetProperty("marketplaces").GetString()!);
+            document.RootElement.GetProperty("marketplaces").GetString()!
+        );
     }
 
     private static async Task<string> CreateWorkspaceAsync(IPage page, string payload)
@@ -578,7 +632,8 @@ public sealed class WorkspacePluginSelectionTests
                 return (await res.json()).id;
             }
             """,
-            payload);
+            payload
+        );
         id.Should().NotBeNullOrWhiteSpace();
         return id;
     }
@@ -603,18 +658,21 @@ public sealed class WorkspacePluginSelectionTests
                 return JSON.stringify({ status: res.status, body: await res.text() });
             }
             """,
-            new Dictionary<string, object> { ["id"] = workspaceId, ["payload"] = payload });
+            new Dictionary<string, object> { ["id"] = workspaceId, ["payload"] = payload }
+        );
 
         using var document = JsonDocument.Parse(json);
         return new RawResponse(
             document.RootElement.GetProperty("status").GetInt32(),
-            document.RootElement.GetProperty("body").GetString()!);
+            document.RootElement.GetProperty("body").GetString()!
+        );
     }
 
     /// <summary>Opens the dropdown on the workspace LIST view, dismissing whatever form was open.</summary>
     private static async Task OpenWorkspaceListAsync(IPage page)
     {
-        await Assertions.Expect(page.GetByTestId("workspace-selector-button"))
+        await Assertions
+            .Expect(page.GetByTestId("workspace-selector-button"))
             .ToBeEnabledAsync(new LocatorAssertionsToBeEnabledOptions { Timeout = 30_000 });
 
         await DismissFormAsync(page, "workspace-edit");
@@ -693,7 +751,8 @@ public sealed class WorkspacePluginSelectionTests
     private static async Task ExpectPluginBoxesAsync(
         IPage page,
         string mode,
-        params (string Plugin, bool Checked)[] expected)
+        params (string Plugin, bool Checked)[] expected
+    )
     {
         foreach (var (plugin, isChecked) in expected)
         {
@@ -742,7 +801,8 @@ public sealed class WorkspacePluginSelectionTests
             }
             """,
             null,
-            new PageWaitForFunctionOptions { Timeout = 30_000 });
+            new PageWaitForFunctionOptions { Timeout = 30_000 }
+        );
 
         return await error.CountAsync() > 0 ? await error.First.TextContentAsync() : null;
     }

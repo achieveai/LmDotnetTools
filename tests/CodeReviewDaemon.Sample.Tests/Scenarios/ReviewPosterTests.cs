@@ -27,9 +27,7 @@ public sealed class ReviewPosterTests : LoggingTestBase
     };
 
     public ReviewPosterTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     [Fact]
     public async Task PostReviewAsync_collect_only_default_records_without_posting()
@@ -39,9 +37,8 @@ public sealed class ReviewPosterTests : LoggingTestBase
         var runId = SeedRun(store);
         var publisher = new FakeReviewCommentPublisher();
 
-        var outcome = await Poster(publisher, store).PostReviewAsync(
-            Request(runId, livePostingAuthorized: false),
-            CancellationToken.None);
+        var outcome = await Poster(publisher, store)
+            .PostReviewAsync(Request(runId, livePostingAuthorized: false), CancellationToken.None);
 
         outcome.Kind.Should().Be(PostOutcomeKind.CollectedOnly);
         outcome.ProviderResponseId.Should().BeNull();
@@ -57,9 +54,8 @@ public sealed class ReviewPosterTests : LoggingTestBase
         var runId = SeedRun(store);
         var publisher = new FakeReviewCommentPublisher();
 
-        var outcome = await Poster(publisher, store).PostReviewAsync(
-            Request(runId, livePostingAuthorized: true),
-            CancellationToken.None);
+        var outcome = await Poster(publisher, store)
+            .PostReviewAsync(Request(runId, livePostingAuthorized: true), CancellationToken.None);
 
         outcome.Kind.Should().Be(PostOutcomeKind.Posted);
         publisher.PostCount.Should().Be(1);
@@ -118,15 +114,17 @@ public sealed class ReviewPosterTests : LoggingTestBase
         var request = Request(runId, livePostingAuthorized: true);
         var key = IdempotencyKey.Build(request.Key);
 
-        var leased = store.EnqueueOutbox(new OutboxEntry
-        {
-            IdempotencyKey = key,
-            Provider = Provider,
-            ReviewRunId = runId,
-            Operation = ReviewPoster.PostReviewCommentOperation,
-            ArtifactKind = request.Key.ArtifactKind,
-            Status = OutboxStatus.Pending,
-        });
+        var leased = store.EnqueueOutbox(
+            new OutboxEntry
+            {
+                IdempotencyKey = key,
+                Provider = Provider,
+                ReviewRunId = runId,
+                Operation = ReviewPoster.PostReviewCommentOperation,
+                ArtifactKind = request.Key.ArtifactKind,
+                Status = OutboxStatus.Pending,
+            }
+        );
         store.TryTransitionOutbox(leased.Id, OutboxStatus.Pending, OutboxStatus.Sending).Should().BeTrue();
         publisher.SeedExistingComment(key, "resp-already-there");
 
@@ -155,7 +153,8 @@ public sealed class ReviewPosterTests : LoggingTestBase
 
         var collected = await poster.PostReviewAsync(
             Request(runId, livePostingAuthorized: false),
-            CancellationToken.None);
+            CancellationToken.None
+        );
         collected.Kind.Should().Be(PostOutcomeKind.CollectedOnly);
 
         var posted = await poster.PostReviewAsync(Request(runId, livePostingAuthorized: true), CancellationToken.None);
@@ -189,27 +188,33 @@ public sealed class ReviewPosterTests : LoggingTestBase
                 ArtifactKind: "review",
                 ArtifactSubject: "summary",
                 HeadSha: "wm-1",
-                VariantId: "primary"),
+                VariantId: "primary"
+            ),
             Target: new ReviewCommentTarget(Repo, "7"),
             Body: "## Review\nLooks good.",
-            LivePostingAuthorized: livePostingAuthorized);
+            LivePostingAuthorized: livePostingAuthorized
+        );
 
     private static long SeedRun(ReviewStore store)
     {
         var repoId = store.EnsureRepo(Repo);
-        return store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = "7",
-            HeadSha = "head-sha",
-            BaseSha = "base-sha",
-            TriggerWatermark = "wm-1",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "post",
-            Stage = ReviewStage.Judged,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        }).Id;
+        return store
+            .CreateOrGetReviewRun(
+                new ReviewRun
+                {
+                    RepoId = repoId,
+                    PrId = "7",
+                    HeadSha = "head-sha",
+                    BaseSha = "base-sha",
+                    TriggerWatermark = "wm-1",
+                    ReviewKind = "full",
+                    VariantId = "primary",
+                    Mode = "post",
+                    Stage = ReviewStage.Judged,
+                    WorkflowStatus = WorkflowStatus.Running,
+                    PrLifecycleState = PrLifecycleState.Open,
+                }
+            )
+            .Id;
     }
 }

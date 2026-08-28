@@ -23,10 +23,7 @@ public class WorkflowManagerRollupTests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
 
-    private static WorkflowManager NewManager(
-        Func<IStreamingAgent> controllerFactory,
-        IUsageSink? usageSink = null
-    ) =>
+    private static WorkflowManager NewManager(Func<IStreamingAgent> controllerFactory, IUsageSink? usageSink = null) =>
         new(
             controllerFactory,
             EmptyControllerOptions(),
@@ -176,7 +173,8 @@ public class WorkflowManagerRollupTests
         await using var manager = new WorkflowManager(
             () => controller.Object,
             EmptyControllerOptions(),
-            controllerConversationStore: store);
+            controllerConversationStore: store
+        );
 
         var result = await manager.StartAsync("wf-view", MinimalDefinition(), WorkflowStartMode.Sync);
 
@@ -225,12 +223,16 @@ public class WorkflowManagerRollupTests
         var turn = 0;
         var profileController = new Mock<IStreamingAgent>();
         profileController
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
-                (_, options, _) => capturedOptions ??= options)
+                (_, options, _) => capturedOptions ??= options
+            )
             .Returns(() => Task.FromResult(ToAsyncEnumerable([DriveMinimalToTerminal(++turn)])));
         await using var manager = new WorkflowManager(
             controllerAgentFactory: () => ScriptedController(NeverComplete).Object,

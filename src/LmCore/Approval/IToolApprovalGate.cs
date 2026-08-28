@@ -36,5 +36,6 @@ public interface IToolApprovalGate
     /// </returns>
     ValueTask<ToolApprovalVerdict> RequestApprovalAsync(
         ToolApprovalContext context,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken
+    );
 }

@@ -106,7 +106,10 @@ public class ObserveMessageCorrelationTests
 
         StatusOf(runtime)
             .Should()
-            .Be("validated", because: "the observer must reassemble the streamed args fragments to read the spawn name");
+            .Be(
+                "validated",
+                because: "the observer must reassemble the streamed args fragments to read the spawn name"
+            );
     }
 
     /// <summary>
@@ -143,7 +146,9 @@ public class ObserveMessageCorrelationTests
         runtime.ObserveMessage(AgentCall("tc_agent", Unit));
         runtime.ObserveMessage(AgentResult("tc_agent", """{ "summary": "done" }"""));
 
-        StatusOf(runtime).Should().Be("validated", because: "correlation must not depend on the controller polling GetWorkflow first");
+        StatusOf(runtime)
+            .Should()
+            .Be("validated", because: "correlation must not depend on the controller polling GetWorkflow first");
     }
 
     /// <summary>

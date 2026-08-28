@@ -104,21 +104,13 @@ public sealed class LifecycleApprovalRequestPublisher : IToolApprovalRequestPubl
 
         // Timed off the injected clock, not the system one, so the attempt window is the same
         // testable construct the delivery pipeline uses for its own attempts.
-        using var attemptWindow = new CancellationTokenSource(
-            _options.AttemptTimeout,
-            _timeProvider
-        );
-        using var attempt = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            attemptWindow.Token
-        );
+        using var attemptWindow = new CancellationTokenSource(_options.AttemptTimeout, _timeProvider);
+        using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, attemptWindow.Token);
 
         LifecycleDeliveryResult result;
         try
         {
-            result = await _sender
-                .SendAsync(subscriber, deliveryId, body, attempt.Token)
-                .ConfigureAwait(false);
+            result = await _sender.SendAsync(subscriber, deliveryId, body, attempt.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -132,9 +124,7 @@ public sealed class LifecycleApprovalRequestPublisher : IToolApprovalRequestPubl
                 subscriber.SubscriptionId,
                 _options.AttemptTimeout
             );
-            throw new InvalidOperationException(
-                $"The approval request timed out after {_options.AttemptTimeout}."
-            );
+            throw new InvalidOperationException($"The approval request timed out after {_options.AttemptTimeout}.");
         }
 
         if (result.Outcome != LifecycleDeliveryOutcome.Succeeded)

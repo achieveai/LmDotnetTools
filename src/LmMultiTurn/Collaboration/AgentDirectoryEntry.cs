@@ -238,10 +238,7 @@ public enum AgentDeliveryDisposition
 /// Short, content-free code explaining a refusal or failure. Codes are safe to log; the message body
 /// never is.
 /// </param>
-public readonly record struct AgentDeliveryOutcome(
-    AgentDeliveryDisposition Disposition,
-    string? ReasonCode = null
-)
+public readonly record struct AgentDeliveryOutcome(AgentDeliveryDisposition Disposition, string? ReasonCode = null)
 {
     /// <summary>Whether the target's owner accepted the message.</summary>
     public bool IsDelivered => Disposition == AgentDeliveryDisposition.Delivered;
@@ -261,10 +258,7 @@ public interface IAgentWriteEndpoint
     /// <summary>Hands one already-admitted message to the target.</summary>
     /// <param name="message">The message to deliver. Its identity and correlation are already trusted.</param>
     /// <param name="cancellationToken">Cancels the attempt.</param>
-    ValueTask<AgentDeliveryOutcome> DeliverAsync(
-        AgentMessage message,
-        CancellationToken cancellationToken = default
-    );
+    ValueTask<AgentDeliveryOutcome> DeliverAsync(AgentMessage message, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -281,7 +275,5 @@ public interface IAgentReadEndpoint
     ValueTask<string> GetStatusAsync(CancellationToken cancellationToken = default);
 
     /// <summary>The agent's conversation so far, as the projection its owner already produces.</summary>
-    ValueTask<IReadOnlyList<IMessage>> GetTranscriptAsync(
-        CancellationToken cancellationToken = default
-    );
+    ValueTask<IReadOnlyList<IMessage>> GetTranscriptAsync(CancellationToken cancellationToken = default);
 }

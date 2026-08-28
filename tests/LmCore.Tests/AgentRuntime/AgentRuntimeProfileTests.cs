@@ -20,10 +20,7 @@ public class AgentRuntimeProfileTests
     {
         var skills = new[] { AgentSkill.Inline("s1", "body") };
         var subs = new[] { SubAgentDefinition.Inline("a1", "body") };
-        var mcp = new Dictionary<string, McpServerConfig>
-        {
-            ["m1"] = McpServerConfig.CreateStdio("node", ["a.js"]),
-        };
+        var mcp = new Dictionary<string, McpServerConfig> { ["m1"] = McpServerConfig.CreateStdio("node", ["a.js"]) };
 
         var profile = new AgentRuntimeProfile
         {

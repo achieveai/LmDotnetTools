@@ -70,11 +70,7 @@ public class TranscriptVisibilityPolicyTests
         var sibling = Entry("agent-a", "collab-1", "agent-root");
         var target = Entry("agent-b", "collab-1", "agent-root");
 
-        var decision = TranscriptVisibilityPolicy.Evaluate(
-            sibling,
-            target,
-            TranscriptVisibilityMode.Ancestors
-        );
+        var decision = TranscriptVisibilityPolicy.Evaluate(sibling, target, TranscriptVisibilityMode.Ancestors);
 
         decision.IsAllowed.Should().BeFalse();
         decision.Reason.Should().Be(TranscriptAccessReasons.NotAnAncestor);
@@ -100,11 +96,7 @@ public class TranscriptVisibilityPolicyTests
         var sibling = Entry("agent-a", "collab-1", "agent-root");
         var target = Entry("agent-b", "collab-1", "agent-root");
 
-        var decision = TranscriptVisibilityPolicy.Evaluate(
-            sibling,
-            target,
-            TranscriptVisibilityMode.Open
-        );
+        var decision = TranscriptVisibilityPolicy.Evaluate(sibling, target, TranscriptVisibilityMode.Open);
 
         decision.IsAllowed.Should().BeTrue();
         decision.Reason.Should().Be(TranscriptAccessReasons.OpenCollaboration);
@@ -113,9 +105,7 @@ public class TranscriptVisibilityPolicyTests
     [Theory]
     [InlineData(TranscriptVisibilityMode.Ancestors)]
     [InlineData(TranscriptVisibilityMode.Open)]
-    public void CrossCollaborationIsRefused_EvenWhenAncestryWouldOtherwiseAllowIt(
-        TranscriptVisibilityMode mode
-    )
+    public void CrossCollaborationIsRefused_EvenWhenAncestryWouldOtherwiseAllowIt(TranscriptVisibilityMode mode)
     {
         // Checked before anything that could allow: a shared identifier across two collaborations must
         // never be enough to read across the boundary between them, and Open widens one collaboration
@@ -132,9 +122,7 @@ public class TranscriptVisibilityPolicyTests
     [Theory]
     [InlineData(TranscriptVisibilityMode.Ancestors)]
     [InlineData(TranscriptVisibilityMode.Open)]
-    public void AnUnregisteredReaderOrTargetIsDenied_RatherThanTreatedAsAnError(
-        TranscriptVisibilityMode mode
-    )
+    public void AnUnregisteredReaderOrTargetIsDenied_RatherThanTreatedAsAnError(TranscriptVisibilityMode mode)
     {
         // The caller is frequently a model-driven tool invocation carrying an arbitrary string, so "no"
         // is the honest and safe answer to a question about an agent that does not exist.
@@ -156,11 +144,7 @@ public class TranscriptVisibilityPolicyTests
         var target = Entry("agent-b", "collab-1", "agent-root");
         var reader = Entry("agent-a", "collab-1", "agent-root");
 
-        var decision = TranscriptVisibilityPolicy.Evaluate(
-            reader,
-            target,
-            TranscriptVisibilityMode.Ancestors
-        );
+        var decision = TranscriptVisibilityPolicy.Evaluate(reader, target, TranscriptVisibilityMode.Ancestors);
 
         decision.Reason.Should().NotContain(target.Role).And.NotContain(target.Description);
     }

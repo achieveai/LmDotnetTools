@@ -31,7 +31,8 @@ public class SandboxSessionRegistryInvalidateStateTests
             "sess-1",
             "conv-1",
             new Dictionary<string, SubAgentTemplate>(),
-            () => Mock.Of<IStreamingAgent>());
+            () => Mock.Of<IStreamingAgent>()
+        );
         registry.TryMarkDiscoverySeen("sess-1", "skill", "SKILL.md").Should().BeTrue();
 
         // The gateway forgets the idle session, forcing a live-check recreate (invalidate + create).
@@ -41,9 +42,13 @@ public class SandboxSessionRegistryInvalidateStateTests
 
         // Every per-session collection keyed by the dead sess-1 must now be empty.
         registry.GetThreads("sess-1").Should().BeEmpty("thread routing must be cleared on invalidation");
-        registry.TryGetSubAgentBinding("sess-1", "conv-1", out _).Should()
+        registry
+            .TryGetSubAgentBinding("sess-1", "conv-1", out _)
+            .Should()
             .BeFalse("sub-agent bindings must be cleared on invalidation");
-        registry.TryMarkDiscoverySeen("sess-1", "skill", "SKILL.md").Should()
+        registry
+            .TryMarkDiscoverySeen("sess-1", "skill", "SKILL.md")
+            .Should()
             .BeTrue("the discovery dedup ledger must be cleared on invalidation (mark is 'first' again)");
         registry.TryGetSessionById("sess-1", out _).Should().BeFalse();
     }
@@ -80,7 +85,8 @@ public class SandboxSessionRegistryInvalidateStateTests
                         Content = new StringContent(
                             $$"""{ "code": 404, "error": "Session not found: {{id}}" }""",
                             Encoding.UTF8,
-                            "application/json"),
+                            "application/json"
+                        ),
                     };
             }
 
@@ -91,7 +97,8 @@ public class SandboxSessionRegistryInvalidateStateTests
         var gateway = new SandboxGatewayLifetime(
             options,
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK))));
+            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)))
+        );
 
         var registry = new SandboxSessionRegistry(
             gateway,
@@ -101,7 +108,9 @@ public class SandboxSessionRegistryInvalidateStateTests
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
 
         return (registry, calls);
     }
@@ -115,22 +124,34 @@ public class SandboxSessionRegistryInvalidateStateTests
 
         public int RecordPost()
         {
-            lock (_gate) { return ++_postCount; }
+            lock (_gate)
+            {
+                return ++_postCount;
+            }
         }
 
         public void MarkCreated(string sessionId)
         {
-            lock (_gate) { _ = _created.Add(sessionId); }
+            lock (_gate)
+            {
+                _ = _created.Add(sessionId);
+            }
         }
 
         public void Evict(string sessionId)
         {
-            lock (_gate) { _ = _evicted.Add(sessionId); }
+            lock (_gate)
+            {
+                _ = _evicted.Add(sessionId);
+            }
         }
 
         public bool IsAlive(string sessionId)
         {
-            lock (_gate) { return _created.Contains(sessionId) && !_evicted.Contains(sessionId); }
+            lock (_gate)
+            {
+                return _created.Contains(sessionId) && !_evicted.Contains(sessionId);
+            }
         }
     }
 
@@ -138,7 +159,7 @@ public class SandboxSessionRegistryInvalidateStateTests
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(respond(request));
+            CancellationToken cancellationToken
+        ) => Task.FromResult(respond(request));
     }
 }

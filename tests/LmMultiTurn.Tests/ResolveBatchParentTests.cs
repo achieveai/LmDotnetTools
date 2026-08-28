@@ -17,11 +17,7 @@ public class ResolveBatchParentTests
     public void AllNullParents_ReturnsNoFork()
     {
         var harness = new ForkResolveProbe("t");
-        var batch = new List<QueuedInput>
-        {
-            MakeQueued("a", parent: null),
-            MakeQueued("b", parent: null),
-        };
+        var batch = new List<QueuedInput> { MakeQueued("a", parent: null), MakeQueued("b", parent: null) };
 
         var (parent, isFork) = harness.Resolve(batch);
 
@@ -33,10 +29,7 @@ public class ResolveBatchParentTests
     public void EmptyParentString_TreatedAsNull()
     {
         var harness = new ForkResolveProbe("t");
-        var batch = new List<QueuedInput>
-        {
-            MakeQueued("a", parent: string.Empty),
-        };
+        var batch = new List<QueuedInput> { MakeQueued("a", parent: string.Empty) };
 
         var (parent, isFork) = harness.Resolve(batch);
 
@@ -48,10 +41,7 @@ public class ResolveBatchParentTests
     public void SingleNonNullParent_ReturnsExplicitFork()
     {
         var harness = new ForkResolveProbe("t");
-        var batch = new List<QueuedInput>
-        {
-            MakeQueued("a", parent: "run-parent-1"),
-        };
+        var batch = new List<QueuedInput> { MakeQueued("a", parent: "run-parent-1") };
 
         var (parent, isFork) = harness.Resolve(batch);
 
@@ -93,8 +83,11 @@ public class ResolveBatchParentTests
 
         parent.Should().Be("run-parent-1");
         isFork.Should().BeTrue();
-        logger.Warnings.Should().ContainSingle().Which
-            .Should().Contain("Mixed ParentRunId values")
+        logger
+            .Warnings.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Contain("Mixed ParentRunId values")
             .And.Contain("run-parent-1");
     }
 
@@ -127,14 +120,12 @@ public class ResolveBatchParentTests
         isFork.Should().BeFalse();
     }
 
-    private static QueuedInput MakeQueued(string receiptId, string? parent)
-        => new(
-            new UserInput(
-                [new TextMessage { Text = "x", Role = Role.User }],
-                InputId: receiptId,
-                ParentRunId: parent),
+    private static QueuedInput MakeQueued(string receiptId, string? parent) =>
+        new(
+            new UserInput([new TextMessage { Text = "x", Role = Role.User }], InputId: receiptId, ParentRunId: parent),
             receiptId,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow
+        );
 
     /// <summary>
     /// Test-only subclass that exposes <c>ResolveBatchParent</c> via a public method.
@@ -142,12 +133,10 @@ public class ResolveBatchParentTests
     private sealed class ForkResolveProbe : MultiTurnAgentBase
     {
         public ForkResolveProbe(string threadId, ILogger? logger = null)
-            : base(threadId, logger: logger)
-        {
-        }
+            : base(threadId, logger: logger) { }
 
-        public (string? ParentRunId, bool IsExplicitFork) Resolve(IReadOnlyList<QueuedInput> inputs)
-            => ResolveBatchParent(inputs);
+        public (string? ParentRunId, bool IsExplicitFork) Resolve(IReadOnlyList<QueuedInput> inputs) =>
+            ResolveBatchParent(inputs);
 
         protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
     }
@@ -156,8 +145,8 @@ public class ResolveBatchParentTests
     {
         public List<string> Warnings { get; } = [];
 
-        public IDisposable BeginScope<TState>(TState state) where TState : notnull
-            => NullScope.Instance;
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
 
         public bool IsEnabled(LogLevel logLevel) => true;
 
@@ -166,7 +155,8 @@ public class ResolveBatchParentTests
             EventId eventId,
             TState state,
             Exception? exception,
-            Func<TState, Exception?, string> formatter)
+            Func<TState, Exception?, string> formatter
+        )
         {
             if (logLevel == LogLevel.Warning)
             {
@@ -177,6 +167,7 @@ public class ResolveBatchParentTests
         private sealed class NullScope : IDisposable
         {
             public static readonly NullScope Instance = new();
+
             public void Dispose() { }
         }
     }

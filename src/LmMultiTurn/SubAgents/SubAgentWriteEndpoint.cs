@@ -48,39 +48,25 @@ internal sealed class SubAgentWriteEndpoint : IAgentWriteEndpoint
             // self-describing <agent-message> envelope — that is what AgentMessage projects — but the
             // structured sender, type, and correlation survive into the child's history, the UI, and
             // persistence, where a flattened TextMessage would have left an anonymous user turn.
-            _ = await _manager.SendMessageAsync(
-                _agentId,
-                message,
-                runInBackground: true,
-                cancellationToken
-            );
+            _ = await _manager.SendMessageAsync(_agentId, message, runInBackground: true, cancellationToken);
 
             return new AgentDeliveryOutcome(AgentDeliveryDisposition.Delivered);
         }
         catch (ObjectDisposedException)
         {
-            return new AgentDeliveryOutcome(
-                AgentDeliveryDisposition.Failed,
-                ManagerDisposedReasonCode
-            );
+            return new AgentDeliveryOutcome(AgentDeliveryDisposition.Failed, ManagerDisposedReasonCode);
         }
         catch (ArgumentException)
         {
             // The manager no longer knows this id at all — retrying under the same message identifier
             // cannot succeed, so this is terminal rather than recoverable backpressure.
-            return new AgentDeliveryOutcome(
-                AgentDeliveryDisposition.Failed,
-                UnknownTargetReasonCode
-            );
+            return new AgentDeliveryOutcome(AgentDeliveryDisposition.Failed, UnknownTargetReasonCode);
         }
         catch (InvalidOperationException)
         {
             // Still queued, or the restart path could not take a concurrency slot in time. Recoverable:
             // the sender may try again once the target is actually running.
-            return new AgentDeliveryOutcome(
-                AgentDeliveryDisposition.Refused,
-                NotDeliverableReasonCode
-            );
+            return new AgentDeliveryOutcome(AgentDeliveryDisposition.Refused, NotDeliverableReasonCode);
         }
     }
 }

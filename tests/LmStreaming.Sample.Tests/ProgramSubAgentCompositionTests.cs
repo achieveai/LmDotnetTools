@@ -18,29 +18,21 @@ public sealed class ProgramSubAgentCompositionTests
     [Fact]
     public void OutputTokenPolicyHelpers_ApplyConfiguredDefaults_AndPreserveExplicitValues()
     {
-        var policy = new AgentOutputTokenPolicy(
-            new AgentOutputTokenOptions { Primary = 24_576, Delegated = 16_384 }
-        );
+        var policy = new AgentOutputTokenPolicy(new AgentOutputTokenOptions { Primary = 24_576, Delegated = 16_384 });
 
-        global::Program.ApplyPrimaryOutputTokens(new GenerateReplyOptions(), policy)
-            .MaxToken.Should().Be(24_576);
-        global::Program.ApplyPrimaryOutputTokens(
-                new GenerateReplyOptions(),
-                policy,
-                useDelegatedFallback: true
-            )
-            .MaxToken.Should().Be(16_384);
-        global::Program.ApplyPrimaryOutputTokens(
-                new GenerateReplyOptions { MaxToken = 4_096 },
-                policy,
-                useDelegatedFallback: true
-            )
-            .MaxToken.Should().Be(4_096);
-        global::Program.ApplyDelegatedOutputTokens(
-                new GenerateReplyOptions { ModelId = "controller" },
-                policy
-            )
-            .MaxToken.Should().Be(16_384);
+        global::Program.ApplyPrimaryOutputTokens(new GenerateReplyOptions(), policy).MaxToken.Should().Be(24_576);
+        global::Program
+            .ApplyPrimaryOutputTokens(new GenerateReplyOptions(), policy, useDelegatedFallback: true)
+            .MaxToken.Should()
+            .Be(16_384);
+        global::Program
+            .ApplyPrimaryOutputTokens(new GenerateReplyOptions { MaxToken = 4_096 }, policy, useDelegatedFallback: true)
+            .MaxToken.Should()
+            .Be(4_096);
+        global::Program
+            .ApplyDelegatedOutputTokens(new GenerateReplyOptions { ModelId = "controller" }, policy)
+            .MaxToken.Should()
+            .Be(16_384);
 
         var subAgentOptions = global::Program.ApplyDelegatedOutputTokens(
             new SubAgentOptions
@@ -92,19 +84,16 @@ public sealed class ProgramSubAgentCompositionTests
     [InlineData(SystemChatModes.DefaultModeId, false)]
     public async Task CreateRootCollaboration_WithUnspecifiedConfig_GivesOnlyWorkspaceTheCollaborationSurface(
         string modeId,
-        bool expectCollaboration)
+        bool expectCollaboration
+    )
     {
         // The shipped appsettings shape: limits configured, Enabled left unset so the mode decides.
         var hostOptions = new AgentCollaborationHostOptions();
-        hostOptions.Enabled.Should()
-            .BeNull("this proves nothing if the configuration already made the decision");
+        hostOptions.Enabled.Should().BeNull("this proves nothing if the configuration already made the decision");
 
         var mode = SystemChatModes.GetById(modeId);
         mode.Should().NotBeNull();
-        var setup = global::Program.CreateRootCollaboration(
-            hostOptions,
-            ModeCapabilities.Resolve(mode!),
-            "thread-1");
+        var setup = global::Program.CreateRootCollaboration(hostOptions, ModeCapabilities.Resolve(mode!), "thread-1");
 
         var templates = new Dictionary<string, SubAgentTemplate>
         {
@@ -117,12 +106,10 @@ public sealed class ProgramSubAgentCompositionTests
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: new SubAgentOptions { Templates = templates },
             source: source,
-            collaboration: setup);
+            collaboration: setup
+        );
 
-        var toolNames = new SubAgentToolProvider(manager, source)
-            .GetFunctions()
-            .Select(f => f.Contract.Name)
-            .ToArray();
+        var toolNames = new SubAgentToolProvider(manager, source).GetFunctions().Select(f => f.Contract.Name).ToArray();
 
         if (expectCollaboration)
         {
@@ -143,22 +130,21 @@ public sealed class ProgramSubAgentCompositionTests
         var routedAgent = new Mock<IStreamingAgent>().Object;
         var requestProperties = ImmutableDictionary<string, object?>.Empty.Add("effort", "high");
         var legacyFactory = new Func<IStreamingAgent>(() => templateAgent);
-        var characteristicsFactory =
-            new Func<SubAgentCharacteristics, SubAgentProviderAgent>(_ =>
-                new SubAgentProviderAgent(routedAgent, requestProperties));
+        var characteristicsFactory = new Func<SubAgentCharacteristics, SubAgentProviderAgent>(
+            _ => new SubAgentProviderAgent(routedAgent, requestProperties)
+        );
 
         var result = global::Program.ApplyCharacteristicsAgentFactory(
             new SubAgentOptions
             {
-                Templates = new Dictionary<string, SubAgentTemplate>
-                {
-                    ["custom"] = Template("custom", legacyFactory),
-                },
+                Templates = new Dictionary<string, SubAgentTemplate> { ["custom"] = Template("custom", legacyFactory) },
             },
-            characteristicsFactory);
+            characteristicsFactory
+        );
 
-        var provider = result.Templates["custom"].CharacteristicsAgentFactory!(
-            new SubAgentCharacteristics(null, ReasoningEffort.High));
+        var provider = result
+            .Templates["custom"]
+            .CharacteristicsAgentFactory!(new SubAgentCharacteristics(null, ReasoningEffort.High));
 
         provider.Agent.Should().BeSameAs(templateAgent);
         provider.ExtraProperties.Should().BeSameAs(requestProperties);
@@ -170,27 +156,23 @@ public sealed class ProgramSubAgentCompositionTests
         var templateAgent = new Mock<IStreamingAgent>().Object;
         var routedAgent = new Mock<IStreamingAgent>().Object;
         var legacyFactory = new Func<IStreamingAgent>(() => templateAgent);
-        var characteristicsFactory =
-            new Func<SubAgentCharacteristics, SubAgentProviderAgent>(_ =>
-                new SubAgentProviderAgent(
-                    routedAgent,
-                    ImmutableDictionary<string, object?>.Empty));
+        var characteristicsFactory = new Func<SubAgentCharacteristics, SubAgentProviderAgent>(
+            _ => new SubAgentProviderAgent(routedAgent, ImmutableDictionary<string, object?>.Empty)
+        );
 
         var result = global::Program.ApplyCharacteristicsAgentFactory(
             new SubAgentOptions
             {
-                Templates = new Dictionary<string, SubAgentTemplate>
-                {
-                    ["custom"] = Template("custom", legacyFactory),
-                },
+                Templates = new Dictionary<string, SubAgentTemplate> { ["custom"] = Template("custom", legacyFactory) },
             },
-            characteristicsFactory);
+            characteristicsFactory
+        );
 
-        var provider = result.Templates["custom"].CharacteristicsAgentFactory!(
-            new SubAgentCharacteristics("explicit-model", null)
-            {
-                IsModelExplicitlySelected = true,
-            });
+        var provider = result
+            .Templates["custom"]
+            .CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics("explicit-model", null) { IsModelExplicitlySelected = true }
+            );
 
         provider.Agent.Should().BeSameAs(routedAgent);
     }
@@ -208,19 +190,16 @@ public sealed class ProgramSubAgentCompositionTests
         var result = global::Program.ApplyCharacteristicsAgentFactory(
             new SubAgentOptions
             {
-                Templates = new Dictionary<string, SubAgentTemplate>
-                {
-                    ["custom"] = Template("custom", legacyFactory),
-                },
+                Templates = new Dictionary<string, SubAgentTemplate> { ["custom"] = Template("custom", legacyFactory) },
             },
             _ => new SubAgentProviderAgent(
                 new Mock<IStreamingAgent>().Object,
-                ImmutableDictionary<string, object?>.Empty));
+                ImmutableDictionary<string, object?>.Empty
+            )
+        );
 
-        var first = result.Templates["custom"].CharacteristicsAgentFactory!(
-            new SubAgentCharacteristics(null, null));
-        var second = result.Templates["custom"].CharacteristicsAgentFactory!(
-            new SubAgentCharacteristics(null, null));
+        var first = result.Templates["custom"].CharacteristicsAgentFactory!(new SubAgentCharacteristics(null, null));
+        var second = result.Templates["custom"].CharacteristicsAgentFactory!(new SubAgentCharacteristics(null, null));
 
         first.Agent.Should().NotBeSameAs(second.Agent);
         createdAgents.Should().Equal(first.Agent, second.Agent);
@@ -234,11 +213,9 @@ public sealed class ProgramSubAgentCompositionTests
         await using var registry = CreateRegistry();
         var legacyFactory = new Func<IStreamingAgent>(() => new Mock<IStreamingAgent>().Object);
         var providerAgent = new Mock<IStreamingAgent>().Object;
-        var characteristicsFactory =
-            new Func<SubAgentCharacteristics, SubAgentProviderAgent>(_ =>
-                new SubAgentProviderAgent(
-                    providerAgent,
-                    ImmutableDictionary<string, object?>.Empty));
+        var characteristicsFactory = new Func<SubAgentCharacteristics, SubAgentProviderAgent>(
+            _ => new SubAgentProviderAgent(providerAgent, ImmutableDictionary<string, object?>.Empty)
+        );
         var templates = new Dictionary<string, SubAgentTemplate>();
 
         var binding = global::Program.BindConversationSubAgents(
@@ -247,7 +224,8 @@ public sealed class ProgramSubAgentCompositionTests
             "conversation",
             templates,
             legacyFactory,
-            characteristicsFactory);
+            characteristicsFactory
+        );
 
         binding.AgentFactory.Should().BeSameAs(legacyFactory);
         binding.CharacteristicsAgentFactory.Should().BeSameAs(characteristicsFactory);
@@ -261,16 +239,12 @@ public sealed class ProgramSubAgentCompositionTests
         var latestProvider = CreateRespondingAgent().Object;
         var firstLegacyFactory = new Func<IStreamingAgent>(() => firstProvider);
         var latestLegacyFactory = new Func<IStreamingAgent>(() => latestProvider);
-        var firstCharacteristicsFactory =
-            new Func<SubAgentCharacteristics, SubAgentProviderAgent>(_ =>
-                new SubAgentProviderAgent(
-                    firstProvider,
-                    ImmutableDictionary<string, object?>.Empty));
-        var latestCharacteristicsFactory =
-            new Func<SubAgentCharacteristics, SubAgentProviderAgent>(_ =>
-                new SubAgentProviderAgent(
-                    latestProvider,
-                    ImmutableDictionary<string, object?>.Empty));
+        var firstCharacteristicsFactory = new Func<SubAgentCharacteristics, SubAgentProviderAgent>(
+            _ => new SubAgentProviderAgent(firstProvider, ImmutableDictionary<string, object?>.Empty)
+        );
+        var latestCharacteristicsFactory = new Func<SubAgentCharacteristics, SubAgentProviderAgent>(
+            _ => new SubAgentProviderAgent(latestProvider, ImmutableDictionary<string, object?>.Empty)
+        );
         var firstSeed = Template("first-seed", firstLegacyFactory);
         var discovered = Template("discovered", firstLegacyFactory) with
         {
@@ -289,7 +263,8 @@ public sealed class ProgramSubAgentCompositionTests
             "conversation",
             new Dictionary<string, SubAgentTemplate> { ["first-seed"] = firstSeed },
             firstLegacyFactory,
-            firstCharacteristicsFactory);
+            firstCharacteristicsFactory
+        );
         firstBinding.Source.TryRegister("discovered", discovered).Should().BeTrue();
 
         var recreatedBinding = global::Program.BindConversationSubAgents(
@@ -302,34 +277,41 @@ public sealed class ProgramSubAgentCompositionTests
                 ["latest-seed"] = Template("latest-seed", latestLegacyFactory),
             },
             latestLegacyFactory,
-            latestCharacteristicsFactory);
+            latestCharacteristicsFactory
+        );
 
         recreatedBinding.Source.Should().BeSameAs(firstBinding.Source);
         var retained = recreatedBinding.Source.Templates["discovered"];
-        retained.Should().BeEquivalentTo(
-            discovered,
-            options => options
-                .Excluding(template => template.AgentFactory)
-                .Excluding(template => template.CharacteristicsAgentFactory),
-            "recreation must preserve all first-wins content and metadata");
+        retained
+            .Should()
+            .BeEquivalentTo(
+                discovered,
+                options =>
+                    options
+                        .Excluding(template => template.AgentFactory)
+                        .Excluding(template => template.CharacteristicsAgentFactory),
+                "recreation must preserve all first-wins content and metadata"
+            );
         retained.Name.Should().NotBe("replacement");
         retained.AgentFactory.Should().BeSameAs(firstLegacyFactory);
         retained.AgentFactory().Should().BeSameAs(firstProvider);
-        retained.CharacteristicsAgentFactory!(
-                new SubAgentCharacteristics(null, ReasoningEffort.High))
-            .Agent.Should().BeSameAs(firstProvider);
-        retained.CharacteristicsAgentFactory!(
-                new SubAgentCharacteristics("spawn-model", ReasoningEffort.High)
-                {
-                    IsModelExplicitlySelected = true,
-                })
-            .Agent.Should().BeSameAs(latestProvider);
+        retained
+            .CharacteristicsAgentFactory!(new SubAgentCharacteristics(null, ReasoningEffort.High))
+            .Agent.Should()
+            .BeSameAs(firstProvider);
+        retained
+            .CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics("spawn-model", ReasoningEffort.High) { IsModelExplicitlySelected = true }
+            )
+            .Agent.Should()
+            .BeSameAs(latestProvider);
         await using var manager = new SubAgentManager(
             Mock.Of<IMultiTurnAgent>(),
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             new SubAgentOptions { Templates = recreatedBinding.Source.Templates },
-            recreatedBinding.Source);
+            recreatedBinding.Source
+        );
         _ = await manager.SpawnAsync("discovered", "invoke the retained template");
         var discoveredAfterRefresh = Template("post-refresh", latestLegacyFactory) with
         {
@@ -337,16 +319,19 @@ public sealed class ProgramSubAgentCompositionTests
         };
         recreatedBinding.Source.TryRegister("post-refresh", discoveredAfterRefresh).Should().BeTrue();
         recreatedBinding.Source.Templates["post-refresh"].AgentFactory().Should().BeSameAs(latestProvider);
-        recreatedBinding.Source.Templates["post-refresh"].CharacteristicsAgentFactory!(
-                new SubAgentCharacteristics(null, null))
-            .Agent.Should().BeSameAs(latestProvider);
+        recreatedBinding
+            .Source.Templates["post-refresh"]
+            .CharacteristicsAgentFactory!(new SubAgentCharacteristics(null, null))
+            .Agent.Should()
+            .BeSameAs(latestProvider);
         recreatedBinding.Source.Templates.Should().ContainKey("first-seed").And.ContainKey("latest-seed");
         recreatedBinding.AgentFactory.Should().BeSameAs(latestLegacyFactory);
         recreatedBinding.AgentFactory().Should().BeSameAs(latestProvider);
         recreatedBinding.CharacteristicsAgentFactory.Should().BeSameAs(latestCharacteristicsFactory);
-        recreatedBinding.CharacteristicsAgentFactory!(
-                new SubAgentCharacteristics("latest-model", ReasoningEffort.High))
-            .Agent.Should().BeSameAs(latestProvider);
+        recreatedBinding
+            .CharacteristicsAgentFactory!(new SubAgentCharacteristics("latest-model", ReasoningEffort.High))
+            .Agent.Should()
+            .BeSameAs(latestProvider);
     }
 
     [Fact]
@@ -355,19 +340,11 @@ public sealed class ProgramSubAgentCompositionTests
         await using var registry = CreateRegistry();
         var models = new[]
         {
-            new CopilotModelInfo(
-                "parent-model",
-                "Parent",
-                CopilotModelVendor.OpenAI,
-                CopilotModelTransport.Responses)
+            new CopilotModelInfo("parent-model", "Parent", CopilotModelVendor.OpenAI, CopilotModelTransport.Responses)
             {
                 ReasoningEfforts = ["low", "medium", "high", "xhigh"],
             },
-            new CopilotModelInfo(
-                "tier-model",
-                "Tier",
-                CopilotModelVendor.OpenAI,
-                CopilotModelTransport.Responses)
+            new CopilotModelInfo("tier-model", "Tier", CopilotModelVendor.OpenAI, CopilotModelTransport.Responses)
             {
                 ReasoningEfforts = ["low", "medium", "high", "xhigh"],
             },
@@ -375,7 +352,8 @@ public sealed class ProgramSubAgentCompositionTests
                 "explicit-model",
                 "Explicit",
                 CopilotModelVendor.OpenAI,
-                CopilotModelTransport.Responses)
+                CopilotModelTransport.Responses
+            )
             {
                 ReasoningEfforts = ["low", "medium", "high", "xhigh"],
             },
@@ -383,21 +361,16 @@ public sealed class ProgramSubAgentCompositionTests
         var catalog = new ProviderRegistry(models, Mock.Of<IFileSystemProbe>());
         var resolver = new SubAgentModelResolver(
             catalog,
-            new SubAgentIntelligenceOptions
-            {
-                Tiers = new Dictionary<int, string[]> { [3] = ["tier-model"] },
-            },
-            new CapturingLogger<SubAgentModelResolver>());
-        var loader = new WorkspaceSubAgentLoader(
-            registry,
-            new CapturingLogger<WorkspaceSubAgentLoader>(),
-            resolver);
+            new SubAgentIntelligenceOptions { Tiers = new Dictionary<int, string[]> { [3] = ["tier-model"] } },
+            new CapturingLogger<SubAgentModelResolver>()
+        );
+        var loader = new WorkspaceSubAgentLoader(registry, new CapturingLogger<WorkspaceSubAgentLoader>(), resolver);
         var inheritedOptions = new List<GenerateReplyOptions?>();
         var routedOptions = new Dictionary<string, GenerateReplyOptions?>();
         Func<IStreamingAgent> inheritedAgentFactory = () =>
             CreateRespondingAgent(options => inheritedOptions.Add(options)).Object;
-        Func<SubAgentCharacteristics, SubAgentProviderAgent> staleCharacteristicsFactory =
-            _ => throw new InvalidOperationException("The pre-recreation route must not execute.");
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> staleCharacteristicsFactory = _ =>
+            throw new InvalidOperationException("The pre-recreation route must not execute.");
         var session = new SandboxSession("default", "session", "default", "workspace");
         var inherited = await loader.LoadOneWithCharacteristicsAsync(
             session,
@@ -409,9 +382,11 @@ public sealed class ProgramSubAgentCompositionTests
                 effort: medium
                 ---
                 Use the inherited route.
-                """),
+                """
+            ),
             inheritedAgentFactory,
-            staleCharacteristicsFactory);
+            staleCharacteristicsFactory
+        );
         var tiered = await loader.LoadOneWithCharacteristicsAsync(
             session,
             InlineAgent(
@@ -423,9 +398,11 @@ public sealed class ProgramSubAgentCompositionTests
                 effort: high
                 ---
                 Use the tier-selected route.
-                """),
+                """
+            ),
             () => throw new InvalidOperationException("Tier routing must use the characteristics factory."),
-            staleCharacteristicsFactory);
+            staleCharacteristicsFactory
+        );
         var explicitTemplate = await loader.LoadOneWithCharacteristicsAsync(
             session,
             InlineAgent(
@@ -437,9 +414,11 @@ public sealed class ProgramSubAgentCompositionTests
                 effort: xhigh
                 ---
                 Use the author-pinned route.
-                """),
+                """
+            ),
             () => throw new InvalidOperationException("Explicit routing must use the characteristics factory."),
-            staleCharacteristicsFactory);
+            staleCharacteristicsFactory
+        );
         var initialOptions = global::Program.ApplyCharacteristicsAgentFactory(
             new SubAgentOptions
             {
@@ -450,27 +429,31 @@ public sealed class ProgramSubAgentCompositionTests
                     ["explicit"] = explicitTemplate!,
                 },
             },
-            staleCharacteristicsFactory);
+            staleCharacteristicsFactory
+        );
         var firstBinding = global::Program.BindConversationSubAgents(
             registry,
             "session",
             "conversation",
             initialOptions.Templates,
             inheritedAgentFactory,
-            staleCharacteristicsFactory);
+            staleCharacteristicsFactory
+        );
         var latestFactory = new CharacteristicsAgentFactory(
             catalog,
             CreateRespondingAgent().Object,
             model => CreateRespondingAgent(options => routedOptions[model.Id] = options).Object,
             new CapturingLogger<CharacteristicsAgentFactory>(),
-            models[0]);
+            models[0]
+        );
         var rebound = global::Program.BindConversationSubAgents(
             registry,
             "session",
             "conversation",
             initialOptions.Templates,
             inheritedAgentFactory,
-            latestFactory.Create);
+            latestFactory.Create
+        );
         rebound.Source.Should().BeSameAs(firstBinding.Source);
         await using var manager = new SubAgentManager(
             Mock.Of<IMultiTurnAgent>(),
@@ -478,7 +461,8 @@ public sealed class ProgramSubAgentCompositionTests
             new Dictionary<string, ToolHandler>(),
             new SubAgentOptions { Templates = rebound.Source.Templates },
             rebound.Source,
-            parentModelId: "parent-model");
+            parentModelId: "parent-model"
+        );
 
         _ = await manager.SpawnAsync("inherited", "inherit");
         _ = await manager.SpawnAsync("tiered", "tier");
@@ -486,17 +470,26 @@ public sealed class ProgramSubAgentCompositionTests
 
         inheritedOptions.Should().ContainSingle();
         inheritedOptions[0]!.ModelId.Should().Be("parent-model");
-        inheritedOptions[0]!.ExtraProperties["Reasoning"]
-            .Should().BeOfType<ResponseReasoningOptions>()
-            .Which.Effort.Should().Be("medium");
+        inheritedOptions[0]!
+            .ExtraProperties["Reasoning"]
+            .Should()
+            .BeOfType<ResponseReasoningOptions>()
+            .Which.Effort.Should()
+            .Be("medium");
         routedOptions["tier-model"]!.ModelId.Should().Be("tier-model");
-        routedOptions["tier-model"]!.ExtraProperties["Reasoning"]
-            .Should().BeOfType<ResponseReasoningOptions>()
-            .Which.Effort.Should().Be("high");
+        routedOptions["tier-model"]!
+            .ExtraProperties["Reasoning"]
+            .Should()
+            .BeOfType<ResponseReasoningOptions>()
+            .Which.Effort.Should()
+            .Be("high");
         routedOptions["explicit-model"]!.ModelId.Should().Be("explicit-model");
-        routedOptions["explicit-model"]!.ExtraProperties["Reasoning"]
-            .Should().BeOfType<ResponseReasoningOptions>()
-            .Which.Effort.Should().Be("xhigh");
+        routedOptions["explicit-model"]!
+            .ExtraProperties["Reasoning"]
+            .Should()
+            .BeOfType<ResponseReasoningOptions>()
+            .Which.Effort.Should()
+            .Be("xhigh");
         rebound.Source.Templates["tiered"].IsModelExplicitlySelected.Should().BeFalse();
         rebound.Source.Templates["tiered"].IsModelTierResolved.Should().BeTrue();
         rebound.Source.Templates["explicit"].IsModelExplicitlySelected.Should().BeTrue();
@@ -528,10 +521,12 @@ public sealed class ProgramSubAgentCompositionTests
         wrappedA.Should().NotBeSameAs(store);
 
         // The whole point: SubAgentManager only disposes a child store when `store is IAsyncDisposable`.
-        (wrappedA is IAsyncDisposable).Should().BeFalse(
-            "a child must never be able to dispose the shared conversation store");
-        (wrappedA is IDisposable).Should().BeFalse(
-            "a child must never be able to dispose the shared conversation store");
+        (wrappedA is IAsyncDisposable)
+            .Should()
+            .BeFalse("a child must never be able to dispose the shared conversation store");
+        (wrappedA is IDisposable)
+            .Should()
+            .BeFalse("a child must never be able to dispose the shared conversation store");
     }
 
     [Fact]
@@ -570,10 +565,12 @@ public sealed class ProgramSubAgentCompositionTests
         var options = global::Program.ApplyDefaultSubAgentStore(
             new SubAgentOptions { Templates = new Dictionary<string, SubAgentTemplate>() },
             backing,
-            stampProvenance: true);
+            stampProvenance: true
+        );
 
-        options.DefaultConversationStoreFactory.Should().BeNull(
-            "provenance stamping routes through the provenance-aware seam, not the plain default factory");
+        options
+            .DefaultConversationStoreFactory.Should()
+            .BeNull("provenance stamping routes through the provenance-aware seam, not the plain default factory");
         options.ProvenanceAwareConversationStoreFactory.Should().NotBeNull();
 
         const string nestedParent = "subagent-child-not-root";
@@ -586,14 +583,15 @@ public sealed class ProgramSubAgentCompositionTests
             Status: SubAgentStatus.Running,
             ThreadId: grandchildThread,
             LastActivityUtc: null,
-            TerminalAtUtc: null);
+            TerminalAtUtc: null
+        );
 
         var childStore = options.ProvenanceAwareConversationStoreFactory!(
             grandchildThread,
             nestedParent,
-            queryThread => string.Equals(queryThread, grandchildThread, StringComparison.Ordinal)
-                ? runningSnapshot
-                : null);
+            queryThread =>
+                string.Equals(queryThread, grandchildThread, StringComparison.Ordinal) ? runningSnapshot : null
+        );
 
         childStore.Should().BeOfType<NonOwningConversationStore>();
 
@@ -604,20 +602,27 @@ public sealed class ProgramSubAgentCompositionTests
             {
                 ThreadId = grandchildThread,
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty.Add(
-                    SubAgentProvenance.TerminalAtKey, 999L),
-            });
+                Properties = ImmutableDictionary<string, object>.Empty.Add(SubAgentProvenance.TerminalAtKey, 999L),
+            }
+        );
 
         var stamped = await backing.LoadMetadataAsync(grandchildThread);
         stamped.Should().NotBeNull();
         stamped!.Properties.Should().NotBeNull();
-        stamped.Properties![SubAgentProvenance.ParentThreadIdKey].Should().Be(
-            nestedParent,
-            "the child is attributed to the caller's own parent, not a root captured once at startup");
+        stamped
+            .Properties![SubAgentProvenance.ParentThreadIdKey]
+            .Should()
+            .Be(
+                nestedParent,
+                "the child is attributed to the caller's own parent, not a root captured once at startup"
+            );
         stamped.Properties[SubAgentProvenance.StatusKey].Should().Be("running");
-        stamped.Properties.Should().NotContainKey(
-            SubAgentProvenance.TerminalAtKey,
-            "a running snapshot's RemovalMarker must clear the stale terminal instant");
+        stamped
+            .Properties.Should()
+            .NotContainKey(
+                SubAgentProvenance.TerminalAtKey,
+                "a running snapshot's RemovalMarker must clear the stale terminal instant"
+            );
     }
 
     [Fact]
@@ -630,14 +635,16 @@ public sealed class ProgramSubAgentCompositionTests
         };
         var options = global::Program.ApplyDefaultSubAgentStore(
             new SubAgentOptions { Templates = templates },
-            fakeStore);
+            fakeStore
+        );
         var source = new MutableSubAgentTemplateSource(templates);
         await using var manager = new SubAgentManager(
             Mock.Of<IMultiTurnAgent>(),
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options,
-            source);
+            source
+        );
 
         _ = await manager.SpawnAsync("worker", "persist my transcript");
 
@@ -655,7 +662,8 @@ public sealed class ProgramSubAgentCompositionTests
     private static async Task<IReadOnlyList<PersistedMessage>> WaitForPersistedMessagesAsync(
         InMemoryConversationStore store,
         string threadId,
-        int timeoutMs = 5000)
+        int timeoutMs = 5000
+    )
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs));
         while (true)
@@ -677,7 +685,8 @@ public sealed class ProgramSubAgentCompositionTests
         var gateway = new SandboxGatewayLifetime(
             options,
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler()));
+            new HttpClient(new StubHandler())
+        );
         return new SandboxSessionRegistry(
             gateway,
             options,
@@ -686,12 +695,12 @@ public sealed class ProgramSubAgentCompositionTests
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
     }
 
-    private static SubAgentTemplate Template(
-        string name,
-        Func<IStreamingAgent> agentFactory) =>
+    private static SubAgentTemplate Template(string name, Func<IStreamingAgent> agentFactory) =>
         new()
         {
             Name = name,
@@ -702,26 +711,28 @@ public sealed class ProgramSubAgentCompositionTests
     private static SandboxSessionRegistry.DiscoveredItem InlineAgent(string name, string content) =>
         new("subagent", name, name, $"/marketplaces/test/{name}.md", content);
 
-    private static Mock<IStreamingAgent> CreateRespondingAgent(
-        Action<GenerateReplyOptions?>? captureOptions = null)
+    private static Mock<IStreamingAgent> CreateRespondingAgent(Action<GenerateReplyOptions?>? captureOptions = null)
     {
         var agent = new Mock<IStreamingAgent>();
         agent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
-                (_, options, _) => captureOptions?.Invoke(options))
-            .ReturnsAsync(ToAsyncEnumerable([
-                new TextMessage { Text = "done", Role = Role.Assistant },
-            ]));
+                (_, options, _) => captureOptions?.Invoke(options)
+            )
+            .ReturnsAsync(ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }]));
         return agent;
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         IReadOnlyList<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
         foreach (var message in messages)
         {
@@ -735,7 +746,7 @@ public sealed class ProgramSubAgentCompositionTests
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("HTTP is not expected");
+            CancellationToken cancellationToken
+        ) => throw new InvalidOperationException("HTTP is not expected");
     }
 }

@@ -226,7 +226,6 @@ public sealed class WorkflowManager : IAsyncDisposable
 
     private readonly MultiTurnLifecycleServices? _lifecycleServices;
 
-
     private readonly WorkflowValidator _validator = new();
     private readonly ConcurrentDictionary<string, WorkflowEntry> _workflows = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _concurrencyGate;
@@ -260,7 +259,6 @@ public sealed class WorkflowManager : IAsyncDisposable
     /// </param>
     /// <param name="logger">Optional logger.</param>
     /// <param name="schemaValidator">Optional JSON-Schema validator forwarded to the runtime.</param>
-
     /// <param name="rootUsageSink">
     ///     Optional LATE-BOUND getter for the originating conversation's root usage sink (issue #196). It is
     ///     resolved once per run at <see cref="StartAsync"/> time (not at construction), so a host that creates
@@ -323,14 +321,12 @@ public sealed class WorkflowManager : IAsyncDisposable
         GenerateReplyOptions? controllerDefaultOptions = null,
         ILogger? logger = null,
         IJsonSchemaValidator? schemaValidator = null,
-
         Func<IUsageSink?>? rootUsageSink = null,
         Func<InheritableToolSnapshot?>? inheritedToolSnapshot = null,
         IConversationStore? controllerConversationStore = null,
         Func<string, WorkflowControllerProfile>? controllerProfileByProvider = null,
         Func<string?>? launchConversationId = null,
         MultiTurnLifecycleServices? lifecycleServices = null
-
     )
     {
         ArgumentNullException.ThrowIfNull(controllerAgentFactory);
@@ -494,7 +490,10 @@ public sealed class WorkflowManager : IAsyncDisposable
             var profileDefaults = profile?.ControllerDefaultOptions ?? _controllerDefaultOptions;
             var runControllerDefaultOptions = string.IsNullOrWhiteSpace(preferredModel)
                 ? profileDefaults
-                : (profileDefaults ?? new GenerateReplyOptions()) with { ModelId = preferredModel };
+                : (profileDefaults ?? new GenerateReplyOptions()) with
+                {
+                    ModelId = preferredModel,
+                };
 
             // Reasoning must follow the controller's actual model/transport. When the run has a provider profile,
             // adopt its pre-shaped reasoning (the host inherited the parent's thinking as a fixed effort floor and
@@ -505,19 +504,26 @@ public sealed class WorkflowManager : IAsyncDisposable
             // fixed default's reasoning (set by the host at construction) is left untouched.
             if (profile?.ControllerReasoningExtraProperties is { } profileReasoning)
             {
-                runControllerDefaultOptions =
-                    (runControllerDefaultOptions ?? new GenerateReplyOptions()) with { ExtraProperties = profileReasoning };
+                runControllerDefaultOptions = (runControllerDefaultOptions ?? new GenerateReplyOptions()) with
+                {
+                    ExtraProperties = profileReasoning,
+                };
             }
             else if (!string.IsNullOrWhiteSpace(preferredModel))
             {
-                runControllerDefaultOptions =
-                    runControllerDefaultOptions! with { ExtraProperties = ImmutableDictionary<string, object?>.Empty };
+                runControllerDefaultOptions = runControllerDefaultOptions! with
+                {
+                    ExtraProperties = ImmutableDictionary<string, object?>.Empty,
+                };
             }
 
             var inheritedTools = _inheritedToolSnapshot?.Invoke();
             var controllerSubAgentOptions = inheritedTools is null
                 ? baseOptions
-                : baseOptions with { ExternalInheritableTools = inheritedTools };
+                : baseOptions with
+                {
+                    ExternalInheritableTools = inheritedTools,
+                };
 
             // Observability: record how many tools this run's delegates will transparently inherit from the
             // launching conversation (content-free — a count, no tool arguments or task text).
@@ -536,7 +542,8 @@ public sealed class WorkflowManager : IAsyncDisposable
                     _controllerConversationStore,
                     _launchConversationId?.Invoke(),
                     controllerThreadId,
-                    CancellationToken.None)
+                    CancellationToken.None
+                )
                 .ConfigureAwait(false);
 
             handle = await WorkflowSession
@@ -554,7 +561,6 @@ public sealed class WorkflowManager : IAsyncDisposable
                     schemaValidator: _schemaValidator,
                     includeAuthoringTool: false,
                     controllerMaxTurnsPerRun: _controllerMaxTurnsPerRun,
-
                     controllerDefaultOptions: runControllerDefaultOptions,
                     usageSink: rootUsageSink,
                     ct: CancellationToken.None,
@@ -639,9 +645,7 @@ public sealed class WorkflowManager : IAsyncDisposable
             return Volatile.Read(ref entry.TerminalSnapshot) ?? Pending(workflowId);
         }
 
-        return handle.Completion.IsCompleted
-            ? BuildResult(workflowId, handle)
-            : Running(workflowId, handle);
+        return handle.Completion.IsCompleted ? BuildResult(workflowId, handle) : Running(workflowId, handle);
     }
 
     /// <summary>
@@ -652,17 +656,17 @@ public sealed class WorkflowManager : IAsyncDisposable
     ///     the calling loop's dispatch cycle for its duration.
     /// </summary>
     /// <exception cref="UnknownWorkflowException">No such workflow.</exception>
-    public async Task<WorkflowRunResult> WaitAsync(
-        string workflowId,
-        TimeSpan? timeout,
-        CancellationToken ct = default
-    )
+    public async Task<WorkflowRunResult> WaitAsync(string workflowId, TimeSpan? timeout, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
 
         // Reject an invalid negative timeout at the public API (the tool handler already rejects it earlier);
         // Timeout.InfiniteTimeSpan (-1ms) is the one allowed negative — it means "no timeout".
-        if (timeout is { } requested && requested < TimeSpan.Zero && requested != System.Threading.Timeout.InfiniteTimeSpan)
+        if (
+            timeout is { } requested
+            && requested < TimeSpan.Zero
+            && requested != System.Threading.Timeout.InfiniteTimeSpan
+        )
         {
             throw new ArgumentOutOfRangeException(
                 nameof(timeout),
@@ -776,10 +780,7 @@ public sealed class WorkflowManager : IAsyncDisposable
                     Status = status,
                     CurrentNodeId = currentNodeId,
                     StartedUtc = entry.StartedUtc,
-                    LastActivityUtc = new DateTimeOffset(
-                        Volatile.Read(ref entry.LastActivityUtcTicks),
-                        TimeSpan.Zero
-                    ),
+                    LastActivityUtc = new DateTimeOffset(Volatile.Read(ref entry.LastActivityUtcTicks), TimeSpan.Zero),
                 }
             );
         }
@@ -797,8 +798,7 @@ public sealed class WorkflowManager : IAsyncDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
 
-        if (_workflows.TryGetValue(workflowId, out var entry)
-            && Volatile.Read(ref entry.Handle) is { } handle)
+        if (_workflows.TryGetValue(workflowId, out var entry) && Volatile.Read(ref entry.Handle) is { } handle)
         {
             loop = handle.Loop;
             return true;
@@ -826,8 +826,7 @@ public sealed class WorkflowManager : IAsyncDisposable
 
         // Prefer the live loop (running run) so in-flight status/activity is current; fall back to the
         // snapshot retained at completion once the heavy graph has been released.
-        if (Volatile.Read(ref entry.Handle) is { } handle
-            && handle.Loop.SubAgentManager is { } manager)
+        if (Volatile.Read(ref entry.Handle) is { } handle && handle.Loop.SubAgentManager is { } manager)
         {
             return manager.ListAgents();
         }
@@ -849,9 +848,11 @@ public sealed class WorkflowManager : IAsyncDisposable
 
         foreach (var entry in _workflows.Values)
         {
-            if (Volatile.Read(ref entry.Handle) is { } handle
+            if (
+                Volatile.Read(ref entry.Handle) is { } handle
                 && handle.Loop.SubAgentManager is { } subAgentManager
-                && subAgentManager.TryGetAgent(subAgentId, out _))
+                && subAgentManager.TryGetAgent(subAgentId, out _)
+            )
             {
                 loop = handle.Loop;
                 return true;
@@ -1001,9 +1002,11 @@ public sealed class WorkflowManager : IAsyncDisposable
                 // The manager was disposed; the slot no longer matters.
             }
 
-            if (mode == WorkflowStartMode.Async
+            if (
+                mode == WorkflowStartMode.Async
                 && _completionNotifier is not null
-                && Interlocked.Exchange(ref entry.NotifySent, 1) == 0)
+                && Interlocked.Exchange(ref entry.NotifySent, 1) == 0
+            )
             {
                 // Revision #4: the terminal outcome is fully determined BEFORE the notify, and the notify is
                 // isolated so a failure never loses the result (still queryable via Check).
@@ -1124,7 +1127,12 @@ public sealed class WorkflowManager : IAsyncDisposable
     /// (queued at the concurrency gate, or the completion handoff is mid-flight) — reported as running, not
     /// unknown, since the id is genuinely known.</summary>
     private static WorkflowRunResult Pending(string workflowId) =>
-        new() { WorkflowId = workflowId, Status = WorkflowStatuses.Running, IsComplete = false };
+        new()
+        {
+            WorkflowId = workflowId,
+            Status = WorkflowStatuses.Running,
+            IsComplete = false,
+        };
 
     private static WorkflowRunResult Timeout(string workflowId, WorkflowRunHandle handle) =>
         new()
@@ -1162,11 +1170,7 @@ public sealed class WorkflowManager : IAsyncDisposable
     }
 
     private static string EscapeXml(string value) =>
-        value
-            .Replace("&", "&amp;")
-            .Replace("<", "&lt;")
-            .Replace(">", "&gt;")
-            .Replace("\"", "&quot;");
+        value.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
 
     /// <summary>
     ///     Builds the controller loop's persistence thread id. The <c>workflow-</c> prefix is load-bearing

@@ -67,7 +67,13 @@ public class TurnAttemptStateTests
         [
             new TextMessage { Text = "visible", Role = Role.Assistant },
             new ReasoningMessage { Reasoning = "visible", Role = Role.Assistant },
-            new ToolCallMessage { ToolCallId = "call_1", FunctionName = "f", FunctionArgs = "{}", Role = Role.Assistant },
+            new ToolCallMessage
+            {
+                ToolCallId = "call_1",
+                FunctionName = "f",
+                FunctionArgs = "{}",
+                Role = Role.Assistant,
+            },
             new ToolCallResultMessage { ToolCallId = "call_1", Result = "ran" },
         ];
 
@@ -78,11 +84,14 @@ public class TurnAttemptStateTests
         var gate = new TaskCompletionSource<ToolCallResultMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
         var starts = 0;
         attempt.TrackToolTask("call_1", gate.Task);
-        attempt.TrackToolTask("call_2", Task.Run(() =>
-        {
-            Interlocked.Increment(ref starts);
-            return new ToolCallResultMessage { ToolCallId = "call_2", Result = "ok" };
-        }));
+        attempt.TrackToolTask(
+            "call_2",
+            Task.Run(() =>
+            {
+                Interlocked.Increment(ref starts);
+                return new ToolCallResultMessage { ToolCallId = "call_2", Result = "ok" };
+            })
+        );
 
         var first = attempt.SettleToolTasksAsync();
         var second = attempt.SettleToolTasksAsync();
@@ -101,7 +110,10 @@ public class TurnAttemptStateTests
     public async Task SettleToolTasksAsync_SurfacesAToolFailure()
     {
         var attempt = new TurnAttemptState(Generation);
-        attempt.TrackToolTask("call_bad", Task.FromException<ToolCallResultMessage>(new InvalidOperationException("boom")));
+        attempt.TrackToolTask(
+            "call_bad",
+            Task.FromException<ToolCallResultMessage>(new InvalidOperationException("boom"))
+        );
 
         var settle = async () => await attempt.SettleToolTasksAsync();
 

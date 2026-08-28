@@ -203,11 +203,7 @@ public sealed record ConversationListOptions
         }
 
         var timestampSpan = threadId.AsSpan(timestampStart, timestampEnd - timestampStart);
-        return long.TryParse(
-            timestampSpan,
-            NumberStyles.None,
-            CultureInfo.InvariantCulture,
-            out var createdAt)
+        return long.TryParse(timestampSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var createdAt)
             ? createdAt
             : metadata.LastUpdated;
     }

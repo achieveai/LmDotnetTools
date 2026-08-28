@@ -118,7 +118,10 @@ public sealed class LifecycleSubscriptionRegistryTests
     [InlineData("https://user:pass@callbacks.example.com/hook", LifecycleSubscriptionRejection.InvalidCallback)]
     [InlineData("http://callbacks.example.com/hook", LifecycleSubscriptionRejection.CallbackNotHttps)]
     [InlineData("https://elsewhere.example.com/hook", LifecycleSubscriptionRejection.CallbackNotAllowed)]
-    public void A_callback_that_fails_any_fail_closed_rule_is_refused(string url, LifecycleSubscriptionRejection expected)
+    public void A_callback_that_fails_any_fail_closed_rule_is_refused(
+        string url,
+        LifecycleSubscriptionRejection expected
+    )
     {
         var registry = CreateRegistry();
 
@@ -129,10 +132,7 @@ public sealed class LifecycleSubscriptionRegistryTests
     public void A_relative_callback_is_refused_rather_than_dereferenced()
     {
         var registry = CreateRegistry();
-        var request = new LifecycleSubscriptionRequest
-        {
-            CallbackUri = new Uri("/hook", UriKind.Relative),
-        };
+        var request = new LifecycleSubscriptionRequest { CallbackUri = new Uri("/hook", UriKind.Relative) };
 
         ShouldReject(
             () => registry.Register(Owner(AppA), AppA, request),
@@ -228,11 +228,12 @@ public sealed class LifecycleSubscriptionRegistryTests
         var registry = CreateRegistry();
 
         ShouldReject(
-            () => registry.Register(
-                Owner(AppA),
-                AppA,
-                Request(capabilities: [LifecycleCapabilities.ContentFull, "lifecycle.everything"])
-            ),
+            () =>
+                registry.Register(
+                    Owner(AppA),
+                    AppA,
+                    Request(capabilities: [LifecycleCapabilities.ContentFull, "lifecycle.everything"])
+                ),
             LifecycleSubscriptionRejection.UnknownCapability
         );
     }
@@ -243,11 +244,12 @@ public sealed class LifecycleSubscriptionRegistryTests
         var registry = CreateRegistry();
 
         ShouldReject(
-            () => registry.Register(
-                Owner(AppA),
-                AppA,
-                Request(eventTypes: [LifecycleEventTypes.RunStarted, "run_teleported"])
-            ),
+            () =>
+                registry.Register(
+                    Owner(AppA),
+                    AppA,
+                    Request(eventTypes: [LifecycleEventTypes.RunStarted, "run_teleported"])
+                ),
             LifecycleSubscriptionRejection.UnknownEventType
         );
     }
@@ -311,7 +313,10 @@ public sealed class LifecycleSubscriptionRegistryTests
         );
 
         accepted.Should().HaveCount(Capacity);
-        accepted.Distinct(StringComparer.Ordinal).Should().HaveCount(Capacity, "ids are unique even when minted concurrently");
+        accepted
+            .Distinct(StringComparer.Ordinal)
+            .Should()
+            .HaveCount(Capacity, "ids are unique even when minted concurrently");
         refusals.Should().HaveCount(Attempts - Capacity);
         refusals.Should().OnlyContain(reason => reason == LifecycleSubscriptionRejection.CapacityExceeded);
         registry.ForOwner(owner).Should().HaveCount(Capacity);
@@ -440,9 +445,7 @@ public sealed class LifecycleSubscriptionRegistryTests
         var mine = registry.Register(Owner(AppA), AppA, Request());
         var stranger = Owner(AppB);
 
-        var onSomeoneElses = Record.Exception(
-            () => registry.Rotate(stranger, mine.Subscription.SubscriptionId)
-        );
+        var onSomeoneElses = Record.Exception(() => registry.Rotate(stranger, mine.Subscription.SubscriptionId));
         var onNothing = Record.Exception(() => registry.Rotate(stranger, UnmintedId));
 
         onSomeoneElses
@@ -472,7 +475,9 @@ public sealed class LifecycleSubscriptionRegistryTests
         var rotated = registry.Rotate(owner, original.Subscription.SubscriptionId);
 
         rotated.Secret.Should().NotBe(original.Secret);
-        rotated.Subscription.Should().BeSameAs(original.Subscription, "rotation replaces the key, not the subscription");
+        rotated
+            .Subscription.Should()
+            .BeSameAs(original.Subscription, "rotation replaces the key, not the subscription");
         Verifies(rotated.Subscription, rotated.Secret).Should().BeTrue("the current key verifies");
         Verifies(rotated.Subscription, original.Secret)
             .Should()

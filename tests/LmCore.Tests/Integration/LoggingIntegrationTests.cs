@@ -145,7 +145,12 @@ public class LoggingIntegrationTests : IDisposable
             },
         };
 
-        var middleware = new FunctionCallMiddleware([testFunction], LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "TestMiddleware", logger: _middlewareLogger);
+        var middleware = new FunctionCallMiddleware(
+            [testFunction],
+            LegacyHandlerAdapter.WrapToNewHandlers(functionMap),
+            name: "TestMiddleware",
+            logger: _middlewareLogger
+        );
 
         var mockAgent = new Mock<IAgent>();
         var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{\"input\":\"test\"}" };

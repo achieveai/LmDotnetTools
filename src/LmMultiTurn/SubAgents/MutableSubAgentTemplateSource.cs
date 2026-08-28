@@ -117,8 +117,7 @@ public sealed class MutableSubAgentTemplateSource
                 : characteristics =>
                 {
                     var provider = _characteristicsAgentFactory(characteristics);
-                    return characteristics.IsModelExplicitlySelected
-                        || characteristics.IsModelTierResolved
+                    return characteristics.IsModelExplicitlySelected || characteristics.IsModelTierResolved
                         ? provider
                         : provider with
                         {

@@ -44,12 +44,8 @@ public sealed class GateTests
     {
         var gate = new LengthBoundsGate(minimumLength: 10, maximumLength: 20);
 
-        (await Evaluate(gate, HarnessFixtures.Candidate(content: new string('x', 10))))
-            .IsPass.Should()
-            .BeTrue();
-        (await Evaluate(gate, HarnessFixtures.Candidate(content: new string('x', 20))))
-            .IsPass.Should()
-            .BeTrue();
+        (await Evaluate(gate, HarnessFixtures.Candidate(content: new string('x', 10)))).IsPass.Should().BeTrue();
+        (await Evaluate(gate, HarnessFixtures.Candidate(content: new string('x', 20)))).IsPass.Should().BeTrue();
     }
 
     [Fact]
@@ -66,10 +62,7 @@ public sealed class GateTests
     {
         var gate = new LengthBoundsGate(minimumLength: 1000, maximumLength: 2000);
 
-        var decision = await Evaluate(
-            gate,
-            HarnessFixtures.Candidate(content: "a secret token: sk-abcdef")
-        );
+        var decision = await Evaluate(gate, HarnessFixtures.Candidate(content: "a secret token: sk-abcdef"));
 
         decision.Reason.Should().NotContain("sk-abcdef");
     }
@@ -114,10 +107,7 @@ public sealed class GateTests
     {
         var gate = new JsonSchemaGate(requiredProperties: ["findings", "summary"]);
 
-        var decision = await Evaluate(
-            gate,
-            HarnessFixtures.Candidate(content: """{"findings":[],"summary":"none"}""")
-        );
+        var decision = await Evaluate(gate, HarnessFixtures.Candidate(content: """{"findings":[],"summary":"none"}"""));
 
         decision.IsPass.Should().BeTrue();
     }
@@ -212,10 +202,7 @@ public sealed class GateTests
     {
         var gate = new RequiredAnchorGate(minimumAnchors: 2);
 
-        var decision = await Evaluate(
-            gate,
-            HarnessFixtures.Candidate(content: "src/a.cs:1 and src/A.cs:1")
-        );
+        var decision = await Evaluate(gate, HarnessFixtures.Candidate(content: "src/a.cs:1 and src/A.cs:1"));
 
         decision.IsPass.Should().BeTrue();
     }
@@ -246,8 +233,6 @@ public sealed class GateTests
     [Fact]
     public void A_gate_can_declare_the_task_types_it_applies_to()
     {
-        new LengthBoundsGate(1, 2, appliesTo: ["code-review"])
-            .AppliesTo.Should()
-            .BeEquivalentTo(["code-review"]);
+        new LengthBoundsGate(1, 2, appliesTo: ["code-review"]).AppliesTo.Should().BeEquivalentTo(["code-review"]);
     }
 }

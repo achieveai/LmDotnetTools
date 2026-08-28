@@ -83,8 +83,12 @@ public sealed class SubAgentEmbeddedChainTests
         var pillContent = page.Locator(".tool-call-result");
         await pillContent.First.WaitForAsync();
         var expanded = string.Join(" ", await pillContent.AllInnerTextsAsync());
-        expanded.Should().Contain("hi from agent",
-            "the expanded Agent tool result is the sub-agent's final text from the nested chain");
+        expanded
+            .Should()
+            .Contain(
+                "hi from agent",
+                "the expanded Agent tool result is the sub-agent's final text from the nested chain"
+            );
 
         responder.RemainingTurns["parent"].Should().Be(0);
         await session.SaveSuccessScreenshotAsync($"SubAgentEmbeddedChain.{providerMode}");
@@ -117,16 +121,19 @@ public sealed class SubAgentEmbeddedChainTests
         if (providerMode == "test-anthropic")
         {
             var handler = new AnthropicTestSseMessageHandler(
-                loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>());
+                loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>()
+            );
             var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://test-mode/v1") };
             var anthropicClient = new AnthropicClient(
                 httpClient,
                 baseUrl: "http://test-mode/v1",
-                logger: loggerFactory.CreateLogger<AnthropicClient>());
+                logger: loggerFactory.CreateLogger<AnthropicClient>()
+            );
             return new AnthropicAgent(
                 "MockAnthropicSub",
                 anthropicClient,
-                loggerFactory.CreateLogger<AnthropicAgent>());
+                loggerFactory.CreateLogger<AnthropicAgent>()
+            );
         }
 
         var openHandler = new TestSseMessageHandler(loggerFactory.CreateLogger<TestSseMessageHandler>());
@@ -134,7 +141,8 @@ public sealed class SubAgentEmbeddedChainTests
         var openClient = new OpenClient(
             openHttpClient,
             "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<OpenClient>());
+            logger: loggerFactory.CreateLogger<OpenClient>()
+        );
         return new OpenClientAgent("MockSub", openClient, loggerFactory.CreateLogger<OpenClientAgent>());
     }
 }

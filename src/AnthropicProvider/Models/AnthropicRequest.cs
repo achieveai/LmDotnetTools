@@ -46,11 +46,9 @@ public record AnthropicRequest
     [JsonPropertyName("system")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonNode? SystemRaw =>
-        SystemContent is { Count: > 0 }
-            ? JsonSerializer.SerializeToNode(SystemContent, s_systemContentOptions)
-            : System != null
-                ? JsonValue.Create(System)
-                : null;
+        SystemContent is { Count: > 0 } ? JsonSerializer.SerializeToNode(SystemContent, s_systemContentOptions)
+        : System != null ? JsonValue.Create(System)
+        : null;
 
     private static readonly JsonSerializerOptions s_systemContentOptions = new()
     {
@@ -129,7 +127,8 @@ public record AnthropicRequest
     public static AnthropicRequest FromMessages(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
-        ILogger? logger = null)
+        ILogger? logger = null
+    )
     {
         // Get model from options or use default
         var modelName = AnthropicModelNames.Claude3Sonnet;
@@ -150,14 +149,16 @@ public record AnthropicRequest
         {
             logger.LogTrace(
                 "Building AnthropicRequest: MessageTypes={MessageTypes}",
-                string.Join(", ", deduplicatedMessages.Select(m => $"{m.GetType().Name}({m.Role})")));
+                string.Join(", ", deduplicatedMessages.Select(m => $"{m.GetType().Name}({m.Role})"))
+            );
 
             foreach (var rm in deduplicatedMessages.OfType<ReasoningMessage>())
             {
                 logger.LogTrace(
                     "ReasoningMessage in history: Visibility={Visibility}, Length={Length}",
                     rm.Visibility,
-                    rm.Reasoning?.Length);
+                    rm.Reasoning?.Length
+                );
             }
         }
 
@@ -217,8 +218,10 @@ public record AnthropicRequest
                     // Server tool results must be placed in user messages as tool_result,
                     // since providers like Kimi treat server_tool_use like regular tool_use
                     // and require a matching tool_result in the next user turn.
-                    if (message is ToolCallResultMessage toolCallResultMessage
-                        && toolCallResultMessage.ExecutionTarget == ExecutionTarget.ProviderServer)
+                    if (
+                        message is ToolCallResultMessage toolCallResultMessage
+                        && toolCallResultMessage.ExecutionTarget == ExecutionTarget.ProviderServer
+                    )
                     {
                         role = "user";
                     }
@@ -274,9 +277,7 @@ public record AnthropicRequest
             Messages = anthropicMessages,
             System = systemPrompt,
             MaxTokens = options?.MaxToken ?? 4096,
-            Temperature = thinking != null
-                ? (options?.Temperature ?? 1.0f)
-                : (options?.Temperature ?? 0.7f),
+            Temperature = thinking != null ? (options?.Temperature ?? 1.0f) : (options?.Temperature ?? 0.7f),
             TopP = options?.TopP,
             Stream = false, // Set by caller if streaming is needed
             // Add tool configuration
@@ -332,15 +333,19 @@ public record AnthropicRequest
                     secondaryMessage.Content.Add(toolResultContent);
                 }
             }
-            else if (message is ToolCallResultMessage toolCallResultMsg
-                && toolCallResultMsg.ExecutionTarget == ExecutionTarget.ProviderServer)
+            else if (
+                message is ToolCallResultMessage toolCallResultMsg
+                && toolCallResultMsg.ExecutionTarget == ExecutionTarget.ProviderServer
+            )
             {
                 // Server tool results must go in a user message as tool_result,
                 // since providers like Kimi treat server_tool_use as regular tool_use
                 // and require a matching tool_result in the next user turn.
                 secondaryMessage ??= new AnthropicMessage { Role = "user" };
                 var serverToolResultBlocks = ToAnthropicToolResultContentBlocks(
-                    toolCallResultMsg.ContentBlocks, toolCallResultMsg.IsError);
+                    toolCallResultMsg.ContentBlocks,
+                    toolCallResultMsg.IsError
+                );
                 secondaryMessage.Content.Add(
                     new AnthropicContent
                     {
@@ -380,16 +385,18 @@ public record AnthropicRequest
         }
         else if (message is ImageMessage imageMsg)
         {
-            anthropicMessage.Content.Add(new AnthropicContent
-            {
-                Type = "image",
-                Source = new ImageSource
+            anthropicMessage.Content.Add(
+                new AnthropicContent
                 {
-                    Type = "base64",
-                    MediaType = imageMsg.ImageData.MediaType ?? "image/jpeg",
-                    Data = Convert.ToBase64String(imageMsg.ImageData.ToArray()),
-                },
-            });
+                    Type = "image",
+                    Source = new ImageSource
+                    {
+                        Type = "base64",
+                        MediaType = imageMsg.ImageData.MediaType ?? "image/jpeg",
+                        Data = Convert.ToBase64String(imageMsg.ImageData.ToArray()),
+                    },
+                }
+            );
         }
         else if (message is ReasoningMessage reasoningMsg)
         {
@@ -398,35 +405,35 @@ public record AnthropicRequest
                 // Encrypted reasoning carries the signature for the preceding thinking block.
                 // Emitted with null Thinking so JsonIgnore(WhenWritingNull) omits the field;
                 // MergeAdjacentThinkingBlocks will combine this with the preceding text block.
-                anthropicMessage.Content.Add(new AnthropicContent
-                {
-                    Type = "thinking",
-                    Thinking = null,
-                    ThinkingSignature = reasoningMsg.Reasoning,
-                });
+                anthropicMessage.Content.Add(
+                    new AnthropicContent
+                    {
+                        Type = "thinking",
+                        Thinking = null,
+                        ThinkingSignature = reasoningMsg.Reasoning,
+                    }
+                );
             }
             else if (reasoningMsg.Visibility == ReasoningVisibility.Summary)
             {
                 // Summary reasoning is a provider-generated short description (e.g., from OpenAI),
                 // not an Anthropic thinking block. Emit as text to avoid Anthropic rejecting it
                 // for missing a signature in multi-turn history.
-                anthropicMessage.Content.Add(new AnthropicContent
-                {
-                    Type = "text",
-                    Text = reasoningMsg.Reasoning,
-                });
+                anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = reasoningMsg.Reasoning });
             }
             else
             {
                 // Plain reasoning — emit as a thinking block.
                 // Signature is null so JsonIgnore(WhenWritingNull) omits it;
                 // MergeAdjacentThinkingBlocks will attach the signature from the next block.
-                anthropicMessage.Content.Add(new AnthropicContent
-                {
-                    Type = "thinking",
-                    Thinking = reasoningMsg.Reasoning,
-                    ThinkingSignature = null,
-                });
+                anthropicMessage.Content.Add(
+                    new AnthropicContent
+                    {
+                        Type = "thinking",
+                        Thinking = reasoningMsg.Reasoning,
+                        ThinkingSignature = null,
+                    }
+                );
             }
         }
         else if (message is ToolCallMessage singularToolCallMsg)
@@ -436,9 +443,10 @@ public record AnthropicRequest
             // beside the finalized call; replaying it fails with "tool_call_id is not found".
             if (!IsEmptyIdServerToolCall(singularToolCallMsg.ExecutionTarget, singularToolCallMsg.ToolCallId))
             {
-                var contentType = singularToolCallMsg.ExecutionTarget == ExecutionTarget.ProviderServer
-                    ? "server_tool_use"
-                    : "tool_use";
+                var contentType =
+                    singularToolCallMsg.ExecutionTarget == ExecutionTarget.ProviderServer
+                        ? "server_tool_use"
+                        : "tool_use";
                 anthropicMessage.Content.Add(
                     new AnthropicContent
                     {
@@ -450,8 +458,10 @@ public record AnthropicRequest
                 );
             }
         }
-        else if (message is ToolCallUpdateMessage toolCallUpdateMsg
-            && toolCallUpdateMsg.ExecutionTarget == ExecutionTarget.ProviderServer)
+        else if (
+            message is ToolCallUpdateMessage toolCallUpdateMsg
+            && toolCallUpdateMsg.ExecutionTarget == ExecutionTarget.ProviderServer
+        )
         {
             // ToolCallUpdateMessage is the streaming equivalent of ToolCallMessage for server tools.
             // When it appears in history (without the joiner middleware), serialize it as server_tool_use.
@@ -478,7 +488,9 @@ public record AnthropicRequest
             if (!IsEmptyIdServerToolCall(singularToolResultMsg.ExecutionTarget, singularToolResultMsg.ToolCallId))
             {
                 var toolResultBlocks = ToAnthropicToolResultContentBlocks(
-                    singularToolResultMsg.ContentBlocks, singularToolResultMsg.IsError);
+                    singularToolResultMsg.ContentBlocks,
+                    singularToolResultMsg.IsError
+                );
                 anthropicMessage.Content.Add(
                     new AnthropicContent
                     {
@@ -500,7 +512,8 @@ public record AnthropicRequest
                     continue;
                 }
 
-                var contentType = toolCall.ExecutionTarget == ExecutionTarget.ProviderServer ? "server_tool_use" : "tool_use";
+                var contentType =
+                    toolCall.ExecutionTarget == ExecutionTarget.ProviderServer ? "server_tool_use" : "tool_use";
                 anthropicMessage.Content.Add(
                     new AnthropicContent
                     {
@@ -526,8 +539,7 @@ public record AnthropicRequest
             // Then add tool results
             foreach (var result in toolResultMsg.ToolCallResults)
             {
-                var toolResultBlocks = ToAnthropicToolResultContentBlocks(
-                    result.ContentBlocks, result.IsError);
+                var toolResultBlocks = ToAnthropicToolResultContentBlocks(result.ContentBlocks, result.IsError);
                 anthropicMessage.Content.Add(
                     new AnthropicContent
                     {
@@ -560,12 +572,12 @@ public record AnthropicRequest
                     continue;
                 }
 
-                var toolResultBlocks = ToAnthropicToolResultContentBlocks(
-                    toolResult.ContentBlocks, toolResult.IsError);
+                var toolResultBlocks = ToAnthropicToolResultContentBlocks(toolResult.ContentBlocks, toolResult.IsError);
                 yield return (
                     new AnthropicContent
                     {
-                        Type = toolCall.ExecutionTarget == ExecutionTarget.ProviderServer ? "server_tool_use" : "tool_use",
+                        Type =
+                            toolCall.ExecutionTarget == ExecutionTarget.ProviderServer ? "server_tool_use" : "tool_use",
                         Id = toolCall.ToolCallId,
                         Name = toolCall.FunctionName,
                         Input = SafeDeserializeArgs(toolCall.FunctionArgs),
@@ -705,10 +717,12 @@ public record AnthropicRequest
         // Yield all messages, skipping earlier ToolCallUpdateMessages that share a ToolCallId
         for (var i = 0; i < messageList.Count; i++)
         {
-            if (messageList[i] is ToolCallUpdateMessage update
+            if (
+                messageList[i] is ToolCallUpdateMessage update
                 && update.ToolCallId != null
                 && lastUpdateIndex.TryGetValue(update.ToolCallId, out var lastIdx)
-                && i != lastIdx)
+                && i != lastIdx
+            )
             {
                 continue; // Skip earlier duplicate
             }
@@ -773,12 +787,13 @@ public record AnthropicRequest
             return;
         }
 
-        static int Rank(AnthropicContent block) => block.Type switch
-        {
-            "thinking" => 0,
-            "tool_use" or "server_tool_use" => 2,
-            _ => 1,
-        };
+        static int Rank(AnthropicContent block) =>
+            block.Type switch
+            {
+                "thinking" => 0,
+                "tool_use" or "server_tool_use" => 2,
+                _ => 1,
+            };
 
         // OrderBy performs a stable sort, so the relative order within each group is preserved — in
         // particular the tool_use blocks keep their order, which Anthropic pairs to tool_result blocks
@@ -883,7 +898,9 @@ public record AnthropicRequest
     ///     - Error results (always text-only per Anthropic API convention)
     /// </summary>
     private static IList<AnthropicContent>? ToAnthropicToolResultContentBlocks(
-        IList<ToolResultContentBlock>? contentBlocks, bool isError = false)
+        IList<ToolResultContentBlock>? contentBlocks,
+        bool isError = false
+    )
     {
         if (isError || contentBlocks == null || contentBlocks.Count == 0)
         {
@@ -906,16 +923,18 @@ public record AnthropicRequest
                     result.Add(new AnthropicContent { Type = "text", Text = textBlock.Text });
                     break;
                 case ImageToolResultBlock imageBlock:
-                    result.Add(new AnthropicContent
-                    {
-                        Type = "image",
-                        Source = new ImageSource
+                    result.Add(
+                        new AnthropicContent
                         {
-                            Type = "base64",
-                            MediaType = imageBlock.MimeType,
-                            Data = imageBlock.Data,
-                        },
-                    });
+                            Type = "image",
+                            Source = new ImageSource
+                            {
+                                Type = "base64",
+                                MediaType = imageBlock.MimeType,
+                                Data = imageBlock.Data,
+                            },
+                        }
+                    );
                     break;
                 default:
                     // Unknown block types are skipped; only text and image are supported by Anthropic.

@@ -43,7 +43,8 @@ internal sealed record PolicyRefusalRecord(
     string Subject,
     string Method,
     string Target,
-    string Reason);
+    string Reason
+);
 
 /// <summary>
 /// Where refusals are recorded. Separated from the enforcement sites so neither the HTTP handler nor the

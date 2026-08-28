@@ -67,9 +67,8 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
             }
 
             return Task.FromResult(
-                Encoding.UTF8.GetByteCount(content) > maxBytes
-                    ? SandboxFileRead.Refused
-                    : SandboxFileRead.Of(content));
+                Encoding.UTF8.GetByteCount(content) > maxBytes ? SandboxFileRead.Refused : SandboxFileRead.Of(content)
+            );
         }
     }
 
@@ -100,8 +99,8 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
         {
             IReadOnlyList<string> names =
             [
-                .. Files.Keys
-                    .Where(key => key.StartsWith(prefix, StringComparison.Ordinal))
+                .. Files
+                    .Keys.Where(key => key.StartsWith(prefix, StringComparison.Ordinal))
                     .Select(key => key[prefix.Length..])
                     .Select(rest =>
                     {

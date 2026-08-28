@@ -22,7 +22,12 @@ public sealed record FileEntryDto(string Name, string Type, long? Size, bool Nam
 }
 
 /// <summary>A directory listing: the resolved <see cref="Path"/>, up to <c>MaxListingRows</c> entries, and how many more were omitted.</summary>
-public sealed record DirectoryListingDto(string WorkspaceId, string Path, IReadOnlyList<FileEntryDto> Entries, int MoreCount);
+public sealed record DirectoryListingDto(
+    string WorkspaceId,
+    string Path,
+    IReadOnlyList<FileEntryDto> Entries,
+    int MoreCount
+);
 
 /// <summary>The structured "no sandbox session yet" state a listing returns with HTTP 200 (actions return 409 instead).</summary>
 public sealed record NoSessionStateDto(string State, string? WorkspaceId)

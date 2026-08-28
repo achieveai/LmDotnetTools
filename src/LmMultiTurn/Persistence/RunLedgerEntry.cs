@@ -44,4 +44,5 @@ public sealed record RunLedgerEntry(
     RunStatus Status,
     IReadOnlyList<string> InputIds,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt
+);

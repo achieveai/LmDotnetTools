@@ -105,10 +105,12 @@ public sealed class OpenAiResponsesReasoningSummaryTests
         // These are provider SUMMARIES, not full chain-of-thought. Persisting them as Plain makes an
         // Anthropic-format replay serialize them as UNSIGNED thinking blocks (rejected with 400). They
         // must carry ReasoningVisibility.Summary so AnthropicRequest emits them as text instead.
-        updates.Should().OnlyContain(
-            u => u.Visibility == ReasoningVisibility.Summary,
-            "reasoning summary deltas are provider summaries, not unsigned thinking"
-        );
+        updates
+            .Should()
+            .OnlyContain(
+                u => u.Visibility == ReasoningVisibility.Summary,
+                "reasoning summary deltas are provider summaries, not unsigned thinking"
+            );
         finalReasoning[0].Visibility.Should().Be(ReasoningVisibility.Summary);
     }
 
@@ -118,9 +120,11 @@ public sealed class OpenAiResponsesReasoningSummaryTests
     [Fact]
     public async Task Agent_emits_summary_visibility_from_reasoning_item_summary_array()
     {
-        var reasoningItem = System.Text.Json.JsonDocument.Parse(
-            "{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"step one\"}]}"
-        ).RootElement;
+        var reasoningItem = System
+            .Text.Json.JsonDocument.Parse(
+                "{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"step one\"}]}"
+            )
+            .RootElement;
 
         ResponseEvent[] events =
         [

@@ -21,16 +21,9 @@ public class ToolCatalogTests
 
     private static ToolCatalog Create(SandboxToolCatalog sandbox, params string[] builtInNames)
     {
-        var builtIns = builtInNames
-            .Select(n => new ToolDefinition { Name = n, Description = n })
-            .ToList();
+        var builtIns = builtInNames.Select(n => new ToolDefinition { Name = n, Description = n }).ToList();
 
-        return new ToolCatalog(
-            new FunctionRegistry(),
-            builtIns,
-            new StubProbe(sandbox),
-            new FakeTimeProvider()
-        );
+        return new ToolCatalog(new FunctionRegistry(), builtIns, new StubProbe(sandbox), new FakeTimeProvider());
     }
 
     [Fact]
@@ -66,10 +59,7 @@ public class ToolCatalogTests
 
         // Every non-qualified row addresses itself by bare name, which is the form already sitting in
         // persisted modes' EnabledTools.
-        catalog
-            .Where(t => !ToolGroups.IsQualified(t.Group))
-            .Should()
-            .OnlyContain(t => t.Id == t.Name);
+        catalog.Where(t => !ToolGroups.IsQualified(t.Group)).Should().OnlyContain(t => t.Id == t.Name);
     }
 
     [Fact]
@@ -104,9 +94,7 @@ public class ToolCatalogTests
         // offer both, because choosing between them is how a mode picks its surface.
         var catalog = await Create(LiveSandbox).GetAsync();
 
-        var subAgentNames = catalog
-            .Where(t => t.Group == ToolGroups.SubAgents && !t.IsWildcard)
-            .Select(t => t.Name);
+        var subAgentNames = catalog.Where(t => t.Group == ToolGroups.SubAgents && !t.IsWildcard).Select(t => t.Name);
 
         subAgentNames.Should().BeEquivalentTo(SubAgentToolProvider.AllToolNames);
     }
@@ -161,9 +149,7 @@ public class ToolCatalogTests
         var catalog = await Create(LiveSandbox).GetAsync();
 
         // Including a plugin-provided tool that no static list could know about.
-        catalog
-            .Should()
-            .Contain(t => t.Id == ToolGroups.Qualify(ToolGroups.Sandbox, "PluginTool"));
+        catalog.Should().Contain(t => t.Id == ToolGroups.Qualify(ToolGroups.Sandbox, "PluginTool"));
         catalog.Where(t => t.Group == ToolGroups.Sandbox).Should().OnlyContain(t => t.CatalogWarning == null);
     }
 
@@ -193,9 +179,7 @@ public class ToolCatalogTests
         var catalog = await Create(LiveSandbox, "web_search").GetAsync();
 
         catalog.Should().OnlyContain(t => !string.IsNullOrWhiteSpace(t.GroupLabel));
-        catalog
-            .Should()
-            .OnlyContain(t => t.GroupLabel == ToolGroups.LabelFor(t.Group));
+        catalog.Should().OnlyContain(t => t.GroupLabel == ToolGroups.LabelFor(t.Group));
     }
 
     [Fact]

@@ -37,9 +37,7 @@ public sealed class SandboxToolCatalogProbeTimeoutTests
         private readonly TcpListener _listener;
         private readonly CancellationTokenSource _stop = new();
         private readonly List<TcpClient> _held = [];
-        private readonly TaskCompletionSource _mcpReached = new(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
+        private readonly TaskCompletionSource _mcpReached = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public WedgedOnMcpGateway()
         {
@@ -62,9 +60,7 @@ public sealed class SandboxToolCatalogProbeTimeoutTests
             {
                 while (!_stop.IsCancellationRequested)
                 {
-                    var client = await _listener
-                        .AcceptTcpClientAsync(_stop.Token)
-                        .ConfigureAwait(false);
+                    var client = await _listener.AcceptTcpClientAsync(_stop.Token).ConfigureAwait(false);
                     _ = ServeAsync(client);
                 }
             }
@@ -94,9 +90,7 @@ public sealed class SandboxToolCatalogProbeTimeoutTests
                     return;
                 }
 
-                var body = path.StartsWith("/api/v1/sandboxes", StringComparison.Ordinal)
-                    ? SessionJson
-                    : "{}";
+                var body = path.StartsWith("/api/v1/sandboxes", StringComparison.Ordinal) ? SessionJson : "{}";
                 var bytes = Encoding.UTF8.GetBytes(body);
                 var head = Encoding.UTF8.GetBytes(
                     "HTTP/1.1 200 OK\r\n"
@@ -165,9 +159,7 @@ public sealed class SandboxToolCatalogProbeTimeoutTests
             {
                 if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
                 {
-                    return int.TryParse(line["Content-Length:".Length..].Trim(), out var value)
-                        ? value
-                        : 0;
+                    return int.TryParse(line["Content-Length:".Length..].Trim(), out var value) ? value : 0;
                 }
             }
 
@@ -214,11 +206,7 @@ public sealed class SandboxToolCatalogProbeTimeoutTests
             new HttpClient(),
             new AuthOptions(),
             new SessionSecretStore(
-                Path.Combine(
-                    Path.GetTempPath(),
-                    "lmstreaming-test-secrets",
-                    Guid.NewGuid().ToString("N")
-                ),
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
                 NullLogger<SessionSecretStore>.Instance
             )
         );
@@ -245,10 +233,7 @@ public sealed class SandboxToolCatalogProbeTimeoutTests
 
         catalog.IsLive.Should().BeFalse();
         catalog.Warning.Should().NotBeNullOrWhiteSpace();
-        catalog
-            .Tools.Select(t => t.Name)
-            .Should()
-            .BeEquivalentTo(SandboxToolCatalogProbe.StaticBaseline);
+        catalog.Tools.Select(t => t.Name).Should().BeEquivalentTo(SandboxToolCatalogProbe.StaticBaseline);
     }
 
     [Fact]
@@ -287,8 +272,6 @@ public sealed class SandboxToolCatalogProbeTimeoutTests
 
         await caller.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => pending.WaitAsync(TimeSpan.FromSeconds(30))
-        );
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(30)));
     }
 }

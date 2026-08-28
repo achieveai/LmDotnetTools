@@ -55,54 +55,70 @@ internal static class CloneFailureClassifier
         var lower = text.ToLowerInvariant();
 
         // Order matters: an auth failure can also mention "could not read" — check the specific signals first.
-        if (lower.Contains("repository not found") || lower.Contains("not found")
-            || lower.Contains("does not exist"))
+        if (lower.Contains("repository not found") || lower.Contains("not found") || lower.Contains("does not exist"))
         {
             return new CloneFailureDiagnosis(
                 CloneFailureKind.RepositoryNotFound,
                 NotFoundExitCode,
                 "ReviewBot remote not found. `reviewbot init` requires the ReviewBot repository to be "
-                + "pre-created out-of-band (it does not create provider repos); create the empty remote, "
-                + $"grant the bot identity access, then re-run. git said:\n{Trim(text)}");
+                    + "pre-created out-of-band (it does not create provider repos); create the empty remote, "
+                    + $"grant the bot identity access, then re-run. git said:\n{Trim(text)}"
+            );
         }
 
-        if (lower.Contains("authentication failed") || lower.Contains("invalid username or password")
-            || lower.Contains("could not read username") || lower.Contains("terminal prompts disabled"))
+        if (
+            lower.Contains("authentication failed")
+            || lower.Contains("invalid username or password")
+            || lower.Contains("could not read username")
+            || lower.Contains("terminal prompts disabled")
+        )
         {
             return new CloneFailureDiagnosis(
                 CloneFailureKind.BadCredential,
                 BadCredentialExitCode,
                 "ReviewBot clone was rejected by authentication. Sign in once with the `auth` subcommand "
-                + $"(or refresh the bot credential) and re-run. git said:\n{Trim(text)}");
+                    + $"(or refresh the bot credential) and re-run. git said:\n{Trim(text)}"
+            );
         }
 
-        if ((lower.Contains("permission") && lower.Contains("denied"))
+        if (
+            (lower.Contains("permission") && lower.Contains("denied"))
             || lower.Contains("403")
-            || lower.Contains("write access to repository not granted"))
+            || lower.Contains("write access to repository not granted")
+        )
         {
             return new CloneFailureDiagnosis(
                 CloneFailureKind.PermissionDenied,
                 PermissionExitCode,
                 "ReviewBot remote exists but the bot identity lacks access. Grant the bot read access to "
-                + $"the ReviewBot repository and re-run. git said:\n{Trim(text)}");
+                    + $"the ReviewBot repository and re-run. git said:\n{Trim(text)}"
+            );
         }
 
-        if (lower.Contains("could not resolve host") || lower.Contains("failed to connect")
-            || lower.Contains("connection timed out") || lower.Contains("connection refused")
-            || lower.Contains("temporary failure") || lower.Contains("502") || lower.Contains("503")
-            || lower.Contains("504"))
+        if (
+            lower.Contains("could not resolve host")
+            || lower.Contains("failed to connect")
+            || lower.Contains("connection timed out")
+            || lower.Contains("connection refused")
+            || lower.Contains("temporary failure")
+            || lower.Contains("502")
+            || lower.Contains("503")
+            || lower.Contains("504")
+        )
         {
             return new CloneFailureDiagnosis(
                 CloneFailureKind.TransientGateway,
                 TransientExitCode,
                 "ReviewBot clone failed to reach the remote (network/gateway). This is likely transient — "
-                + $"verify the sandbox gateway and remote host, then retry. git said:\n{Trim(text)}");
+                    + $"verify the sandbox gateway and remote host, then retry. git said:\n{Trim(text)}"
+            );
         }
 
         return new CloneFailureDiagnosis(
             CloneFailureKind.Unknown,
             UnknownExitCode,
-            $"ReviewBot clone failed (git exit {exitCode}):\n{Trim(text)}");
+            $"ReviewBot clone failed (git exit {exitCode}):\n{Trim(text)}"
+        );
     }
 
     private static string Trim(string stderr) => stderr.Trim();

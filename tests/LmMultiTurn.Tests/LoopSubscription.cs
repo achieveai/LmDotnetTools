@@ -28,29 +28,28 @@ internal static class LoopSubscription
     /// <param name="ct">Cancels the subscription; cancellation ends the drain silently.</param>
     /// <returns>A handle whose <see cref="Drain.WaitAsync"/> waits without letting a broken drain
     /// masquerade as a timeout.</returns>
-    public static Drain StartDraining(
-        IMultiTurnAgent agent,
-        Action<IMessage> onMessage,
-        CancellationToken ct)
+    public static Drain StartDraining(IMultiTurnAgent agent, Action<IMessage> onMessage, CancellationToken ct)
     {
         var enumerator = agent.SubscribeAsync(ct).GetAsyncEnumerator(ct);
         var first = enumerator.MoveNextAsync();
 
-        return new Drain(Task.Run(async () =>
-        {
-            try
+        return new Drain(
+            Task.Run(async () =>
             {
-                for (var hasMessage = await first; hasMessage; hasMessage = await enumerator.MoveNextAsync())
+                try
                 {
-                    onMessage(enumerator.Current);
+                    for (var hasMessage = await first; hasMessage; hasMessage = await enumerator.MoveNextAsync())
+                    {
+                        onMessage(enumerator.Current);
+                    }
                 }
-            }
-            catch (OperationCanceledException) { }
-            finally
-            {
-                await enumerator.DisposeAsync();
-            }
-        }));
+                catch (OperationCanceledException) { }
+                finally
+                {
+                    await enumerator.DisposeAsync();
+                }
+            })
+        );
     }
 
     /// <summary>
@@ -60,9 +59,11 @@ internal static class LoopSubscription
     public static RunCompletions SubscribeForRunCompletions(
         IMultiTurnAgent agent,
         CancellationToken ct,
-        int expectedCount)
+        int expectedCount
+    )
     {
-        var sources = Enumerable.Range(0, expectedCount)
+        var sources = Enumerable
+            .Range(0, expectedCount)
             .Select(_ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously))
             .ToList();
         var completed = 0;
@@ -81,7 +82,8 @@ internal static class LoopSubscription
                     }
                 }
             },
-            ct);
+            ct
+        );
 
         return new RunCompletions(drain, sources);
     }
@@ -91,8 +93,7 @@ internal static class LoopSubscription
 internal sealed class RunCompletions(Drain drain, IReadOnlyList<TaskCompletionSource<bool>> sources)
 {
     /// <summary>Waits for the <paramref name="index"/>-th run completion (0-based).</summary>
-    public Task WaitAsync(int index) =>
-        drain.WaitAsync(sources[index].Task, TimeSpan.FromSeconds(5));
+    public Task WaitAsync(int index) => drain.WaitAsync(sources[index].Task, TimeSpan.FromSeconds(5));
 }
 
 /// <summary>
@@ -105,8 +106,9 @@ internal sealed class Drain(Task drainTask)
 {
     /// <summary>Stands in for "the drain is still healthy", which is not an outcome to act on — only a
     /// faulted drain is. Shared because it never completes and therefore carries no per-wait state.</summary>
-    private static readonly Task NeverCompletes =
-        new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
+    private static readonly Task NeverCompletes = new TaskCompletionSource<bool>(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    ).Task;
 
     /// <summary>
     /// Awaits <paramref name="expectation"/> for at most <paramref name="timeout"/>, failing early with the
@@ -124,7 +126,9 @@ internal sealed class Drain(Task drainTask)
         catch (Exception ex)
         {
             throw new InvalidOperationException(
-                "The subscription drain failed, so no further published messages were delivered.", ex);
+                "The subscription drain failed, so no further published messages were delivered.",
+                ex
+            );
         }
 
         // A drain that ended cleanly (subscription closed) is not a failure — what it already delivered may

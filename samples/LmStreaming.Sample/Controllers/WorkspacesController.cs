@@ -13,7 +13,8 @@ public sealed class WorkspacesController(
     IWorkspaceStore store,
     WorkspaceCatalogCompatibilityService compatibility,
     GatewayWorkspaceCatalogIdentity identity,
-    IWorkspacePluginSelectionService pluginSelection) : ControllerBase
+    IWorkspacePluginSelectionService pluginSelection
+) : ControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct = default)
@@ -70,9 +71,7 @@ public sealed class WorkspacesController(
     }
 
     [HttpPost]
-    public async Task<IActionResult> Create(
-        [FromBody] WorkspaceCreate createData,
-        CancellationToken ct = default)
+    public async Task<IActionResult> Create([FromBody] WorkspaceCreate createData, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(createData);
         try
@@ -157,7 +156,8 @@ public sealed class WorkspacesController(
     public async Task<IActionResult> Update(
         string id,
         [FromBody] WorkspaceUpdate updateData,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(updateData);
         try

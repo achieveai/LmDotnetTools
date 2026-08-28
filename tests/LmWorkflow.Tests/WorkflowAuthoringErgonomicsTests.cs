@@ -145,10 +145,7 @@ public class WorkflowAuthoringErgonomicsTests
     public async Task WorkedExample_AuthorsCleanly_AndRegistersASpawnableTask()
     {
         var runtime = new WorkflowRuntime();
-        var args = new JsonObject
-        {
-            ["definition"] = JsonNode.Parse(WorkflowExamples.MinimalProcedural),
-        };
+        var args = new JsonObject { ["definition"] = JsonNode.Parse(WorkflowExamples.MinimalProcedural) };
 
         var result = await Invoke(Tool(runtime, "SetWorkflow"), args.ToJsonString());
         result.Payload.IsError.Should().BeFalse(because: result.Payload.Text);
@@ -207,10 +204,6 @@ public class WorkflowAuthoringErgonomicsTests
     private static FunctionDescriptor Tool(WorkflowRuntime runtime, string name) =>
         new WorkflowToolProvider(runtime).GetFunctions().Single(f => f.Contract.Name == name);
 
-    private static async Task<ToolHandlerResult.Resolved> Invoke(
-        FunctionDescriptor tool,
-        string argsJson
-    ) =>
-        (ToolHandlerResult.Resolved)
-            await tool.Handler(argsJson, new ToolCallContext(), CancellationToken.None);
+    private static async Task<ToolHandlerResult.Resolved> Invoke(FunctionDescriptor tool, string argsJson) =>
+        (ToolHandlerResult.Resolved)await tool.Handler(argsJson, new ToolCallContext(), CancellationToken.None);
 }

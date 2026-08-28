@@ -33,13 +33,15 @@ public sealed class OrphanBranchReconcilerTests
             fromDb: [],
             remoteReviewBranches: ["review/widgets-42"],
             configuredTargets: [WidgetsTarget],
-            NullLogger.Instance);
+            NullLogger.Instance
+        );
 
         var pr = result.Should().ContainSingle().Subject;
         pr.Provider.Should().Be("github");
         pr.PrId.Should().Be("42");
         pr.Branch.Should().Be("review/widgets-42");
-        pr.Repo.RepoName.Should().Be("widgets", "the identity is recovered from the configured target, not the branch name");
+        pr.Repo.RepoName.Should()
+            .Be("widgets", "the identity is recovered from the configured target, not the branch name");
     }
 
     [Fact]
@@ -51,7 +53,8 @@ public sealed class OrphanBranchReconcilerTests
             fromDb,
             remoteReviewBranches: ["review/widgets-42"],
             configuredTargets: [WidgetsTarget],
-            NullLogger.Instance);
+            NullLogger.Instance
+        );
 
         result.Should().ContainSingle().Which.Branch.Should().Be("review/widgets-42");
     }
@@ -63,7 +66,8 @@ public sealed class OrphanBranchReconcilerTests
             fromDb: [],
             remoteReviewBranches: ["review/unknown-7"],
             configuredTargets: [WidgetsTarget],
-            NullLogger.Instance);
+            NullLogger.Instance
+        );
 
         result.Should().BeEmpty();
     }
@@ -76,7 +80,8 @@ public sealed class OrphanBranchReconcilerTests
             fromDb: [],
             remoteReviewBranches: ["review/github/acme-widgets/42"],
             configuredTargets: [WidgetsTarget],
-            NullLogger.Instance);
+            NullLogger.Instance
+        );
 
         var pr = result.Should().ContainSingle().Subject;
         pr.Provider.Should().Be("github");
@@ -92,7 +97,8 @@ public sealed class OrphanBranchReconcilerTests
             fromDb: [],
             remoteReviewBranches: ["review/github/other-owner-other-repo/9"],
             configuredTargets: [WidgetsTarget],
-            NullLogger.Instance);
+            NullLogger.Instance
+        );
 
         result.Should().BeEmpty();
     }
@@ -113,11 +119,16 @@ public sealed class OrphanBranchReconcilerTests
                 remoteReviewBranches: ["review/lmdotnettools-178"],
                 configuredTargets: [WidgetsTarget],
                 logger,
-                warned);
-            result.Should().BeEmpty("the branch still matches no configured repo, so it is never added to the watch-set");
+                warned
+            );
+            result
+                .Should()
+                .BeEmpty("the branch still matches no configured repo, so it is never added to the watch-set");
         }
 
-        logger.WarningCount.Should().Be(1, "the unresolvable branch is a steady-state condition, warned once per process");
+        logger
+            .WarningCount.Should()
+            .Be(1, "the unresolvable branch is a steady-state condition, warned once per process");
         warned.Should().Contain("review/lmdotnettools-178");
     }
 
@@ -127,12 +138,18 @@ public sealed class OrphanBranchReconcilerTests
     {
         public int WarningCount { get; private set; }
 
-        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
 
         public bool IsEnabled(LogLevel logLevel) => true;
 
         public void Log<TState>(
-            LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
         {
             if (logLevel == LogLevel.Warning)
             {
@@ -144,9 +161,7 @@ public sealed class OrphanBranchReconcilerTests
         {
             public static readonly NullScope Instance = new();
 
-            public void Dispose()
-            {
-            }
+            public void Dispose() { }
         }
     }
 }

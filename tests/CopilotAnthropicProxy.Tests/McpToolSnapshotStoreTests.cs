@@ -8,16 +8,8 @@ public class McpToolSnapshotStoreTests
     [Fact]
     public void HeaderContext_IsCaseAndOrderIndependent()
     {
-        var first = new HeaderDictionary
-        {
-            ["X-MCP-Tools"] = "web_search,issues",
-            ["X-MCP-Readonly"] = "true",
-        };
-        var second = new HeaderDictionary
-        {
-            ["x-mcp-readonly"] = "true",
-            ["x-mcp-tools"] = "web_search,issues",
-        };
+        var first = new HeaderDictionary { ["X-MCP-Tools"] = "web_search,issues", ["X-MCP-Readonly"] = "true" };
+        var second = new HeaderDictionary { ["x-mcp-readonly"] = "true", ["x-mcp-tools"] = "web_search,issues" };
 
         McpToolSnapshotStore.BuildHeaderContext(first).Should().Be(McpToolSnapshotStore.BuildHeaderContext(second));
     }
@@ -28,8 +20,10 @@ public class McpToolSnapshotStoreTests
         var split = new HeaderDictionary { ["X-MCP-A"] = "1", ["X-MCP-B"] = "2" };
         var combined = new HeaderDictionary { ["X-MCP-A"] = "1x-mcp-b=2" };
 
-        McpToolSnapshotStore.BuildHeaderContext(split)
-            .Should().NotBe(McpToolSnapshotStore.BuildHeaderContext(combined));
+        McpToolSnapshotStore
+            .BuildHeaderContext(split)
+            .Should()
+            .NotBe(McpToolSnapshotStore.BuildHeaderContext(combined));
     }
 
     [Fact]

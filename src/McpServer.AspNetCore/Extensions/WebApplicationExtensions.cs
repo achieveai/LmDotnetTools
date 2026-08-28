@@ -20,7 +20,8 @@ public static class WebApplicationExtensions
     /// <returns>The endpoint convention builder for further configuration</returns>
     public static IEndpointConventionBuilder MapMcpFunctionProviders(
         this IEndpointRouteBuilder app,
-        string pattern = "/mcp")
+        string pattern = "/mcp"
+    )
     {
         // Use the standard ModelContextProtocol.AspNetCore extension
         // which maps the MCP protocol endpoints

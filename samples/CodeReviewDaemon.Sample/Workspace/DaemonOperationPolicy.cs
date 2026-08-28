@@ -31,8 +31,10 @@ internal static class DaemonOperationPolicy
                 ReviewBotHost: GitHubGitHost,
                 ReviewBotRepoPath: "/",
                 ApiHost: GitHubApiHost,
-                AllowedSubmodules: []),
-            allowWriteOperations: true);
+                AllowedSubmodules: []
+            ),
+            allowWriteOperations: true
+        );
 
     /// <summary>The primary (write-capable) host-only policy for Azure DevOps provider-API requests.</summary>
     public static OperationPolicy ForAdo() =>
@@ -46,8 +48,10 @@ internal static class DaemonOperationPolicy
                 ReviewBotHost: AdoHost,
                 ReviewBotRepoPath: "/",
                 ApiHost: AdoHost,
-                AllowedSubmodules: []),
-            allowWriteOperations: true);
+                AllowedSubmodules: []
+            ),
+            allowWriteOperations: true
+        );
 
     /// <summary>
     /// Builds the per-run policy scoped to exactly the repos this review touches (PR #121 H2). Both the
@@ -75,11 +79,13 @@ internal static class DaemonOperationPolicy
         RepoIdentity repo,
         string? reviewBotRepoUrl,
         bool allowWriteOperations = false,
-        IReadOnlyList<SubmoduleAllowRule>? allowedSubmodules = null)
+        IReadOnlyList<SubmoduleAllowRule>? allowedSubmodules = null
+    )
     {
         ArgumentNullException.ThrowIfNull(repo);
 
-        var isAdo = string.Equals(repo.Provider, "azure-devops", StringComparison.Ordinal)
+        var isAdo =
+            string.Equals(repo.Provider, "azure-devops", StringComparison.Ordinal)
             || string.Equals(repo.Provider, "ado", StringComparison.Ordinal);
 
         var (targetHost, targetRepoPath, apiHost, apiRepoPathPrefix, providerKey) = isAdo
@@ -98,12 +104,14 @@ internal static class DaemonOperationPolicy
                 ReviewBotHost: reviewBotHost,
                 ReviewBotRepoPath: reviewBotRepoPath,
                 ApiHost: apiHost,
-                AllowedSubmodules: allowedSubmodules ?? [])
+                AllowedSubmodules: allowedSubmodules ?? []
+            )
             {
                 ApiRepoPathPrefix = apiRepoPathPrefix,
                 ApiWorkItemPaths = isAdo ? AdoApiWorkItemPaths(repo) : [],
             },
-            allowWriteOperations);
+            allowWriteOperations
+        );
     }
 
     /// <summary>GitHub git remote path: <c>/{owner}/{repo}</c>.</summary>
@@ -142,13 +150,7 @@ internal static class DaemonOperationPolicy
     /// </para>
     /// </summary>
     private static IReadOnlyList<string> AdoApiWorkItemPaths(RepoIdentity repo) =>
-        string.IsNullOrEmpty(repo.Project)
-            ?
-            []
-            :
-            [
-                $"/{repo.OrgOrOwner}/{repo.Project}/_apis/wit/workitems",
-            ];
+        string.IsNullOrEmpty(repo.Project) ? [] : [$"/{repo.OrgOrOwner}/{repo.Project}/_apis/wit/workitems"];
 
     /// <summary>
     /// Parses the configured ReviewBot remote into a (host, repo-path) the push policy matches against.

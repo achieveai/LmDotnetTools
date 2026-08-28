@@ -86,10 +86,7 @@ public class WebFetchToolTests
         var provider = new FakeWebFetchProvider { Result = new WebFetchResult { Content = "ok" } };
         var tool = CreateTool(provider);
 
-        var text = await InvokeAsync(
-            tool,
-            Args("https://example.com/reset?email=user@example.com&token=sek-ret#frag")
-        );
+        var text = await InvokeAsync(tool, Args("https://example.com/reset?email=user@example.com&token=sek-ret#frag"));
 
         // The displayed source label is minimized: query, fragment, and any secrets are dropped.
         text.Should().NotContain("email=user@example.com");
@@ -230,10 +227,7 @@ public class WebFetchToolTests
     [Fact]
     public async Task HandleAsync_ContentExceedsCap_TruncatesWithMarker()
     {
-        var provider = new FakeWebFetchProvider
-        {
-            Result = new WebFetchResult { Content = new string('a', 500) },
-        };
+        var provider = new FakeWebFetchProvider { Result = new WebFetchResult { Content = new string('a', 500) } };
         var tool = CreateTool(provider, new WebToolsOptions { OutputCap = 50 });
 
         var text = await InvokeAsync(tool, Args(SampleUrl));

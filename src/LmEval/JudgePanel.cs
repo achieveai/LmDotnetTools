@@ -78,16 +78,11 @@ public static class JudgePanel
         // real eligible count below, so a one-judge configuration stays Degraded rather than being
         // promoted to Full by an unknown family.
         var eligible = configured
-            .Where(j =>
-                generatorFamily is null || !FamilyComparer.Equals(j.ModelFamily, generatorFamily)
-            )
+            .Where(j => generatorFamily is null || !FamilyComparer.Equals(j.ModelFamily, generatorFamily))
             .ToList();
 
         var excludedCount = configured.Count - eligible.Count;
-        var reason =
-            excludedCount > 0
-                ? $"generator-family-excluded:{generatorFamily}"
-                : "single-judge-configured";
+        var reason = excludedCount > 0 ? $"generator-family-excluded:{generatorFamily}" : "single-judge-configured";
 
         return eligible.Count switch
         {
@@ -111,10 +106,7 @@ public static class JudgePanel
     /// is in a position to notice a shared id.
     /// </param>
     /// <exception cref="ArgumentException">The configuration is invalid.</exception>
-    public static void ValidateConfiguration(
-        IReadOnlyList<IJudge> configured,
-        IJudge? arbiter = null
-    )
+    public static void ValidateConfiguration(IReadOnlyList<IJudge> configured, IJudge? arbiter = null)
     {
         ArgumentNullException.ThrowIfNull(configured);
 
@@ -142,11 +134,7 @@ public static class JudgePanel
         // sharing one makes each of those ambiguous, and the panel-versus-arbiter partition wrong.
         if (
             configured.Count == 2
-            && string.Equals(
-                configured[0].JudgeId,
-                configured[1].JudgeId,
-                StringComparison.Ordinal
-            )
+            && string.Equals(configured[0].JudgeId, configured[1].JudgeId, StringComparison.Ordinal)
         )
         {
             throw new ArgumentException(
@@ -166,9 +154,7 @@ public static class JudgePanel
         // worse than none at all, so the collision is refused rather than measured through.
         if (
             arbiter is not null
-            && configured.Any(j =>
-                string.Equals(j.JudgeId, arbiter.JudgeId, StringComparison.Ordinal)
-            )
+            && configured.Any(j => string.Equals(j.JudgeId, arbiter.JudgeId, StringComparison.Ordinal))
         )
         {
             throw new ArgumentException(

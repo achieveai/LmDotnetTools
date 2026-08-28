@@ -152,9 +152,7 @@ public sealed class AgentCollaborationBundle
         // owner would refuse the hand-off after the sender had already been told "accepted". Refusing
         // here instead keeps admission and delivery agreeing about what is deliverable, and gives the
         // sender a recoverable answer it can act on rather than a silent drop it cannot see.
-        if (
-            string.Equals(entry.Status, AgentCollaborationStatuses.Queued, StringComparison.Ordinal)
-        )
+        if (string.Equals(entry.Status, AgentCollaborationStatuses.Queued, StringComparison.Ordinal))
         {
             return new AgentSendResult(null, entry, AgentMessageFailureCodes.TargetNotStarted);
         }
@@ -164,11 +162,7 @@ public sealed class AgentCollaborationBundle
         // refused synchronously while the sender can still choose a message type that does apply.
         if (
             messageType == AgentMessageType.Steer
-            && !string.Equals(
-                entry.Status,
-                AgentCollaborationStatuses.Running,
-                StringComparison.Ordinal
-            )
+            && !string.Equals(entry.Status, AgentCollaborationStatuses.Running, StringComparison.Ordinal)
         )
         {
             return new AgentSendResult(null, entry, AgentMessageFailureCodes.TargetNotActive);
@@ -253,10 +247,7 @@ public sealed class AgentCollaborationBundle
     /// <summary>Decides whether one agent may read another agent's transcript.</summary>
     /// <param name="readerAgentId">Canonical identifier of the agent asking.</param>
     /// <param name="targetAgentId">Canonical identifier or name of the agent being asked about.</param>
-    public TranscriptAccessDecision EvaluateTranscriptAccess(
-        string readerAgentId,
-        string targetAgentId
-    )
+    public TranscriptAccessDecision EvaluateTranscriptAccess(string readerAgentId, string targetAgentId)
     {
         return TranscriptVisibilityPolicy.Evaluate(
             Directory.FindById(readerAgentId),

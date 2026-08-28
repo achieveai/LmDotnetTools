@@ -19,13 +19,7 @@ public sealed class JudgeGauntletTests
         IReadOnlyList<IJudge> judges,
         HarnessOptions? options = null,
         IBallotAggregator? aggregator = null
-    ) =>
-        new(
-            gates,
-            judges,
-            aggregator ?? new WeightedMeanAggregator(),
-            options ?? new HarnessOptions()
-        );
+    ) => new(gates, judges, aggregator ?? new WeightedMeanAggregator(), options ?? new HarnessOptions());
 
     private static Task<Verdict> Run(JudgeGauntlet gauntlet, Candidate candidate) =>
         gauntlet.RunAsync(candidate, Rubric, NoReliability, CancellationToken.None);
@@ -35,8 +29,7 @@ public sealed class JudgeGauntletTests
     [Fact]
     public void A_two_judge_same_family_configuration_throws_at_construction()
     {
-        var construct = () =>
-            Gauntlet([], [new FakeJudge("a", "anthropic"), new FakeJudge("b", "anthropic")]);
+        var construct = () => Gauntlet([], [new FakeJudge("a", "anthropic"), new FakeJudge("b", "anthropic")]);
 
         construct.Should().Throw<ArgumentException>().WithMessage("*same model family*");
     }
@@ -66,13 +59,9 @@ public sealed class JudgeGauntletTests
     [Fact]
     public void An_abstain_floor_written_as_a_percentage_throws_at_construction()
     {
-        var construct = () =>
-            Gauntlet([], [new FakeJudge("a", "anthropic")], new HarnessOptions { AbstainFloor = 34 });
+        var construct = () => Gauntlet([], [new FakeJudge("a", "anthropic")], new HarnessOptions { AbstainFloor = 34 });
 
-        construct
-            .Should()
-            .Throw<ArgumentOutOfRangeException>()
-            .WithMessage("*confidence*");
+        construct.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*confidence*");
     }
 
     /// <summary>The mirror image: a negative floor silently disables the filter entirely.</summary>
@@ -80,11 +69,7 @@ public sealed class JudgeGauntletTests
     public void A_negative_abstain_floor_throws_at_construction()
     {
         var construct = () =>
-            Gauntlet(
-                [],
-                [new FakeJudge("a", "anthropic")],
-                new HarnessOptions { AbstainFloor = -1.0 }
-            );
+            Gauntlet([], [new FakeJudge("a", "anthropic")], new HarnessOptions { AbstainFloor = -1.0 });
 
         construct.Should().Throw<ArgumentOutOfRangeException>();
     }
@@ -92,18 +77,8 @@ public sealed class JudgeGauntletTests
     [Fact]
     public void The_abstain_floor_may_sit_on_either_end_of_its_range()
     {
-        var atZero = () =>
-            Gauntlet(
-                [],
-                [new FakeJudge("a", "anthropic")],
-                new HarnessOptions { AbstainFloor = 0.0 }
-            );
-        var atOne = () =>
-            Gauntlet(
-                [],
-                [new FakeJudge("a", "anthropic")],
-                new HarnessOptions { AbstainFloor = 1.0 }
-            );
+        var atZero = () => Gauntlet([], [new FakeJudge("a", "anthropic")], new HarnessOptions { AbstainFloor = 0.0 });
+        var atOne = () => Gauntlet([], [new FakeJudge("a", "anthropic")], new HarnessOptions { AbstainFloor = 1.0 });
 
         atZero.Should().NotThrow();
         atOne.Should().NotThrow();
@@ -117,11 +92,7 @@ public sealed class JudgeGauntletTests
     public void A_negative_dispersion_alarm_throws_at_construction()
     {
         var construct = () =>
-            Gauntlet(
-                [],
-                [new FakeJudge("a", "anthropic")],
-                new HarnessOptions { DispersionAlarm = -0.5 }
-            );
+            Gauntlet([], [new FakeJudge("a", "anthropic")], new HarnessOptions { DispersionAlarm = -0.5 });
 
         construct.Should().Throw<ArgumentOutOfRangeException>();
     }
@@ -141,10 +112,7 @@ public sealed class JudgeGauntletTests
         var later = new CountingGate("g3", GateOutcome.Pass);
         var judge = new FakeJudge("a", "anthropic");
 
-        var verdict = await Run(
-            Gauntlet([first, rejecting, later], [judge]),
-            HarnessFixtures.Candidate()
-        );
+        var verdict = await Run(Gauntlet([first, rejecting, later], [judge]), HarnessFixtures.Candidate());
 
         judge.Calls.Should().Be(0, "a gate rejection must cost no tokens at all");
         later.Calls.Should().Be(0, "the first reject short-circuits the remaining gates");
@@ -170,11 +138,7 @@ public sealed class JudgeGauntletTests
 
         judge.Calls.Should().Be(1);
         verdict.Outcome.Should().Be(VerdictOutcome.Pass);
-        verdict
-            .GateDecisions.Should()
-            .ContainSingle()
-            .Which.Outcome.Should()
-            .Be(GateOutcome.Inconclusive);
+        verdict.GateDecisions.Should().ContainSingle().Which.Outcome.Should().Be(GateOutcome.Inconclusive);
     }
 
     [Fact]
@@ -204,10 +168,7 @@ public sealed class JudgeGauntletTests
         var later = new CountingGate("after", GateOutcome.Pass);
         var judge = new FakeJudge("a", "anthropic", score: 8.0);
 
-        var verdict = await Run(
-            Gauntlet([boom, later], [judge]),
-            HarnessFixtures.Candidate()
-        );
+        var verdict = await Run(Gauntlet([boom, later], [judge]), HarnessFixtures.Candidate());
 
         verdict.GateDecisions.Should().HaveCount(2);
         var thrown = verdict.GateDecisions[0];
@@ -228,10 +189,7 @@ public sealed class JudgeGauntletTests
     {
         var boom = new MarkerGate("never", gateId: "boom", throwOnCandidateId: "cand-1");
 
-        var verdict = await Run(
-            Gauntlet([boom], [new FakeJudge("a", "anthropic")]),
-            HarnessFixtures.Candidate()
-        );
+        var verdict = await Run(Gauntlet([boom], [new FakeJudge("a", "anthropic")]), HarnessFixtures.Candidate());
 
         verdict.GateDecisions[0].Reason.Should().NotContain("gate blew up");
     }
@@ -246,13 +204,7 @@ public sealed class JudgeGauntletTests
         using var source = new CancellationTokenSource();
         var gauntlet = Gauntlet([new CancellingGate(source)], [new FakeJudge("a", "anthropic")]);
 
-        var run = async () =>
-            await gauntlet.RunAsync(
-                HarnessFixtures.Candidate(),
-                Rubric,
-                NoReliability,
-                source.Token
-            );
+        var run = async () => await gauntlet.RunAsync(HarnessFixtures.Candidate(), Rubric, NoReliability, source.Token);
 
         await run.Should().ThrowAsync<OperationCanceledException>();
     }
@@ -267,11 +219,7 @@ public sealed class JudgeGauntletTests
     public async Task One_judge_faulting_yields_a_SingleJudge_verdict_with_a_null_dispersion()
     {
         var healthy = new FakeJudge("a", "anthropic", score: 8.0);
-        var broken = new FakeJudge(
-            "b",
-            "openai",
-            fault: new HttpRequestException("provider down")
-        );
+        var broken = new FakeJudge("b", "openai", fault: new HttpRequestException("provider down"));
 
         var verdict = await Run(Gauntlet([], [healthy, broken]), HarnessFixtures.Candidate());
 
@@ -341,10 +289,7 @@ public sealed class JudgeGauntletTests
     {
         var only = new FakeJudge("a", "anthropic");
 
-        var verdict = await Run(
-            Gauntlet([], [only]),
-            HarnessFixtures.Candidate(generatorFamily: "anthropic")
-        );
+        var verdict = await Run(Gauntlet([], [only]), HarnessFixtures.Candidate(generatorFamily: "anthropic"));
 
         only.Calls.Should().Be(0);
         verdict.Outcome.Should().Be(VerdictOutcome.NoDecision);
@@ -398,8 +343,7 @@ public sealed class JudgeGauntletTests
     [Fact]
     public void Two_panel_judges_sharing_a_judge_id_throw_at_construction()
     {
-        var construct = () =>
-            Gauntlet([], [new FakeJudge("a", "anthropic"), new FakeJudge("a", "openai")]);
+        var construct = () => Gauntlet([], [new FakeJudge("a", "anthropic"), new FakeJudge("a", "openai")]);
 
         construct.Should().Throw<ArgumentException>().WithMessage("*judge id*");
     }
@@ -554,10 +498,7 @@ public sealed class JudgeGauntletTests
         verdict.TieBreakRule.Should().Be("split:unresolved");
         verdict
             .Degradation.Should()
-            .Be(
-                PanelDegradation.None,
-                "we chose not to escalate — that is not the same as trying and failing"
-            );
+            .Be(PanelDegradation.None, "we chose not to escalate — that is not the same as trying and failing");
     }
 
     /// <summary>
@@ -583,9 +524,7 @@ public sealed class JudgeGauntletTests
             HarnessFixtures.Candidate()
         );
 
-        arbiter
-            .Calls.Should()
-            .Be(0, "a degraded panel's disagreement is not the arbiter's to resolve");
+        arbiter.Calls.Should().Be(0, "a degraded panel's disagreement is not the arbiter's to resolve");
         verdict.Outcome.Should().Be(VerdictOutcome.Split);
     }
 
@@ -650,8 +589,7 @@ public sealed class JudgeGauntletTests
         );
         var gauntlet = Gauntlet([], [judge]);
 
-        var run = () =>
-            gauntlet.RunAsync(HarnessFixtures.Candidate(), Rubric, NoReliability, cts.Token);
+        var run = () => gauntlet.RunAsync(HarnessFixtures.Candidate(), Rubric, NoReliability, cts.Token);
 
         await run.Should().ThrowAsync<OperationCanceledException>();
     }
@@ -664,8 +602,7 @@ public sealed class JudgeGauntletTests
         var gauntlet = Gauntlet([], [new FakeJudge("a", "anthropic")]);
         var candidate = HarnessFixtures.Candidate() with { TaskType = "summarization" };
 
-        var run = () =>
-            gauntlet.RunAsync(candidate, Rubric, NoReliability, CancellationToken.None);
+        var run = () => gauntlet.RunAsync(candidate, Rubric, NoReliability, CancellationToken.None);
 
         await run.Should().ThrowAsync<ArgumentException>().WithMessage("*task type*");
     }

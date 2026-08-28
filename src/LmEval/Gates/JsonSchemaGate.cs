@@ -21,10 +21,7 @@ public sealed class JsonSchemaGate : GateBase, IConfigurationFingerprint
     /// <summary>Creates the gate.</summary>
     /// <param name="requiredProperties">Property names the object must carry. May be empty.</param>
     /// <param name="appliesTo">Task types this gate applies to; empty means all.</param>
-    public JsonSchemaGate(
-        IEnumerable<string>? requiredProperties = null,
-        IEnumerable<string>? appliesTo = null
-    )
+    public JsonSchemaGate(IEnumerable<string>? requiredProperties = null, IEnumerable<string>? appliesTo = null)
         : base(Id, appliesTo)
     {
         _requiredProperties = [.. requiredProperties ?? []];
@@ -35,8 +32,7 @@ public sealed class JsonSchemaGate : GateBase, IConfigurationFingerprint
     /// fingerprints identically — order does not change which candidates this gate rejects.
     /// </summary>
     public string? ConfigurationFingerprint =>
-        "required="
-        + string.Join(',', _requiredProperties.OrderBy(p => p, StringComparer.Ordinal));
+        "required=" + string.Join(',', _requiredProperties.OrderBy(p => p, StringComparer.Ordinal));
 
     /// <inheritdoc />
     protected override GateDecision Evaluate(Candidate candidate)
@@ -55,15 +51,10 @@ public sealed class JsonSchemaGate : GateBase, IConfigurationFingerprint
         {
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
-                return GateDecision.Reject(
-                    Id,
-                    $"content is a JSON {document.RootElement.ValueKind}, not an object"
-                );
+                return GateDecision.Reject(Id, $"content is a JSON {document.RootElement.ValueKind}, not an object");
             }
 
-            var missing = _requiredProperties
-                .Where(p => !document.RootElement.TryGetProperty(p, out _))
-                .ToList();
+            var missing = _requiredProperties.Where(p => !document.RootElement.TryGetProperty(p, out _)).ToList();
 
             // The property NAMES are the task's own vocabulary, not the candidate's content, so
             // naming them keeps the reason actionable without quoting anything the model wrote.

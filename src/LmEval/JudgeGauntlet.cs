@@ -101,8 +101,7 @@ public sealed class JudgeGauntlet
 
         // 1. Gates. The first reject short-circuits with no ballots and a null score, so this path
         //    costs nothing at all — which is the entire reason gates run first.
-        var (gateDecisions, rejection) = await RunGatesAsync(candidate, cancellationToken)
-            .ConfigureAwait(false);
+        var (gateDecisions, rejection) = await RunGatesAsync(candidate, cancellationToken).ConfigureAwait(false);
         if (rejection is not null)
         {
             _logger?.LogInformation(
@@ -225,8 +224,7 @@ public sealed class JudgeGauntlet
                 continue;
             }
 
-            var decision = await EvaluateGateAsync(gate, candidate, cancellationToken)
-                .ConfigureAwait(false);
+            var decision = await EvaluateGateAsync(gate, candidate, cancellationToken).ConfigureAwait(false);
             decisions.Add(decision);
 
             if (decision.Outcome == GateOutcome.Reject)
@@ -297,9 +295,7 @@ public sealed class JudgeGauntlet
     {
         try
         {
-            var ballot = await judge
-                .JudgeAsync(candidate, rubric, context, cancellationToken)
-                .ConfigureAwait(false);
+            var ballot = await judge.JudgeAsync(candidate, rubric, context, cancellationToken).ConfigureAwait(false);
             return (ballot, null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -321,11 +317,7 @@ public sealed class JudgeGauntlet
         }
     }
 
-    private static Verdict GateRejectedVerdict(
-        Candidate candidate,
-        Rubric rubric,
-        IReadOnlyList<GateDecision> gates
-    ) =>
+    private static Verdict GateRejectedVerdict(Candidate candidate, Rubric rubric, IReadOnlyList<GateDecision> gates) =>
         new()
         {
             CandidateId = candidate.CandidateId,

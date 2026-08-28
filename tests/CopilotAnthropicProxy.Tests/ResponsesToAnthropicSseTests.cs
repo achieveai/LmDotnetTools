@@ -241,9 +241,7 @@ public class ResponsesToAnthropicSseTests
 
         output.Should().Contain("event: error");
         output.Should().Contain("\"type\":\"api_error\"");
-        output
-            .Should()
-            .NotContain("message_stop", "the turn did not complete; claiming it did is the silent failure");
+        output.Should().NotContain("message_stop", "the turn did not complete; claiming it did is the silent failure");
     }
 
     [Fact]
@@ -315,9 +313,7 @@ public class ResponsesToAnthropicSseTests
         _ = translator.Next("""{"type":"response.created","response":{"id":"r","model":"m"}}""");
         _ = translator.Next("""{"type":"error","code":"server_error"}""");
 
-        var afterFailure = translator.Next(
-            """{"type":"response.completed","response":{"output":[],"usage":{}}}"""
-        );
+        var afterFailure = translator.Next("""{"type":"response.completed","response":{"output":[],"usage":{}}}""");
 
         afterFailure.Should().BeEmpty();
     }

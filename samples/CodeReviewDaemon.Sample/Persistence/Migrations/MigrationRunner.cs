@@ -20,8 +20,7 @@ internal static class MigrationRunner
     /// already current (idempotent re-open). Throws <see cref="InvalidOperationException"/> when the
     /// database is at a higher version than this binary knows about (unsupported downgrade).
     /// </summary>
-    public static void Migrate(SqliteConnection connection) =>
-        Migrate(connection, SchemaMigrations.All);
+    public static void Migrate(SqliteConnection connection) => Migrate(connection, SchemaMigrations.All);
 
     /// <summary>
     /// Core runner, parameterized on the migration set so tests can drive rollback/serialization behavior
@@ -45,7 +44,8 @@ internal static class MigrationRunner
         {
             throw new InvalidOperationException(
                 $"Database schema version {current} is newer than this build supports "
-                + $"(max {latest}). Downgrade is not supported; run a newer build of the daemon.");
+                    + $"(max {latest}). Downgrade is not supported; run a newer build of the daemon."
+            );
         }
 
         foreach (var migration in migrations.Where(m => m.Version > current).OrderBy(m => m.Version))

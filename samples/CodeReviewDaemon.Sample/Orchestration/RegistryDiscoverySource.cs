@@ -14,6 +14,8 @@ internal sealed class RegistryDiscoverySource(SandboxSessionRegistry inner) : ID
 {
     private readonly SandboxSessionRegistry _inner = inner ?? throw new ArgumentNullException(nameof(inner));
 
-    public Task<IReadOnlyList<SandboxSessionRegistry.DiscoveredItem>> ListDiscoveredAsync(string sessionId, CancellationToken ct) =>
-        _inner.ListDiscoveredAsync(sessionId, ct);
+    public Task<IReadOnlyList<SandboxSessionRegistry.DiscoveredItem>> ListDiscoveredAsync(
+        string sessionId,
+        CancellationToken ct
+    ) => _inner.ListDiscoveredAsync(sessionId, ct);
 }

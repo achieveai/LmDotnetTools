@@ -137,9 +137,10 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                 // The multi-modal handler (returning ToolCallResult with optional ContentBlocks)
                 // is the canonical handler shape; the text-only handler is no longer used.
                 // Wrap the multi-modal flavor when available, otherwise wrap the text handler.
-                var unifiedHandler = multiModalHandler != null
-                    ? LegacyHandlerAdapter.ToNewHandler(multiModalHandler)
-                    : LegacyHandlerAdapter.ToNewHandler(handler);
+                var unifiedHandler =
+                    multiModalHandler != null
+                        ? LegacyHandlerAdapter.ToNewHandler(multiModalHandler)
+                        : LegacyHandlerAdapter.ToNewHandler(handler);
                 functions.Add(
                     new FunctionDescriptor
                     {
@@ -321,9 +322,10 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                 // The multi-modal handler (returning ToolCallResult with optional ContentBlocks)
                 // is the canonical handler shape; the text-only handler is no longer used.
                 // Wrap the multi-modal flavor when available, otherwise wrap the text handler.
-                var unifiedHandler = multiModalHandler != null
-                    ? LegacyHandlerAdapter.ToNewHandler(multiModalHandler)
-                    : LegacyHandlerAdapter.ToNewHandler(handler);
+                var unifiedHandler =
+                    multiModalHandler != null
+                        ? LegacyHandlerAdapter.ToNewHandler(multiModalHandler)
+                        : LegacyHandlerAdapter.ToNewHandler(handler);
                 functions.Add(
                     new FunctionDescriptor
                     {
@@ -361,11 +363,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             {
                 var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
                 toolsByServer[serverId] = [.. tools];
-                logger.LogDebug(
-                    "Retrieved tools for server {ServerId}: ToolCount={ToolCount}",
-                    serverId,
-                    tools.Count
-                );
+                logger.LogDebug("Retrieved tools for server {ServerId}: ToolCount={ToolCount}", serverId, tools.Count);
             }
             catch (Exception ex)
             {
@@ -515,7 +513,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     var descriptor = new FunctionDescriptor
                     {
                         Contract = new FunctionContract { Name = tool.Name },
-                        Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(string.Empty)),
+                        Handler = (_, _, _) =>
+                            Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(string.Empty)),
                         ProviderName = serverId,
                     };
 
@@ -640,8 +639,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                 var textResult = string.Join(
                     Environment.NewLine,
                     response.Content != null
-                        ? response.Content
-                            .Where(c => c?.Type == "text")
+                        ? response
+                            .Content.Where(c => c?.Type == "text")
                             .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
                         : []
                 );
@@ -762,7 +761,11 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     }
 
                     imageBlocks.Add(
-                        new ImageToolResultBlock { Data = Convert.ToBase64String(dataSpan), MimeType = detectedMimeType }
+                        new ImageToolResultBlock
+                        {
+                            Data = Convert.ToBase64String(dataSpan),
+                            MimeType = detectedMimeType,
+                        }
                     );
                 }
                 catch (Exception ex)
@@ -844,8 +847,17 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             }
 
             // WebP: 52 49 46 46 ... 57 45 42 50
-            if (bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46 &&
-                bytes.Length >= 12 && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50)
+            if (
+                bytes[0] == 0x52
+                && bytes[1] == 0x49
+                && bytes[2] == 0x46
+                && bytes[3] == 0x46
+                && bytes.Length >= 12
+                && bytes[8] == 0x57
+                && bytes[9] == 0x45
+                && bytes[10] == 0x42
+                && bytes[11] == 0x50
+            )
             {
                 return "image/webp";
             }
@@ -1130,7 +1142,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         var descriptor = new FunctionDescriptor
                         {
                             Contract = new FunctionContract { Name = tool.Name },
-                            Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(string.Empty)), // Dummy handler
+                            Handler = (_, _, _) =>
+                                Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(string.Empty)), // Dummy handler
                             ProviderName = serverId,
                         };
 
@@ -1217,7 +1230,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     var descriptor = new FunctionDescriptor
                     {
                         Contract = new FunctionContract { Name = tool.Name },
-                        Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(string.Empty)), // Dummy handler
+                        Handler = (_, _, _) =>
+                            Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(string.Empty)), // Dummy handler
                         ProviderName = serverId,
                     };
 

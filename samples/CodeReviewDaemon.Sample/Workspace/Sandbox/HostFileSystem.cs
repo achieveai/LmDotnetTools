@@ -22,7 +22,13 @@ internal sealed class HostFileSystem : ISandboxFileSystem
         }
 
         await using var stream = new FileStream(
-            path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize: 4096, useAsync: true);
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite,
+            bufferSize: 4096,
+            useAsync: true
+        );
 
         using var buffer = new MemoryStream();
         var chunk = new byte[8192];

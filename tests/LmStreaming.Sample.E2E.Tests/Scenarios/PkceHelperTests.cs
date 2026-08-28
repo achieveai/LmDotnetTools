@@ -14,9 +14,7 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 public sealed class PkceHelperTests : LoggingTestBase
 {
     public PkceHelperTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     [Fact]
     public void Code_verifier_is_base64url_with_256_bits_of_entropy()

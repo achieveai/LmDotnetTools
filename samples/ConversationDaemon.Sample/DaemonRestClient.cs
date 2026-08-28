@@ -29,32 +29,31 @@ internal sealed class DaemonRestClient
     }
 
     /// <summary>Provisions a new conversation thread and returns its server-minted thread id.</summary>
-    public async Task<string> ProvisionAsync(
-        string workspaceId,
-        string providerId,
-        string modeId,
-        CancellationToken ct)
+    public async Task<string> ProvisionAsync(string workspaceId, string providerId, string modeId, CancellationToken ct)
     {
         var body = await SendReadAsync(
             HttpMethod.Post,
             "api/conversations",
-            new { WorkspaceId = workspaceId, ProviderId = providerId, ModeId = modeId },
-            ct);
+            new
+            {
+                WorkspaceId = workspaceId,
+                ProviderId = providerId,
+                ModeId = modeId,
+            },
+            ct
+        );
         return ReadStringProperty(body, "threadId");
     }
 
     /// <summary>Updates a conversation's title/preview metadata.</summary>
-    public async Task UpdateMetadataAsync(
-        string threadId,
-        string? title,
-        string? preview,
-        CancellationToken ct)
+    public async Task UpdateMetadataAsync(string threadId, string? title, string? preview, CancellationToken ct)
     {
         await SendAsync(
             HttpMethod.Put,
             $"api/conversations/{Uri.EscapeDataString(threadId)}/metadata",
             new { Title = title, Preview = preview },
-            ct);
+            ct
+        );
     }
 
     /// <summary>Queues a user message onto the thread and returns the input id to poll status by.</summary>
@@ -64,7 +63,8 @@ internal sealed class DaemonRestClient
             HttpMethod.Post,
             $"api/conversations/{Uri.EscapeDataString(threadId)}/messages",
             new { Text = text },
-            ct);
+            ct
+        );
         return ReadStringProperty(body, "inputId");
     }
 
@@ -75,7 +75,8 @@ internal sealed class DaemonRestClient
             HttpMethod.Get,
             $"api/conversations/{Uri.EscapeDataString(threadId)}/run-state",
             body: null,
-            ct);
+            ct
+        );
         return Deserialize<RunState>(body);
     }
 
@@ -89,34 +90,31 @@ internal sealed class DaemonRestClient
             HttpMethod.Get,
             $"api/conversations/{Uri.EscapeDataString(threadId)}/messages",
             body: null,
-            ct);
+            ct
+        );
     }
 
     /// <summary>Resolves a run's status by the input id returned from <see cref="SendMessageAsync"/>.</summary>
-    public async Task<StatusResult> GetStatusByInputIdAsync(
-        string threadId,
-        string inputId,
-        CancellationToken ct)
+    public async Task<StatusResult> GetStatusByInputIdAsync(string threadId, string inputId, CancellationToken ct)
     {
         var body = await SendReadAsync(
             HttpMethod.Get,
             $"api/conversations/{Uri.EscapeDataString(threadId)}/status?inputId={Uri.EscapeDataString(inputId)}",
             body: null,
-            ct);
+            ct
+        );
         return Deserialize<StatusResult>(body);
     }
 
     /// <summary>Switches the conversation's provider while it is idle.</summary>
-    public async Task<SwitchResult> SwitchProviderAsync(
-        string threadId,
-        string providerId,
-        CancellationToken ct)
+    public async Task<SwitchResult> SwitchProviderAsync(string threadId, string providerId, CancellationToken ct)
     {
         var body = await SendReadAsync(
             HttpMethod.Post,
             $"api/conversations/{Uri.EscapeDataString(threadId)}/provider",
             new { ProviderId = providerId },
-            ct);
+            ct
+        );
         return Deserialize<SwitchResult>(body);
     }
 
@@ -128,11 +126,7 @@ internal sealed class DaemonRestClient
         _ = response.EnsureSuccessStatusCode();
     }
 
-    private async Task<string> SendReadAsync(
-        HttpMethod method,
-        string path,
-        object? body,
-        CancellationToken ct)
+    private async Task<string> SendReadAsync(HttpMethod method, string path, object? body, CancellationToken ct)
     {
         using var response = await ExecuteAsync(method, path, body, ct);
         _ = response.EnsureSuccessStatusCode();
@@ -143,7 +137,8 @@ internal sealed class DaemonRestClient
         HttpMethod method,
         string path,
         object? body,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         using var request = new HttpRequestMessage(method, path);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -178,8 +173,7 @@ internal sealed class DaemonRestClient
     private static string ReadStringProperty(string body, string propertyName)
     {
         using var doc = JsonDocument.Parse(body);
-        if (doc.RootElement.TryGetProperty(propertyName, out var value)
-            && value.ValueKind == JsonValueKind.String)
+        if (doc.RootElement.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String)
         {
             var text = value.GetString();
             if (!string.IsNullOrEmpty(text))
@@ -188,14 +182,14 @@ internal sealed class DaemonRestClient
             }
         }
 
-        throw new InvalidOperationException(
-            $"Server response did not contain a '{propertyName}' string. Body: {body}");
+        throw new InvalidOperationException($"Server response did not contain a '{propertyName}' string. Body: {body}");
     }
 
     private static T Deserialize<T>(string body)
     {
         return JsonSerializer.Deserialize<T>(body, JsonOptions)
             ?? throw new InvalidOperationException(
-                $"Could not parse a {typeof(T).Name} from the server response. Body: {body}");
+                $"Could not parse a {typeof(T).Name} from the server response. Body: {body}"
+            );
     }
 }

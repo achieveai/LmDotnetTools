@@ -21,7 +21,8 @@ public sealed class PrincipalConflictException : Exception
         : base(
             $"Thread '{threadId}' is bound to user '{Describe(existingUserId)}'; the current request "
                 + $"carries user '{Describe(requestedUserId)}'. A conversation cannot change its "
-                + "owning user identity.")
+                + "owning user identity."
+        )
     {
         ThreadId = threadId;
         ExistingUserId = existingUserId;

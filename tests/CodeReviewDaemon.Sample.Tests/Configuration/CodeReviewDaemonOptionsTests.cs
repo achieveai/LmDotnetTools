@@ -65,6 +65,8 @@ public class CodeReviewDaemonOptionsTests
         o.ReviewModelId.Should().Be("claude-sonnet-5", "the primary dispatcher always has a concrete model");
         o.SubAgentModelId.Should().BeEmpty("empty ⇒ review sub-agents inherit ReviewModelId");
         o.KnowledgeModelId.Should()
-            .BeEmpty("empty ⇒ the at-close knowledge-extraction loop inherits ReviewModelId; set it (e.g. claude-opus-4.8) to run extraction on a dedicated model");
+            .BeEmpty(
+                "empty ⇒ the at-close knowledge-extraction loop inherits ReviewModelId; set it (e.g. claude-opus-4.8) to run extraction on a dedicated model"
+            );
     }
 }

@@ -8,9 +8,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 public sealed class SubAgentExecutionException : Exception
 {
     public SubAgentExecutionException(string agentId, string templateName, string? errorMessage)
-        : base(
-            $"Sub-agent '{templateName}' ({agentId}) failed: " +
-            $"{errorMessage ?? "(no error message)"}")
+        : base($"Sub-agent '{templateName}' ({agentId}) failed: " + $"{errorMessage ?? "(no error message)"}")
     {
         AgentId = agentId;
         TemplateName = templateName;

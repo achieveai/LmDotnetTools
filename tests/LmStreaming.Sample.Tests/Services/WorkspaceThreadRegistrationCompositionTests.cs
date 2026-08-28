@@ -42,9 +42,7 @@ namespace LmStreaming.Sample.Tests.Services;
 /// </remarks>
 public sealed class WorkspaceThreadRegistrationCompositionTests
 {
-    private static readonly AgentProfile WorkspaceMode = SystemChatModes.GetById(
-        SystemChatModes.WorkspaceAgentModeId
-    )!;
+    private static readonly AgentProfile WorkspaceMode = SystemChatModes.GetById(SystemChatModes.WorkspaceAgentModeId)!;
 
     private const string Marketplace = "official";
 
@@ -73,7 +71,9 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
             // the migration validates the selection against the (stubbed) catalog before it does
             // anything else, so the selection below has to be genuinely legal here.
             var store = host.Services.GetRequiredService<IWorkspaceStore>();
-            var workspace = await store.CreateAsync(new WorkspaceCreate { Name = "Proj", Marketplaces = [Marketplace] });
+            var workspace = await store.CreateAsync(
+                new WorkspaceCreate { Name = "Proj", Marketplaces = [Marketplace] }
+            );
 
             // An ORDINARY workspace conversation: no subAgentOptions, no S2S credential — the plain
             // interactive path a browser takes. This is the call whose side effects are under test.
@@ -129,7 +129,8 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
             // reach the probe at all, and every assertion below would still hold for the wrong reason:
             // no candidate, no delete and no persistence are equally true of a migration that timed out
             // and of one that never started. This is the assertion that separates them.
-            probe.ObservedThreads.Should()
+            probe
+                .ObservedThreads.Should()
                 .Contain(
                     threadId,
                     "the idle wait must have consulted the probe about THIS thread — that is the only "

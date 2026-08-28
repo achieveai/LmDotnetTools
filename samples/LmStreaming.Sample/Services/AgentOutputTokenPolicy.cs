@@ -13,10 +13,7 @@ public sealed class AgentOutputTokenPolicy
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
-    public GenerateReplyOptions ApplyPrimary(
-        GenerateReplyOptions options,
-        bool useDelegatedFallback = false
-    )
+    public GenerateReplyOptions ApplyPrimary(GenerateReplyOptions options, bool useDelegatedFallback = false)
     {
         ArgumentNullException.ThrowIfNull(options);
         if (options.MaxToken is not null)
@@ -33,9 +30,7 @@ public sealed class AgentOutputTokenPolicy
     public GenerateReplyOptions ApplyDelegated(GenerateReplyOptions? options)
     {
         var effective = options ?? new GenerateReplyOptions();
-        return effective.MaxToken is null
-            ? effective with { MaxToken = _options.Delegated }
-            : effective;
+        return effective.MaxToken is null ? effective with { MaxToken = _options.Delegated } : effective;
     }
 
     public SubAgentTemplate ApplyDelegated(SubAgentTemplate template)
@@ -52,7 +47,8 @@ public sealed class AgentOutputTokenPolicy
             Templates = options.Templates.ToDictionary(
                 pair => pair.Key,
                 pair => ApplyDelegated(pair.Value),
-                StringComparer.Ordinal),
+                StringComparer.Ordinal
+            ),
         };
     }
 }

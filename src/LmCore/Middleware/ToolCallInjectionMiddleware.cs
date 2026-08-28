@@ -116,7 +116,8 @@ public class ToolCallInjectionMiddleware : IStreamingMiddleware
     /// </summary>
     private static GenerateReplyOptions PrepareOptions(
         GenerateReplyOptions? contextOptions,
-        IEnumerable<FunctionContract> functions)
+        IEnumerable<FunctionContract> functions
+    )
     {
         var options = contextOptions ?? new GenerateReplyOptions();
         var combinedFunctions = CombineFunctions(functions, options.Functions);
@@ -128,7 +129,8 @@ public class ToolCallInjectionMiddleware : IStreamingMiddleware
     /// </summary>
     private static IEnumerable<FunctionContract>? CombineFunctions(
         IEnumerable<FunctionContract>? middlewareFunctions,
-        IEnumerable<FunctionContract>? optionFunctions)
+        IEnumerable<FunctionContract>? optionFunctions
+    )
     {
         return middlewareFunctions == null && optionFunctions == null ? null
             : middlewareFunctions == null ? optionFunctions

@@ -31,7 +31,11 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
     private CopilotAcpTransport? _transport;
     private ActiveRunState? _activeRun;
     private CopilotBridgeInitOptions? _startupOptions;
-    private Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? _dynamicToolExecutor;
+    private Func<
+        CopilotDynamicToolCallRequest,
+        CancellationToken,
+        Task<CopilotDynamicToolCallResponse>
+    >? _dynamicToolExecutor;
     private int _isShuttingDown;
     private int _disposed;
     private bool _loadSessionUnsupportedWarned;
@@ -54,14 +58,12 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger;
-        _json = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        };
+        _json = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     }
 
     public void ConfigureDynamicToolExecutor(
-        Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor)
+        Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor
+    )
     {
         _dynamicToolExecutor = executor;
     }
@@ -92,11 +94,11 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 _options.CopilotCliPath,
                 _options.CopilotCliMinVersion,
                 timeout,
-                ct);
+                ct
+            );
 
-            var workingDirectory = effectiveOptions.WorkingDirectory
-                ?? _options.WorkingDirectory
-                ?? Directory.GetCurrentDirectory();
+            var workingDirectory =
+                effectiveOptions.WorkingDirectory ?? _options.WorkingDirectory ?? Directory.GetCurrentDirectory();
             var transport = new CopilotAcpTransport(_options, _logger);
             transport.Closed += OnTransportClosed;
 
@@ -107,7 +109,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 effectiveOptions.McpServers,
                 HandleServerRequestAsync,
                 HandleServerNotification,
-                ct);
+                ct
+            );
 
             Volatile.Write(ref _transport, transport);
             _startupOptions = effectiveOptions;
@@ -119,18 +122,12 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 new
                 {
                     protocolVersion = _options.AcpProtocolVersion,
-                    clientInfo = new
-                    {
-                        name = "lm-dotnet-tools-copilot-client",
-                        version = "0.3.0",
-                    },
-                    capabilities = new
-                    {
-                        dynamicTools = true,
-                    },
+                    clientInfo = new { name = "lm-dotnet-tools-copilot-client", version = "0.3.0" },
+                    capabilities = new { dynamicTools = true },
                 },
                 ct,
-                startupTimeout);
+                startupTimeout
+            );
 
             if (_options.ModelAllowlistProbeEnabled)
             {
@@ -139,13 +136,10 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
 
             SupportsLoadSession = CopilotEventParser.ExtractSupportsLoadSession(initializeResponse);
 
-            var sessionResponse = await TryLoadOrCreateSessionAsync(
-                transport,
-                effectiveOptions,
-                startupTimeout,
-                ct);
+            var sessionResponse = await TryLoadOrCreateSessionAsync(transport, effectiveOptions, startupTimeout, ct);
 
-            CurrentCopilotSessionId = CopilotEventParser.ExtractSessionId(sessionResponse) ?? effectiveOptions.SessionId;
+            CurrentCopilotSessionId =
+                CopilotEventParser.ExtractSessionId(sessionResponse) ?? effectiveOptions.SessionId;
             DependencyState = "ready";
 
             _logger?.LogInformation(
@@ -156,7 +150,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 _options.ProviderMode,
                 _options.CopilotCliPath,
                 copilotCliVersion,
-                CurrentCopilotSessionId);
+                CurrentCopilotSessionId
+            );
         }
         catch (Exception ex)
         {
@@ -173,14 +168,17 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
 
     public async IAsyncEnumerable<CopilotTurnEventEnvelope> RunStreamingAsync(
         string input,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(input);
 
         var transport = Volatile.Read(ref _transport);
         if (transport is null || !transport.IsRunning)
         {
-            throw new InvalidOperationException("Copilot ACP process is not running. Call StartOrResumeSessionAsync first.");
+            throw new InvalidOperationException(
+                "Copilot ACP process is not running. Call StartOrResumeSessionAsync first."
+            );
         }
 
         if (string.IsNullOrWhiteSpace(CurrentCopilotSessionId))
@@ -204,7 +202,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
             _options.Provider,
             _options.ProviderMode,
             requestId,
-            CurrentCopilotSessionId);
+            CurrentCopilotSessionId
+        );
 
         var runTask = ExecuteTurnAsync(transport, input, runState, requestId, stopwatch, ct);
         try
@@ -228,7 +227,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
         ActiveRunState runState,
         string requestId,
         Stopwatch stopwatch,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         try
         {
@@ -238,17 +238,20 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 "session/prompt",
                 BuildSessionPromptParams(runState.SessionId, input),
                 ct,
-                timeout);
+                timeout
+            );
 
             // Emit a synthetic final envelope so the translator can produce a UsageMessage
             // and any terminal processing.
-            runState.TryWriteEvent(new CopilotTurnEventEnvelope
-            {
-                Type = "event",
-                Event = WrapEvent("session/prompt/completed", promptResponse),
-                RequestId = runState.RequestId,
-                SessionId = runState.SessionId,
-            });
+            runState.TryWriteEvent(
+                new CopilotTurnEventEnvelope
+                {
+                    Type = "event",
+                    Event = WrapEvent("session/prompt/completed", promptResponse),
+                    RequestId = runState.RequestId,
+                    SessionId = runState.SessionId,
+                }
+            );
 
             runState.TryComplete();
 
@@ -260,7 +263,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 _options.ProviderMode,
                 requestId,
                 runState.SessionId,
-                stopwatch.ElapsedMilliseconds);
+                stopwatch.ElapsedMilliseconds
+            );
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -281,7 +285,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 requestId,
                 runState.SessionId,
                 "run_failed",
-                stopwatch.ElapsedMilliseconds);
+                stopwatch.ElapsedMilliseconds
+            );
             throw;
         }
     }
@@ -302,10 +307,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
 
         try
         {
-            await transport.SendNotificationAsync(
-                "session/cancel",
-                new { sessionId = run.SessionId },
-                ct);
+            await transport.SendNotificationAsync("session/cancel", new { sessionId = run.SessionId }, ct);
         }
         catch (Exception ex)
         {
@@ -316,7 +318,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 "failed",
                 _options.Provider,
                 _options.ProviderMode,
-                run.SessionId);
+                run.SessionId
+            );
         }
     }
 
@@ -372,7 +375,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                     await transport.SendNotificationAsync(
                         "session/cancel",
                         new { sessionId = run.SessionId },
-                        CancellationToken.None);
+                        CancellationToken.None
+                    );
                 }
                 catch
                 {
@@ -395,7 +399,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 "completed",
                 _options.Provider,
                 _options.ProviderMode,
-                CurrentCopilotSessionId);
+                CurrentCopilotSessionId
+            );
 
             _ = Interlocked.Exchange(ref _isShuttingDown, 0);
         }
@@ -423,7 +428,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                     "completed",
                     _options.Provider,
                     _options.ProviderMode,
-                    "acp_server_stopped");
+                    "acp_server_stopped"
+                );
             }
             else
             {
@@ -435,22 +441,24 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                     "failed",
                     _options.Provider,
                     _options.ProviderMode,
-                    "acp_server_exited");
+                    "acp_server_exited"
+                );
             }
         }
 
         var run = GetActiveRun();
         if (run != null)
         {
-            run.TryFail(exception ?? new InvalidOperationException("Copilot ACP process exited before run completion."));
+            run.TryFail(
+                exception ?? new InvalidOperationException("Copilot ACP process exited before run completion.")
+            );
             ClearActiveRun();
         }
     }
 
     private void HandleServerNotification(string method, JsonElement? parameters)
     {
-        if (Volatile.Read(ref _disposed) != 0
-            || Interlocked.CompareExchange(ref _isShuttingDown, 0, 0) == 1)
+        if (Volatile.Read(ref _disposed) != 0 || Interlocked.CompareExchange(ref _isShuttingDown, 0, 0) == 1)
         {
             return;
         }
@@ -464,38 +472,54 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
         if (!string.Equals(method, "session/update", StringComparison.Ordinal))
         {
             // Non-update notifications are still forwarded as events for visibility.
-            run.TryWriteEvent(new CopilotTurnEventEnvelope
-            {
-                Type = "event",
-                Event = WrapEvent(method, parameters),
-                RequestId = run.RequestId,
-                SessionId = CopilotEventParser.ExtractSessionId(parameters) ?? run.SessionId,
-            });
+            run.TryWriteEvent(
+                new CopilotTurnEventEnvelope
+                {
+                    Type = "event",
+                    Event = WrapEvent(method, parameters),
+                    RequestId = run.RequestId,
+                    SessionId = CopilotEventParser.ExtractSessionId(parameters) ?? run.SessionId,
+                }
+            );
             return;
         }
 
         var sessionId = CopilotEventParser.ExtractSessionId(parameters) ?? run.SessionId;
-        run.TryWriteEvent(new CopilotTurnEventEnvelope
-        {
-            Type = "event",
-            Event = WrapEvent(method, parameters),
-            RequestId = run.RequestId,
-            SessionId = sessionId,
-        });
+        run.TryWriteEvent(
+            new CopilotTurnEventEnvelope
+            {
+                Type = "event",
+                Event = WrapEvent(method, parameters),
+                RequestId = run.RequestId,
+                SessionId = sessionId,
+            }
+        );
     }
 
-    private async Task<JsonElement> HandleServerRequestAsync(string method, JsonElement? parameters, CancellationToken ct)
+    private async Task<JsonElement> HandleServerRequestAsync(
+        string method,
+        JsonElement? parameters,
+        CancellationToken ct
+    )
     {
         return method switch
         {
             "session/request_permission" => SerializeToElement(BuildPermissionResponse(parameters)),
-            "fs/read_text_file" => throw new InvalidOperationException("Copilot client does not expose local filesystem reads."),
-            "fs/write_text_file" => throw new InvalidOperationException("Copilot client does not expose local filesystem writes."),
+            "fs/read_text_file" => throw new InvalidOperationException(
+                "Copilot client does not expose local filesystem reads."
+            ),
+            "fs/write_text_file" => throw new InvalidOperationException(
+                "Copilot client does not expose local filesystem writes."
+            ),
             _ => await HandleDynamicToolCallAsync(method, parameters, ct),
         };
     }
 
-    private async Task<JsonElement> HandleDynamicToolCallAsync(string method, JsonElement? parameters, CancellationToken ct)
+    private async Task<JsonElement> HandleDynamicToolCallAsync(
+        string method,
+        JsonElement? parameters,
+        CancellationToken ct
+    )
     {
         // Copilot ACP routes dynamic tools via the tool name as the RPC method, or a
         // wrapped tools/call request. Support both shapes by extracting the canonical
@@ -539,7 +563,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                     "failed",
                     _options.Provider,
                     _options.ProviderMode,
-                    toolName);
+                    toolName
+                );
                 response = BuildToolBridgeFailure(ex.Message);
             }
         }
@@ -553,20 +578,24 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
             toolName,
             request.CallId,
             request.SessionId,
-            stopwatch.ElapsedMilliseconds);
+            stopwatch.ElapsedMilliseconds
+        );
 
-        return SerializeToElement(new
-        {
-            success = response.Success,
-            content = NormalizeToolContentItems(response.ContentItems),
-        });
+        return SerializeToElement(
+            new { success = response.Success, content = NormalizeToolContentItems(response.ContentItems) }
+        );
     }
 
-    private (string ToolName, JsonElement Arguments) ExtractDynamicToolInvocation(string method, JsonElement? parameters)
+    private (string ToolName, JsonElement Arguments) ExtractDynamicToolInvocation(
+        string method,
+        JsonElement? parameters
+    )
     {
-        var directTool = CopilotEventParser.GetPropertyString(parameters, "tool")
+        var directTool =
+            CopilotEventParser.GetPropertyString(parameters, "tool")
             ?? CopilotEventParser.GetPropertyString(parameters, "name");
-        var directArgs = CopilotEventParser.GetPropertyElement(parameters, "arguments")
+        var directArgs =
+            CopilotEventParser.GetPropertyElement(parameters, "arguments")
             ?? CopilotEventParser.GetPropertyElement(parameters, "input")
             ?? CopilotEventParser.CreateEmptyObject();
 
@@ -590,7 +619,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
             "completed",
             _options.Provider,
             _options.ProviderMode,
-            decision);
+            decision
+        );
         _ = parameters; // decision is static; parameters reserved for future inspection
         return new { decision };
     }
@@ -616,7 +646,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
 
         var joined = string.Join(",", models);
         throw new InvalidOperationException(
-            $"Copilot CLI does not expose requested model '{requestedModel}'. Available models: {joined}.");
+            $"Copilot CLI does not expose requested model '{requestedModel}'. Available models: {joined}."
+        );
     }
 
     private static List<string> ExtractModelList(JsonElement response)
@@ -644,9 +675,11 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                         result.Add(value);
                     }
                 }
-                else if (item.ValueKind == JsonValueKind.Object
-                         && item.TryGetProperty("id", out var idProp)
-                         && idProp.ValueKind == JsonValueKind.String)
+                else if (
+                    item.ValueKind == JsonValueKind.Object
+                    && item.TryGetProperty("id", out var idProp)
+                    && idProp.ValueKind == JsonValueKind.String
+                )
                 {
                     var value = idProp.GetString();
                     if (!string.IsNullOrWhiteSpace(value))
@@ -671,17 +704,23 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
         // siblings below: a non-empty per-call dictionary overrides; null or empty
         // falls back to the SDK options. To disable MCP entirely, leave both
         // CopilotSdkOptions.McpServers and the per-call dictionary empty.
-        var mcpServers = options.McpServers is { Count: > 0 }
-            ? options.McpServers
-            : _options.McpServers;
+        var mcpServers = options.McpServers is { Count: > 0 } ? options.McpServers : _options.McpServers;
 
         return options with
         {
             Model = string.IsNullOrWhiteSpace(options.Model) ? _options.Model : options.Model,
-            WorkingDirectory = string.IsNullOrWhiteSpace(options.WorkingDirectory) ? _options.WorkingDirectory : options.WorkingDirectory,
-            BaseInstructions = string.IsNullOrWhiteSpace(options.BaseInstructions) ? _options.BaseInstructions : options.BaseInstructions,
-            DeveloperInstructions = string.IsNullOrWhiteSpace(options.DeveloperInstructions) ? _options.DeveloperInstructions : options.DeveloperInstructions,
-            ModelInstructionsFile = string.IsNullOrWhiteSpace(options.ModelInstructionsFile) ? _options.ModelInstructionsFile : options.ModelInstructionsFile,
+            WorkingDirectory = string.IsNullOrWhiteSpace(options.WorkingDirectory)
+                ? _options.WorkingDirectory
+                : options.WorkingDirectory,
+            BaseInstructions = string.IsNullOrWhiteSpace(options.BaseInstructions)
+                ? _options.BaseInstructions
+                : options.BaseInstructions,
+            DeveloperInstructions = string.IsNullOrWhiteSpace(options.DeveloperInstructions)
+                ? _options.DeveloperInstructions
+                : options.DeveloperInstructions,
+            ModelInstructionsFile = string.IsNullOrWhiteSpace(options.ModelInstructionsFile)
+                ? _options.ModelInstructionsFile
+                : options.ModelInstructionsFile,
             BaseUrl = string.IsNullOrWhiteSpace(options.BaseUrl) ? _options.BaseUrl : options.BaseUrl,
             ApiKey = string.IsNullOrWhiteSpace(options.ApiKey) ? _options.ApiKey : options.ApiKey,
             SessionId = string.IsNullOrWhiteSpace(options.SessionId) ? _options.CopilotSessionId : options.SessionId,
@@ -693,7 +732,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
         CopilotAcpTransport transport,
         CopilotBridgeInitOptions options,
         TimeSpan startupTimeout,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (SupportsLoadSession && !string.IsNullOrWhiteSpace(options.SessionId))
         {
@@ -705,19 +745,22 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                     "started",
                     _options.Provider,
                     _options.ProviderMode,
-                    options.SessionId);
+                    options.SessionId
+                );
                 var loaded = await transport.SendRequestAsync(
                     "session/load",
                     BuildSessionLoadParams(options),
                     ct,
-                    startupTimeout);
+                    startupTimeout
+                );
                 _logger?.LogInformation(
                     "{event_type} {event_status} {provider} {provider_mode} {copilot_session_id}",
                     "copilot.session.load",
                     "completed",
                     _options.Provider,
                     _options.ProviderMode,
-                    options.SessionId);
+                    options.SessionId
+                );
                 return loaded;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -734,12 +777,15 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                     _options.Provider,
                     _options.ProviderMode,
                     options.SessionId,
-                    ex.GetType().Name);
+                    ex.GetType().Name
+                );
             }
         }
-        else if (!SupportsLoadSession
+        else if (
+            !SupportsLoadSession
             && !string.IsNullOrWhiteSpace(options.SessionId)
-            && !_loadSessionUnsupportedWarned)
+            && !_loadSessionUnsupportedWarned
+        )
         {
             _loadSessionUnsupportedWarned = true;
             _logger?.LogInformation(
@@ -748,14 +794,11 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 "skipped",
                 _options.Provider,
                 _options.ProviderMode,
-                options.SessionId);
+                options.SessionId
+            );
         }
 
-        return await transport.SendRequestAsync(
-            "session/new",
-            BuildSessionNewParams(options),
-            ct,
-            startupTimeout);
+        return await transport.SendRequestAsync("session/new", BuildSessionNewParams(options), ct, startupTimeout);
     }
 
     private static object BuildSessionLoadParams(CopilotBridgeInitOptions options)
@@ -817,22 +860,21 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
 
         if (options.Tools is { Count: > 0 })
         {
-            parameters["tools"] = options.Tools.Select(tool =>
-            {
-                object inputSchema = tool.InputSchema.ValueKind == JsonValueKind.Undefined
-                    ? new Dictionary<string, object?>
-                    {
-                        ["type"] = "object",
-                        ["additionalProperties"] = true,
-                    }
-                    : tool.InputSchema;
-                return new Dictionary<string, object?>
+            parameters["tools"] = options
+                .Tools.Select(tool =>
                 {
-                    ["name"] = tool.Name,
-                    ["description"] = tool.Description ?? string.Empty,
-                    ["inputSchema"] = inputSchema,
-                };
-            }).ToArray();
+                    object inputSchema =
+                        tool.InputSchema.ValueKind == JsonValueKind.Undefined
+                            ? new Dictionary<string, object?> { ["type"] = "object", ["additionalProperties"] = true }
+                            : tool.InputSchema;
+                    return new Dictionary<string, object?>
+                    {
+                        ["name"] = tool.Name,
+                        ["description"] = tool.Description ?? string.Empty,
+                        ["inputSchema"] = inputSchema,
+                    };
+                })
+                .ToArray();
         }
 
         return parameters;
@@ -840,18 +882,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
 
     private static object BuildSessionPromptParams(string sessionId, string input)
     {
-        return new
-        {
-            sessionId,
-            prompt = new[]
-            {
-                new
-                {
-                    type = "text",
-                    text = input,
-                },
-            },
-        };
+        return new { sessionId, prompt = new[] { new { type = "text", text = input } } };
     }
 
     private static IReadOnlyList<object> NormalizeToolContentItems(IReadOnlyList<CopilotDynamicToolContentItem> items)
@@ -859,30 +890,21 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
         var normalized = new List<object>();
         foreach (var item in items)
         {
-            if (string.Equals(item.Type, "image", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(item.ImageUrl))
+            if (
+                string.Equals(item.Type, "image", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(item.ImageUrl)
+            )
             {
-                normalized.Add(new
-                {
-                    type = "image",
-                    imageUrl = item.ImageUrl,
-                });
+                normalized.Add(new { type = "image", imageUrl = item.ImageUrl });
                 continue;
             }
 
-            normalized.Add(new
-            {
-                type = "text",
-                text = item.Text ?? string.Empty,
-            });
+            normalized.Add(new { type = "text", text = item.Text ?? string.Empty });
         }
 
         if (normalized.Count == 0)
         {
-            normalized.Add(new
-            {
-                type = "text",
-                text = string.Empty,
-            });
+            normalized.Add(new { type = "text", text = string.Empty });
         }
 
         return normalized;
@@ -893,14 +915,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
         return new CopilotDynamicToolCallResponse
         {
             Success = false,
-            ContentItems =
-            [
-                new CopilotDynamicToolContentItem
-                {
-                    Type = "text",
-                    Text = message,
-                },
-            ],
+            ContentItems = [new CopilotDynamicToolContentItem { Type = "text", Text = message }],
         };
     }
 
@@ -985,11 +1000,8 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
     {
         private readonly object _stateLock = new();
         private readonly Channel<CopilotTurnEventEnvelope> _events = Channel.CreateUnbounded<CopilotTurnEventEnvelope>(
-            new UnboundedChannelOptions
-            {
-                SingleReader = true,
-                SingleWriter = false,
-            });
+            new UnboundedChannelOptions { SingleReader = true, SingleWriter = false }
+        );
 
         private bool _completed;
 

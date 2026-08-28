@@ -41,17 +41,12 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         """;
 
     public AuthWebhookControllerTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private E2EWebAppFactory NewFactory(bool disableDeferredAuth = false)
     {
         // Any scripted handler works — these tests hit the HTTP API, never create an agent.
-        var responder = ScriptedSseResponder.New()
-            .ForRole("noop", _ => true)
-                .Turn(t => t.Text("ok"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("noop", _ => true).Turn(t => t.Text("ok")).Build();
         Logger.LogInformation("Booting in-process sample host (provider mode 'test') for auth-webhook checks");
 
         // Deferred auth would HOLD a not-signed-in webhook call for the configured timeout; the
@@ -60,7 +55,8 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
             ? new Dictionary<string, string?> { ["Auth:Webhook:HoldTimeoutSeconds"] = "0" }
             : null;
         var factory = new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()), settings);
-        factory.Services.GetRequiredService<SessionSecretStore>()
+        factory
+            .Services.GetRequiredService<SessionSecretStore>()
             .SaveAsync(SessionId, SharedSecret)
             .GetAwaiter()
             .GetResult();
@@ -124,7 +120,9 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         };
         request.Headers.TryAddWithoutValidation("Authorization", sharedSecret);
 
-        Logger.LogInformation("POST /api/auth/webhook/github with CORRECT shared secret, not signed in (expect 200 deny)");
+        Logger.LogInformation(
+            "POST /api/auth/webhook/github with CORRECT shared secret, not signed in (expect 200 deny)"
+        );
         using var response = await client.SendAsync(request);
 
         // The decision lives in the body, not the status code — both allow and deny are HTTP 200.
@@ -150,13 +148,18 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
 
         // Simulate a persisted sign-in (as if from a previous run / restart): seed the github token
         // store the same singleton the provider reads. GetAccessTokenAsync then returns this token.
-        await factory.Services.GetRequiredService<IOAuthTokenStore>().SaveAsync(new OAuthTokenRecord(
-            Provider: "github",
-            Account: "octocat",
-            RefreshToken: string.Empty,
-            AccessToken: "injected-token-xyz",
-            AccessTokenExpiresAtUtc: DateTimeOffset.UtcNow.AddYears(1),
-            Scopes: ["repo", "read:org"]));
+        await factory
+            .Services.GetRequiredService<IOAuthTokenStore>()
+            .SaveAsync(
+                new OAuthTokenRecord(
+                    Provider: "github",
+                    Account: "octocat",
+                    RefreshToken: string.Empty,
+                    AccessToken: "injected-token-xyz",
+                    AccessTokenExpiresAtUtc: DateTimeOffset.UtcNow.AddYears(1),
+                    Scopes: ["repo", "read:org"]
+                )
+            );
         Logger.LogInformation("Seeded a valid github token in the store (value not logged) to exercise the allow path");
 
         var sharedSecret = SharedSecret;
@@ -166,7 +169,9 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         };
         request.Headers.TryAddWithoutValidation("Authorization", sharedSecret);
 
-        Logger.LogInformation("POST /api/auth/webhook/github with CORRECT shared secret, signed in (expect 200 allow + Bearer)");
+        Logger.LogInformation(
+            "POST /api/auth/webhook/github with CORRECT shared secret, signed in (expect 200 allow + Bearer)"
+        );
         using var response = await client.SendAsync(request);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -202,27 +207,28 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         _ = Directory.CreateDirectory(tokenDir);
         try
         {
-            var responder = ScriptedSseResponder.New()
-                .ForRole("noop", _ => true)
-                    .Turn(t => t.Text("ok"))
-                .Build();
+            var responder = ScriptedSseResponder.New().ForRole("noop", _ => true).Turn(t => t.Text("ok")).Build();
             using var factory = new E2EWebAppFactory(
                 "test",
                 new ScriptedBuilder(responder.AsAnthropicHandler()),
-                new Dictionary<string, string?> { ["Auth:TokenStoreDir"] = tokenDir });
+                new Dictionary<string, string?> { ["Auth:TokenStoreDir"] = tokenDir }
+            );
             using var client = factory.CreateClient();
             await factory.Services.GetRequiredService<SessionSecretStore>().SaveAsync(SessionId, SharedSecret);
             var sharedSecret = SharedSecret;
 
-            var createBody = JsonSerializer.Serialize(new
-            {
-                host = "api.internal.test",
-                kind = "custom-headers",
-                headers = new[] { new { name = "X-Api-Key", value = "secret-123" } },
-            });
+            var createBody = JsonSerializer.Serialize(
+                new
+                {
+                    host = "api.internal.test",
+                    kind = "custom-headers",
+                    headers = new[] { new { name = "X-Api-Key", value = "secret-123" } },
+                }
+            );
             using var createResponse = await client.PostAsync(
                 "/api/auth/egress-keys",
-                new StringContent(createBody, Encoding.UTF8, "application/json"));
+                new StringContent(createBody, Encoding.UTF8, "application/json")
+            );
             createResponse.StatusCode.Should().Be(HttpStatusCode.OK);
             string id;
             using (var created = JsonDocument.Parse(await createResponse.Content.ReadAsStringAsync()))
@@ -231,7 +237,10 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
             }
 
             var providerId = $"predefined-{id}";
-            Logger.LogInformation("Created custom-header egress key {ProviderId} for host api.internal.test", providerId);
+            Logger.LogInformation(
+                "Created custom-header egress key {ProviderId} for host api.internal.test",
+                providerId
+            );
 
             using (var allow = await PostWebhookAsync(client, sharedSecret, providerId, "api.internal.test"))
             {
@@ -249,7 +258,9 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
 
             // Same host but a non-443 port is denied — a predefined key is HTTPS/443-only, so a
             // misbehaving gateway cannot extract it over a cleartext port.
-            using (var portDeny = await PostWebhookAsync(client, sharedSecret, providerId, "api.internal.test", port: 8443))
+            using (
+                var portDeny = await PostWebhookAsync(client, sharedSecret, providerId, "api.internal.test", port: 8443)
+            )
             {
                 portDeny.RootElement.GetProperty("decision").GetString().Should().Be("deny");
             }
@@ -270,20 +281,27 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
     }
 
     private static async Task<JsonDocument> PostWebhookAsync(
-        HttpClient client, string sharedSecret, string providerId, string destinationHost, int port = 443)
+        HttpClient client,
+        string sharedSecret,
+        string providerId,
+        string destinationHost,
+        int port = 443
+    )
     {
-        var body = JsonSerializer.Serialize(new
-        {
-            session_id = "s-test",
-            app_id = "lmstreaming-sample",
-            provider_id = providerId,
-            rule_id = providerId,
-            destination_host = destinationHost,
-            destination_port = port,
-            method = "GET",
-            path = "/",
-            required_scopes = Array.Empty<string>(),
-        });
+        var body = JsonSerializer.Serialize(
+            new
+            {
+                session_id = "s-test",
+                app_id = "lmstreaming-sample",
+                provider_id = providerId,
+                rule_id = providerId,
+                destination_host = destinationHost,
+                destination_port = port,
+                method = "GET",
+                path = "/",
+                required_scopes = Array.Empty<string>(),
+            }
+        );
         using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/auth/webhook/{providerId}")
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
@@ -304,13 +322,18 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         // Seed a valid github token, then hit the GIT smart-HTTP host (github.com) rather than the
         // REST API host. GitHub's git endpoint rejects `Bearer` with 401, so the webhook must inject
         // HTTP Basic with username `x-access-token` and the token as the password.
-        await factory.Services.GetRequiredService<IOAuthTokenStore>().SaveAsync(new OAuthTokenRecord(
-            Provider: "github",
-            Account: "octocat",
-            RefreshToken: string.Empty,
-            AccessToken: "injected-token-xyz",
-            AccessTokenExpiresAtUtc: DateTimeOffset.UtcNow.AddYears(1),
-            Scopes: ["repo", "read:org"]));
+        await factory
+            .Services.GetRequiredService<IOAuthTokenStore>()
+            .SaveAsync(
+                new OAuthTokenRecord(
+                    Provider: "github",
+                    Account: "octocat",
+                    RefreshToken: string.Empty,
+                    AccessToken: "injected-token-xyz",
+                    AccessTokenExpiresAtUtc: DateTimeOffset.UtcNow.AddYears(1),
+                    Scopes: ["repo", "read:org"]
+                )
+            );
 
         const string gitBody = """
             {
@@ -333,7 +356,9 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         };
         request.Headers.TryAddWithoutValidation("Authorization", sharedSecret);
 
-        Logger.LogInformation("POST /api/auth/webhook/github for git host github.com (expect 200 allow + Basic x-access-token)");
+        Logger.LogInformation(
+            "POST /api/auth/webhook/github for git host github.com (expect 200 allow + Basic x-access-token)"
+        );
         using var response = await client.SendAsync(request);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -347,7 +372,8 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         var pair = headers[0];
         pair[0].GetString().Should().Be("Authorization");
 
-        var expectedBasic = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("x-access-token:injected-token-xyz"));
+        var expectedBasic =
+            "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("x-access-token:injected-token-xyz"));
         pair[1].GetString().Should().Be(expectedBasic);
 
         await factory.Services.GetRequiredService<IOAuthTokenStore>().RemoveAsync("github");

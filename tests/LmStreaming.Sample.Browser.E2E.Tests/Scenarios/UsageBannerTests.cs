@@ -83,7 +83,8 @@ public sealed class UsageBannerTests
         await using var session = await _fixture.OpenAsync(
             "test-anthropic",
             responder.HandlerFor("test-anthropic"),
-            subAgentFactory: (loggerFactory, _) => BuildSubAgentOptions(loggerFactory));
+            subAgentFactory: (loggerFactory, _) => BuildSubAgentOptions(loggerFactory)
+        );
         var page = session.Page;
 
         await page.SendMessageAsync("delegate to the sub-agent");
@@ -110,10 +111,14 @@ public sealed class UsageBannerTests
                 const r = await fetch(`/api/conversations/${id}/usage`);
                 if (!r.ok) return -1;
                 return (await r.json()).totalTokens;
-            }");
-        aggregateTotal.Should().BeGreaterThan(
-            300,
-            "the sub-agent's relayed usage must fold into the conversation-wide aggregate, above the parent's own 300");
+            }"
+        );
+        aggregateTotal
+            .Should()
+            .BeGreaterThan(
+                300,
+                "the sub-agent's relayed usage must fold into the conversation-wide aggregate, above the parent's own 300"
+            );
 
         // On reopen the banner is restored from that aggregate, so it now includes the descendant's tokens.
         await page.ReloadAsync();
@@ -154,16 +159,17 @@ public sealed class UsageBannerTests
     // 100/50 usage per generation as the parent — so the descendant's contribution is measurable.
     private static IStreamingAgent BuildEmbeddedChainAgent(ILoggerFactory loggerFactory)
     {
-        var handler = new AnthropicTestSseMessageHandler(
-            loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>());
+        var handler = new AnthropicTestSseMessageHandler(loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>());
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://test-mode/v1") };
         var anthropicClient = new AnthropicClient(
             httpClient,
             baseUrl: "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<AnthropicClient>());
+            logger: loggerFactory.CreateLogger<AnthropicClient>()
+        );
         return new AnthropicAgent(
             "MockAnthropicUsageSub",
             anthropicClient,
-            loggerFactory.CreateLogger<AnthropicAgent>());
+            loggerFactory.CreateLogger<AnthropicAgent>()
+        );
     }
 }

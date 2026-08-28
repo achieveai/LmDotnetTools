@@ -14,14 +14,15 @@ public sealed class CopilotModelsClientTests
     public async Task GetModelsAsync_requests_the_models_endpoint()
     {
         string? requestedPath = null;
-        var handler = new FakeHttpMessageHandler((request, _) =>
-        {
-            requestedPath = request.RequestUri?.AbsolutePath;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        var handler = new FakeHttpMessageHandler(
+            (request, _) =>
             {
-                Content = new StringContent("""{ "data": [] }"""),
-            });
-        });
+                requestedPath = request.RequestUri?.AbsolutePath;
+                return Task.FromResult(
+                    new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{ "data": [] }""") }
+                );
+            }
+        );
 
         var client = new CopilotModelsClient(ClientOver(handler));
         _ = await client.GetModelsAsync();

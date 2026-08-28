@@ -13,11 +13,7 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Model;
 public sealed class WorkflowNodeJsonConverter : JsonConverter<WorkflowNode>
 {
     /// <inheritdoc />
-    public override WorkflowNode? Read(
-        ref Utf8JsonReader reader,
-        Type typeToConvert,
-        JsonSerializerOptions options
-    )
+    public override WorkflowNode? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         if (JsonNode.Parse(ref reader) is not JsonObject obj)
         {
@@ -36,11 +32,7 @@ public sealed class WorkflowNodeJsonConverter : JsonConverter<WorkflowNode>
     }
 
     /// <inheritdoc />
-    public override void Write(
-        Utf8JsonWriter writer,
-        WorkflowNode value,
-        JsonSerializerOptions options
-    )
+    public override void Write(Utf8JsonWriter writer, WorkflowNode value, JsonSerializerOptions options)
     {
         ArgumentNullException.ThrowIfNull(writer);
         ArgumentNullException.ThrowIfNull(value);

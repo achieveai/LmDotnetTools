@@ -23,6 +23,5 @@ internal sealed class DaemonControllerFeatureProvider : ControllerFeatureProvide
 {
     protected override bool IsController(TypeInfo typeInfo) =>
         base.IsController(typeInfo)
-        && (typeInfo.AsType() == typeof(AuthWebhookController)
-            || typeInfo.AsType() == typeof(DiscoveryController));
+        && (typeInfo.AsType() == typeof(AuthWebhookController) || typeInfo.AsType() == typeof(DiscoveryController));
 }

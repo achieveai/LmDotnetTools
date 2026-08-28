@@ -15,7 +15,11 @@ public sealed class NotifyMessageMappingTests
     public void NotifyMessage_MapsTo_UserInputTextMessage_WithEnvelope()
     {
         var notify = NotifyMessage.Create(
-            NotifyKinds.SubAgentCompletion, detail: "done", sourceToolName: "Agent", sourceToolCallId: "c1");
+            NotifyKinds.SubAgentCompletion,
+            detail: "done",
+            sourceToolName: "Agent",
+            sourceToolCallId: "c1"
+        );
 
         var request = MessageMapper.BuildRequest([notify], options: null);
 

@@ -65,6 +65,5 @@ public static class LifecycleEventTypes
     /// </summary>
     /// <param name="eventType">The discriminator carried by the envelope.</param>
     /// <returns><see langword="true"/> when a typed payload exists for the value.</returns>
-    public static bool IsKnown(string? eventType) =>
-        eventType is not null && Known.Contains(eventType);
+    public static bool IsKnown(string? eventType) => eventType is not null && Known.Contains(eventType);
 }

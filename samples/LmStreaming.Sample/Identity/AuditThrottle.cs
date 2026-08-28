@@ -79,7 +79,8 @@ public sealed class AuditThrottle
 
                 admitted = true;
                 return nowTicks;
-            });
+            }
+        );
 
         return admitted;
     }

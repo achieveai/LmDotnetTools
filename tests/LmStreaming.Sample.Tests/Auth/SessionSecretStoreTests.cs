@@ -9,9 +9,11 @@ namespace LmStreaming.Sample.Tests.Auth;
 /// </summary>
 public sealed class SessionSecretStoreTests
 {
-    private static SessionSecretStore NewStore(string? baseDirectory = null) => new(
-        baseDirectory ?? Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-        NullLogger<SessionSecretStore>.Instance);
+    private static SessionSecretStore NewStore(string? baseDirectory = null) =>
+        new(
+            baseDirectory ?? Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+            NullLogger<SessionSecretStore>.Instance
+        );
 
     [Fact]
     public async Task SaveThenMatch_WithCorrectSecret_ReturnsTrue()
@@ -45,7 +47,9 @@ public sealed class SessionSecretStoreTests
         (await store.MatchesAsync("session-a", "secret-b")).Should().BeFalse();
 
         // Each session's own secret still matches — isolation didn't break the happy path either.
-        (await store.MatchesAsync("session-a", "secret-a")).Should().BeTrue();
+        (await store.MatchesAsync("session-a", "secret-a"))
+            .Should()
+            .BeTrue();
         (await store.MatchesAsync("session-b", "secret-b")).Should().BeTrue();
     }
 
@@ -72,11 +76,15 @@ public sealed class SessionSecretStoreTests
         await store.SaveAsync(idTwo, "secret-two");
 
         // Neither id can read the other's secret (the isolation the collision used to break)...
-        (await store.MatchesAsync(idOne, "secret-two")).Should().BeFalse();
+        (await store.MatchesAsync(idOne, "secret-two"))
+            .Should()
+            .BeFalse();
         (await store.MatchesAsync(idTwo, "secret-one")).Should().BeFalse();
 
         // ...and saving idTwo did NOT overwrite idOne's file — each still matches its own secret.
-        (await store.MatchesAsync(idOne, "secret-one")).Should().BeTrue();
+        (await store.MatchesAsync(idOne, "secret-one"))
+            .Should()
+            .BeTrue();
         (await store.MatchesAsync(idTwo, "secret-two")).Should().BeTrue();
 
         // Two distinct ids ⇒ two distinct files on disk.

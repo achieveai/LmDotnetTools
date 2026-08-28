@@ -33,16 +33,23 @@ public sealed class PredefinedKeyProviderTests
         public int Calls { get; private set; }
         public List<string> Bodies { get; } = [];
 
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
         {
             Calls++;
-            Bodies.Add(request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken));
+            Bodies.Add(
+                request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken)
+            );
             return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(respond()) };
         }
     }
 
     private static (PredefinedKeyProvider provider, MemoryTokenStore store, ScriptHandler handler) NewProvider(
-        PredefinedKeyEntry entry, Func<string> respond)
+        PredefinedKeyEntry entry,
+        Func<string> respond
+    )
     {
         var store = new MemoryTokenStore();
         var handler = new ScriptHandler(respond);
@@ -50,38 +57,41 @@ public sealed class PredefinedKeyProviderTests
         return (new PredefinedKeyProvider(entry, store, endpoint, NullLogger.Instance), store, handler);
     }
 
-    private static PredefinedKeyEntry CustomEntry(params (string name, string value)[] headers) => new()
-    {
-        Id = "c1",
-        Host = "api.example.com",
-        Kind = PredefinedKeyKind.CustomHeaders,
-        Headers = [.. headers.Select(h => new PredefinedHeader(h.name, h.value))],
-    };
+    private static PredefinedKeyEntry CustomEntry(params (string name, string value)[] headers) =>
+        new()
+        {
+            Id = "c1",
+            Host = "api.example.com",
+            Kind = PredefinedKeyKind.CustomHeaders,
+            Headers = [.. headers.Select(h => new PredefinedHeader(h.name, h.value))],
+        };
 
-    private static PredefinedKeyEntry RefreshEntry() => new()
-    {
-        Id = "r1",
-        Host = "api.example.com",
-        Kind = PredefinedKeyKind.RefreshToken,
-        HeaderName = "Authorization",
-        TokenEndpoint = "https://token.example/oauth/token",
-        ClientId = "cid",
-        ClientSecret = "csec",
-        RefreshToken = "rt0",
-        Scopes = ["read"],
-    };
+    private static PredefinedKeyEntry RefreshEntry() =>
+        new()
+        {
+            Id = "r1",
+            Host = "api.example.com",
+            Kind = PredefinedKeyKind.RefreshToken,
+            HeaderName = "Authorization",
+            TokenEndpoint = "https://token.example/oauth/token",
+            ClientId = "cid",
+            ClientSecret = "csec",
+            RefreshToken = "rt0",
+            Scopes = ["read"],
+        };
 
-    private static PredefinedKeyEntry ClientCredentialsEntry() => new()
-    {
-        Id = "cc1",
-        Host = "api.example.com",
-        Kind = PredefinedKeyKind.ClientCredentials,
-        HeaderName = "Authorization",
-        TokenEndpoint = "https://token.example/oauth/token",
-        ClientId = "cid",
-        ClientSecret = "csec",
-        Scopes = ["read"],
-    };
+    private static PredefinedKeyEntry ClientCredentialsEntry() =>
+        new()
+        {
+            Id = "cc1",
+            Host = "api.example.com",
+            Kind = PredefinedKeyKind.ClientCredentials,
+            HeaderName = "Authorization",
+            TokenEndpoint = "https://token.example/oauth/token",
+            ClientId = "cid",
+            ClientSecret = "csec",
+            Scopes = ["read"],
+        };
 
     [Fact]
     public async Task Custom_headers_returns_list_verbatim_without_hitting_endpoint()
@@ -99,16 +109,28 @@ public sealed class PredefinedKeyProviderTests
     [Fact]
     public async Task Custom_headers_with_no_headers_throws()
     {
-        var entry = new PredefinedKeyEntry { Id = "c", Host = "api.example.com", Kind = PredefinedKeyKind.CustomHeaders, Headers = [] };
+        var entry = new PredefinedKeyEntry
+        {
+            Id = "c",
+            Host = "api.example.com",
+            Kind = PredefinedKeyKind.CustomHeaders,
+            Headers = [],
+        };
         var (provider, _, _) = NewProvider(entry, () => "{}");
 
-        await FluentActions.Awaiting(() => provider.GetAccessTokenAsync()).Should().ThrowAsync<InvalidOperationException>();
+        await FluentActions
+            .Awaiting(() => provider.GetAccessTokenAsync())
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
     }
 
     [Fact]
     public async Task Refresh_token_mints_bearer_persists_and_caches()
     {
-        var (provider, store, handler) = NewProvider(RefreshEntry(), () => "{\"access_token\":\"AT\",\"expires_in\":3600}");
+        var (provider, store, handler) = NewProvider(
+            RefreshEntry(),
+            () => "{\"access_token\":\"AT\",\"expires_in\":3600}"
+        );
 
         var token = await provider.GetAccessTokenAsync();
 
@@ -126,7 +148,10 @@ public sealed class PredefinedKeyProviderTests
     [Fact]
     public async Task Client_credentials_mints_with_client_credentials_grant()
     {
-        var (provider, _, handler) = NewProvider(ClientCredentialsEntry(), () => "{\"access_token\":\"CC\",\"expires_in\":60}");
+        var (provider, _, handler) = NewProvider(
+            ClientCredentialsEntry(),
+            () => "{\"access_token\":\"CC\",\"expires_in\":60}"
+        );
 
         var token = await provider.GetAccessTokenAsync();
 
@@ -140,14 +165,21 @@ public sealed class PredefinedKeyProviderTests
         var fail = true;
         var (provider, _, handler) = NewProvider(
             RefreshEntry(),
-            () => fail ? "{\"error\":\"invalid_grant\"}" : "{\"access_token\":\"AT2\",\"expires_in\":60}");
+            () => fail ? "{\"error\":\"invalid_grant\"}" : "{\"access_token\":\"AT2\",\"expires_in\":60}"
+        );
 
         // First mint is rejected → throws + marks invalid.
-        await FluentActions.Awaiting(() => provider.GetAccessTokenAsync()).Should().ThrowAsync<InvalidOperationException>();
+        await FluentActions
+            .Awaiting(() => provider.GetAccessTokenAsync())
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
         handler.Calls.Should().Be(1);
 
         // While invalid it short-circuits — no further endpoint calls.
-        await FluentActions.Awaiting(() => provider.GetAccessTokenAsync()).Should().ThrowAsync<InvalidOperationException>();
+        await FluentActions
+            .Awaiting(() => provider.GetAccessTokenAsync())
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
         handler.Calls.Should().Be(1);
 
         // Updating the entry (user re-enters the credential) clears the invalid flag → mint retried.
@@ -172,10 +204,17 @@ public sealed class PredefinedKeyProviderTests
 
         var newEntry = RefreshEntry() with { RefreshToken = "new-rt" };
         await FluentActions
-            .Awaiting(() => provider.ApplyUpdateAsync(newEntry, credentialChanged: true, () => throw new IOException("persist failed")))
-            .Should().ThrowAsync<IOException>();
+            .Awaiting(() =>
+                provider.ApplyUpdateAsync(
+                    newEntry,
+                    credentialChanged: true,
+                    () => throw new IOException("persist failed")
+                )
+            )
+            .Should()
+            .ThrowAsync<IOException>();
 
-        provider.Entry.RefreshToken.Should().Be("rt0");           // entry NOT swapped
+        provider.Entry.RefreshToken.Should().Be("rt0"); // entry NOT swapped
         (await store.GetAsync("predefined-r1")).Should().BeNull(); // token invalidated (step 1)
     }
 
@@ -188,7 +227,14 @@ public sealed class PredefinedKeyProviderTests
         // A host-only edit (credentialChanged: false) keeps the still-valid cached token → no re-mint.
         // (The credential-change re-mint path — where the registry removes the persisted token — is
         // covered by PredefinedKeyRegistryTests.Update_changing_credential_invalidates_the_persisted_token.)
-        await provider.ApplyUpdateAsync(RefreshEntry() with { Host = "api2.example.com" }, credentialChanged: false, () => Task.CompletedTask);
+        await provider.ApplyUpdateAsync(
+            RefreshEntry() with
+            {
+                Host = "api2.example.com",
+            },
+            credentialChanged: false,
+            () => Task.CompletedTask
+        );
 
         _ = await provider.GetAccessTokenAsync();
         handler.Calls.Should().Be(1);

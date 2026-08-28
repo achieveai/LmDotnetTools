@@ -25,13 +25,19 @@ public sealed class HostWorkspacePathVerifierTests
     public void Verify_rejects_null_or_blank_reported_path()
     {
         HostWorkspacePathVerifier.Verify(null, @"B:\sandbox-workspaces\e2e-clone-abc12345").Verified.Should().BeFalse();
-        HostWorkspacePathVerifier.Verify("   ", @"B:\sandbox-workspaces\e2e-clone-abc12345").Verified.Should().BeFalse();
+        HostWorkspacePathVerifier
+            .Verify("   ", @"B:\sandbox-workspaces\e2e-clone-abc12345")
+            .Verified.Should()
+            .BeFalse();
     }
 
     [Fact]
     public void Verify_rejects_a_drive_qualified_path_that_does_not_exist_on_this_host()
     {
-        var missing = Path.Combine(Path.GetTempPath(), "host-workspace-verifier-missing-" + Guid.NewGuid().ToString("N"));
+        var missing = Path.Combine(
+            Path.GetTempPath(),
+            "host-workspace-verifier-missing-" + Guid.NewGuid().ToString("N")
+        );
 
         var result = HostWorkspacePathVerifier.Verify(missing, missing);
 
@@ -106,7 +112,7 @@ public sealed class HostWorkspacePathVerifierTests
     [Theory]
     [InlineData("/srv/sandbox-workspaces/leaf", true)]
     [InlineData("/workspace", true)] // syntactically indistinguishable here; Verify's existence and
-                                     // equality checks are what reject it on a Unix host
+    // equality checks are what reject it on a Unix host
     [InlineData("sandbox-workspaces/leaf", false)]
     [InlineData(@"B:\sandbox-workspaces\leaf", false)]
     [InlineData("", false)]

@@ -17,9 +17,7 @@ public class ResultTemplateTests
     private static WorkflowRuntime Loaded(bool schemaFail = false)
     {
         var runtime = new WorkflowRuntime();
-        runtime.LoadDefinition(
-            WorkflowJson.Deserialize(Phase4bFixtures.ResultTemplateWorkflow(schemaFail))
-        );
+        runtime.LoadDefinition(WorkflowJson.Deserialize(Phase4bFixtures.ResultTemplateWorkflow(schemaFail)));
         return runtime;
     }
 
@@ -44,14 +42,15 @@ public class ResultTemplateTests
     {
         var runtime = Loaded();
 
-        var explicitResult = JsonNode.Parse(
-            """{ "curriculum": { "problemCount": 99 }, "authored": [] }"""
-        );
+        var explicitResult = JsonNode.Parse("""{ "curriculum": { "problemCount": 99 }, "authored": [] }""");
 
         runtime.AdvanceTo("start", "done", explicitResult);
 
         // The explicit result is captured verbatim (99), not the state-derived template (2).
-        runtime.Result!["curriculum"]!["problemCount"]!.GetValue<int>().Should().Be(99);
+        runtime.Result!["curriculum"]!["problemCount"]!
+            .GetValue<int>()
+            .Should()
+            .Be(99);
     }
 
     [Fact]

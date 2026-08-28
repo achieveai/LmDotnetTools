@@ -27,7 +27,8 @@ internal static class OrphanBranchReconciler
         IReadOnlyList<string> remoteReviewBranches,
         IReadOnlyList<PrPollTarget> configuredTargets,
         ILogger logger,
-        ISet<string>? warnedOrphanBranches = null)
+        ISet<string>? warnedOrphanBranches = null
+    )
     {
         ArgumentNullException.ThrowIfNull(fromDb);
         ArgumentNullException.ThrowIfNull(remoteReviewBranches);
@@ -55,8 +56,10 @@ internal static class OrphanBranchReconciler
             }
 
             // New scheme first, then the legacy nested form, so both orphan generations get cleaned up.
-            if (!ReviewBranchManager.TryParseReviewBranch(branch, out var slug, out var prNumber)
-                && !ReviewBranchManager.TryParseLegacyReviewBranch(branch, out slug, out prNumber))
+            if (
+                !ReviewBranchManager.TryParseReviewBranch(branch, out var slug, out var prNumber)
+                && !ReviewBranchManager.TryParseLegacyReviewBranch(branch, out slug, out prNumber)
+            )
             {
                 continue;
             }
@@ -72,7 +75,8 @@ internal static class OrphanBranchReconciler
                 {
                     logger.LogWarning(
                         "PR-lifecycle sweep: orphaned notes branch '{Branch}' matches no configured repo; skipping.",
-                        branch);
+                        branch
+                    );
                 }
 
                 continue;
@@ -82,8 +86,9 @@ internal static class OrphanBranchReconciler
             // repo and PR number. These are branches with no surviving review_run row, so there is no
             // recorded author to recover — and inventing one would file a public per-developer record
             // under the wrong name. No author means no feedback record, which is the right outcome here.
-            result.Add(new ReviewedPr(
-                target.Repo, target.Provider, prNumber.ToString(CultureInfo.InvariantCulture), branch));
+            result.Add(
+                new ReviewedPr(target.Repo, target.Provider, prNumber.ToString(CultureInfo.InvariantCulture), branch)
+            );
         }
 
         return result;

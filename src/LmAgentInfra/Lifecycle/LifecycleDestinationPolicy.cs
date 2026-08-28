@@ -60,10 +60,7 @@ internal static class LifecycleDestinationPolicy
     /// <param name="options">The egress configuration in force <i>now</i>, which is not necessarily
     /// the configuration that admitted the subscription.</param>
     /// <returns>The reason the destination is refused, or <see cref="LifecycleDestinationVerdict.Allowed"/>.</returns>
-    public static LifecycleDestinationVerdict Evaluate(
-        Uri? callbackUri,
-        LifecycleDeliveryOptions options
-    )
+    public static LifecycleDestinationVerdict Evaluate(Uri? callbackUri, LifecycleDeliveryOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
 
@@ -104,8 +101,7 @@ internal static class LifecycleDestinationPolicy
         // A literal address can be judged here, before the subscription is ever persisted. A name
         // cannot: what it resolves to is not knowable until the moment of connection, which is why
         // the same address rule is applied again on every connect (see IsAllowedAddress).
-        return IPAddress.TryParse(callbackUri.Host, out var literal)
-            && !IsAllowedAddress(literal, options)
+        return IPAddress.TryParse(callbackUri.Host, out var literal) && !IsAllowedAddress(literal, options)
             ? LifecycleDestinationVerdict.AddressNotAllowed
             : LifecycleDestinationVerdict.Allowed;
     }
@@ -167,11 +163,7 @@ internal static class LifecycleDestinationPolicy
         return Array.Exists(
             allowed,
             entry =>
-                string.Equals(
-                    ToPunycode(entry),
-                    callbackUri.IdnHost,
-                    StringComparison.OrdinalIgnoreCase
-                )
+                string.Equals(ToPunycode(entry), callbackUri.IdnHost, StringComparison.OrdinalIgnoreCase)
                 // The entry as written, for the case where it is not a name punycode applies to. An
                 // entry that cannot be canonicalized is a configuration mistake, and letting it match
                 // itself keeps that mistake from being reported as a rebinding refusal.
@@ -228,11 +220,7 @@ internal static class LifecycleDestinationPolicy
         // Never a callback destination under any configuration, so these are not covered by the
         // development escape hatch below: nothing answers on the unspecified address, and a
         // multicast delivery is a delivery to an unknown set of listeners.
-        if (
-            candidate.Equals(IPAddress.Any)
-            || candidate.Equals(IPAddress.IPv6Any)
-            || IsMulticast(candidate)
-        )
+        if (candidate.Equals(IPAddress.Any) || candidate.Equals(IPAddress.IPv6Any) || IsMulticast(candidate))
         {
             return false;
         }

@@ -39,8 +39,9 @@ public class SubAgentStateLifecycleTests
         // before the manager disposes the owned provider — while the send lease is still held.
         var disposal = state.BeginTerminalDisposalAsync(isError: false);
         await Task.Delay(150);
-        disposal.IsCompleted.Should().BeFalse(
-            "terminal disposal must await the in-flight inject send lease so disposal cannot overlap a send");
+        disposal
+            .IsCompleted.Should()
+            .BeFalse("terminal disposal must await the in-flight inject send lease so disposal cannot overlap a send");
         state.Status.Should().Be(SubAgentStatus.Running, "status must stay Running until the send lease drains");
 
         // Releasing the lease lets the disposal proceed and flip terminal.
@@ -152,8 +153,10 @@ public class SubAgentStateLifecycleTests
         await terminated.BeginTerminalDisposalAsync(isError: false);
         terminated.Status.Should().Be(SubAgentStatus.Completed);
 
-        terminated.TryArmRunning(generation).Should().BeFalse(
-            "a run that already reached terminal must not be resurrected to Running");
+        terminated
+            .TryArmRunning(generation)
+            .Should()
+            .BeFalse("a run that already reached terminal must not be resurrected to Running");
         terminated.Status.Should().Be(SubAgentStatus.Completed, "the terminal state must survive the guarded publish");
 
         // Control: a generation whose run has NOT gone terminal publishes Running normally.
@@ -175,8 +178,9 @@ public class SubAgentStateLifecycleTests
 
         state.MarkOwnedProviderTerminalDisposeFailed();
         state.OwnedProviderTerminalDisposeFailed.Should().BeTrue("a failed terminal disposal poisons the provider");
-        state.HasDisposedOwnedProviderAgent.Should().BeFalse(
-            "a failed disposal did not latch Disposed, so poison — not HasDisposed — must drive the rebuild");
+        state
+            .HasDisposedOwnedProviderAgent.Should()
+            .BeFalse("a failed disposal did not latch Disposed, so poison — not HasDisposed — must drive the rebuild");
 
         state.SetOwnedProviderAgent(new Mock<IStreamingAgent>().Object);
         state.OwnedProviderTerminalDisposeFailed.Should().BeFalse("assigning a fresh provider clears the poison");
@@ -216,8 +220,9 @@ public class SubAgentStateLifecycleTests
         // Releasing the lease lets the (un-aborted) transition finish and flip terminal.
         state.EndInjectLease();
         await disposal.WaitAsync(TimeSpan.FromSeconds(5));
-        state.Status.Should().Be(SubAgentStatus.Completed,
-            "a throwing cancellation callback must not abort the terminal transition");
+        state
+            .Status.Should()
+            .Be(SubAgentStatus.Completed, "a throwing cancellation callback must not abort the terminal transition");
     }
 
     [Fact]
@@ -230,8 +235,7 @@ public class SubAgentStateLifecycleTests
         state.NotifyParentOnCompletion = true;
 
         state.TryBeginInjectLease().Should().BeTrue("a running, non-terminating sub-agent accepts context");
-        state.NotifyParentOnCompletion.Should().BeTrue(
-            "TryBeginInjectLease must not mutate NotifyParentOnCompletion");
+        state.NotifyParentOnCompletion.Should().BeTrue("TryBeginInjectLease must not mutate NotifyParentOnCompletion");
 
         state.EndInjectLease();
     }
@@ -265,8 +269,10 @@ public class SubAgentStateLifecycleTests
 
         state.TryBeginInjectLease().Should().BeFalse("a finished sub-agent must not accept context");
 
-        state.BeginContinuation(notifyParentOnCompletion: false).Mode
-            .Should().Be(ContinuationMode.Restart, "TryBeginInjectLease must not consume the restart claim");
+        state
+            .BeginContinuation(notifyParentOnCompletion: false)
+            .Mode.Should()
+            .Be(ContinuationMode.Restart, "TryBeginInjectLease must not consume the restart claim");
         state.EndRestart();
     }
 
@@ -283,8 +289,10 @@ public class SubAgentStateLifecycleTests
         var disposal = state.BeginTerminalDisposalAsync(isError: false);
         await Task.Delay(50);
 
-        state.TryBeginInjectLease().Should().BeFalse(
-            "context must not be injected into a sub-agent whose terminal disposal has begun");
+        state
+            .TryBeginInjectLease()
+            .Should()
+            .BeFalse("context must not be injected into a sub-agent whose terminal disposal has begun");
 
         state.EndInjectLease();
         await disposal.WaitAsync(TimeSpan.FromSeconds(5));

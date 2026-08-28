@@ -79,7 +79,8 @@ public sealed class RunTurnLifecycleFinalizer
         string threadId,
         MultiTurnLifecycleServices services,
         IRunLifecycleStore? fallbackStore = null,
-        ILogger? logger = null)
+        ILogger? logger = null
+    )
     {
         ArgumentNullException.ThrowIfNull(services);
 
@@ -148,7 +149,8 @@ public sealed class RunTurnLifecycleFinalizer
         string? causeKind = null,
         string? causeToolCallId = null,
         bool wasForked = false,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (!IsEnabled)
         {
@@ -164,21 +166,24 @@ public sealed class RunTurnLifecycleFinalizer
         {
             try
             {
-                await _store.RecordRunStartedAsync(
-                    new RunLifecycleState
-                    {
-                        ThreadId = _threadId,
-                        RunId = runId,
-                        GenerationId = generationId,
-                        ParentRunId = parentRunId ?? lineage.ParentRunId,
-                        ParentThreadId = lineage.ParentThreadId,
-                        SpawningToolCallId = lineage.SpawningToolCallId,
-                        SubAgentId = lineage.SubAgentId,
-                        CauseKind = cause,
-                        CauseToolCallId = causeToolCallId,
-                        StartedAt = startedAt,
-                    },
-                    ct).ConfigureAwait(false);
+                await _store
+                    .RecordRunStartedAsync(
+                        new RunLifecycleState
+                        {
+                            ThreadId = _threadId,
+                            RunId = runId,
+                            GenerationId = generationId,
+                            ParentRunId = parentRunId ?? lineage.ParentRunId,
+                            ParentThreadId = lineage.ParentThreadId,
+                            SpawningToolCallId = lineage.SpawningToolCallId,
+                            SubAgentId = lineage.SubAgentId,
+                            CauseKind = cause,
+                            CauseToolCallId = causeToolCallId,
+                            StartedAt = startedAt,
+                        },
+                        ct
+                    )
+                    .ConfigureAwait(false);
                 durable = true;
             }
             catch (Exception ex)
@@ -191,26 +196,29 @@ public sealed class RunTurnLifecycleFinalizer
                     "Could not record lifecycle start for run {RunId} on thread {ThreadId}; "
                         + "continuing with in-process lifecycle only",
                     runId,
-                    _threadId);
+                    _threadId
+                );
             }
         }
 
         _inFlight[runId] = new RunProgress(generationId, parentRunId, durable);
 
         await PublishAsync(
-            LifecycleEventTypes.RunStarted,
-            new RunStartedPayload
-            {
-                RunId = runId,
-                GenerationId = generationId,
-                Cause = new LifecycleRunCause { Kind = cause, ToolCallId = causeToolCallId },
-                WasForked = wasForked,
-                AgentKind = _services.AgentKind,
-                ModelId = _services.ModelId,
-            },
-            BuildCorrelation(runId, generationId, parentRunId, causeToolCallId),
-            startedAt,
-            ct).ConfigureAwait(false);
+                LifecycleEventTypes.RunStarted,
+                new RunStartedPayload
+                {
+                    RunId = runId,
+                    GenerationId = generationId,
+                    Cause = new LifecycleRunCause { Kind = cause, ToolCallId = causeToolCallId },
+                    WasForked = wasForked,
+                    AgentKind = _services.AgentKind,
+                    ModelId = _services.ModelId,
+                },
+                BuildCorrelation(runId, generationId, parentRunId, causeToolCallId),
+                startedAt,
+                ct
+            )
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -318,11 +326,14 @@ public sealed class RunTurnLifecycleFinalizer
         string generationId,
         string? outcome = null,
         LifecycleError? error = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
-        if (!IsEnabled
+        if (
+            !IsEnabled
             || !_inFlight.TryGetValue(runId, out var progress)
-            || !progress.TryCloseTurn(generationId, out var tally))
+            || !progress.TryCloseTurn(generationId, out var tally)
+        )
         {
             return false;
         }
@@ -330,21 +341,23 @@ public sealed class RunTurnLifecycleFinalizer
         var turnIndex = progress.NextTurnIndex();
 
         await PublishAsync(
-            LifecycleEventTypes.TurnCompleted,
-            new TurnCompletedPayload
-            {
-                RunId = runId,
-                GenerationId = generationId,
-                TurnIndex = turnIndex,
-                Outcome = outcome ?? LifecycleTurnOutcomes.Completed,
-                MessageCount = tally.MessageCount,
-                ToolCallCount = tally.ToolCallCount,
-                Usage = LifecycleUsageMapper.ToLifecycleUsage(tally.Usage),
-                Error = error,
-            },
-            BuildCorrelation(runId, generationId, progress.ParentRunId),
-            _services.TimeProvider.GetUtcNow(),
-            ct).ConfigureAwait(false);
+                LifecycleEventTypes.TurnCompleted,
+                new TurnCompletedPayload
+                {
+                    RunId = runId,
+                    GenerationId = generationId,
+                    TurnIndex = turnIndex,
+                    Outcome = outcome ?? LifecycleTurnOutcomes.Completed,
+                    MessageCount = tally.MessageCount,
+                    ToolCallCount = tally.ToolCallCount,
+                    Usage = LifecycleUsageMapper.ToLifecycleUsage(tally.Usage),
+                    Error = error,
+                },
+                BuildCorrelation(runId, generationId, progress.ParentRunId),
+                _services.TimeProvider.GetUtcNow(),
+                ct
+            )
+            .ConfigureAwait(false);
 
         return true;
     }
@@ -388,7 +401,8 @@ public sealed class RunTurnLifecycleFinalizer
         string runId,
         string generationId,
         IReadOnlyList<RenderedContextBlock> blocks,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (!PublishesEvents || blocks == null || blocks.Count == 0)
         {
@@ -414,19 +428,21 @@ public sealed class RunTurnLifecycleFinalizer
         var parentRunId = _inFlight.TryGetValue(runId, out var progress) ? progress.ParentRunId : null;
 
         await PublishAsync(
-            LifecycleEventTypes.ContextLoaded,
-            new ContextLoadedPayload
-            {
-                RunId = runId,
-                GenerationId = generationId,
-                Sources = [.. fresh.Select(b => b.ToLifecycleSource())],
-                RenderedHash = Convert.ToHexString(SHA256.HashData(renderedBytes)).ToLowerInvariant(),
-                RenderedByteCount = renderedBytes.Length,
-                RenderedText = rendered,
-            },
-            BuildCorrelation(runId, generationId, parentRunId),
-            _services.TimeProvider.GetUtcNow(),
-            ct).ConfigureAwait(false);
+                LifecycleEventTypes.ContextLoaded,
+                new ContextLoadedPayload
+                {
+                    RunId = runId,
+                    GenerationId = generationId,
+                    Sources = [.. fresh.Select(b => b.ToLifecycleSource())],
+                    RenderedHash = Convert.ToHexString(SHA256.HashData(renderedBytes)).ToLowerInvariant(),
+                    RenderedByteCount = renderedBytes.Length,
+                    RenderedText = rendered,
+                },
+                BuildCorrelation(runId, generationId, parentRunId),
+                _services.TimeProvider.GetUtcNow(),
+                ct
+            )
+            .ConfigureAwait(false);
 
         return true;
     }
@@ -466,7 +482,8 @@ public sealed class RunTurnLifecycleFinalizer
         ToolApprovalSummary? approval = null,
         LifecycleError? error = null,
         string toolKind = LifecycleToolKinds.Host,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (!IsEnabled)
         {
@@ -476,23 +493,25 @@ public sealed class RunTurnLifecycleFinalizer
         var parentRunId = _inFlight.TryGetValue(runId, out var progress) ? progress.ParentRunId : null;
 
         await PublishAsync(
-            LifecycleEventTypes.ToolCompleted,
-            new ToolCompletedPayload
-            {
-                RunId = runId,
-                GenerationId = generationId,
-                ToolCallId = toolCallId,
-                ToolName = toolName,
-                ToolKind = toolKind,
-                Outcome = outcome,
-                WasDeferred = wasDeferred,
-                DurationMilliseconds = durationMilliseconds,
-                Approval = approval,
-                Error = error,
-            },
-            BuildCorrelation(runId, generationId, parentRunId, toolCallId),
-            _services.TimeProvider.GetUtcNow(),
-            ct).ConfigureAwait(false);
+                LifecycleEventTypes.ToolCompleted,
+                new ToolCompletedPayload
+                {
+                    RunId = runId,
+                    GenerationId = generationId,
+                    ToolCallId = toolCallId,
+                    ToolName = toolName,
+                    ToolKind = toolKind,
+                    Outcome = outcome,
+                    WasDeferred = wasDeferred,
+                    DurationMilliseconds = durationMilliseconds,
+                    Approval = approval,
+                    Error = error,
+                },
+                BuildCorrelation(runId, generationId, parentRunId, toolCallId),
+                _services.TimeProvider.GetUtcNow(),
+                ct
+            )
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -510,7 +529,8 @@ public sealed class RunTurnLifecycleFinalizer
     public async Task RecordDeferredToolCallAsync(
         string runId,
         DeferredToolCallRecord record,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(record);
 
@@ -531,7 +551,8 @@ public sealed class RunTurnLifecycleFinalizer
                     + "continuing with in-process tracking only",
                 record.ToolCallId,
                 runId,
-                _threadId);
+                _threadId
+            );
         }
     }
 
@@ -556,20 +577,24 @@ public sealed class RunTurnLifecycleFinalizer
         string toolCallId,
         string resolutionFingerprint,
         string? childRunId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (_store == null)
         {
             return DeferredResolutionOutcome.Resolved;
         }
 
-        return await _store.TryResolveDeferredToolCallAsync(
-            _threadId,
-            toolCallId,
-            resolutionFingerprint,
-            childRunId,
-            _services.TimeProvider.GetUtcNow(),
-            ct).ConfigureAwait(false);
+        return await _store
+            .TryResolveDeferredToolCallAsync(
+                _threadId,
+                toolCallId,
+                resolutionFingerprint,
+                childRunId,
+                _services.TimeProvider.GetUtcNow(),
+                ct
+            )
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -596,19 +621,17 @@ public sealed class RunTurnLifecycleFinalizer
     public async Task<string?> AttachDeferredChildRunAsync(
         string toolCallId,
         string childRunId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (_store == null)
         {
             return childRunId;
         }
 
-        return await _store.AttachDeferredChildRunAsync(
-            _threadId,
-            toolCallId,
-            childRunId,
-            _services.TimeProvider.GetUtcNow(),
-            ct).ConfigureAwait(false);
+        return await _store
+            .AttachDeferredChildRunAsync(_threadId, toolCallId, childRunId, _services.TimeProvider.GetUtcNow(), ct)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -621,8 +644,7 @@ public sealed class RunTurnLifecycleFinalizer
     /// store that cannot answer must degrade to the pre-existing "recover from history alone"
     /// behaviour rather than fail the recovery.
     /// </remarks>
-    public async Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
-        CancellationToken ct = default)
+    public async Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(CancellationToken ct = default)
     {
         if (_store == null)
         {
@@ -639,7 +661,8 @@ public sealed class RunTurnLifecycleFinalizer
                 ex,
                 "Could not read run lifecycle records for thread {ThreadId}; recovering from "
                     + "persisted history alone",
-                _threadId);
+                _threadId
+            );
             return [];
         }
     }
@@ -667,7 +690,8 @@ public sealed class RunTurnLifecycleFinalizer
         string? outcome = null,
         LifecycleError? error = null,
         LifecycleUsage? usage = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (!IsEnabled || !_inFlight.TryGetValue(runId, out var progress))
         {
@@ -687,11 +711,13 @@ public sealed class RunTurnLifecycleFinalizer
         foreach (var openGenerationId in progress.OpenTurnIds())
         {
             _ = await TurnCompletedAsync(
-                runId,
-                openGenerationId,
-                TurnOutcomeForRun(resolvedOutcome),
-                error: error,
-                ct: ct).ConfigureAwait(false);
+                    runId,
+                    openGenerationId,
+                    TurnOutcomeForRun(resolvedOutcome),
+                    error: error,
+                    ct: ct
+                )
+                .ConfigureAwait(false);
         }
 
         if (!_inFlight.TryRemove(runId, out _))
@@ -706,12 +732,9 @@ public sealed class RunTurnLifecycleFinalizer
         {
             try
             {
-                var won = await _store.TryMarkRunTerminalAsync(
-                    runId,
-                    resolvedOutcome,
-                    progress.TurnCount,
-                    terminalAt,
-                    ct).ConfigureAwait(false);
+                var won = await _store
+                    .TryMarkRunTerminalAsync(runId, resolvedOutcome, progress.TurnCount, terminalAt, ct)
+                    .ConfigureAwait(false);
                 if (!won)
                 {
                     return false;
@@ -728,20 +751,23 @@ public sealed class RunTurnLifecycleFinalizer
                     "Could not durably terminalize run {RunId} on thread {ThreadId}; "
                         + "publishing completion on the in-process decision",
                     runId,
-                    _threadId);
+                    _threadId
+                );
             }
         }
 
         await PublishRunCompletedAsync(
-            runId,
-            string.IsNullOrEmpty(generationId) ? progress.GenerationId : generationId,
-            progress.ParentRunId,
-            resolvedOutcome,
-            progress.TurnCount,
-            usage,
-            error,
-            terminalAt,
-            ct).ConfigureAwait(false);
+                runId,
+                string.IsNullOrEmpty(generationId) ? progress.GenerationId : generationId,
+                progress.ParentRunId,
+                resolvedOutcome,
+                progress.TurnCount,
+                usage,
+                error,
+                terminalAt,
+                ct
+            )
+            .ConfigureAwait(false);
 
         return true;
     }
@@ -769,8 +795,7 @@ public sealed class RunTurnLifecycleFinalizer
         // Snapshot the keys: TryCompleteRunAsync mutates the dictionary as it wins each run.
         foreach (var runId in _inFlight.Keys.ToList())
         {
-            _ = await TryCompleteRunAsync(runId, generationId: string.Empty, outcome, ct: ct)
-                .ConfigureAwait(false);
+            _ = await TryCompleteRunAsync(runId, generationId: string.Empty, outcome, ct: ct).ConfigureAwait(false);
         }
     }
 
@@ -809,12 +834,9 @@ public sealed class RunTurnLifecycleFinalizer
             foreach (var run in dangling)
             {
                 var terminalAt = _services.TimeProvider.GetUtcNow();
-                var won = await _store.TryMarkRunTerminalAsync(
-                    run.RunId,
-                    LifecycleRunOutcomes.Interrupted,
-                    run.TurnCount,
-                    terminalAt,
-                    ct).ConfigureAwait(false);
+                var won = await _store
+                    .TryMarkRunTerminalAsync(run.RunId, LifecycleRunOutcomes.Interrupted, run.TurnCount, terminalAt, ct)
+                    .ConfigureAwait(false);
                 if (!won)
                 {
                     continue;
@@ -823,30 +845,33 @@ public sealed class RunTurnLifecycleFinalizer
                 _logger.LogWarning(
                     "Marking dangling run {RunId} interrupted on restart for thread {ThreadId}",
                     run.RunId,
-                    _threadId);
+                    _threadId
+                );
 
                 await PublishAsync(
-                    LifecycleEventTypes.RunCompleted,
-                    new RunCompletedPayload
-                    {
-                        RunId = run.RunId,
-                        GenerationId = run.GenerationId,
-                        Outcome = LifecycleRunOutcomes.Interrupted,
-                        TurnCount = run.TurnCount,
-                    },
-                    new LifecycleCorrelation
-                    {
-                        ThreadId = run.ThreadId,
-                        RunId = run.RunId,
-                        GenerationId = string.IsNullOrEmpty(run.GenerationId) ? null : run.GenerationId,
-                        ParentRunId = run.ParentRunId,
-                        ParentThreadId = run.ParentThreadId,
-                        SpawningToolCallId = run.SpawningToolCallId,
-                        SubAgentId = run.SubAgentId,
-                        ToolCallId = run.CauseToolCallId,
-                    },
-                    terminalAt,
-                    ct).ConfigureAwait(false);
+                        LifecycleEventTypes.RunCompleted,
+                        new RunCompletedPayload
+                        {
+                            RunId = run.RunId,
+                            GenerationId = run.GenerationId,
+                            Outcome = LifecycleRunOutcomes.Interrupted,
+                            TurnCount = run.TurnCount,
+                        },
+                        new LifecycleCorrelation
+                        {
+                            ThreadId = run.ThreadId,
+                            RunId = run.RunId,
+                            GenerationId = string.IsNullOrEmpty(run.GenerationId) ? null : run.GenerationId,
+                            ParentRunId = run.ParentRunId,
+                            ParentThreadId = run.ParentThreadId,
+                            SpawningToolCallId = run.SpawningToolCallId,
+                            SubAgentId = run.SubAgentId,
+                            ToolCallId = run.CauseToolCallId,
+                        },
+                        terminalAt,
+                        ct
+                    )
+                    .ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -858,7 +883,8 @@ public sealed class RunTurnLifecycleFinalizer
             _logger.LogWarning(
                 ex,
                 "Lifecycle reconciliation failed for thread {ThreadId}; continuing without it",
-                _threadId);
+                _threadId
+            );
         }
     }
 
@@ -870,13 +896,14 @@ public sealed class RunTurnLifecycleFinalizer
     /// finished normally — so <c>max_turns</c> describes the run and would misdescribe the turn.
     /// Every other terminal run outcome is one the turn shared.
     /// </remarks>
-    private static string TurnOutcomeForRun(string runOutcome) => runOutcome switch
-    {
-        LifecycleRunOutcomes.Error => LifecycleTurnOutcomes.Error,
-        LifecycleRunOutcomes.Cancelled => LifecycleTurnOutcomes.Cancelled,
-        LifecycleRunOutcomes.Interrupted => LifecycleTurnOutcomes.Interrupted,
-        _ => LifecycleTurnOutcomes.Completed,
-    };
+    private static string TurnOutcomeForRun(string runOutcome) =>
+        runOutcome switch
+        {
+            LifecycleRunOutcomes.Error => LifecycleTurnOutcomes.Error,
+            LifecycleRunOutcomes.Cancelled => LifecycleTurnOutcomes.Cancelled,
+            LifecycleRunOutcomes.Interrupted => LifecycleTurnOutcomes.Interrupted,
+            _ => LifecycleTurnOutcomes.Completed,
+        };
 
     private Task PublishRunCompletedAsync(
         string runId,
@@ -887,7 +914,8 @@ public sealed class RunTurnLifecycleFinalizer
         LifecycleUsage? usage,
         LifecycleError? error,
         DateTimeOffset occurredAt,
-        CancellationToken ct) =>
+        CancellationToken ct
+    ) =>
         PublishAsync(
             LifecycleEventTypes.RunCompleted,
             new RunCompletedPayload
@@ -901,13 +929,15 @@ public sealed class RunTurnLifecycleFinalizer
             },
             BuildCorrelation(runId, generationId, parentRunId),
             occurredAt,
-            ct);
+            ct
+        );
 
     private LifecycleCorrelation BuildCorrelation(
         string runId,
         string? generationId,
         string? parentRunId,
-        string? toolCallId = null)
+        string? toolCallId = null
+    )
     {
         var lineage = _services.Lineage;
         return new LifecycleCorrelation
@@ -928,7 +958,8 @@ public sealed class RunTurnLifecycleFinalizer
         TPayload payload,
         LifecycleCorrelation correlation,
         DateTimeOffset occurredAt,
-        CancellationToken ct)
+        CancellationToken ct
+    )
         where TPayload : class
     {
         if (!PublishesEvents)
@@ -944,7 +975,8 @@ public sealed class RunTurnLifecycleFinalizer
                 _sourceStreamId,
                 _services.SequenceAllocator,
                 occurredAt,
-                correlation);
+                correlation
+            );
 
             await _services.Publisher.PublishAsync(envelope, ct).ConfigureAwait(false);
         }
@@ -952,11 +984,7 @@ public sealed class RunTurnLifecycleFinalizer
         {
             // Including cancellation: a subscriber that could not be reached because the run was
             // torn down is still just a dropped event, and the caller is mid-teardown already.
-            _logger.LogWarning(
-                ex,
-                "Dropping lifecycle event {EventType} for thread {ThreadId}",
-                eventType,
-                _threadId);
+            _logger.LogWarning(ex, "Dropping lifecycle event {EventType} for thread {ThreadId}", eventType, _threadId);
         }
     }
 

@@ -29,7 +29,8 @@ public sealed class WorkspaceTranscriptLineTests
         string? generationId = "gen-1",
         int? messageOrderIdx = 0,
         string? parentRunId = null,
-        string? fromAgent = ProviderMessageId) =>
+        string? fromAgent = ProviderMessageId
+    ) =>
         new()
         {
             Id = id,
@@ -47,21 +48,22 @@ public sealed class WorkspaceTranscriptLineTests
 
     /// <summary>The five message kinds the transcript has to carry with one uniform key set.</summary>
     private static IReadOnlyList<PersistedMessage> FiveMessageKinds() =>
-    [
-        Persisted("id-text", "TextMessage", "Assistant"),
-        Persisted("id-tool-call", "ToolCallMessage", "Assistant", """{"role":"assistant","tool_calls":[]}"""),
-        // A tool result carries no generation/order in some stores, and a reasoning row may arrive
-        // without a parent run — the key set still has to come out identical.
-        Persisted(
-            "id-tool-result",
-            "ToolCallResultMessage",
-            "Tool",
-            """{"role":"tool","result":"ok"}""",
-            generationId: null,
-            messageOrderIdx: null),
-        Persisted("id-reasoning", "ReasoningMessage", "Assistant", """{"role":"assistant","reasoning":"…"}"""),
-        Persisted("id-usage", "UsageMessage", "None", """{"role":"none","usage":{"total_tokens":7}}"""),
-    ];
+        [
+            Persisted("id-text", "TextMessage", "Assistant"),
+            Persisted("id-tool-call", "ToolCallMessage", "Assistant", """{"role":"assistant","tool_calls":[]}"""),
+            // A tool result carries no generation/order in some stores, and a reasoning row may arrive
+            // without a parent run — the key set still has to come out identical.
+            Persisted(
+                "id-tool-result",
+                "ToolCallResultMessage",
+                "Tool",
+                """{"role":"tool","result":"ok"}""",
+                generationId: null,
+                messageOrderIdx: null
+            ),
+            Persisted("id-reasoning", "ReasoningMessage", "Assistant", """{"role":"assistant","reasoning":"…"}"""),
+            Persisted("id-usage", "UsageMessage", "None", """{"role":"none","usage":{"total_tokens":7}}"""),
+        ];
 
     private static JsonElement Parse(WorkspaceTranscriptLine line) =>
         JsonDocument.Parse(WorkspaceTranscriptLine.Serialize(line)).RootElement;
@@ -178,7 +180,6 @@ public sealed class WorkspaceTranscriptLineTests
             "role",
             "id",
             "message_json",
-
             // #254. Joined the pinned set rather than being emitted only when populated: a key that
             // appears on some lines and not others is two schemas in one file, which is the exact thing
             // this test exists to prevent. It is null on every line here, because none of the five kinds
@@ -198,7 +199,8 @@ public sealed class WorkspaceTranscriptLineTests
     public void AbsentMessageFields_AreWrittenAsExplicitNulls_NotOmitted()
     {
         var line = WorkspaceTranscriptLine.ForMessage(
-            Persisted("id-tool-result", generationId: null, messageOrderIdx: null));
+            Persisted("id-tool-result", generationId: null, messageOrderIdx: null)
+        );
         var json = Parse(line);
 
         json.GetProperty("parent_uid").ValueKind.Should().Be(JsonValueKind.Null);
@@ -212,7 +214,10 @@ public sealed class WorkspaceTranscriptLineTests
     public void SchemaVersion_IsStampedOnEveryLine()
     {
         Parse(WorkspaceTranscriptLine.ForMessage(Persisted("id")))
-            .GetProperty("schema_version").GetInt32().Should().Be(WorkspaceTranscriptLine.CurrentSchemaVersion);
+            .GetProperty("schema_version")
+            .GetInt32()
+            .Should()
+            .Be(WorkspaceTranscriptLine.CurrentSchemaVersion);
     }
 
     // ---- AC 20: message_json is an opaque STRING, and stays recoverable --------------------------
@@ -220,15 +225,17 @@ public sealed class WorkspaceTranscriptLineTests
     [Fact]
     public void MessageJson_IsSerializedAsAString_NotAnInlinedObject()
     {
-        const string Payload =
-            """{"role":"assistant","message_id":"m-42","in_response_to":"m-41","text":"answer"}""";
+        const string Payload = """{"role":"assistant","message_id":"m-42","in_response_to":"m-41","text":"answer"}""";
 
         var json = Parse(WorkspaceTranscriptLine.ForMessage(Persisted("id-text", messageJson: Payload)));
         var messageJson = json.GetProperty("message_json");
 
-        messageJson.ValueKind.Should().Be(
-            JsonValueKind.String,
-            "message_json is opaque — an object-or-string union is exactly what a tolerant JSONL reader drops");
+        messageJson
+            .ValueKind.Should()
+            .Be(
+                JsonValueKind.String,
+                "message_json is opaque — an object-or-string union is exactly what a tolerant JSONL reader drops"
+            );
         messageJson.GetString().Should().Be(Payload);
 
         // AC 20 proper: message_id / in_response_to remain recoverable by parsing that string.
@@ -243,7 +250,8 @@ public sealed class WorkspaceTranscriptLineTests
         var payload = "{\"role\":\"assistant\",\"text\":\"line one\nline two\"}";
 
         var serialized = WorkspaceTranscriptLine.Serialize(
-            WorkspaceTranscriptLine.ForMessage(Persisted("id-text", messageJson: payload)));
+            WorkspaceTranscriptLine.ForMessage(Persisted("id-text", messageJson: payload))
+        );
 
         serialized.Should().NotContain("\n", "a JSONL record must occupy exactly one physical line");
         JsonDocument.Parse(serialized).RootElement.GetProperty("message_json").GetString().Should().Be(payload);
@@ -270,9 +278,13 @@ public sealed class WorkspaceTranscriptLineTests
         var line = WorkspaceTranscriptLine.ForMessage(Persisted("id-text"), agent: displayName);
 
         line.Agent.Should().Be("reviewer");
-        WorkspaceTranscriptLine.Serialize(line).Should().NotContain(
-            ProviderMessageId,
-            "FromAgent carries a provider message id and must never reach the transcript envelope");
+        WorkspaceTranscriptLine
+            .Serialize(line)
+            .Should()
+            .NotContain(
+                ProviderMessageId,
+                "FromAgent carries a provider message id and must never reach the transcript envelope"
+            );
     }
 
     [Fact]
@@ -351,10 +363,14 @@ public sealed class WorkspaceTranscriptLineTests
     {
         var shortAgentId = WorkspaceTranscriptLine.ShortId("agent-7");
 
-        WorkspaceTranscriptLine.AgentFileLeaf(null, shortAgentId)
-            .Should().Be($"{WorkspaceTranscriptLine.UnnamedAgentLeafPrefix}-{shortAgentId}");
-        WorkspaceTranscriptLine.AgentFileLeaf("修复", shortAgentId)
-            .Should().Be($"{WorkspaceTranscriptLine.UnnamedAgentLeafPrefix}-{shortAgentId}");
+        WorkspaceTranscriptLine
+            .AgentFileLeaf(null, shortAgentId)
+            .Should()
+            .Be($"{WorkspaceTranscriptLine.UnnamedAgentLeafPrefix}-{shortAgentId}");
+        WorkspaceTranscriptLine
+            .AgentFileLeaf("修复", shortAgentId)
+            .Should()
+            .Be($"{WorkspaceTranscriptLine.UnnamedAgentLeafPrefix}-{shortAgentId}");
         WorkspaceTranscriptLine.AgentFileLeaf("Reviewer", shortAgentId).Should().Be($"reviewer-{shortAgentId}");
     }
 
@@ -440,7 +456,8 @@ public sealed class WorkspaceTranscriptLineTests
         var agentLines = WorkspaceTranscriptLine.ChainMessages(
             [Persisted("sub-1"), Persisted("sub-2")],
             agent: "reviewer",
-            rootParentUid: anchor);
+            rootParentUid: anchor
+        );
 
         // AC 16 as reworded: the chain resolves within the conversation's FILE SET — an _agents/ root
         // line points into the main file, not into its own file.

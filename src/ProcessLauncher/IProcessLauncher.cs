@@ -38,6 +38,6 @@ public interface IProcessLauncher
     /// deadlock when called from a captured <see cref="SynchronizationContext"/>
     /// (UI / classic ASP.NET) and starves thread-pool threads under load.
     /// </remarks>
-    IProcessHandle Launch(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
-        => LaunchAsync(request, cancellationToken).GetAwaiter().GetResult();
+    IProcessHandle Launch(ProcessLaunchRequest request, CancellationToken cancellationToken = default) =>
+        LaunchAsync(request, cancellationToken).GetAwaiter().GetResult();
 }

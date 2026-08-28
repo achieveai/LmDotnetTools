@@ -38,7 +38,8 @@ internal interface IReviewAgentLoopFactory
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
         PreparedReviewWorkspace? reviewWorkspace = null,
-        string? resumeHostedThreadId = null);
+        string? resumeHostedThreadId = null
+    );
 
     /// <summary>
     /// What <see cref="Create"/> will ACTUALLY run on given <paramref name="requestedModelId"/> — which is

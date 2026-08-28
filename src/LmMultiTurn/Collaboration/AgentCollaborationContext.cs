@@ -146,12 +146,7 @@ public sealed record AgentCollaborationContext
     /// <exception cref="ArgumentException">
     /// The identifier is blank, or the role or description is outside its bounds.
     /// </exception>
-    public AgentCollaborationContext CreateChild(
-        string childAgentId,
-        AgentKind kind,
-        string role,
-        string description
-    )
+    public AgentCollaborationContext CreateChild(string childAgentId, AgentKind kind, string role, string description)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(childAgentId);
         ValidateRole(role);
@@ -164,8 +159,7 @@ public sealed record AgentCollaborationContext
             ParentAgentId = AgentId,
             AncestorAgentIds = AncestorAgentIds.Add(AgentId),
             StructuralDepth = StructuralDepth + 1,
-            DelegationDepth =
-                kind == AgentKind.WorkflowController ? DelegationDepth : DelegationDepth + 1,
+            DelegationDepth = kind == AgentKind.WorkflowController ? DelegationDepth : DelegationDepth + 1,
             Kind = kind,
             Role = role,
             Description = description,
@@ -189,12 +183,7 @@ public sealed record AgentCollaborationContext
     /// <exception cref="ArgumentException">The description is blank or out of bounds.</exception>
     public static void ValidateDescription(string description)
     {
-        ValidateBounded(
-            description,
-            nameof(description),
-            MinDescriptionLength,
-            MaxDescriptionLength
-        );
+        ValidateBounded(description, nameof(description), MinDescriptionLength, MaxDescriptionLength);
     }
 
     /// <summary>
@@ -213,10 +202,7 @@ public sealed record AgentCollaborationContext
         {
             // The value itself is collaboration-visible content, so it is deliberately absent from the
             // message: a validation failure must not become the way content reaches a log.
-            throw new ArgumentException(
-                $"Value must be between {min} and {max} Unicode scalar values.",
-                paramName
-            );
+            throw new ArgumentException($"Value must be between {min} and {max} Unicode scalar values.", paramName);
         }
     }
 

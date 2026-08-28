@@ -44,16 +44,16 @@ public class SimplifiedMessageFlowExample
                         Name = "location",
                         Description = "The city name (e.g., 'San Francisco', 'New York')",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
+                        IsRequired = true,
                     },
                     new FunctionParameterContract
                     {
                         Name = "unit",
                         Description = "Temperature unit: 'celsius' or 'fahrenheit'",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = false
-                    }
-                ]
+                        IsRequired = false,
+                    },
+                ],
             },
             new FunctionContract
             {
@@ -66,10 +66,10 @@ public class SimplifiedMessageFlowExample
                         Name = "timezone",
                         Description = "Timezone (e.g., 'PST', 'EST', 'UTC')",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
-                    }
-                ]
-            }
+                        IsRequired = true,
+                    },
+                ],
+            },
         };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
@@ -87,7 +87,7 @@ public class SimplifiedMessageFlowExample
                     location = weatherArgs?.Location,
                     temperature = 72,
                     unit = weatherArgs?.Unit ?? "fahrenheit",
-                    condition = "sunny"
+                    condition = "sunny",
                 };
 
                 return JsonSerializer.Serialize(weather);
@@ -104,26 +104,21 @@ public class SimplifiedMessageFlowExample
                 {
                     timezone = timeArgs?.Timezone,
                     time = DateTime.UtcNow.ToString("HH:mm:ss"),
-                    date = DateTime.UtcNow.ToString("yyyy-MM-dd")
+                    date = DateTime.UtcNow.ToString("yyyy-MM-dd"),
                 };
 
                 return JsonSerializer.Serialize(time);
-            }
+            },
         };
 
         // ===== Step 2: Setup Agent with Simplified Message Flow =====
 
-        var provider = new OpenAgent(
-            model: "gpt-4",
-            apiKey: apiKey
-        );
+        var provider = new OpenAgent(model: "gpt-4", apiKey: apiKey);
 
         // Create middleware pipeline:
         // 1. MessageTransformationMiddleware (outermost) - assigns messageOrderIdx, reconstructs aggregates
         // 2. ToolCallInjectionMiddleware - injects tool definitions
-        var agent = provider
-            .WithToolCallInjection(functions)
-            .WithMessageTransformation();
+        var agent = provider.WithToolCallInjection(functions).WithMessageTransformation();
 
         // ===== Step 3: Start Conversation =====
 
@@ -132,8 +127,8 @@ public class SimplifiedMessageFlowExample
             new TextMessage
             {
                 Text = "What's the weather in San Francisco and what time is it in PST?",
-                Role = Role.User
-            }
+                Role = Role.User,
+            },
         };
 
         _logger.LogInformation("User: {Message}", conversationHistory[0].GetTextContent());
@@ -186,10 +181,7 @@ public class SimplifiedMessageFlowExample
             }
 
             // Execute tools
-            _logger.LogInformation(
-                "Executing {Count} tool call(s)",
-                toolCallMsg.ToolCalls.Count
-            );
+            _logger.LogInformation("Executing {Count} tool call(s)", toolCallMsg.ToolCalls.Count);
 
             foreach (var toolCall in toolCallMsg.ToolCalls)
             {
@@ -203,11 +195,7 @@ public class SimplifiedMessageFlowExample
 
             try
             {
-                var toolResult = await ToolCallExecutor.ExecuteAsync(
-                    toolCallMsg,
-                    functionMap,
-                    logger: _logger
-                );
+                var toolResult = await ToolCallExecutor.ExecuteAsync(toolCallMsg, functionMap, logger: _logger);
 
                 // Log tool results
                 _logger.LogInformation("Tool execution completed:");
@@ -216,9 +204,7 @@ public class SimplifiedMessageFlowExample
                     _logger.LogInformation(
                         "  Result for {ToolCallId}: {Result}",
                         result.ToolCallId,
-                        result.Result.Length > 100
-                            ? result.Result[..100] + "..."
-                            : result.Result
+                        result.Result.Length > 100 ? result.Result[..100] + "..." : result.Result
                     );
                 }
 
@@ -230,11 +216,7 @@ public class SimplifiedMessageFlowExample
                 _logger.LogError(ex, "Tool execution failed");
 
                 // Add error message to conversation
-                var errorMessage = new TextMessage
-                {
-                    Text = $"Error executing tools: {ex.Message}",
-                    Role = Role.User
-                };
+                var errorMessage = new TextMessage { Text = $"Error executing tools: {ex.Message}", Role = Role.User };
                 conversationHistory.Add(errorMessage);
             }
         }
@@ -292,21 +274,13 @@ public class SimplifiedStreamingExample
         _logger.LogInformation("Starting Simplified Streaming Example");
 
         // Setup streaming agent
-        var provider = new OpenAgent(
-            model: "gpt-4",
-            apiKey: apiKey
-        );
+        var provider = new OpenAgent(model: "gpt-4", apiKey: apiKey);
 
-        var agent = provider
-            .WithMessageTransformation(); // MessageTransformationMiddleware assigns ordering to streaming messages
+        var agent = provider.WithMessageTransformation(); // MessageTransformationMiddleware assigns ordering to streaming messages
 
         var messages = new List<IMessage>
         {
-            new TextMessage
-            {
-                Text = "Tell me a short story about a robot.",
-                Role = Role.User
-            }
+            new TextMessage { Text = "Tell me a short story about a robot.", Role = Role.User },
         };
 
         _logger.LogInformation("User: {Message}", messages[0].GetTextContent());
@@ -379,16 +353,16 @@ public class BackwardCompatibilityExample
                     {
                         Name = "a",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(int)),
-                        IsRequired = true
+                        IsRequired = true,
                     },
                     new FunctionParameterContract
                     {
                         Name = "b",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(int)),
-                        IsRequired = true
-                    }
-                ]
-            }
+                        IsRequired = true,
+                    },
+                ],
+            },
         };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
@@ -399,7 +373,7 @@ public class BackwardCompatibilityExample
                 var result = (addArgs?.A ?? 0) + (addArgs?.B ?? 0);
                 await Task.Delay(10); // Simulate work
                 return result.ToString();
-            }
+            },
         };
 
         var provider = new OpenAgent(model: "gpt-4", apiKey: apiKey);
@@ -408,14 +382,11 @@ public class BackwardCompatibilityExample
         // - ToolCallInjectionMiddleware for injection
         // - ToolCallExecutor for execution
         // - MessageTransformationMiddleware for ordering
-        var agent = new MiddlewareWrappingAgent(
-            provider,
-            new FunctionCallMiddleware(functions, functionMap)
-        );
+        var agent = new MiddlewareWrappingAgent(provider, new FunctionCallMiddleware(functions, functionMap));
 
         var messages = new List<IMessage>
         {
-            new TextMessage { Text = "What is 5 + 7?", Role = Role.User }
+            new TextMessage { Text = "What is 5 + 7?", Role = Role.User },
         };
 
         _logger.LogInformation("User: {Message}", messages[0].GetTextContent());

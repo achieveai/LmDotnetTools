@@ -47,7 +47,8 @@ public class GitFailureClassifierTests
         GitFailureClassifier
             .Classify(
                 "fatal: not a git repository: sub/../.git/modules/sub\n"
-                    + "fatal: Unable to create '/store/.git/modules/repos/X/index.lock': File exists.")
+                    + "fatal: Unable to create '/store/.git/modules/repos/X/index.lock': File exists."
+            )
             .Should()
             .Be(GitFailureKind.Corrupt);
 

@@ -43,7 +43,8 @@ public sealed class ContextDiscoveryController(
     ContextDiscoveryInjector contextInjector,
     ContextDiscoveryDiagnostics diagnostics,
     AgentOutputTokenPolicy outputTokenPolicy,
-    ILogger<ContextDiscoveryController> logger) : ControllerBase
+    ILogger<ContextDiscoveryController> logger
+) : ControllerBase
 {
     /// <summary>
     /// Gateway callback for a batch of discovered context items. The gateway batches every newly
@@ -55,7 +56,8 @@ public sealed class ContextDiscoveryController(
     [HttpPost("context_discovery")]
     public async Task<IActionResult> NotifyAsync(
         [FromBody] ContextDiscoveryEnvelope? body,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (body is null)
         {
@@ -69,7 +71,13 @@ public sealed class ContextDiscoveryController(
             return Unauthorized();
         }
 
-        if (!await sessionSecretStore.MatchesAsync(body.SessionId, Request.Headers.Authorization.ToString(), cancellationToken))
+        if (
+            !await sessionSecretStore.MatchesAsync(
+                body.SessionId,
+                Request.Headers.Authorization.ToString(),
+                cancellationToken
+            )
+        )
         {
             // Do not reveal whether the header was missing, malformed, or simply wrong.
             logger.LogWarning("Rejected unauthorized context-discovery webhook call.");
@@ -104,7 +112,8 @@ public sealed class ContextDiscoveryController(
                 logger.LogWarning(
                     "Rejected context-discovery webhook with malformed item (kind={Kind}, path={Path}).",
                     item.Kind,
-                    item.Path);
+                    item.Path
+                );
                 return BadRequest();
             }
 
@@ -129,7 +138,8 @@ public sealed class ContextDiscoveryController(
                 payload.Path,
                 payload.Description,
                 payload.SessionId,
-                payload.Truncated);
+                payload.Truncated
+            );
 
             // Record the arrival for the diagnostics endpoint BEFORE the kind-specific handling
             // (which is best-effort and may no-op). This is what lets an operator confirm webhooks
@@ -167,7 +177,8 @@ public sealed class ContextDiscoveryController(
     /// </summary>
     private async Task InjectContextFilesInOrderAsync(
         IReadOnlyList<ContextDiscoveryPayload> contextFiles,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         foreach (var payload in contextFiles)
         {
@@ -206,15 +217,14 @@ public sealed class ContextDiscoveryController(
     /// the template. Every failure path is logged and swallowed — context discovery is an
     /// enrichment, never blocking, so the gateway always sees a 200 for an authenticated payload.
     /// </summary>
-    private async Task TryActivateSubAgentAsync(
-        ContextDiscoveryPayload body,
-        CancellationToken ct)
+    private async Task TryActivateSubAgentAsync(ContextDiscoveryPayload body, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(body.SessionId))
         {
             logger.LogWarning(
                 "ContextDiscovery subagent {Name}: payload missing session_id; cannot resolve session for activation.",
-                body.Name);
+                body.Name
+            );
             return;
         }
 
@@ -223,7 +233,8 @@ public sealed class ContextDiscoveryController(
             logger.LogInformation(
                 "ContextDiscovery subagent {Name}: no session known for session_id {SessionId}; skipping activation.",
                 body.Name,
-                body.SessionId);
+                body.SessionId
+            );
             return;
         }
 
@@ -240,7 +251,8 @@ public sealed class ContextDiscoveryController(
             logger.LogInformation(
                 "ContextDiscovery subagent {Name}: session {SessionId} has no agent binding yet; skipping activation.",
                 body.Name,
-                body.SessionId);
+                body.SessionId
+            );
             return;
         }
 
@@ -253,14 +265,12 @@ public sealed class ContextDiscoveryController(
                 Description: body.Description,
                 Path: body.Path ?? string.Empty,
                 Content: body.Content,
-                QualifiedName: body.QualifiedName);
+                QualifiedName: body.QualifiedName
+            );
         }
         catch (Exception ex)
         {
-            logger.LogWarning(
-                ex,
-                "ContextDiscovery subagent {Name}: failed to build discovery item.",
-                body.Name);
+            logger.LogWarning(ex, "ContextDiscovery subagent {Name}: failed to build discovery item.", body.Name);
             return;
         }
 
@@ -270,9 +280,7 @@ public sealed class ContextDiscoveryController(
         SubAgentTemplate? template = null;
         var loaded = false;
 
-        var registrationKey = string.IsNullOrWhiteSpace(body.QualifiedName)
-            ? body.Name!
-            : body.QualifiedName;
+        var registrationKey = string.IsNullOrWhiteSpace(body.QualifiedName) ? body.Name! : body.QualifiedName;
         foreach (var binding in bindings)
         {
             // Fast-path: if this conversation already has this qualified template (built-in seed OR a
@@ -300,7 +308,8 @@ public sealed class ContextDiscoveryController(
                     logger.LogWarning(
                         ex,
                         "ContextDiscovery subagent {Name}: loader threw while activating; skipping.",
-                        body.Name);
+                        body.Name
+                    );
                     return;
                 }
             }
@@ -330,16 +339,18 @@ public sealed class ContextDiscoveryController(
                 logger.LogInformation(
                     "ContextDiscovery subagent {Name}: activated for session {SessionId}.",
                     conversationTemplate.Name,
-                    body.SessionId);
+                    body.SessionId
+                );
             }
             else
             {
                 // First-wins collision with a built-in OR an earlier discovery on this conversation.
                 logger.LogInformation(
                     "ContextDiscovery subagent {Name}: session {SessionId} already has a template "
-                    + "with that name; keeping the first.",
+                        + "with that name; keeping the first.",
                     template.Name,
-                    body.SessionId);
+                    body.SessionId
+                );
             }
         }
     }
@@ -356,7 +367,8 @@ internal readonly record struct SubAgentSessionRegistryItem(
     string? Description,
     string Path,
     string? Content,
-    string? QualifiedName)
+    string? QualifiedName
+)
 {
     public SandboxSessionRegistry.DiscoveredItem ToDiscovered() =>
         new(Kind, Name, Description, Path, Content, QualifiedName);

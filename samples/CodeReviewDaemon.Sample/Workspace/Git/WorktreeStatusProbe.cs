@@ -31,9 +31,7 @@ internal static class WorktreeStatusProbe
     /// <paramref name="Normalized"/> are paths git reports as modified whose bytes on disk ARE the blob the
     /// index records, which is a filter disagreeing with what was committed rather than contamination.
     /// </summary>
-    internal sealed record StatusClassification(
-        IReadOnlyList<string> Leftovers,
-        IReadOnlyList<string> Normalized);
+    internal sealed record StatusClassification(IReadOnlyList<string> Leftovers, IReadOnlyList<string> Normalized);
 
     /// <summary>
     /// Whether the probe's output is the answer of a git that actually ran. <c>status --porcelain -b</c>
@@ -122,7 +120,8 @@ internal static class WorktreeStatusProbe
         GitRunner git,
         string repoRoot,
         IReadOnlyList<(string Code, string Path)> entries,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(git);
         ArgumentNullException.ThrowIfNull(entries);
@@ -133,10 +132,12 @@ internal static class WorktreeStatusProbe
 
         foreach (var (code, path) in entries)
         {
-            if (worthClassifying
+            if (
+                worthClassifying
                 && string.Equals(code, " M", StringComparison.Ordinal)
                 && await HoldsRecordedBytesAsync(git, repoRoot, path, cancellationToken).ConfigureAwait(false)
-                    == GitAnswer.Yes)
+                    == GitAnswer.Yes
+            )
             {
                 normalized.Add(path);
                 continue;
@@ -155,18 +156,24 @@ internal static class WorktreeStatusProbe
     /// finding that the bytes differ.
     /// </summary>
     private static async Task<GitAnswer> HoldsRecordedBytesAsync(
-        GitRunner git, string repoRoot, string path, CancellationToken cancellationToken)
+        GitRunner git,
+        string repoRoot,
+        string path,
+        CancellationToken cancellationToken
+    )
     {
-        var recorded = await git
-            .RunAsync(["-C", repoRoot, "rev-parse", $":{path}"], repoRoot, cancellationToken)
+        var recorded = await git.RunAsync(["-C", repoRoot, "rev-parse", $":{path}"], repoRoot, cancellationToken)
             .ConfigureAwait(false);
         if (!recorded.Succeeded)
         {
             return GitAnswer.Unknown;
         }
 
-        var onDisk = await git
-            .RunAsync(["-C", repoRoot, "hash-object", "--no-filters", "--", path], repoRoot, cancellationToken)
+        var onDisk = await git.RunAsync(
+                ["-C", repoRoot, "hash-object", "--no-filters", "--", path],
+                repoRoot,
+                cancellationToken
+            )
             .ConfigureAwait(false);
         if (!onDisk.Succeeded)
         {

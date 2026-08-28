@@ -13,18 +13,24 @@ public class MultiModalHandlerIntegrationTests
     [Fact]
     public void FunctionRegistry_Build_RetainsHandlerThatReturnsContentBlocks()
     {
-        var multiModalHandler = new ToolHandler((_, _, _) =>
-            Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromMultiModal(
-                "multimodal",
-                [
-                    new TextToolResultBlock { Text = "some text" },
-                    new ImageToolResultBlock { Data = "base64img", MimeType = "image/jpeg" },
-                ])));
+        var multiModalHandler = new ToolHandler(
+            (_, _, _) =>
+                Task.FromResult<ToolHandlerResult>(
+                    ToolHandlerResult.FromMultiModal(
+                        "multimodal",
+                        [
+                            new TextToolResultBlock { Text = "some text" },
+                            new ImageToolResultBlock { Data = "base64img", MimeType = "image/jpeg" },
+                        ]
+                    )
+                )
+        );
 
         var registry = new FunctionRegistry();
         registry.AddFunction(
             new FunctionContract { Name = "mcp_tool", Description = "MCP tool with images" },
-            multiModalHandler);
+            multiModalHandler
+        );
 
         var (contracts, handlers) = registry.Build();
 
@@ -43,13 +49,16 @@ public class MultiModalHandlerIntegrationTests
 
         var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["image_tool"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                ToolHandlerResult.FromMultiModal(
-                    "multimodal text",
-                    [
-                        new TextToolResultBlock { Text = "rich text" },
-                        new ImageToolResultBlock { Data = "aW1hZ2VkYXRh", MimeType = "image/png" },
-                    ])),
+            ["image_tool"] = (_, _, _) =>
+                Task.FromResult<ToolHandlerResult>(
+                    ToolHandlerResult.FromMultiModal(
+                        "multimodal text",
+                        [
+                            new TextToolResultBlock { Text = "rich text" },
+                            new ImageToolResultBlock { Data = "aW1hZ2VkYXRh", MimeType = "image/png" },
+                        ]
+                    )
+                ),
         };
 
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -84,14 +93,15 @@ public class MultiModalHandlerIntegrationTests
     [Fact]
     public void FunctionRegistry_BuildMiddleware_AcceptsContentBlockHandlers()
     {
-        var multiModalHandler = new ToolHandler((_, _, _) =>
-            Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("mm result"))
+        var multiModalHandler = new ToolHandler(
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("mm result"))
         );
 
         var registry = new FunctionRegistry();
         registry.AddFunction(
             new FunctionContract { Name = "mm_func", Description = "Multimodal function" },
-            multiModalHandler);
+            multiModalHandler
+        );
 
         var middleware = registry.BuildMiddleware("TestMiddleware");
 

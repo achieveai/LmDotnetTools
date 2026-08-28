@@ -337,5 +337,4 @@ public class RerankingService : IRerankService, IDisposable
                 or // 429
                 HttpStatusCode.RequestTimeout; // 408
     }
-
 }

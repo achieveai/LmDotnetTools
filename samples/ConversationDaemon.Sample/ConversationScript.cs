@@ -27,7 +27,8 @@ internal sealed class ConversationScript
         DaemonRestClient client,
         string threadId,
         TimeSpan timeout,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (true)
@@ -43,7 +44,8 @@ internal sealed class ConversationScript
             if (DateTimeOffset.UtcNow >= deadline)
             {
                 throw new TimeoutException(
-                    $"No parked Wait (is_deferred=true) was observed for thread '{threadId}' within {timeout.TotalSeconds} seconds.");
+                    $"No parked Wait (is_deferred=true) was observed for thread '{threadId}' within {timeout.TotalSeconds} seconds."
+                );
             }
 
             await Task.Delay(PollInterval, ct);
@@ -60,7 +62,8 @@ internal sealed class ConversationScript
         DaemonRestClient client,
         string threadId,
         TimeSpan timeout,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         var settleDeadline = DateTimeOffset.UtcNow + RunStartSettle;
@@ -83,7 +86,8 @@ internal sealed class ConversationScript
             if (DateTimeOffset.UtcNow >= deadline)
             {
                 throw new TimeoutException(
-                    $"Run for thread '{threadId}' did not reach an idle state within {timeout.TotalSeconds} seconds.");
+                    $"Run for thread '{threadId}' did not reach an idle state within {timeout.TotalSeconds} seconds."
+                );
             }
 
             await Task.Delay(PollInterval, ct);

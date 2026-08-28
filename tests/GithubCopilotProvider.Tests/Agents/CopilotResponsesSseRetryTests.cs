@@ -126,7 +126,10 @@ public sealed class CopilotResponsesSseRetryTests
         // MaxRetries=0: the single 502 must surface immediately. If CreateSseClient dropped the forwarded
         // retryOptions and fell back to RetryOptions.Default, the 502 would be retried and SUCCEED — so this
         // pins the retryOptions wiring (not just that *some* retry happens).
-        var noRetry = RetryOptions.FastForTests with { MaxRetries = 0 };
+        var noRetry = RetryOptions.FastForTests with
+        {
+            MaxRetries = 0,
+        };
         using var client = CopilotResponsesAgentFactory.CreateSseClient(
             "https://copilot.test",
             new StubTokenProvider(),

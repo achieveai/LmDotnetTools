@@ -89,16 +89,18 @@ public record ConversationSummary
     /// method does not know throws rather than falling back to <c>private</c>: a new state reported
     /// as "shared with nobody" would be a silent misstatement about who can read the conversation.
     /// </remarks>
-    public static string ToWireVisibility(StoredVisibility? visibility) => visibility switch
-    {
-        null or StoredVisibility.Private => "private",
-        StoredVisibility.Shared => "shared",
-        StoredVisibility.TenantPublished => "tenant-published",
-        _ => throw new ArgumentOutOfRangeException(
-            nameof(visibility),
-            visibility,
-            "No wire name for this visibility; add one rather than letting it read as private."),
-    };
+    public static string ToWireVisibility(StoredVisibility? visibility) =>
+        visibility switch
+        {
+            null or StoredVisibility.Private => "private",
+            StoredVisibility.Shared => "shared",
+            StoredVisibility.TenantPublished => "tenant-published",
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(visibility),
+                visibility,
+                "No wire name for this visibility; add one rather than letting it read as private."
+            ),
+        };
 }
 
 /// <summary>

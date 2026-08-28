@@ -77,7 +77,8 @@ public sealed partial class SandboxClient
                 // reason the sibling exits below stamp it: by this point the command has already RUN, and a
                 // gateway rejection on its stdout/stderr artifact leaves the caller holding output it cannot
                 // see — the id is what lets it re-address the operation and collect that output.
-                throw await MapDirectErrorAsync(response, operation, sessionId, ct, timeoutCts.Token, operationId).ConfigureAwait(false);
+                throw await MapDirectErrorAsync(response, operation, sessionId, ct, timeoutCts.Token, operationId)
+                    .ConfigureAwait(false);
             }
 
             var declaredLength = response.Content.Headers.ContentLength;
@@ -95,7 +96,8 @@ public sealed partial class SandboxClient
                 };
             }
 
-            return await ReadStreamCappedAsync(response, operation, operationId, cap, timeoutCts.Token).ConfigureAwait(false);
+            return await ReadStreamCappedAsync(response, operation, operationId, cap, timeoutCts.Token)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -246,7 +248,13 @@ public sealed partial class SandboxClient
                     );
                 }
 
-                var bytes = await ReadStreamCappedAsync(response, $"'{relativeUri}'", operationId: null, MaxDirectReadBytes, timeoutCts.Token)
+                var bytes = await ReadStreamCappedAsync(
+                        response,
+                        $"'{relativeUri}'",
+                        operationId: null,
+                        MaxDirectReadBytes,
+                        timeoutCts.Token
+                    )
                     .ConfigureAwait(false);
                 var contentType = response.Content.Headers.ContentType;
                 response.Content.Dispose();
@@ -513,9 +521,14 @@ public sealed partial class SandboxClient
             // path) supplies its already-running whole-call CTS, the read shares that ONE deadline (headers +
             // error body bounded together); otherwise impose the SDK's transport deadline here.
             using var bodyBudgetCts = readBudget is null ? StartTransportBudget() : null;
-            using var bodyCts = CancellationTokenSource.CreateLinkedTokenSource(callerToken, readBudget ?? bodyBudgetCts!.Token);
+            using var bodyCts = CancellationTokenSource.CreateLinkedTokenSource(
+                callerToken,
+                readBudget ?? bodyBudgetCts!.Token
+            );
 
-            var error = await response.Content.ReadFromJsonAsync<GatewayErrorDto>(SandboxJson.RestOptions, bodyCts.Token).ConfigureAwait(false);
+            var error = await response
+                .Content.ReadFromJsonAsync<GatewayErrorDto>(SandboxJson.RestOptions, bodyCts.Token)
+                .ConfigureAwait(false);
             errorCode = error?.ErrorCode;
         }
         catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
@@ -541,7 +554,12 @@ public sealed partial class SandboxClient
 
         var kind = MapDirectErrorKind(response.StatusCode, errorCode);
         var codeSuffix = string.IsNullOrEmpty(errorCode) ? string.Empty : $" (error_code {errorCode})";
-        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.", statusCode, operationId: operationId)
+        return new SandboxException(
+            kind,
+            $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.",
+            statusCode,
+            operationId: operationId
+        )
         {
             ErrorCode = errorCode,
         };
@@ -556,7 +574,8 @@ public sealed partial class SandboxClient
     private static SandboxErrorKind MapDirectErrorKind(HttpStatusCode status, string? errorCode) =>
         errorCode switch
         {
-            "session_not_found" or "mount_not_found" or "operation_not_found" or "path_not_found" => SandboxErrorKind.NotFound,
+            "session_not_found" or "mount_not_found" or "operation_not_found" or "path_not_found" =>
+                SandboxErrorKind.NotFound,
             "idempotency_conflict" or "operation_running" or "target_locked" => SandboxErrorKind.Conflict,
             "workspace_required" => SandboxErrorKind.WorkspaceRequired,
             "operation_api_unavailable"

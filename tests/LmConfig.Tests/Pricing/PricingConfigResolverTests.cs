@@ -1,7 +1,7 @@
+using System.Text;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Pricing;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
-using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,7 +17,8 @@ public class PricingConfigResolverTests
                 ["model-A"] = new() { PromptPerMillion = 2.0, CompletionPerMillion = 8.0 },
             },
             source: "test-catalog",
-            version: "2026-07-19");
+            version: "2026-07-19"
+        );
 
     [Fact]
     public void Resolve_KnownModel_ReturnsPricingWithProvenance()

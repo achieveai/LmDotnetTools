@@ -70,19 +70,25 @@ public sealed class ChatClientLayoutRegressionTests
         // A single default-mode parent role serves the whole run: twelve calculate tool-call turns
         // (each executed by the real local `calculate` tool so the multi-turn loop advances) followed
         // by a long final text turn. The tool pills + the long tail overflow the pinned viewport.
-        var role = ScriptedSseResponder
-            .New()
-            .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"));
+        var role = ScriptedSseResponder.New().ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"));
 
         for (var i = 0; i < ToolCallCount; i++)
         {
             var n = i;
-            role = role.Turn(t => t.ToolCall("calculate", new { a = n, operation = "add", b = 1 }));
+            role = role.Turn(t =>
+                t.ToolCall(
+                    "calculate",
+                    new
+                    {
+                        a = n,
+                        operation = "add",
+                        b = 1,
+                    }
+                )
+            );
         }
 
-        var responder = role
-            .Turn(t => t.TextLen(6_000))
-            .Build();
+        var responder = role.Turn(t => t.TextLen(6_000)).Build();
 
         await using var session = await _fixture.OpenAsync("test", responder.HandlerFor("test"));
         var page = session.Page;
@@ -110,7 +116,8 @@ public sealed class ChatClientLayoutRegressionTests
             .Should()
             .BeGreaterThan(
                 0,
-                "the conversation must overflow and scroll INSIDE .message-list (otherwise 'the page does not scroll' is vacuous)");
+                "the conversation must overflow and scroll INSIDE .message-list (otherwise 'the page does not scroll' is vacuous)"
+            );
 
         // Assertion (a), collapsed — the document must not scroll: the fixed full-height shell caps at
         // 100vh and clips its overflow, so `.sr-only` labels (and everything else) stay inside the
@@ -124,9 +131,9 @@ public sealed class ChatClientLayoutRegressionTests
         // than a raw DOM click, asserting one header per pill so the intended interaction is explicit
         // and fails clearly if a header is missing or not actionable.
         var pillHeaders = page.Locator("[data-testid='tool-call-pill'] .tool-pill__header");
-        (await pillHeaders.CountAsync()).Should().Be(
-            ToolCallCount,
-            "every collapsed tool pill exposes exactly one header toggle to expand");
+        (await pillHeaders.CountAsync())
+            .Should()
+            .Be(ToolCallCount, "every collapsed tool pill exposes exactly one header toggle to expand");
         for (var i = 0; i < ToolCallCount; i++)
         {
             await pillHeaders.Nth(i).ClickAsync();
@@ -152,13 +159,13 @@ public sealed class ChatClientLayoutRegressionTests
             .Should()
             .BeLessThanOrEqualTo(
                 ViewportWidth,
-                "the header must wrap so the trailing 'Clear' button stays within the viewport, not clipped off the right edge");
+                "the header must wrap so the trailing 'Clear' button stays within the viewport, not clipped off the right edge"
+            );
         (await page.ClearButton().IsVisibleAsync())
             .Should()
             .BeTrue("the Clear button must remain visible after the header wraps");
 
-        await session.SaveSuccessScreenshotAsync(
-            "ChatClientLayout.message_list_scrolls_not_page_and_Clear_on_screen");
+        await session.SaveSuccessScreenshotAsync("ChatClientLayout.message_list_scrolls_not_page_and_Clear_on_screen");
     }
 
     /// <summary>
@@ -171,15 +178,20 @@ public sealed class ChatClientLayoutRegressionTests
     private static async Task AssertPageDoesNotScrollAsync(IPage page, string because)
     {
         var overflow = await page.EvaluateAsync<double>(
-            "() => { const se = document.scrollingElement; return se.scrollHeight - se.clientHeight; }");
-        overflow.Should().BeLessThanOrEqualTo(
-            1,
-            $"the page must not have a spurious scrollbar ({because}) — the shell clips to 100vh and the conversation scrolls internally");
+            "() => { const se = document.scrollingElement; return se.scrollHeight - se.clientHeight; }"
+        );
+        overflow
+            .Should()
+            .BeLessThanOrEqualTo(
+                1,
+                $"the page must not have a spurious scrollbar ({because}) — the shell clips to 100vh and the conversation scrolls internally"
+            );
 
         var clampedScrollTop = await page.EvaluateAsync<double>(
-            "() => { const se = document.scrollingElement; se.scrollTop = 9999; return se.scrollTop; }");
-        clampedScrollTop.Should().Be(
-            0,
-            $"driving the page scroll offset must be clamped to 0 — the document cannot scroll ({because})");
+            "() => { const se = document.scrollingElement; se.scrollTop = 9999; return se.scrollTop; }"
+        );
+        clampedScrollTop
+            .Should()
+            .Be(0, $"driving the page scroll offset must be clamped to 0 — the document cannot scroll ({because})");
     }
 }

@@ -14,7 +14,8 @@ public class ConversationUsageAggregateTests
         long cacheWrite = 0,
         long? estimated = null,
         long? reported = null,
-        DateTimeOffset? occurredAt = null) =>
+        DateTimeOffset? occurredAt = null
+    ) =>
         new()
         {
             LogicalCallId = attemptId,
@@ -77,7 +78,10 @@ public class ConversationUsageAggregateTests
     {
         var records = new[]
         {
-            Record("a1", "alias", input: 10, output: 10) with { EffectiveModel = "real-model" },
+            Record("a1", "alias", input: 10, output: 10) with
+            {
+                EffectiveModel = "real-model",
+            },
             Record("a2", "real-model", input: 5, output: 5),
         };
 
@@ -122,7 +126,8 @@ public class ConversationUsageAggregateTests
             "conv-1",
             [Record("a1", "model-A", input: 1, output: 1)],
             foldedRevision: 42,
-            completeness: UsageCompleteness.Complete);
+            completeness: UsageCompleteness.Complete
+        );
 
         agg.FoldedRevision.Should().Be(42);
         agg.Completeness.Should().Be(UsageCompleteness.Complete);

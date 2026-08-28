@@ -47,10 +47,7 @@ public class ProfileMaterializationTests
     [Fact]
     public void Materialize_InlineSkill_WritesSkillMd()
     {
-        var profile = new AgentRuntimeProfile
-        {
-            Skills = [AgentSkill.Inline("my-skill", "# Skill body")],
-        };
+        var profile = new AgentRuntimeProfile { Skills = [AgentSkill.Inline("my-skill", "# Skill body")] };
 
         using var result = ProfileMaterializer.Materialize(profile);
 
@@ -63,10 +60,7 @@ public class ProfileMaterializationTests
     [Fact]
     public void Materialize_InlineSubAgent_WritesAgentMd()
     {
-        var profile = new AgentRuntimeProfile
-        {
-            SubAgents = [SubAgentDefinition.Inline("my-agent", "agent body")],
-        };
+        var profile = new AgentRuntimeProfile { SubAgents = [SubAgentDefinition.Inline("my-agent", "agent body")] };
 
         using var result = ProfileMaterializer.Materialize(profile);
 
@@ -83,10 +77,7 @@ public class ProfileMaterializationTests
         File.WriteAllText(tempFile, "file body");
         try
         {
-            var profile = new AgentRuntimeProfile
-            {
-                Skills = [AgentSkill.FromPath("name", tempFile)],
-            };
+            var profile = new AgentRuntimeProfile { Skills = [AgentSkill.FromPath("name", tempFile)] };
 
             using var result = ProfileMaterializer.Materialize(profile);
             var skillFile = Path.Combine(result.StagingDirectory!, "skills", "name", "SKILL.md");
@@ -110,10 +101,7 @@ public class ProfileMaterializationTests
         File.WriteAllText(Path.Combine(subDir, "helper.md"), "nested");
         try
         {
-            var profile = new AgentRuntimeProfile
-            {
-                Skills = [AgentSkill.FromPath("name", srcDir)],
-            };
+            var profile = new AgentRuntimeProfile { Skills = [AgentSkill.FromPath("name", srcDir)] };
 
             using var result = ProfileMaterializer.Materialize(profile);
             var destSkillRoot = Path.Combine(result.StagingDirectory!, "skills", "name");
@@ -130,10 +118,7 @@ public class ProfileMaterializationTests
     [Fact]
     public void Materialize_StagingDir_DeletedOnDispose()
     {
-        var profile = new AgentRuntimeProfile
-        {
-            Skills = [AgentSkill.Inline("x", "y")],
-        };
+        var profile = new AgentRuntimeProfile { Skills = [AgentSkill.Inline("x", "y")] };
         string? stagingPath;
         using (var result = ProfileMaterializer.Materialize(profile))
         {
@@ -213,7 +198,8 @@ public class ProfileMaterializationTests
         var tempRoot = Path.GetTempPath();
         var before = new HashSet<string>(
             Directory.EnumerateDirectories(tempRoot, "lm-claude-*"),
-            StringComparer.OrdinalIgnoreCase);
+            StringComparer.OrdinalIgnoreCase
+        );
 
         Assert.Throws<ArgumentException>(() => ProfileMaterializer.Materialize(profile));
 
@@ -229,10 +215,7 @@ public class ProfileMaterializationTests
         File.WriteAllText(srcFile, "agent body from file");
         try
         {
-            var profile = new AgentRuntimeProfile
-            {
-                SubAgents = [SubAgentDefinition.FromPath("from-file", srcFile)],
-            };
+            var profile = new AgentRuntimeProfile { SubAgents = [SubAgentDefinition.FromPath("from-file", srcFile)] };
 
             using var result = ProfileMaterializer.Materialize(profile);
             var dest = Path.Combine(result.StagingDirectory!, "agents", "from-file.md");
@@ -261,10 +244,7 @@ public class ProfileMaterializationTests
         File.WriteAllText(Path.Combine(srcDir, "beta.md"), "agent body from dir");
         try
         {
-            var profile = new AgentRuntimeProfile
-            {
-                SubAgents = [SubAgentDefinition.FromPath("from-dir", srcDir)],
-            };
+            var profile = new AgentRuntimeProfile { SubAgents = [SubAgentDefinition.FromPath("from-dir", srcDir)] };
 
             using var result = ProfileMaterializer.Materialize(profile);
             var dest = Path.Combine(result.StagingDirectory!, "agents", "from-dir.md");
@@ -286,10 +266,7 @@ public class ProfileMaterializationTests
         File.WriteAllText(Path.Combine(srcDir, "not-markdown.txt"), "ignored");
         try
         {
-            var profile = new AgentRuntimeProfile
-            {
-                SubAgents = [SubAgentDefinition.FromPath("no-md", srcDir)],
-            };
+            var profile = new AgentRuntimeProfile { SubAgents = [SubAgentDefinition.FromPath("no-md", srcDir)] };
 
             Assert.Throws<FileNotFoundException>(() => ProfileMaterializer.Materialize(profile));
         }

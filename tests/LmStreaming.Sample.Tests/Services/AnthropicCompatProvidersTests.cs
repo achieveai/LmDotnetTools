@@ -41,16 +41,29 @@ public class AnthropicCompatProvidersTests
 
         var models = AnthropicCompatProviders.DiscoverFromEnv(NullLoggerFactory.Instance);
 
-        models.Should().BeEquivalentTo(
-            [
-                new AnthropicCompatModel(
-                    "deepseek-v4-pro", "deepseek-v4-pro", "deepseek-v4-pro",
-                    "https://api.deepseek.com/anthropic", "sk-deepseek", "DEEPSEEK"),
-                new AnthropicCompatModel(
-                    "deepseek-v4-flash", "deepseek-v4-flash", "deepseek-v4-flash",
-                    "https://api.deepseek.com/anthropic", "sk-deepseek", "DEEPSEEK"),
-            ],
-            options => options.WithStrictOrdering());
+        models
+            .Should()
+            .BeEquivalentTo(
+                [
+                    new AnthropicCompatModel(
+                        "deepseek-v4-pro",
+                        "deepseek-v4-pro",
+                        "deepseek-v4-pro",
+                        "https://api.deepseek.com/anthropic",
+                        "sk-deepseek",
+                        "DEEPSEEK"
+                    ),
+                    new AnthropicCompatModel(
+                        "deepseek-v4-flash",
+                        "deepseek-v4-flash",
+                        "deepseek-v4-flash",
+                        "https://api.deepseek.com/anthropic",
+                        "sk-deepseek",
+                        "DEEPSEEK"
+                    ),
+                ],
+                options => options.WithStrictOrdering()
+            );
     }
 
     [Fact]
@@ -78,7 +91,8 @@ public class AnthropicCompatProvidersTests
     public void DiscoverFromEnv_SkipsFamily_WhenAnyOfItsThreeVarsIsMissing(
         string? baseUrl,
         string? apiKey,
-        string? modelsRaw)
+        string? modelsRaw
+    )
     {
         using var _ = EnvScope.Set("ANTHROPIC_COMPAT_PROVIDERS", "ACME");
         using var __ = EnvScope.Set("ACME_ANTHROPIC_URL", baseUrl);
@@ -151,9 +165,11 @@ public class AnthropicCompatProvidersTests
         // First configured entry wins; the colliding second is dropped, not silently overwritten.
         models.Select(m => m.ModelName).Should().BeEquivalentTo(["kimi-2.5"]);
         models.Single().Id.Should().Be("kimi-2-5");
-        factory.Entries
-            .Should()
-            .ContainSingle(e => e.Level == LogLevel.Warning && e.Message.Contains("collides") && e.Message.Contains("kimi-2-5"));
+        factory
+            .Entries.Should()
+            .ContainSingle(e =>
+                e.Level == LogLevel.Warning && e.Message.Contains("collides") && e.Message.Contains("kimi-2-5")
+            );
     }
 
     [Fact]
@@ -176,9 +192,11 @@ public class AnthropicCompatProvidersTests
         var model = models.Should().ContainSingle().Subject;
         model.Id.Should().Be("shared-model");
         model.FamilyKey.Should().Be("DEEPSEEK");
-        factory.Entries
-            .Should()
-            .ContainSingle(e => e.Level == LogLevel.Warning && e.Message.Contains("collides") && e.Message.Contains("KIMI"));
+        factory
+            .Entries.Should()
+            .ContainSingle(e =>
+                e.Level == LogLevel.Warning && e.Message.Contains("collides") && e.Message.Contains("KIMI")
+            );
     }
 
     /// <summary>
@@ -220,7 +238,8 @@ public class AnthropicCompatProvidersTests
                 EventId eventId,
                 TState state,
                 Exception? exception,
-                Func<TState, Exception?, string> formatter)
+                Func<TState, Exception?, string> formatter
+            )
             {
                 var message = formatter(state, exception);
                 lock (entries)

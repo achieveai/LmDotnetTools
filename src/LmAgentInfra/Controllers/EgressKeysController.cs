@@ -53,12 +53,19 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
 
         if (OAuthProviderHosts.CollidesWithManagedHost(request.Host))
         {
-            return BadRequest(new { error = "Host collides with a managed OAuth provider (GitHub / Azure DevOps / M365)." });
+            return BadRequest(
+                new { error = "Host collides with a managed OAuth provider (GitHub / Azure DevOps / M365)." }
+            );
         }
 
         if (!TryParseKind(request.Kind, out var kind))
         {
-            return BadRequest(new { error = $"Unknown kind '{request.Kind}'. Expected custom-headers, refresh-token, or client-credentials." });
+            return BadRequest(
+                new
+                {
+                    error = $"Unknown kind '{request.Kind}'. Expected custom-headers, refresh-token, or client-credentials.",
+                }
+            );
         }
 
         var existing = string.IsNullOrEmpty(request.Id) ? null : registry.Find(request.Id);
@@ -69,9 +76,10 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
 
         var id = existing?.Id ?? Guid.NewGuid().ToString("N");
 
-        var (entry, error) = kind == PredefinedKeyKind.CustomHeaders
-            ? BuildCustomHeadersEntry(id, request.Host, request, existing)
-            : BuildOAuthEntry(id, request.Host, kind, request, existing);
+        var (entry, error) =
+            kind == PredefinedKeyKind.CustomHeaders
+                ? BuildCustomHeadersEntry(id, request.Host, request, existing)
+                : BuildOAuthEntry(id, request.Host, kind, request, existing);
 
         if (error is not null)
         {
@@ -79,8 +87,13 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
         }
 
         await registry.UpsertAsync(entry!, ct).ConfigureAwait(false);
-        logger.LogInformation("Egress key {ProviderId} {Action} (host {Host}, kind {Kind}).",
-            $"{PredefinedKeyRegistry.ProviderIdPrefix}{id}", existing is null ? "created" : "updated", request.Host, request.Kind);
+        logger.LogInformation(
+            "Egress key {ProviderId} {Action} (host {Host}, kind {Kind}).",
+            $"{PredefinedKeyRegistry.ProviderIdPrefix}{id}",
+            existing is null ? "created" : "updated",
+            request.Host,
+            request.Kind
+        );
         return Ok(ToView(entry!));
     }
 
@@ -107,10 +120,13 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
     private IActionResult? RejectNonLoopback()
     {
         var headers = HttpContext?.Request?.Headers;
-        var proxied = headers is not null
-            && (headers.ContainsKey("X-Forwarded-For")
+        var proxied =
+            headers is not null
+            && (
+                headers.ContainsKey("X-Forwarded-For")
                 || headers.ContainsKey("X-Forwarded-Host")
-                || headers.ContainsKey("Forwarded"));
+                || headers.ContainsKey("Forwarded")
+            );
 
         var remote = HttpContext?.Connection?.RemoteIpAddress;
         var nonLoopback = remote is not null && !System.Net.IPAddress.IsLoopback(remote);
@@ -118,15 +134,25 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
         if (proxied || nonLoopback)
         {
             logger.LogWarning(
-                "Rejected egress-key management request from {Remote} (proxied={Proxied}).", remote, proxied);
-            return StatusCode(403, new { error = "Egress-key management is restricted to direct local (loopback) callers." });
+                "Rejected egress-key management request from {Remote} (proxied={Proxied}).",
+                remote,
+                proxied
+            );
+            return StatusCode(
+                403,
+                new { error = "Egress-key management is restricted to direct local (loopback) callers." }
+            );
         }
 
         return null;
     }
 
     private static (PredefinedKeyEntry? entry, string? error) BuildCustomHeadersEntry(
-        string id, string host, EgressKeyRequest request, PredefinedKeyEntry? existing)
+        string id,
+        string host,
+        EgressKeyRequest request,
+        PredefinedKeyEntry? existing
+    )
     {
         // Edit that omits the header list entirely (e.g. changing only the host) preserves the stored headers.
         if (request.Headers is not { Count: > 0 })
@@ -160,8 +186,9 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
             var value = header.Value;
             if (string.IsNullOrEmpty(value))
             {
-                var stored = existing?.Headers.FirstOrDefault(
-                    h => string.Equals(h.Name, header.Name, StringComparison.OrdinalIgnoreCase));
+                var stored = existing?.Headers.FirstOrDefault(h =>
+                    string.Equals(h.Name, header.Name, StringComparison.OrdinalIgnoreCase)
+                );
                 value = stored?.Value ?? string.Empty;
             }
 
@@ -174,11 +201,25 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
             resolved.Add(new PredefinedHeader(header.Name, value));
         }
 
-        return (new PredefinedKeyEntry { Id = id, Host = host, Kind = PredefinedKeyKind.CustomHeaders, Headers = resolved }, null);
+        return (
+            new PredefinedKeyEntry
+            {
+                Id = id,
+                Host = host,
+                Kind = PredefinedKeyKind.CustomHeaders,
+                Headers = resolved,
+            },
+            null
+        );
     }
 
     private static (PredefinedKeyEntry? entry, string? error) BuildOAuthEntry(
-        string id, string host, PredefinedKeyKind kind, EgressKeyRequest request, PredefinedKeyEntry? existing)
+        string id,
+        string host,
+        PredefinedKeyKind kind,
+        EgressKeyRequest request,
+        PredefinedKeyEntry? existing
+    )
     {
         var headerName = Coalesce(request.HeaderName, existing?.HeaderName) ?? "Authorization";
         var headerError = EgressHostMatcher.ValidateHeaderName(headerName);
@@ -215,30 +256,35 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
 
         var scopes = request.Scopes ?? existing?.Scopes ?? [];
 
-        return (new PredefinedKeyEntry
-        {
-            Id = id,
-            Host = host,
-            Kind = kind,
-            HeaderName = headerName,
-            TokenEndpoint = tokenEndpoint,
-            ClientId = clientId,
-            ClientSecret = clientSecret,
-            RefreshToken = refreshToken,
-            Scopes = scopes,
-        }, null);
+        return (
+            new PredefinedKeyEntry
+            {
+                Id = id,
+                Host = host,
+                Kind = kind,
+                HeaderName = headerName,
+                TokenEndpoint = tokenEndpoint,
+                ClientId = clientId,
+                ClientSecret = clientSecret,
+                RefreshToken = refreshToken,
+                Scopes = scopes,
+            },
+            null
+        );
     }
 
     /// <summary>Maps an internal entry to the masked, secret-free view returned to the UI.</summary>
-    private static EgressKeyView ToView(PredefinedKeyEntry entry) => new(
-        Id: entry.Id,
-        Host: entry.Host,
-        Kind: KindToWire(entry.Kind),
-        HeaderName: entry.HeaderName,
-        HeaderNames: [.. entry.Headers.Select(h => h.Name)],
-        HasClientSecret: !string.IsNullOrEmpty(entry.ClientSecret),
-        HasRefreshToken: !string.IsNullOrEmpty(entry.RefreshToken),
-        Scopes: entry.Scopes);
+    private static EgressKeyView ToView(PredefinedKeyEntry entry) =>
+        new(
+            Id: entry.Id,
+            Host: entry.Host,
+            Kind: KindToWire(entry.Kind),
+            HeaderName: entry.HeaderName,
+            HeaderNames: [.. entry.Headers.Select(h => h.Name)],
+            HasClientSecret: !string.IsNullOrEmpty(entry.ClientSecret),
+            HasRefreshToken: !string.IsNullOrEmpty(entry.RefreshToken),
+            Scopes: entry.Scopes
+        );
 
     private static string? Coalesce(string? preferred, string? fallback) =>
         string.IsNullOrWhiteSpace(preferred) ? fallback : preferred;
@@ -262,13 +308,14 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
         }
     }
 
-    private static string KindToWire(PredefinedKeyKind kind) => kind switch
-    {
-        PredefinedKeyKind.CustomHeaders => "custom-headers",
-        PredefinedKeyKind.RefreshToken => "refresh-token",
-        PredefinedKeyKind.ClientCredentials => "client-credentials",
-        _ => "custom-headers",
-    };
+    private static string KindToWire(PredefinedKeyKind kind) =>
+        kind switch
+        {
+            PredefinedKeyKind.CustomHeaders => "custom-headers",
+            PredefinedKeyKind.RefreshToken => "refresh-token",
+            PredefinedKeyKind.ClientCredentials => "client-credentials",
+            _ => "custom-headers",
+        };
 }
 
 /// <summary>Create/update request for a predefined egress key. Secret fields left blank on an update preserve the stored value.</summary>
@@ -282,7 +329,8 @@ public sealed record EgressKeyRequest(
     string? ClientId,
     string? ClientSecret,
     string? RefreshToken,
-    IReadOnlyList<string>? Scopes);
+    IReadOnlyList<string>? Scopes
+);
 
 /// <summary>One custom header name/value pair from the CRUD request. SECRET: <see cref="Value"/> is credential material.</summary>
 public sealed record EgressHeaderInput(string Name, string Value);
@@ -296,4 +344,5 @@ public sealed record EgressKeyView(
     IReadOnlyList<string> HeaderNames,
     bool HasClientSecret,
     bool HasRefreshToken,
-    IReadOnlyList<string> Scopes);
+    IReadOnlyList<string> Scopes
+);

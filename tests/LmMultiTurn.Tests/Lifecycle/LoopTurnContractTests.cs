@@ -95,8 +95,7 @@ public class LoopTurnContractTests
         };
 
     /// <summary>Every loop, for promises that do not turn on which one it is.</summary>
-    public static TheoryData<Loop> EveryLoop =>
-        [Loop.Raw, Loop.Claude, Loop.Codex, Loop.Copilot];
+    public static TheoryData<Loop> EveryLoop => [Loop.Raw, Loop.Claude, Loop.Codex, Loop.Copilot];
 
     #region One ordinary turn, described the same way by every loop
 
@@ -109,29 +108,28 @@ public class LoopTurnContractTests
         RunAndTurnEventsOf(publisher)
             .Should()
             .Equal(
-                [
-                    LifecycleEventTypes.RunStarted,
-                    LifecycleEventTypes.TurnCompleted,
-                    LifecycleEventTypes.RunCompleted,
-                ],
-                "a subscriber pairs a start with a turn with a completion, in that order, whatever produced them");
+                [LifecycleEventTypes.RunStarted, LifecycleEventTypes.TurnCompleted, LifecycleEventTypes.RunCompleted],
+                "a subscriber pairs a start with a turn with a completion, in that order, whatever produced them"
+            );
 
         var started = Single<RunStartedPayload>(publisher, LifecycleEventTypes.RunStarted);
         var turn = Single<TurnCompletedPayload>(publisher, LifecycleEventTypes.TurnCompleted);
         var completed = Single<RunCompletedPayload>(publisher, LifecycleEventTypes.RunCompleted);
 
-        started.AgentKind.Should().Be(
-            expectedAgentKind,
-            "the loop knows which implementation is running and is the only honest source for it");
+        started
+            .AgentKind.Should()
+            .Be(
+                expectedAgentKind,
+                "the loop knows which implementation is running and is the only honest source for it"
+            );
         started.ModelId.Should().Be(ModelId);
         started.Cause.Kind.Should().Be(LifecycleRunCauseKinds.UserInput);
         started.WasForked.Should().BeFalse();
 
         turn.TurnIndex.Should().Be(1, "the first turn of a run is turn one on every loop");
         turn.Outcome.Should().Be(LifecycleTurnOutcomes.Completed);
-        turn.MessageCount.Should().Be(
-            2,
-            "the equivalent script produced one answer and one usage report, however it was wired");
+        turn.MessageCount.Should()
+            .Be(2, "the equivalent script produced one answer and one usage report, however it was wired");
         turn.ToolCallCount.Should().Be(0);
         turn.Error.Should().BeNull("a turn that finished has nothing to explain");
 
@@ -141,9 +139,8 @@ public class LoopTurnContractTests
 
         turn.RunId.Should().Be(started.RunId);
         completed.RunId.Should().Be(started.RunId);
-        turn.GenerationId.Should().Be(
-            started.GenerationId,
-            "a run's first turn carries the generation id the run started with");
+        turn.GenerationId.Should()
+            .Be(started.GenerationId, "a run's first turn carries the generation id the run started with");
     }
 
     [Theory]
@@ -153,11 +150,7 @@ public class LoopTurnContractTests
         var publisher = (await DriveAsync(loop, Script.WholeAnswer)).Events;
 
         var started = Single<RunStartedPayload>(publisher, LifecycleEventTypes.RunStarted);
-        var correlation = publisher
-            .CorrelationsFor(LifecycleEventTypes.TurnCompleted)
-            .Should()
-            .ContainSingle()
-            .Subject;
+        var correlation = publisher.CorrelationsFor(LifecycleEventTypes.TurnCompleted).Should().ContainSingle().Subject;
 
         correlation.ThreadId.Should().Be(ThreadId);
         correlation.RunId.Should().Be(started.RunId);
@@ -178,9 +171,9 @@ public class LoopTurnContractTests
         usage!.PromptTokens.Should().Be(PromptTokens);
         usage.CompletionTokens.Should().Be(CompletionTokens);
         usage.TotalTokens.Should().Be(TotalTokens);
-        usage.Completeness.Should().Be(
-            LifecycleUsageCompleteness.Complete,
-            "the one response the turn contained reported its usage");
+        usage
+            .Completeness.Should()
+            .Be(LifecycleUsageCompleteness.Complete, "the one response the turn contained reported its usage");
     }
 
     #endregion
@@ -193,15 +186,17 @@ public class LoopTurnContractTests
     {
         var whole = Single<TurnCompletedPayload>(
             (await DriveAsync(loop, Script.WholeAnswer)).Events,
-            LifecycleEventTypes.TurnCompleted);
+            LifecycleEventTypes.TurnCompleted
+        );
 
         var streamed = Single<TurnCompletedPayload>(
             (await DriveAsync(loop, Script.FragmentedAnswer)).Events,
-            LifecycleEventTypes.TurnCompleted);
+            LifecycleEventTypes.TurnCompleted
+        );
 
-        streamed.MessageCount.Should().Be(
-            whole.MessageCount,
-            "deltas are how the answer arrived; the turn produced one answer either way");
+        streamed
+            .MessageCount.Should()
+            .Be(whole.MessageCount, "deltas are how the answer arrived; the turn produced one answer either way");
         streamed.ToolCallCount.Should().Be(whole.ToolCallCount);
         streamed.TurnIndex.Should().Be(whole.TurnIndex);
         streamed.Outcome.Should().Be(whole.Outcome);
@@ -217,11 +212,11 @@ public class LoopTurnContractTests
         // actually flowed through the loop. Note this is the subscriber stream, not the finalizer's
         // — the raw loop publishes upstream of its joiner (MultiTurnAgentLoop.cs:253-258), so a
         // subscriber sees the deltas while the finalizer sees the message they were joined into.
-        run.Streamed.OfType<TextUpdateMessage>().Should().NotBeEmpty(
-            "a loop that silently dropped the deltas would satisfy the count below for the wrong reason");
+        run.Streamed.OfType<TextUpdateMessage>()
+            .Should()
+            .NotBeEmpty("a loop that silently dropped the deltas would satisfy the count below for the wrong reason");
 
-        run.Events
-            .Payloads<TurnCompletedPayload>(LifecycleEventTypes.TurnCompleted)
+        run.Events.Payloads<TurnCompletedPayload>(LifecycleEventTypes.TurnCompleted)
             .Should()
             .ContainSingle("a fragment is not a turn, so no number of them can produce a second event")
             .Which.GenerationId.Should()
@@ -240,24 +235,31 @@ public class LoopTurnContractTests
         var agent = new Mock<IStreamingAgent>();
         var turnsRequested = 0;
         _ = agent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(() => Task.FromResult(
-                ++turnsRequested == 1
-                    ? Replay(
-                        [
-                            new ToolCallMessage
-                            {
-                                FunctionName = "ping",
-                                FunctionArgs = "{}",
-                                ToolCallId = "tc_1",
-                                Role = Role.Assistant,
-                            },
-                        ],
-                        tail: null)
-                    : Replay([Answered(), UsageReport()], tail: null)));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(() =>
+                Task.FromResult(
+                    ++turnsRequested == 1
+                        ? Replay(
+                            [
+                                new ToolCallMessage
+                                {
+                                    FunctionName = "ping",
+                                    FunctionArgs = "{}",
+                                    ToolCallId = "tc_1",
+                                    Role = Role.Assistant,
+                                },
+                            ],
+                            tail: null
+                        )
+                        : Replay([Answered(), UsageReport()], tail: null)
+                )
+            );
 
         var registry = new FunctionRegistry();
         _ = registry.AddFunction(
@@ -267,32 +269,35 @@ public class LoopTurnContractTests
                 Description = "Answers with pong.",
                 Parameters = [],
             },
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("pong")));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("pong"))
+        );
 
         var loop = new MultiTurnAgentLoop(
             agent.Object,
             registry,
             ThreadId,
             defaultOptions: new GenerateReplyOptions { ModelId = ModelId },
-            lifecycleServices: Bundle(publisher));
+            lifecycleServices: Bundle(publisher)
+        );
 
         _ = await DriveOneRunAsync(loop, Script.WholeAnswer, tail: null, cts);
 
         var turns = publisher.Payloads<TurnCompletedPayload>(LifecycleEventTypes.TurnCompleted);
         turns.Should().HaveCount(2, "the tool call bought a second turn and nothing bought a third");
-        turns.Select(t => t.TurnIndex).Should().Equal(
-            [1, 2],
-            "turn ordinals are the subscriber's only way to order turns within a run");
-        turns.Select(t => t.GenerationId).Distinct().Should().HaveCount(
-            2,
-            "each turn is its own generation, so a subscriber can key state by generation id");
+        turns
+            .Select(t => t.TurnIndex)
+            .Should()
+            .Equal([1, 2], "turn ordinals are the subscriber's only way to order turns within a run");
+        turns
+            .Select(t => t.GenerationId)
+            .Distinct()
+            .Should()
+            .HaveCount(2, "each turn is its own generation, so a subscriber can key state by generation id");
         turns[0].ToolCallCount.Should().Be(1);
         turns[1].ToolCallCount.Should().Be(0);
         turns.Should().OnlyContain(t => t.Outcome == LifecycleTurnOutcomes.Completed);
 
-        Single<RunCompletedPayload>(publisher, LifecycleEventTypes.RunCompleted)
-            .TurnCount.Should()
-            .Be(2);
+        Single<RunCompletedPayload>(publisher, LifecycleEventTypes.RunCompleted).TurnCount.Should().Be(2);
     }
 
     #endregion
@@ -315,20 +320,18 @@ public class LoopTurnContractTests
         var turn = Single<TurnCompletedPayload>(publisher, LifecycleEventTypes.TurnCompleted);
         var completed = Single<RunCompletedPayload>(publisher, LifecycleEventTypes.RunCompleted);
 
-        turn.MessageCount.Should().Be(
-            0,
-            "only fragments had arrived, and a fragment is not a message the turn produced");
+        turn.MessageCount.Should()
+            .Be(0, "only fragments had arrived, and a fragment is not a message the turn produced");
         turn.ToolCallCount.Should().Be(0);
         turn.TurnIndex.Should().Be(1);
         turn.Outcome.Should().Be(LifecycleTurnOutcomes.Error);
         turn.Error.Should().NotBeNull();
-        turn.Error!.Message.Should().Contain(
-            ProviderDied,
-            "the turn carries the failure that ended it, not a placeholder");
+        turn.Error!.Message.Should()
+            .Contain(ProviderDied, "the turn carries the failure that ended it, not a placeholder");
 
-        completed.Outcome.Should().Be(
-            LifecycleRunOutcomes.Error,
-            "the turn's outcome and the run's outcome must agree about what happened");
+        completed
+            .Outcome.Should()
+            .Be(LifecycleRunOutcomes.Error, "the turn's outcome and the run's outcome must agree about what happened");
         completed.TurnCount.Should().Be(1, "the turn that failed still happened");
     }
 
@@ -340,14 +343,14 @@ public class LoopTurnContractTests
 
         var turn = Single<TurnCompletedPayload>(publisher, LifecycleEventTypes.TurnCompleted);
 
-        turn.MessageCount.Should().Be(
-            0,
-            "the answer was still arriving in pieces when the cancellation landed");
+        turn.MessageCount.Should().Be(0, "the answer was still arriving in pieces when the cancellation landed");
         turn.ToolCallCount.Should().Be(0);
         turn.TurnIndex.Should().Be(1);
-        turn.Outcome.Should().Be(
-            LifecycleTurnOutcomes.Cancelled,
-            "a cancelled turn has a stable outcome of its own — it is neither a success nor an error");
+        turn.Outcome.Should()
+            .Be(
+                LifecycleTurnOutcomes.Cancelled,
+                "a cancelled turn has a stable outcome of its own — it is neither a success nor an error"
+            );
 
         Single<RunCompletedPayload>(publisher, LifecycleEventTypes.RunCompleted)
             .Outcome.Should()
@@ -396,18 +399,17 @@ public class LoopTurnContractTests
     /// that silently dropped the deltas would satisfy "fragments are not counted" for the wrong
     /// reason.
     /// </remarks>
-    private sealed record DriveResult(
-        RecordingLifecyclePublisher Events,
-        IReadOnlyList<IMessage> Streamed);
+    private sealed record DriveResult(RecordingLifecyclePublisher Events, IReadOnlyList<IMessage> Streamed);
 
-    private static Task<DriveResult> DriveAsync(Loop loop, Script script) => loop switch
-    {
-        Loop.Raw => DriveRawAsync(script),
-        Loop.Claude => DriveClaudeAsync(script),
-        Loop.Codex => DriveCodexAsync(script),
-        Loop.Copilot => DriveCopilotAsync(script),
-        _ => throw new ArgumentOutOfRangeException(nameof(loop)),
-    };
+    private static Task<DriveResult> DriveAsync(Loop loop, Script script) =>
+        loop switch
+        {
+            Loop.Raw => DriveRawAsync(script),
+            Loop.Claude => DriveClaudeAsync(script),
+            Loop.Codex => DriveCodexAsync(script),
+            Loop.Copilot => DriveCopilotAsync(script),
+            _ => throw new ArgumentOutOfRangeException(nameof(loop)),
+        };
 
     private static async Task<DriveResult> DriveRawAsync(Script script)
     {
@@ -417,10 +419,13 @@ public class LoopTurnContractTests
 
         var agent = new Mock<IStreamingAgent>();
         _ = agent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(() => Task.FromResult(Replay(RawMessages(script), tail)));
 
         var loop = new MultiTurnAgentLoop(
@@ -428,7 +433,8 @@ public class LoopTurnContractTests
             new FunctionRegistry(),
             ThreadId,
             defaultOptions: new GenerateReplyOptions { ModelId = ModelId },
-            lifecycleServices: Bundle(publisher));
+            lifecycleServices: Bundle(publisher)
+        );
 
         return new DriveResult(publisher, await DriveOneRunAsync(loop, script, tail, cts));
     }
@@ -445,7 +451,8 @@ public class LoopTurnContractTests
             threadId: ThreadId,
             defaultOptions: new GenerateReplyOptions { ModelId = ModelId },
             clientFactory: (_, _) => new ScriptedClaudeClient(ClaudeMessages(script), tail),
-            lifecycleServices: Bundle(publisher));
+            lifecycleServices: Bundle(publisher)
+        );
 
         return new DriveResult(publisher, await DriveOneRunAsync(loop, script, tail, cts));
     }
@@ -463,7 +470,8 @@ public class LoopTurnContractTests
             enabledTools: null,
             threadId: ThreadId,
             clientFactory: (_, _) => new ScriptedCodexClient(CodexEvents(script), tail),
-            lifecycleServices: Bundle(publisher));
+            lifecycleServices: Bundle(publisher)
+        );
 
         return new DriveResult(publisher, await DriveOneRunAsync(loop, script, tail, cts));
     }
@@ -477,11 +485,9 @@ public class LoopTurnContractTests
         var loop = new CopilotAgentLoop(
             new CopilotSdkOptions { Model = ModelId },
             threadId: ThreadId,
-            clientFactory: (_, _) => new ScriptedCopilotClient(
-                CopilotSessionId,
-                CopilotEvents(script),
-                tail),
-            lifecycleServices: Bundle(publisher));
+            clientFactory: (_, _) => new ScriptedCopilotClient(CopilotSessionId, CopilotEvents(script), tail),
+            lifecycleServices: Bundle(publisher)
+        );
 
         return new DriveResult(publisher, await DriveOneRunAsync(loop, script, tail, cts));
     }
@@ -500,7 +506,8 @@ public class LoopTurnContractTests
         MultiTurnAgentBase loop,
         Script script,
         ScriptTail? tail,
-        CancellationTokenSource cts)
+        CancellationTokenSource cts
+    )
     {
         var streamed = new List<IMessage>();
 
@@ -527,7 +534,8 @@ public class LoopTurnContractTests
                             streamed.Add(message);
                         }
                     },
-                    cts.Token);
+                    cts.Token
+                );
 
                 await drain.WaitAsync(TimeSpan.FromSeconds(20));
             }
@@ -563,33 +571,33 @@ public class LoopTurnContractTests
         {
             await task.WaitAsync(TimeSpan.FromSeconds(20));
         }
-        catch (Exception ex)
-            when (ex is InvalidOperationException or OperationCanceledException or TimeoutException)
-        {
-        }
+        catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledException or TimeoutException)
+        { }
     }
 
     private static MultiTurnLifecycleServices Bundle(RecordingLifecyclePublisher publisher) =>
         new() { Publisher = publisher, LifecycleStore = new InMemoryConversationStore() };
 
-    private static Ending EndingOf(Script script) => script switch
-    {
-        Script.DiesMidStream => Ending.Throws,
-        Script.ParksUntilCancelled => Ending.Parks,
-        _ => Ending.Normal,
-    };
+    private static Ending EndingOf(Script script) =>
+        script switch
+        {
+            Script.DiesMidStream => Ending.Throws,
+            Script.ParksUntilCancelled => Ending.Parks,
+            _ => Ending.Normal,
+        };
 
     private static IReadOnlyList<string> RunAndTurnEventsOf(RecordingLifecyclePublisher publisher) =>
-    [
-        .. publisher.EventTypes.Where(type =>
-            type is LifecycleEventTypes.RunStarted
-                or LifecycleEventTypes.TurnCompleted
-                or LifecycleEventTypes.RunCompleted),
-    ];
+        [
+            .. publisher.EventTypes.Where(type =>
+                type
+                    is LifecycleEventTypes.RunStarted
+                        or LifecycleEventTypes.TurnCompleted
+                        or LifecycleEventTypes.RunCompleted
+            ),
+        ];
 
     private static TPayload Single<TPayload>(RecordingLifecyclePublisher publisher, string eventType)
-        where TPayload : class =>
-        publisher.Payloads<TPayload>(eventType).Should().ContainSingle().Subject;
+        where TPayload : class => publisher.Payloads<TPayload>(eventType).Should().ContainSingle().Subject;
 
     #endregion
 
@@ -609,65 +617,72 @@ public class LoopTurnContractTests
         };
 
     private static IReadOnlyList<IMessage> Deltas() =>
-    [
-        new TextUpdateMessage { Text = FirstFragment, Role = Role.Assistant },
-        new TextUpdateMessage { Text = SecondFragment, Role = Role.Assistant },
-    ];
+        [
+            new TextUpdateMessage { Text = FirstFragment, Role = Role.Assistant },
+            new TextUpdateMessage { Text = SecondFragment, Role = Role.Assistant },
+        ];
 
     /// <summary>
     /// The raw loop's script. Its own <c>MessageUpdateJoinerMiddleware</c> turns the deltas back
     /// into the finalized <see cref="TextMessage"/>, which is why the streamed variant carries no
     /// complete text message of its own.
     /// </summary>
-    private static IReadOnlyList<IMessage> RawMessages(Script script) => script switch
-    {
-        Script.WholeAnswer => [Answered(), UsageReport()],
-        Script.FragmentedAnswer => [.. Deltas(), UsageReport()],
-        _ => [.. Deltas()],
-    };
+    private static IReadOnlyList<IMessage> RawMessages(Script script) =>
+        script switch
+        {
+            Script.WholeAnswer => [Answered(), UsageReport()],
+            Script.FragmentedAnswer => [.. Deltas(), UsageReport()],
+            _ => [.. Deltas()],
+        };
 
     /// <summary>
     /// Claude's script. The SDK finalizes its own text, so the streamed variant carries the deltas
     /// and the complete message; <see cref="ResultEventMessage"/> is the terminator the loop reads.
     /// </summary>
-    private static IReadOnlyList<IMessage> ClaudeMessages(Script script) => script switch
-    {
-        Script.WholeAnswer => [Answered(), UsageReport(), new ResultEventMessage { IsError = false }],
-        Script.FragmentedAnswer =>
-            [.. Deltas(), Answered(), UsageReport(), new ResultEventMessage { IsError = false }],
-        _ => [.. Deltas()],
-    };
+    private static IReadOnlyList<IMessage> ClaudeMessages(Script script) =>
+        script switch
+        {
+            Script.WholeAnswer => [Answered(), UsageReport(), new ResultEventMessage { IsError = false }],
+            Script.FragmentedAnswer =>
+            [
+                .. Deltas(),
+                Answered(),
+                UsageReport(),
+                new ResultEventMessage { IsError = false },
+            ],
+            _ => [.. Deltas()],
+        };
 
-    private const string CodexThreadStarted =
-        """{"type":"thread.started","thread_id":"thread_loop_contract"}""";
+    private const string CodexThreadStarted = """{"type":"thread.started","thread_id":"thread_loop_contract"}""";
 
     private static string CodexTurnCompleted() =>
         $$$"""
-        {"type":"turn.completed","usage":{"input_tokens":{{{PromptTokens}}},"cached_input_tokens":0,"output_tokens":{{{CompletionTokens}}}}}
-        """;
+            {"type":"turn.completed","usage":{"input_tokens":{{{PromptTokens}}},"cached_input_tokens":0,"output_tokens":{{{CompletionTokens}}}}}
+            """;
 
-    private static IReadOnlyList<CodexTurnEventEnvelope> CodexEvents(Script script) => script switch
-    {
-        Script.WholeAnswer =>
-        [
-            CodexEvent("thread.started", CodexThreadStarted),
-            CodexEvent("item.completed", CodexAgentMessage("item.completed", Answer)),
-            CodexEvent("turn.completed", CodexTurnCompleted()),
-        ],
-        Script.FragmentedAnswer =>
-        [
-            CodexEvent("thread.started", CodexThreadStarted),
-            CodexEvent("item.updated", CodexAgentMessage("item.updated", FirstFragment)),
-            CodexEvent("item.updated", CodexAgentMessage("item.updated", Answer)),
-            CodexEvent("item.completed", CodexAgentMessage("item.completed", Answer)),
-            CodexEvent("turn.completed", CodexTurnCompleted()),
-        ],
-        _ =>
-        [
-            CodexEvent("thread.started", CodexThreadStarted),
-            CodexEvent("item.updated", CodexAgentMessage("item.updated", FirstFragment)),
-        ],
-    };
+    private static IReadOnlyList<CodexTurnEventEnvelope> CodexEvents(Script script) =>
+        script switch
+        {
+            Script.WholeAnswer =>
+            [
+                CodexEvent("thread.started", CodexThreadStarted),
+                CodexEvent("item.completed", CodexAgentMessage("item.completed", Answer)),
+                CodexEvent("turn.completed", CodexTurnCompleted()),
+            ],
+            Script.FragmentedAnswer =>
+            [
+                CodexEvent("thread.started", CodexThreadStarted),
+                CodexEvent("item.updated", CodexAgentMessage("item.updated", FirstFragment)),
+                CodexEvent("item.updated", CodexAgentMessage("item.updated", Answer)),
+                CodexEvent("item.completed", CodexAgentMessage("item.completed", Answer)),
+                CodexEvent("turn.completed", CodexTurnCompleted()),
+            ],
+            _ =>
+            [
+                CodexEvent("thread.started", CodexThreadStarted),
+                CodexEvent("item.updated", CodexAgentMessage("item.updated", FirstFragment)),
+            ],
+        };
 
     /// <summary>
     /// A Codex agent-message item. <c>item.updated</c> carries the cumulative snapshot the CLI
@@ -675,38 +690,39 @@ public class LoopTurnContractTests
     /// </summary>
     private static string CodexAgentMessage(string eventType, string text) =>
         $$$"""
-        {"type":"{{{eventType}}}","item":{"id":"msg_1","type":"agent_message","text":"{{{text}}}"}}
-        """;
+            {"type":"{{{eventType}}}","item":{"id":"msg_1","type":"agent_message","text":"{{{text}}}"}}
+            """;
 
     private const string CopilotSessionId = "sess_loop_contract";
 
     private static string CopilotUsagePayload() =>
         $$$"""
-        {"usage":{"inputTokens":{{{PromptTokens}}},"outputTokens":{{{CompletionTokens}}},"cachedInputTokens":0}}
-        """;
+            {"usage":{"inputTokens":{{{PromptTokens}}},"outputTokens":{{{CompletionTokens}}},"cachedInputTokens":0}}
+            """;
 
-    private static IReadOnlyList<CopilotTurnEventEnvelope> CopilotEvents(Script script) => script switch
-    {
-        // Copilot has no "whole answer" wire form: the CLI only ever streams chunks and consolidates
-        // them at session/prompt/completed. One chunk is this provider's whole answer.
-        Script.WholeAnswer =>
-        [
-            CopilotSessionUpdate(CopilotSessionId, CopilotChunk(Answer)),
-            CopilotPromptCompletedEvent(CopilotUsagePayload()),
-        ],
-        Script.FragmentedAnswer =>
-        [
-            CopilotSessionUpdate(CopilotSessionId, CopilotChunk(FirstFragment)),
-            CopilotSessionUpdate(CopilotSessionId, CopilotChunk(SecondFragment)),
-            CopilotPromptCompletedEvent(CopilotUsagePayload()),
-        ],
-        _ => [CopilotSessionUpdate(CopilotSessionId, CopilotChunk(FirstFragment))],
-    };
+    private static IReadOnlyList<CopilotTurnEventEnvelope> CopilotEvents(Script script) =>
+        script switch
+        {
+            // Copilot has no "whole answer" wire form: the CLI only ever streams chunks and consolidates
+            // them at session/prompt/completed. One chunk is this provider's whole answer.
+            Script.WholeAnswer =>
+            [
+                CopilotSessionUpdate(CopilotSessionId, CopilotChunk(Answer)),
+                CopilotPromptCompletedEvent(CopilotUsagePayload()),
+            ],
+            Script.FragmentedAnswer =>
+            [
+                CopilotSessionUpdate(CopilotSessionId, CopilotChunk(FirstFragment)),
+                CopilotSessionUpdate(CopilotSessionId, CopilotChunk(SecondFragment)),
+                CopilotPromptCompletedEvent(CopilotUsagePayload()),
+            ],
+            _ => [CopilotSessionUpdate(CopilotSessionId, CopilotChunk(FirstFragment))],
+        };
 
     private static string CopilotChunk(string text) =>
         $$$"""
-        {"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{{{text}}}"}}
-        """;
+            {"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{{{text}}}"}}
+            """;
 
     #endregion
 
@@ -715,7 +731,8 @@ public class LoopTurnContractTests
     private static async IAsyncEnumerable<IMessage> Replay(
         IEnumerable<IMessage> messages,
         ScriptTail? tail,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var message in messages)
         {
@@ -736,8 +753,7 @@ public class LoopTurnContractTests
     /// </summary>
     private sealed class ScriptTail
     {
-        private readonly TaskCompletionSource _reached =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _reached = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private readonly Ending _ending;
         private readonly CancellationToken _parkToken;
@@ -863,16 +879,16 @@ public class LoopTurnContractTests
 
         public IAsyncEnumerable<IMessage> SendMessagesAsync(
             IEnumerable<IMessage> messages,
-            CancellationToken cancellationToken = default) => StreamAsync(cancellationToken);
+            CancellationToken cancellationToken = default
+        ) => StreamAsync(cancellationToken);
 
-        public IAsyncEnumerable<IMessage> SubscribeToMessagesAsync(
-            CancellationToken cancellationToken = default) => StreamAsync(cancellationToken);
+        public IAsyncEnumerable<IMessage> SubscribeToMessagesAsync(CancellationToken cancellationToken = default) =>
+            StreamAsync(cancellationToken);
 
-        public Task SendAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default)
-            => Task.CompletedTask;
+        public Task SendAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
 
-        public Task<bool> SendExitCommandAsync(CancellationToken cancellationToken = default)
-            => Task.FromResult(true);
+        public Task<bool> SendExitCommandAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
 
         public Task ShutdownAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
         {
@@ -889,7 +905,8 @@ public class LoopTurnContractTests
         public void Dispose() => IsRunning = false;
 
         private async IAsyncEnumerable<IMessage> StreamAsync(
-            [EnumeratorCancellation] CancellationToken cancellationToken)
+            [EnumeratorCancellation] CancellationToken cancellationToken
+        )
         {
             CurrentSession = new SessionInfo
             {
@@ -929,9 +946,8 @@ public class LoopTurnContractTests
         public string DependencyState => "ready";
 
         public void ConfigureDynamicToolExecutor(
-            Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor)
-        {
-        }
+            Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor
+        ) { }
 
         public Task StartOrResumeThreadAsync(CodexBridgeInitOptions options, CancellationToken ct = default)
         {
@@ -940,12 +956,13 @@ public class LoopTurnContractTests
             return Task.CompletedTask;
         }
 
-        public Task EnsureStartedAsync(CodexBridgeInitOptions options, CancellationToken ct = default)
-            => StartOrResumeThreadAsync(options, ct);
+        public Task EnsureStartedAsync(CodexBridgeInitOptions options, CancellationToken ct = default) =>
+            StartOrResumeThreadAsync(options, ct);
 
         public async IAsyncEnumerable<CodexTurnEventEnvelope> RunStreamingAsync(
             string input,
-            [EnumeratorCancellation] CancellationToken ct = default)
+            [EnumeratorCancellation] CancellationToken ct = default
+        )
         {
             foreach (var item in _events)
             {
@@ -974,10 +991,7 @@ public class LoopTurnContractTests
         private readonly IReadOnlyList<CopilotTurnEventEnvelope> _events;
         private readonly ScriptTail _tail;
 
-        public ScriptedCopilotClient(
-            string sessionId,
-            IReadOnlyList<CopilotTurnEventEnvelope> events,
-            ScriptTail tail)
+        public ScriptedCopilotClient(string sessionId, IReadOnlyList<CopilotTurnEventEnvelope> events, ScriptTail tail)
         {
             _sessionId = sessionId;
             _events = events;
@@ -991,9 +1005,8 @@ public class LoopTurnContractTests
         public string DependencyState => "ready";
 
         public void ConfigureDynamicToolExecutor(
-            Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor)
-        {
-        }
+            Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor
+        ) { }
 
         public Task StartOrResumeSessionAsync(CopilotBridgeInitOptions options, CancellationToken ct = default)
         {
@@ -1002,12 +1015,13 @@ public class LoopTurnContractTests
             return Task.CompletedTask;
         }
 
-        public Task EnsureStartedAsync(CopilotBridgeInitOptions options, CancellationToken ct = default)
-            => StartOrResumeSessionAsync(options, ct);
+        public Task EnsureStartedAsync(CopilotBridgeInitOptions options, CancellationToken ct = default) =>
+            StartOrResumeSessionAsync(options, ct);
 
         public async IAsyncEnumerable<CopilotTurnEventEnvelope> RunStreamingAsync(
             string input,
-            [EnumeratorCancellation] CancellationToken ct = default)
+            [EnumeratorCancellation] CancellationToken ct = default
+        )
         {
             foreach (var item in _events)
             {

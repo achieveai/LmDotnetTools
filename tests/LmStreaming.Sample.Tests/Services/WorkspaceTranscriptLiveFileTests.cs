@@ -44,7 +44,8 @@ public sealed class WorkspaceTranscriptLiveFileTests
         var shell = LocalShellWorkspaceBrowser.FindPosixShell();
         Skip.If(
             shell is null,
-            "No POSIX shell (sh) on this machine, so the writer's real append script cannot be run.");
+            "No POSIX shell (sh) on this machine, so the writer's real append script cannot be run."
+        );
 
         var root = Path.Combine(Path.GetTempPath(), LiveDirectoryName);
         if (Directory.Exists(root))
@@ -68,19 +69,22 @@ public sealed class WorkspaceTranscriptLiveFileTests
             new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance),
             NullLoggerFactory.Instance,
             TimeSpan.Zero,
-            TimeSpan.Zero);
+            TimeSpan.Zero
+        );
 
         var leaf = WorkspaceTranscriptLine.MainFileLeaf(Title, WorkspaceTranscriptLine.ShortId(ThreadId));
         var mainFile = Path.Combine(
             root,
             ConversationTranscriptWriter.TranscriptDirectory,
-            leaf + ConversationTranscriptWriter.TranscriptExtension);
+            leaf + ConversationTranscriptWriter.TranscriptExtension
+        );
         var agentFile = Path.Combine(
             root,
             ConversationTranscriptWriter.TranscriptDirectory,
             leaf + ConversationTranscriptWriter.AgentsDirectorySuffix,
             WorkspaceTranscriptLine.AgentFileLeaf(AgentName, WorkspaceTranscriptLine.ShortId(AgentId))
-                + ConversationTranscriptWriter.TranscriptExtension);
+                + ConversationTranscriptWriter.TranscriptExtension
+        );
 
         mirror.Attach(agent);
         await PublishUntilAsync(agent, () => LineCount(mainFile) >= 4, "the first turn never reached the file");
@@ -100,18 +104,18 @@ public sealed class WorkspaceTranscriptLiveFileTests
         _ = await VerifyChainAsync(agentFile, mainUids);
 
         // The newest turn is present, not just the first flush's rows.
-        _ = string
-            .Join('\n', ReadRecords(mainFile))
+        _ = string.Join('\n', ReadRecords(mainFile))
             .Should()
             .Contain("the-answer", "the second turn's content must be in the file");
 
         // And the opt-out the feature ships with is on disk beside the transcript.
-        _ = File
-            .Exists(
+        _ = File.Exists(
                 Path.Combine(
                     root,
                     ConversationTranscriptWriter.TranscriptDirectory,
-                    "." + ConversationTranscriptWriter.GitignoreName))
+                    "." + ConversationTranscriptWriter.GitignoreName
+                )
+            )
             .Should()
             .BeTrue();
     }
@@ -124,9 +128,7 @@ public sealed class WorkspaceTranscriptLiveFileTests
     /// when <paramref name="anchors"/> is supplied, points at a line of the file this one descends from.
     /// </summary>
     /// <returns>The file's uids, in order.</returns>
-    private static async Task<IReadOnlyList<string>> VerifyChainAsync(
-        string file,
-        IReadOnlyCollection<string>? anchors)
+    private static async Task<IReadOnlyList<string>> VerifyChainAsync(string file, IReadOnlyCollection<string>? anchors)
     {
         var lines = await ReadSettledRecordsAsync(file);
         _ = lines.Should().NotBeEmpty($"{file} should hold at least one record");
@@ -188,7 +190,8 @@ public sealed class WorkspaceTranscriptLiveFileTests
                 file,
                 FileMode.Open,
                 FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete);
+                FileShare.ReadWrite | FileShare.Delete
+            );
             using var reader = new StreamReader(stream);
 
             var records = new List<string>();
@@ -259,7 +262,8 @@ public sealed class WorkspaceTranscriptLiveFileTests
                 Properties = ImmutableDictionary<string, object>
                     .Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, WorkspaceId)
                     .Add("title", Title),
-            });
+            }
+        );
 
     private static async Task SeedSubAgentAsync(IConversationStore store)
     {
@@ -280,15 +284,19 @@ public sealed class WorkspaceTranscriptLiveFileTests
                         Status: SubAgentStatus.Completed,
                         ThreadId: childThreadId,
                         LastActivityUtc: DateTimeOffset.UnixEpoch,
-                        TerminalAtUtc: DateTimeOffset.UnixEpoch)),
-            });
+                        TerminalAtUtc: DateTimeOffset.UnixEpoch
+                    )
+                ),
+            }
+        );
 
         await store.AppendMessagesAsync(
             childThreadId,
             [
                 Msg("s1", 1, "TextMessage", "User", "\"look it up\"", childThreadId),
                 Msg("s2", 2, "TextMessage", "Assistant", "\"found it\"", childThreadId),
-            ]);
+            ]
+        );
     }
 
     /// <summary>A full first turn: question, reasoning, a tool call and its result.</summary>
@@ -301,10 +309,7 @@ public sealed class WorkspaceTranscriptLiveFileTests
         ];
 
     private static PersistedMessage[] SecondTurn() =>
-        [
-            Msg("m5", 5, "TextMessage", "Assistant", "\"the-answer\""),
-            Msg("m6", 6, "TextMessage", "User", "\"thanks\""),
-        ];
+        [Msg("m5", 5, "TextMessage", "Assistant", "\"the-answer\""), Msg("m6", 6, "TextMessage", "User", "\"thanks\"")];
 
     private static PersistedMessage Msg(
         string id,
@@ -312,7 +317,8 @@ public sealed class WorkspaceTranscriptLiveFileTests
         string messageType,
         string role,
         string messageJson,
-        string threadId = ThreadId) =>
+        string threadId = ThreadId
+    ) =>
         new()
         {
             Id = id,

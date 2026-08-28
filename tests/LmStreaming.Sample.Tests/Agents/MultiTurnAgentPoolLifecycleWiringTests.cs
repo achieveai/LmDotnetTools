@@ -142,10 +142,7 @@ public class MultiTurnAgentPoolLifecycleWiringTests
 
     /// <summary>A bundle whose approval half is armed — the only half the warning is about.</summary>
     private static MultiTurnLifecycleServices Gated() =>
-        new()
-        {
-            Approval = new ToolInvocationPreparer(new ToolApprovalOptions { RequireApproval = true }),
-        };
+        new() { Approval = new ToolInvocationPreparer(new ToolApprovalOptions { RequireApproval = true }) };
 
     /// <summary>Keeps rendered warnings so a test can assert the exact wording, and the count.</summary>
     private sealed class CapturingLogger : ILogger<MultiTurnAgentPool>

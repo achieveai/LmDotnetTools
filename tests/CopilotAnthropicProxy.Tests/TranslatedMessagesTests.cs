@@ -219,10 +219,7 @@ public class TranslatedMessagesTests
             {
                 model = "gpt-5.3-codex",
                 max_tokens = 1,
-                messages = new[]
-                {
-                    new { role = "user", content = new[] { new { type = "text", text = "Hi" } } },
-                },
+                messages = new[] { new { role = "user", content = new[] { new { type = "text", text = "Hi" } } } },
             }
         );
 
@@ -303,10 +300,7 @@ public class TranslatedMessagesTests
         await using var factory = Factory(
             (_, _) =>
                 Task.FromResult(
-                    TestUpstream.Json(
-                        "{\"error\":{\"message\":\"" + huge + "\"}}",
-                        HttpStatusCode.ServiceUnavailable
-                    )
+                    TestUpstream.Json("{\"error\":{\"message\":\"" + huge + "\"}}", HttpStatusCode.ServiceUnavailable)
                 )
         );
         using var client = factory.CreateClient();
@@ -330,10 +324,7 @@ public class TranslatedMessagesTests
         await using var factory = Factory(
             (_, _) =>
                 Task.FromResult(
-                    TestUpstream.Json(
-                        """{"detail":{"trace":"secret-internal-hostname"}}""",
-                        HttpStatusCode.BadGateway
-                    )
+                    TestUpstream.Json("""{"detail":{"trace":"secret-internal-hostname"}}""", HttpStatusCode.BadGateway)
                 )
         );
         using var client = factory.CreateClient();
@@ -495,7 +486,8 @@ public class TranslatedMessagesTests
 
         body.Should().NotBeNull();
         var forwarded = body!;
-        forwarded.Should()
+        forwarded
+            .Should()
             .NotContain("thinking", "an unsigned thinking block cannot be replayed and must not be forwarded");
         forwarded.Should().NotContain("weighing the options");
 
@@ -522,11 +514,7 @@ public class TranslatedMessagesTests
 
         var response = await client.PostAsJsonAsync(
             "/v1/messages/count_tokens",
-            new
-            {
-                model = "gpt-5.3-codex",
-                messages = new[] { new { role = "user", content = "Hi" } },
-            }
+            new { model = "gpt-5.3-codex", messages = new[] { new { role = "user", content = "Hi" } } }
         );
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
@@ -585,12 +573,17 @@ public class TranslatedMessagesTests
             "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
         );
 
-        await using var factory = Factory((_, _) => Task.FromResult(TestUpstream.SseStream(gated)), keepAliveSeconds: 1);
+        await using var factory = Factory(
+            (_, _) => Task.FromResult(TestUpstream.SseStream(gated)),
+            keepAliveSeconds: 1
+        );
         using var client = factory.CreateClient();
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
         {
-            Content = JsonContent.Create(TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)),
+            Content = JsonContent.Create(
+                TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)
+            ),
         };
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
         await using var body = await response.Content.ReadAsStreamAsync();
@@ -602,7 +595,10 @@ public class TranslatedMessagesTests
         );
         seen.Should().Contain("event: message_start");
         seen.Should()
-            .Contain("event: ping", "a silent upstream must be covered by pings or an intermediary drops the connection");
+            .Contain(
+                "event: ping",
+                "a silent upstream must be covered by pings or an intermediary drops the connection"
+            );
 
         gated.Release();
         var rest = await new StreamReader(body).ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
@@ -626,7 +622,8 @@ public class TranslatedMessagesTests
         );
 
         response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
-        response.Content.Headers.ContentType!.MediaType.Should()
+        response
+            .Content.Headers.ContentType!.MediaType.Should()
             .Be("application/json", "the reply is an error envelope, not the SSE stream that was asked for");
 
         using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
@@ -688,11 +685,7 @@ public class TranslatedMessagesTests
         Frames(stream)
             .Select(f => f.Event)
             .Should()
-            .Equal(
-                "message_start",
-                "content_block_start",
-                "content_block_delta"
-            );
+            .Equal("message_start", "content_block_start", "content_block_delta");
     }
 
     [Fact]
@@ -720,7 +713,8 @@ public class TranslatedMessagesTests
         error.RootElement.GetProperty("error").GetProperty("type").GetString().Should().Be("api_error");
 
         await stalled.Cancelled.WaitAsync(TimeSpan.FromSeconds(10));
-        stalled.Cancelled.IsCompletedSuccessfully.Should()
+        stalled
+            .Cancelled.IsCompletedSuccessfully.Should()
             .BeTrue("the idle deadline must reach the upstream read, not merely abandon it");
     }
 
@@ -760,7 +754,9 @@ public class TranslatedMessagesTests
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
         {
-            Content = JsonContent.Create(TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)),
+            Content = JsonContent.Create(
+                TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)
+            ),
         };
 
         var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);

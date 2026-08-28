@@ -28,15 +28,14 @@ public sealed class MockProviderHostLifetime : IHostedService, IAsyncDisposable
     private bool _disposed;
 
     public MockProviderHostLifetime(ILogger<MockProviderHostLifetime> logger)
-        : this(LoadDefaultScenario, logger)
-    {
-    }
+        : this(LoadDefaultScenario, logger) { }
 
     // Test-only constructor: lets tests inject a stub responder factory so they can verify
     // the lifetime contract without parsing JSON or hitting the filesystem.
     internal MockProviderHostLifetime(
         Func<ScriptedSseResponder> responderFactory,
-        ILogger<MockProviderHostLifetime> logger)
+        ILogger<MockProviderHostLifetime> logger
+    )
     {
         _responderFactory = responderFactory ?? throw new ArgumentNullException(nameof(responderFactory));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -59,9 +58,7 @@ public sealed class MockProviderHostLifetime : IHostedService, IAsyncDisposable
         try
         {
             var responder = _responderFactory();
-            _app = MockProviderHostBuilder.Build(
-                responder,
-                urls: ["http://127.0.0.1:0"]);
+            _app = MockProviderHostBuilder.Build(responder, urls: ["http://127.0.0.1:0"]);
 
             await _app.StartAsync(cancellationToken).ConfigureAwait(false);
 
@@ -71,20 +68,20 @@ public sealed class MockProviderHostLifetime : IHostedService, IAsyncDisposable
             if (BaseUrl is null)
             {
                 _logger.LogWarning(
-                    "Mock provider host started but did not report a bound URL; *-mock providers will be unavailable");
+                    "Mock provider host started but did not report a bound URL; *-mock providers will be unavailable"
+                );
                 return;
             }
 
             _logger.LogInformation(
                 "Mock provider host running at {BaseUrl} — *-mock providers are now selectable",
-                BaseUrl);
+                BaseUrl
+            );
         }
         catch (Exception ex)
         {
             // Don't propagate: a failed mock host is recoverable (just disables three providers).
-            _logger.LogWarning(
-                ex,
-                "Mock provider host failed to start; *-mock providers will be unavailable");
+            _logger.LogWarning(ex, "Mock provider host failed to start; *-mock providers will be unavailable");
 
             if (_app is not null)
             {

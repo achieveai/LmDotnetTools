@@ -346,10 +346,7 @@ internal sealed class EvalCorpusSweep
     private RecordedJudgeGrade? RecordedGrade(Candidate candidate, ArtifactMemo artifacts)
     {
         if (
-            !candidate.Metadata.TryGetValue(
-                DaemonCorpusReader.ReviewRunIdMetadataKey,
-                out var reviewRunIdText
-            )
+            !candidate.Metadata.TryGetValue(DaemonCorpusReader.ReviewRunIdMetadataKey, out var reviewRunIdText)
             || !long.TryParse(
                 reviewRunIdText,
                 System.Globalization.NumberStyles.Integer,
@@ -367,20 +364,11 @@ internal sealed class EvalCorpusSweep
         foreach (
             var artifact in artifacts
                 .For(reviewRunId)
-                .Where(a =>
-                    string.Equals(
-                        a.ArtifactKind,
-                        JudgeAgent.JudgeArtifactKind,
-                        StringComparison.Ordinal
-                    )
-                )
+                .Where(a => string.Equals(a.ArtifactKind, JudgeAgent.JudgeArtifactKind, StringComparison.Ordinal))
                 .OrderByDescending(a => a.Id)
         )
         {
-            var payload = EvalArtifactJson.TryRead<JudgeArtifactPayload>(
-                artifact.Payload,
-                out var failure
-            );
+            var payload = EvalArtifactJson.TryRead<JudgeArtifactPayload>(artifact.Payload, out var failure);
 
             if (payload is null)
             {
@@ -425,9 +413,7 @@ internal sealed class EvalCorpusSweep
                 return null;
             }
 
-            if (
-                !string.Equals(payload.VariantId, candidate.VariantId, StringComparison.Ordinal)
-            )
+            if (!string.Equals(payload.VariantId, candidate.VariantId, StringComparison.Ordinal))
             {
                 continue;
             }

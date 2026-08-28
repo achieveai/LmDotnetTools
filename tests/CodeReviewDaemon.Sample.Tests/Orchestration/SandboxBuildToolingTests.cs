@@ -29,13 +29,18 @@ public sealed class SandboxBuildToolingTests
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
-        var runner = new FakeSandboxCommandRunner()
-            .OnArgvContainsFirst("dotnet --version", new SandboxCommandResult(127, "", "dotnet: not found"));
+        var runner = new FakeSandboxCommandRunner().OnArgvContainsFirst(
+            "dotnet --version",
+            new SandboxCommandResult(127, "", "dotnet: not found")
+        );
         var factory = new FakeReviewAgentLoopFactory();
         var executor = BuildExecutor(store, factory, runner);
 
         await executor.ExecuteStageAsync(
-            ReviewStage.Reviewed, SeedRunWithContext(store, "270"), CancellationToken.None);
+            ReviewStage.Reviewed,
+            SeedRunWithContext(store, "270"),
+            CancellationToken.None
+        );
 
         var prompt = factory.CreatedProfiles[0].SystemPrompt;
         prompt.Should().Contain("no .NET SDK is installed");
@@ -49,13 +54,18 @@ public sealed class SandboxBuildToolingTests
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
-        var runner = new FakeSandboxCommandRunner()
-            .OnArgvContainsFirst("dotnet --version", new SandboxCommandResult(0, "9.0.100\n", ""));
+        var runner = new FakeSandboxCommandRunner().OnArgvContainsFirst(
+            "dotnet --version",
+            new SandboxCommandResult(0, "9.0.100\n", "")
+        );
         var factory = new FakeReviewAgentLoopFactory();
         var executor = BuildExecutor(store, factory, runner);
 
         await executor.ExecuteStageAsync(
-            ReviewStage.Reviewed, SeedRunWithContext(store, "270"), CancellationToken.None);
+            ReviewStage.Reviewed,
+            SeedRunWithContext(store, "270"),
+            CancellationToken.None
+        );
 
         var prompt = factory.CreatedProfiles[0].SystemPrompt;
         prompt.Should().Contain("9.0.100", "the reviewer is told WHICH SDK it has, not merely that it has one");
@@ -82,13 +92,18 @@ public sealed class SandboxBuildToolingTests
             --------------------------------------------------------------------------------
             9.0.100
             """;
-        var runner = new FakeSandboxCommandRunner()
-            .OnArgvContainsFirst("dotnet --version", new SandboxCommandResult(0, firstRun, ""));
+        var runner = new FakeSandboxCommandRunner().OnArgvContainsFirst(
+            "dotnet --version",
+            new SandboxCommandResult(0, firstRun, "")
+        );
         var factory = new FakeReviewAgentLoopFactory();
         var executor = BuildExecutor(store, factory, runner);
 
         await executor.ExecuteStageAsync(
-            ReviewStage.Reviewed, SeedRunWithContext(store, "270"), CancellationToken.None);
+            ReviewStage.Reviewed,
+            SeedRunWithContext(store, "270"),
+            CancellationToken.None
+        );
 
         // The status sentence is interpolated verbatim into the reviewer's system prompt, so an unfiltered
         // stdout spends its context on a telemetry notice and buries the one fact the line exists to carry.
@@ -106,12 +121,16 @@ public sealed class SandboxBuildToolingTests
         // A container carrying the `dotnet` muxer but no SDK: the command runs, prints to stdout, and fails.
         var runner = new FakeSandboxCommandRunner().OnArgvContainsFirst(
             "dotnet --version",
-            new SandboxCommandResult(145, "You must install or update .NET to run this application.\n", ""));
+            new SandboxCommandResult(145, "You must install or update .NET to run this application.\n", "")
+        );
         var factory = new FakeReviewAgentLoopFactory();
         var executor = BuildExecutor(store, factory, runner);
 
         await executor.ExecuteStageAsync(
-            ReviewStage.Reviewed, SeedRunWithContext(store, "270"), CancellationToken.None);
+            ReviewStage.Reviewed,
+            SeedRunWithContext(store, "270"),
+            CancellationToken.None
+        );
 
         // Reading stdout without checking the exit code would announce that sentence to the reviewer as its
         // SDK version, and send it off to run builds that cannot work.
@@ -125,13 +144,18 @@ public sealed class SandboxBuildToolingTests
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
-        var runner = new FakeSandboxCommandRunner()
-            .OnArgvContainsFirst("dotnet --version", new SandboxCommandResult(0, "  \n", ""));
+        var runner = new FakeSandboxCommandRunner().OnArgvContainsFirst(
+            "dotnet --version",
+            new SandboxCommandResult(0, "  \n", "")
+        );
         var factory = new FakeReviewAgentLoopFactory();
         var executor = BuildExecutor(store, factory, runner);
 
         await executor.ExecuteStageAsync(
-            ReviewStage.Reviewed, SeedRunWithContext(store, "270"), CancellationToken.None);
+            ReviewStage.Reviewed,
+            SeedRunWithContext(store, "270"),
+            CancellationToken.None
+        );
 
         // Trusting the exit code alone yields "a .NET SDK is available (dotnet )" — a claim with a hole where
         // its evidence should be. An exit code with no version behind it is not a detection.
@@ -160,8 +184,10 @@ public sealed class SandboxBuildToolingTests
         prompt.Should().NotContain("do NOT spend turns");
         prompt.Should().Contain("try the build once");
         // And a probe that cannot run must never cost the review.
-        store.GetArtifacts(run.Id)
-            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        store
+            .GetArtifacts(run.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     [Fact]
@@ -173,9 +199,15 @@ public sealed class SandboxBuildToolingTests
         var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), runner);
 
         await executor.ExecuteStageAsync(
-            ReviewStage.Reviewed, SeedRunWithContext(store, "270"), CancellationToken.None);
+            ReviewStage.Reviewed,
+            SeedRunWithContext(store, "270"),
+            CancellationToken.None
+        );
         await executor.ExecuteStageAsync(
-            ReviewStage.Reviewed, SeedRunWithContext(store, "271"), CancellationToken.None);
+            ReviewStage.Reviewed,
+            SeedRunWithContext(store, "271"),
+            CancellationToken.None
+        );
 
         // A detected verdict is process-lifetime configuration and is cached. A FAILED READ is not a verdict:
         // caching it lets one transient gateway hiccup disable build-verification for every review this
@@ -188,20 +220,29 @@ public sealed class SandboxBuildToolingTests
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
-        var runner = new FakeSandboxCommandRunner()
-            .OnArgvContainsFirst("dotnet --version", new SandboxCommandResult(0, "9.0.100\n", ""));
+        var runner = new FakeSandboxCommandRunner().OnArgvContainsFirst(
+            "dotnet --version",
+            new SandboxCommandResult(0, "9.0.100\n", "")
+        );
         var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), runner);
 
         await executor.ExecuteStageAsync(
-            ReviewStage.Reviewed, SeedRunWithContext(store, "270"), CancellationToken.None);
+            ReviewStage.Reviewed,
+            SeedRunWithContext(store, "270"),
+            CancellationToken.None
+        );
         await executor.ExecuteStageAsync(
-            ReviewStage.Reviewed, SeedRunWithContext(store, "271"), CancellationToken.None);
+            ReviewStage.Reviewed,
+            SeedRunWithContext(store, "271"),
+            CancellationToken.None
+        );
 
         // The image is process-lifetime gateway configuration, like the marketplace catalog. Re-probing per
         // review adds a blocking round-trip to every run for an answer that cannot have changed.
-        runner.Commands
-            .Count(c => string.Join(' ', c.Argv).Contains("dotnet --version", StringComparison.Ordinal))
-            .Should().Be(1);
+        runner
+            .Commands.Count(c => string.Join(' ', c.Argv).Contains("dotnet --version", StringComparison.Ordinal))
+            .Should()
+            .Be(1);
     }
 
     [Fact]
@@ -224,8 +265,10 @@ public sealed class SandboxBuildToolingTests
         // timeout-shaped TaskCanceledException out faults a review the probe promises never to cost.
         runner.ProbeAttempts.Should().Be(1, "the site under test is only reached if the probe actually ran");
         factory.CreatedProfiles[0].SystemPrompt.Should().Contain("could not determine");
-        store.GetArtifacts(run.Id)
-            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        store
+            .GetArtifacts(run.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     [Fact]
@@ -248,9 +291,12 @@ public sealed class SandboxBuildToolingTests
         // OperationCanceledException raised a few lines later, and still writes no artifact. The SWALLOW's own
         // log line is the only observable that tells the two apart.
         logs.Capturing.WarningCount(TimedOutProbeLog)
-            .Should().Be(0, "a caller-requested cancel is not a timeout and must not be reported as one");
-        store.GetArtifacts(run.Id)
-            .Should().NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+            .Should()
+            .Be(0, "a caller-requested cancel is not a timeout and must not be reported as one");
+        store
+            .GetArtifacts(run.Id)
+            .Should()
+            .NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     /// <summary>The probe swallow's own log line — the observable that separates it from a real cancel.</summary>
@@ -260,7 +306,8 @@ public sealed class SandboxBuildToolingTests
         ReviewStore store,
         FakeReviewAgentLoopFactory factory,
         ISandboxCommandRunner runner,
-        ILoggerFactory? loggerFactory = null) =>
+        ILoggerFactory? loggerFactory = null
+    ) =>
         new(
             store,
             factory,
@@ -268,7 +315,8 @@ public sealed class SandboxBuildToolingTests
             new FakeSandboxFileSystem(),
             new CodeReviewDaemonOptions(),
             [new FakeReviewCommentPublisher("github")],
-            loggerFactory ?? NullLoggerFactory.Instance);
+            loggerFactory ?? NullLoggerFactory.Instance
+        );
 
     /// <summary>
     /// Seeds a run plus the 'review-context' artifact the Reviewed stage reads, so a test can drive that stage
@@ -276,37 +324,49 @@ public sealed class SandboxBuildToolingTests
     /// </summary>
     private static ReviewRun SeedRunWithContext(ReviewStore store, string prId)
     {
-        var repoId = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "repo-stable-1",
-        });
-        var run = store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = prId,
-            HeadSha = $"head-{prId}",
-            BaseSha = $"base-{prId}",
-            TriggerWatermark = $"wm-{prId}",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "collect-only",
-            Stage = ReviewStage.Discovered,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        });
+        var repoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-stable-1",
+            }
+        );
+        var run = store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = prId,
+                HeadSha = $"head-{prId}",
+                BaseSha = $"base-{prId}",
+                TriggerWatermark = $"wm-{prId}",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Running,
+                PrLifecycleState = PrLifecycleState.Open,
+            }
+        );
 
-        _ = store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.ContextArtifactKind,
-            Provider = "github",
-            Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
-                run.PrId, run.BaseSha, run.HeadSha, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;")),
-        });
+        _ = store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ContextArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new ContextArtifactPayload(
+                        run.PrId,
+                        run.BaseSha,
+                        run.HeadSha,
+                        "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;"
+                    )
+                ),
+            }
+        );
 
         return run;
     }

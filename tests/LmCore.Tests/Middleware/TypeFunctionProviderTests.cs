@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class TypeFunctionProviderTests
@@ -282,7 +283,11 @@ public class TypeFunctionProviderTests
 
         // Test execution through handler
         var calculateHandler = handlers["calculate"];
-        var result = await calculateHandler(JsonSerializer.Serialize(new { value = 5.0, factor = 3.0 }), new ToolCallContext(), CancellationToken.None);
+        var result = await calculateHandler(
+            JsonSerializer.Serialize(new { value = 5.0, factor = 3.0 }),
+            new ToolCallContext(),
+            CancellationToken.None
+        );
         Assert.Equal(15.0, JsonSerializer.Deserialize<double>(result.ResultText));
     }
 
@@ -344,11 +349,7 @@ public class TypeFunctionProviderTests
         var function = provider.GetFunctions().First(f => f.Contract.Name == "bind-int");
 
         // Act
-        var result = await function.Handler(
-            """{"taskId":"1"}""",
-            new ToolCallContext(),
-            CancellationToken.None
-        );
+        var result = await function.Handler("""{"taskId":"1"}""", new ToolCallContext(), CancellationToken.None);
 
         // Assert
         Assert.False(result is ToolHandlerResult.Resolved { Payload.IsError: true });

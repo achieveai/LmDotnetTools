@@ -38,7 +38,8 @@ public interface IConversationOwnershipStore
     Task<IReadOnlyList<string>> ListThreadIdsByTenantAsync(
         string tenantId,
         IReadOnlyCollection<string>? threadIds,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Moves conversations out of <paramref name="fromTenantId"/> into
@@ -60,5 +61,6 @@ public interface IConversationOwnershipStore
         string toTenantId,
         string? ownerUserId,
         IReadOnlyCollection<string>? threadIds,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 }

@@ -79,7 +79,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
     public FileTailTriggerSource(
         IReadOnlyList<string> allowedRoots,
         FileTailContentMode contentMode = FileTailContentMode.Redacted,
-        ILogger? logger = null)
+        ILogger? logger = null
+    )
     {
         ArgumentNullException.ThrowIfNull(allowedRoots);
         _contentMode = contentMode;
@@ -91,14 +92,18 @@ public sealed class FileTailTriggerSource : ITriggerSource
 
         // Canonicalize (and resolve any reparse point) up front so every arm-time comparison is
         // against a real, symlink-resolved root rather than a lexical one.
-        _allowedRoots = [.. allowedRoots.Select(r => Path.TrimEndingDirectorySeparator(ResolveRealPath(Path.GetFullPath(r))))];
+        _allowedRoots =
+        [
+            .. allowedRoots.Select(r => Path.TrimEndingDirectorySeparator(ResolveRealPath(Path.GetFullPath(r)))),
+        ];
     }
 
     /// <inheritdoc />
     public ValueTask<IArmedTrigger> ArmAsync(
         TriggerArmRequest request,
         ITriggerEventSink eventSink,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(eventSink);
@@ -126,14 +131,14 @@ public sealed class FileTailTriggerSource : ITriggerSource
                 // backtracking regex allows; surface that as a caller-correctable arg error too.
                 throw new ArgumentException(
                     $"file_tail 'pattern' uses a construct unsupported by non-backtracking matching: {ex.Message}",
-                    ex);
+                    ex
+                );
             }
         }
 
         // WaitId identifies the wait to the runtime — never the file path — so nothing that reads
         // this handle's WaitId (logs, diagnostics, a future ListWaits enrichment) can leak it.
-        var handle = new FileTailArmedTrigger(
-            request.WaitId, canonical, regex, eventSink, _contentMode, _logger);
+        var handle = new FileTailArmedTrigger(request.WaitId, canonical, regex, eventSink, _contentMode, _logger);
         return ValueTask.FromResult<IArmedTrigger>(handle);
     }
 
@@ -151,8 +156,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
         var real = ResolveRealPath(lexical);
 
         var inRoot = _allowedRoots.Any(root =>
-            real.Equals(root, PathComparison)
-            || real.StartsWith(root + Path.DirectorySeparatorChar, PathComparison));
+            real.Equals(root, PathComparison) || real.StartsWith(root + Path.DirectorySeparatorChar, PathComparison)
+        );
 
         if (!inRoot)
         {
@@ -180,7 +185,10 @@ public sealed class FileTailTriggerSource : ITriggerSource
         }
 
         var segments = full[pathRoot.Length..]
-            .Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+            .Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries
+            );
 
         // Seed with the root AS-IS (e.g. "C:\" on Windows, "/" on POSIX) rather than trimming its
         // trailing separator. Path.Combine treats a path ending in the bare volume-separator ':'
@@ -263,12 +271,12 @@ public sealed class FileTailTriggerSource : ITriggerSource
                 throw new ArgumentException("file_tail args must be a JSON object.");
             }
 
-            var path = root.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String
-                ? p.GetString()
-                : null;
-            var pattern = root.TryGetProperty("pattern", out var pat) && pat.ValueKind == JsonValueKind.String
-                ? pat.GetString()
-                : null;
+            var path =
+                root.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+            var pattern =
+                root.TryGetProperty("pattern", out var pat) && pat.ValueKind == JsonValueKind.String
+                    ? pat.GetString()
+                    : null;
 
             if (string.IsNullOrWhiteSpace(path))
             {
@@ -353,7 +361,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
             Regex? regex,
             ITriggerEventSink sink,
             FileTailContentMode contentMode,
-            ILogger? logger)
+            ILogger? logger
+        )
         {
             WaitId = waitId;
 
@@ -408,7 +417,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
             ITriggerEventSink sink,
             FileTailContentMode contentMode,
             ILogger? logger,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             // Yield first so the fire is always asynchronous — never synchronous within ArmAsync.
             // This is purely about when the fire is delivered; the baseline it is measured against
@@ -443,7 +453,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
                             "file_tail watcher has seen no file at its armed path for {Ticks} consecutive polls; "
                                 + "it can never fire while this holds. The path was validated at arm time, so the "
                                 + "file was deleted, rotated away, or its volume unmounted.",
-                            missingStreak.Consecutive);
+                            missingStreak.Consecutive
+                        );
                     }
 
                     continue;
@@ -452,7 +463,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
                 if (missingStreak.RecordSuccess())
                 {
                     logger?.LogInformation(
-                        "file_tail watcher's armed path is readable again; resuming normal polling.");
+                        "file_tail watcher's armed path is readable again; resuming normal polling."
+                    );
                 }
 
                 long len;
@@ -470,7 +482,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
                             ex,
                             "file_tail watcher has failed to read its armed file's length for {Ticks} consecutive "
                                 + "polls; it can never fire while this holds.",
-                            ioStreak.Consecutive);
+                            ioStreak.Consecutive
+                        );
                     }
 
                     continue;
@@ -491,8 +504,7 @@ public sealed class FileTailTriggerSource : ITriggerSource
                     offset = await PollOnceAsync(path, offset, len, regex, sink, contentMode, ct);
                     if (ioStreak.RecordSuccess())
                     {
-                        logger?.LogInformation(
-                            "file_tail watcher read its armed file again; resuming normal polling.");
+                        logger?.LogInformation("file_tail watcher read its armed file again; resuming normal polling.");
                     }
                 }
                 catch (OperationCanceledException)
@@ -511,7 +523,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
                             "file_tail watcher has failed to read its armed file for {Ticks} consecutive polls; "
                                 + "it can never fire while this holds. A transient rotation race clears on its "
                                 + "own; an ACL change or an unmounted volume does not.",
-                            ioStreak.Consecutive);
+                            ioStreak.Consecutive
+                        );
                     }
 
                     // A rotation (rename+recreate) or a brief exclusive lock can race File.Exists →
@@ -539,7 +552,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
             Regex? regex,
             ITriggerEventSink sink,
             FileTailContentMode contentMode,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             fs.Seek(offset, SeekOrigin.Begin);
@@ -610,7 +624,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
             Regex? regex,
             ITriggerEventSink sink,
             FileTailContentMode contentMode,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             if (regex != null && !SafeMatch(regex, line))
             {

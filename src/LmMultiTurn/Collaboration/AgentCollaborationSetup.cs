@@ -24,11 +24,7 @@ public sealed class AgentCollaborationSetup
     /// <param name="name">This agent's human-facing name.</param>
     /// <exception cref="ArgumentNullException"><paramref name="bundle"/> or <paramref name="context"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="name"/> is blank, or the context belongs to another collaboration.</exception>
-    public AgentCollaborationSetup(
-        AgentCollaborationBundle bundle,
-        AgentCollaborationContext context,
-        string name
-    )
+    public AgentCollaborationSetup(AgentCollaborationBundle bundle, AgentCollaborationContext context, string name)
     {
         ArgumentNullException.ThrowIfNull(bundle);
         ArgumentNullException.ThrowIfNull(context);
@@ -107,10 +103,7 @@ public sealed class AgentCollaborationSetup
     /// Derives the handle a child agent gets: the same bundle, the child's own context and name.
     /// </summary>
     /// <exception cref="ArgumentNullException"><paramref name="childContext"/> is null.</exception>
-    public AgentCollaborationSetup ForChild(
-        AgentCollaborationContext childContext,
-        string childName
-    )
+    public AgentCollaborationSetup ForChild(AgentCollaborationContext childContext, string childName)
     {
         return new AgentCollaborationSetup(Bundle, childContext, childName);
     }

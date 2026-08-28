@@ -17,9 +17,7 @@ public sealed class SubAgentProvenanceTests
     private const string ParentThreadId = "thread-parent";
     private const string ChildThreadId = "subagent-child-1";
 
-    private static SubAgentSnapshot MakeSnapshot(
-        SubAgentStatus status,
-        DateTimeOffset? terminalAtUtc = null) =>
+    private static SubAgentSnapshot MakeSnapshot(SubAgentStatus status, DateTimeOffset? terminalAtUtc = null) =>
         new(
             AgentId: "child-1",
             Name: "alpha",
@@ -28,7 +26,8 @@ public sealed class SubAgentProvenanceTests
             Status: status,
             ThreadId: ChildThreadId,
             LastActivityUtc: null,
-            TerminalAtUtc: terminalAtUtc);
+            TerminalAtUtc: terminalAtUtc
+        );
 
     [Theory]
     [InlineData(SubAgentStatus.Completed)]
@@ -37,8 +36,7 @@ public sealed class SubAgentProvenanceTests
     public void Build_StampsExactStatusAndTerminalTimestamp_ForTerminalStatuses(SubAgentStatus status)
     {
         var terminalAt = DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000);
-        var properties = SubAgentProvenance.Build(
-            ParentThreadId, MakeSnapshot(status, terminalAt));
+        var properties = SubAgentProvenance.Build(ParentThreadId, MakeSnapshot(status, terminalAt));
 
         properties[SubAgentProvenance.StatusKey].Should().Be(status.ToString().ToLowerInvariant());
         properties[SubAgentProvenance.TerminalAtKey].Should().Be(terminalAt.ToUnixTimeMilliseconds());
@@ -56,9 +54,11 @@ public sealed class SubAgentProvenanceTests
         // merely omitting it, so NonOwningConversationStore's additive merge actually clears it.
         properties.Should().ContainKey(SubAgentProvenance.TerminalAtKey);
         ReferenceEquals(properties[SubAgentProvenance.TerminalAtKey], SubAgentProvenance.RemovalMarker)
-            .Should().BeTrue(
-                "a running sub-agent's terminal timestamp must be explicitly marked for removal, not " +
-                "merely omitted, so a stale value from a prior terminal transition is cleared");
+            .Should()
+            .BeTrue(
+                "a running sub-agent's terminal timestamp must be explicitly marked for removal, not "
+                    + "merely omitted, so a stale value from a prior terminal transition is cleared"
+            );
     }
 
     [Fact]
@@ -66,7 +66,9 @@ public sealed class SubAgentProvenanceTests
     {
         var before = DateTimeOffset.UtcNow;
         var properties = SubAgentProvenance.Build(
-            ParentThreadId, MakeSnapshot(SubAgentStatus.Completed, terminalAtUtc: null));
+            ParentThreadId,
+            MakeSnapshot(SubAgentStatus.Completed, terminalAtUtc: null)
+        );
         var after = DateTimeOffset.UtcNow;
 
         var stamped = (long)properties[SubAgentProvenance.TerminalAtKey];
@@ -81,17 +83,20 @@ public sealed class SubAgentProvenanceTests
         {
             ThreadId = ChildThreadId,
             LastUpdated = 1, // Deliberately stale/irrelevant: TerminalAtKey must win over this.
-            Properties = SubAgentProvenance.Build(
-                ParentThreadId, MakeSnapshot(SubAgentStatus.Completed, terminalAt)),
+            Properties = SubAgentProvenance.Build(ParentThreadId, MakeSnapshot(SubAgentStatus.Completed, terminalAt)),
         };
 
         var summary = SubAgentProvenance.TryProject(metadata, ParentThreadId);
 
         summary.Should().NotBeNull();
         summary!.Status.Should().Be("completed");
-        summary.LastActivityUtc.Should().Be(terminalAt,
-            "the exact terminal instant captured at the transition must survive the round trip " +
-            "rather than being recomputed from LastUpdated");
+        summary
+            .LastActivityUtc.Should()
+            .Be(
+                terminalAt,
+                "the exact terminal instant captured at the transition must survive the round trip "
+                    + "rather than being recomputed from LastUpdated"
+            );
     }
 
     [Fact]
@@ -107,8 +112,12 @@ public sealed class SubAgentProvenanceTests
         var summary = SubAgentProvenance.TryProject(metadata, ParentThreadId);
 
         summary!.Status.Should().Be("running");
-        summary.LastActivityUtc.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(42_000),
-            "with no terminal instant stamped, activity falls back to the metadata's own LastUpdated");
+        summary
+            .LastActivityUtc.Should()
+            .Be(
+                DateTimeOffset.FromUnixTimeMilliseconds(42_000),
+                "with no terminal instant stamped, activity falls back to the metadata's own LastUpdated"
+            );
     }
 
     [Fact]
@@ -138,7 +147,9 @@ public sealed class SubAgentProvenanceTests
             ThreadId = ChildThreadId,
             LastUpdated = 1,
             Properties = SubAgentProvenance.Build(
-                "thread-someone-else", MakeSnapshot(SubAgentStatus.Completed, DateTimeOffset.UtcNow)),
+                "thread-someone-else",
+                MakeSnapshot(SubAgentStatus.Completed, DateTimeOffset.UtcNow)
+            ),
         };
 
         SubAgentProvenance.TryProject(metadata, ParentThreadId).Should().BeNull();
@@ -149,10 +160,7 @@ public sealed class SubAgentProvenanceTests
     // that names a run's sub-agents — and the daemon artifacts built from it — could not say what any of
     // them ran on (#552).
 
-    private static SubAgentSnapshot MakeRoutedSnapshot(
-        string? effectiveModelId,
-        int? tier,
-        string selectionSource) =>
+    private static SubAgentSnapshot MakeRoutedSnapshot(string? effectiveModelId, int? tier, string selectionSource) =>
         MakeSnapshot(SubAgentStatus.Completed, DateTimeOffset.UnixEpoch) with
         {
             EffectiveModelId = effectiveModelId,
@@ -164,7 +172,9 @@ public sealed class SubAgentProvenanceTests
     public void Build_StampsTheEffectiveModelTierAndSelectionSource()
     {
         var properties = SubAgentProvenance.Build(
-            ParentThreadId, MakeRoutedSnapshot("gpt-5.6-sol", 3, "template-tier"));
+            ParentThreadId,
+            MakeRoutedSnapshot("gpt-5.6-sol", 3, "template-tier")
+        );
 
         properties[SubAgentProvenance.ModelKey].Should().Be("gpt-5.6-sol");
         properties[SubAgentProvenance.ModelIntelligenceKey].Should().Be(3);
@@ -178,12 +188,15 @@ public sealed class SubAgentProvenanceTests
         // decided once, when its provider is built, and does not go stale across a restart the way a
         // terminal instant does — so there is no stale value to clear, and omitting is the honest write.
         var properties = SubAgentProvenance.Build(
-            ParentThreadId, MakeRoutedSnapshot(effectiveModelId: null, tier: null, selectionSource: "pending"));
+            ParentThreadId,
+            MakeRoutedSnapshot(effectiveModelId: null, tier: null, selectionSource: "pending")
+        );
 
         properties.Should().NotContainKey(SubAgentProvenance.ModelKey);
         properties.Should().NotContainKey(SubAgentProvenance.ModelIntelligenceKey);
-        properties[SubAgentProvenance.ModelSelectionSourceKey].Should().Be(
-            "pending", "a spawn that has not been routed yet says so, which is not the same as saying nothing");
+        properties[SubAgentProvenance.ModelSelectionSourceKey]
+            .Should()
+            .Be("pending", "a spawn that has not been routed yet says so, which is not the same as saying nothing");
     }
 
     [Fact]
@@ -193,8 +206,7 @@ public sealed class SubAgentProvenanceTests
         {
             ThreadId = ChildThreadId,
             LastUpdated = 1,
-            Properties = SubAgentProvenance.Build(
-                ParentThreadId, MakeRoutedSnapshot("gpt-5.6-terra", 2, "spawn-tier")),
+            Properties = SubAgentProvenance.Build(ParentThreadId, MakeRoutedSnapshot("gpt-5.6-terra", 2, "spawn-tier")),
         };
 
         var summary = SubAgentProvenance.TryProject(metadata, ParentThreadId);
@@ -230,8 +242,7 @@ public sealed class SubAgentProvenanceTests
         // Properties round-trip through JSON on their way to disk, so an int comes back as a JsonElement.
         // Reading it as a plain int cast would project every persisted tier as absent — the same
         // round-trip tolerance ReadUnixMillis already carries for the terminal timestamp.
-        using var document = JsonDocument.Parse(
-            $"{{\"{SubAgentProvenance.ModelIntelligenceKey}\":4}}");
+        using var document = JsonDocument.Parse($"{{\"{SubAgentProvenance.ModelIntelligenceKey}\":4}}");
         var metadata = new ThreadMetadata
         {
             ThreadId = ChildThreadId,
@@ -242,12 +253,13 @@ public sealed class SubAgentProvenanceTests
                     KeyValuePair.Create(SubAgentProvenance.ParentThreadIdKey, (object)ParentThreadId),
                     KeyValuePair.Create(
                         SubAgentProvenance.ModelIntelligenceKey,
-                        (object)document.RootElement.GetProperty(SubAgentProvenance.ModelIntelligenceKey)),
-                ]),
+                        (object)document.RootElement.GetProperty(SubAgentProvenance.ModelIntelligenceKey)
+                    ),
+                ]
+            ),
         };
 
-        SubAgentProvenance.TryProject(metadata, ParentThreadId)!
-            .EffectiveModelIntelligence.Should().Be(4);
+        SubAgentProvenance.TryProject(metadata, ParentThreadId)!.EffectiveModelIntelligence.Should().Be(4);
     }
 
     [Fact]
@@ -262,8 +274,10 @@ public sealed class SubAgentProvenanceTests
         var template = new SubAgentTemplate
         {
             SystemPrompt = "Test",
-            AgentFactory = () => throw new InvalidOperationException(
-                "The transport-correct provider must be built for the routed model, not the controller's."),
+            AgentFactory = () =>
+                throw new InvalidOperationException(
+                    "The transport-correct provider must be built for the routed model, not the controller's."
+                ),
             DefaultOptions = new GenerateReplyOptions { ModelId = "template-model" },
             IsModelExplicitlySelected = true,
         };
@@ -285,7 +299,8 @@ public sealed class SubAgentProvenanceTests
             new Dictionary<string, ToolHandler>(),
             options,
             new MutableSubAgentTemplateSource(options.Templates),
-            parentModelId: "parent-model");
+            parentModelId: "parent-model"
+        );
 
         _ = await manager.SpawnAsync("test-agent", "test task");
 
@@ -301,25 +316,32 @@ public sealed class SubAgentProvenanceTests
 
         var summary = SubAgentProvenance.TryProject(metadata, ParentThreadId);
 
-        summary!.EffectiveModelId.Should().Be(
-            providerBuiltForModel,
-            "the published model must be the one the provider was actually built for");
-        summary.EffectiveModelId.Should().NotBe(
-            "parent-model", "and it must not be the parent's, which is what an unrouted child would show");
-        summary.ModelSelectionSource.Should().Be(
-            "conversation-default",
-            "the label is what tells an operator their configured sub-agent model won rather than the "
-                + "template's — the model id alone cannot, they may coincide");
+        summary!
+            .EffectiveModelId.Should()
+            .Be(providerBuiltForModel, "the published model must be the one the provider was actually built for");
+        summary
+            .EffectiveModelId.Should()
+            .NotBe("parent-model", "and it must not be the parent's, which is what an unrouted child would show");
+        summary
+            .ModelSelectionSource.Should()
+            .Be(
+                "conversation-default",
+                "the label is what tells an operator their configured sub-agent model won rather than the "
+                    + "template's — the model id alone cannot, they may coincide"
+            );
     }
 
     private static IStreamingAgent RespondingAgent()
     {
         var agent = new Mock<IStreamingAgent>();
         agent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(Replies());
         return agent.Object;
     }

@@ -27,7 +27,8 @@ public sealed record ConversationStatusResult(
     string ThreadId,
     string? RunId,
     ConversationRunStatus Status,
-    object? Response);
+    object? Response
+);
 
 /// <summary>
 /// Resolves the polled status of a conversation run from persisted state (<see cref="IRunLedgerStore"/>
@@ -49,7 +50,8 @@ public sealed class ConversationStatusResolver(IConversationStore conversationSt
     public async Task<ConversationStatusResult?> ResolveByRunIdAsync(
         string threadId,
         string runId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var entry = await runLedgerStore.LoadRunLedgerAsync(runId, ct);
         if (entry == null || entry.ThreadId != threadId)
@@ -85,7 +87,8 @@ public sealed class ConversationStatusResolver(IConversationStore conversationSt
     public async Task<ConversationStatusResult?> ResolveByInputIdAsync(
         string threadId,
         string inputId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var acceptedInputIds = await runLedgerStore.ListAcceptedInputIdsAsync(threadId, ct);
         var wasAccepted = acceptedInputIds.Contains(inputId);
@@ -186,13 +189,14 @@ public sealed class ConversationStatusResolver(IConversationStore conversationSt
         }
     }
 
-    private static ConversationRunStatus ToConversationRunStatus(RunStatus status) => status switch
-    {
-        RunStatus.Queued => ConversationRunStatus.NotStarted,
-        RunStatus.InProgress => ConversationRunStatus.InProgress,
-        RunStatus.Completed => ConversationRunStatus.Completed,
-        RunStatus.Errored => ConversationRunStatus.Errored,
-        RunStatus.Interrupted => ConversationRunStatus.Interrupted,
-        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown RunStatus value."),
-    };
+    private static ConversationRunStatus ToConversationRunStatus(RunStatus status) =>
+        status switch
+        {
+            RunStatus.Queued => ConversationRunStatus.NotStarted,
+            RunStatus.InProgress => ConversationRunStatus.InProgress,
+            RunStatus.Completed => ConversationRunStatus.Completed,
+            RunStatus.Errored => ConversationRunStatus.Errored,
+            RunStatus.Interrupted => ConversationRunStatus.Interrupted,
+            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown RunStatus value."),
+        };
 }

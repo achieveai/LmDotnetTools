@@ -78,7 +78,8 @@ public sealed class WorkspaceTranscriptMirrorAttachCompositionTests
                 // the registry singleton has not been built yet.
                 services.RemoveAll<IFileSystemProbe>();
                 services.AddSingleton<IFileSystemProbe>(
-                    new FakeFileSystemProbe(executablesOnPath: ["claude", "copilot"]));
+                    new FakeFileSystemProbe(executablesOnPath: ["claude", "copilot"])
+                );
 
                 // Isolates conversation storage to this test's temp dir.
                 services.RemoveAll<IConversationStore>();
@@ -108,7 +109,10 @@ public sealed class WorkspaceTranscriptMirrorAttachCompositionTests
     public async Task Host_AttachesTheMirrorToAgentsBuiltByCliBackedProviderBranches(string providerId)
     {
         var root = Path.Combine(
-            Path.GetTempPath(), "lmstreaming-mirror-attach-composition-test", Guid.NewGuid().ToString("N"));
+            Path.GetTempPath(),
+            "lmstreaming-mirror-attach-composition-test",
+            Guid.NewGuid().ToString("N")
+        );
         _ = Directory.CreateDirectory(root);
         // An explicit `await using` BLOCK, not a method-scoped `await using var`: the host must be
         // disposed before the purge below, and method scope would dispose it at the method's closing
@@ -118,10 +122,14 @@ public sealed class WorkspaceTranscriptMirrorAttachCompositionTests
         await using (var host = new MirrorAttachWebAppFactory(Path.Combine(root, "conversations")))
         {
             var registry = host.Services.GetRequiredService<ProviderRegistry>();
-            registry.IsAvailable(providerId).Should().BeTrue(
-                "the faked CLI probe and the host's own in-process mock provider host must make "
-                    + "{0} selectable, otherwise this test would silently stop covering that branch",
-                providerId);
+            registry
+                .IsAvailable(providerId)
+                .Should()
+                .BeTrue(
+                    "the faked CLI probe and the host's own in-process mock provider host must make "
+                        + "{0} selectable, otherwise this test would silently stop covering that branch",
+                    providerId
+                );
 
             var mirror = host.Services.GetRequiredService<WorkspaceTranscriptMirror>();
             var pool = host.Services.GetRequiredService<MultiTurnAgentPool>();
@@ -130,11 +138,15 @@ public sealed class WorkspaceTranscriptMirrorAttachCompositionTests
             var agent = pool.GetOrCreateAgent(threadId, Mode, providerId, requestResponseDumpFileName: null);
 
             agent.Should().NotBeNull("the provider branch under test must actually build an agent");
-            mirror.IsMirroring(threadId).Should().BeTrue(
-                "every agent the pool factory returns must be registered with the transcript mirror; "
-                    + "{0} builds and returns from its own branch, so an attach that lives inside one "
-                    + "other branch never runs for it and the conversation is mirrored nowhere",
-                providerId);
+            mirror
+                .IsMirroring(threadId)
+                .Should()
+                .BeTrue(
+                    "every agent the pool factory returns must be registered with the transcript mirror; "
+                        + "{0} builds and returns from its own branch, so an attach that lives inside one "
+                        + "other branch never runs for it and the conversation is mirrored nowhere",
+                    providerId
+                );
         }
 
         // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.

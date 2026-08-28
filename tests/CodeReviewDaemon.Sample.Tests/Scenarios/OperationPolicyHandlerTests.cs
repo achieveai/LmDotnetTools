@@ -19,9 +19,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class OperationPolicyHandlerTests : LoggingTestBase
 {
     public OperationPolicyHandlerTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private static OperationPolicy CreateGitHubPolicy(bool allowWriteOperations = true) =>
         new(
@@ -34,17 +32,16 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
                 ReviewBotHost: "github.com",
                 ReviewBotRepoPath: "/acme/reviewbot",
                 ApiHost: "api.github.com",
-                AllowedSubmodules: []),
-            allowWriteOperations);
+                AllowedSubmodules: []
+            ),
+            allowWriteOperations
+        );
 
     private (HttpClient Client, FakeHttpMessageHandler Inner) BuildClient(OperationPolicy policy)
     {
         var inner = new FakeHttpMessageHandler();
         _ = inner.On(_ => true, _ => new HttpResponseMessage(HttpStatusCode.OK));
-        var handler = new OperationPolicyHandler(
-            policy,
-            "github",
-            LoggerFactory.CreateLogger<OperationPolicyHandler>())
+        var handler = new OperationPolicyHandler(policy, "github", LoggerFactory.CreateLogger<OperationPolicyHandler>())
         {
             InnerHandler = inner,
         };
@@ -56,8 +53,10 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     {
         var (client, inner) = BuildClient(CreateGitHubPolicy());
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.github.com/repos/acme/widgets/pulls?state=open")
-            .WithOperation(SandboxOperation.ReadProviderMetadata);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "https://api.github.com/repos/acme/widgets/pulls?state=open"
+        ).WithOperation(SandboxOperation.ReadProviderMetadata);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
 
         using var response = await client.SendAsync(request, CancellationToken.None);
@@ -72,8 +71,10 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     {
         var (client, inner) = BuildClient(CreateGitHubPolicy());
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/repos/acme/widgets/issues/7/comments")
-            .WithOperation(SandboxOperation.PostReviewComment);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "https://api.github.com/repos/acme/widgets/issues/7/comments"
+        ).WithOperation(SandboxOperation.PostReviewComment);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
 
         using var response = await client.SendAsync(request, CancellationToken.None);
@@ -88,8 +89,10 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
         var (client, inner) = BuildClient(CreateGitHubPolicy());
 
         // PostReviewComment requires the API host; github.com (the git host) is not it.
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://github.com/acme/widgets/issues/7/comments")
-            .WithOperation(SandboxOperation.PostReviewComment);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "https://github.com/acme/widgets/issues/7/comments"
+        ).WithOperation(SandboxOperation.PostReviewComment);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
 
         var act = () => client.SendAsync(request, CancellationToken.None);
@@ -103,8 +106,10 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     {
         var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/repos/acme/widgets/issues/7/comments")
-            .WithOperation(SandboxOperation.PostReviewComment);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "https://api.github.com/repos/acme/widgets/issues/7/comments"
+        ).WithOperation(SandboxOperation.PostReviewComment);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
 
         var act = () => client.SendAsync(request, CancellationToken.None);
@@ -112,7 +117,9 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
         var thrown = (await act.Should().ThrowAsync<OperationDeniedException>()).Which;
         thrown.Operation.Should().Be(SandboxOperation.PostReviewComment);
         // The credential must be stripped from the request the moment the policy denies it.
-        request.Headers.Authorization.Should().BeNull("a denied operation must withhold the credential (fail closed both ways)");
+        request
+            .Headers.Authorization.Should()
+            .BeNull("a denied operation must withhold the credential (fail closed both ways)");
         inner.Requests.Should().BeEmpty();
     }
 

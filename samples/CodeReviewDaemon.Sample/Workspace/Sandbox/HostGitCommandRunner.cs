@@ -11,7 +11,8 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 internal sealed class HostGitCommandRunner(
     Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> credentialsSource,
     ILogger<HostGitCommandRunner> logger,
-    IReadOnlyCollection<string>? adoOrgs = null) : ISandboxCommandRunner
+    IReadOnlyCollection<string>? adoOrgs = null
+) : ISandboxCommandRunner
 {
     public async Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken)
     {
@@ -30,9 +31,14 @@ internal sealed class HostGitCommandRunner(
             var missingDirResult = new SandboxCommandResult(
                 1,
                 string.Empty,
-                $"working directory '{command.WorkingDirectory}' does not exist");
-            logger.LogDebug("Host git '{Argv}' exited {Exit}: {Stderr}",
-                string.Join(' ', command.Argv), missingDirResult.ExitCode, missingDirResult.Stderr);
+                $"working directory '{command.WorkingDirectory}' does not exist"
+            );
+            logger.LogDebug(
+                "Host git '{Argv}' exited {Exit}: {Stderr}",
+                string.Join(' ', command.Argv),
+                missingDirResult.ExitCode,
+                missingDirResult.Stderr
+            );
             return missingDirResult;
         }
 
@@ -71,11 +77,16 @@ internal sealed class HostGitCommandRunner(
         var result = new SandboxCommandResult(
             process.ExitCode,
             await stdoutTask.ConfigureAwait(false),
-            await stderrTask.ConfigureAwait(false));
+            await stderrTask.ConfigureAwait(false)
+        );
         if (!result.Succeeded)
         {
-            logger.LogDebug("Host git '{Argv}' exited {Exit}: {Stderr}",
-                string.Join(' ', command.Argv), result.ExitCode, result.Stderr);
+            logger.LogDebug(
+                "Host git '{Argv}' exited {Exit}: {Stderr}",
+                string.Join(' ', command.Argv),
+                result.ExitCode,
+                result.Stderr
+            );
         }
 
         return result;

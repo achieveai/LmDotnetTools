@@ -16,10 +16,7 @@ public sealed record SubAgentProviderAgent
     /// </summary>
     /// <param name="Agent">The provider agent selected for the spawn.</param>
     /// <param name="ExtraProperties">Provider request hints to merge into the spawn options.</param>
-    public SubAgentProviderAgent(
-        IStreamingAgent Agent,
-        ImmutableDictionary<string, object?> ExtraProperties
-    )
+    public SubAgentProviderAgent(IStreamingAgent Agent, ImmutableDictionary<string, object?> ExtraProperties)
     {
         ArgumentNullException.ThrowIfNull(Agent);
         ArgumentNullException.ThrowIfNull(ExtraProperties);
@@ -60,5 +57,4 @@ public sealed record SubAgentProviderAgent
     /// back from an unsupported explicit model to the parent provider agent.
     /// </summary>
     public bool UseParentModel { get; init; }
-
 }

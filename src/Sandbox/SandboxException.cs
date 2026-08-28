@@ -83,7 +83,13 @@ public sealed class SandboxException : Exception
     /// </summary>
     public bool IsDirectReadCapExceeded { get; init; }
 
-    public SandboxException(SandboxErrorKind kind, string message, int? statusCode = null, Exception? innerException = null, string? operationId = null)
+    public SandboxException(
+        SandboxErrorKind kind,
+        string message,
+        int? statusCode = null,
+        Exception? innerException = null,
+        string? operationId = null
+    )
         : base(message, innerException)
     {
         Kind = kind;

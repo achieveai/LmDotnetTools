@@ -1,4 +1,3 @@
-
 namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>

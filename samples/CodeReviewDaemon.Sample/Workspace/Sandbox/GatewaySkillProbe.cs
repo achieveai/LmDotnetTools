@@ -18,7 +18,8 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 internal sealed record GatewaySkillSupport(
     bool HasReviewSkill,
     int ReviewerAgentCount,
-    IReadOnlyList<string> MarketplaceErrors)
+    IReadOnlyList<string> MarketplaceErrors
+)
 {
     /// <summary>A review needs BOTH halves: the skill that defines the review procedure and at least one
     /// sub-agent to run the deep passes with.</summary>
@@ -28,9 +29,9 @@ internal sealed record GatewaySkillSupport(
     /// identifiers and gateway-reported errors — never a credential.</summary>
     public string Describe() =>
         $"skill '{GatewaySkillProbe.RequiredPlugin}:{GatewaySkillProbe.RequiredSkill}'="
-            + (HasReviewSkill ? "present" : "MISSING")
-            + $", {GatewaySkillProbe.RequiredPlugin} sub-agents={ReviewerAgentCount}"
-            + (MarketplaceErrors.Count > 0 ? $", marketplace errors=[{string.Join("; ", MarketplaceErrors)}]" : "");
+        + (HasReviewSkill ? "present" : "MISSING")
+        + $", {GatewaySkillProbe.RequiredPlugin} sub-agents={ReviewerAgentCount}"
+        + (MarketplaceErrors.Count > 0 ? $", marketplace errors=[{string.Join("; ", MarketplaceErrors)}]" : "");
 }
 
 /// <summary>
@@ -88,7 +89,8 @@ internal sealed class GatewaySkillProbe : IGatewaySkillProbe, IAsyncDisposable
         string gatewayBaseUrl,
         SandboxCredential credential,
         ILogger<GatewaySkillProbe> logger,
-        HttpMessageHandler? testTransport)
+        HttpMessageHandler? testTransport
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(gatewayBaseUrl);
         ArgumentNullException.ThrowIfNull(logger);
@@ -99,7 +101,9 @@ internal sealed class GatewaySkillProbe : IGatewaySkillProbe, IAsyncDisposable
     }
 
     public async Task<GatewaySkillSupport> ProbeAsync(
-        IReadOnlyList<string> marketplaces, CancellationToken cancellationToken)
+        IReadOnlyList<string> marketplaces,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(marketplaces);
 
@@ -127,8 +131,9 @@ internal sealed class GatewaySkillProbe : IGatewaySkillProbe, IAsyncDisposable
                 }
 
                 agentCount += plugin.Agents.Count;
-                hasSkill |= plugin.Skills.Any(
-                    s => string.Equals(s.Name, RequiredSkill, StringComparison.OrdinalIgnoreCase));
+                hasSkill |= plugin.Skills.Any(s =>
+                    string.Equals(s.Name, RequiredSkill, StringComparison.OrdinalIgnoreCase)
+                );
             }
         }
 
@@ -136,7 +141,8 @@ internal sealed class GatewaySkillProbe : IGatewaySkillProbe, IAsyncDisposable
         _logger.LogInformation(
             "Gateway marketplace preview for [{Marketplaces}]: {Support}",
             marketplaces.Count > 0 ? string.Join(",", marketplaces) : "(gateway default)",
-            support.Describe());
+            support.Describe()
+        );
         return support;
     }
 
@@ -170,7 +176,8 @@ internal sealed class GatewaySkillProbe : IGatewaySkillProbe, IAsyncDisposable
             _credential.AppKey,
             executionTimeout: S_probeTimeout,
             transportTimeout: S_probeTimeout,
-            allowInsecureDevelopmentTransport: true);
+            allowInsecureDevelopmentTransport: true
+        );
 
         if (_testTransport is null)
         {

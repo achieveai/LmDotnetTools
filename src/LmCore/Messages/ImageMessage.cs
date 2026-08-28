@@ -131,7 +131,10 @@ public class ImageMessageJsonConverter : ShadowPropertiesJsonConverter<ImageMess
                 else if (instance.ImageData.Length > 0 && _pendingMediaType != null)
                 {
                     // Recreate with media type if image_data was already processed
-                    instance = CreateNewInstance(instance, BinaryData.FromBytes(instance.ImageData.ToArray(), _pendingMediaType));
+                    instance = CreateNewInstance(
+                        instance,
+                        BinaryData.FromBytes(instance.ImageData.ToArray(), _pendingMediaType)
+                    );
                     _pendingMediaType = null;
                 }
 
@@ -307,8 +310,17 @@ public static partial class ImageMessageExtensions
             }
 
             // WebP: 52 49 46 46 ... 57 45 42 50
-            if (bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46 &&
-                bytes.Length >= 12 && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50)
+            if (
+                bytes[0] == 0x52
+                && bytes[1] == 0x49
+                && bytes[2] == 0x46
+                && bytes[3] == 0x46
+                && bytes.Length >= 12
+                && bytes[8] == 0x57
+                && bytes[9] == 0x45
+                && bytes[10] == 0x42
+                && bytes[11] == 0x50
+            )
             {
                 return "image/webp";
             }

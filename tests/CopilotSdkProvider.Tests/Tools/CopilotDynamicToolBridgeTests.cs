@@ -9,14 +9,7 @@ public class CopilotDynamicToolBridgeTests
 {
     private static FunctionContract[] BuildContracts()
     {
-        return
-        [
-            new FunctionContract
-            {
-                Name = "calculate",
-                Description = "calc",
-            },
-        ];
+        return [new FunctionContract { Name = "calculate", Description = "calc" }];
     }
 
     [Fact]
@@ -26,18 +19,13 @@ public class CopilotDynamicToolBridgeTests
         {
             ["calculate"] = _ => Task.FromResult("10"),
         };
-        var policy = new CopilotToolPolicyEngine(
-            dynamicToolNames: ["calculate"],
-            enabledTools: ["get_weather"]);
+        var policy = new CopilotToolPolicyEngine(dynamicToolNames: ["calculate"], enabledTools: ["get_weather"]);
         var bridge = new CopilotDynamicToolBridge(BuildContracts(), handlers, policy);
         var args = JsonDocument.Parse("""{"a":2}""").RootElement.Clone();
 
         var response = await bridge.ExecuteAsync(
-            new CopilotDynamicToolCallRequest
-            {
-                Tool = "calculate",
-                Arguments = args,
-            });
+            new CopilotDynamicToolCallRequest { Tool = "calculate", Arguments = args }
+        );
 
         response.Success.Should().BeFalse();
         response.ContentItems.Should().ContainSingle();
@@ -52,18 +40,13 @@ public class CopilotDynamicToolBridgeTests
         {
             ["calculate"] = _ => Task.FromResult("10"),
         };
-        var policy = new CopilotToolPolicyEngine(
-            dynamicToolNames: ["calculate"],
-            enabledTools: ["calculate"]);
+        var policy = new CopilotToolPolicyEngine(dynamicToolNames: ["calculate"], enabledTools: ["calculate"]);
         var bridge = new CopilotDynamicToolBridge(BuildContracts(), handlers, policy);
         var args = JsonDocument.Parse("""{"a":2}""").RootElement.Clone();
 
         var response = await bridge.ExecuteAsync(
-            new CopilotDynamicToolCallRequest
-            {
-                Tool = "calculate",
-                Arguments = args,
-            });
+            new CopilotDynamicToolCallRequest { Tool = "calculate", Arguments = args }
+        );
 
         response.Success.Should().BeTrue();
         response.ContentItems.Should().ContainSingle();
@@ -75,18 +58,13 @@ public class CopilotDynamicToolBridgeTests
     public async Task ExecuteAsync_ReturnsFailure_WhenHandlerMissing()
     {
         var handlers = new Dictionary<string, Func<string, Task<string>>>(StringComparer.OrdinalIgnoreCase);
-        var policy = new CopilotToolPolicyEngine(
-            dynamicToolNames: ["calculate"],
-            enabledTools: ["calculate"]);
+        var policy = new CopilotToolPolicyEngine(dynamicToolNames: ["calculate"], enabledTools: ["calculate"]);
         var bridge = new CopilotDynamicToolBridge(BuildContracts(), handlers, policy);
         var args = JsonDocument.Parse("""{"a":2}""").RootElement.Clone();
 
         var response = await bridge.ExecuteAsync(
-            new CopilotDynamicToolCallRequest
-            {
-                Tool = "calculate",
-                Arguments = args,
-            });
+            new CopilotDynamicToolCallRequest { Tool = "calculate", Arguments = args }
+        );
 
         response.Success.Should().BeFalse();
         response.ContentItems[0].Text.Should().Contain("not registered");
@@ -99,18 +77,13 @@ public class CopilotDynamicToolBridgeTests
         {
             ["calculate"] = _ => throw new InvalidOperationException("boom"),
         };
-        var policy = new CopilotToolPolicyEngine(
-            dynamicToolNames: ["calculate"],
-            enabledTools: ["calculate"]);
+        var policy = new CopilotToolPolicyEngine(dynamicToolNames: ["calculate"], enabledTools: ["calculate"]);
         var bridge = new CopilotDynamicToolBridge(BuildContracts(), handlers, policy);
         var args = JsonDocument.Parse("""{"a":2}""").RootElement.Clone();
 
         var response = await bridge.ExecuteAsync(
-            new CopilotDynamicToolCallRequest
-            {
-                Tool = "calculate",
-                Arguments = args,
-            });
+            new CopilotDynamicToolCallRequest { Tool = "calculate", Arguments = args }
+        );
 
         response.Success.Should().BeFalse();
         response.ContentItems[0].Text.Should().Be("boom");
@@ -131,7 +104,8 @@ public class CopilotDynamicToolBridgeTests
         };
         var policy = new CopilotToolPolicyEngine(
             dynamicToolNames: ["calculate", "get_weather"],
-            enabledTools: ["calculate"]);
+            enabledTools: ["calculate"]
+        );
         var bridge = new CopilotDynamicToolBridge(contracts, handlers, policy);
 
         var specs = bridge.GetToolSpecs();

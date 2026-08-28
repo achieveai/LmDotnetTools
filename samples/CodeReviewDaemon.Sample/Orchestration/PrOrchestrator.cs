@@ -25,7 +25,8 @@ internal sealed class PrOrchestrator
         IReviewStageExecutor executor,
         ILogger<PrOrchestrator> logger,
         ReviewProgressReporter? progress = null,
-        RetryGovernor? retryGovernor = null)
+        RetryGovernor? retryGovernor = null
+    )
     {
         _store = store;
         _executor = executor;
@@ -94,10 +95,17 @@ internal sealed class PrOrchestrator
             {
                 // PR merged/closed/abandoned — stop working it without marking the run as failed.
                 _logger.LogInformation(
-                    "Review run {RunId} halted: PR {PrId} is {State}.", run.Id, run.PrId, run.PrLifecycleState);
+                    "Review run {RunId} halted: PR {PrId} is {State}.",
+                    run.Id,
+                    run.PrId,
+                    run.PrLifecycleState
+                );
                 _store.UpdateReviewRunState(run.Id, run.Stage, WorkflowStatus.Completed, run.PrLifecycleState);
                 _progress?.Finished(
-                    run, $"halted (PR {run.PrLifecycleState})", System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
+                    run,
+                    $"halted (PR {run.PrLifecycleState})",
+                    System.Diagnostics.Stopwatch.GetElapsedTime(startedAt)
+                );
                 return run with { WorkflowStatus = WorkflowStatus.Completed };
             }
 
@@ -134,7 +142,10 @@ internal sealed class PrOrchestrator
                     }
                     _logger.LogError(ex, "Review run {RunId} failed at stage {Stage}.", run.Id, stage);
                     _progress?.Finished(
-                        run, $"failed at {stage}", System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
+                        run,
+                        $"failed at {stage}",
+                        System.Diagnostics.Stopwatch.GetElapsedTime(startedAt)
+                    );
                     throw;
                 }
 
@@ -156,7 +167,8 @@ internal sealed class PrOrchestrator
             _progress?.Finished(
                 run,
                 $"complete ({ClassifyDeliveryOutcome(run)})",
-                System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
+                System.Diagnostics.Stopwatch.GetElapsedTime(startedAt)
+            );
             return run;
         }
         finally
@@ -191,24 +203,30 @@ internal sealed class PrOrchestrator
             try
             {
                 var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(artifact.Payload);
-                if (payload?.ReviewText.TrimStart().StartsWith(
-                        "No new findings",
-                        StringComparison.OrdinalIgnoreCase) == true)
+                if (
+                    payload?.ReviewText.TrimStart().StartsWith("No new findings", StringComparison.OrdinalIgnoreCase)
+                    == true
+                )
                 {
                     return "no new findings — nothing posted";
                 }
             }
             catch (JsonException ex)
             {
-                _logger.LogWarning(ex, "Run {RunId}: could not classify delivery from review artifact {ArtifactId}.", run.Id, artifact.Id);
+                _logger.LogWarning(
+                    ex,
+                    "Run {RunId}: could not classify delivery from review artifact {ArtifactId}.",
+                    run.Id,
+                    artifact.Id
+                );
             }
         }
 
-        var delivery = _store.GetOutboxForRun(run.Id)
-            .LastOrDefault(entry => string.Equals(
-                entry.Operation,
-                ReviewPoster.PostReviewCommentOperation,
-                StringComparison.Ordinal));
+        var delivery = _store
+            .GetOutboxForRun(run.Id)
+            .LastOrDefault(entry =>
+                string.Equals(entry.Operation, ReviewPoster.PostReviewCommentOperation, StringComparison.Ordinal)
+            );
 
         return delivery?.Status switch
         {
@@ -251,10 +269,13 @@ internal sealed class PrOrchestrator
         // the budget. A probe that loses its output on every attempt would otherwise busy-loop a stage that
         // can never make progress, and the transient case it exists for is retried and gone long before the
         // budget is reached.
-        if (ex is SlotNeedsRecloneException
-            or SlotCorruptException
-            or SlotAddressUnusableException
-            or SlotProbeUnansweredException)
+        if (
+            ex
+            is SlotNeedsRecloneException
+                or SlotCorruptException
+                or SlotAddressUnusableException
+                or SlotProbeUnansweredException
+        )
         {
             return true;
         }

@@ -33,10 +33,7 @@ public sealed class InMemoryLifecycleSequenceAllocator : ILifecycleSequenceAlloc
     {
         if (string.IsNullOrWhiteSpace(producerEpoch))
         {
-            throw new ArgumentException(
-                "A producer epoch must be non-empty.",
-                nameof(producerEpoch)
-            );
+            throw new ArgumentException("A producer epoch must be non-empty.", nameof(producerEpoch));
         }
 
         ProducerEpoch = producerEpoch;
@@ -50,10 +47,7 @@ public sealed class InMemoryLifecycleSequenceAllocator : ILifecycleSequenceAlloc
     {
         if (string.IsNullOrWhiteSpace(sourceStreamId))
         {
-            throw new ArgumentException(
-                "A source stream id must be non-empty.",
-                nameof(sourceStreamId)
-            );
+            throw new ArgumentException("A source stream id must be non-empty.", nameof(sourceStreamId));
         }
 
         var counter = _counters.GetOrAdd(sourceStreamId, static _ => new Counter());

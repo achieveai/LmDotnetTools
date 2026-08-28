@@ -18,14 +18,9 @@ public class AgentCollaborationDirectoryTests
 {
     private const string CollaborationId = "collab-1";
 
-    private static AgentCollaborationDirectory CreateDirectory(
-        AgentCollaborationOptions? options = null
-    )
+    private static AgentCollaborationDirectory CreateDirectory(AgentCollaborationOptions? options = null)
     {
-        return new AgentCollaborationDirectory(
-            CollaborationId,
-            options ?? new AgentCollaborationOptions()
-        );
+        return new AgentCollaborationDirectory(CollaborationId, options ?? new AgentCollaborationOptions());
     }
 
     private static AgentCollaborationContext RegisterRoot(AgentCollaborationDirectory directory)
@@ -61,9 +56,7 @@ public class AgentCollaborationDirectoryTests
         var root = RegisterRoot(directory);
 
         var child = root.CreateChild("agent-a", AgentKind.SubAgent, "reviewer", "reviews diffs");
-        var entry = directory
-            .TryRegister(child, "reviewer", "queued", agentType: "code-reviewer")
-            .Entry!;
+        var entry = directory.TryRegister(child, "reviewer", "queued", agentType: "code-reviewer").Entry!;
 
         entry.AncestorAgentIds.Should().Equal("agent-root");
         entry.StructuralDepth.Should().Be(1);
@@ -135,19 +128,9 @@ public class AgentCollaborationDirectoryTests
         var directory = CreateDirectory(new AgentCollaborationOptions { MaxDelegationDepth = 1 });
         var root = RegisterRoot(directory);
 
-        var controller = root.CreateChild(
-            "agent-ctl",
-            AgentKind.WorkflowController,
-            "controller",
-            "orchestrates"
-        );
+        var controller = root.CreateChild("agent-ctl", AgentKind.WorkflowController, "controller", "orchestrates");
         _ = directory.TryRegister(controller, "controller", "running");
-        var worker = controller.CreateChild(
-            "agent-w",
-            AgentKind.WorkflowDelegate,
-            "worker",
-            "works"
-        );
+        var worker = controller.CreateChild("agent-w", AgentKind.WorkflowDelegate, "worker", "works");
 
         // Structurally deeper than the ordinary case above, but the same delegation cost, so the
         // budget is spent on work rather than on orchestration.
@@ -177,29 +160,15 @@ public class AgentCollaborationDirectoryTests
     {
         var directory = CreateDirectory();
         var root = RegisterRoot(directory);
-        _ = directory.TryRegister(
-            root.CreateChild("agent-a", AgentKind.SubAgent, "r", "d"),
-            "reviewer",
-            "running"
-        );
-        _ = directory.TryRegister(
-            root.CreateChild("agent-b", AgentKind.SubAgent, "r", "d"),
-            "reviewer",
-            "running"
-        );
+        _ = directory.TryRegister(root.CreateChild("agent-a", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
+        _ = directory.TryRegister(root.CreateChild("agent-b", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
 
-        directory
-            .Resolve("reviewer")
-            .FailureCode.Should()
-            .Be(AgentDirectoryFailureCodes.AmbiguousName);
+        directory.Resolve("reviewer").FailureCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
 
         // Latching, not toggling: once two agents have answered to a name, a sender still cannot know
         // which one it meant even after one of them leaves.
         _ = directory.TryMarkRetained("agent-b");
-        directory
-            .Resolve("reviewer")
-            .FailureCode.Should()
-            .Be(AgentDirectoryFailureCodes.AmbiguousName);
+        directory.Resolve("reviewer").FailureCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
     }
 
     [Fact]
@@ -216,11 +185,7 @@ public class AgentCollaborationDirectoryTests
     {
         var directory = CreateDirectory();
         var root = RegisterRoot(directory);
-        _ = directory.TryRegister(
-            root.CreateChild("agent-a", AgentKind.SubAgent, "r", "d"),
-            "reviewer",
-            "running"
-        );
+        _ = directory.TryRegister(root.CreateChild("agent-a", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
 
         directory.TryUpdateStatus("agent-a", "completed").Should().BeTrue();
         directory.TryMarkRetained("agent-a").Should().BeTrue();
@@ -249,11 +214,7 @@ public class AgentCollaborationDirectoryTests
         var root = RegisterRoot(directory);
         foreach (var id in new[] { "agent-c", "agent-a", "agent-b" })
         {
-            _ = directory.TryRegister(
-                root.CreateChild(id, AgentKind.SubAgent, "r", "d"),
-                id,
-                "running"
-            );
+            _ = directory.TryRegister(root.CreateChild(id, AgentKind.SubAgent, "r", "d"), id, "running");
         }
 
         directory
@@ -268,11 +229,7 @@ public class AgentCollaborationDirectoryTests
     {
         var directory = CreateDirectory(new AgentCollaborationOptions { MaxInboxMessages = 2 });
         var root = RegisterRoot(directory);
-        _ = directory.TryRegister(
-            root.CreateChild("agent-a", AgentKind.SubAgent, "r", "d"),
-            "reviewer",
-            "running"
-        );
+        _ = directory.TryRegister(root.CreateChild("agent-a", AgentKind.SubAgent, "r", "d"), "reviewer", "running");
 
         var inbox = directory.GetInbox("agent-a")!;
         inbox.Capacity.Should().Be(2);

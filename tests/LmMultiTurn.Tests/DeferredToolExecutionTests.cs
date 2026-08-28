@@ -44,14 +44,15 @@ public class DeferredToolExecutionTests
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("approve_directory_read"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred()));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred())
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
@@ -73,10 +74,15 @@ public class DeferredToolExecutionTests
 
         // The mock LLM should have been called only once — no second turn fires while
         // the deferred call is unresolved.
-        _mockAgent.Verify(a => a.GenerateReplyStreamingAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _mockAgent.Verify(
+            a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
 
         var pending = await loop.GetDeferredToolCallsAsync();
         pending.Should().ContainSingle(p => p.ToolCallId == "tc_1");
@@ -97,19 +103,18 @@ public class DeferredToolExecutionTests
             ToolCallId = "tc_long",
             Role = Role.Assistant,
         };
-        var finalAssistantText = new TextMessage
-        {
-            Text = "Operation completed successfully.",
-            Role = Role.Assistant,
-        };
+        var finalAssistantText = new TextMessage { Text = "Operation completed successfully.", Role = Role.Assistant };
 
         var callCount = 0;
         IEnumerable<IMessage>? secondCallMessages = null;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 (msgs, _, _) =>
                 {
@@ -120,19 +125,21 @@ public class DeferredToolExecutionTests
                     }
                     secondCallMessages = [.. msgs];
                     return Task.FromResult(ToAsyncEnumerable([finalAssistantText]));
-                });
+                }
+            );
 
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("long_running_op"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred()));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred())
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
@@ -142,22 +149,26 @@ public class DeferredToolExecutionTests
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var secondRunCompleted = new TaskCompletionSource<bool>();
         var runCompleteCount = 0;
-        _ = ObserveAsync(loop, msg =>
-        {
-            subscriberMessages.Add(msg);
-            if (msg is RunCompletedMessage)
+        _ = ObserveAsync(
+            loop,
+            msg =>
             {
-                runCompleteCount++;
-                if (runCompleteCount == 1)
+                subscriberMessages.Add(msg);
+                if (msg is RunCompletedMessage)
                 {
-                    firstRunCompleted.TrySetResult(true);
+                    runCompleteCount++;
+                    if (runCompleteCount == 1)
+                    {
+                        firstRunCompleted.TrySetResult(true);
+                    }
+                    else if (runCompleteCount == 2)
+                    {
+                        secondRunCompleted.TrySetResult(true);
+                    }
                 }
-                else if (runCompleteCount == 2)
-                {
-                    secondRunCompleted.TrySetResult(true);
-                }
-            }
-        }, cts.Token);
+            },
+            cts.Token
+        );
 
         // Send the first user input — kicks off run 1.
         await loop.SendAsync([new TextMessage { Text = "Start the long op", Role = Role.User }]);
@@ -186,13 +197,17 @@ public class DeferredToolExecutionTests
         var allResults = secondCallMessages!
             .OfType<ToolCallResultMessage>()
             .Concat(
-                secondCallMessages!.OfType<ToolsCallResultMessage>()
-                    .SelectMany(m => m.ToolCallResults.Select(r => new ToolCallResultMessage
-                    {
-                        ToolCallId = r.ToolCallId,
-                        Result = r.Result,
-                        IsError = r.IsError,
-                    })))
+                secondCallMessages!
+                    .OfType<ToolsCallResultMessage>()
+                    .SelectMany(m =>
+                        m.ToolCallResults.Select(r => new ToolCallResultMessage
+                        {
+                            ToolCallId = r.ToolCallId,
+                            Result = r.Result,
+                            IsError = r.IsError,
+                        })
+                    )
+            )
             .ToList();
         var resolvedInHistory = allResults.Single(m => m.ToolCallId == "tc_long");
         resolvedInHistory.Result.Should().Be("{\"status\":\"done\"}");
@@ -218,28 +233,35 @@ public class DeferredToolExecutionTests
 
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                return callCount == 1
-                    ? Task.FromResult(ToAsyncEnumerable([toolCall]))
-                    : Task.FromResult(ToAsyncEnumerable([finalText]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                {
+                    callCount++;
+                    return callCount == 1
+                        ? Task.FromResult(ToAsyncEnumerable([toolCall]))
+                        : Task.FromResult(ToAsyncEnumerable([finalText]));
+                }
+            );
 
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("long_op"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred())
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
@@ -247,21 +269,25 @@ public class DeferredToolExecutionTests
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var secondRunCompleted = new TaskCompletionSource<bool>();
         var completedRuns = 0;
-        _ = ObserveAsync(loop, msg =>
-        {
-            if (msg is RunCompletedMessage)
+        _ = ObserveAsync(
+            loop,
+            msg =>
             {
-                completedRuns++;
-                if (completedRuns == 1)
+                if (msg is RunCompletedMessage)
                 {
-                    firstRunCompleted.TrySetResult(true);
+                    completedRuns++;
+                    if (completedRuns == 1)
+                    {
+                        firstRunCompleted.TrySetResult(true);
+                    }
+                    else if (completedRuns == 2)
+                    {
+                        secondRunCompleted.TrySetResult(true);
+                    }
                 }
-                else if (completedRuns == 2)
-                {
-                    secondRunCompleted.TrySetResult(true);
-                }
-            }
-        }, cts.Token);
+            },
+            cts.Token
+        );
 
         await loop.SendAsync([new TextMessage { Text = "Go", Role = Role.User }]);
         await firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -288,11 +314,11 @@ public class DeferredToolExecutionTests
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         var act = async () => await loop.ResolveToolCallAsync("nonexistent", "value");
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*nonexistent*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*nonexistent*");
     }
 
     [Fact]
@@ -309,45 +335,56 @@ public class DeferredToolExecutionTests
 
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                return callCount == 1
-                    ? Task.FromResult(ToAsyncEnumerable([toolCall]))
-                    : Task.FromResult(ToAsyncEnumerable([finalText]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                {
+                    callCount++;
+                    return callCount == 1
+                        ? Task.FromResult(ToAsyncEnumerable([toolCall]))
+                        : Task.FromResult(ToAsyncEnumerable([finalText]));
+                }
+            );
 
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("op"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred())
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var completedRuns = 0;
-        _ = ObserveAsync(loop, msg =>
-        {
-            if (msg is RunCompletedMessage)
+        _ = ObserveAsync(
+            loop,
+            msg =>
             {
-                completedRuns++;
-                if (completedRuns == 1)
+                if (msg is RunCompletedMessage)
                 {
-                    firstRunCompleted.TrySetResult(true);
+                    completedRuns++;
+                    if (completedRuns == 1)
+                    {
+                        firstRunCompleted.TrySetResult(true);
+                    }
                 }
-            }
-        }, cts.Token);
+            },
+            cts.Token
+        );
 
         await loop.SendAsync([new TextMessage { Text = "Go", Role = Role.User }]);
         await firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -357,8 +394,7 @@ public class DeferredToolExecutionTests
 
         // Second resolution with different content must throw.
         var act = async () => await loop.ResolveToolCallAsync("tc_conflict", "ANSWER_B");
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*already been resolved*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*already been resolved*");
 
         await cts.CancelAsync();
     }
@@ -378,13 +414,15 @@ public class DeferredToolExecutionTests
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("wait_for_human"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred())
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
@@ -424,13 +462,15 @@ public class DeferredToolExecutionTests
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("wait"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred())
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
@@ -462,10 +502,15 @@ public class DeferredToolExecutionTests
 
         // Mock LLM should still have been called exactly once — the guard fired before
         // any second provider request was sent.
-        _mockAgent.Verify(a => a.GenerateReplyStreamingAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _mockAgent.Verify(
+            a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
 
         await cts.CancelAsync();
     }
@@ -497,31 +542,42 @@ public class DeferredToolExecutionTests
         var callCount = 0;
         IEnumerable<IMessage>? secondCallMessages = null;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 (msgs, _, _) =>
                 {
                     callCount++;
                     if (callCount == 1)
                     {
-                        return Task.FromResult(ToAsyncEnumerable(
-                            [toolCallA, toolCallB]));
+                        return Task.FromResult(ToAsyncEnumerable([toolCallA, toolCallB]));
                     }
                     secondCallMessages = [.. msgs];
                     return Task.FromResult(ToAsyncEnumerable([finalText]));
-                });
+                }
+            );
 
         var registry = new FunctionRegistry();
-        registry.AddFunction(BuildContract("wait_a"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
-        registry.AddFunction(BuildContract("wait_b"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+        registry.AddFunction(
+            BuildContract("wait_a"),
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred())
+        );
+        registry.AddFunction(
+            BuildContract("wait_b"),
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred())
+        );
 
         await using var loop = new MultiTurnAgentLoop(
-            _mockAgent.Object, registry, "test-thread", logger: _loggerMock.Object);
+            _mockAgent.Object,
+            registry,
+            "test-thread",
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
@@ -530,33 +586,37 @@ public class DeferredToolExecutionTests
         var siblingRunCompleted = new TaskCompletionSource<bool>();
         var continuationCompleted = new TaskCompletionSource<bool>();
         var completedRunIds = new List<string>();
-        _ = ObserveAsync(loop, msg =>
-        {
-            if (msg is not RunCompletedMessage completed)
+        _ = ObserveAsync(
+            loop,
+            msg =>
             {
-                return;
-            }
+                if (msg is not RunCompletedMessage completed)
+                {
+                    return;
+                }
 
-            lock (completedRunIds)
-            {
-                completedRunIds.Add(completed.CompletedRunId);
-            }
+                lock (completedRunIds)
+                {
+                    completedRunIds.Add(completed.CompletedRunId);
+                }
 
-            // The provider call count is what separates the two kinds of child run: the sibling
-            // completes without one, the continuation only completes after making it.
-            if (Volatile.Read(ref callCount) >= 2)
-            {
-                continuationCompleted.TrySetResult(true);
-            }
-            else if (firstRunCompleted.Task.IsCompleted)
-            {
-                siblingRunCompleted.TrySetResult(true);
-            }
-            else
-            {
-                firstRunCompleted.TrySetResult(true);
-            }
-        }, cts.Token);
+                // The provider call count is what separates the two kinds of child run: the sibling
+                // completes without one, the continuation only completes after making it.
+                if (Volatile.Read(ref callCount) >= 2)
+                {
+                    continuationCompleted.TrySetResult(true);
+                }
+                else if (firstRunCompleted.Task.IsCompleted)
+                {
+                    siblingRunCompleted.TrySetResult(true);
+                }
+                else
+                {
+                    firstRunCompleted.TrySetResult(true);
+                }
+            },
+            cts.Token
+        );
 
         await loop.SendAsync([new TextMessage { Text = "Go", Role = Role.User }]);
         await firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -575,15 +635,15 @@ public class DeferredToolExecutionTests
         await loop.ResolveToolCallAsync("tc_a", "result-a");
         await siblingRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await Task.Delay(150);
-        callCount.Should().Be(
-            1, "a request carrying a still-deferred placeholder must never reach the provider");
+        callCount.Should().Be(1, "a request carrying a still-deferred placeholder must never reach the provider");
         continuationCompleted.Task.IsCompleted.Should().BeFalse();
 
         lock (completedRunIds)
         {
             completedRunIds.Should().HaveCount(2, "each resolved result gets its own child run");
-            completedRunIds[1].Should().NotBe(
-                originatingRunId, "the child run is a new run, not a re-completion of the origin");
+            completedRunIds[1]
+                .Should()
+                .NotBe(originatingRunId, "the child run is a new run, not a re-completion of the origin");
         }
 
         var stillPending = await loop.GetDeferredToolCallsAsync();
@@ -599,13 +659,17 @@ public class DeferredToolExecutionTests
         var allResults = secondCallMessages!
             .OfType<ToolCallResultMessage>()
             .Concat(
-                secondCallMessages!.OfType<ToolsCallResultMessage>()
-                    .SelectMany(m => m.ToolCallResults.Select(r => new ToolCallResultMessage
-                    {
-                        ToolCallId = r.ToolCallId,
-                        Result = r.Result,
-                        IsError = r.IsError,
-                    })))
+                secondCallMessages!
+                    .OfType<ToolsCallResultMessage>()
+                    .SelectMany(m =>
+                        m.ToolCallResults.Select(r => new ToolCallResultMessage
+                        {
+                            ToolCallId = r.ToolCallId,
+                            Result = r.Result,
+                            IsError = r.IsError,
+                        })
+                    )
+            )
             .ToList();
         allResults.Single(m => m.ToolCallId == "tc_a").Result.Should().Be("result-a");
         allResults.Single(m => m.ToolCallId == "tc_b").Result.Should().Be("result-b");
@@ -650,17 +714,22 @@ public class DeferredToolExecutionTests
             RunId = runId,
         };
 
-        await store.AppendMessagesAsync(threadId,
-        [
-            MessagePersistenceConverter.ToPersistedMessage(toolCall, threadId, runId),
-            MessagePersistenceConverter.ToPersistedMessage(deferredResult, threadId, runId),
-        ]);
-        await store.SaveMetadataAsync(threadId, new ThreadMetadata
-        {
-            ThreadId = threadId,
-            LatestRunId = runId,
-            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        });
+        await store.AppendMessagesAsync(
+            threadId,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(toolCall, threadId, runId),
+                MessagePersistenceConverter.ToPersistedMessage(deferredResult, threadId, runId),
+            ]
+        );
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
 
         // New process: spin up a fresh loop pointed at the same store and recover.
         var registry = new FunctionRegistry();
@@ -669,7 +738,8 @@ public class DeferredToolExecutionTests
             registry,
             threadId,
             store: store,
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         var recovered = await loop.RecoverAsync();
         recovered.Should().BeTrue();
@@ -721,17 +791,22 @@ public class DeferredToolExecutionTests
             RunId = runId,
         };
 
-        await store.AppendMessagesAsync(threadId,
-        [
-            MessagePersistenceConverter.ToPersistedMessage(toolCall, threadId, runId),
-            MessagePersistenceConverter.ToPersistedMessage(deferredResult, threadId, runId),
-        ]);
-        await store.SaveMetadataAsync(threadId, new ThreadMetadata
-        {
-            ThreadId = threadId,
-            LatestRunId = runId,
-            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        });
+        await store.AppendMessagesAsync(
+            threadId,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(toolCall, threadId, runId),
+                MessagePersistenceConverter.ToPersistedMessage(deferredResult, threadId, runId),
+            ]
+        );
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
 
         // Recovering loop has no triggerOptions -> _triggerRuntime is null.
         var registry = new FunctionRegistry();
@@ -740,7 +815,8 @@ public class DeferredToolExecutionTests
             registry,
             threadId,
             store: store,
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         var recovered = await loop.RecoverAsync();
         recovered.Should().BeTrue();
@@ -752,8 +828,11 @@ public class DeferredToolExecutionTests
         // It must have resolved with a terminal trigger_disabled failure, persisted to the store.
         var persisted = await store.LoadMessagesAsync(threadId);
         var resolvedMessages = MessagePersistenceConverter.FromPersistedMessages(persisted);
-        var resolved = resolvedMessages.OfType<ToolCallResultMessage>()
-            .Should().ContainSingle(m => m.ToolCallId == "tc_wait_persisted").Subject;
+        var resolved = resolvedMessages
+            .OfType<ToolCallResultMessage>()
+            .Should()
+            .ContainSingle(m => m.ToolCallId == "tc_wait_persisted")
+            .Subject;
         resolved.IsDeferred.Should().BeFalse();
         resolved.IsError.Should().BeFalse();
 
@@ -841,20 +920,25 @@ public class DeferredToolExecutionTests
             MessageOrderIdx = 4,
         };
 
-        await store.AppendMessagesAsync(threadId,
-        [
-            MessagePersistenceConverter.ToPersistedMessage(toolCall1, threadId, runId),
-            MessagePersistenceConverter.ToPersistedMessage(deferredResult1, threadId, runId),
-            MessagePersistenceConverter.ToPersistedMessage(conflictingResolution1, threadId, runId),
-            MessagePersistenceConverter.ToPersistedMessage(toolCall2, threadId, runId),
-            MessagePersistenceConverter.ToPersistedMessage(deferredResult2, threadId, runId),
-        ]);
-        await store.SaveMetadataAsync(threadId, new ThreadMetadata
-        {
-            ThreadId = threadId,
-            LatestRunId = runId,
-            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        });
+        await store.AppendMessagesAsync(
+            threadId,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(toolCall1, threadId, runId),
+                MessagePersistenceConverter.ToPersistedMessage(deferredResult1, threadId, runId),
+                MessagePersistenceConverter.ToPersistedMessage(conflictingResolution1, threadId, runId),
+                MessagePersistenceConverter.ToPersistedMessage(toolCall2, threadId, runId),
+                MessagePersistenceConverter.ToPersistedMessage(deferredResult2, threadId, runId),
+            ]
+        );
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
 
         // Recovering loop has no triggerOptions -> _triggerRuntime is null, exercising the
         // trigger-disabled fallback loop under test.
@@ -864,7 +948,8 @@ public class DeferredToolExecutionTests
             registry,
             threadId,
             store: store,
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         var recovered = await loop.RecoverAsync();
         recovered.Should().BeTrue();
@@ -880,8 +965,11 @@ public class DeferredToolExecutionTests
         // tc_wait_2 must have been resolved with the terminal trigger_disabled failure, persisted.
         var persisted = await store.LoadMessagesAsync(threadId);
         var resolvedMessages = MessagePersistenceConverter.FromPersistedMessages(persisted);
-        var resolved2 = resolvedMessages.OfType<ToolCallResultMessage>()
-            .Should().ContainSingle(m => m.ToolCallId == "tc_wait_2").Subject;
+        var resolved2 = resolvedMessages
+            .OfType<ToolCallResultMessage>()
+            .Should()
+            .ContainSingle(m => m.ToolCallId == "tc_wait_2")
+            .Subject;
         resolved2.IsDeferred.Should().BeFalse();
         resolved2.IsError.Should().BeFalse();
 
@@ -891,8 +979,7 @@ public class DeferredToolExecutionTests
 
         // tc_wait_1's persisted rows must be untouched by the failed attempt — no partial/corrupt
         // write from the aborted resolution.
-        resolvedMessages.OfType<ToolCallResultMessage>()
-            .Count(m => m.ToolCallId == "tc_wait_1").Should().Be(2);
+        resolvedMessages.OfType<ToolCallResultMessage>().Count(m => m.ToolCallId == "tc_wait_1").Should().Be(2);
     }
 
     [Fact]
@@ -903,11 +990,7 @@ public class DeferredToolExecutionTests
         // would corrupt _deferred / history for any subsequent process that re-opens the
         // same store.
         var registry = new FunctionRegistry();
-        var loop = new MultiTurnAgentLoop(
-            _mockAgent.Object,
-            registry,
-            "test-thread",
-            logger: _loggerMock.Object);
+        var loop = new MultiTurnAgentLoop(_mockAgent.Object, registry, "test-thread", logger: _loggerMock.Object);
 
         await loop.DisposeAsync();
 
@@ -919,11 +1002,7 @@ public class DeferredToolExecutionTests
     public async Task GetDeferredToolCallsAsync_ThrowsObjectDisposedException_AfterDispose()
     {
         var registry = new FunctionRegistry();
-        var loop = new MultiTurnAgentLoop(
-            _mockAgent.Object,
-            registry,
-            "test-thread",
-            logger: _loggerMock.Object);
+        var loop = new MultiTurnAgentLoop(_mockAgent.Object, registry, "test-thread", logger: _loggerMock.Object);
 
         await loop.DisposeAsync();
 
@@ -955,13 +1034,15 @@ public class DeferredToolExecutionTests
             {
                 ct.ThrowIfCancellationRequested();
                 throw new OperationCanceledException(ct);
-            });
+            }
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
@@ -991,8 +1072,9 @@ public class DeferredToolExecutionTests
         var swallowedCancel = messages
             .OfType<ToolCallResultMessage>()
             .Where(m => m.IsError && m.Result.Contains("OperationCanceled", StringComparison.OrdinalIgnoreCase));
-        swallowedCancel.Should().BeEmpty(
-            "OperationCanceledException must propagate, not be serialized into an LLM-visible error");
+        swallowedCancel
+            .Should()
+            .BeEmpty("OperationCanceledException must propagate, not be serialized into an LLM-visible error");
     }
 
     /// <summary>
@@ -1008,60 +1090,61 @@ public class DeferredToolExecutionTests
     /// load: a subscriber attaching after a run completed gets no replay, so the completion signal
     /// the test then waits on never arrives and it fails on a timeout rather than on its subject.
     /// </remarks>
-    private static Task ObserveAsync(
-        MultiTurnAgentLoop loop,
-        Action<IMessage> onMessage,
-        CancellationToken ct)
+    private static Task ObserveAsync(MultiTurnAgentLoop loop, Action<IMessage> onMessage, CancellationToken ct)
     {
         var messages = loop.SubscribeAsync(ct).GetAsyncEnumerator(ct);
         var first = messages.MoveNextAsync();
 
         // Not `ct`: a cancelled token would skip this body entirely, leaving the subscription
         // attached and the pending move unobserved.
-        return Task.Run(async () =>
-        {
-            try
+        return Task.Run(
+            async () =>
             {
-                for (
-                    var hasMessage = await first;
-                    hasMessage;
-                    hasMessage = await messages.MoveNextAsync()
-                )
+                try
                 {
-                    onMessage(messages.Current);
+                    for (var hasMessage = await first; hasMessage; hasMessage = await messages.MoveNextAsync())
+                    {
+                        onMessage(messages.Current);
+                    }
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                // Cancelling the token is how these tests end the subscription.
-            }
-            finally
-            {
-                await messages.DisposeAsync();
-            }
-        }, CancellationToken.None);
+                catch (OperationCanceledException)
+                {
+                    // Cancelling the token is how these tests end the subscription.
+                }
+                finally
+                {
+                    await messages.DisposeAsync();
+                }
+            },
+            CancellationToken.None
+        );
     }
 
     private void SetupOneTurnResponse(IMessage message)
     {
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable([message])));
     }
 
-    private static FunctionContract BuildContract(string name) => new()
-    {
-        Name = name,
-        Description = $"Test contract for {name}",
-        Parameters = [],
-    };
+    private static FunctionContract BuildContract(string name) =>
+        new()
+        {
+            Name = name,
+            Description = $"Test contract for {name}",
+            Parameters = [],
+        };
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

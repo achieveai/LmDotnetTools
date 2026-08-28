@@ -101,9 +101,7 @@ public class WorkflowCollaborationTests
 
         var delegateNode = caller.Directory.Snapshot().SingleOrDefault(e => e.Kind == AgentKind.WorkflowDelegate);
         delegateNode.Should().NotBeNull("a controller's spawn is a workflow delegate, not a free sub-agent");
-        delegateNode!.ParentAgentId
-            .Should()
-            .Be(WorkflowCollaboration.ComposeControllerAgentId("wf-collab-delegate"));
+        delegateNode!.ParentAgentId.Should().Be(WorkflowCollaboration.ComposeControllerAgentId("wf-collab-delegate"));
         delegateNode.StructuralDepth.Should().Be(2, "root → controller → delegate");
         delegateNode.DelegationDepth.Should().Be(1, "one hop from the caller, as a direct sub-agent would be");
     }
@@ -119,8 +117,8 @@ public class WorkflowCollaborationTests
             definition: null,
             subAgentOptions: SpawningSubAgentOptions(),
             controllerAgent: ScriptedController(turn =>
-                    SpawnTurn(turn, LabelledTaskWorkflow, "hijacked-role", "hijacked description")
-                ).Object,
+                SpawnTurn(turn, LabelledTaskWorkflow, "hijacked-role", "hijacked description")
+            ).Object,
             threadId: "wf-collab-trusted-thread",
             instanceId: "wf-collab-trusted",
             callerCollaboration: caller
@@ -152,8 +150,8 @@ public class WorkflowCollaborationTests
             definition: null,
             subAgentOptions: SpawningSubAgentOptions(),
             controllerAgent: ScriptedController(turn =>
-                    SpawnTurn(turn, Phase3Fixtures.LinearBlockingAgent, "hijacked-role", "hijacked description")
-                ).Object,
+                SpawnTurn(turn, Phase3Fixtures.LinearBlockingAgent, "hijacked-role", "hijacked description")
+            ).Object,
             threadId: "wf-collab-unlabelled-thread",
             instanceId: "wf-collab-unlabelled",
             callerCollaboration: caller
@@ -179,8 +177,8 @@ public class WorkflowCollaborationTests
             definition: null,
             subAgentOptions: SpawningSubAgentOptions(fixedRole: "code-reviewer"),
             controllerAgent: ScriptedController(turn =>
-                    SpawnTurn(turn, LabelledTaskWorkflow, "hijacked-role", "hijacked description")
-                ).Object,
+                SpawnTurn(turn, LabelledTaskWorkflow, "hijacked-role", "hijacked description")
+            ).Object,
             threadId: "wf-collab-fixedrole-thread",
             instanceId: "wf-collab-fixedrole",
             callerCollaboration: caller
@@ -279,8 +277,8 @@ public class WorkflowCollaborationTests
 
         restarted.Directory.Capacity.InUse.Should().Be(1, "the resumed controller holds a permit again");
 
-        resumed.CollaborationNode!.AgentId
-            .Should()
+        resumed
+            .CollaborationNode!.AgentId.Should()
             .Be(WorkflowCollaboration.ComposeControllerAgentId("wf-reacquire-1"), "the identity is deterministic");
         resumed.CollaborationNode.Role.Should().Be("pinned-role");
         resumed.CollaborationNode.Description.Should().Be("pinned description");
@@ -310,9 +308,7 @@ public class WorkflowCollaborationTests
             .Be(SubAgentCollaborationFailureCodes.CapacityExhausted);
 
         // Nothing partial was left behind: no node, and the permit count is untouched.
-        caller.Directory.FindById(WorkflowCollaboration.ComposeControllerAgentId("wf-capacity-1"))
-            .Should()
-            .BeNull();
+        caller.Directory.FindById(WorkflowCollaboration.ComposeControllerAgentId("wf-capacity-1")).Should().BeNull();
         caller.Directory.Capacity.InUse.Should().Be(1);
     }
 
@@ -369,23 +365,13 @@ public class WorkflowCollaborationTests
         {
             await handle.Completion.WaitAsync(TimeSpan.FromSeconds(30));
 
-            var sent = caller.Bundle.TrySend(
-                caller.AgentId,
-                controllerId,
-                AgentMessageType.Question
-            );
+            var sent = caller.Bundle.TrySend(caller.AgentId, controllerId, AgentMessageType.Question);
             sent.Succeeded.Should().BeTrue("the controller is still a live, addressable node");
             question = sent.MessageId!;
         }
 
-        caller
-            .Bundle.Ledger.Find(question)!
-            .State.Should()
-            .Be(AgentMessageDeliveryState.Abandoned);
-        caller
-            .Bundle.Ledger.Find(question)!
-            .ReasonCode.Should()
-            .Be(AgentCollaborationBundle.TargetLeftReasonCode);
+        caller.Bundle.Ledger.Find(question)!.State.Should().Be(AgentMessageDeliveryState.Abandoned);
+        caller.Bundle.Ledger.Find(question)!.ReasonCode.Should().Be(AgentCollaborationBundle.TargetLeftReasonCode);
         caller.Bundle.Ledger.GetOpenInbound(controllerId).Should().BeEmpty();
         caller.Bundle.Ledger.GetOpenOutbound(caller.AgentId).Should().BeEmpty();
     }
@@ -423,7 +409,8 @@ public class WorkflowCollaborationTests
             () => caller.Directory.Capacity.InUse == 0,
             "the controller's permit was released",
             TimeSpan.FromSeconds(10),
-            observed: () => $"caller.Directory.Capacity.InUse={caller.Directory.Capacity.InUse}");
+            observed: () => $"caller.Directory.Capacity.InUse={caller.Directory.Capacity.InUse}"
+        );
 
         caller.Directory.Capacity.InUse.Should().Be(0, "the permit must not wait on an unbounded store flush");
         disposal.IsCompleted.Should().BeFalse("non-vacuity: teardown is still inside the blocked flush");
@@ -431,7 +418,6 @@ public class WorkflowCollaborationTests
         release.SetResult();
         await disposal;
     }
-
 
     /// <summary>A store whose saves park until released, standing in for a slow or wedged backend.</summary>
     private sealed class BlockingWorkflowStore(Task release) : IWorkflowStore
@@ -518,10 +504,7 @@ public class WorkflowCollaborationTests
             () => ScriptedController(DriveMinimalToTerminal).Object,
             EmptyControllerOptions()
         );
-        var provider = new StartWorkflowToolProvider(
-            manager,
-            callerCollaboration: () => outer.Loop.Collaboration
-        );
+        var provider = new StartWorkflowToolProvider(manager, callerCollaboration: () => outer.Loop.Collaboration);
         var start = provider.GetFunctions().Single(f => f.Contract.Name == "StartWorkflowAgent");
 
         var result = (ToolHandlerResult.Resolved)
@@ -547,7 +530,12 @@ public class WorkflowCollaborationTests
         // still cannot see the controller's workflow-state tools OR the launch family.
         var external = new InheritableToolSnapshot(
             [
-                new FunctionContract { Name = "Foo", Description = "Foo", Parameters = [] },
+                new FunctionContract
+                {
+                    Name = "Foo",
+                    Description = "Foo",
+                    Parameters = [],
+                },
                 new FunctionContract
                 {
                     Name = StartWorkflowToolProvider.StartWorkflowToolName,
@@ -586,15 +574,13 @@ public class WorkflowCollaborationTests
         inheritable.Should().Contain("Foo", "ordinary host tools still flow down");
         inheritable
             .Should()
-            .NotContain(
-                [
-                    StartWorkflowToolProvider.StartWorkflowToolName,
-                    "GetWorkflow",
-                    "SetCurrentNode",
-                    "SetState",
-                    "SetNotes",
-                ]
-            );
+            .NotContain([
+                StartWorkflowToolProvider.StartWorkflowToolName,
+                "GetWorkflow",
+                "SetCurrentNode",
+                "SetState",
+                "SetNotes",
+            ]);
     }
 
     [Fact]
@@ -619,7 +605,9 @@ public class WorkflowCollaborationTests
         (await endpoint.GetStatusAsync()).Should().Be(AgentCollaborationStatuses.Completed);
 
         // With no conversation store there is nothing to read, and that is an empty transcript, not a fault.
-        (await endpoint.GetTranscriptAsync()).Should().BeEmpty();
+        (await endpoint.GetTranscriptAsync())
+            .Should()
+            .BeEmpty();
     }
 
     [Fact]
@@ -676,7 +664,8 @@ public class WorkflowCollaborationTests
         gate.WasConsulted.Should().BeFalse("the controller's own steps are still not a host action to approve");
         handle.Runtime.IsComplete.Should().BeTrue();
         handle.Runtime.CurrentNodeId.Should().Be("t");
-        caller.Directory.FindById(WorkflowCollaboration.ComposeControllerAgentId("wf-collab-approval"))
+        caller
+            .Directory.FindById(WorkflowCollaboration.ComposeControllerAgentId("wf-collab-approval"))
             .Should()
             .NotBeNull();
     }
@@ -697,7 +686,10 @@ public class WorkflowCollaborationTests
                 objective: "drive",
                 inputs: null,
                 definition: MinimalDefinition(),
-                subAgentOptions: SpawningSubAgentOptions() with { MaxConcurrentSubAgents = 0 },
+                subAgentOptions: SpawningSubAgentOptions() with
+                {
+                    MaxConcurrentSubAgents = 0,
+                },
                 controllerAgent: ScriptedController(DriveMinimalToTerminal).Object,
                 threadId: "wf-leak-thread",
                 instanceId: "wf-leak-1",
@@ -707,7 +699,8 @@ public class WorkflowCollaborationTests
         _ = await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
 
         caller.Directory.Capacity.InUse.Should().Be(0, "the permit is returned even though no handle exists");
-        caller.Directory.FindById(WorkflowCollaboration.ComposeControllerAgentId("wf-leak-1"))!
+        caller
+            .Directory.FindById(WorkflowCollaboration.ComposeControllerAgentId("wf-leak-1"))!
             .IsLive.Should()
             .BeFalse();
     }
@@ -719,11 +712,7 @@ public class WorkflowCollaborationTests
     private static AgentCollaborationSetup Root(int maxTotalAgents = 8, int maxDelegationDepth = 1)
     {
         var setup = AgentCollaborationSetup.CreateRoot(
-            new AgentCollaborationOptions
-            {
-                MaxTotalAgents = maxTotalAgents,
-                MaxDelegationDepth = maxDelegationDepth,
-            },
+            new AgentCollaborationOptions { MaxTotalAgents = maxTotalAgents, MaxDelegationDepth = maxDelegationDepth },
             collaborationId: "collab-test",
             agentId: RootAgentId,
             name: "root"
@@ -751,15 +740,9 @@ public class WorkflowCollaborationTests
             )
             .Returns(
                 Task.FromResult(
-                    ToAsyncEnumerable(
-                        [
-                            new TextMessage
-                            {
-                                Text = """{ "summary": "analyzed-by-subagent" }""",
-                                Role = Role.Assistant,
-                            },
-                        ]
-                    )
+                    ToAsyncEnumerable([
+                        new TextMessage { Text = """{ "summary": "analyzed-by-subagent" }""", Role = Role.Assistant },
+                    ])
                 )
             );
 
@@ -773,9 +756,7 @@ public class WorkflowCollaborationTests
                     SystemPrompt = "You are a general-purpose analysis agent.",
                     AgentFactory = () => subAgent.Object,
                     Role = fixedRole,
-                    RoleMode = fixedRole is null
-                        ? SubAgentRoleMode.Customizable
-                        : SubAgentRoleMode.Fixed,
+                    RoleMode = fixedRole is null ? SubAgentRoleMode.Customizable : SubAgentRoleMode.Fixed,
                 },
             },
         };
@@ -848,21 +829,21 @@ public class WorkflowCollaborationTests
     /// <summary>A snapshot exactly as a pre-#244 build wrote it: no <c>collaboration</c> field anywhere.</summary>
     private static string LegacySnapshotJson(string instanceId) =>
         $$"""
-        {
-          "schemaVersion": 1,
-          "instanceId": "{{instanceId}}",
-          "definition": {{WorkflowFixtures.MinimalValid}},
-          "currentNodeId": "s",
-          "isComplete": false,
-          "step": 1,
-          "inputs": {},
-          "state": {},
-          "outputs": {},
-          "notes": {},
-          "visits": { "s": 1 },
-          "tasks": []
-        }
-        """;
+            {
+              "schemaVersion": 1,
+              "instanceId": "{{instanceId}}",
+              "definition": {{WorkflowFixtures.MinimalValid}},
+              "currentNodeId": "s",
+              "isComplete": false,
+              "step": 1,
+              "inputs": {},
+              "state": {},
+              "outputs": {},
+              "notes": {},
+              "visits": { "s": 1 },
+              "tasks": []
+            }
+            """;
 
     private static AgentMessage Message() =>
         new()

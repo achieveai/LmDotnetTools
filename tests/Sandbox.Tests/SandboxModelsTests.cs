@@ -8,7 +8,13 @@ public class SandboxModelsTests
     [Fact]
     public void SandboxAuthProvider_ToString_NeverIncludesGatewayAuth()
     {
-        var provider = new SandboxAuthProvider("github-auth", "webhook", "https://app/callback", "super-secret-value", 300);
+        var provider = new SandboxAuthProvider(
+            "github-auth",
+            "webhook",
+            "https://app/callback",
+            "super-secret-value",
+            300
+        );
 
         var rendered = provider.ToString();
 
@@ -130,7 +136,12 @@ public class SandboxModelsTests
         // (crates/mcp-gateway/src/api/sandboxes.rs, SandboxedOstoolsMcpServer@c0dc9cfe...): "name" is
         // `Option<String>` and is omitted entirely for a "context_file" item. The model must not
         // require it.
-        var item = new SandboxDiscoveredItem("context_file", name: null, description: null, path: "/workspace/CLAUDE.md");
+        var item = new SandboxDiscoveredItem(
+            "context_file",
+            name: null,
+            description: null,
+            path: "/workspace/CLAUDE.md"
+        );
 
         item.Name.Should().BeNull();
         item.Kind.Should().Be("context_file");
@@ -142,7 +153,12 @@ public class SandboxModelsTests
     {
         // The model does not hard-code per-kind requirements, so a discriminator this SDK does not
         // yet recognize (a future gateway addition) is tolerated rather than rejected.
-        var item = new SandboxDiscoveredItem("future_kind_v2", name: null, description: null, path: "/workspace/whatever");
+        var item = new SandboxDiscoveredItem(
+            "future_kind_v2",
+            name: null,
+            description: null,
+            path: "/workspace/whatever"
+        );
 
         item.Kind.Should().Be("future_kind_v2");
         item.Name.Should().BeNull();
@@ -243,12 +259,7 @@ public class SandboxModelsTests
     [Fact]
     public void SandboxPluginResolution_NullRequested_StaysNull_NotEmpty()
     {
-        var resolution = new SandboxPluginResolution(
-            supported: true,
-            requested: null,
-            effective: [],
-            failed: []
-        );
+        var resolution = new SandboxPluginResolution(supported: true, requested: null, effective: [], failed: []);
 
         resolution.Requested.Should().BeNull();
     }

@@ -16,14 +16,13 @@ public sealed class BasicStreamingTests
     [InlineData("test-anthropic")]
     public async Task Parent_streams_plain_text_to_client(string providerMode)
     {
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.Text("Hello from the scripted parent."))
+            .Turn(t => t.Text("Hello from the scripted parent."))
             .Build();
 
-        var handler = providerMode == "test-anthropic"
-            ? responder.AsAnthropicHandler()
-            : responder.AsOpenAiHandler();
+        var handler = providerMode == "test-anthropic" ? responder.AsAnthropicHandler() : responder.AsOpenAiHandler();
 
         var builder = new ScriptedBuilder(handler);
         using var factory = new E2EWebAppFactory(providerMode, builder);

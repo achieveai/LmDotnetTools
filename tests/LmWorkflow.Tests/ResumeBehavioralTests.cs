@@ -60,14 +60,10 @@ public class ResumeBehavioralTests
             persisted.Should().NotBeNull();
             persisted!.CurrentNodeId.Should().Be("analyze");
             persisted.IsComplete.Should().BeFalse();
-            persisted.Outputs["analyze"]!["task"]!["summary"]!.GetValue<string>()
-                .Should()
-                .Be("analyzed-by-subagent");
+            persisted.Outputs["analyze"]!["task"]!["summary"]!.GetValue<string>().Should().Be("analyzed-by-subagent");
             persisted.State["analysis"]!["summary"]!.GetValue<string>().Should().Be("analyzed-by-subagent");
             persisted.Visits["analyze"].Should().Be(1);
-            persisted.Tasks.Single(t => t.Name == AnalyzeUnit).Status
-                .Should()
-                .Be(WorkflowTaskStatus.Validated);
+            persisted.Tasks.Single(t => t.Name == AnalyzeUnit).Status.Should().Be(WorkflowTaskStatus.Validated);
 
             // The controller conversation was persisted under the thread id.
             conversationStore.GetMessageCount(ThreadId).Should().BeGreaterThan(0);
@@ -92,9 +88,7 @@ public class ResumeBehavioralTests
         resumed.Runtime.IsComplete.Should().BeTrue();
         resumed.Runtime.CurrentNodeId.Should().Be("done");
         resumed.Result!["summary"]!.GetValue<string>().Should().Be("final-result");
-        resumed.Runtime.Outputs["analyze"]!["task"]!["summary"]!.GetValue<string>()
-            .Should()
-            .Be("analyzed-by-subagent");
+        resumed.Runtime.Outputs["analyze"]!["task"]!["summary"]!.GetValue<string>().Should().Be("analyzed-by-subagent");
         resumed.Runtime.State["analysis"]!["summary"]!.GetValue<string>().Should().Be("analyzed-by-subagent");
         resumed.Runtime.Visits["analyze"].Should().Be(1);
 
@@ -117,15 +111,9 @@ public class ResumeBehavioralTests
             )
             .Returns(
                 Task.FromResult(
-                    ToAsyncEnumerable(
-                        [
-                            new TextMessage
-                            {
-                                Text = """{ "summary": "analyzed-by-subagent" }""",
-                                Role = Role.Assistant,
-                            },
-                        ]
-                    )
+                    ToAsyncEnumerable([
+                        new TextMessage { Text = """{ "summary": "analyzed-by-subagent" }""", Role = Role.Assistant },
+                    ])
                 )
             );
 

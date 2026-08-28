@@ -44,13 +44,7 @@ public sealed class WeightedMeanAggregatorTests
         };
 
     private static Verdict Aggregate(IReadOnlyList<Ballot> ballots, AggregationContext? context = null) =>
-        Aggregator.Aggregate(
-            HarnessFixtures.Candidate(),
-            Rubric,
-            [],
-            ballots,
-            context ?? Context()
-        );
+        Aggregator.Aggregate(HarnessFixtures.Candidate(), Rubric, [], ballots, context ?? Context());
 
     /// <summary>
     /// §2.6 — an abstention is DISTINCT from a zero. If it were counted as zero, a two-judge panel
@@ -60,33 +54,21 @@ public sealed class WeightedMeanAggregatorTests
     [Fact]
     public void An_abstention_is_excluded_rather_than_counted_as_zero()
     {
-        var verdict = Aggregate(
-            [Ballot("a", "anthropic", 8.0), Ballot("b", "openai", 0.0, abstained: true)]
-        );
+        var verdict = Aggregate([Ballot("a", "anthropic", 8.0), Ballot("b", "openai", 0.0, abstained: true)]);
 
         verdict.Score.Should().Be(8.0, "the abstention is not a zero dragging the mean down");
         verdict.Ballots.Should().ContainSingle().Which.JudgeId.Should().Be("a");
-        verdict
-            .ExcludedBallots.Should()
-            .ContainSingle()
-            .Which.ExclusionReason.Should()
-            .Be("abstained");
+        verdict.ExcludedBallots.Should().ContainSingle().Which.ExclusionReason.Should().Be("abstained");
         verdict.Outcome.Should().Be(VerdictOutcome.Pass);
     }
 
     [Fact]
     public void A_ballot_below_the_abstain_floor_is_excluded_and_recorded()
     {
-        var verdict = Aggregate(
-            [Ballot("a", "anthropic", 8.0), Ballot("b", "openai", 2.0, confidence: 0.2)]
-        );
+        var verdict = Aggregate([Ballot("a", "anthropic", 8.0), Ballot("b", "openai", 2.0, confidence: 0.2)]);
 
         verdict.Score.Should().Be(8.0);
-        verdict
-            .ExcludedBallots.Should()
-            .ContainSingle()
-            .Which.ExclusionReason.Should()
-            .Be("confidence-below-floor");
+        verdict.ExcludedBallots.Should().ContainSingle().Which.ExclusionReason.Should().Be("confidence-below-floor");
     }
 
     /// <summary>
@@ -96,12 +78,10 @@ public sealed class WeightedMeanAggregatorTests
     [Fact]
     public void No_surviving_ballot_is_NoDecision_not_Fail()
     {
-        var verdict = Aggregate(
-            [
-                Ballot("a", "anthropic", 0.0, abstained: true),
-                Ballot("b", "openai", 0.0, abstained: true),
-            ]
-        );
+        var verdict = Aggregate([
+            Ballot("a", "anthropic", 0.0, abstained: true),
+            Ballot("b", "openai", 0.0, abstained: true),
+        ]);
 
         verdict.Outcome.Should().Be(VerdictOutcome.NoDecision);
         verdict.Score.Should().BeNull("there are no counted ballots, so there is no score");
@@ -163,9 +143,7 @@ public sealed class WeightedMeanAggregatorTests
         verdict.TieBreakRule.Should().Be("consensus");
         verdict.Score.Should().Be(7.5);
         verdict.Degradation.Should().Be(PanelDegradation.None);
-        verdict
-            .Dispersion.Should()
-            .BeApproximately(1.5, 1e-9, "9 and 6 agree on the decision but not on the quality");
+        verdict.Dispersion.Should().BeApproximately(1.5, 1e-9, "9 and 6 agree on the decision but not on the quality");
     }
 
     [Fact]
@@ -200,11 +178,7 @@ public sealed class WeightedMeanAggregatorTests
     {
         var arbiter = new FakeJudge("arb", "google", score: 4.0);
         var verdict = Aggregate(
-            [
-                Ballot("a", "anthropic", 9.0),
-                Ballot("b", "openai", 3.0),
-                Ballot("arb", "google", 4.0),
-            ],
+            [Ballot("a", "anthropic", 9.0), Ballot("b", "openai", 3.0), Ballot("arb", "google", 4.0)],
             Context(new HarnessOptions { ArbiterJudge = arbiter })
         );
 
@@ -328,11 +302,7 @@ public sealed class WeightedMeanAggregatorTests
     public void Every_counted_ballot_carries_a_weight_and_every_excluded_one_carries_none()
     {
         var verdict = Aggregate(
-            [
-                Ballot("a", "anthropic", 9.0),
-                Ballot("b", "openai", 7.0),
-                Ballot("c", "openai", 1.0, abstained: true),
-            ],
+            [Ballot("a", "anthropic", 9.0), Ballot("b", "openai", 7.0), Ballot("c", "openai", 1.0, abstained: true)],
             Context(reliability: new Dictionary<string, double> { ["a"] = 0.5 })
         );
 
@@ -349,21 +319,15 @@ public sealed class WeightedMeanAggregatorTests
     [Fact]
     public void An_excluded_ballot_that_arrived_with_a_weight_is_normalised_back_to_null()
     {
-        var verdict = Aggregate(
-            [
-                Ballot("a", "anthropic", 9.0),
-                Ballot("b", "openai", 1.0, abstained: true) with
-                {
-                    AppliedWeight = 42.0,
-                },
-            ]
-        );
+        var verdict = Aggregate([
+            Ballot("a", "anthropic", 9.0),
+            Ballot("b", "openai", 1.0, abstained: true) with
+            {
+                AppliedWeight = 42.0,
+            },
+        ]);
 
-        verdict
-            .ExcludedBallots.Should()
-            .ContainSingle()
-            .Which.Ballot.AppliedWeight.Should()
-            .BeNull();
+        verdict.ExcludedBallots.Should().ContainSingle().Which.Ballot.AppliedWeight.Should().BeNull();
     }
 
     [Fact]
@@ -388,9 +352,7 @@ public sealed class WeightedMeanAggregatorTests
     [Fact]
     public void A_SingleJudge_verdict_caused_by_an_abstention_names_the_abstention()
     {
-        var verdict = Aggregate(
-            [Ballot("a", "anthropic", 9.0), Ballot("b", "openai", 0.0, abstained: true)]
-        );
+        var verdict = Aggregate([Ballot("a", "anthropic", 9.0), Ballot("b", "openai", 0.0, abstained: true)]);
 
         verdict.Degradation.Should().Be(PanelDegradation.SingleJudge);
         verdict.DegradationReason.Should().NotBeNull();
@@ -400,9 +362,7 @@ public sealed class WeightedMeanAggregatorTests
     [Fact]
     public void A_SingleJudge_verdict_caused_by_low_confidence_names_the_floor()
     {
-        var verdict = Aggregate(
-            [Ballot("a", "anthropic", 9.0), Ballot("b", "openai", 4.0, confidence: 0.1)]
-        );
+        var verdict = Aggregate([Ballot("a", "anthropic", 9.0), Ballot("b", "openai", 4.0, confidence: 0.1)]);
 
         verdict.Degradation.Should().Be(PanelDegradation.SingleJudge);
         verdict.DegradationReason.Should().Contain("confidence-below-floor");
@@ -446,8 +406,7 @@ public sealed class WeightedMeanAggregatorTests
         var totalWeight = verdict.Ballots.Sum(b => b.AppliedWeight!.Value);
         totalWeight.Should().BePositive("a persisted row whose weights sum to zero cannot recompute");
 
-        var recomputed =
-            verdict.Ballots.Sum(b => b.AppliedWeight!.Value * b.WeightedScore) / totalWeight;
+        var recomputed = verdict.Ballots.Sum(b => b.AppliedWeight!.Value * b.WeightedScore) / totalWeight;
         recomputed.Should().BeApproximately(verdict.Score!.Value, 1e-9);
     }
 
@@ -523,9 +482,7 @@ public sealed class WeightedMeanAggregatorTests
     [Fact]
     public void No_configured_alarm_never_flags_however_wide_the_disagreement()
     {
-        var verdict = Aggregate(
-            [Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 0.0)]
-        );
+        var verdict = Aggregate([Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 0.0)]);
 
         verdict.Dispersion.Should().Be(5.0);
         verdict.DispersionAlarmed.Should().BeFalse();

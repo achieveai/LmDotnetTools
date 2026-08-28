@@ -37,12 +37,11 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         [
             new ReviewArtifactFile("PRs/widgets-42/review.md", "# Review"),
             new ReviewArtifactFile("KnowledgeBase/_toc.md", "# ToC"),
-        ]);
+        ]
+    );
 
     public ReviewBranchManagerTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private ReviewBranchManager CreateManager(
         ISandboxCommandRunner runner,
@@ -53,7 +52,8 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
             new GitRunner(runner),
             fileSystem,
             LoggerFactory.CreateLogger<ReviewBranchManager>(),
-            rebuildDerivedKnowledgeAsync);
+            rebuildDerivedKnowledgeAsync
+        );
 
     [Fact]
     public async Task CommitNotes_creates_the_branch_from_default_when_it_does_not_exist_yet()
@@ -62,8 +62,12 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         // A brand-new review branch: the existence probe fails.
         runner.OnArgvContains(
             $"rev-parse --verify {ReviewBranch}",
-            new SandboxCommandResult(1, string.Empty, "unknown revision"));
-        runner.OnArgvContains($"rev-parse {ReviewBranch}", new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+            new SandboxCommandResult(1, string.Empty, "unknown revision")
+        );
+        runner.OnArgvContains(
+            $"rev-parse {ReviewBranch}",
+            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
+        );
         var fs = new FakeSandboxFileSystem();
 
         var result = await CreateManager(runner, fs).CommitNotesAsync(RepoRoot, Request, CancellationToken.None);
@@ -97,7 +101,8 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         // The review branch already exists (a prior review committed onto it) — the probe succeeds.
         runner.OnArgvContains(
             $"rev-parse --verify {ReviewBranch}",
-            new SandboxCommandResult(0, ReviewBranch, string.Empty));
+            new SandboxCommandResult(0, ReviewBranch, string.Empty)
+        );
         runner.OnArgvContains($"rev-parse {ReviewBranch}", new SandboxCommandResult(0, "deadbeef\n", string.Empty));
         var fs = new FakeSandboxFileSystem();
 
@@ -121,10 +126,12 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"rev-parse --verify {ReviewBranch}",
-            new SandboxCommandResult(0, ReviewBranch, string.Empty));
+            new SandboxCommandResult(0, ReviewBranch, string.Empty)
+        );
         runner.OnArgvContains(
             "commit -m",
-            new SandboxCommandResult(1, "nothing to commit, working tree clean\n", string.Empty));
+            new SandboxCommandResult(1, "nothing to commit, working tree clean\n", string.Empty)
+        );
         // The index genuinely matches HEAD — `diff --cached --quiet` exits 0 — and the notes it should
         // contain resolve at HEAD, so the branch really is carrying this review's artifacts.
         runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(0, string.Empty, string.Empty));
@@ -152,23 +159,29 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"rev-parse --verify {ReviewBranch}",
-            new SandboxCommandResult(0, ReviewBranch, string.Empty));
+            new SandboxCommandResult(0, ReviewBranch, string.Empty)
+        );
         runner.OnArgvContains(
             "commit -m",
-            new SandboxCommandResult(1, "nothing to commit, working tree clean\n", string.Empty));
+            new SandboxCommandResult(1, "nothing to commit, working tree clean\n", string.Empty)
+        );
         runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(0, string.Empty, string.Empty));
         // The review notes are NOT on the branch: `cat-file -e HEAD:PRs/widgets-42/review.md` cannot resolve.
         runner.OnArgvContains(
             "cat-file -e HEAD:PRs/widgets-42/review.md",
-            new SandboxCommandResult(1, string.Empty, "fatal: path does not exist in 'HEAD'"));
+            new SandboxCommandResult(1, string.Empty, "fatal: path does not exist in 'HEAD'")
+        );
         var fs = new FakeSandboxFileSystem();
 
         var act = async () =>
             await CreateManager(runner, fs).CommitNotesAsync(RepoRoot, Request, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<InvalidOperationException>())
-            .WithMessage("*PRs/widgets-42/review.md*", "the failure has to name the notes that are missing");
-        runner.Commands.Select(c => string.Join(' ', c.Argv))
+        (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            "*PRs/widgets-42/review.md*",
+            "the failure has to name the notes that are missing"
+        );
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
             .Should()
             .NotContain(a => a.Contains($"push origin {ReviewBranch}"), "unretained notes must not be pushed");
     }
@@ -181,10 +194,9 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"rev-parse --verify {ReviewBranch}",
-            new SandboxCommandResult(0, ReviewBranch, string.Empty));
-        runner.OnArgvContains(
-            "commit -m",
-            new SandboxCommandResult(1, string.Empty, "fatal: cannot lock ref HEAD"));
+            new SandboxCommandResult(0, ReviewBranch, string.Empty)
+        );
+        runner.OnArgvContains("commit -m", new SandboxCommandResult(1, string.Empty, "fatal: cannot lock ref HEAD"));
         // Changes ARE staged — `diff --cached --quiet` exits 1.
         runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(1, string.Empty, string.Empty));
         var fs = new FakeSandboxFileSystem();
@@ -192,9 +204,9 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         var act = async () =>
             await CreateManager(runner, fs).CommitNotesAsync(RepoRoot, Request, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<InvalidOperationException>())
-            .WithMessage("*cannot lock ref HEAD*");
-        runner.Commands.Select(c => string.Join(' ', c.Argv))
+        (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*cannot lock ref HEAD*");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
             .Should()
             .NotContain(a => a.Contains($"push origin {ReviewBranch}"), "a failed commit must not be pushed");
     }
@@ -205,13 +217,15 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"rev-parse --verify {ReviewBranch}",
-            new SandboxCommandResult(1, string.Empty, "unknown revision"));
+            new SandboxCommandResult(1, string.Empty, "unknown revision")
+        );
         // Push is rejected twice (remote moved), then succeeds on the third attempt.
         runner.OnArgvContainsSequence(
             $"push origin {ReviewBranch}",
             new SandboxCommandResult(1, string.Empty, "rejected"),
             new SandboxCommandResult(1, string.Empty, "rejected"),
-            new SandboxCommandResult(0, string.Empty, string.Empty));
+            new SandboxCommandResult(0, string.Empty, string.Empty)
+        );
         runner.OnArgvContains($"rev-parse {ReviewBranch}", new SandboxCommandResult(0, "deadbeef\n", string.Empty));
         var fs = new FakeSandboxFileSystem();
 
@@ -231,13 +245,14 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"rev-parse --verify {ReviewBranch}",
-            new SandboxCommandResult(1, string.Empty, "unknown revision"));
+            new SandboxCommandResult(1, string.Empty, "unknown revision")
+        );
         // Push is rejected (remote moved) and the rebase onto the moved remote then fails (a conflict).
-        runner.OnArgvContains(
-            $"push origin {ReviewBranch}", new SandboxCommandResult(1, string.Empty, "rejected"));
+        runner.OnArgvContains($"push origin {ReviewBranch}", new SandboxCommandResult(1, string.Empty, "rejected"));
         runner.OnArgvContains(
             $"pull --rebase origin {ReviewBranch}",
-            new SandboxCommandResult(1, string.Empty, "CONFLICT: could not apply"));
+            new SandboxCommandResult(1, string.Empty, "CONFLICT: could not apply")
+        );
         var fs = new FakeSandboxFileSystem();
 
         var result = await CreateManager(runner, fs).CommitNotesAsync(RepoRoot, Request, CancellationToken.None);
@@ -284,7 +299,9 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
                 "100644 aaaa 0\tPRs/widgets-42/review.md\n"
                     + "160000 bbbb 0\tPRs/widgets-42/repo\n"
                     + "160000 cccc 0\trepos/widgets\n",
-                string.Empty));
+                string.Empty
+            )
+        );
         var fs = new FakeSandboxFileSystem();
 
         var result = await CreateManager(runner, fs)
@@ -292,16 +309,20 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
 
         result.Outcome.Should().Be(ReviewBotPublishOutcome.Pushed);
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(
-            a => a.Contains("rm --cached -- PRs/widgets-42/repo"),
-            "the stray embedded gitlink under the notes dir is unstaged before commit");
-        commands.Should().NotContain(
-            a => a.Contains("rm --cached -- repos/widgets"),
-            "the reviewed submodule, outside the staged notes paths, is never dropped");
-        // The unstage happens before the commit, so the stray never reaches the tree.
-        IndexOf(commands, "rm --cached -- PRs/widgets-42/repo")
+        commands
             .Should()
-            .BeLessThan(IndexOf(commands, "commit -m"));
+            .Contain(
+                a => a.Contains("rm --cached -- PRs/widgets-42/repo"),
+                "the stray embedded gitlink under the notes dir is unstaged before commit"
+            );
+        commands
+            .Should()
+            .NotContain(
+                a => a.Contains("rm --cached -- repos/widgets"),
+                "the reviewed submodule, outside the staged notes paths, is never dropped"
+            );
+        // The unstage happens before the commit, so the stray never reaches the tree.
+        IndexOf(commands, "rm --cached -- PRs/widgets-42/repo").Should().BeLessThan(IndexOf(commands, "commit -m"));
     }
 
     [Fact]
@@ -337,10 +358,13 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
 
         // The old bug — merging the branch by its bare name — must not happen: no merge references the
         // notes branch except through its origin/ remote-tracking ref.
-        commands.Should().NotContain(
-            a => a.Contains("merge", StringComparison.Ordinal)
+        commands
+            .Should()
+            .NotContain(a =>
+                a.Contains("merge", StringComparison.Ordinal)
                 && a.Contains(ReviewBranch, StringComparison.Ordinal)
-                && !a.Contains($"origin/{ReviewBranch}", StringComparison.Ordinal));
+                && !a.Contains($"origin/{ReviewBranch}", StringComparison.Ordinal)
+            );
     }
 
     [Fact]
@@ -349,7 +373,8 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"merge --ff-only origin/{ReviewBranch}",
-            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward"));
+            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward")
+        );
         var fs = new FakeSandboxFileSystem();
 
         var result = await CreateManager(runner, fs)
@@ -390,7 +415,8 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         // A prior sweep already merged + deleted the branch, so it no longer resolves on origin.
         runner.OnArgvContains(
             $"rev-parse --verify origin/{ReviewBranch}",
-            new SandboxCommandResult(1, string.Empty, "fatal: Needed a single revision"));
+            new SandboxCommandResult(1, string.Empty, "fatal: Needed a single revision")
+        );
         var fs = new FakeSandboxFileSystem();
 
         var result = await CreateManager(runner, fs)
@@ -439,10 +465,14 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
     public async Task DeleteBranch_is_idempotent_when_the_branch_is_already_gone()
     {
         var runner = new FakeSandboxCommandRunner();
-        runner.OnArgvContains($"branch -D {ReviewBranch}", new SandboxCommandResult(1, string.Empty, "branch not found"));
+        runner.OnArgvContains(
+            $"branch -D {ReviewBranch}",
+            new SandboxCommandResult(1, string.Empty, "branch not found")
+        );
         runner.OnArgvContains(
             $"push origin --delete {ReviewBranch}",
-            new SandboxCommandResult(1, string.Empty, "remote ref does not exist"));
+            new SandboxCommandResult(1, string.Empty, "remote ref does not exist")
+        );
         var fs = new FakeSandboxFileSystem();
 
         var act = () => CreateManager(runner, fs).DeleteBranchAsync(RepoRoot, ReviewBranch, CancellationToken.None);
@@ -456,7 +486,8 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"merge --ff-only origin/{ReviewBranch}",
-            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward"));
+            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward")
+        );
         // Exit 1 from `diff --cached --quiet` means there IS a staged difference — the rebuilt listings.
         runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(1, string.Empty, string.Empty));
         var fs = new FakeSandboxFileSystem();
@@ -474,7 +505,8 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
                     reconcileCalls++;
                     reconciledAfterCommands = runner.Commands.Count;
                     return Task.FromResult(true);
-                })
+                }
+            )
             .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
 
         result.Should().BeTrue();
@@ -491,22 +523,20 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
             .Should()
             .BeGreaterThan(
                 IndexOf(commands, $"merge --no-edit -X theirs origin/{ReviewBranch}"),
-                "the listings must describe the MERGED tree, so the rebuild cannot precede the merge");
+                "the listings must describe the MERGED tree, so the rebuild cannot precede the merge"
+            );
         reconciledAfterCommands
             .Should()
             .BeLessThanOrEqualTo(
                 IndexOf(commands, $"push origin {DefaultBranch}"),
-                "the rebuilt listings must ride the same push, not land in a follow-up sweep");
+                "the rebuilt listings must ride the same push, not land in a follow-up sweep"
+            );
 
         IndexOf(commands, "add -- KnowledgeBase")
             .Should()
             .BeGreaterThan(IndexOf(commands, $"merge --no-edit -X theirs origin/{ReviewBranch}"));
-        IndexOf(commands, "add -- KnowledgeBase")
-            .Should()
-            .BeLessThan(IndexOf(commands, "commit -m"));
-        IndexOf(commands, "commit -m")
-            .Should()
-            .BeLessThan(IndexOf(commands, $"push origin {DefaultBranch}"));
+        IndexOf(commands, "add -- KnowledgeBase").Should().BeLessThan(IndexOf(commands, "commit -m"));
+        IndexOf(commands, "commit -m").Should().BeLessThan(IndexOf(commands, $"push origin {DefaultBranch}"));
     }
 
     [Fact]
@@ -515,13 +545,15 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"merge --ff-only origin/{ReviewBranch}",
-            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward"));
+            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward")
+        );
         // Exit 0 from `diff --cached --quiet` means NO staged difference.
         runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(0, string.Empty, string.Empty));
         // What git really does when asked to commit an empty index — and RunGitAsync throws on it.
         runner.OnArgvContains(
             "commit -m",
-            new SandboxCommandResult(1, "nothing to commit, working tree clean", string.Empty));
+            new SandboxCommandResult(1, "nothing to commit, working tree clean", string.Empty)
+        );
         var fs = new FakeSandboxFileSystem();
 
         // The regenerator answers "changed" whenever it could not establish the current content — an
@@ -530,8 +562,9 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         // commit. Believing it would throw out of MergeToDefaultAsync, leaving the notes branch undeleted
         // so the identical merge re-throws on every subsequent sweep: one oversized listing wedges the
         // sweep permanently. Ask git what is actually staged instead.
-        var act = async () => await CreateManager(runner, fs, (_, _) => Task.FromResult(true))
-            .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
+        var act = async () =>
+            await CreateManager(runner, fs, (_, _) => Task.FromResult(true))
+                .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
 
         (await act.Should().NotThrowAsync()).Which.Should().BeTrue();
 
@@ -541,7 +574,8 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
             .Should()
             .Contain(
                 a => a.Contains($"push origin {DefaultBranch}", StringComparison.Ordinal),
-                "the merge must still land; skipping an empty commit is not skipping the merge");
+                "the merge must still land; skipping an empty commit is not skipping the merge"
+            );
     }
 
     [Fact]
@@ -550,7 +584,8 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"merge --ff-only origin/{ReviewBranch}",
-            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward"));
+            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward")
+        );
         var fs = new FakeSandboxFileSystem();
 
         var result = await CreateManager(runner, fs, (_, _) => Task.FromResult(false))
@@ -596,7 +631,8 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
                     reconcileCalls++;
                     reconciledAfterCommands = runner.Commands.Count;
                     return Task.FromResult(true);
-                })
+                }
+            )
             .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
 
         result.Should().BeTrue();
@@ -607,13 +643,15 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
             .Should()
             .BeGreaterThan(
                 IndexOf(commands, $"merge --ff-only origin/{ReviewBranch}"),
-                "the listings must describe the tree the fast-forward produced, not the one before it");
+                "the listings must describe the tree the fast-forward produced, not the one before it"
+            );
         IndexOf(commands, "add -- KnowledgeBase").Should().BeLessThan(IndexOf(commands, "commit -m"));
         IndexOf(commands, "commit -m")
             .Should()
             .BeLessThan(
                 IndexOf(commands, $"push origin {DefaultBranch}"),
-                "the repair must ride the same push, not wait for a follow-up sweep");
+                "the repair must ride the same push, not wait for a follow-up sweep"
+            );
     }
 
     /// <summary>
@@ -640,7 +678,8 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
             .Should()
             .Contain(
                 a => a.Contains($"push origin {DefaultBranch}", StringComparison.Ordinal),
-                "the fast-forward still lands; only the empty repair commit is skipped");
+                "the fast-forward still lands; only the empty repair commit is skipped"
+            );
     }
 
     private static int IndexOf(List<string> commands, string contains) =>

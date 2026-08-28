@@ -27,17 +27,19 @@ public sealed class CodeReviewDaemonOptionsTests
     public void Binds_every_flag_from_the_CodeReviewDaemon_section()
     {
         var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["CodeReviewDaemon:EnableCommentPosting"] = "true",
-                ["CodeReviewDaemon:EnableKnowledgeAgent"] = "true",
-                ["CodeReviewDaemon:EnableJudgeAgent"] = "true",
-                ["CodeReviewDaemon:EnableABVariants"] = "true",
-                ["CodeReviewDaemon:EnableAdoProvider"] = "true",
-                ["CodeReviewDaemon:EnabledRepos:0"] = "achieveai/LmDotnetTools",
-                ["CodeReviewDaemon:EnabledRepos:1"] = "contoso/widgets",
-                ["CodeReviewDaemon:JudgeModelId"] = "anthropic/claude-opus-4",
-            })
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["CodeReviewDaemon:EnableCommentPosting"] = "true",
+                    ["CodeReviewDaemon:EnableKnowledgeAgent"] = "true",
+                    ["CodeReviewDaemon:EnableJudgeAgent"] = "true",
+                    ["CodeReviewDaemon:EnableABVariants"] = "true",
+                    ["CodeReviewDaemon:EnableAdoProvider"] = "true",
+                    ["CodeReviewDaemon:EnabledRepos:0"] = "achieveai/LmDotnetTools",
+                    ["CodeReviewDaemon:EnabledRepos:1"] = "contoso/widgets",
+                    ["CodeReviewDaemon:JudgeModelId"] = "anthropic/claude-opus-4",
+                }
+            )
             .Build();
 
         var options = config.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
@@ -58,15 +60,17 @@ public sealed class CodeReviewDaemonOptionsTests
     public void Binds_the_pooled_review_workspace_options_from_the_CodeReviewDaemon_section()
     {
         var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["CodeReviewDaemon:ReviewPoolSize"] = "4",
-                ["CodeReviewDaemon:ReviewPoolHostRoot"] = "/var/crd/review-pool",
-                ["CodeReviewDaemon:ScratchDirName"] = "work",
-                ["CodeReviewDaemon:EnableReviewerWrites"] = "true",
-                ["CodeReviewDaemon:WritableToolAllowList:0"] = "PrNotes",
-                ["CodeReviewDaemon:MergeNotesBranchOnClose"] = "false",
-            })
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["CodeReviewDaemon:ReviewPoolSize"] = "4",
+                    ["CodeReviewDaemon:ReviewPoolHostRoot"] = "/var/crd/review-pool",
+                    ["CodeReviewDaemon:ScratchDirName"] = "work",
+                    ["CodeReviewDaemon:EnableReviewerWrites"] = "true",
+                    ["CodeReviewDaemon:WritableToolAllowList:0"] = "PrNotes",
+                    ["CodeReviewDaemon:MergeNotesBranchOnClose"] = "false",
+                }
+            )
             .Build();
 
         var options = config.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
@@ -90,11 +94,13 @@ public sealed class CodeReviewDaemonOptionsTests
         new CodeReviewDaemonOptions().ReviewSubAgentBarrierQuietSeconds.Should().Be(2);
 
         var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["CodeReviewDaemon:ReviewStageDeadlineMinutes"] = "45",
-                ["CodeReviewDaemon:ReviewSubAgentBarrierQuietSeconds"] = "5",
-            })
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["CodeReviewDaemon:ReviewStageDeadlineMinutes"] = "45",
+                    ["CodeReviewDaemon:ReviewSubAgentBarrierQuietSeconds"] = "5",
+                }
+            )
             .Build();
 
         var options = config.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
@@ -130,11 +136,13 @@ public sealed class CodeReviewDaemonOptionsTests
     public void Binds_the_eval_corpus_sweep_options_from_the_CodeReviewDaemon_section()
     {
         var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["CodeReviewDaemon:EvalCorpusSweepIntervalMinutes"] = "90",
-                ["CodeReviewDaemon:EvalCorpusSweepWindow"] = "250",
-            })
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["CodeReviewDaemon:EvalCorpusSweepIntervalMinutes"] = "90",
+                    ["CodeReviewDaemon:EvalCorpusSweepWindow"] = "250",
+                }
+            )
             .Build();
 
         var options = config.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
@@ -161,22 +169,22 @@ public sealed class CodeReviewDaemonOptionsTests
     public void An_absent_or_null_eval_sweep_key_keeps_its_default_rather_than_binding_zero()
     {
         var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                // The section exists and names a sibling knob, so this is a bound section with the
-                // sweep's keys missing — not an absent section, which would be a weaker case.
-                ["CodeReviewDaemon:EnableJudgeAgent"] = "true",
-                ["CodeReviewDaemon:EvalCorpusSweepWindow"] = null,
-            })
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    // The section exists and names a sibling knob, so this is a bound section with the
+                    // sweep's keys missing — not an absent section, which would be a weaker case.
+                    ["CodeReviewDaemon:EnableJudgeAgent"] = "true",
+                    ["CodeReviewDaemon:EvalCorpusSweepWindow"] = null,
+                }
+            )
             .Build();
 
         var options = config.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
 
         options.Should().NotBeNull();
         options!.EnableJudgeAgent.Should().BeTrue("the section genuinely bound");
-        options
-            .EvalCorpusSweepWindow.Should()
-            .Be(1000, "an explicit null must not overwrite the default with 0");
+        options.EvalCorpusSweepWindow.Should().Be(1000, "an explicit null must not overwrite the default with 0");
         options
             .EvalCorpusSweepIntervalMinutes.Should()
             .Be(0, "an absent interval is the off default, which is what 0 means here");

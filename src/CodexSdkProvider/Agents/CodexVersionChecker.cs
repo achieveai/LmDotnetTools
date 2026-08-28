@@ -8,13 +8,17 @@ namespace AchieveAi.LmDotnetTools.CodexSdkProvider.Agents;
 /// </summary>
 internal static class CodexVersionChecker
 {
-    private static readonly Regex VersionRegex = new(@"\b(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)\b", RegexOptions.Compiled);
+    private static readonly Regex VersionRegex = new(
+        @"\b(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)\b",
+        RegexOptions.Compiled
+    );
 
     public static async Task<string> EnsureCodexCliVersionAsync(
         string cliPath,
         string minVersion,
         TimeSpan timeout,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var psi = new ProcessStartInfo
         {
@@ -26,9 +30,11 @@ internal static class CodexVersionChecker
             CreateNoWindow = true,
         };
 
-        using var process = Process.Start(psi)
+        using var process =
+            Process.Start(psi)
             ?? throw new InvalidOperationException(
-                $"Failed to start Codex CLI '{cliPath}'. Ensure it is installed and on PATH.");
+                $"Failed to start Codex CLI '{cliPath}'. Ensure it is installed and on PATH."
+            );
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
@@ -45,16 +51,19 @@ internal static class CodexVersionChecker
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                $"Codex CLI version check failed (exit={process.ExitCode}): {CodexEventParser.Truncate(combined)}");
+                $"Codex CLI version check failed (exit={process.ExitCode}): {CodexEventParser.Truncate(combined)}"
+            );
         }
 
         var detectedVersion = ExtractVersion(combined);
         return string.IsNullOrWhiteSpace(detectedVersion)
-            ? throw new InvalidOperationException(
-                $"Could not parse Codex CLI version from output: {CodexEventParser.Truncate(combined)}")
+                ? throw new InvalidOperationException(
+                    $"Could not parse Codex CLI version from output: {CodexEventParser.Truncate(combined)}"
+                )
             : CompareVersion(detectedVersion, minVersion) < 0
-            ? throw new InvalidOperationException(
-                $"Codex CLI version '{detectedVersion}' is below minimum required '{minVersion}'.")
+                ? throw new InvalidOperationException(
+                    $"Codex CLI version '{detectedVersion}' is below minimum required '{minVersion}'."
+                )
             : detectedVersion;
     }
 
@@ -66,7 +75,9 @@ internal static class CodexVersionChecker
         }
 
         var match = VersionRegex.Match(value);
-        return !match.Success ? null : $"{match.Groups["major"].Value}.{match.Groups["minor"].Value}.{match.Groups["patch"].Value}";
+        return !match.Success
+            ? null
+            : $"{match.Groups["major"].Value}.{match.Groups["minor"].Value}.{match.Groups["patch"].Value}";
     }
 
     public static int CompareVersion(string left, string right)
@@ -91,10 +102,11 @@ internal static class CodexVersionChecker
         var match = VersionRegex.Match(version ?? string.Empty);
         return !match.Success
             ? throw new InvalidOperationException($"Invalid version string '{version}'.")
-            : [
-            int.Parse(match.Groups["major"].Value),
-            int.Parse(match.Groups["minor"].Value),
-            int.Parse(match.Groups["patch"].Value),
-        ];
+            :
+            [
+                int.Parse(match.Groups["major"].Value),
+                int.Parse(match.Groups["minor"].Value),
+                int.Parse(match.Groups["patch"].Value),
+            ];
     }
 }

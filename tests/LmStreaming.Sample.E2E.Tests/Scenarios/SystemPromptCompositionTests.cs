@@ -52,28 +52,27 @@ public sealed class SystemPromptCompositionTests
     [Theory]
     [InlineData("test")]
     [InlineData("test-anthropic")]
-    public async Task Provisioned_appendix_reaches_the_model_last_in_the_composed_system_prompt(
-        string providerMode)
+    public async Task Provisioned_appendix_reaches_the_model_last_in_the_composed_system_prompt(string providerMode)
     {
         // Captured from inside the role predicate, which the scripted handler invokes with the parsed
         // OUTBOUND request. This is the whole point of the test: the assertion subject is the prompt as
         // the provider received it, not a value any host-side code handed back to us.
         string? promptTheModelReceived = null;
 
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole(
                 "parent",
                 ctx =>
                 {
                     promptTheModelReceived ??= ctx.SystemPrompt;
                     return true;
-                })
-                .Turn(t => t.Text("ack"))
+                }
+            )
+            .Turn(t => t.Text("ack"))
             .Build();
 
-        var handler = providerMode == "test-anthropic"
-            ? responder.AsAnthropicHandler()
-            : responder.AsOpenAiHandler();
+        var handler = providerMode == "test-anthropic" ? responder.AsAnthropicHandler() : responder.AsOpenAiHandler();
 
         var builder = new ScriptedBuilder(handler);
         using var factory = new E2EWebAppFactory(providerMode, builder);
@@ -91,8 +90,8 @@ public sealed class SystemPromptCompositionTests
             threadId,
             existing =>
             {
-                var properties = existing?.Properties?.ToBuilder()
-                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+                var properties =
+                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
                 properties[SystemPromptAugmenter.AppendixPropertyKey] = AppendixMarker;
 
                 return new ThreadMetadata
@@ -104,14 +103,14 @@ public sealed class SystemPromptCompositionTests
                     SessionMappings = existing?.SessionMappings,
                     Properties = properties.ToImmutable(),
                 };
-            });
+            }
+        );
 
         // Guard the fixture before trusting the wire assertion below. If the seed is not readable through
         // the exact reader production uses, a failure downstream would be this test's own setup rather
         // than the host dropping the appendix — two very different findings that look identical.
         var seeded = await SystemPromptAugmenter.ReadAppendixAsync(store, threadId);
-        seeded.Should()
-            .Be(AppendixMarker, "the seed must be visible to production's own reader");
+        seeded.Should().Be(AppendixMarker, "the seed must be visible to production's own reader");
 
         var socket = await factory.ConnectWebSocketAsync(threadId);
         await using var client = new WebSocketTestClient(socket);
@@ -121,16 +120,19 @@ public sealed class SystemPromptCompositionTests
         // Guard the instrument before trusting it: if the turn never reached the provider there would be
         // no captured prompt, and every assertion below would be vacuous rather than failing.
         frames.ConcatText().Should().Contain("ack");
-        promptTheModelReceived.Should()
+        promptTheModelReceived
+            .Should()
             .NotBeNull("the scripted provider must have received a request to capture a prompt from");
 
         var prompt = promptTheModelReceived!;
 
         // 1. The claim under test. Deleting the ComposeAsync call in Program.cs fails exactly here.
-        prompt.Should()
+        prompt
+            .Should()
             .Contain(
                 AppendixMarker,
-                "the caller's instructions must reach the model, not merely the thread's metadata");
+                "the caller's instructions must reach the model, not merely the thread's metadata"
+            );
 
         // 2. Additive, not a replacement — the host-built prompt is still there.
         prompt.Should().Contain(ModePromptMarker);
@@ -143,9 +145,12 @@ public sealed class SystemPromptCompositionTests
         //    adding a task on top of a workspace agent. ConversationsControllerTests pins this on the
         //    composed string; this pins it on what actually went over the wire.
         prompt.TrimEnd().Should().EndWith(AppendixMarker);
-        prompt.IndexOf(AppendixMarker, StringComparison.Ordinal).Should()
+        prompt
+            .IndexOf(AppendixMarker, StringComparison.Ordinal)
+            .Should()
             .BeGreaterThan(
                 prompt.IndexOf(ModePromptMarker, StringComparison.Ordinal),
-                "the appendix must follow every host-built section, not precede them");
+                "the appendix must follow every host-built section, not precede them"
+            );
     }
 }

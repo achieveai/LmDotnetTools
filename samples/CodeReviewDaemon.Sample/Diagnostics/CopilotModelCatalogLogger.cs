@@ -59,7 +59,8 @@ internal sealed class CopilotModelCatalogLogger : BackgroundService
             _logger.LogWarning(
                 "Copilot model discovery GET {BaseUrl}/models returned {StatusCode}; no catalog to log.",
                 options.BaseUrl,
-                (int)response.StatusCode);
+                (int)response.StatusCode
+            );
             return;
         }
 
@@ -88,33 +89,41 @@ internal sealed class CopilotModelCatalogLogger : BackgroundService
                 _ => "other/chat-only",
             };
 
-            raw.Add((
-                id,
-                CopilotModelsResponse.GetString(item, "vendor") ?? "?",
-                endpoints,
-                CopilotModelsResponse.GetString(item, "name") ?? id));
+            raw.Add(
+                (
+                    id,
+                    CopilotModelsResponse.GetString(item, "vendor") ?? "?",
+                    endpoints,
+                    CopilotModelsResponse.GetString(item, "name") ?? id
+                )
+            );
         }
 
         _logger.LogInformation(
             "Copilot model catalog: {Count} model(s) visible to the daemon credential at {BaseUrl}.",
             raw.Count,
-            options.BaseUrl);
-        foreach (var m in raw.OrderBy(m => m.Vendor, StringComparer.OrdinalIgnoreCase)
-                     .ThenBy(m => m.Id, StringComparer.OrdinalIgnoreCase))
+            options.BaseUrl
+        );
+        foreach (
+            var m in raw.OrderBy(m => m.Vendor, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(m => m.Id, StringComparer.OrdinalIgnoreCase)
+        )
         {
             _logger.LogInformation(
                 "  Copilot model: id={Id} | vendor={Vendor} | endpoints={Endpoints} | name=\"{Name}\"",
                 m.Id,
                 m.Vendor,
                 m.Endpoints,
-                m.Name);
+                m.Name
+            );
         }
 
         // ── Routable subset: models usable as a ReviewModelId (pick from these) ─────────────────────
         var routable = CopilotModelCatalogParser.Parse(json);
         _logger.LogInformation(
             "Copilot routable models (usable as CodeReviewDaemon:ReviewModelId): {Count}.",
-            routable.Count);
+            routable.Count
+        );
         foreach (var m in routable.OrderBy(m => m.Vendor).ThenBy(m => m.Id, StringComparer.OrdinalIgnoreCase))
         {
             _logger.LogInformation(
@@ -123,7 +132,8 @@ internal sealed class CopilotModelCatalogLogger : BackgroundService
                 m.Vendor,
                 m.Transport,
                 m.SupportsAdaptiveThinking,
-                m.DisplayName);
+                m.DisplayName
+            );
         }
     }
 }

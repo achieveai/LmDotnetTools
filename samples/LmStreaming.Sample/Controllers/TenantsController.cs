@@ -66,28 +66,27 @@ public sealed class OperatorSecretAuthAttribute : Attribute, IAsyncActionFilter,
 
         if (string.IsNullOrWhiteSpace(secret))
         {
-            httpContext.RequestServices
-                .GetService<ILogger<OperatorSecretAuthAttribute>>()
+            httpContext
+                .RequestServices.GetService<ILogger<OperatorSecretAuthAttribute>>()
                 ?.LogError(
                     "{ConfigKey} is not configured; the tenant admin surface is unavailable. "
                         + "Set {EnvVar} to enable it.",
                     SecretConfigKey,
-                    SecretEnvironmentVariable);
+                    SecretEnvironmentVariable
+                );
 
-            context.Result = new ObjectResult(
-                new { error = "unavailable", code = "operator_secret_not_configured" })
+            context.Result = new ObjectResult(new { error = "unavailable", code = "operator_secret_not_configured" })
             {
                 StatusCode = StatusCodes.Status503ServiceUnavailable,
             };
             return;
         }
 
-        if (!InboundS2SAuthAttribute.ConstantTimeEquals(
-                secret,
-                httpContext.Request.Headers[HeaderName].ToString()))
+        if (!InboundS2SAuthAttribute.ConstantTimeEquals(secret, httpContext.Request.Headers[HeaderName].ToString()))
         {
             context.Result = new UnauthorizedObjectResult(
-                new { error = "unauthorized", code = "operator_auth_failed" });
+                new { error = "unauthorized", code = "operator_auth_failed" }
+            );
             return;
         }
 
@@ -214,7 +213,8 @@ public sealed class TenantsController : ControllerBase
         TimeProvider timeProvider,
         IConversationStore conversationStore,
         IOptions<IdentityOptions> identityOptions,
-        ILogger<TenantsController> logger)
+        ILogger<TenantsController> logger
+    )
     {
         ArgumentNullException.ThrowIfNull(tenantStore);
         ArgumentNullException.ThrowIfNull(auditSink);
@@ -235,9 +235,7 @@ public sealed class TenantsController : ControllerBase
     /// <param name="request">The tenant to create.</param>
     /// <param name="ct">Cancellation token.</param>
     [HttpPost]
-    public async Task<IActionResult> ProvisionAsync(
-        [FromBody] ProvisionTenantRequest request,
-        CancellationToken ct)
+    public async Task<IActionResult> ProvisionAsync([FromBody] ProvisionTenantRequest request, CancellationToken ct)
     {
         // Unreachable in practice: [ApiController] makes a [FromBody] parameter implicitly
         // required, so a missing or null body is answered 400 by model validation long before this
@@ -268,13 +266,12 @@ public sealed class TenantsController : ControllerBase
         {
             TenantProvisionOutcome.Created => Created(
                 $"/api/admin/tenants/{record.TenantId}",
-                new { tenantId = record.TenantId, entraTenantId = record.EntraTenantId }),
-            TenantProvisionOutcome.TenantIdExists => Conflict(
-                new { error = "conflict", code = "tenant_id_exists" }),
+                new { tenantId = record.TenantId, entraTenantId = record.EntraTenantId }
+            ),
+            TenantProvisionOutcome.TenantIdExists => Conflict(new { error = "conflict", code = "tenant_id_exists" }),
             _ => Conflict(new { error = "conflict", code = "entra_tenant_id_claimed" }),
         };
     }
-
 
     /// <summary>
     /// Moves quarantined conversations into a real tenant, optionally assigning an owner
@@ -293,7 +290,8 @@ public sealed class TenantsController : ControllerBase
     public async Task<IActionResult> AdoptLegacyAsync(
         string tenantId,
         [FromBody] AdoptLegacyRequest request,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -301,11 +299,7 @@ public sealed class TenantsController : ControllerBase
 
         if (!string.Equals(request.ResourceType, AdoptLegacyResourceTypes.Thread, StringComparison.Ordinal))
         {
-            return RejectAdoption(
-                tenantId,
-                request,
-                StatusCodes.Status400BadRequest,
-                "unsupported_resource_type");
+            return RejectAdoption(tenantId, request, StatusCodes.Status400BadRequest, "unsupported_resource_type");
         }
 
         var tenant = await _tenantStore.FindByTenantIdAsync(tenantId, ct).ConfigureAwait(false);
@@ -321,27 +315,17 @@ public sealed class TenantsController : ControllerBase
         // and target selections are the same rows, so every one of them is "already adopted".
         if (string.Equals(tenantId, quarantineTenantId, StringComparison.Ordinal))
         {
-            return RejectAdoption(
-                tenantId,
-                request,
-                StatusCodes.Status400BadRequest,
-                "target_is_quarantine_tenant");
+            return RejectAdoption(tenantId, request, StatusCodes.Status400BadRequest, "target_is_quarantine_tenant");
         }
 
-        var ownerUserId = string.IsNullOrWhiteSpace(request.OwnerUserId)
-            ? null
-            : request.OwnerUserId.Trim();
+        var ownerUserId = string.IsNullOrWhiteSpace(request.OwnerUserId) ? null : request.OwnerUserId.Trim();
 
         // Validated BEFORE any write. A user id from another Entra directory would produce rows
         // that 7.4 step 2 then denies to everybody - the data would be re-quarantined under a name
         // that looks adopted, which is worse than leaving it where it was.
         if (ownerUserId is not null && !OwnerBelongsToTenant(ownerUserId, tenant.EntraTenantId))
         {
-            return RejectAdoption(
-                tenantId,
-                request,
-                StatusCodes.Status400BadRequest,
-                "owner_tenant_mismatch");
+            return RejectAdoption(tenantId, request, StatusCodes.Status400BadRequest, "owner_tenant_mismatch");
         }
 
         if (_conversationStore is not IConversationOwnershipStore ownership)
@@ -350,7 +334,8 @@ public sealed class TenantsController : ControllerBase
                 tenantId,
                 request,
                 StatusCodes.Status503ServiceUnavailable,
-                "adoption_unsupported_store");
+                "adoption_unsupported_store"
+            );
         }
 
         // ResourceIds is distinguished from its absence, not normalised into it: an explicitly empty
@@ -364,8 +349,7 @@ public sealed class TenantsController : ControllerBase
         // silently, and the incomplete roster is then cached for the life of the process.
         if (resourceIds is { Length: > 0 })
         {
-            var expansion = await ExpandToWholeTreesAsync(quarantineTenantId, resourceIds, ct)
-                .ConfigureAwait(false);
+            var expansion = await ExpandToWholeTreesAsync(quarantineTenantId, resourceIds, ct).ConfigureAwait(false);
 
             if (expansion is null)
             {
@@ -373,7 +357,8 @@ public sealed class TenantsController : ControllerBase
                     tenantId,
                     request,
                     StatusCodes.Status503ServiceUnavailable,
-                    "adoption_scan_truncated");
+                    "adoption_scan_truncated"
+                );
             }
 
             resourceIds = expansion;
@@ -391,42 +376,42 @@ public sealed class TenantsController : ControllerBase
                 eligible.Count,
                 dryRun: true,
                 AdministrationOutcome.Rehearsed,
-                reason: null);
+                reason: null
+            );
 
-            return Ok(new AdoptLegacyResponse
-            {
-                TenantId = tenantId,
-                AffectedCount = eligible.Count,
-                DryRun = true,
-                Sample = [.. eligible.Take(SampleSize)],
-            });
+            return Ok(
+                new AdoptLegacyResponse
+                {
+                    TenantId = tenantId,
+                    AffectedCount = eligible.Count,
+                    DryRun = true,
+                    Sample = [.. eligible.Take(SampleSize)],
+                }
+            );
         }
 
         var affected = await ownership
             .AdoptThreadsAsync(quarantineTenantId, tenantId, ownerUserId, resourceIds, ct)
             .ConfigureAwait(false);
 
-        WriteAdoptionAudit(
-            tenantId,
-            ownerUserId,
-            affected,
-            dryRun: false,
-            AdministrationOutcome.Applied,
-            reason: null);
+        WriteAdoptionAudit(tenantId, ownerUserId, affected, dryRun: false, AdministrationOutcome.Applied, reason: null);
 
         _logger.LogWarning(
             "Adopted {AffectedCount} legacy conversation(s) from {QuarantineTenantId} into {TenantId}.",
             affected,
             quarantineTenantId,
-            tenantId);
+            tenantId
+        );
 
-        return Ok(new AdoptLegacyResponse
-        {
-            TenantId = tenantId,
-            AffectedCount = affected,
-            DryRun = false,
-            Sample = [.. eligible.Take(SampleSize)],
-        });
+        return Ok(
+            new AdoptLegacyResponse
+            {
+                TenantId = tenantId,
+                AffectedCount = affected,
+                DryRun = false,
+                Sample = [.. eligible.Take(SampleSize)],
+            }
+        );
     }
 
     /// <summary>
@@ -463,15 +448,19 @@ public sealed class TenantsController : ControllerBase
     private async Task<string[]?> ExpandToWholeTreesAsync(
         string quarantineTenantId,
         IReadOnlyCollection<string> seeds,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
-        var rows = await _conversationStore
-            .ListThreadsAsync(
-                ConversationListScope.ForTenant(quarantineTenantId),
-                AdoptionScanMaxThreads + 1,
-                0,
-                ct: ct)
-            .ConfigureAwait(false) ?? [];
+        var rows =
+            await _conversationStore
+                .ListThreadsAsync(
+                    ConversationListScope.ForTenant(quarantineTenantId),
+                    AdoptionScanMaxThreads + 1,
+                    0,
+                    ct: ct
+                )
+                .ConfigureAwait(false)
+            ?? [];
 
         if (rows.Count > AdoptionScanMaxThreads)
         {
@@ -482,7 +471,8 @@ public sealed class TenantsController : ControllerBase
                 "Refusing a subset adoption from {QuarantineTenantId}: more than {MaxThreads} "
                     + "quarantined conversations, so the sub-agent tree cannot be walked in one scan.",
                 quarantineTenantId,
-                AdoptionScanMaxThreads);
+                AdoptionScanMaxThreads
+            );
             return null;
         }
 
@@ -520,15 +510,14 @@ public sealed class TenantsController : ControllerBase
         // refusal is a stable code in an audit record.
         var reached = new HashSet<string>(
             seeds.Where(seed => !string.IsNullOrWhiteSpace(seed) && inScan.Contains(seed)),
-            StringComparer.Ordinal);
+            StringComparer.Ordinal
+        );
         var frontier = new Queue<string>(reached);
         while (frontier.Count > 0)
         {
             var current = frontier.Dequeue();
 
-            if (parentOf.TryGetValue(current, out var parent)
-                && inScan.Contains(parent)
-                && reached.Add(parent))
+            if (parentOf.TryGetValue(current, out var parent) && inScan.Contains(parent) && reached.Add(parent))
             {
                 frontier.Enqueue(parent);
             }
@@ -576,21 +565,14 @@ public sealed class TenantsController : ControllerBase
         // Case-insensitive because a directory id is a GUID, whose textual case carries no meaning -
         // and because #347's normalisation stores it lower-cased while an operator will paste it
         // from a portal that shows it however it likes.
-        return string.Equals(
-            ownerUserId[..separator],
-            entraTenantId,
-            StringComparison.OrdinalIgnoreCase);
+        return string.Equals(ownerUserId[..separator], entraTenantId, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
     /// Answers a refused adoption, writing its audit record first. Every early return goes through
     /// here so that "rejected calls are audited too" is a property of the shape, not of remembering.
     /// </summary>
-    private ObjectResult RejectAdoption(
-        string tenantId,
-        AdoptLegacyRequest request,
-        int statusCode,
-        string code)
+    private ObjectResult RejectAdoption(string tenantId, AdoptLegacyRequest request, int statusCode, string code)
     {
         WriteAdoptionAudit(
             tenantId,
@@ -598,12 +580,10 @@ public sealed class TenantsController : ControllerBase
             affectedCount: 0,
             request.DryRun,
             AdministrationOutcome.Rejected,
-            code);
+            code
+        );
 
-        return new ObjectResult(new { error = "rejected", code })
-        {
-            StatusCode = statusCode,
-        };
+        return new ObjectResult(new { error = "rejected", code }) { StatusCode = statusCode };
     }
 
     private void WriteAdoptionAudit(
@@ -612,37 +592,43 @@ public sealed class TenantsController : ControllerBase
         int affectedCount,
         bool dryRun,
         AdministrationOutcome outcome,
-        string? reason) =>
-        _auditSink.Write(new AdministrationAuditRecord
-        {
-            Operation = "tenant.adopt_legacy",
-            RemoteAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
-            TargetTenantId = tenantId,
-            TargetOwnerUserId = ownerUserId,
-            AffectedCount = affectedCount,
-            DryRun = dryRun,
-            Outcome = outcome,
-            Reason = reason,
-            CorrelationId = HttpContext.TraceIdentifier,
-            EventClass = AuditEventClass.Security,
-        });
+        string? reason
+    ) =>
+        _auditSink.Write(
+            new AdministrationAuditRecord
+            {
+                Operation = "tenant.adopt_legacy",
+                RemoteAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                TargetTenantId = tenantId,
+                TargetOwnerUserId = ownerUserId,
+                AffectedCount = affectedCount,
+                DryRun = dryRun,
+                Outcome = outcome,
+                Reason = reason,
+                CorrelationId = HttpContext.TraceIdentifier,
+                EventClass = AuditEventClass.Security,
+            }
+        );
 
     private void WriteAudit(TenantRecord record, TenantProvisionOutcome outcome)
     {
-        _auditSink.Write(new AdministrationAuditRecord
-        {
-            Operation = "tenant.provision",
-            RemoteAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
-            TargetTenantId = record.TenantId,
-            TargetOwnerUserId = null,
-            AffectedCount = outcome == TenantProvisionOutcome.Created ? 1 : 0,
-            DryRun = false,
-            Outcome = outcome == TenantProvisionOutcome.Created
-                ? AdministrationOutcome.Applied
-                : AdministrationOutcome.Rejected,
-            Reason = outcome == TenantProvisionOutcome.Created ? null : outcome.ToString(),
-            CorrelationId = HttpContext.TraceIdentifier,
-            EventClass = AuditEventClass.Security,
-        });
+        _auditSink.Write(
+            new AdministrationAuditRecord
+            {
+                Operation = "tenant.provision",
+                RemoteAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                TargetTenantId = record.TenantId,
+                TargetOwnerUserId = null,
+                AffectedCount = outcome == TenantProvisionOutcome.Created ? 1 : 0,
+                DryRun = false,
+                Outcome =
+                    outcome == TenantProvisionOutcome.Created
+                        ? AdministrationOutcome.Applied
+                        : AdministrationOutcome.Rejected,
+                Reason = outcome == TenantProvisionOutcome.Created ? null : outcome.ToString(),
+                CorrelationId = HttpContext.TraceIdentifier,
+                EventClass = AuditEventClass.Security,
+            }
+        );
     }
 }

@@ -17,6 +17,5 @@ public class ToolsController(IToolCatalog toolCatalog) : ControllerBase
     ///     <c>name</c>/<c>description</c> keeps working.
     /// </remarks>
     [HttpGet]
-    public async Task<IActionResult> List(CancellationToken ct = default) =>
-        Ok(await toolCatalog.GetAsync(ct));
+    public async Task<IActionResult> List(CancellationToken ct = default) => Ok(await toolCatalog.GetAsync(ct));
 }

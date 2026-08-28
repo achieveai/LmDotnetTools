@@ -301,13 +301,17 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
 
         _ = await manager.SpawnAsync("test-agent", "test task", modelIntelligence: 3);
 
-        tierFactoryRequestedModel.Should().Be("tier-3-model", "the plain path must build the provider for the resolved tier model");
+        tierFactoryRequestedModel
+            .Should()
+            .Be("tier-3-model", "the plain path must build the provider for the resolved tier model");
         tierAgentOptions.Should().NotBeNull("the tier-built provider must be the agent that runs");
         tierAgentOptions!.ModelId.Should().Be("tier-3-model");
-        tierAgentOptions.ExtraProperties.Should().NotContainKey(
-            "Thinking",
-            "a tier-resolved model may use a different transport, so the controller's pre-shaped reasoning is not seeded"
-        );
+        tierAgentOptions
+            .ExtraProperties.Should()
+            .NotContainKey(
+                "Thinking",
+                "a tier-resolved model may use a different transport, so the controller's pre-shaped reasoning is not seeded"
+            );
     }
 
     [Fact]
@@ -356,8 +360,7 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
             IsModelTierResolved = true,
         };
         var modelIntelligenceProperty = template.GetType().GetProperty("ModelIntelligence");
-        modelIntelligenceProperty
-            .Should().NotBeNull("tier provenance must be retained on the template");
+        modelIntelligenceProperty.Should().NotBeNull("tier provenance must be retained on the template");
         modelIntelligenceProperty!.SetValue(template, 5);
         await using var manager = CreateManager(
             template,
@@ -376,15 +379,19 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         tierAgentOptions!.ModelId.Should().Be("template-tier-5-model");
 
         var snapshot = manager.ListAgents().Should().ContainSingle().Subject;
-        snapshot.GetType().GetProperty("EffectiveModelId")
-            .Should().NotBeNull("snapshots must carry authoritative effective routing to presentation layers");
-        snapshot.GetType().GetProperty("EffectiveModelId")!.GetValue(snapshot)
-            .Should().Be("template-tier-5-model");
-        snapshot.GetType().GetProperty("EffectiveModelIntelligence")
-            .Should().NotBeNull("the authored template tier must be visible beside misleading raw Agent arguments");
+        snapshot
+            .GetType()
+            .GetProperty("EffectiveModelId")
+            .Should()
+            .NotBeNull("snapshots must carry authoritative effective routing to presentation layers");
+        snapshot.GetType().GetProperty("EffectiveModelId")!.GetValue(snapshot).Should().Be("template-tier-5-model");
+        snapshot
+            .GetType()
+            .GetProperty("EffectiveModelIntelligence")
+            .Should()
+            .NotBeNull("the authored template tier must be visible beside misleading raw Agent arguments");
         snapshot.GetType().GetProperty("EffectiveModelIntelligence")!.GetValue(snapshot).Should().Be(5);
-        snapshot.GetType().GetProperty("ModelSelectionSource")!.GetValue(snapshot)
-            .Should().Be("template-tier");
+        snapshot.GetType().GetProperty("ModelSelectionSource")!.GetValue(snapshot).Should().Be("template-tier");
     }
 
     [Fact]
@@ -434,7 +441,9 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         {
             SystemPrompt = "You are a test agent.",
             AgentFactory = () =>
-                throw new InvalidOperationException("Plain template factory must NOT run for a cross-transport override."),
+                throw new InvalidOperationException(
+                    "Plain template factory must NOT run for a cross-transport override."
+                ),
         };
         await using var manager = CreateManager(
             template,
@@ -455,7 +464,9 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-model", modelIntelligence: 3);
 
         resolverCalls.Should().Be(0, "an explicit model override short-circuits tier resolution");
-        tierFactoryRequestedModel.Should().Be("spawn-model", "the override is built transport-correctly for its own id");
+        tierFactoryRequestedModel
+            .Should()
+            .Be("spawn-model", "the override is built transport-correctly for its own id");
         tierAgentOptions.Should().NotBeNull("the tier-built provider is the agent that runs");
         tierAgentOptions!.ModelId.Should().Be("spawn-model");
         tierAgentOptions.ExtraProperties.Should().NotContainKey("Thinking");
@@ -478,8 +489,7 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     [Fact]
     public void SubAgentProviderAgent_RejectsNullAgent()
     {
-        var act = () =>
-            new SubAgentProviderAgent(null!, ImmutableDictionary<string, object?>.Empty);
+        var act = () => new SubAgentProviderAgent(null!, ImmutableDictionary<string, object?>.Empty);
 
         act.Should().Throw<ArgumentNullException>().WithParameterName("Agent");
     }
@@ -487,11 +497,7 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     [Fact]
     public void SubAgentProviderAgent_RejectsNullExtraProperties()
     {
-        var act = () =>
-            new SubAgentProviderAgent(
-                Agent: Mock.Of<IStreamingAgent>(),
-                ExtraProperties: null!
-            );
+        var act = () => new SubAgentProviderAgent(Agent: Mock.Of<IStreamingAgent>(), ExtraProperties: null!);
 
         act.Should().Throw<ArgumentNullException>().WithParameterName("ExtraProperties");
     }
@@ -635,22 +641,22 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         _ = await manager.SpawnAsync("test-agent", "test task");
 
         receivedCharacteristics.Should().NotBeNull();
-        receivedCharacteristics!.ModelId
-            .Should()
+        receivedCharacteristics!
+            .ModelId.Should()
             .Be(
                 "configured-reviewer-model",
                 "the operator configured this model for sub-agents, so it is the one the child must run"
             );
-        receivedCharacteristics.IsModelExplicitlySelected
-            .Should()
+        receivedCharacteristics
+            .IsModelExplicitlySelected.Should()
             .BeTrue(
                 "the characteristics factory hands back the PARENT agent unless a model was explicitly "
                     + "selected, so a false here would silently discard the configured model"
             );
 
         var snapshot = manager.ListAgents().Should().ContainSingle().Subject;
-        snapshot.ModelSelectionSource
-            .Should()
+        snapshot
+            .ModelSelectionSource.Should()
             .Be(
                 "conversation-default",
                 "an operator has to be able to tell 'the configured model won' from 'nothing was configured "
@@ -681,8 +687,8 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
 
         _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-chosen-model");
 
-        receivedCharacteristics!.ModelId
-            .Should()
+        receivedCharacteristics!
+            .ModelId.Should()
             .Be(
                 "spawn-chosen-model",
                 "a per-spawn model is the parent agent deciding at dispatch time for THIS task; the "
@@ -751,8 +757,7 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
 
         receivedCharacteristics!.ModelId.Should().Be("configured-reviewer-model");
 
-        manager.ListAgents().Should().ContainSingle().Subject.ModelSelectionSource
-            .Should().Be("conversation-default");
+        manager.ListAgents().Should().ContainSingle().Subject.ModelSelectionSource.Should().Be("conversation-default");
     }
 
     [Fact]
@@ -785,8 +790,8 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         _ = await manager.SpawnAsync("test-agent", "test task");
 
         receivedCharacteristics!.ModelId.Should().Be("configured-reviewer-model");
-        receivedCharacteristics.Effort
-            .Should()
+        receivedCharacteristics
+            .Effort.Should()
             .Be(
                 ReasoningEffort.High,
                 "InheritedEffort is the abstract floor that is re-shaped per child model, so it carries "

@@ -14,7 +14,8 @@ public sealed class RealGitFixtureTests
 {
     [WindowsOnlyFact(
         "an open file handle only blocks deletion on Windows; on Unix the unlink succeeds and there would be "
-            + "nothing for the final attempt to swallow, so the body would pass while proving nothing")]
+            + "nothing for the final attempt to swallow, so the body would pass while proving nothing"
+    )]
     public void ForceDelete_does_not_throw_out_of_dispose_when_the_tree_cannot_be_deleted()
     {
         var root = Path.Combine(Path.GetTempPath(), "crd-forcedelete-" + Guid.NewGuid().ToString("N"));
@@ -26,13 +27,15 @@ public sealed class RealGitFixtureTests
         {
             var act = () => RealGitFixture.ForceDelete(root);
 
-            act.Should().NotThrow(
-                "a throw here would replace whatever failure the test being disposed was actually reporting");
+            act.Should()
+                .NotThrow("a throw here would replace whatever failure the test being disposed was actually reporting");
 
             // Non-vacuity: the delete has to have genuinely failed, or "did not throw" is the trivial truth
             // about a tree that simply went away.
-            Directory.Exists(root).Should().BeTrue(
-                "the handle must really have blocked the delete for the swallow to be what was exercised");
+            Directory
+                .Exists(root)
+                .Should()
+                .BeTrue("the handle must really have blocked the delete for the swallow to be what was exercised");
         }
 
         // The handle is released; the same call now cleans up for real, so the assertion above is about the

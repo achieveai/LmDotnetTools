@@ -1,4 +1,3 @@
-
 namespace LmStreaming.Sample.Tests.Persistence;
 
 /// <summary>
@@ -109,9 +108,7 @@ public class FileWorkspaceStoreTests
     {
         var store = new FileWorkspaceStore(NewTempDir());
 
-        var created = await store.CreateAsync(
-            new WorkspaceCreate { Name = "x", DirectoryRelPath = "a/../b\\c" }
-        );
+        var created = await store.CreateAsync(new WorkspaceCreate { Name = "x", DirectoryRelPath = "a/../b\\c" });
 
         created.DirectoryRelPath.Should().NotContain("/");
         created.DirectoryRelPath.Should().NotContain("\\");
@@ -165,9 +162,7 @@ public class FileWorkspaceStoreTests
     public async Task UpdateAsync_ReplacesMarketplaces_AndBumpsUpdatedAt()
     {
         var store = new FileWorkspaceStore(NewTempDir());
-        var created = await store.CreateAsync(
-            new WorkspaceCreate { Name = "Proj", Marketplaces = ["one"] }
-        );
+        var created = await store.CreateAsync(new WorkspaceCreate { Name = "Proj", Marketplaces = ["one"] });
 
         // Ensure the timestamp clock moves between create and update.
         await Task.Delay(2);
@@ -237,7 +232,9 @@ public class FileWorkspaceStoreTests
     public async Task UpdateAsync_OmittedPluginSelection_LeavesExistingSelectionUnchanged()
     {
         var store = new FileWorkspaceStore(NewTempDir());
-        var created = await store.CreateAsync(new WorkspaceCreate { Name = "Proj", PluginSelection = [new PluginRef("official", "code-review")] });
+        var created = await store.CreateAsync(
+            new WorkspaceCreate { Name = "Proj", PluginSelection = [new PluginRef("official", "code-review")] }
+        );
 
         var updated = await store.UpdateAsync(created.Id, new WorkspaceUpdate { Marketplaces = ["a"] });
 
@@ -249,11 +246,18 @@ public class FileWorkspaceStoreTests
     public async Task UpdateAsync_ExplicitNullPluginSelection_ClearsToLegacyAll_AndBumpsRevision()
     {
         var store = new FileWorkspaceStore(NewTempDir());
-        var created = await store.CreateAsync(new WorkspaceCreate { Name = "Proj", PluginSelection = [new PluginRef("official", "code-review")] });
+        var created = await store.CreateAsync(
+            new WorkspaceCreate { Name = "Proj", PluginSelection = [new PluginRef("official", "code-review")] }
+        );
 
         var updated = await store.UpdateAsync(
             created.Id,
-            new WorkspaceUpdate { Marketplaces = [], PluginSelection = new Optional<IReadOnlyList<PluginRef>?>(null), PluginsRevision = created.PluginsRevision }
+            new WorkspaceUpdate
+            {
+                Marketplaces = [],
+                PluginSelection = new Optional<IReadOnlyList<PluginRef>?>(null),
+                PluginsRevision = created.PluginsRevision,
+            }
         );
 
         updated.PluginSelection.Should().BeNull();
@@ -268,7 +272,12 @@ public class FileWorkspaceStoreTests
 
         var updated = await store.UpdateAsync(
             created.Id,
-            new WorkspaceUpdate { Marketplaces = [], PluginSelection = new Optional<IReadOnlyList<PluginRef>?>([]), PluginsRevision = created.PluginsRevision }
+            new WorkspaceUpdate
+            {
+                Marketplaces = [],
+                PluginSelection = new Optional<IReadOnlyList<PluginRef>?>([]),
+                PluginsRevision = created.PluginsRevision,
+            }
         );
 
         updated.PluginSelection.Should().NotBeNull();
@@ -283,13 +292,24 @@ public class FileWorkspaceStoreTests
         var created = await store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
         _ = await store.UpdateAsync(
             created.Id,
-            new WorkspaceUpdate { Marketplaces = [], PluginSelection = new Optional<IReadOnlyList<PluginRef>?>([]), PluginsRevision = created.PluginsRevision }
+            new WorkspaceUpdate
+            {
+                Marketplaces = [],
+                PluginSelection = new Optional<IReadOnlyList<PluginRef>?>([]),
+                PluginsRevision = created.PluginsRevision,
+            }
         );
 
-        var act = async () => await store.UpdateAsync(
-            created.Id,
-            new WorkspaceUpdate { Marketplaces = [], PluginSelection = new Optional<IReadOnlyList<PluginRef>?>(null), PluginsRevision = created.PluginsRevision }
-        );
+        var act = async () =>
+            await store.UpdateAsync(
+                created.Id,
+                new WorkspaceUpdate
+                {
+                    Marketplaces = [],
+                    PluginSelection = new Optional<IReadOnlyList<PluginRef>?>(null),
+                    PluginsRevision = created.PluginsRevision,
+                }
+            );
 
         await act.Should().ThrowAsync<WorkspaceRevisionConflictException>();
     }
@@ -313,10 +333,11 @@ public class FileWorkspaceStoreTests
 
         // PluginSelection is explicitly set but PluginsRevision is omitted (null) — CAS is
         // mandatory for any explicit selection change, so this must reject, not silently overwrite.
-        var act = async () => await store.UpdateAsync(
-            created.Id,
-            new WorkspaceUpdate { Marketplaces = [], PluginSelection = new Optional<IReadOnlyList<PluginRef>?>([]) }
-        );
+        var act = async () =>
+            await store.UpdateAsync(
+                created.Id,
+                new WorkspaceUpdate { Marketplaces = [], PluginSelection = new Optional<IReadOnlyList<PluginRef>?>([]) }
+            );
 
         await act.Should().ThrowAsync<WorkspaceRevisionConflictException>();
     }

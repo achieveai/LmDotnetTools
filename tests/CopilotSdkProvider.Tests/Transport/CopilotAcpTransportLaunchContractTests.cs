@@ -15,7 +15,10 @@ public class CopilotAcpTransportLaunchContractTests
     {
         public ProcessLaunchRequest? LastRequest { get; private set; }
 
-        public Task<IProcessHandle> LaunchAsync(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
+        public Task<IProcessHandle> LaunchAsync(
+            ProcessLaunchRequest request,
+            CancellationToken cancellationToken = default
+        )
         {
             LastRequest = request;
             throw new ProcessLauncherException("recording launcher: never spawns");
@@ -26,11 +29,7 @@ public class CopilotAcpTransportLaunchContractTests
     public async Task StartAsync_PassesAcpStdioArgumentsAndHostPath()
     {
         var recorder = new RecordingLauncher();
-        var options = new CopilotSdkOptions
-        {
-            CopilotCliPath = "copilot-cli-mock",
-            ProcessLauncher = recorder,
-        };
+        var options = new CopilotSdkOptions { CopilotCliPath = "copilot-cli-mock", ProcessLauncher = recorder };
 
         await using var transport = new CopilotAcpTransport(options);
 
@@ -38,13 +37,15 @@ public class CopilotAcpTransportLaunchContractTests
         Directory.CreateDirectory(workingDir);
         try
         {
-            var act = async () => await transport.StartAsync(
-                workingDir,
-                apiKey: "ghp_test-token",
-                baseUrl: "https://copilot.example.test",
-                requestHandler: (_, _, _) => Task.FromResult(default(JsonElement)),
-                notificationHandler: (_, _) => { },
-                ct: CancellationToken.None);
+            var act = async () =>
+                await transport.StartAsync(
+                    workingDir,
+                    apiKey: "ghp_test-token",
+                    baseUrl: "https://copilot.example.test",
+                    requestHandler: (_, _, _) => Task.FromResult(default(JsonElement)),
+                    notificationHandler: (_, _) => { },
+                    ct: CancellationToken.None
+                );
 
             await act.Should().ThrowAsync<InvalidOperationException>();
         }
@@ -61,18 +62,22 @@ public class CopilotAcpTransportLaunchContractTests
         request.WorkingDirectory.Should().Be(workingDir);
         request.EnvironmentOverrides.Should().ContainKey("COPILOT_API_KEY").WhoseValue.Should().Be("ghp_test-token");
         request.EnvironmentOverrides.Should().ContainKey("GITHUB_TOKEN").WhoseValue.Should().Be("ghp_test-token");
-        request.EnvironmentOverrides.Should().ContainKey("COPILOT_BASE_URL").WhoseValue.Should().Be("https://copilot.example.test");
-        request.HostPaths.Should().ContainSingle()
-            .Which.Should().BeEquivalentTo(new HostPathReference(workingDir, HostPathKind.WorkingDirectory));
+        request
+            .EnvironmentOverrides.Should()
+            .ContainKey("COPILOT_BASE_URL")
+            .WhoseValue.Should()
+            .Be("https://copilot.example.test");
+        request
+            .HostPaths.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeEquivalentTo(new HostPathReference(workingDir, HostPathKind.WorkingDirectory));
     }
 
     [Fact]
     public async Task StartAsync_DefaultOptions_DoesNotEmitDisableMcpFlags()
     {
-        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
-        {
-            CopilotCliPath = "copilot-cli-mock",
-        });
+        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions { CopilotCliPath = "copilot-cli-mock" });
 
         request.Arguments.Should().Equal("--acp", "--stdio");
     }
@@ -80,83 +85,76 @@ public class CopilotAcpTransportLaunchContractTests
     [Fact]
     public async Task StartAsync_SingleDisabledMcpServer_EmitsOneDisableMcpServerFlag()
     {
-        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
-        {
-            CopilotCliPath = "copilot-cli-mock",
-            DisabledMcpServers = ["playwright"],
-        });
+        var request = await CaptureLaunchRequestAsync(
+            new CopilotSdkOptions { CopilotCliPath = "copilot-cli-mock", DisabledMcpServers = ["playwright"] }
+        );
 
-        request.Arguments.Should().Equal(
-            "--acp",
-            "--stdio",
-            "--disable-mcp-server",
-            "playwright");
+        request.Arguments.Should().Equal("--acp", "--stdio", "--disable-mcp-server", "playwright");
     }
 
     [Fact]
     public async Task StartAsync_MultipleDisabledMcpServers_EmitsRepeatedFlagsInOrder()
     {
-        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
-        {
-            CopilotCliPath = "copilot-cli-mock",
-            DisabledMcpServers = ["playwright", "memory", "github"],
-        });
+        var request = await CaptureLaunchRequestAsync(
+            new CopilotSdkOptions
+            {
+                CopilotCliPath = "copilot-cli-mock",
+                DisabledMcpServers = ["playwright", "memory", "github"],
+            }
+        );
 
-        request.Arguments.Should().Equal(
-            "--acp",
-            "--stdio",
-            "--disable-mcp-server",
-            "playwright",
-            "--disable-mcp-server",
-            "memory",
-            "--disable-mcp-server",
-            "github");
+        request
+            .Arguments.Should()
+            .Equal(
+                "--acp",
+                "--stdio",
+                "--disable-mcp-server",
+                "playwright",
+                "--disable-mcp-server",
+                "memory",
+                "--disable-mcp-server",
+                "github"
+            );
     }
 
     [Fact]
     public async Task StartAsync_NullOrWhitespaceServerName_IsSkipped()
     {
-        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
-        {
-            CopilotCliPath = "copilot-cli-mock",
-            DisabledMcpServers = ["playwright", "  ", null!, string.Empty, "memory"],
-        });
+        var request = await CaptureLaunchRequestAsync(
+            new CopilotSdkOptions
+            {
+                CopilotCliPath = "copilot-cli-mock",
+                DisabledMcpServers = ["playwright", "  ", null!, string.Empty, "memory"],
+            }
+        );
 
-        request.Arguments.Should().Equal(
-            "--acp",
-            "--stdio",
-            "--disable-mcp-server",
-            "playwright",
-            "--disable-mcp-server",
-            "memory");
+        request
+            .Arguments.Should()
+            .Equal("--acp", "--stdio", "--disable-mcp-server", "playwright", "--disable-mcp-server", "memory");
     }
 
     [Fact]
     public async Task StartAsync_DisabledServerName_IsTrimmed()
     {
-        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
-        {
-            CopilotCliPath = "copilot-cli-mock",
-            DisabledMcpServers = ["  playwright  ", "\tmemory\n"],
-        });
+        var request = await CaptureLaunchRequestAsync(
+            new CopilotSdkOptions
+            {
+                CopilotCliPath = "copilot-cli-mock",
+                DisabledMcpServers = ["  playwright  ", "\tmemory\n"],
+            }
+        );
 
-        request.Arguments.Should().Equal(
-            "--acp",
-            "--stdio",
-            "--disable-mcp-server",
-            "playwright",
-            "--disable-mcp-server",
-            "memory");
+        request
+            .Arguments.Should()
+            .Equal("--acp", "--stdio", "--disable-mcp-server", "playwright", "--disable-mcp-server", "memory");
     }
 
     [Fact]
     public async Task StartAsync_DisableBuiltinMcps_EmitsBuiltinFlag()
     {
-        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
-        {
-            CopilotCliPath = "copilot-cli-mock",
-            DisableBuiltinMcps = true,
-        });
+        var request = await CaptureLaunchRequestAsync(
+            new CopilotSdkOptions { CopilotCliPath = "copilot-cli-mock", DisableBuiltinMcps = true }
+        );
 
         request.Arguments.Should().Equal("--acp", "--stdio", "--disable-builtin-mcps");
     }
@@ -164,21 +162,26 @@ public class CopilotAcpTransportLaunchContractTests
     [Fact]
     public async Task StartAsync_BothDisableFlags_EmitsDisabledServersBeforeBuiltinFlag()
     {
-        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
-        {
-            CopilotCliPath = "copilot-cli-mock",
-            DisabledMcpServers = ["playwright", "memory"],
-            DisableBuiltinMcps = true,
-        });
+        var request = await CaptureLaunchRequestAsync(
+            new CopilotSdkOptions
+            {
+                CopilotCliPath = "copilot-cli-mock",
+                DisabledMcpServers = ["playwright", "memory"],
+                DisableBuiltinMcps = true,
+            }
+        );
 
-        request.Arguments.Should().Equal(
-            "--acp",
-            "--stdio",
-            "--disable-mcp-server",
-            "playwright",
-            "--disable-mcp-server",
-            "memory",
-            "--disable-builtin-mcps");
+        request
+            .Arguments.Should()
+            .Equal(
+                "--acp",
+                "--stdio",
+                "--disable-mcp-server",
+                "playwright",
+                "--disable-mcp-server",
+                "memory",
+                "--disable-builtin-mcps"
+            );
     }
 
     private static async Task<ProcessLaunchRequest> CaptureLaunchRequestAsync(CopilotSdkOptions baseOptions)
@@ -192,13 +195,15 @@ public class CopilotAcpTransportLaunchContractTests
         Directory.CreateDirectory(workingDir);
         try
         {
-            var act = async () => await transport.StartAsync(
-                workingDir,
-                apiKey: null,
-                baseUrl: null,
-                requestHandler: (_, _, _) => Task.FromResult(default(JsonElement)),
-                notificationHandler: (_, _) => { },
-                ct: CancellationToken.None);
+            var act = async () =>
+                await transport.StartAsync(
+                    workingDir,
+                    apiKey: null,
+                    baseUrl: null,
+                    requestHandler: (_, _, _) => Task.FromResult(default(JsonElement)),
+                    notificationHandler: (_, _) => { },
+                    ct: CancellationToken.None
+                );
 
             await act.Should().ThrowAsync<InvalidOperationException>();
         }

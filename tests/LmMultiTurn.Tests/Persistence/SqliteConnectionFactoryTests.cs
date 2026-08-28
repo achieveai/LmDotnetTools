@@ -27,8 +27,9 @@ namespace LmMultiTurn.Tests.Persistence;
 /// </summary>
 public class SqliteConnectionFactoryTests : IDisposable
 {
-    private readonly string _root = Directory.CreateDirectory(
-        Path.Combine(Path.GetTempPath(), "sqlfac-" + Guid.NewGuid().ToString("N"))).FullName;
+    private readonly string _root = Directory
+        .CreateDirectory(Path.Combine(Path.GetTempPath(), "sqlfac-" + Guid.NewGuid().ToString("N")))
+        .FullName;
 
     public void Dispose()
     {
@@ -81,7 +82,11 @@ public class SqliteConnectionFactoryTests : IDisposable
         var renamed = Path.Combine(_root, "data-renamed");
         var rename = () => Directory.Move(dbDirectory, renamed);
 
-        rename.Should().NotThrow("disposing the connection must actually close it and return it to the pool -- only then can ClearAllPools release the file and let its directory be renamed");
+        rename
+            .Should()
+            .NotThrow(
+                "disposing the connection must actually close it and return it to the pool -- only then can ClearAllPools release the file and let its directory be renamed"
+            );
         File.Exists(Path.Combine(renamed, "notify-waits.db")).Should().BeTrue();
     }
 
@@ -134,8 +139,11 @@ public class SqliteConnectionFactoryTests : IDisposable
             connection.State.Should().Be(System.Data.ConnectionState.Open);
         };
 
-        await acquire.Should().NotThrowAsync(
-            "every disposed connection must have returned its permit -- a lost permit is never reposted, so the factory would block here forever");
+        await acquire
+            .Should()
+            .NotThrowAsync(
+                "every disposed connection must have returned its permit -- a lost permit is never reposted, so the factory would block here forever"
+            );
     }
 
     [Fact]
@@ -169,7 +177,10 @@ public class SqliteConnectionFactoryTests : IDisposable
         using var overCap = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
         var acquireSecond = async () => await factory.GetConnectionAsync(overCap.Token);
 
-        await acquireSecond.Should().ThrowAsync<OperationCanceledException>(
-            "the cap must still be enforced -- a permit released twice would silently raise the real concurrency limit above maxConnections");
+        await acquireSecond
+            .Should()
+            .ThrowAsync<OperationCanceledException>(
+                "the cap must still be enforced -- a permit released twice would silently raise the real concurrency limit above maxConnections"
+            );
     }
 }

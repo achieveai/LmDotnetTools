@@ -8,16 +8,9 @@ namespace AchieveAi.LmDotnetTools.CodexSdkProvider.Transport;
 internal sealed class CodexRpcTraceWriter : IAsyncDisposable
 {
     private static readonly HashSet<string> RedactedKeys = new(
-    [
-        "apiKey",
-        "api_key",
-        "authorization",
-        "openai_api_key",
-        "token",
-        "access_token",
-        "refresh_token",
-    ],
-        StringComparer.OrdinalIgnoreCase);
+        ["apiKey", "api_key", "authorization", "openai_api_key", "token", "access_token", "refresh_token"],
+        StringComparer.OrdinalIgnoreCase
+    );
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly string _sessionId;
@@ -68,13 +61,15 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
 
             if (payloadElement.ValueKind == JsonValueKind.Object)
             {
-                var hasMethod = payloadElement.TryGetProperty("method", out var methodProp)
-                                && methodProp.ValueKind == JsonValueKind.String;
+                var hasMethod =
+                    payloadElement.TryGetProperty("method", out var methodProp)
+                    && methodProp.ValueKind == JsonValueKind.String;
                 var hasId = payloadElement.TryGetProperty("id", out var idProp);
                 var hasResult = payloadElement.TryGetProperty("result", out _);
                 var hasError = payloadElement.TryGetProperty("error", out _);
 
-                messageKind = hasMethod && hasId ? "request"
+                messageKind =
+                    hasMethod && hasId ? "request"
                     : hasMethod ? "notification"
                     : hasId && (hasResult || hasError) ? "response"
                     : "unknown";
@@ -94,8 +89,10 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
                     };
                 }
 
-                if (payloadElement.TryGetProperty("params", out var paramsProp)
-                    && paramsProp.ValueKind == JsonValueKind.Object)
+                if (
+                    payloadElement.TryGetProperty("params", out var paramsProp)
+                    && paramsProp.ValueKind == JsonValueKind.Object
+                )
                 {
                     threadId = TryGetString(paramsProp, "threadId") ?? TryGetString(paramsProp, "thread_id");
                     turnId = TryGetString(paramsProp, "turnId") ?? TryGetString(paramsProp, "turn_id");
@@ -109,19 +106,21 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
         }
 
         var payloadHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payloadJson)));
-        var envelope = JsonSerializer.Serialize(new
-        {
-            timestamp_utc = DateTimeOffset.UtcNow.ToString("O"),
-            codex_session_id = _sessionId,
-            direction,
-            message_kind = messageKind ?? "unknown",
-            rpc_id = rpcId,
-            method,
-            thread_id = threadId,
-            turn_id = turnId,
-            payload_sha256 = payloadHash,
-            payload = payloadJson,
-        });
+        var envelope = JsonSerializer.Serialize(
+            new
+            {
+                timestamp_utc = DateTimeOffset.UtcNow.ToString("O"),
+                codex_session_id = _sessionId,
+                direction,
+                message_kind = messageKind ?? "unknown",
+                rpc_id = rpcId,
+                method,
+                thread_id = threadId,
+                turn_id = turnId,
+                payload_sha256 = payloadHash,
+                payload = payloadJson,
+            }
+        );
 
         await _writeLock.WaitAsync(ct);
         try
@@ -142,7 +141,8 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
                 "{event_type} {event_status} {error_code}",
                 "codex.rpc_trace.write",
                 "failed",
-                "trace_write_failed");
+                "trace_write_failed"
+            );
         }
         finally
         {
@@ -226,8 +226,7 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
 
     private static string? TryGetString(JsonElement obj, string propertyName)
     {
-        return obj.TryGetProperty(propertyName, out var property)
-               && property.ValueKind == JsonValueKind.String
+        return obj.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
             ? property.GetString()
             : null;
     }

@@ -171,7 +171,8 @@ public class InMemoryRunLedgerStoreTests
         string runId,
         RunStatus status = RunStatus.Queued,
         IReadOnlyList<string>? inputIds = null,
-        DateTimeOffset? createdAt = null)
+        DateTimeOffset? createdAt = null
+    )
     {
         var timestamp = createdAt ?? DateTimeOffset.UtcNow;
         return new RunLedgerEntry(
@@ -180,7 +181,8 @@ public class InMemoryRunLedgerStoreTests
             Status: status,
             InputIds: inputIds ?? [runId + "-input"],
             CreatedAt: timestamp,
-            UpdatedAt: timestamp);
+            UpdatedAt: timestamp
+        );
     }
 
     #endregion

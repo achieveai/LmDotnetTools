@@ -20,9 +20,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 /// at agent-creation time, so they must travel with the source rather than be re-derived inside the
 /// webhook handler.
 /// </summary>
-public sealed record SubAgentSessionBinding(
-    MutableSubAgentTemplateSource Source,
-    Func<IStreamingAgent> AgentFactory)
+public sealed record SubAgentSessionBinding(MutableSubAgentTemplateSource Source, Func<IStreamingAgent> AgentFactory)
 {
     /// <summary>
     /// Optional factory that creates the provider agent from resolved spawn characteristics.
@@ -145,7 +143,8 @@ public sealed record SandboxSessionResolution(
     SandboxSessionResolutionOutcome Outcome,
     SandboxSession? Session,
     string? ExistingAppId,
-    string? RequestedAppId);
+    string? RequestedAppId
+);
 
 /// <summary>
 /// Owns sandbox sessions for the sample app. Sessions are created lazily and exactly once per
@@ -221,8 +220,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// forwarding handler, so they share its connection pool (and, in tests, its recording handler).
     /// Keyed by the full (AppId, AppKey) credential so a rotated key yields a fresh client.
     /// </summary>
-    private readonly ConcurrentDictionary<(string AppId, string AppKey), SandboxClientEntry> _clients =
-        new();
+    private readonly ConcurrentDictionary<(string AppId, string AppKey), SandboxClientEntry> _clients = new();
 
     /// <summary>
     /// Serializes every <see cref="_clients"/> get-or-create, per-credential session refcount mutation,
@@ -255,10 +253,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// default equality comparer for a <c>(string, string)</c> value tuple already compares each
     /// element with ordinal string equality, so no explicit comparer is needed.
     /// </summary>
-    private readonly ConcurrentDictionary<
-        (string WorkspaceId, string AppId),
-        Lazy<Task<SandboxSession>>
-    > _sessions = new();
+    private readonly ConcurrentDictionary<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>> _sessions =
+        new();
 
     /// <summary>
     /// Sub-agent binding (template source + agent factory) the loop uses to populate the Agent
@@ -273,8 +269,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// The outer key is the session id (what the webhook carries) so it can fan a discovery out to
     /// every conversation currently live on that session.
     /// </remarks>
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, SubAgentSessionBinding>> _subAgentBindings =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<
+        string,
+        ConcurrentDictionary<string, SubAgentSessionBinding>
+    > _subAgentBindings = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Reverse map from gateway session id to the <see cref="SandboxSession"/> it represents.
@@ -282,8 +280,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// context-discovery webhook (which only knows the session id) can resolve back to the
     /// session's <c>HostPath</c> for path-containment checks.
     /// </summary>
-    private readonly ConcurrentDictionary<string, SandboxSession> _sessionsById =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SandboxSession> _sessionsById = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Session id → set of agent-pool thread ids currently routed to that session. The
@@ -293,8 +290,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// (called from the pool's thread-removed notifier — NOT from a mode switch, which preserves
     /// the same threadId and therefore must continue routing).
     /// </summary>
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _sessionThreads =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _sessionThreads = new(
+        StringComparer.Ordinal
+    );
 
     /// <summary>
     /// Per-session dedup ledger of <c>(kind, path)</c> tuples the gateway has already delivered.
@@ -303,8 +301,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// twice into the same thread. No TTL — entries are scoped to the registry lifetime, cleared
     /// on <see cref="DisposeAsync"/>.
     /// </summary>
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _discoverySeen =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _discoverySeen = new(
+        StringComparer.Ordinal
+    );
 
     private readonly SandboxGatewayLifetime _gateway;
     private readonly SandboxGatewayOptions _options;
@@ -352,8 +351,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// opened under instead of the process-wide default. Populated by <see cref="CreateSessionAsync"/>
     /// and cleared wherever <see cref="_sessionsById"/> is cleared.
     /// </summary>
-    private readonly ConcurrentDictionary<string, SandboxCredential> _sessionCredentials =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SandboxCredential> _sessionCredentials = new(StringComparer.Ordinal);
 
     /// <summary>
     /// When each live session was last confirmed alive by a gateway probe, as UTC ticks. Read by
@@ -373,8 +371,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// on a transient failure deliberately does not, so a flaky gateway can never be mistaken for a
     /// verified one and buy itself a full freshness window.
     /// </remarks>
-    private readonly ConcurrentDictionary<string, long> _sessionVerifiedAtUtcTicks =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _sessionVerifiedAtUtcTicks = new(StringComparer.Ordinal);
 
     /// <summary>
     /// A conversation thread's sandbox-established binding (workspace ref + creating credential), the
@@ -384,8 +381,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// same durable workspace in-process) and NEVER persisted. Independent of <see cref="_sessionThreads"/>
     /// and of the pool's private agent entry.
     /// </summary>
-    private readonly ConcurrentDictionary<string, SandboxEstablishedBinding> _establishedBindings =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SandboxEstablishedBinding> _establishedBindings = new(
+        StringComparer.Ordinal
+    );
 
     /// <summary>
     /// Sessions that have been committed but whose <see cref="LifecycleEventTypes.SandboxCreated"/>
@@ -411,8 +409,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// nothing pays no allocation and the map stays permanently empty.
     /// </para>
     /// </remarks>
-    private readonly ConcurrentDictionary<string, SandboxCreatedPayload> _unreportedCreations =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SandboxCreatedPayload> _unreportedCreations = new(
+        StringComparer.Ordinal
+    );
 
     /// <summary>
     /// The dead session a given (workspace id, app id) slot is about to replace, recorded by
@@ -426,8 +425,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// an invalidated slot claims the marker, so the linkage follows the replacement rather than the
     /// caller that noticed the eviction.
     /// </remarks>
-    private readonly ConcurrentDictionary<(string WorkspaceId, string AppId), string> _replacedSessions =
-        new();
+    private readonly ConcurrentDictionary<(string WorkspaceId, string AppId), string> _replacedSessions = new();
 
     /// <summary>
     /// Initialises the registry.
@@ -527,10 +525,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// <param name="threadId">The conversation thread to look up.</param>
     /// <param name="binding">The binding when one exists; otherwise <c>null</c>.</param>
     /// <returns><c>true</c> when the thread has an established binding.</returns>
-    public bool TryGetEstablishedBinding(
-        string? threadId,
-        out SandboxEstablishedBinding? binding
-    )
+    public bool TryGetEstablishedBinding(string? threadId, out SandboxEstablishedBinding? binding)
     {
         if (string.IsNullOrWhiteSpace(threadId))
         {
@@ -628,8 +623,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         // The persisted conversation workspace is authoritative: a binding for a different workspace id is
         // not a match (guards a stale binding after a workspace switch).
-        if (!string.IsNullOrWhiteSpace(persistedWorkspaceId)
-            && !string.Equals(binding.WorkspaceRef.Id, persistedWorkspaceId, StringComparison.Ordinal))
+        if (
+            !string.IsNullOrWhiteSpace(persistedWorkspaceId)
+            && !string.Equals(binding.WorkspaceRef.Id, persistedWorkspaceId, StringComparison.Ordinal)
+        )
         {
             return new SandboxSessionResolution(SandboxSessionResolutionOutcome.NoSession, null, null, null);
         }
@@ -652,7 +649,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             );
         }
 
-        var session = await GetOrCreateLiveSessionAsync(binding.WorkspaceRef, ct, binding.Credential).ConfigureAwait(false);
+        var session = await GetOrCreateLiveSessionAsync(binding.WorkspaceRef, ct, binding.Credential)
+            .ConfigureAwait(false);
         return new SandboxSessionResolution(SandboxSessionResolutionOutcome.Resolved, session, ownerAppId, callerAppId);
     }
 
@@ -699,8 +697,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // TransportTimeout is enforced per-call by the SDK via a linked token; borrow the shared client's
         // timeout (default 100s) so behaviour matches the pre-SDK path, and fall back to 100s when the
         // shared client's timeout is infinite/unset.
-        var transportTimeout =
-            _httpClient.Timeout > TimeSpan.Zero ? _httpClient.Timeout : TimeSpan.FromSeconds(100);
+        var transportTimeout = _httpClient.Timeout > TimeSpan.Zero ? _httpClient.Timeout : TimeSpan.FromSeconds(100);
         var options = new SandboxClientOptions(
             serverAddress,
             credential.AppId,
@@ -810,9 +807,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
             if (request.Content is not null)
             {
-                var bytes = await request
-                    .Content.ReadAsByteArrayAsync(cancellationToken)
-                    .ConfigureAwait(false);
+                var bytes = await request.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
                 var content = new ByteArrayContent(bytes);
                 foreach (var header in request.Content.Headers)
                 {
@@ -919,9 +914,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         catch
         {
             // Only evict the entry we own, in case another creation has since replaced it.
-            _ = ((ICollection<KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>>)_sessions).Remove(
-                new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy)
-            );
+            _ = (
+                (ICollection<KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>>)_sessions
+            ).Remove(new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy));
             throw;
         }
 
@@ -956,11 +951,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 LifecycleSourceStream.ForSandbox(session.SessionId),
                 _lifecycle.SequenceAllocator,
                 _lifecycle.TimeProvider.GetUtcNow(),
-                new LifecycleCorrelation
-                {
-                    SandboxSessionId = session.SessionId,
-                    WorkspaceId = session.WorkspaceId,
-                }
+                new LifecycleCorrelation { SandboxSessionId = session.SessionId, WorkspaceId = session.WorkspaceId }
             );
 
             await _lifecycle.Publisher.PublishAsync(envelope).ConfigureAwait(false);
@@ -1057,8 +1048,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // is that back-to-back turns cost no gateway round-trip at all (#93). Everything past this point
         // — including what a failed probe does — is unchanged, because the window only ever suppresses a
         // probe whose answer is already known, never one that could have said "evicted".
-        if (IsRecentlyVerified(session.SessionId)
-            || await IsSessionAliveAsync(session.SessionId, ct).ConfigureAwait(false))
+        if (
+            IsRecentlyVerified(session.SessionId)
+            || await IsSessionAliveAsync(session.SessionId, ct).ConfigureAwait(false)
+        )
         {
             return session;
         }
@@ -1145,9 +1138,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         probeCts.CancelAfter(SessionLivenessProbeTimeout);
         try
         {
-            _ = await ClientFor(CredentialFor(sessionId))
-                .GetAsync(sessionId, probeCts.Token)
-                .ConfigureAwait(false);
+            _ = await ClientFor(CredentialFor(sessionId)).GetAsync(sessionId, probeCts.Token).ConfigureAwait(false);
             // The gateway just confirmed this session, so the next acquisitions within the freshness
             // window can skip the round-trip. Only this branch stamps: the catch-all below reports
             // "alive" without having heard from the gateway at all.
@@ -1222,10 +1213,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// main maps. The gateway already dropped this session (a 404 liveness probe is what brought us
     /// here), so no DELETE is issued.
     /// </summary>
-    private async Task InvalidateSessionAsync(
-        (string WorkspaceId, string AppId) key,
-        SandboxSession session
-    )
+    private async Task InvalidateSessionAsync((string WorkspaceId, string AppId) key, SandboxSession session)
     {
         // Remove the cached creation ONLY when it still holds the exact dead session — mirroring
         // AwaitAndEvictOnFailureAsync's "only evict the entry we own" discipline. A plain key-removal
@@ -1240,9 +1228,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         {
             _ = (
                 (ICollection<KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>>)_sessions
-            ).Remove(
-                new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy)
-            );
+            ).Remove(new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy));
 
             // Only when this call actually freed the slot: the next create for it is this session's
             // successor, and its event says so. Recording it when a concurrent caller had already
@@ -1311,9 +1297,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // can't leave the rest of teardown half-done.
         try
         {
-            await _sessionSecretStore
-                .RemoveAsync(session.SessionId, CancellationToken.None)
-                .ConfigureAwait(false);
+            await _sessionSecretStore.RemoveAsync(session.SessionId, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -1374,9 +1358,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
         // Shared with the workspace plugin-selection validator so a selection can never be rejected
         // against a different set than the session it gates is about to be created with.
-        var marketplaces = MarketplaceAliases.ResolveEffective(
-            workspaceRef.Marketplaces,
-            _options.Marketplaces);
+        var marketplaces = MarketplaceAliases.ResolveEffective(workspaceRef.Marketplaces, _options.Marketplaces);
         // The effective credential for this creation: caller-supplied (M2 per-caller passthrough) or
         // the process-wide default (M1 behavior, still the only path for the daemon and any other
         // contextless caller).
@@ -1501,8 +1483,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 throw new SandboxSessionUnavailableException(
                     workspaceId,
                     ex.StatusCode,
-                    $"Sandbox gateway returned {ex.StatusCode} creating a session for "
-                        + $"workspace '{workspaceId}'."
+                    $"Sandbox gateway returned {ex.StatusCode} creating a session for " + $"workspace '{workspaceId}'."
                 );
             }
 
@@ -1563,9 +1544,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // Remove ONLY the entries this attempt added, and only while they still point at THIS
                 // session, so a concurrent recreation is never clobbered (mirrors InvalidateSessionAsync).
                 _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
-                    new KeyValuePair<string, SandboxSession>(session.SessionId, session));
+                    new KeyValuePair<string, SandboxSession>(session.SessionId, session)
+                );
                 _ = ((ICollection<KeyValuePair<string, SandboxCredential>>)_sessionCredentials).Remove(
-                    new KeyValuePair<string, SandboxCredential>(session.SessionId, effectiveCredential));
+                    new KeyValuePair<string, SandboxCredential>(session.SessionId, effectiveCredential)
+                );
                 throw;
             }
             // The reservation acquired above IS this session's refcount — commit it (no extra increment),
@@ -1645,11 +1628,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // rather than as the successor of one the caller asked to be destroyed.
             _ = _replacedSessions.TryRemove(key, out _);
 
-            if (
-                !_sessions.TryRemove(key, out var lazy)
-                || !lazy.IsValueCreated
-                || !lazy.Value.IsCompletedSuccessfully
-            )
+            if (!_sessions.TryRemove(key, out var lazy) || !lazy.IsValueCreated || !lazy.Value.IsCompletedSuccessfully)
             {
                 continue;
             }
@@ -1757,7 +1736,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Failed to dispose a sandbox client during registry disposal; continuing.");
+                        _logger.LogWarning(
+                            ex,
+                            "Failed to dispose a sandbox client during registry disposal; continuing."
+                        );
                     }
 
                     try
@@ -1766,7 +1748,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Failed to dispose a sandbox transport during registry disposal; continuing.");
+                        _logger.LogWarning(
+                            ex,
+                            "Failed to dispose a sandbox transport during registry disposal; continuing."
+                        );
                     }
                 }
             }
@@ -1789,7 +1774,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// Thrown when the gateway returns a non-success status. The gateway status code is included so
     /// callers can correlate against gateway logs. Caller is expected to catch + log + degrade.
     /// </exception>
-    public async Task<IReadOnlyList<DiscoveredItem>> ListDiscoveredAsync(string sessionId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<DiscoveredItem>> ListDiscoveredAsync(
+        string sessionId,
+        CancellationToken ct = default
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -1823,8 +1811,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 ex.StatusCode
             );
             throw new InvalidOperationException(
-                $"Sandbox gateway returned {ex.StatusCode} listing discovered items for "
-                    + $"session '{sessionId}'.",
+                $"Sandbox gateway returned {ex.StatusCode} listing discovered items for " + $"session '{sessionId}'.",
                 ex
             );
         }
@@ -1848,7 +1835,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// The file's raw text, or <c>null</c> when the file is missing, the tool reports an error, or the
     /// call fails. Best-effort by contract: callers treat <c>null</c> as "no content" and degrade.
     /// </returns>
-    public async Task<string?> ReadWorkspaceFileAsync(string sessionId, string absolutePath, CancellationToken ct = default)
+    public async Task<string?> ReadWorkspaceFileAsync(
+        string sessionId,
+        string absolutePath,
+        CancellationToken ct = default
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -1957,8 +1948,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     {
         var path = absolutePath.Replace('\\', '/');
 
-        if (_sessionsById.TryGetValue(sessionId, out var session)
-            && !string.IsNullOrEmpty(session.HostPath))
+        if (_sessionsById.TryGetValue(sessionId, out var session) && !string.IsNullOrEmpty(session.HostPath))
         {
             var hostPath = session.HostPath.Replace('\\', '/').TrimEnd('/');
             if (path.StartsWith(hostPath + "/", StringComparison.OrdinalIgnoreCase))
@@ -1979,6 +1969,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         return path.TrimStart('/');
     }
+
     /// <summary>
     /// Returns the <see cref="SubAgentSessionBinding"/> for the
     /// (<paramref name="sessionId"/>, <paramref name="conversationId"/>) pair, creating one on
@@ -2003,7 +1994,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         string sessionId,
         string conversationId,
         IReadOnlyDictionary<string, SubAgentTemplate> seed,
-        Func<IStreamingAgent> agentFactory)
+        Func<IStreamingAgent> agentFactory
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -2013,13 +2005,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         var conversations = _subAgentBindings.GetOrAdd(
             sessionId,
-            _ => new ConcurrentDictionary<string, SubAgentSessionBinding>(StringComparer.Ordinal));
+            _ => new ConcurrentDictionary<string, SubAgentSessionBinding>(StringComparer.Ordinal)
+        );
 
         var binding = conversations.GetOrAdd(
             conversationId,
-            _ => new SubAgentSessionBinding(
-                new MutableSubAgentTemplateSource(seed),
-                agentFactory));
+            _ => new SubAgentSessionBinding(new MutableSubAgentTemplateSource(seed), agentFactory)
+        );
 
         return ReconcileSubAgentBindingSeed(binding, seed);
     }
@@ -2038,7 +2030,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         string conversationId,
         IReadOnlyDictionary<string, SubAgentTemplate> seed,
         Func<IStreamingAgent> agentFactory,
-        Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory)
+        Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -2048,7 +2041,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         var conversations = _subAgentBindings.GetOrAdd(
             sessionId,
-            _ => new ConcurrentDictionary<string, SubAgentSessionBinding>(StringComparer.Ordinal));
+            _ => new ConcurrentDictionary<string, SubAgentSessionBinding>(StringComparer.Ordinal)
+        );
 
         var binding = conversations.AddOrUpdate(
             conversationId,
@@ -2069,14 +2063,16 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                     AgentFactory = agentFactory,
                     CharacteristicsAgentFactory = characteristicsAgentFactory,
                 };
-            });
+            }
+        );
 
         return ReconcileSubAgentBindingSeed(binding, seed);
     }
 
     private static SubAgentSessionBinding ReconcileSubAgentBindingSeed(
         SubAgentSessionBinding binding,
-        IReadOnlyDictionary<string, SubAgentTemplate> seed)
+        IReadOnlyDictionary<string, SubAgentTemplate> seed
+    )
     {
         // Reconcile the seed every call: a later pool factory invocation for the same conversation
         // may present additional built-in templates that weren't present on the first call.
@@ -2130,9 +2126,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             return [];
         }
 
-        return _subAgentBindings.TryGetValue(sessionId, out var conversations)
-            ? [.. conversations.Values]
-            : [];
+        return _subAgentBindings.TryGetValue(sessionId, out var conversations) ? [.. conversations.Values] : [];
     }
 
     /// <summary>
@@ -2166,7 +2160,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         var set = _sessionThreads.GetOrAdd(
             sessionId,
-            _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
+            _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal)
+        );
         _ = set.TryAdd(threadId, 0);
     }
 
@@ -2247,9 +2242,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             return [];
         }
 
-        return _sessionThreads.TryGetValue(sessionId, out var set)
-            ? [.. set.Keys]
-            : [];
+        return _sessionThreads.TryGetValue(sessionId, out var set) ? [.. set.Keys] : [];
     }
 
     /// <summary>
@@ -2307,17 +2300,20 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     public bool TryMarkDiscoverySeen(string sessionId, string target, string kind, string path)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (string.IsNullOrWhiteSpace(sessionId)
+        if (
+            string.IsNullOrWhiteSpace(sessionId)
             || string.IsNullOrWhiteSpace(target)
             || string.IsNullOrWhiteSpace(kind)
-            || string.IsNullOrWhiteSpace(path))
+            || string.IsNullOrWhiteSpace(path)
+        )
         {
             return false;
         }
 
         var set = _discoverySeen.GetOrAdd(
             sessionId,
-            _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
+            _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal)
+        );
         return set.TryAdd(DiscoverySeenKey(target, kind, path), 0);
     }
 
@@ -2340,11 +2336,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// </summary>
     public void UnmarkDiscoverySeen(string sessionId, string target, string kind, string path)
     {
-        if (_disposed
+        if (
+            _disposed
             || string.IsNullOrWhiteSpace(sessionId)
             || string.IsNullOrWhiteSpace(target)
             || string.IsNullOrWhiteSpace(kind)
-            || string.IsNullOrWhiteSpace(path))
+            || string.IsNullOrWhiteSpace(path)
+        )
         {
             return;
         }
@@ -2360,8 +2358,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// single builder keeps <see cref="TryMarkDiscoverySeen(string, string, string, string)"/> and
     /// <see cref="UnmarkDiscoverySeen"/> on the exact same key shape.
     /// </summary>
-    private static string DiscoverySeenKey(string target, string kind, string path) =>
-        $"{target}\0{kind}\0{path}";
+    private static string DiscoverySeenKey(string target, string kind, string path) => $"{target}\0{kind}\0{path}";
 
     /// <summary>
     /// The exact URL the gateway is told to deliver context-discovery webhooks to (the auth-callback
@@ -2369,8 +2366,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// an unreachable/loopback callback host — the silent-failure mode where discoveries are fired
     /// by the gateway but never arrive at the app.
     /// </summary>
-    public string DiscoveryWebhookUrl =>
-        $"{_authOptions.Webhook.CallbackBaseUrl}/api/discovery/context_discovery";
+    public string DiscoveryWebhookUrl => $"{_authOptions.Webhook.CallbackBaseUrl}/api/discovery/context_discovery";
 
     /// <summary>
     /// True when a callback base URL is configured. The default (a loopback host) is non-empty, so
@@ -2395,9 +2391,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     {
         try
         {
-            await ClientFor(CredentialFor(session.SessionId))
-                .DeleteAsync(session.SessionId, ct)
-                .ConfigureAwait(false);
+            await ClientFor(CredentialFor(session.SessionId)).DeleteAsync(session.SessionId, ct).ConfigureAwait(false);
             _logger.LogInformation("Destroyed sandbox session {SessionId}", session.SessionId);
         }
         catch (SandboxException ex)
@@ -2460,10 +2454,15 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// test can assert the security-sensitive rule shape (host, ports, auth-provider linkage) and the
     /// webhook endpoint / cache TTL — not just the provider id.
     /// </summary>
-    internal (IReadOnlyList<SandboxAuthProvider>? Providers, IReadOnlyList<SandboxNetworkRule>? Network) BuildAuthProvidersForTest() =>
-        BuildAuthProviders("test-secret");
+    internal (
+        IReadOnlyList<SandboxAuthProvider>? Providers,
+        IReadOnlyList<SandboxNetworkRule>? Network
+    ) BuildAuthProvidersForTest() => BuildAuthProviders("test-secret");
 
-    private (IReadOnlyList<SandboxAuthProvider>? Providers, IReadOnlyList<SandboxNetworkRule>? Network) BuildAuthProviders(string sessionSecret)
+    private (
+        IReadOnlyList<SandboxAuthProvider>? Providers,
+        IReadOnlyList<SandboxNetworkRule>? Network
+    ) BuildAuthProviders(string sessionSecret)
     {
         var providers = new List<SandboxAuthProvider>();
         var rules = new List<SandboxNetworkRule>();
@@ -2545,8 +2544,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // M365 (Microsoft Graph). Gate on both ClientId and ClientSecret: the provider stays
         // disabled when the secret is missing, so emitting the gateway rule + webhook entry in that
         // case would point to a webhook that always denies — confusing rather than helpful.
-        if (!string.IsNullOrWhiteSpace(_authOptions.M365.ClientId)
-            && !string.IsNullOrWhiteSpace(_authOptions.M365.ClientSecret))
+        if (
+            !string.IsNullOrWhiteSpace(_authOptions.M365.ClientId)
+            && !string.IsNullOrWhiteSpace(_authOptions.M365.ClientSecret)
+        )
         {
             providers.Add(
                 new SandboxAuthProvider(
@@ -2627,10 +2628,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         _logger.LogInformation(
             "ContextDiscovery: gateway will deliver discoveries to {WebhookUrl} (enabled={Enabled}).",
             url,
-            DiscoveryEnabled);
+            DiscoveryEnabled
+        );
         return new SandboxDiscoverySettings(url, sessionSecret);
     }
-
 
     /// <summary>One item the gateway has discovered for the workspace (a sub-agent file,
     /// a skill descriptor, …). <see cref="Kind"/> is the discriminator the caller filters by;

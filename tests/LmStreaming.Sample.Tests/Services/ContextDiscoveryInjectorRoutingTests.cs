@@ -77,8 +77,10 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         sink.SentMessages.Should().ContainSingle();
         sink.DeliverCallCount.Should().Be(0, "a blank agent_id must fall back, not create a routing bucket");
         second.Should().Be(0, "the blank id dedups under __session__, not a rogue \"\" target");
-        harness.Registry.TryMarkDiscoverySeen(SessionId, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, Path)
-            .Should().BeFalse();
+        harness
+            .Registry.TryMarkDiscoverySeen(SessionId, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, Path)
+            .Should()
+            .BeFalse();
     }
 
     // --- Routed aggregation (AC2 / AC4 / AC5) ---
@@ -95,8 +97,12 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         sent.Should().Be(1);
         sink.DeliverCallCount.Should().Be(1);
         sink.LastDeliveredAgentId.Should().Be(AgentId);
-        sink.DeliveredMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>()
-            .Which.Text.Should().Contain(Content);
+        sink.DeliveredMessages.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeOfType<NotifyMessage>()
+            .Which.Text.Should()
+            .Contain(Content);
         primary.SentMessages.Should().BeEmpty("routed delivery must not also pollute the primary");
         sink.SentMessages.Should().BeEmpty("routed delivery goes via TryDeliverContextAsync, not SendAsync");
         harness.Diagnostics.RoutingSnapshot().Routed.Should().Be(1);
@@ -113,7 +119,11 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         // AC3/AC5: a known sub-agent that is finished/disposing ⇒ drop, never redirect to the primary.
         using var harness = new Harness(routeToSubAgent: true);
         var primary = harness.RegisterPrimaryThread(SessionId, "thread-primary");
-        var sink = harness.RegisterSinkThread(SessionId, "thread-sub", SubAgentContextDeliveryResult.TargetNotDeliverable);
+        var sink = harness.RegisterSinkThread(
+            SessionId,
+            "thread-sub",
+            SubAgentContextDeliveryResult.TargetNotDeliverable
+        );
 
         var sent = await harness.Injector.InjectAsync(Payload(agentId: AgentId), CancellationToken.None);
 
@@ -140,8 +150,10 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         primary.SentMessages.Should().BeEmpty("present-but-unresolved agent_id must never fall back to the primary");
         sink.SentMessages.Should().BeEmpty();
         harness.Diagnostics.RoutingSnapshot().Dropped.Should().Be(1);
-        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
-            .Should().BeTrue("the un-delivered routed discovery was un-marked so a gateway retry can heal the race");
+        harness
+            .Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
+            .Should()
+            .BeTrue("the un-delivered routed discovery was un-marked so a gateway retry can heal the race");
     }
 
     [Fact]
@@ -169,15 +181,20 @@ public sealed class ContextDiscoveryInjectorRoutingTests
                 Content = Content,
                 AgentId = AgentId,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
         sent.Should().Be(0);
 
         // The concurrent DeliveredPath mark MUST still be present — precise un-mark, not target-wide wipe.
-        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, DeliveredPath)
-            .Should().BeFalse("the precise rollback must not erase a concurrent path's mark for the same agent_id");
+        harness
+            .Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, DeliveredPath)
+            .Should()
+            .BeFalse("the precise rollback must not erase a concurrent path's mark for the same agent_id");
         // …while NotOwnedPath's own mark WAS rolled back so a gateway redelivery can heal the race.
-        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, NotOwnedPath)
-            .Should().BeTrue("the un-delivered path was un-marked so a gateway retry can heal the pre-registration race");
+        harness
+            .Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, NotOwnedPath)
+            .Should()
+            .BeTrue("the un-delivered path was un-marked so a gateway retry can heal the pre-registration race");
     }
 
     [Fact]
@@ -190,7 +207,9 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         var sent = await harness.Injector.InjectAsync(Payload(agentId: AgentId), CancellationToken.None);
 
         sent.Should().Be(1);
-        delivered.DeliveredMessages.Should().ContainSingle("a Delivered result wins the aggregation regardless of thread order");
+        delivered
+            .DeliveredMessages.Should()
+            .ContainSingle("a Delivered result wins the aggregation regardless of thread order");
         harness.Diagnostics.RoutingSnapshot().Routed.Should().Be(1);
         harness.Diagnostics.RoutingSnapshot().Dropped.Should().Be(0);
     }
@@ -216,8 +235,10 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         harness.Diagnostics.RoutingSnapshot().Dropped.Should().Be(1);
         // The mark is KEPT (returns false = already seen), so a gateway redelivery is deduped instead of
         // risking a second inject of a context the throwing sink may already have delivered.
-        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
-            .Should().BeFalse("an ambiguous sink failure keeps the dedup mark so a retry can't double-inject");
+        harness
+            .Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
+            .Should()
+            .BeFalse("an ambiguous sink failure keeps the dedup mark so a retry can't double-inject");
     }
 
     // --- Cancellation & stop-scanning ---
@@ -239,8 +260,10 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         var act = async () => await harness.Injector.InjectAsync(Payload(agentId: AgentId), cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
-        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
-            .Should().BeTrue("a cancelled call must throw before marking, leaving the routed dedup slot free");
+        harness
+            .Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
+            .Should()
+            .BeTrue("a cancelled call must throw before marking, leaving the routed dedup slot free");
     }
 
     [Fact]
@@ -261,8 +284,10 @@ public sealed class ContextDiscoveryInjectorRoutingTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
         sink.SentMessages.Should().BeEmpty("the cancellation guard fires before any fan-out send");
-        harness.Registry.TryMarkDiscoverySeen(SessionId, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, Path)
-            .Should().BeTrue("a cancelled call must throw before marking, leaving the __session__ dedup slot free");
+        harness
+            .Registry.TryMarkDiscoverySeen(SessionId, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, Path)
+            .Should()
+            .BeTrue("a cancelled call must throw before marking, leaving the __session__ dedup slot free");
     }
 
     [Fact]
@@ -275,7 +300,11 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         // InjectAsync before the mark is created.) Modelled by a hook that cancels + throws OCE mid-delivery.
         using var harness = new Harness(routeToSubAgent: true);
         using var cts = new CancellationTokenSource();
-        var sink = harness.RegisterSinkThread(SessionId, "thread-sub", SubAgentContextDeliveryResult.TargetNotDeliverable);
+        var sink = harness.RegisterSinkThread(
+            SessionId,
+            "thread-sub",
+            SubAgentContextDeliveryResult.TargetNotDeliverable
+        );
         sink.DeliverBehavior = (_, _) =>
         {
             cts.Cancel();
@@ -285,8 +314,12 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         var act = async () => await harness.Injector.InjectAsync(Payload(agentId: AgentId), cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
-        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
-            .Should().BeFalse("cancellation after sink invocation is ambiguous, so the mark is KEPT to prevent a retry double-inject");
+        harness
+            .Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
+            .Should()
+            .BeFalse(
+                "cancellation after sink invocation is ambiguous, so the mark is KEPT to prevent a retry double-inject"
+            );
     }
 
     [Fact]
@@ -326,12 +359,15 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         consultCount.Should().Be(1, "the scan must stop at the first (throwing) sink");
         laterSinkConsulted.Should().BeFalse("no later sink may be consulted after an ambiguous throw");
         (sinkA.DeliverCallCount + sinkB.DeliverCallCount)
-            .Should().Be(1, "exactly one sink is consulted before the scan stops");
+            .Should()
+            .Be(1, "exactly one sink is consulted before the scan stops");
         primary.SentMessages.Should().BeEmpty("an ambiguous sink failure must never fall back to the primary");
         harness.Diagnostics.RoutingSnapshot().Dropped.Should().Be(1);
         harness.Diagnostics.RoutingSnapshot().Routed.Should().Be(0);
-        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
-            .Should().BeFalse("the ambiguous drop keeps the dedup mark so a gateway retry can't double-inject");
+        harness
+            .Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
+            .Should()
+            .BeFalse("the ambiguous drop keeps the dedup mark so a gateway retry can't double-inject");
     }
 
     // --- Back-compat constructor ---
@@ -349,12 +385,14 @@ public sealed class ContextDiscoveryInjectorRoutingTests
             harness.Registry,
             harness.Pool,
             new ContextDiscoveryFormatter(),
-            NullLogger<ContextDiscoveryInjector>.Instance);
+            NullLogger<ContextDiscoveryInjector>.Instance
+        );
 
         var sent = await compatInjector.InjectAsync(Payload(agentId: AgentId), CancellationToken.None);
 
         sent.Should().Be(1);
-        sink.SentMessages.Should().ContainSingle("the compat ctor defaults routing OFF, so a present agent_id fans out to the primary");
+        sink.SentMessages.Should()
+            .ContainSingle("the compat ctor defaults routing OFF, so a present agent_id fans out to the primary");
         sink.DeliverCallCount.Should().Be(0, "routing is off, so the sink's routed delivery path is never consulted");
     }
 
@@ -370,10 +408,13 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         _ = await harness.Injector.InjectAsync(Payload(agentId: AgentId), CancellationToken.None);
 
         // AC7: assert level + a contained token, not an exact string.
-        capturing.Entries.Should().Contain(e =>
-            e.Level == LogLevel.Information
-            && e.Message.Contains("routed", StringComparison.OrdinalIgnoreCase)
-            && e.Message.Contains(AgentId, StringComparison.Ordinal));
+        capturing
+            .Entries.Should()
+            .Contain(e =>
+                e.Level == LogLevel.Information
+                && e.Message.Contains("routed", StringComparison.OrdinalIgnoreCase)
+                && e.Message.Contains(AgentId, StringComparison.Ordinal)
+            );
     }
 
     // --- Contract / per-item projection ---
@@ -416,17 +457,37 @@ public sealed class ContextDiscoveryInjectorRoutingTests
                 SessionId = SessionId,
                 Discoveries =
                 [
-                    new ContextDiscoveryItem { Kind = Kind, Path = "sub/CLAUDE.md", Content = "SUB_MARKER", AgentId = AgentId },
-                    new ContextDiscoveryItem { Kind = Kind, Path = "AGENTS.md", Content = "ROOT_MARKER" },
+                    new ContextDiscoveryItem
+                    {
+                        Kind = Kind,
+                        Path = "sub/CLAUDE.md",
+                        Content = "SUB_MARKER",
+                        AgentId = AgentId,
+                    },
+                    new ContextDiscoveryItem
+                    {
+                        Kind = Kind,
+                        Path = "AGENTS.md",
+                        Content = "ROOT_MARKER",
+                    },
                 ],
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         result.Should().BeOfType<OkResult>();
-        sink.DeliveredMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>()
-            .Which.Text.Should().Contain("SUB_MARKER");
-        sink.SentMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>()
-            .Which.Text.Should().Contain("ROOT_MARKER");
+        sink.DeliveredMessages.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeOfType<NotifyMessage>()
+            .Which.Text.Should()
+            .Contain("SUB_MARKER");
+        sink.SentMessages.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeOfType<NotifyMessage>()
+            .Which.Text.Should()
+            .Contain("ROOT_MARKER");
         harness.Diagnostics.RoutingSnapshot().Routed.Should().Be(1);
         harness.Diagnostics.RoutingSnapshot().Fallback.Should().Be(1);
     }
@@ -444,13 +505,17 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         var mockAgent = new Mock<IStreamingAgent>();
         var functions = new FunctionRegistry();
         await using var pool = new MultiTurnAgentPool(
-            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(
-                new MultiTurnAgentLoop(
-                    mockAgent.Object,
-                    functions,
-                    threadId,
-                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            (threadId, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(
+                    new MultiTurnAgentLoop(
+                        mockAgent.Object,
+                        functions,
+                        threadId,
+                        logger: NullLogger<MultiTurnAgentLoop>.Instance
+                    )
+                ),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var agent = pool.GetOrCreateAgent("thread-loop", mode);
@@ -464,20 +529,22 @@ public sealed class ContextDiscoveryInjectorRoutingTests
             new ContextDiscoveryFormatter(),
             new ContextDiscoveryOptions { RouteToOpeningSubAgent = true },
             new ContextDiscoveryDiagnostics(),
-            NullLogger<ContextDiscoveryInjector>.Instance);
+            NullLogger<ContextDiscoveryInjector>.Instance
+        );
 
         var sent = await injector.InjectAsync(Payload(agentId: AgentId), CancellationToken.None);
         sent.Should().Be(0);
     }
 
-    private static ContextDiscoveryPayload Payload(string? agentId) => new()
-    {
-        SessionId = SessionId,
-        Kind = Kind,
-        Path = Path,
-        Content = Content,
-        AgentId = agentId,
-    };
+    private static ContextDiscoveryPayload Payload(string? agentId) =>
+        new()
+        {
+            SessionId = SessionId,
+            Kind = Kind,
+            Path = Path,
+            Content = Content,
+            AgentId = agentId,
+        };
 
     private sealed class Harness : IDisposable
     {
@@ -492,16 +559,24 @@ public sealed class ContextDiscoveryInjectorRoutingTests
                 {
                     var agent = _agents.GetOrAdd(
                         threadId,
-                        id => _factories.TryGetValue(id, out var factory) ? factory(id) : new RecordingMultiTurnAgent(id));
+                        id =>
+                            _factories.TryGetValue(id, out var factory) ? factory(id) : new RecordingMultiTurnAgent(id)
+                    );
                     return new MultiTurnAgentPool.AgentCreationResult(agent);
                 },
-                NullLogger<MultiTurnAgentPool>.Instance);
+                NullLogger<MultiTurnAgentPool>.Instance
+            );
             Pool.ThreadRemoved += threadId => Registry.UnregisterThreadFromAllSessions(threadId);
 
             Diagnostics = new ContextDiscoveryDiagnostics();
             SessionSecretStore = new SessionSecretStore(
-                System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance);
+                System.IO.Path.Combine(
+                    System.IO.Path.GetTempPath(),
+                    "lmstreaming-test-secrets",
+                    Guid.NewGuid().ToString("N")
+                ),
+                NullLogger<SessionSecretStore>.Instance
+            );
             SessionSecretStore.SaveAsync(SessionId, Secret).GetAwaiter().GetResult();
             Injector = new ContextDiscoveryInjector(
                 Registry,
@@ -509,7 +584,8 @@ public sealed class ContextDiscoveryInjectorRoutingTests
                 new ContextDiscoveryFormatter(),
                 new ContextDiscoveryOptions { RouteToOpeningSubAgent = routeToSubAgent },
                 Diagnostics,
-                injectorLogger ?? NullLogger<ContextDiscoveryInjector>.Instance);
+                injectorLogger ?? NullLogger<ContextDiscoveryInjector>.Instance
+            );
         }
 
         public SandboxSessionRegistry Registry { get; }
@@ -529,7 +605,8 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         public RecordingSinkAgent RegisterSinkThread(
             string sessionId,
             string threadId,
-            SubAgentContextDeliveryResult result)
+            SubAgentContextDeliveryResult result
+        )
         {
             _factories[threadId] = id => new RecordingSinkAgent(id, result);
             _ = Pool.GetOrCreateAgent(threadId, Mode);
@@ -547,7 +624,8 @@ public sealed class ContextDiscoveryInjectorRoutingTests
                 Injector,
                 Diagnostics,
                 new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
-                NullLogger<ContextDiscoveryController>.Instance);
+                NullLogger<ContextDiscoveryController>.Instance
+            );
 
             var httpContext = new DefaultHttpContext();
             httpContext.Request.Headers.Authorization = Secret;
@@ -571,7 +649,8 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(Unused)));
+            new HttpClient(new StubHandler(Unused))
+        );
 
         return new SandboxSessionRegistry(
             gateway,
@@ -580,15 +659,22 @@ public sealed class ContextDiscoveryInjectorRoutingTests
             new HttpClient(new StubHandler(Unused)),
             new AuthOptions(),
             new SessionSecretStore(
-                System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                System.IO.Path.Combine(
+                    System.IO.Path.GetTempPath(),
+                    "lmstreaming-test-secrets",
+                    Guid.NewGuid().ToString("N")
+                ),
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(respond(request));
         }

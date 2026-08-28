@@ -47,9 +47,17 @@ public sealed class NotificationPillTests
             .Turn(t => t.Text("Found three fresh AI papers today."))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
             // Turn 1: spawn the researcher in the BACKGROUND (returns an id immediately, does not block).
-            .Turn(t => t.ToolCall(
-                "Agent",
-                new { subagent_type = "researcher", prompt = "Find AI papers", run_in_background = true }))
+            .Turn(t =>
+                t.ToolCall(
+                    "Agent",
+                    new
+                    {
+                        subagent_type = "researcher",
+                        prompt = "Find AI papers",
+                        run_in_background = true,
+                    }
+                )
+            )
             // Turn 2: acknowledge the spawn and end the run, so the parent goes idle while the
             // background researcher is still running.
             .Turn(t => t.Text("Spawned the researcher in the background; I'll report back when it finishes."))
@@ -104,7 +112,6 @@ public sealed class NotificationPillTests
         var userGroups = await page.UserMessageGroups().CountAsync();
         userGroups.Should().Be(1, "the out-of-band NotifyMessage must render as a pill, not a second user bubble");
 
-        await session.SaveSuccessScreenshotAsync(
-            $"NotificationPill.Background_sub_agent_completion_{providerMode}");
+        await session.SaveSuccessScreenshotAsync($"NotificationPill.Background_sub_agent_completion_{providerMode}");
     }
 }

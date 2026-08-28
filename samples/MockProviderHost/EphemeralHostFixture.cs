@@ -28,20 +28,22 @@ internal sealed class EphemeralHostFixture : IAsyncDisposable
 
     public static async Task<EphemeralHostFixture> StartAsync(
         HttpMessageHandler openAiHandler,
-        HttpMessageHandler anthropicHandler)
+        HttpMessageHandler anthropicHandler
+    )
     {
         var app = MockProviderHostBuilder.BuildFromHandlers(
             openAiHandler,
             anthropicHandler,
-            urls: ["http://127.0.0.1:0"]);
+            urls: ["http://127.0.0.1:0"]
+        );
         return await StartCoreAsync(app).ConfigureAwait(false);
     }
 
     private static async Task<EphemeralHostFixture> StartCoreAsync(WebApplication app)
     {
         await app.StartAsync().ConfigureAwait(false);
-        var url = app.Urls.FirstOrDefault()
-            ?? throw new InvalidOperationException("Mock host failed to bind to a URL.");
+        var url =
+            app.Urls.FirstOrDefault() ?? throw new InvalidOperationException("Mock host failed to bind to a URL.");
         return new EphemeralHostFixture(app, url);
     }
 

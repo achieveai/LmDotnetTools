@@ -17,9 +17,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
 
     private static IConfigurationSection BuildSection(Dictionary<string, string?> values)
     {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(values)
-            .Build();
+        var config = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
         return config.GetSection("Failover");
     }
 
@@ -37,7 +35,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
             ["Failover:Backup:EmbeddingSize"] = "8",
             ["Failover:PrimaryRequestTimeoutSeconds"] = "5",
             ["Failover:FailoverOnHttpError"] = "true",
-            ["Failover:RecoveryIntervalSeconds"] = "120"
+            ["Failover:RecoveryIntervalSeconds"] = "120",
         };
     }
 
@@ -53,7 +51,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
             ["Failover:Backup:ApiKey"] = "key-b",
             ["Failover:PrimaryRequestTimeoutSeconds"] = "5",
             ["Failover:FailoverOnHttpError"] = "true",
-            ["Failover:RecoveryIntervalSeconds"] = "120"
+            ["Failover:RecoveryIntervalSeconds"] = "120",
         };
     }
 
@@ -66,8 +64,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         values["Failover:Primary:Endpoint"] = "";
         var section = BuildSection(values);
 
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new ServiceCollection().AddFailoverEmbeddings(section));
+        var ex = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddFailoverEmbeddings(section));
         Trace("Exception: {Message}", ex.Message);
         Assert.Contains("Primary:Endpoint", ex.Message);
         LogTestEnd();
@@ -82,8 +79,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         values["Failover:Primary:Model"] = "";
         var section = BuildSection(values);
 
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new ServiceCollection().AddFailoverEmbeddings(section));
+        var ex = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddFailoverEmbeddings(section));
         Trace("Exception: {Message}", ex.Message);
         Assert.Contains("Primary:Model", ex.Message);
         LogTestEnd();
@@ -98,8 +94,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         values["Failover:Backup:ApiKey"] = "";
         var section = BuildSection(values);
 
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new ServiceCollection().AddFailoverEmbeddings(section));
+        var ex = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddFailoverEmbeddings(section));
         Trace("Exception: {Message}", ex.Message);
         Assert.Contains("Backup:ApiKey", ex.Message);
         LogTestEnd();
@@ -114,8 +109,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         values["Failover:Backup:EmbeddingSize"] = "768";
         var section = BuildSection(values);
 
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new ServiceCollection().AddFailoverEmbeddings(section));
+        var ex = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddFailoverEmbeddings(section));
         Trace("Exception: {Message}", ex.Message);
         Assert.Contains("embedding sizes must match", ex.Message);
         LogTestEnd();
@@ -130,8 +124,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         values["Failover:PrimaryRequestTimeoutSeconds"] = "0";
         var section = BuildSection(values);
 
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new ServiceCollection().AddFailoverEmbeddings(section));
+        var ex = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddFailoverEmbeddings(section));
         Trace("Exception: {Message}", ex.Message);
         Assert.Contains("PrimaryRequestTimeoutSeconds", ex.Message);
         LogTestEnd();
@@ -146,8 +139,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         values["Failover:RecoveryIntervalSeconds"] = "-5";
         var section = BuildSection(values);
 
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new ServiceCollection().AddFailoverEmbeddings(section));
+        var ex = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddFailoverEmbeddings(section));
         Trace("Exception: {Message}", ex.Message);
         Assert.Contains("RecoveryIntervalSeconds", ex.Message);
         LogTestEnd();
@@ -162,8 +154,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         values["Failover:RecoveryIntervalSeconds"] = "0";
         var section = BuildSection(values);
 
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new ServiceCollection().AddFailoverReranking(section));
+        var ex = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddFailoverReranking(section));
         Trace("Exception: {Message}", ex.Message);
         Assert.Contains("RecoveryIntervalSeconds", ex.Message);
         LogTestEnd();
@@ -182,7 +173,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         var options = new FailoverOptions
         {
             PrimaryRequestTimeout = TimeSpan.FromSeconds(2),
-            RecoveryInterval = TimeSpan.FromSeconds(60)
+            RecoveryInterval = TimeSpan.FromSeconds(60),
         };
 
         var services = new ServiceCollection();
@@ -205,8 +196,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         values["Failover:Primary:Endpoint"] = "";
         var section = BuildSection(values);
 
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new ServiceCollection().AddFailoverReranking(section));
+        var ex = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddFailoverReranking(section));
         Trace("Exception: {Message}", ex.Message);
         Assert.Contains("Primary:Endpoint", ex.Message);
         LogTestEnd();
@@ -221,8 +211,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         values["Failover:Backup:Model"] = "";
         var section = BuildSection(values);
 
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new ServiceCollection().AddFailoverReranking(section));
+        var ex = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddFailoverReranking(section));
         Trace("Exception: {Message}", ex.Message);
         Assert.Contains("Backup:Model", ex.Message);
         LogTestEnd();
@@ -239,7 +228,7 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         var options = new FailoverOptions
         {
             PrimaryRequestTimeout = TimeSpan.FromSeconds(2),
-            RecoveryInterval = TimeSpan.FromSeconds(60)
+            RecoveryInterval = TimeSpan.FromSeconds(60),
         };
 
         var services = new ServiceCollection();

@@ -54,7 +54,8 @@ public static class ScriptedScenario
             sandboxGatewayHandler,
             sandboxOptions,
             copilotModels,
-            settings);
+            settings
+        );
     }
 
     /// <summary>
@@ -82,7 +83,8 @@ public static class ScriptedScenario
             catalogClient,
             sandboxGatewayHandler,
             sandboxOptions,
-            copilotModels);
+            copilotModels
+        );
     }
 
     private static async Task<ScenarioSession> OpenWithBuilderAsync(
@@ -105,7 +107,8 @@ public static class ScriptedScenario
             sandboxGatewayHandler,
             sandboxOptions,
             copilotModels,
-            settings);
+            settings
+        );
         IBrowserContext? context = null;
         try
         {
@@ -172,8 +175,7 @@ public sealed class ScenarioSession : IAsyncDisposable
         catch (Exception ex)
 #pragma warning restore CA1031
         {
-            await Console.Error.WriteLineAsync(
-                $"[Screenshot] Warning: failed to save '{name}': {ex.Message}");
+            await Console.Error.WriteLineAsync($"[Screenshot] Warning: failed to save '{name}': {ex.Message}");
         }
     }
 

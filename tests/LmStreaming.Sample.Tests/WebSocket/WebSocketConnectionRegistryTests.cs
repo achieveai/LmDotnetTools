@@ -28,7 +28,8 @@ public class WebSocketConnectionRegistryTests
             ArraySegment<byte> buffer,
             WebSocketMessageType messageType,
             bool endOfMessage,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             var current = Interlocked.Increment(ref _inFlight);
             UpdateMax(current);
@@ -54,22 +55,29 @@ public class WebSocketConnectionRegistryTests
                 {
                     return;
                 }
-            }
-            while (Interlocked.CompareExchange(ref MaxConcurrent, candidate, snapshot) != snapshot);
+            } while (Interlocked.CompareExchange(ref MaxConcurrent, candidate, snapshot) != snapshot);
         }
 
         public override void Abort() { }
 
-        public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        public override Task CloseAsync(
+            WebSocketCloseStatus closeStatus,
+            string? statusDescription,
+            CancellationToken cancellationToken
+        ) => Task.CompletedTask;
 
-        public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        public override Task CloseOutputAsync(
+            WebSocketCloseStatus closeStatus,
+            string? statusDescription,
+            CancellationToken cancellationToken
+        ) => Task.CompletedTask;
 
         public override void Dispose() { }
 
-        public override Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+        public override Task<WebSocketReceiveResult> ReceiveAsync(
+            ArraySegment<byte> buffer,
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException();
     }
 
     [Fact]
@@ -80,7 +88,8 @@ public class WebSocketConnectionRegistryTests
         var connection = registry.Register("thread-1", fake);
 
         const int senders = 50;
-        var sends = Enumerable.Range(0, senders)
+        var sends = Enumerable
+            .Range(0, senders)
             .Select(i => Task.Run(() => connection.TrySendTextAsync($"{{\"i\":{i}}}", CancellationToken.None)))
             .ToArray();
 

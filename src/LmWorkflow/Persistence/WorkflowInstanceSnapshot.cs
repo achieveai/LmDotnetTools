@@ -60,8 +60,7 @@ public sealed record WorkflowInstanceSnapshot
     public JsonObject Notes { get; init; } = [];
 
     /// <summary>The per-node visit counts.</summary>
-    public IReadOnlyDictionary<string, int> Visits { get; init; } =
-        new Dictionary<string, int>(StringComparer.Ordinal);
+    public IReadOnlyDictionary<string, int> Visits { get; init; } = new Dictionary<string, int>(StringComparer.Ordinal);
 
     /// <summary>The per-task correlation/status bookkeeping (one entry per surfaced task occurrence).</summary>
     public IReadOnlyList<WorkflowTaskSnapshot> Tasks { get; init; } = [];

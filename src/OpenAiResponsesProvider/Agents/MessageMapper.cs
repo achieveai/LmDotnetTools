@@ -16,10 +16,7 @@ namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 /// </summary>
 internal static class MessageMapper
 {
-    internal static ResponseCreateRequest BuildRequest(
-        IEnumerable<IMessage> messages,
-        GenerateReplyOptions? options
-    )
+    internal static ResponseCreateRequest BuildRequest(IEnumerable<IMessage> messages, GenerateReplyOptions? options)
     {
         var instructionsBuilder = new StringBuilder();
         var inputItems = new List<ResponseInputItem>();
@@ -73,7 +70,9 @@ internal static class MessageMapper
     }
 
     // Options that know how to serialize JsonSchemaObject (notably its Union-typed "type" field).
-    private static readonly JsonSerializerOptions s_schemaSerializerOptions = JsonSerializerOptionsFactory.CreateBase(false);
+    private static readonly JsonSerializerOptions s_schemaSerializerOptions = JsonSerializerOptionsFactory.CreateBase(
+        false
+    );
 
     /// <summary>
     ///     Builds the JSON Schema object the Responses API expects for a function tool's
@@ -96,9 +95,13 @@ internal static class MessageMapper
                 }
 
                 // Carry the parameter description onto the property schema when it has none of its own.
-                var propertySchema = parameter.ParameterType.Description is null && parameter.Description is not null
-                    ? parameter.ParameterType with { Description = parameter.Description }
-                    : parameter.ParameterType;
+                var propertySchema =
+                    parameter.ParameterType.Description is null && parameter.Description is not null
+                        ? parameter.ParameterType with
+                        {
+                            Description = parameter.Description,
+                        }
+                        : parameter.ParameterType;
 
                 properties[parameter.Name] = propertySchema;
                 if (parameter.IsRequired)

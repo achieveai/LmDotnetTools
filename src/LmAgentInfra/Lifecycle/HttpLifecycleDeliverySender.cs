@@ -189,10 +189,7 @@ public sealed class HttpLifecycleDeliverySender : ILifecycleDeliverySender, IDis
             return LifecycleDeliveryResult.Gone(status);
         }
 
-        if (
-            response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests
-            || status >= 500
-        )
+        if (response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests || status >= 500)
         {
             return LifecycleDeliveryResult.Retryable("http_status", status, ReadRetryAfter(response));
         }

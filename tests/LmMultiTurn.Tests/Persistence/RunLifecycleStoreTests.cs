@@ -17,8 +17,7 @@ namespace LmMultiTurn.Tests.Persistence;
 /// </remarks>
 public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
 {
-    private static readonly DateTimeOffset Origin =
-        new(2026, 7, 27, 12, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset Origin = new(2026, 7, 27, 12, 0, 0, TimeSpan.Zero);
 
     /// <summary>The store under test.</summary>
     protected IRunLifecycleStore Store { get; private set; } = null!;
@@ -182,8 +181,11 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
     {
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
 
-        var attempts = Enumerable.Range(0, 4).Select(i => Task.Run(
-            () => Store.TryMarkRunTerminalAsync("run-1", $"outcome-{i}", i, Origin.AddSeconds(i))));
+        var attempts = Enumerable
+            .Range(0, 4)
+            .Select(i =>
+                Task.Run(() => Store.TryMarkRunTerminalAsync("run-1", $"outcome-{i}", i, Origin.AddSeconds(i)))
+            );
 
         var results = await Task.WhenAll(attempts);
 
@@ -230,7 +232,11 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
 
         var again = await Store.RecordDeferredToolCallAsync(
             "run-1",
-            NewDeferral("call-a") with { ToolName = "different_tool" });
+            NewDeferral("call-a") with
+            {
+                ToolName = "different_tool",
+            }
+        );
 
         again.Ordinal.Should().Be(committed.Ordinal);
         again.ToolName.Should().Be(committed.ToolName);
@@ -242,8 +248,7 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
     [Fact]
     public async Task RecordDeferredToolCall_UnknownRun_Throws()
     {
-        var record = async () =>
-            await Store.RecordDeferredToolCallAsync("never-started", NewDeferral("call-a"));
+        var record = async () => await Store.RecordDeferredToolCallAsync("never-started", NewDeferral("call-a"));
 
         _ = await record.Should().ThrowAsync<InvalidOperationException>();
     }
@@ -255,7 +260,12 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
 
         var outcome = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-a", "fingerprint-1", "child-run-1", Origin.AddSeconds(30));
+            "thread-1",
+            "call-a",
+            "fingerprint-1",
+            "child-run-1",
+            Origin.AddSeconds(30)
+        );
 
         outcome.Should().Be(DeferredResolutionOutcome.Resolved);
 
@@ -274,10 +284,20 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
         _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
         _ = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-a", "fingerprint-1", "child-run-1", Origin.AddSeconds(30));
+            "thread-1",
+            "call-a",
+            "fingerprint-1",
+            "child-run-1",
+            Origin.AddSeconds(30)
+        );
 
         var outcome = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-a", "fingerprint-1", "child-run-2", Origin.AddSeconds(60));
+            "thread-1",
+            "call-a",
+            "fingerprint-1",
+            "child-run-2",
+            Origin.AddSeconds(60)
+        );
 
         outcome.Should().Be(DeferredResolutionOutcome.Duplicate);
 
@@ -293,10 +313,20 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
         _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
         _ = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-a", "fingerprint-1", childRunId: null, Origin.AddSeconds(30));
+            "thread-1",
+            "call-a",
+            "fingerprint-1",
+            childRunId: null,
+            Origin.AddSeconds(30)
+        );
 
         var outcome = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-a", "fingerprint-2", childRunId: null, Origin.AddSeconds(60));
+            "thread-1",
+            "call-a",
+            "fingerprint-2",
+            childRunId: null,
+            Origin.AddSeconds(60)
+        );
 
         outcome.Should().Be(DeferredResolutionOutcome.Conflict);
 
@@ -310,7 +340,12 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
 
         var outcome = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-never-deferred", "fingerprint-1", null, Origin);
+            "thread-1",
+            "call-never-deferred",
+            "fingerprint-1",
+            null,
+            Origin
+        );
 
         outcome.Should().Be(DeferredResolutionOutcome.NotFound);
     }
@@ -321,8 +356,7 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
         _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
 
-        var outcome = await Store.TryResolveDeferredToolCallAsync(
-            "thread-2", "call-a", "fingerprint-1", null, Origin);
+        var outcome = await Store.TryResolveDeferredToolCallAsync("thread-2", "call-a", "fingerprint-1", null, Origin);
 
         outcome.Should().Be(DeferredResolutionOutcome.NotFound);
     }
@@ -335,7 +369,12 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         _ = await Store.TryMarkRunTerminalAsync("run-1", "completed", 1, Origin.AddSeconds(5));
 
         var outcome = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-a", "fingerprint-1", "child-run-1", Origin.AddSeconds(30));
+            "thread-1",
+            "call-a",
+            "fingerprint-1",
+            "child-run-1",
+            Origin.AddSeconds(30)
+        );
 
         outcome.Should().Be(DeferredResolutionOutcome.Resolved);
     }
@@ -346,9 +385,19 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
         _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
 
-        var attempts = Enumerable.Range(0, 4).Select(i => Task.Run(
-            () => Store.TryResolveDeferredToolCallAsync(
-                "thread-1", "call-a", $"fingerprint-{i}", $"child-{i}", Origin.AddSeconds(30 + i))));
+        var attempts = Enumerable
+            .Range(0, 4)
+            .Select(i =>
+                Task.Run(() =>
+                    Store.TryResolveDeferredToolCallAsync(
+                        "thread-1",
+                        "call-a",
+                        $"fingerprint-{i}",
+                        $"child-{i}",
+                        Origin.AddSeconds(30 + i)
+                    )
+                )
+            );
 
         var outcomes = await Task.WhenAll(attempts);
 
@@ -366,8 +415,7 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         // first reported — the deferral is already committed. Re-recording must not unresolve work
         // the run has done, or a store that replaces the row loses tool calls a caller is waiting
         // on while a store that upserts keeps them.
-        await Store.RecordRunStartedAsync(
-            NewRun("thread-1", "run-1") with { SubAgentId = "researcher" });
+        await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1") with { SubAgentId = "researcher" });
 
         var loaded = await Store.LoadRunLifecycleAsync("run-1");
 
@@ -386,10 +434,19 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
         _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
         _ = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-a", "fingerprint-1", childRunId: null, Origin.AddSeconds(30));
+            "thread-1",
+            "call-a",
+            "fingerprint-1",
+            childRunId: null,
+            Origin.AddSeconds(30)
+        );
 
         var standing = await Store.AttachDeferredChildRunAsync(
-            "thread-1", "call-a", "child-run-1", Origin.AddSeconds(31));
+            "thread-1",
+            "call-a",
+            "child-run-1",
+            Origin.AddSeconds(31)
+        );
 
         standing.Should().Be("child-run-1");
         var loaded = await Store.LoadRunLifecycleAsync("run-1");
@@ -407,18 +464,23 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
         _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
         _ = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-a", "fingerprint-1", childRunId: null, Origin.AddSeconds(30));
-        _ = await Store.AttachDeferredChildRunAsync(
-            "thread-1", "call-a", "child-run-1", Origin.AddSeconds(31));
+            "thread-1",
+            "call-a",
+            "fingerprint-1",
+            childRunId: null,
+            Origin.AddSeconds(30)
+        );
+        _ = await Store.AttachDeferredChildRunAsync("thread-1", "call-a", "child-run-1", Origin.AddSeconds(31));
 
-        var again = await Store.AttachDeferredChildRunAsync(
-            "thread-1", "call-a", "child-run-1", Origin.AddSeconds(32));
+        var again = await Store.AttachDeferredChildRunAsync("thread-1", "call-a", "child-run-1", Origin.AddSeconds(32));
 
-        again.Should()
+        again
+            .Should()
             .Be(
                 "child-run-1",
                 "a caller retrying its own attach after a lost acknowledgement must be handed back "
-                    + "the same continuation it already owns");
+                    + "the same continuation it already owns"
+            );
         var loaded = await Store.LoadRunLifecycleAsync("run-1");
         loaded!.DeferredToolCalls.Single().ChildRunId.Should().Be("child-run-1");
     }
@@ -429,17 +491,27 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
         _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
         _ = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-a", "fingerprint-1", "child-run-1", Origin.AddSeconds(30));
+            "thread-1",
+            "call-a",
+            "fingerprint-1",
+            "child-run-1",
+            Origin.AddSeconds(30)
+        );
 
         var standing = await Store.AttachDeferredChildRunAsync(
-            "thread-1", "call-a", "child-run-2", Origin.AddSeconds(31));
+            "thread-1",
+            "call-a",
+            "child-run-2",
+            Origin.AddSeconds(31)
+        );
 
         standing
             .Should()
             .Be(
                 "child-run-1",
                 "the committed name stands, and the late caller has to adopt it rather than start a "
-                    + "second continuation for the same result");
+                    + "second continuation for the same result"
+            );
         var loaded = await Store.LoadRunLifecycleAsync("run-1");
         loaded!.DeferredToolCalls.Single().ChildRunId.Should().Be("child-run-1");
     }
@@ -451,13 +523,18 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
 
         var standing = await Store.AttachDeferredChildRunAsync(
-            "thread-1", "call-a", "child-run-1", Origin.AddSeconds(31));
+            "thread-1",
+            "call-a",
+            "child-run-1",
+            Origin.AddSeconds(31)
+        );
 
         standing
             .Should()
             .BeNull(
                 "a call with no result yet has no continuation to carry one, and naming one would let "
-                    + "recovery start a child run for a result that never arrived");
+                    + "recovery start a child run for a result that never arrived"
+            );
         var loaded = await Store.LoadRunLifecycleAsync("run-1");
         loaded!.DeferredToolCalls.Single().ChildRunId.Should().BeNull();
     }
@@ -468,7 +545,11 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
 
         var standing = await Store.AttachDeferredChildRunAsync(
-            "thread-1", "call-never-deferred", "child-run-1", Origin);
+            "thread-1",
+            "call-never-deferred",
+            "child-run-1",
+            Origin
+        );
 
         standing.Should().BeNull();
     }
@@ -479,10 +560,19 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
         _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
         _ = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-a", "fingerprint-1", childRunId: null, Origin.AddSeconds(30));
+            "thread-1",
+            "call-a",
+            "fingerprint-1",
+            childRunId: null,
+            Origin.AddSeconds(30)
+        );
 
         var standing = await Store.AttachDeferredChildRunAsync(
-            "thread-2", "call-a", "child-run-1", Origin.AddSeconds(31));
+            "thread-2",
+            "call-a",
+            "child-run-1",
+            Origin.AddSeconds(31)
+        );
 
         standing.Should().BeNull();
         var loaded = await Store.LoadRunLifecycleAsync("run-1");
@@ -495,18 +585,18 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
         _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
         _ = await Store.TryResolveDeferredToolCallAsync(
-            "thread-1", "call-a", "fingerprint-1", childRunId: null, Origin.AddSeconds(30));
+            "thread-1",
+            "call-a",
+            "fingerprint-1",
+            childRunId: null,
+            Origin.AddSeconds(30)
+        );
 
         var attempts = Enumerable
             .Range(0, 4)
             .Select(i =>
                 Task.Run(() =>
-                    Store.AttachDeferredChildRunAsync(
-                        "thread-1",
-                        "call-a",
-                        $"child-{i}",
-                        Origin.AddSeconds(31 + i)
-                    )
+                    Store.AttachDeferredChildRunAsync("thread-1", "call-a", $"child-{i}", Origin.AddSeconds(31 + i))
                 )
             );
 
@@ -515,20 +605,12 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         var loaded = await Store.LoadRunLifecycleAsync("run-1");
         var committed = loaded!.DeferredToolCalls.Single().ChildRunId;
         committed.Should().NotBeNull();
-        results
-            .Should()
-            .AllBe(
-                committed,
-                "every racing caller has to come away naming the one continuation that won"
-            );
+        results.Should().AllBe(committed, "every racing caller has to come away naming the one continuation that won");
     }
 
     #endregion
 
-    private static RunLifecycleState NewRun(
-        string threadId,
-        string runId,
-        DateTimeOffset? startedAt = null) =>
+    private static RunLifecycleState NewRun(string threadId, string runId, DateTimeOffset? startedAt = null) =>
         new()
         {
             ThreadId = threadId,

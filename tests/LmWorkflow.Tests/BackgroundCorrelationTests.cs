@@ -39,8 +39,8 @@ public class BackgroundCorrelationTests
 
     private static string Receipt(string agentId) =>
         $$"""
-        { "agent_id": "{{agentId}}", "name": "general-purpose", "template": "general-purpose", "status": "spawned" }
-        """;
+            { "agent_id": "{{agentId}}", "name": "general-purpose", "template": "general-purpose", "status": "spawned" }
+            """;
 
     private static string StatusOf(WorkflowRuntime runtime, string unit) =>
         runtime.GetProjection(null)["tasks"]![unit]!.GetValue<string>();
@@ -63,7 +63,10 @@ public class BackgroundCorrelationTests
 
         // The stable, non-sensitive reason lands in all three sinks: the {_error} marker, the taskErrors
         // projection, and the persisted snapshot.
-        runtime.Outputs["analyze"]!["task"]!["_error"]!.GetValue<string>().Should().Be(UnsupportedReason);
+        runtime.Outputs["analyze"]!["task"]!["_error"]!
+            .GetValue<string>()
+            .Should()
+            .Be(UnsupportedReason);
         projection["taskErrors"]![Unit]!.GetValue<string>().Should().Be(UnsupportedReason);
         runtime.Snapshot().Tasks.Single(t => t.Name == Unit).LastError.Should().Be(UnsupportedReason);
     }
@@ -78,8 +81,8 @@ public class BackgroundCorrelationTests
 
         // Non-retryable: the unit must not re-appear in nextExpectedAction (re-spawning the same unsupported
         // mode could never succeed), and its spawn correlation is cleared.
-        runtime
-            .GetProjection(null)["nextExpectedAction"]!.AsArray()
+        runtime.GetProjection(null)["nextExpectedAction"]!
+            .AsArray()
             .Should()
             .NotContain(n => n!["name"]!.GetValue<string>() == Unit);
         runtime.IsRegisteredSpawn("tc_agent").Should().BeFalse();
@@ -107,8 +110,8 @@ public class BackgroundCorrelationTests
 
         runtime.ObserveInjectedResult("never_correlated", """{ "summary": "x" }""", isError: false);
 
-        runtime
-            .GetProjection(null)["unmatched"]!.AsArray()
+        runtime.GetProjection(null)["unmatched"]!
+            .AsArray()
             .Select(n => n!.GetValue<string>())
             .Should()
             .Contain("never_correlated");

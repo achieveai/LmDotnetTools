@@ -86,8 +86,7 @@ public sealed class OpenAiResponsesEventStreamWriterTests
         var summaryDone = events.OfType<ResponseReasoningSummaryTextDoneEvent>().Should().ContainSingle().Subject;
         summaryDone.Text.Should().NotBeNullOrWhiteSpace();
         summaryDone.OutputIndex.Should().Be(0);
-        string
-            .Concat(events.OfType<ResponseReasoningSummaryTextDeltaEvent>().Select(e => e.Delta))
+        string.Concat(events.OfType<ResponseReasoningSummaryTextDeltaEvent>().Select(e => e.Delta))
             .Should()
             .Be(summaryDone.Text);
     }
@@ -142,12 +141,7 @@ public sealed class OpenAiResponsesEventStreamWriterTests
             .GetInt32()
             .Should()
             .Be(13696, "the mock must reproduce the real Responses API's nested cached_tokens shape");
-        usage
-            .GetProperty("output_tokens_details")
-            .GetProperty("reasoning_tokens")
-            .GetInt32()
-            .Should()
-            .Be(8);
+        usage.GetProperty("output_tokens_details").GetProperty("reasoning_tokens").GetInt32().Should().Be(8);
     }
 
     [Fact]

@@ -33,7 +33,9 @@ internal static class PublishLaunchScriptHost
             "..",
             "samples",
             "LmStreaming.Sample",
-            "publish-launch.ps1"));
+            "publish-launch.ps1"
+        )
+    );
 
     /// <summary>
     /// Dot-sources the script (defining every function, running no top-level pipeline) and then
@@ -113,8 +115,8 @@ internal static class PublishLaunchScriptHost
         startInfo.ArgumentList.Add("-Command");
         startInfo.ArgumentList.Add(command);
 
-        using var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("Failed to start pwsh process.");
+        using var process =
+            Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start pwsh process.");
 
         var stdoutTask = process.StandardOutput.ReadToEndAsync();
         var stderrTask = process.StandardError.ReadToEndAsync();

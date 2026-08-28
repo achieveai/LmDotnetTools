@@ -93,11 +93,8 @@ public class WebToolContractTests
         var (registry, fetch, _) = BuildRegistry();
 
         var (_, handlers) = registry.Build();
-        var result = await handlers[WebFetchTool.ToolName](
-            "{\"url\":\"https://e.com\"}",
-            new ToolCallContext(),
-            CancellationToken.None
-        );
+        var result = await handlers[WebFetchTool.ToolName]
+            ("{\"url\":\"https://e.com\"}", new ToolCallContext(), CancellationToken.None);
 
         fetch.Called.Should().BeTrue();
         // ValidateUrl normalizes the authority-only URL by appending the root path.
@@ -111,11 +108,8 @@ public class WebToolContractTests
         var (registry, _, search) = BuildRegistry();
 
         var (_, handlers) = registry.Build();
-        _ = await handlers[WebSearchTool.ToolName](
-            "{\"query\":\"hello\"}",
-            new ToolCallContext(),
-            CancellationToken.None
-        );
+        _ = await handlers[WebSearchTool.ToolName]
+            ("{\"query\":\"hello\"}", new ToolCallContext(), CancellationToken.None);
 
         search.Called.Should().BeTrue();
         search.ReceivedQuery.Should().Be("hello");

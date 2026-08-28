@@ -110,14 +110,20 @@ public class SandboxSessionRegistryThreadTrackingTests
 
         // The primary (session sentinel) and two DISTINCT sub-agents entering the SAME directory each
         // get their own first-sight true — dedup is per (target, kind, path).
-        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, DirPath).Should().BeTrue();
+        registry
+            .TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, DirPath)
+            .Should()
+            .BeTrue();
         registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, DirPath).Should().BeTrue();
         registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, DirPath).Should().BeTrue();
 
         // …and each independently dedups on repeat.
         registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, DirPath).Should().BeFalse();
         registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, DirPath).Should().BeFalse();
-        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, DirPath).Should().BeFalse();
+        registry
+            .TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, DirPath)
+            .Should()
+            .BeFalse();
     }
 
     [Fact]
@@ -132,8 +138,10 @@ public class SandboxSessionRegistryThreadTrackingTests
 
         // …and it shares the SAME bucket as the explicit 4-arg __session__ form, so a caller mixing the
         // two overloads still dedups the same discovery exactly once (no rogue second bucket).
-        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
-            .Should().BeFalse("the 3-arg overload and the 4-arg __session__ form share one dedup bucket");
+        registry
+            .TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
+            .Should()
+            .BeFalse("the 3-arg overload and the 4-arg __session__ form share one dedup bucket");
     }
 
     [Fact]
@@ -166,8 +174,14 @@ public class SandboxSessionRegistryThreadTrackingTests
         // wipe that also erased a concurrent path's mark).
         registry.UnmarkDiscoverySeen(SessionA, "agent-A", Kind, PathX);
 
-        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathX).Should().BeTrue("only agent-A's PathX key was un-marked");
-        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathY).Should().BeFalse("a sibling path of the same target is untouched");
+        registry
+            .TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathX)
+            .Should()
+            .BeTrue("only agent-A's PathX key was un-marked");
+        registry
+            .TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathY)
+            .Should()
+            .BeFalse("a sibling path of the same target is untouched");
         registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, PathX).Should().BeFalse("another target is untouched");
     }
 
@@ -183,8 +197,10 @@ public class SandboxSessionRegistryThreadTrackingTests
         registry.UnmarkDiscoverySeen(SessionA, "agent-never-marked", "context_file", "CLAUDE.md");
         registry.UnmarkDiscoverySeen(SessionA, "agent-A", "context_file", "other/path.md");
 
-        registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md")
-            .Should().BeFalse("no-op un-marks must leave the real mark intact");
+        registry
+            .TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md")
+            .Should()
+            .BeFalse("no-op un-marks must leave the real mark intact");
     }
 
     [Fact]
@@ -199,8 +215,10 @@ public class SandboxSessionRegistryThreadTrackingTests
         // ledger is cleared only on session destroy/dispose, so a redelivery still dedups.
         registry.UnregisterThreadFromAllSessions("thread-1");
 
-        registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md")
-            .Should().BeFalse("the dedup ledger persists until the session is destroyed/disposed");
+        registry
+            .TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md")
+            .Should()
+            .BeFalse("the dedup ledger persists until the session is destroyed/disposed");
     }
 
     [Fact]
@@ -209,14 +227,18 @@ public class SandboxSessionRegistryThreadTrackingTests
         await using var registry = CreateRegistry();
         registry.RegisterThread(SessionA, "thread-stays");
         registry.RegisterThread(SessionA, "thread-goes");
-        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
-            .Should().BeTrue();
+        registry
+            .TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
+            .Should()
+            .BeTrue();
 
         registry.UnregisterThreadFromAllSessions("thread-goes");
 
         // The session still routes thread-stays, so its dedup ledger must survive (else double-inject).
-        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
-            .Should().BeFalse();
+        registry
+            .TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
+            .Should()
+            .BeFalse();
     }
 
     [Fact]
@@ -225,7 +247,11 @@ public class SandboxSessionRegistryThreadTrackingTests
         var registry = CreateRegistry();
         registry.RegisterThread(SessionA, "thread-1");
         _ = registry.TryMarkDiscoverySeen(
-            SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md");
+            SessionA,
+            SandboxSessionRegistry.SessionDiscoveryTarget,
+            "context_file",
+            "CLAUDE.md"
+        );
 
         await registry.DisposeAsync();
 
@@ -238,13 +264,13 @@ public class SandboxSessionRegistryThreadTrackingTests
 
     private static SandboxSessionRegistry CreateRegistry()
     {
-        static HttpResponseMessage Unused(HttpRequestMessage _) =>
-            new(HttpStatusCode.OK);
+        static HttpResponseMessage Unused(HttpRequestMessage _) => new(HttpStatusCode.OK);
 
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(Unused)));
+            new HttpClient(new StubHandler(Unused))
+        );
 
         return new SandboxSessionRegistry(
             gateway,
@@ -254,14 +280,17 @@ public class SandboxSessionRegistryThreadTrackingTests
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(respond(request));
         }

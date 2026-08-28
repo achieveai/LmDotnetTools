@@ -89,11 +89,7 @@ public class EvalRunnerTests
         // The straddle rate measures disagreement, not outcome. This item ends up a Pass because
         // the arbiter said so, and it is still a straddle.
         var run = await EvalFixtures.RunAsync(
-            Panel(
-                first: _ => 9.0,
-                second: _ => 2.0,
-                arbiter: Judge("arb", "openai", _ => 8.0)
-            ),
+            Panel(first: _ => 9.0, second: _ => 2.0, arbiter: Judge("arb", "openai", _ => 8.0)),
             EvalFixtures.Snapshot(EvalFixtures.Item("disputed"))
         );
 
@@ -156,9 +152,7 @@ public class EvalRunnerTests
                         "j-b",
                         "google",
                         _ => 9.0,
-                        fault: c => c.CandidateId == "degraded"
-                            ? new InvalidOperationException("provider down")
-                            : null
+                        fault: c => c.CandidateId == "degraded" ? new InvalidOperationException("provider down") : null
                     ),
                 ]
             ),
@@ -182,10 +176,7 @@ public class EvalRunnerTests
         // "not the judge's family", so its score is not pooled with rows that were checked.
         var run = await EvalFixtures.RunAsync(
             Panel(first: _ => 9.0, second: _ => 8.0),
-            EvalFixtures.Snapshot(
-                EvalFixtures.Item("checked"),
-                EvalFixtures.Item("unchecked", generatorFamily: null)
-            )
+            EvalFixtures.Snapshot(EvalFixtures.Item("checked"), EvalFixtures.Item("unchecked", generatorFamily: null))
         );
 
         var unchecked_ = run.Items.Single(i => i.CandidateId == "unchecked");
@@ -209,14 +200,8 @@ public class EvalRunnerTests
         // decision the same way it already contained a judge fault, so neither of those reaches
         // this isolation any more. The injected reducer is the remaining seam that genuinely can.
         var run = await EvalFixtures.RunAsync(
-            EvalFixtures.Config(
-                aggregator: new ThrowingAggregator("poison", new WeightedMeanAggregator())
-            ),
-            EvalFixtures.Snapshot(
-                EvalFixtures.Item("before"),
-                EvalFixtures.Item("poison"),
-                EvalFixtures.Item("after")
-            )
+            EvalFixtures.Config(aggregator: new ThrowingAggregator("poison", new WeightedMeanAggregator())),
+            EvalFixtures.Snapshot(EvalFixtures.Item("before"), EvalFixtures.Item("poison"), EvalFixtures.Item("after"))
         );
 
         run.Items.Should().HaveCount(3);
@@ -244,24 +229,14 @@ public class EvalRunnerTests
     public async Task One_throwing_gate_costs_a_gate_decision_and_not_the_item()
     {
         var run = await EvalFixtures.RunAsync(
-            EvalFixtures.Config(
-                [new MarkerGate(EvalFixtures.RejectMarker, throwOnCandidateId: "poison")]
-            ),
-            EvalFixtures.Snapshot(
-                EvalFixtures.Item("before"),
-                EvalFixtures.Item("poison"),
-                EvalFixtures.Item("after")
-            )
+            EvalFixtures.Config([new MarkerGate(EvalFixtures.RejectMarker, throwOnCandidateId: "poison")]),
+            EvalFixtures.Snapshot(EvalFixtures.Item("before"), EvalFixtures.Item("poison"), EvalFixtures.Item("after"))
         );
 
         var poison = run.Items.Single(i => i.CandidateId == "poison");
         poison.Exclusion.Should().Be(ScoreExclusion.None);
         poison.IsScored.Should().BeTrue();
-        poison
-            .Verdict!.GateDecisions.Should()
-            .ContainSingle()
-            .Which.Outcome.Should()
-            .Be(GateOutcome.Inconclusive);
+        poison.Verdict!.GateDecisions.Should().ContainSingle().Which.Outcome.Should().Be(GateOutcome.Inconclusive);
 
         run.FaultedCount.Should().Be(0);
         run.ScoredItems.Should().Be(3);
@@ -308,8 +283,7 @@ public class EvalRunnerTests
         var run = await EvalFixtures.RunAsync(
             EvalFixtures.Config(),
             EvalFixtures.Snapshot(EvalFixtures.Item("a"), EvalFixtures.Item("b")),
-            costSource: (candidate, _) =>
-                ValueTask.FromResult<long?>(candidate.CandidateId == "a" ? 1000L : 3000L)
+            costSource: (candidate, _) => ValueTask.FromResult<long?>(candidate.CandidateId == "a" ? 1000L : 3000L)
         );
 
         run.TotalCostMicros.Should().Be(4000);
@@ -319,10 +293,7 @@ public class EvalRunnerTests
     [Fact]
     public async Task Cost_is_null_rather_than_zero_when_the_host_supplies_no_source()
     {
-        var run = await EvalFixtures.RunAsync(
-            EvalFixtures.Config(),
-            EvalFixtures.Snapshot(EvalFixtures.Item("a"))
-        );
+        var run = await EvalFixtures.RunAsync(EvalFixtures.Config(), EvalFixtures.Snapshot(EvalFixtures.Item("a")));
 
         run.Items.Single().CostMicros.Should().BeNull();
     }
@@ -387,9 +358,7 @@ public class EvalRunnerTests
 
     /// <summary>Six items whose scored content is fixed, so a replay is deterministic by construction.</summary>
     private static Corpus.CorpusSnapshot FixtureCorpus() =>
-        EvalFixtures.Snapshot(
-            [.. Enumerable.Range(0, 6).Select(i => EvalFixtures.Item($"c{i}"))]
-        );
+        EvalFixtures.Snapshot([.. Enumerable.Range(0, 6).Select(i => EvalFixtures.Item($"c{i}"))]);
 
     [Fact]
     public async Task A_replay_over_the_fixture_corpus_reproduces_its_baseline_exactly()
@@ -410,10 +379,7 @@ public class EvalRunnerTests
         second.MeanScore.Should().Be(first.MeanScore);
         second.P10Score.Should().Be(first.P10Score);
 
-        var comparison = BaselineComparer.Compare(
-            second,
-            EvalBaseline.From("base-1", first, minCoverage: 0.9)
-        );
+        var comparison = BaselineComparer.Compare(second, EvalBaseline.From("base-1", first, minCoverage: 0.9));
 
         comparison.IsRefused.Should().BeFalse();
         comparison.IsRegression.Should().BeFalse();
@@ -456,10 +422,7 @@ public class EvalRunnerTests
 
         after.PassRate.Should().Be(before.PassRate);
 
-        var comparison = BaselineComparer.Compare(
-            after,
-            EvalBaseline.From("base-1", before, minCoverage: 0.9)
-        );
+        var comparison = BaselineComparer.Compare(after, EvalBaseline.From("base-1", before, minCoverage: 0.9));
 
         comparison.Refusal.Should().Be(ComparisonRefusal.EvaluatorConfigDiffers);
         comparison.IsRegression.Should().BeFalse();
@@ -480,10 +443,7 @@ public class EvalRunnerTests
             await EvalFixtures.RunAsync(
                 EvalFixtures.Config(
                     [new Gates.LengthBoundsGate(minimumLength: 1, maximumLength: maximumLength)],
-                    [
-                        new ScoringJudge("j-a", "anthropic", Score),
-                        new ScoringJudge("j-b", "google", Score),
-                    ]
+                    [new ScoringJudge("j-a", "anthropic", Score), new ScoringJudge("j-b", "google", Score)]
                 ),
                 corpus
             );
@@ -534,9 +494,7 @@ public class EvalRunnerTests
         // all. Here the two judges disagree and the weights decide the answer: an unweighted mean
         // of 10 and 2 is 6.0, and the weighted one is (10*1.0 + 2*0.25) / 1.25 = 8.4.
         var weights = new Dictionary<string, double> { ["j-a"] = 1.0, ["j-b"] = 0.25 };
-        var runner = new EvalRunner(
-            Panel(first: _ => 10.0, second: _ => 2.0, reliabilityWeights: weights)
-        );
+        var runner = new EvalRunner(Panel(first: _ => 10.0, second: _ => 2.0, reliabilityWeights: weights));
 
         var run = await runner.RunAsync(
             "run-1",
@@ -590,27 +548,19 @@ public class EvalRunnerTests
         // with nothing scored, and the operator was told their corpus was unscoreable when in fact
         // their configuration had been rejected.
         var judge = new ScoringJudge("j-a", "anthropic", _ => 8.0);
-        var runner = new EvalRunner(
-            EvalFixtures.Config(judges: [judge, Judge("j-b", "google", _ => 8.0)])
-        );
+        var runner = new EvalRunner(EvalFixtures.Config(judges: [judge, Judge("j-b", "google", _ => 8.0)]));
 
         var act = async () =>
             await runner.RunAsync(
                 "run-1",
-                EvalFixtures.Snapshot(
-                    EvalFixtures.Item("a"),
-                    EvalFixtures.Item("b"),
-                    EvalFixtures.Item("c")
-                ),
+                EvalFixtures.Snapshot(EvalFixtures.Item("a"), EvalFixtures.Item("b"), EvalFixtures.Item("c")),
                 HarnessFixtures.Rubric(),
                 new Dictionary<string, double> { ["j-a"] = 1.4 },
                 null,
                 CancellationToken.None
             );
 
-        await act.Should()
-            .ThrowAsync<ArgumentOutOfRangeException>()
-            .WithParameterName("reliability");
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>().WithParameterName("reliability");
 
         // And no judge was billed for the corpus on the way to finding out.
         judge.SeenCandidateIds.Should().BeEmpty();
@@ -623,9 +573,7 @@ public class EvalRunnerTests
         // poisons the weighted mean instead of pushing it off the rubric's scale, so it gets its
         // own case rather than riding on the out-of-range one.
         var judge = new ScoringJudge("j-a", "anthropic", _ => 8.0);
-        var runner = new EvalRunner(
-            EvalFixtures.Config(judges: [judge, Judge("j-b", "google", _ => 8.0)])
-        );
+        var runner = new EvalRunner(EvalFixtures.Config(judges: [judge, Judge("j-b", "google", _ => 8.0)]));
 
         var act = async () =>
             await runner.RunAsync(
@@ -637,9 +585,7 @@ public class EvalRunnerTests
                 CancellationToken.None
             );
 
-        await act.Should()
-            .ThrowAsync<ArgumentOutOfRangeException>()
-            .WithParameterName("reliability");
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>().WithParameterName("reliability");
 
         judge.SeenCandidateIds.Should().BeEmpty();
     }
@@ -727,10 +673,7 @@ public class EvalRunnerTests
         emptyRun.ScoredItems.Should().Be(0);
         emptyRun.MeanScore.Should().BeNull();
 
-        var comparison = BaselineComparer.Compare(
-            emptyRun,
-            EvalBaseline.From("base-1", baselineRun, minCoverage: 0.0)
-        );
+        var comparison = BaselineComparer.Compare(emptyRun, EvalBaseline.From("base-1", baselineRun, minCoverage: 0.0));
 
         comparison.Refusal.Should().Be(ComparisonRefusal.CoverageBelowMinimum);
         comparison.RefusalDetail.Should().Contain("scored no items at all");
@@ -748,11 +691,7 @@ public class EvalRunnerTests
     [Fact]
     public async Task A_gate_scoped_to_another_task_type_sees_no_candidate_and_moves_no_rate()
     {
-        var elsewhere = new MarkerGate(
-            EvalFixtures.RejectMarker,
-            gateId: "scoped",
-            appliesTo: ["summarization"]
-        );
+        var elsewhere = new MarkerGate(EvalFixtures.RejectMarker, gateId: "scoped", appliesTo: ["summarization"]);
 
         var run = await EvalFixtures.RunAsync(
             EvalFixtures.Config([elsewhere]),
@@ -776,11 +715,7 @@ public class EvalRunnerTests
     [Fact]
     public async Task A_gate_scoped_to_the_corpus_task_type_sees_every_candidate()
     {
-        var here = new MarkerGate(
-            EvalFixtures.RejectMarker,
-            gateId: "scoped",
-            appliesTo: [HarnessFixtures.TaskType]
-        );
+        var here = new MarkerGate(EvalFixtures.RejectMarker, gateId: "scoped", appliesTo: [HarnessFixtures.TaskType]);
 
         var run = await EvalFixtures.RunAsync(
             EvalFixtures.Config([here]),
@@ -792,9 +727,7 @@ public class EvalRunnerTests
 
         run.Items.Should().OnlyContain(i => i.Verdict!.GateDecisions.Count == 1);
         run.GateRejectedCount.Should().Be(1);
-        run.Items.Single(i => i.CandidateId == "dirty")
-            .Exclusion.Should()
-            .Be(ScoreExclusion.GateRejected);
+        run.Items.Single(i => i.CandidateId == "dirty").Exclusion.Should().Be(ScoreExclusion.GateRejected);
         run.ScoredItems.Should().Be(1);
         run.PassRate.Should().Be(0.5, "the rejected item leaves the numerator and stays in the denominator");
     }

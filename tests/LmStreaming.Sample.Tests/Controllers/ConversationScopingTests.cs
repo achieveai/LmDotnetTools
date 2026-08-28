@@ -1,10 +1,10 @@
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using LmStreaming.Sample.Identity;
-using Microsoft.AspNetCore.Mvc.Infrastructure;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
 using LmStreaming.Sample.Tests.Identity;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
 
 namespace LmStreaming.Sample.Tests.Controllers;
 
@@ -67,7 +67,8 @@ public sealed class ConversationScopingTests
     private static MultiTurnAgentPool CreatePool() =>
         new(
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
     /// <summary>
     /// An app-only caller: a service credential with an app id and no user behind it. The shape the
@@ -93,12 +94,14 @@ public sealed class ConversationScopingTests
         var workspaces = new Mock<IWorkspaceStore>();
         _ = workspaces
             .Setup(w => w.GetAsync(workspaceId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Workspace
-            {
-                Id = workspaceId,
-                Name = workspaceId,
-                DirectoryRelPath = workspaceId,
-            });
+            .ReturnsAsync(
+                new Workspace
+                {
+                    Id = workspaceId,
+                    Name = workspaceId,
+                    DirectoryRelPath = workspaceId,
+                }
+            );
         return workspaces.Object;
     }
 
@@ -107,7 +110,8 @@ public sealed class ConversationScopingTests
         MultiTurnAgentPool pool,
         bool enforce = true,
         IResourceGrantStore? grantsOverride = null,
-        IWorkspaceStore? workspaces = null) =>
+        IWorkspaceStore? workspaces = null
+    ) =>
         new(
             _store,
             pool,
@@ -123,14 +127,16 @@ public sealed class ConversationScopingTests
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
-            new ConversationDescendantScanner(_store, NullLogger<ConversationDescendantScanner>.Instance));
+            new ConversationDescendantScanner(_store, NullLogger<ConversationDescendantScanner>.Instance)
+        );
 
     private async Task SeedAsync(
         string threadId,
         string tenantId,
         string? ownerUserId,
         Visibility? visibility = null,
-        string? title = null) =>
+        string? title = null
+    ) =>
         await _store.UpdateMetadataAsync(
             threadId,
             existing => new ThreadMetadata
@@ -139,13 +145,15 @@ public sealed class ConversationScopingTests
                 LastUpdated = 1_000,
                 Properties = title is null
                     ? existing?.Properties
-                    : (existing?.Properties ?? System.Collections.Immutable.ImmutableDictionary<string, object>.Empty)
-                        .SetItem("title", title),
+                    : (
+                        existing?.Properties ?? System.Collections.Immutable.ImmutableDictionary<string, object>.Empty
+                    ).SetItem("title", title),
                 TenantId = tenantId,
                 OwnerUserId = ownerUserId,
                 Visibility = visibility,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
     /// <summary>
     /// A cross-tenant read is refused as UNKNOWN, with the same body an id that was never minted
@@ -167,10 +175,14 @@ public sealed class ConversationScopingTests
         var missing = Assert.IsType<NotFoundObjectResult>(neverExisted);
 
         _ = refused.StatusCode.Should().Be(404);
-        _ = System.Text.Json.JsonSerializer.Serialize(refused.Value)
-            .Should().Be(
-                System.Text.Json.JsonSerializer.Serialize(missing.Value)
-                    .Replace("no-such-thread", "alice-thread", StringComparison.Ordinal));
+        _ = System
+            .Text.Json.JsonSerializer.Serialize(refused.Value)
+            .Should()
+            .Be(
+                System
+                    .Text.Json.JsonSerializer.Serialize(missing.Value)
+                    .Replace("no-such-thread", "alice-thread", StringComparison.Ordinal)
+            );
     }
 
     /// <summary>
@@ -189,8 +201,7 @@ public sealed class ConversationScopingTests
         var result = await controller.Delete("alice-thread", CancellationToken.None);
 
         _ = Assert.IsType<NotFoundObjectResult>(result).StatusCode.Should().Be(404);
-        _ = (await _store.LoadMetadataAsync("alice-thread", CancellationToken.None))
-            .Should().NotBeNull();
+        _ = (await _store.LoadMetadataAsync("alice-thread", CancellationToken.None)).Should().NotBeNull();
     }
 
     /// <summary>A cross-tenant rename is refused and the title is unchanged.</summary>
@@ -205,7 +216,8 @@ public sealed class ConversationScopingTests
         var result = await controller.UpdateMetadata(
             "alice-thread",
             new ConversationMetadataUpdate { Title = "owned" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         _ = Assert.IsType<NotFoundObjectResult>(result).StatusCode.Should().Be(404);
 
@@ -248,11 +260,13 @@ public sealed class ConversationScopingTests
         var forbidden = await CountSendLookupsAsync(Signed(TenantB, Mallory), "alice-thread", pool);
         var missing = await CountSendLookupsAsync(Signed(TenantB, Mallory), "no-such-thread", pool);
 
-        _ = forbidden.Should().BeGreaterThan(
-            0, "a cross-tenant write runs the authorizer's equalising grant lookup");
-        _ = missing.Should().Be(
-            forbidden,
-            "a thread that was never minted must cost the same grant-lookup work, or the round-trip count is an existence oracle");
+        _ = forbidden.Should().BeGreaterThan(0, "a cross-tenant write runs the authorizer's equalising grant lookup");
+        _ = missing
+            .Should()
+            .Be(
+                forbidden,
+                "a thread that was never minted must cost the same grant-lookup work, or the round-trip count is an existence oracle"
+            );
     }
 
     /// <summary>
@@ -269,11 +283,15 @@ public sealed class ConversationScopingTests
         var forbidden = await CountStatusLookupsAsync(Signed(TenantB, Mallory), "alice-thread", pool);
         var missing = await CountStatusLookupsAsync(Signed(TenantB, Mallory), "no-such-thread", pool);
 
-        _ = forbidden.Should().BeGreaterThan(
-            0, "a cross-tenant status read runs the authorizer's equalising grant lookup");
-        _ = missing.Should().Be(
-            forbidden,
-            "a thread that was never minted must cost the same grant-lookup work, or the round-trip count is an existence oracle");
+        _ = forbidden
+            .Should()
+            .BeGreaterThan(0, "a cross-tenant status read runs the authorizer's equalising grant lookup");
+        _ = missing
+            .Should()
+            .Be(
+                forbidden,
+                "a thread that was never minted must cost the same grant-lookup work, or the round-trip count is an existence oracle"
+            );
     }
 
     /// <summary>Sends to <paramref name="threadId"/> as <paramref name="principal"/> over a fresh counting
@@ -398,8 +416,7 @@ public sealed class ConversationScopingTests
 
         var controller = CreateController(Signed(TenantA, Alice), pool);
 
-        var ok = Assert.IsType<OkObjectResult>(
-            await controller.List(PageSize, 0, ct: CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(await controller.List(PageSize, 0, ct: CancellationToken.None));
         var summaries = ((IEnumerable<ConversationSummary>)ok.Value!).ToArray();
 
         _ = summaries.Should().HaveCount(PageSize);
@@ -415,11 +432,7 @@ public sealed class ConversationScopingTests
     /// <param name="tenantId">Owning tenant.</param>
     /// <param name="ownerUserId">Owning user.</param>
     /// <param name="lastUpdated">The last-updated stamp the listing orders on.</param>
-    private Task SeedListingRowAsync(
-        string threadId,
-        string tenantId,
-        string ownerUserId,
-        long lastUpdated) =>
+    private Task SeedListingRowAsync(string threadId, string tenantId, string ownerUserId, long lastUpdated) =>
         _store.SaveMetadataAsync(
             threadId,
             new ThreadMetadata
@@ -430,7 +443,8 @@ public sealed class ConversationScopingTests
                 TenantId = tenantId,
                 OwnerUserId = ownerUserId,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
     /// <summary>
     /// An UNAUTHENTICATED caller under enforcement lists nothing.
@@ -459,8 +473,7 @@ public sealed class ConversationScopingTests
         }
         else
         {
-            _ = Assert.IsAssignableFrom<IStatusCodeActionResult>(result)
-                .StatusCode.Should().Be(401);
+            _ = Assert.IsAssignableFrom<IStatusCodeActionResult>(result).StatusCode.Should().Be(401);
         }
     }
 
@@ -476,7 +489,14 @@ public sealed class ConversationScopingTests
         var workspaceStore = new Mock<IWorkspaceStore>();
         _ = workspaceStore
             .Setup(w => w.GetAsync("ws", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Workspace { Id = "ws", Name = "ws", DirectoryRelPath = "ws" });
+            .ReturnsAsync(
+                new Workspace
+                {
+                    Id = "ws",
+                    Name = "ws",
+                    DirectoryRelPath = "ws",
+                }
+            );
 
         var modeStore = new Mock<IChatModeStore>();
         _ = modeStore
@@ -496,16 +516,20 @@ public sealed class ConversationScopingTests
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
-            new ConversationDescendantScanner(_store, NullLogger<ConversationDescendantScanner>.Instance));
+            new ConversationDescendantScanner(_store, NullLogger<ConversationDescendantScanner>.Instance)
+        );
 
-        var ok = Assert.IsType<OkObjectResult>(await controller.Provision(
-            new ProvisionConversationRequest
-            {
-                WorkspaceId = "ws",
-                ProviderId = "test",
-                ModeId = SystemChatModes.DefaultModeId,
-            },
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await controller.Provision(
+                new ProvisionConversationRequest
+                {
+                    WorkspaceId = "ws",
+                    ProviderId = "test",
+                    ModeId = SystemChatModes.DefaultModeId,
+                },
+                CancellationToken.None
+            )
+        );
 
         var threadId = ((ProvisionConversationResponse)ok.Value!).ThreadId;
         var metadata = await _store.LoadMetadataAsync(threadId, CancellationToken.None);
@@ -521,14 +545,17 @@ public sealed class ConversationScopingTests
     private async Task<string> ProvisionAsAsync(Principal principal, MultiTurnAgentPool pool)
     {
         var ok = Assert.IsType<OkObjectResult>(
-            await CreateController(principal, pool, workspaces: WorkspaceStoreResolving("ws")).Provision(
-                new ProvisionConversationRequest
-                {
-                    WorkspaceId = "ws",
-                    ProviderId = "test",
-                    ModeId = SystemChatModes.DefaultModeId,
-                },
-                CancellationToken.None));
+            await CreateController(principal, pool, workspaces: WorkspaceStoreResolving("ws"))
+                .Provision(
+                    new ProvisionConversationRequest
+                    {
+                        WorkspaceId = "ws",
+                        ProviderId = "test",
+                        ModeId = SystemChatModes.DefaultModeId,
+                    },
+                    CancellationToken.None
+                )
+        );
 
         return ((ProvisionConversationResponse)ok.Value!).ThreadId;
     }
@@ -576,21 +603,27 @@ public sealed class ConversationScopingTests
         var refused = await intruder.SendMessage(
             threadId,
             new SendMessageRequest { Text = "not yours" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
         var neverMinted = await intruder.SendMessage(
             "thread-never-minted",
             new SendMessageRequest { Text = "not yours" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var denied = Assert.IsType<NotFoundObjectResult>(refused);
         var missing = Assert.IsType<NotFoundObjectResult>(neverMinted);
 
         _ = denied.StatusCode.Should().Be(404);
-        _ = System.Text.Json.JsonSerializer.Serialize(denied.Value)
-            .Should().Be(
-                System.Text.Json.JsonSerializer.Serialize(missing.Value)
+        _ = System
+            .Text.Json.JsonSerializer.Serialize(denied.Value)
+            .Should()
+            .Be(
+                System
+                    .Text.Json.JsonSerializer.Serialize(missing.Value)
                     .Replace("thread-never-minted", threadId, StringComparison.Ordinal),
-                "a refused caller must not be able to tell a real conversation from an imaginary one");
+                "a refused caller must not be able to tell a real conversation from an imaginary one"
+            );
 
         // Refused BEFORE the pool, not after: a refusal that still minted an agent would leave the
         // conversation frozen to the intruder for the owner's own first message. No agent entry is
@@ -617,7 +650,8 @@ public sealed class ConversationScopingTests
         var accepted = await owner.SendMessage(
             threadId,
             new SendMessageRequest { Text = "mine" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         _ = Assert.IsType<AcceptedResult>(accepted).StatusCode.Should().Be(202);
     }
@@ -642,7 +676,8 @@ public sealed class ConversationScopingTests
         _ = await owner.UpdateMetadata(
             "alice-thread",
             new ConversationMetadataUpdate { Title = "after" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var stored = await _store.LoadMetadataAsync("alice-thread", CancellationToken.None);
         _ = stored!.TenantId.Should().Be(TenantA);
@@ -650,7 +685,8 @@ public sealed class ConversationScopingTests
 
         _ = Assert.IsType<OkObjectResult>(
             await CreateController(Signed(TenantA, Alice), pool)
-                .GetMessages("alice-thread", viewer: null, CancellationToken.None));
+                .GetMessages("alice-thread", viewer: null, CancellationToken.None)
+        );
     }
 
     /// <summary>
@@ -664,21 +700,26 @@ public sealed class ConversationScopingTests
         await SeedAsync("alice-thread", TenantA, Alice);
 
         var owner = CreateController(Signed(TenantA, Alice), pool);
-        _ = Assert.IsType<OkObjectResult>(await owner.AddShare(
-            "alice-thread",
-            new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
-            CancellationToken.None));
+        _ = Assert.IsType<OkObjectResult>(
+            await owner.AddShare(
+                "alice-thread",
+                new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
+                CancellationToken.None
+            )
+        );
 
         var stored = await _store.LoadMetadataAsync("alice-thread", CancellationToken.None);
         _ = stored!.Visibility.Should().Be(Visibility.Shared);
 
         var grantee = CreateController(Signed(TenantA, Bob), pool);
         _ = Assert.IsType<OkObjectResult>(
-            await grantee.GetMessages("alice-thread", viewer: null, CancellationToken.None));
+            await grantee.GetMessages("alice-thread", viewer: null, CancellationToken.None)
+        );
 
         var stranger = CreateController(Signed(TenantA, "dir-a:carol"), pool);
         _ = Assert.IsType<NotFoundObjectResult>(
-            await stranger.GetMessages("alice-thread", viewer: null, CancellationToken.None));
+            await stranger.GetMessages("alice-thread", viewer: null, CancellationToken.None)
+        );
     }
 
     /// <summary>
@@ -696,18 +737,22 @@ public sealed class ConversationScopingTests
         _ = await owner.AddShare(
             "alice-thread",
             new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var grantee = CreateController(Signed(TenantA, Bob), pool);
         var refused = await grantee.UpdateMetadata(
             "alice-thread",
             new ConversationMetadataUpdate { Title = "renamed" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var objectResult = Assert.IsType<ObjectResult>(refused);
         _ = objectResult.StatusCode.Should().Be(403);
-        _ = System.Text.Json.JsonSerializer.Serialize(objectResult.Value)
-            .Should().Contain("grant_does_not_confer_action", Exactly.Once());
+        _ = System
+            .Text.Json.JsonSerializer.Serialize(objectResult.Value)
+            .Should()
+            .Contain("grant_does_not_confer_action", Exactly.Once());
     }
 
     /// <summary>
@@ -737,7 +782,8 @@ public sealed class ConversationScopingTests
         _ = await owner.AddShare(
             "alice-thread",
             new ConversationShareRequest { SubjectId = Bob, Role = "editor" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         // The owner has a live agent - the state her own turn leaves behind, and the state that made
         // this conflict intermittent: it clears whenever the entry is evicted.
@@ -748,12 +794,13 @@ public sealed class ConversationScopingTests
         var accepted = await grantee.SendMessage(
             "alice-thread",
             new SendMessageRequest { Text = "my turn" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         _ = Assert.IsType<AcceptedResult>(accepted).StatusCode.Should().Be(202);
-        _ = pool.GetAgentOwnerUserId("alice-thread").Should().Be(
-            Bob,
-            "the grantee's turn must run on an agent of their own, not on the owner's");
+        _ = pool.GetAgentOwnerUserId("alice-thread")
+            .Should()
+            .Be(Bob, "the grantee's turn must run on an agent of their own, not on the owner's");
 
         // A release happens on a HANDOFF, not on every turn. Without this, a fix that released
         // whenever the entry is owned at all would pass everything above while throwing away - and
@@ -762,11 +809,12 @@ public sealed class ConversationScopingTests
         _ = await grantee.SendMessage(
             "alice-thread",
             new SendMessageRequest { Text = "and another" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
         _ = pool.TryGet("alice-thread", out var afterSecondTurn);
-        _ = afterSecondTurn.Should().BeSameAs(
-            afterHandoff,
-            "a caller writing to an agent that is already theirs must keep it");
+        _ = afterSecondTurn
+            .Should()
+            .BeSameAs(afterHandoff, "a caller writing to an agent that is already theirs must keep it");
     }
 
     /// <summary>
@@ -792,23 +840,29 @@ public sealed class ConversationScopingTests
         var refused = await stranger.SendMessage(
             "alice-thread",
             new SendMessageRequest { Text = "let me in" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
         var neverExisted = await stranger.SendMessage(
             "no-such-thread",
             new SendMessageRequest { Text = "let me in" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var hidden = Assert.IsType<NotFoundObjectResult>(refused);
         var missing = Assert.IsType<NotFoundObjectResult>(neverExisted);
         _ = hidden.StatusCode.Should().Be(404);
-        _ = System.Text.Json.JsonSerializer.Serialize(hidden.Value)
-            .Should().Be(
-                System.Text.Json.JsonSerializer.Serialize(missing.Value)
-                    .Replace("no-such-thread", "alice-thread", StringComparison.Ordinal));
+        _ = System
+            .Text.Json.JsonSerializer.Serialize(hidden.Value)
+            .Should()
+            .Be(
+                System
+                    .Text.Json.JsonSerializer.Serialize(missing.Value)
+                    .Replace("no-such-thread", "alice-thread", StringComparison.Ordinal)
+            );
 
-        _ = pool.GetAgentOwnerUserId("alice-thread").Should().Be(
-            Alice,
-            "a refused caller must not be able to evict the owner's live agent");
+        _ = pool.GetAgentOwnerUserId("alice-thread")
+            .Should()
+            .Be(Alice, "a refused caller must not be able to evict the owner's live agent");
     }
 
     /// <summary>
@@ -842,7 +896,8 @@ public sealed class ConversationScopingTests
         _ = await owner.AddShare(
             "alice-thread",
             new ConversationShareRequest { SubjectId = Bob, Role = "editor" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         // Alice's live agent was minted by an S2S app, so the thread is frozen to that app id.
         var daemon = new SandboxCredential("review-daemon", "0123456789abcdef0123456789abcdef");
@@ -852,7 +907,8 @@ public sealed class ConversationScopingTests
             null,
             null,
             callerCredential: daemon,
-            ownerUserId: Alice);
+            ownerUserId: Alice
+        );
         _ = pool.GetAgentCallerAppId("alice-thread").Should().Be("review-daemon");
 
         // Bob is an authorized editor, but he arrives through the UI: no sandbox credential, so a null
@@ -861,28 +917,34 @@ public sealed class ConversationScopingTests
         var refused = await grantee.SendMessage(
             "alice-thread",
             new SendMessageRequest { Text = "my turn" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var conflict = Assert.IsType<ConflictObjectResult>(refused);
         _ = conflict.StatusCode.Should().Be(409);
-        _ = System.Text.Json.JsonSerializer.Serialize(conflict.Value)
-            .Should().Contain("\"code\":\"caller_credential_conflict\"");
+        _ = System
+            .Text.Json.JsonSerializer.Serialize(conflict.Value)
+            .Should()
+            .Contain("\"code\":\"caller_credential_conflict\"");
 
-        _ = pool.GetAgentCallerAppId("alice-thread").Should().Be(
-            "review-daemon",
-            "a refused handoff must leave the thread frozen to the app that minted it, not unfrozen");
-        _ = pool.GetAgentOwnerUserId("alice-thread").Should().Be(
-            Alice,
-            "the refusal costs the owner nothing - her agent is still hers");
+        _ = pool.GetAgentCallerAppId("alice-thread")
+            .Should()
+            .Be(
+                "review-daemon",
+                "a refused handoff must leave the thread frozen to the app that minted it, not unfrozen"
+            );
+        _ = pool.GetAgentOwnerUserId("alice-thread")
+            .Should()
+            .Be(Alice, "the refusal costs the owner nothing - her agent is still hers");
 
         // The refusal must not double as a directory lookup. Bob is an authorized editor of this
         // conversation; he is NOT authorized to learn which service minted it. The WebSocket sibling
         // of this refusal suppresses the same id - it did NOT originally, and was corrected alongside
         // this, so the two transports cannot be played against each other.
-        _ = System.Text.Json.JsonSerializer.Serialize(conflict.Value)
-            .Should().NotContain(
-                "review-daemon",
-                "a 409 must not name the app identity the thread is frozen to");
+        _ = System
+            .Text.Json.JsonSerializer.Serialize(conflict.Value)
+            .Should()
+            .NotContain("review-daemon", "a 409 must not name the app identity the thread is frozen to");
     }
 
     /// <summary>
@@ -914,9 +976,12 @@ public sealed class ConversationScopingTests
         // A live run is what makes the guard reachable: the release below declines to evict a
         // streaming turn, so the recreate meets an entry still frozen to the owner.
         await using var pool = new MultiTurnAgentPool(
-            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(
-                new FakeMultiTurnAgent(threadId) { CurrentRunId = "run-in-flight" }),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            (threadId, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(
+                    new FakeMultiTurnAgent(threadId) { CurrentRunId = "run-in-flight" }
+                ),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         await SeedAsync("shared-thread", TenantA, Owner);
 
@@ -924,29 +989,30 @@ public sealed class ConversationScopingTests
         _ = await owner.AddShare(
             "shared-thread",
             new ConversationShareRequest { SubjectId = Grantee, Role = "editor" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         _ = pool.GetOrCreateAgent("shared-thread", DefaultMode(), null, null, ownerUserId: Owner);
-        _ = pool.IsRunInProgress("shared-thread").Should().BeTrue(
-            "the guard is only reachable while the owner's turn is streaming");
+        _ = pool.IsRunInProgress("shared-thread")
+            .Should()
+            .BeTrue("the guard is only reachable while the owner's turn is streaming");
 
         var grantee = CreateController(Signed(TenantA, Grantee), pool);
         var refused = await grantee.SendMessage(
             "shared-thread",
             new SendMessageRequest { Text = "my turn" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var conflict = Assert.IsType<ConflictObjectResult>(refused);
         _ = conflict.StatusCode.Should().Be(409);
 
         var payload = System.Text.Json.JsonSerializer.Serialize(conflict.Value);
         _ = payload.Should().Contain("\"code\":\"principal_conflict\"");
-        _ = payload.Should().NotContain(
-            Owner,
-            "the refused caller must not learn the owner's stable user id");
-        _ = payload.Should().NotContain(
-            Grantee,
-            "a refusal has no reason to echo the caller's own stable id back into a body");
+        _ = payload.Should().NotContain(Owner, "the refused caller must not learn the owner's stable user id");
+        _ = payload
+            .Should()
+            .NotContain(Grantee, "a refusal has no reason to echo the caller's own stable id back into a body");
     }
 
     /// <summary>
@@ -963,18 +1029,22 @@ public sealed class ConversationScopingTests
         _ = await owner.AddShare(
             "alice-thread",
             new ConversationShareRequest { SubjectId = Bob, Role = "editor" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var grantee = CreateController(Signed(TenantA, Bob), pool);
         var refused = await grantee.AddShare(
             "alice-thread",
             new ConversationShareRequest { SubjectId = "dir-a:carol", Role = "viewer" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var objectResult = Assert.IsType<ObjectResult>(refused);
         _ = objectResult.StatusCode.Should().Be(403);
-        _ = System.Text.Json.JsonSerializer.Serialize(objectResult.Value)
-            .Should().Contain("grantee_may_not_reshare", Exactly.Once());
+        _ = System
+            .Text.Json.JsonSerializer.Serialize(objectResult.Value)
+            .Should()
+            .Contain("grantee_may_not_reshare", Exactly.Once());
         _ = _grants.All.Should().ContainSingle();
     }
 
@@ -993,11 +1063,13 @@ public sealed class ConversationScopingTests
         _ = await owner.AddShare(
             "alice-thread",
             new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
         _ = await owner.AddShare(
             "alice-thread",
             new ConversationShareRequest { SubjectId = "dir-a:carol", Role = "viewer" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         _ = await owner.RemoveShare("alice-thread", Bob, CancellationToken.None);
 
@@ -1031,10 +1103,13 @@ public sealed class ConversationScopingTests
 
         _ = (await ListedVisibilityAsync(owner)).Should().Be("private");
 
-        _ = Assert.IsType<OkObjectResult>(await owner.AddShare(
-            "alice-thread",
-            new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
-            CancellationToken.None));
+        _ = Assert.IsType<OkObjectResult>(
+            await owner.AddShare(
+                "alice-thread",
+                new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
+                CancellationToken.None
+            )
+        );
 
         _ = (await ListedVisibilityAsync(owner)).Should().Be("shared");
 
@@ -1044,8 +1119,10 @@ public sealed class ConversationScopingTests
     }
 
     /// <summary>MVC's default naming policy, so the payload read here is the one a client receives.</summary>
-    private static readonly JsonSerializerOptions WireOptions =
-        new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    private static readonly JsonSerializerOptions WireOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
 
     /// <summary>
     /// The <c>visibility</c> the conversation listing puts on the wire for the single conversation
@@ -1056,9 +1133,7 @@ public sealed class ConversationScopingTests
         var ok = Assert.IsType<OkObjectResult>(await controller.List());
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value, WireOptions));
         var summary = document.RootElement.EnumerateArray().Single();
-        return summary.TryGetProperty("visibility", out var visibility)
-            ? visibility.GetString()
-            : null;
+        return summary.TryGetProperty("visibility", out var visibility) ? visibility.GetString() : null;
     }
 
     /// <summary>
@@ -1079,10 +1154,13 @@ public sealed class ConversationScopingTests
         await SeedAsync("alice-thread", TenantA, Alice);
 
         var owner = CreateController(Signed(TenantA, Alice), pool);
-        _ = Assert.IsType<OkObjectResult>(await owner.AddShare(
-            "alice-thread",
-            new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
-            CancellationToken.None));
+        _ = Assert.IsType<OkObjectResult>(
+            await owner.AddShare(
+                "alice-thread",
+                new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
+                CancellationToken.None
+            )
+        );
 
         _ = (await ListedCanShareAsync(owner, "alice-thread")).Should().BeTrue();
 
@@ -1109,12 +1187,12 @@ public sealed class ConversationScopingTests
         var refused = await admin.AddShare(
             "alice-thread",
             new ConversationShareRequest { SubjectId = "dir-a:carol", Role = "viewer" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var objectResult = Assert.IsType<ObjectResult>(refused);
         _ = objectResult.StatusCode.Should().Be(403);
-        _ = JsonSerializer.Serialize(objectResult.Value)
-            .Should().Contain("admin_may_not_reshare", Exactly.Once());
+        _ = JsonSerializer.Serialize(objectResult.Value).Should().Contain("admin_may_not_reshare", Exactly.Once());
     }
 
     /// <summary>
@@ -1168,18 +1246,14 @@ public sealed class ConversationScopingTests
     /// The row itself is located by <c>threadId</c> and asserted to be present: a listing that
     /// simply dropped the conversation would otherwise answer "no permission" and read as a pass.
     /// </remarks>
-    private static async Task<bool?> ListedCanShareAsync(
-        ConversationsController controller,
-        string threadId)
+    private static async Task<bool?> ListedCanShareAsync(ConversationsController controller, string threadId)
     {
         var ok = Assert.IsType<OkObjectResult>(await controller.List());
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value, WireOptions));
-        var summary = document.RootElement
-            .EnumerateArray()
+        var summary = document
+            .RootElement.EnumerateArray()
             .Single(e => e.GetProperty("threadId").GetString() == threadId);
-        return summary.TryGetProperty("canShare", out var canShare)
-            ? canShare.GetBoolean()
-            : null;
+        return summary.TryGetProperty("canShare", out var canShare) ? canShare.GetBoolean() : null;
     }
 
     /// <summary>
@@ -1196,7 +1270,8 @@ public sealed class ConversationScopingTests
         _ = await owner.AddShare(
             "alice-thread",
             new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var mallory = CreateController(Signed(TenantB, Mallory), pool);
         var refused = await mallory.RemoveShare("alice-thread", Bob, CancellationToken.None);
@@ -1216,7 +1291,8 @@ public sealed class ConversationScopingTests
         var refused = await owner.AddShare(
             "alice-thread",
             new ConversationShareRequest { SubjectId = Bob, Role = "owner" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         _ = Assert.IsType<BadRequestObjectResult>(refused).StatusCode.Should().Be(400);
         _ = _grants.All.Should().BeEmpty();
@@ -1281,10 +1357,10 @@ public sealed class ConversationScopingTests
         var ok = Assert.IsType<OkObjectResult>(await admin.List(50, 0, ct: CancellationToken.None));
         _ = ((IEnumerable<ConversationSummary>)ok.Value!).Should().HaveCount(3);
 
-        _ = _audit.Authorizations
-            .Where(a => a.EventClass == AuditEventClass.Security)
-            .Should().BeEmpty(
-                "computing canShare for a list row is a display-time capability probe, not a refused attempt");
+        _ = _audit
+            .Authorizations.Where(a => a.EventClass == AuditEventClass.Security)
+            .Should()
+            .BeEmpty("computing canShare for a list row is a display-time capability probe, not a refused attempt");
     }
 
     /// <summary>
@@ -1308,9 +1384,12 @@ public sealed class ConversationScopingTests
         var ok = Assert.IsType<OkObjectResult>(await owner.List(50, 0, ct: CancellationToken.None));
         _ = ((IEnumerable<ConversationSummary>)ok.Value!).Should().HaveCount(8);
 
-        _ = counting.FindGrantCallCount.Should().Be(
-            0,
-            "the listing resolves grants once via ListGrantedResourceIds; the per-row capability check must not FindGrant again");
+        _ = counting
+            .FindGrantCallCount.Should()
+            .Be(
+                0,
+                "the listing resolves grants once via ListGrantedResourceIds; the per-row capability check must not FindGrant again"
+            );
     }
 
     /// <summary>
@@ -1328,12 +1407,15 @@ public sealed class ConversationScopingTests
         var refused = await admin.AddShare(
             "alice-thread",
             new ConversationShareRequest { SubjectId = "dir-a:carol", Role = "viewer" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         _ = Assert.IsType<ObjectResult>(refused).StatusCode.Should().Be(403);
-        _ = _audit.Authorizations
-            .Where(a => a.EventClass == AuditEventClass.Security)
-            .Should().ContainSingle()
-            .Which.Reason.Should().Be("admin_may_not_reshare");
+        _ = _audit
+            .Authorizations.Where(a => a.EventClass == AuditEventClass.Security)
+            .Should()
+            .ContainSingle()
+            .Which.Reason.Should()
+            .Be("admin_may_not_reshare");
     }
 }

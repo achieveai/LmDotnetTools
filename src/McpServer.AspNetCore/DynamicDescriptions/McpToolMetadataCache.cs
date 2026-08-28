@@ -139,13 +139,13 @@ public sealed class McpToolMetadataCache
         var tools = new List<ToolMetadata>();
 
         // Find all types with [McpServerToolType] attribute
-        var toolTypes = assembly.GetTypes()
-            .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() != null);
+        var toolTypes = assembly.GetTypes().Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() != null);
 
         foreach (var toolType in toolTypes)
         {
             // Find all methods with [McpServerTool] attribute
-            var toolMethods = toolType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
+            var toolMethods = toolType
+                .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
                 .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() != null);
 
             foreach (var method in toolMethods)
@@ -177,7 +177,8 @@ public sealed class McpToolMetadataCache
         }
 
         // Find all methods with [McpServerTool] attribute
-        var toolMethods = toolType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
+        var toolMethods = toolType
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
             .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() != null);
 
         foreach (var method in toolMethods)
@@ -202,9 +203,7 @@ public sealed class McpToolMetadataCache
         // Determine tool name:
         // 1. If explicitly specified in attribute, use it as-is
         // 2. Otherwise, convert PascalCase method name to snake_case
-        var toolName = !string.IsNullOrEmpty(toolAttr?.Name)
-            ? toolAttr.Name
-            : ToSnakeCase(method.Name);
+        var toolName = !string.IsNullOrEmpty(toolAttr?.Name) ? toolAttr.Name : ToSnakeCase(method.Name);
 
         return new ToolMetadata
         {
@@ -213,7 +212,7 @@ public sealed class McpToolMetadataCache
             DeclaringType = declaringType,
             Method = method,
             Parameters = parameters,
-            InputSchema = inputSchema
+            InputSchema = inputSchema,
         };
     }
 
@@ -268,15 +267,17 @@ public sealed class McpToolMetadataCache
             var isNullable = IsNullableType(param);
             var isRequired = !isNullable && !param.HasDefaultValue;
 
-            parameters.Add(new ParameterMetadata
-            {
-                Name = param.Name ?? $"param{param.Position}",
-                DefaultDescription = descriptionAttr?.Description,
-                ParameterType = param.ParameterType,
-                IsRequired = isRequired,
-                HasDefaultValue = param.HasDefaultValue,
-                DefaultValue = param.HasDefaultValue ? param.DefaultValue : null
-            });
+            parameters.Add(
+                new ParameterMetadata
+                {
+                    Name = param.Name ?? $"param{param.Position}",
+                    DefaultDescription = descriptionAttr?.Description,
+                    ParameterType = param.ParameterType,
+                    IsRequired = isRequired,
+                    HasDefaultValue = param.HasDefaultValue,
+                    DefaultValue = param.HasDefaultValue ? param.DefaultValue : null,
+                }
+            );
         }
 
         return parameters;
@@ -304,10 +305,7 @@ public sealed class McpToolMetadataCache
     /// </summary>
     private static JsonObject BuildInputSchema(IReadOnlyList<ParameterMetadata> parameters)
     {
-        var schema = new JsonObject
-        {
-            ["type"] = "object"
-        };
+        var schema = new JsonObject { ["type"] = "object" };
 
         var properties = new JsonObject();
         var required = new JsonArray();
@@ -474,11 +472,18 @@ public sealed class McpToolMetadataCache
     private static bool IsPrimitiveJsonType(Type type)
     {
         return type == typeof(string)
-            || type == typeof(int) || type == typeof(long) || type == typeof(short) || type == typeof(byte)
-            || type == typeof(float) || type == typeof(double) || type == typeof(decimal)
+            || type == typeof(int)
+            || type == typeof(long)
+            || type == typeof(short)
+            || type == typeof(byte)
+            || type == typeof(float)
+            || type == typeof(double)
+            || type == typeof(decimal)
             || type == typeof(bool)
-            || type == typeof(DateTime) || type == typeof(DateTimeOffset)
-            || type == typeof(Guid) || type == typeof(Uri)
+            || type == typeof(DateTime)
+            || type == typeof(DateTimeOffset)
+            || type == typeof(Guid)
+            || type == typeof(Uri)
             || type.IsEnum;
     }
 
@@ -500,12 +505,14 @@ public sealed class McpToolMetadataCache
             var genericDef = type.GetGenericTypeDefinition();
 
             // Check common collection types
-            if (genericDef == typeof(List<>) ||
-                genericDef == typeof(IList<>) ||
-                genericDef == typeof(ICollection<>) ||
-                genericDef == typeof(IEnumerable<>) ||
-                genericDef == typeof(IReadOnlyList<>) ||
-                genericDef == typeof(IReadOnlyCollection<>))
+            if (
+                genericDef == typeof(List<>)
+                || genericDef == typeof(IList<>)
+                || genericDef == typeof(ICollection<>)
+                || genericDef == typeof(IEnumerable<>)
+                || genericDef == typeof(IReadOnlyList<>)
+                || genericDef == typeof(IReadOnlyCollection<>)
+            )
             {
                 return type.GetGenericArguments()[0];
             }
@@ -536,14 +543,17 @@ public sealed class McpToolMetadataCache
         return underlyingType switch
         {
             Type t when t == typeof(string) => ("string", null),
-            Type t when t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte) => ("integer", null),
+            Type t when t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte) => (
+                "integer",
+                null
+            ),
             Type t when t == typeof(float) || t == typeof(double) || t == typeof(decimal) => ("number", null),
             Type t when t == typeof(bool) => ("boolean", null),
             Type t when t == typeof(DateTime) || t == typeof(DateTimeOffset) => ("string", "date-time"),
             Type t when t == typeof(Guid) => ("string", "uuid"),
             Type t when t == typeof(Uri) => ("string", "uri"),
             Type t when t.IsEnum => ("string", null),
-            _ => ("object", null)
+            _ => ("object", null),
         };
     }
 }

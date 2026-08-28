@@ -53,7 +53,8 @@ public sealed class SandboxGitCloneInstructionChainTests
         Skip.IfNot(
             workspaceBase is not null && Directory.Exists(workspaceBase),
             "Could not resolve the adopted gateway's workspace base. Set SANDBOX_WORKSPACE_BASE, or "
-                + "ensure the sample's SandboxGateway:WorkspaceBasePath exists.");
+                + "ensure the sample's SandboxGateway:WorkspaceBasePath exists."
+        );
 
         // The assertions below are decisive only if the adopted gateway's own notion of "the
         // workspace" really is this host directory. A Docker-backed (or otherwise non-host-mapped)
@@ -62,7 +63,9 @@ public sealed class SandboxGitCloneInstructionChainTests
         // environment/topology mismatch, not a product regression. Detect that up front and skip
         // with a clear reason rather than fail on host-side assertions the gateway can never satisfy.
         var hostVerification = await GitHubClonePrerequisites.VerifyHostVerifiableWorkspaceAsync(
-            gateway.BaseUrl, workspaceBase!);
+            gateway.BaseUrl,
+            workspaceBase!
+        );
         Skip.IfNot(hostVerification.Verified, hostVerification.Reason);
 
         var id = Guid.NewGuid().ToString("N")[..8];
@@ -85,11 +88,12 @@ public sealed class SandboxGitCloneInstructionChainTests
             $"rm -rf {privDir} && git clone --depth 1 --single-branch https://github.com/achieveai/LmDotnetTools {privDir} "
             + $"&& git -C {privDir} rev-parse HEAD";
 
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("workspace-agent", _ => true)
-                .Turn(t => t.ToolCall("Bash", new { command = pubCommand }))
-                .Turn(t => t.ToolCall("Bash", new { command = privCommand }))
-                .Turn(t => t.Text("Cloned both repositories."))
+            .Turn(t => t.ToolCall("Bash", new { command = pubCommand }))
+            .Turn(t => t.ToolCall("Bash", new { command = privCommand }))
+            .Turn(t => t.Text("Cloned both repositories."))
             .Build();
 
         // A fixed loopback port is required so the gateway can call this host's auth webhook at a URL
@@ -97,25 +101,28 @@ public sealed class SandboxGitCloneInstructionChainTests
         var port = GitHubClonePrerequisites.ReserveLoopbackPort();
         var gw = SandboxGatewayOptions.SectionName;
         var auth = AuthOptions.SectionName;
-        using var env = new EnvironmentVariableScope(new Dictionary<string, string?>(StringComparer.Ordinal)
-        {
-            // Adopt the running gateway; root the session workspace under the gateway's own base.
-            [$"{gw}__BaseUrl"] = gateway.BaseUrl,
-            [$"{gw}__WorkspaceBasePath"] = workspaceBase,
-            [$"{gw}__Workspace"] = leaf,
-            [$"{gw}__AutoSpawn"] = "false",
-            // Reuse the developer's signed-in token; enable the github.com allow-rule; advertise the webhook.
-            [$"{auth}__TokenStoreDir"] = github.TokenStoreDir,
-            [$"{auth}__Github__ClientId"] = GitHubClonePrerequisites.PlaceholderClientId,
-            [$"{auth}__Webhook__PublicBaseUrl"] = $"http://127.0.0.1:{port}",
-        });
+        using var env = new EnvironmentVariableScope(
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                // Adopt the running gateway; root the session workspace under the gateway's own base.
+                [$"{gw}__BaseUrl"] = gateway.BaseUrl,
+                [$"{gw}__WorkspaceBasePath"] = workspaceBase,
+                [$"{gw}__Workspace"] = leaf,
+                [$"{gw}__AutoSpawn"] = "false",
+                // Reuse the developer's signed-in token; enable the github.com allow-rule; advertise the webhook.
+                [$"{auth}__TokenStoreDir"] = github.TokenStoreDir,
+                [$"{auth}__Github__ClientId"] = GitHubClonePrerequisites.PlaceholderClientId,
+                [$"{auth}__Webhook__PublicBaseUrl"] = $"http://127.0.0.1:{port}",
+            }
+        );
 
         try
         {
             await using var session = await _fixture.OpenAsync(
                 "test-anthropic",
                 responder.HandlerFor("test-anthropic"),
-                fixedPort: port);
+                fixedPort: port
+            );
             var page = session.Page;
 
             // Workspace Agent mode is what folds the gateway's sandbox tools into the agent — select it
@@ -143,12 +150,19 @@ public sealed class SandboxGitCloneInstructionChainTests
             var listing = Directory.Exists(privClone)
                 ? string.Join(", ", Directory.EnumerateFileSystemEntries(privClone).Select(Path.GetFileName))
                 : "(private clone directory missing)";
-            Directory.Exists(Path.Combine(workspacePath, pubDir, ".git"))
-                .Should().BeTrue($"the public clone should have written {pubDir}/.git under {workspacePath}");
-            Directory.Exists(Path.Combine(privClone, ".git"))
-                .Should().BeTrue($"the private clone should have written {privDir}/.git under {workspacePath}");
+            Directory
+                .Exists(Path.Combine(workspacePath, pubDir, ".git"))
+                .Should()
+                .BeTrue($"the public clone should have written {pubDir}/.git under {workspacePath}");
+            Directory
+                .Exists(Path.Combine(privClone, ".git"))
+                .Should()
+                .BeTrue($"the private clone should have written {privDir}/.git under {workspacePath}");
             File.Exists(Path.Combine(privClone, "LmDotnetTools.sln"))
-                .Should().BeTrue($"the private clone should have checked out the working tree; {privClone} contains: [{listing}]");
+                .Should()
+                .BeTrue(
+                    $"the private clone should have checked out the working tree; {privClone} contains: [{listing}]"
+                );
 
             await session.SaveSuccessScreenshotAsync("SandboxGitClone.Public_and_private_through_sandbox");
         }
@@ -156,7 +170,10 @@ public sealed class SandboxGitCloneInstructionChainTests
         {
             // Set SANDBOX_E2E_KEEP_WORKSPACE=1 to leave the cloned workspace on disk for inspection.
             var keep = string.Equals(
-                Environment.GetEnvironmentVariable("SANDBOX_E2E_KEEP_WORKSPACE"), "1", StringComparison.Ordinal);
+                Environment.GetEnvironmentVariable("SANDBOX_E2E_KEEP_WORKSPACE"),
+                "1",
+                StringComparison.Ordinal
+            );
             if (!keep)
             {
                 ForceDeleteDirectory(workspacePath);

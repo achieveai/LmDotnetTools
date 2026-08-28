@@ -18,12 +18,13 @@ public static class McpServerConfigExtensions
     {
         ArgumentNullException.ThrowIfNull(source);
 
-        IReadOnlyList<string>? args = source.Args is null
-            ? null
-            : [.. source.Args];
+        IReadOnlyList<string>? args = source.Args is null ? null : [.. source.Args];
 
-        IReadOnlyDictionary<string, string>? env = source.Env?
-            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
+        IReadOnlyDictionary<string, string>? env = source.Env?.ToDictionary(
+            kv => kv.Key,
+            kv => kv.Value,
+            StringComparer.Ordinal
+        );
 
         return new CodexMcpServerConfig
         {

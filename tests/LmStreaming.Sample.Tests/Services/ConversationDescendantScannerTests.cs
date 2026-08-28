@@ -17,15 +17,15 @@ public sealed class ConversationDescendantScannerTests
     private static ConversationDescendantScanner CreateScanner(
         IConversationStore store,
         int? capacity = null,
-        ILogger<ConversationDescendantScanner>? logger = null) =>
+        ILogger<ConversationDescendantScanner>? logger = null
+    ) =>
         capacity is null
-            ? new ConversationDescendantScanner(
-                store,
-                logger ?? NullLogger<ConversationDescendantScanner>.Instance)
+            ? new ConversationDescendantScanner(store, logger ?? NullLogger<ConversationDescendantScanner>.Instance)
             : new ConversationDescendantScanner(
                 store,
                 logger ?? NullLogger<ConversationDescendantScanner>.Instance,
-                capacity.Value);
+                capacity.Value
+            );
 
     /// <summary>Seeds one persisted sub-agent thread stamped as <paramref name="parentThreadId"/>'s child.</summary>
     private static Task SeedChildAsync(
@@ -33,7 +33,8 @@ public sealed class ConversationDescendantScannerTests
         string parentThreadId,
         string agentId,
         string childThreadId,
-        string? tenantId = null) =>
+        string? tenantId = null
+    ) =>
         store.SaveMetadataAsync(
             childThreadId,
             new ThreadMetadata
@@ -51,13 +52,17 @@ public sealed class ConversationDescendantScannerTests
                         Status: SubAgentStatus.Completed,
                         ThreadId: childThreadId,
                         LastActivityUtc: DateTimeOffset.UtcNow,
-                        TerminalAtUtc: DateTimeOffset.UtcNow)),
-            });
+                        TerminalAtUtc: DateTimeOffset.UtcNow
+                    )
+                ),
+            }
+        );
 
     private static MultiTurnAgentPool CreateFakeAgentPool() =>
         new(
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
     /// <summary>
     /// The traversal contract lifted verbatim from the controller: transitive descendants only (the root
@@ -102,7 +107,13 @@ public sealed class ConversationDescendantScannerTests
         var store = new InMemoryConversationStore();
         await store.SaveMetadataAsync(
             root,
-            new ThreadMetadata { ThreadId = root, LastUpdated = 0, TenantId = tenant });
+            new ThreadMetadata
+            {
+                ThreadId = root,
+                LastUpdated = 0,
+                TenantId = tenant,
+            }
+        );
 
         // The ordinary child: it inherited the root's tenant at creation.
         await SeedChildAsync(store, root, "tenanted", "subagent-tenanted", tenantId: tenant);
@@ -113,10 +124,7 @@ public sealed class ConversationDescendantScannerTests
 
         var nodes = await CreateScanner(store).ScanAsync(root);
 
-        _ = nodes
-            .Select(n => n.ThreadId)
-            .Should()
-            .BeEquivalentTo("subagent-tenanted", "subagent-untenanted");
+        _ = nodes.Select(n => n.ThreadId).Should().BeEquivalentTo("subagent-tenanted", "subagent-untenanted");
     }
 
     /// <summary>A cycle in the persisted parent stamps must be cut, not looped on.</summary>
@@ -155,7 +163,8 @@ public sealed class ConversationDescendantScannerTests
 
         var scanned = await scanner.ScanAsync(root);
         var response = Assert.IsType<SubAgentTreeResponse>(
-            Assert.IsType<OkObjectResult>(await controller.ListSubAgents(root, recursive: true)).Value);
+            Assert.IsType<OkObjectResult>(await controller.ListSubAgents(root, recursive: true)).Value
+        );
 
         response.SchemaVersion.Should().Be(1);
         response.Nodes.Should().BeEquivalentTo(scanned, o => o.WithStrictOrdering());
@@ -188,9 +197,7 @@ public sealed class ConversationDescendantScannerTests
         var second = await scanner.GetOrScanAsync(root);
 
         callsAfterFirst.Should().BeGreaterThan(0, "the cold scan must actually read the store");
-        counting.ListThreadsCallCount.Should().Be(
-            callsAfterFirst,
-            "a cache hit must not touch the store at all");
+        counting.ListThreadsCallCount.Should().Be(callsAfterFirst, "a cache hit must not touch the store at all");
         second.Should().BeEquivalentTo(first, o => o.WithStrictOrdering());
     }
 
@@ -239,9 +246,9 @@ public sealed class ConversationDescendantScannerTests
 
         scanner.NoteAgentActivity(notedRoot);
         _ = await scanner.GetOrScanAsync(quietRoot);
-        counting.ListThreadsCallCount.Should().Be(
-            callsAfterCold,
-            "activity on one root must not invalidate another root's graph");
+        counting
+            .ListThreadsCallCount.Should()
+            .Be(callsAfterCold, "activity on one root must not invalidate another root's graph");
 
         _ = await scanner.GetOrScanAsync(notedRoot);
         counting.ListThreadsCallCount.Should().BeGreaterThan(callsAfterCold);
@@ -391,8 +398,9 @@ public sealed class ConversationDescendantScannerTests
         await store.DeleteThreadAsync("subagent-removed", CancellationToken.None);
         await pool.RemoveAgentAsync(root);
 
-        (await scanner.GetOrScanAsync(root)).Should().BeEmpty(
-            "ThreadRemoved must drop the cached graph so a reused thread id cannot inherit it");
+        (await scanner.GetOrScanAsync(root))
+            .Should()
+            .BeEmpty("ThreadRemoved must drop the cached graph so a reused thread id cannot inherit it");
     }
 
     [Fact]
@@ -513,18 +521,23 @@ public sealed class ConversationDescendantScannerTests
                             Status: SubAgentStatus.Completed,
                             ThreadId: childThreadId,
                             LastActivityUtc: DateTimeOffset.UtcNow,
-                            TerminalAtUtc: DateTimeOffset.UtcNow)),
-                });
+                            TerminalAtUtc: DateTimeOffset.UtcNow
+                        )
+                    ),
+                }
+            );
         }
 
         var nodes = await CreateScanner(new TouchingConversationStore(store, touched)).ScanAsync(root);
 
-        nodes.Select(n => n.ThreadId)
+        nodes
+            .Select(n => n.ThreadId)
             .Should()
             .Contain(
                 touched,
                 "a child that was merely touched mid-scan must still be listed — the roster this scan "
-                    + "produces is cached, so anything it skips stays skipped");
+                    + "produces is cached, so anything it skips stays skipped"
+            );
         nodes.Should().HaveCount(childCount);
     }
 
@@ -548,10 +561,12 @@ public sealed class ConversationDescendantScannerTests
 
         _ = await CreateScanner(store, logger: logger).ScanAsync("thread-cap-0");
 
-        logger.Entries.Should().Contain(
-            e => e.Level == LogLevel.Warning
-                && e.Message.Contains(scanCap.ToString(), StringComparison.Ordinal),
-            "hitting the scan cap must be observable, not a silent truncation");
+        logger
+            .Entries.Should()
+            .Contain(
+                e => e.Level == LogLevel.Warning && e.Message.Contains(scanCap.ToString(), StringComparison.Ordinal),
+                "hitting the scan cap must be observable, not a silent truncation"
+            );
     }
 
     /// <summary>The other side of that boundary: a store read IN FULL must not raise a false alarm.</summary>
@@ -569,9 +584,12 @@ public sealed class ConversationDescendantScannerTests
 
         _ = await CreateScanner(store, logger: logger).ScanAsync("thread-cap-0");
 
-        logger.Entries.Should().NotContain(
-            e => e.Level == LogLevel.Warning && e.Message.Contains("cap", StringComparison.Ordinal),
-            "the store was read in full, so there is nothing to warn about");
+        logger
+            .Entries.Should()
+            .NotContain(
+                e => e.Level == LogLevel.Warning && e.Message.Contains("cap", StringComparison.Ordinal),
+                "the store was read in full, so there is nothing to warn about"
+            );
     }
 
     [Fact]
@@ -585,7 +603,8 @@ public sealed class ConversationDescendantScannerTests
     private static ConversationsController CreateController(
         IConversationStore store,
         MultiTurnAgentPool pool,
-        ConversationDescendantScanner scanner) =>
+        ConversationDescendantScanner scanner
+    ) =>
         new(
             store,
             pool,
@@ -599,7 +618,8 @@ public sealed class ConversationDescendantScannerTests
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
-            scanner);
+            scanner
+        );
 
     /// <summary>Holds the first <c>ListThreadsAsync</c> open until a gate completes, so a test can act while
     /// a scan is genuinely in flight.</summary>
@@ -620,7 +640,8 @@ public sealed class ConversationDescendantScannerTests
             int limit = 50,
             int offset = 0,
             ConversationListOptions? options = null,
-            CancellationToken ct = default)
+            CancellationToken ct = default
+        )
         {
             var first = Interlocked.Increment(ref _calls) == 1;
             var page = await inner.ListThreadsAsync(limit, offset, options, ct);
@@ -636,21 +657,22 @@ public sealed class ConversationDescendantScannerTests
         public Task AppendMessagesAsync(
             string threadId,
             IReadOnlyList<PersistedMessage> messages,
-            CancellationToken ct = default) => inner.AppendMessagesAsync(threadId, messages, ct);
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
 
         public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
             string threadId,
-            CancellationToken ct = default) => inner.LoadMessagesAsync(threadId, ct);
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
 
         public Task ReplaceMessageAsync(
             string threadId,
             PersistedMessage replacement,
-            CancellationToken ct = default) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
 
-        public Task SaveMetadataAsync(
-            string threadId,
-            ThreadMetadata metadata,
-            CancellationToken ct = default) => inner.SaveMetadataAsync(threadId, metadata, ct);
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
 
         public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
             inner.LoadMetadataAsync(threadId, ct);
@@ -658,7 +680,8 @@ public sealed class ConversationDescendantScannerTests
         public Task UpdateMetadataAsync(
             string threadId,
             Func<ThreadMetadata?, ThreadMetadata> update,
-            CancellationToken ct = default) => inner.UpdateMetadataAsync(threadId, update, ct);
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
 
         public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
             inner.DeleteThreadAsync(threadId, ct);
@@ -681,7 +704,13 @@ public sealed class ConversationDescendantScannerTests
         var store = new InMemoryConversationStore();
         await store.SaveMetadataAsync(
             root,
-            new ThreadMetadata { ThreadId = root, LastUpdated = 0, TenantId = "tnt_a" });
+            new ThreadMetadata
+            {
+                ThreadId = root,
+                LastUpdated = 0,
+                TenantId = "tnt_a",
+            }
+        );
         await SeedChildAsync(store, root, "mine", "subagent-mine", tenantId: "tnt_a");
         await SeedChildAsync(store, root, "theirs", "subagent-theirs", tenantId: "tnt_b");
 
@@ -700,7 +729,13 @@ public sealed class ConversationDescendantScannerTests
         var store = new InMemoryConversationStore();
         await store.SaveMetadataAsync(
             root,
-            new ThreadMetadata { ThreadId = root, LastUpdated = 0, TenantId = "tnt_a" });
+            new ThreadMetadata
+            {
+                ThreadId = root,
+                LastUpdated = 0,
+                TenantId = "tnt_a",
+            }
+        );
         await SeedChildAsync(store, root, "mine", "subagent-mine", tenantId: "tnt_a");
         await SeedChildAsync(store, root, "sibling", "subagent-sibling", tenantId: "tnt_a");
 

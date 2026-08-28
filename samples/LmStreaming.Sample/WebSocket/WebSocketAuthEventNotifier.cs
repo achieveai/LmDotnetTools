@@ -1,6 +1,6 @@
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace LmStreaming.Sample.WebSocket;
 
@@ -12,7 +12,8 @@ namespace LmStreaming.Sample.WebSocket;
 /// </summary>
 public sealed class WebSocketAuthEventNotifier(
     WebSocketConnectionRegistry registry,
-    ILogger<WebSocketAuthEventNotifier> logger) : IAuthEventNotifier
+    ILogger<WebSocketAuthEventNotifier> logger
+) : IAuthEventNotifier
 {
     private static readonly JsonSerializerOptions JsonOptions = JsonSerializerOptionsFactory.CreateForProduction();
 
@@ -21,7 +22,8 @@ public sealed class WebSocketAuthEventNotifier(
         logger.LogInformation(
             "Broadcasting auth_required for provider {ProviderId} (signinUrl {SigninUrl}).",
             providerId,
-            signinUrl);
+            signinUrl
+        );
         await registry.BroadcastAsync(BuildAuthRequiredJson(providerId, signinUrl, reason), ct);
     }
 
@@ -29,12 +31,9 @@ public sealed class WebSocketAuthEventNotifier(
     {
         logger.LogInformation("Broadcasting auth_completed for provider {ProviderId}.", providerId);
         var json = JsonSerializer.Serialize(
-            new Dictionary<string, object?>
-            {
-                ["$type"] = "auth_completed",
-                ["providerId"] = providerId,
-            },
-            JsonOptions);
+            new Dictionary<string, object?> { ["$type"] = "auth_completed", ["providerId"] = providerId },
+            JsonOptions
+        );
         await registry.BroadcastAsync(json, ct);
     }
 
@@ -48,7 +47,8 @@ public sealed class WebSocketAuthEventNotifier(
                 ["providerId"] = providerId,
                 ["reason"] = reason,
             },
-            JsonOptions);
+            JsonOptions
+        );
         await registry.BroadcastAsync(json, ct);
     }
 
@@ -65,5 +65,6 @@ public sealed class WebSocketAuthEventNotifier(
                 ["signinUrl"] = signinUrl,
                 ["reason"] = reason,
             },
-            JsonOptions);
+            JsonOptions
+        );
 }

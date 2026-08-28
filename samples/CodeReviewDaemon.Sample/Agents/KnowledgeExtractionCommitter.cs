@@ -26,11 +26,7 @@ internal sealed class KnowledgeExtractionCommitter
     private readonly string _repoRoot;
     private readonly ILogger<KnowledgeExtractionCommitter> _logger;
 
-    public KnowledgeExtractionCommitter(
-        GitRunner git,
-        string repoRoot,
-        ILogger<KnowledgeExtractionCommitter> logger
-    )
+    public KnowledgeExtractionCommitter(GitRunner git, string repoRoot, ILogger<KnowledgeExtractionCommitter> logger)
     {
         _git = git ?? throw new ArgumentNullException(nameof(git));
         ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
@@ -75,20 +71,28 @@ internal sealed class KnowledgeExtractionCommitter
             // finds origin/<branch> gone. A blind `checkout -B` then fails with a scary "not a commit" fatal that
             // reads like a real error. Probe first and treat a missing branch as the expected no-op it is —
             // there is no branch left to extract from, and no retry could bring one back.
-            var branchExists = await _git
-                .RunAsync(["rev-parse", "--verify", "--quiet", $"origin/{branch}"], _repoRoot, cancellationToken)
+            var branchExists = await _git.RunAsync(
+                    ["rev-parse", "--verify", "--quiet", $"origin/{branch}"],
+                    _repoRoot,
+                    cancellationToken
+                )
                 .ConfigureAwait(false);
             if (!branchExists.Succeeded)
             {
                 _logger.LogInformation(
                     "Knowledge extraction for {SourcePr}: notes branch '{Branch}' no longer exists on origin "
                         + "(already merged on an earlier sweep); nothing to extract.",
-                    sourcePrRef, branch);
+                    sourcePrRef,
+                    branch
+                );
                 return KnowledgeExtractionOutcome.Declined;
             }
 
-            var checkedOut = await _git
-                .RunAsync(["checkout", "-B", branch, $"origin/{branch}"], _repoRoot, cancellationToken)
+            var checkedOut = await _git.RunAsync(
+                    ["checkout", "-B", branch, $"origin/{branch}"],
+                    _repoRoot,
+                    cancellationToken
+                )
                 .ConfigureAwait(false);
             if (!checkedOut.Succeeded)
             {
@@ -97,7 +101,10 @@ internal sealed class KnowledgeExtractionCommitter
                 // onto the wrong branch. Bail before the agent ever runs.
                 _logger.LogWarning(
                     "Knowledge extraction commit for {SourcePr} could not check '{Branch}' out ({Stderr}); skipping.",
-                    sourcePrRef, branch, checkedOut.Stderr);
+                    sourcePrRef,
+                    branch,
+                    checkedOut.Stderr
+                );
                 return KnowledgeExtractionOutcome.Failed;
             }
 
@@ -117,18 +124,28 @@ internal sealed class KnowledgeExtractionCommitter
             {
                 _logger.LogWarning(
                     "Knowledge extraction commit for {SourcePr} on '{Branch}' could not stage {Dir} ({Stderr}); retrying on a later sweep.",
-                    sourcePrRef, branch, KnowledgeBaseDir, added.Stderr);
+                    sourcePrRef,
+                    branch,
+                    KnowledgeBaseDir,
+                    added.Stderr
+                );
                 return KnowledgeExtractionOutcome.Failed;
             }
 
-            var committed = await _git
-                .RunAsync(["commit", "-m", $"kb: extract from {sourcePrRef}"], _repoRoot, cancellationToken)
+            var committed = await _git.RunAsync(
+                    ["commit", "-m", $"kb: extract from {sourcePrRef}"],
+                    _repoRoot,
+                    cancellationToken
+                )
                 .ConfigureAwait(false);
             if (!committed.Succeeded)
             {
                 _logger.LogWarning(
                     "Knowledge extraction commit for {SourcePr} on '{Branch}' failed to commit ({Stderr}); retrying on a later sweep.",
-                    sourcePrRef, branch, committed.Stderr);
+                    sourcePrRef,
+                    branch,
+                    committed.Stderr
+                );
                 return KnowledgeExtractionOutcome.Failed;
             }
 
@@ -140,13 +157,18 @@ internal sealed class KnowledgeExtractionCommitter
                 // silently drop the entry while logging that it was carried.
                 _logger.LogWarning(
                     "Knowledge extraction commit for {SourcePr} could not push '{Branch}' after {Attempts} attempts; retrying on a later sweep.",
-                    sourcePrRef, branch, MaxPushAttempts);
+                    sourcePrRef,
+                    branch,
+                    MaxPushAttempts
+                );
                 return KnowledgeExtractionOutcome.Failed;
             }
 
             _logger.LogInformation(
                 "Knowledge extraction for {SourcePr} committed to notes branch '{Branch}' for the sweeper merge.",
-                sourcePrRef, branch);
+                sourcePrRef,
+                branch
+            );
             return KnowledgeExtractionOutcome.Wrote;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -154,7 +176,9 @@ internal sealed class KnowledgeExtractionCommitter
             _logger.LogWarning(
                 ex,
                 "Knowledge extraction commit for {SourcePr} on '{Branch}' failed; it will be retried on a later sweep.",
-                sourcePrRef, branch);
+                sourcePrRef,
+                branch
+            );
             return KnowledgeExtractionOutcome.Failed;
         }
     }
@@ -193,7 +217,8 @@ internal sealed class KnowledgeExtractionCommitter
                     "Knowledge extraction push for '{Branch}' could not rebase onto origin/{Branch} ({Stderr}); aborting retries.",
                     branch,
                     branch,
-                    rebased.Stderr);
+                    rebased.Stderr
+                );
                 break;
             }
         }

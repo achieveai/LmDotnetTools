@@ -201,7 +201,7 @@ public class GatewayWorkspaceCatalogIdentityTests
             CanonicalBaseUrl = identity.CanonicalBaseUrl,
             AppId = identity.AppId,
             SchemaVersion = identity.SchemaVersion,
-            DerivationVersion = identity.DerivationVersion
+            DerivationVersion = identity.DerivationVersion,
         };
 
         var act = () => identity.ValidateManifest(manifest);
@@ -221,7 +221,7 @@ public class GatewayWorkspaceCatalogIdentityTests
             CanonicalBaseUrl = "https://different.com",
             AppId = identity.AppId,
             SchemaVersion = identity.SchemaVersion,
-            DerivationVersion = identity.DerivationVersion
+            DerivationVersion = identity.DerivationVersion,
         };
 
         var act = () => identity.ValidateManifest(manifest);
@@ -241,7 +241,7 @@ public class GatewayWorkspaceCatalogIdentityTests
             CanonicalBaseUrl = identity.CanonicalBaseUrl,
             AppId = "wrongapp",
             SchemaVersion = identity.SchemaVersion,
-            DerivationVersion = identity.DerivationVersion
+            DerivationVersion = identity.DerivationVersion,
         };
 
         var act = () => identity.ValidateManifest(manifest);
@@ -261,7 +261,7 @@ public class GatewayWorkspaceCatalogIdentityTests
             CanonicalBaseUrl = identity.CanonicalBaseUrl,
             AppId = identity.AppId,
             SchemaVersion = 99,
-            DerivationVersion = identity.DerivationVersion
+            DerivationVersion = identity.DerivationVersion,
         };
 
         var act = () => identity.ValidateManifest(manifest);
@@ -281,7 +281,7 @@ public class GatewayWorkspaceCatalogIdentityTests
             CanonicalBaseUrl = identity.CanonicalBaseUrl,
             AppId = identity.AppId,
             SchemaVersion = identity.SchemaVersion,
-            DerivationVersion = 99
+            DerivationVersion = 99,
         };
 
         var act = () => identity.ValidateManifest(manifest);

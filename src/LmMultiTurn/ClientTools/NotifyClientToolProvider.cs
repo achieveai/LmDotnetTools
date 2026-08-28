@@ -45,42 +45,52 @@ public sealed class NotifyClientToolProvider : IFunctionProvider
         };
     }
 
-    private static FunctionContract BuildContract() => new()
-    {
-        Name = ToolName,
-        Description =
-            "Push an ad-hoc, non-blocking notification to the client (e.g. progress update, heads-up "
-            + "about something noteworthy). Unlike AskUserQuestion, this does NOT pause the run — it "
-            + "returns immediately and the conversation continues.",
-        Parameters =
-        [
-            new FunctionParameterContract
-            {
-                Name = "message",
-                Description = "The notification text shown to the client.",
-                ParameterType = new JsonSchemaObject { Type = new("string") },
-                IsRequired = true,
-            },
-            new FunctionParameterContract
-            {
-                Name = "label",
-                Description = "Optional short label/title for the notification.",
-                ParameterType = new JsonSchemaObject { Type = new("string") },
-                IsRequired = false,
-            },
-        ],
-    };
+    private static FunctionContract BuildContract() =>
+        new()
+        {
+            Name = ToolName,
+            Description =
+                "Push an ad-hoc, non-blocking notification to the client (e.g. progress update, heads-up "
+                + "about something noteworthy). Unlike AskUserQuestion, this does NOT pause the run — it "
+                + "returns immediately and the conversation continues.",
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "message",
+                    Description = "The notification text shown to the client.",
+                    ParameterType = new JsonSchemaObject { Type = new("string") },
+                    IsRequired = true,
+                },
+                new FunctionParameterContract
+                {
+                    Name = "label",
+                    Description = "Optional short label/title for the notification.",
+                    ParameterType = new JsonSchemaObject { Type = new("string") },
+                    IsRequired = false,
+                },
+            ],
+        };
 
     private async Task<ToolHandlerResult> HandleAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (!TryParseArgs(argsJson, out var message, out var label, out var errorCode, out var errorMessage))
         {
             return ToolHandlerResult.FromError(
-                JsonSerializer.Serialize(new { status = "rejected", reason = errorCode, message = errorMessage }),
-                errorCode);
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        status = "rejected",
+                        reason = errorCode,
+                        message = errorMessage,
+                    }
+                ),
+                errorCode
+            );
         }
 
         var notify = NotifyMessage.Create(
@@ -88,7 +98,8 @@ public sealed class NotifyClientToolProvider : IFunctionProvider
             detail: message,
             sourceToolName: ToolName,
             sourceToolCallId: context.ToolCallId,
-            label: label);
+            label: label
+        );
 
         await _deliver(notify, cancellationToken);
 
@@ -100,7 +111,8 @@ public sealed class NotifyClientToolProvider : IFunctionProvider
         out string? message,
         out string? label,
         out string? errorCode,
-        out string? errorMessage)
+        out string? errorMessage
+    )
     {
         message = null;
         label = null;
@@ -136,10 +148,10 @@ public sealed class NotifyClientToolProvider : IFunctionProvider
                 return false;
             }
 
-            message = root.TryGetProperty("message", out var messageEl)
-                && messageEl.ValueKind == JsonValueKind.String
-                ? messageEl.GetString()
-                : null;
+            message =
+                root.TryGetProperty("message", out var messageEl) && messageEl.ValueKind == JsonValueKind.String
+                    ? messageEl.GetString()
+                    : null;
             if (string.IsNullOrWhiteSpace(message))
             {
                 errorCode = "missing_message";
@@ -147,9 +159,10 @@ public sealed class NotifyClientToolProvider : IFunctionProvider
                 return false;
             }
 
-            label = root.TryGetProperty("label", out var labelEl) && labelEl.ValueKind == JsonValueKind.String
-                ? labelEl.GetString()
-                : null;
+            label =
+                root.TryGetProperty("label", out var labelEl) && labelEl.ValueKind == JsonValueKind.String
+                    ? labelEl.GetString()
+                    : null;
             return true;
         }
     }

@@ -34,12 +34,10 @@ public class SubAgentLineagePropagationTests
         var manager = CreateManager(
             CreateBundle(publisher),
             parentThreadId: "parent-thread",
-            parentRunId: "parent-run-7");
+            parentRunId: "parent-run-7"
+        );
 
-        _ = await manager.SpawnAsync(
-            TemplateName,
-            "do some work",
-            spawningToolCallId: "call-abc");
+        _ = await manager.SpawnAsync(TemplateName, "do some work", spawningToolCallId: "call-abc");
 
         var started = publisher.CorrelationsFor(LifecycleEventTypes.RunStarted);
         started.Should().NotBeEmpty("the spawned loop starts a run of its own");
@@ -69,9 +67,7 @@ public class SubAgentLineagePropagationTests
             .Distinct()
             .ToList();
 
-        subAgentIds
-            .Should()
-            .ContainSingle("a subscriber groups a sub-agent's whole event stream by that one id");
+        subAgentIds.Should().ContainSingle("a subscriber groups a sub-agent's whole event stream by that one id");
     }
 
     [Fact]
@@ -83,7 +79,8 @@ public class SubAgentLineagePropagationTests
         var manager = CreateManager(
             CreateBundle(publisher),
             parentThreadId: "parent-thread",
-            parentRunId: "parent-run-9");
+            parentRunId: "parent-run-9"
+        );
 
         _ = await manager.SpawnAsync(TemplateName, "do some work");
 
@@ -105,13 +102,17 @@ public class SubAgentLineagePropagationTests
         IStreamingAgent Factory()
         {
             var agent = new Mock<IStreamingAgent>();
-            _ = agent.Setup(a => a.GenerateReplyStreamingAsync(
-                    It.IsAny<IEnumerable<IMessage>>(),
-                    It.IsAny<GenerateReplyOptions?>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns(() => Task.FromResult(Interlocked.Increment(ref calls) == 1
-                    ? WaitThenReply(gate.Task)
-                    : Reply()));
+            _ = agent
+                .Setup(a =>
+                    a.GenerateReplyStreamingAsync(
+                        It.IsAny<IEnumerable<IMessage>>(),
+                        It.IsAny<GenerateReplyOptions?>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .Returns(() =>
+                    Task.FromResult(Interlocked.Increment(ref calls) == 1 ? WaitThenReply(gate.Task) : Reply())
+                );
             return agent.Object;
         }
 
@@ -129,21 +130,20 @@ public class SubAgentLineagePropagationTests
             new Dictionary<string, ToolHandler>(),
             options,
             new MutableSubAgentTemplateSource(options.Templates),
-            lifecycleServices: CreateBundle(publisher));
+            lifecycleServices: CreateBundle(publisher)
+        );
 
         _ = await manager.SpawnAsync(TemplateName, "block", runInBackground: true);
-        _ = await manager.SpawnAsync(
-            TemplateName,
-            "queued",
-            runInBackground: true,
-            spawningToolCallId: "call-queued");
+        _ = await manager.SpawnAsync(TemplateName, "queued", runInBackground: true, spawningToolCallId: "call-queued");
         _ = parent.SetupGet(a => a.CurrentRunId).Returns("parent-run-later");
         gate.SetResult();
 
         await WaitUntilAsync(
             () => publisher.CorrelationsFor(LifecycleEventTypes.RunStarted).Count >= 2,
-            TimeSpan.FromSeconds(10));
-        var queued = publisher.CorrelationsFor(LifecycleEventTypes.RunStarted)
+            TimeSpan.FromSeconds(10)
+        );
+        var queued = publisher
+            .CorrelationsFor(LifecycleEventTypes.RunStarted)
             .Single(c => c.SpawningToolCallId == "call-queued");
         queued.ParentRunId.Should().Be("parent-run-original");
     }
@@ -165,7 +165,8 @@ public class SubAgentLineagePropagationTests
             TemplateName,
             "do some work",
             name: "worker",
-            spawningToolCallId: "call-original");
+            spawningToolCallId: "call-original"
+        );
         _ = spawned.Should().NotBeNull();
 
         // The spawning run is over; the parent has moved on to another one.
@@ -243,7 +244,8 @@ public class SubAgentLineagePropagationTests
     private static SubAgentManager CreateManager(
         MultiTurnLifecycleServices? lifecycleServices,
         string parentThreadId = "parent-thread",
-        string? parentRunId = "parent-run")
+        string? parentRunId = "parent-run"
+    )
     {
         var parent = new Mock<IMultiTurnAgent>();
         _ = parent.SetupGet(a => a.ThreadId).Returns(parentThreadId);
@@ -253,7 +255,8 @@ public class SubAgentLineagePropagationTests
 
     private static SubAgentManager CreateManager(
         MultiTurnLifecycleServices? lifecycleServices,
-        Mock<IMultiTurnAgent> parent)
+        Mock<IMultiTurnAgent> parent
+    )
     {
         var template = new SubAgentTemplate
         {
@@ -271,7 +274,8 @@ public class SubAgentLineagePropagationTests
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
             source: new MutableSubAgentTemplateSource(options.Templates),
-            lifecycleServices: lifecycleServices);
+            lifecycleServices: lifecycleServices
+        );
     }
 
     /// <summary>A provider that answers once with plain text, so the child's run reaches a terminal state.</summary>
@@ -279,10 +283,13 @@ public class SubAgentLineagePropagationTests
     {
         var agent = new Mock<IStreamingAgent>();
         _ = agent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }]));
         return agent.Object;
     }

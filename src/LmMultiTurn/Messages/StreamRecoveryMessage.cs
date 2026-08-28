@@ -52,7 +52,8 @@ public sealed record StreamRecoveryMessage(
     [property: JsonPropertyName("threadId")] string? ThreadId,
     [property: JsonPropertyName("runId")] string? RunId,
     [property: JsonPropertyName("generationId")] string? GenerationId,
-    [property: JsonPropertyName("reason")] StreamRecoveryReason Reason) : IMessage
+    [property: JsonPropertyName("reason")] StreamRecoveryReason Reason
+) : IMessage
 {
     // IMessage-only members: not part of this message's content-free wire contract (see class
     // summary). JsonIgnore keeps them out of serialization regardless of which JsonSerializerOptions

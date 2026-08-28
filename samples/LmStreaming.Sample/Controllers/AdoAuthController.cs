@@ -14,9 +14,7 @@ namespace LmStreaming.Sample.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/auth/ado")]
-public sealed class AdoAuthController(
-    AdoOAuthProvider provider,
-    ILogger<AdoAuthController> logger) : ControllerBase
+public sealed class AdoAuthController(AdoOAuthProvider provider, ILogger<AdoAuthController> logger) : ControllerBase
 {
     /// <summary>
     /// Opens the browser to start the interactive sign-in and returns the challenge (the

@@ -28,11 +28,7 @@ public sealed class WebSocketTestClient : IAsyncDisposable
     {
         var json = JsonSerializer.Serialize(new { Message = text });
         var bytes = Encoding.UTF8.GetBytes(json);
-        return _socket.SendAsync(
-            new ArraySegment<byte>(bytes),
-            WebSocketMessageType.Text,
-            endOfMessage: true,
-            ct);
+        return _socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, endOfMessage: true, ct);
     }
 
     /// <summary>
@@ -44,9 +40,7 @@ public sealed class WebSocketTestClient : IAsyncDisposable
     /// implementation also disposes collected documents if an unexpected exception escapes
     /// the collection loop (timeout, malformed JSON, transport fault, ...).
     /// </summary>
-    public async Task<FrameCollection> CollectUntilDoneAsync(
-        TimeSpan overallTimeout,
-        CancellationToken ct = default)
+    public async Task<FrameCollection> CollectUntilDoneAsync(TimeSpan overallTimeout, CancellationToken ct = default)
     {
         using var timeoutCts = new CancellationTokenSource(overallTimeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
@@ -64,7 +58,8 @@ public sealed class WebSocketTestClient : IAsyncDisposable
                 WebSocketReceiveResult result;
                 do
                 {
-                    result = await _socket.ReceiveAsync(new ArraySegment<byte>(buffer), linked.Token)
+                    result = await _socket
+                        .ReceiveAsync(new ArraySegment<byte>(buffer), linked.Token)
                         .ConfigureAwait(false);
 
                     if (result.MessageType == WebSocketMessageType.Close)
@@ -96,7 +91,8 @@ public sealed class WebSocketTestClient : IAsyncDisposable
         {
             DisposeAll(frames);
             throw new TimeoutException(
-                $"Did not observe 'done' frame within {overallTimeout}. Collected {frames.Count} frame(s).");
+                $"Did not observe 'done' frame within {overallTimeout}. Collected {frames.Count} frame(s)."
+            );
         }
         catch
         {
@@ -118,7 +114,8 @@ public sealed class WebSocketTestClient : IAsyncDisposable
     public async Task<JsonDocument> WaitForFrameAsync(
         Func<JsonDocument, bool> predicate,
         TimeSpan timeout,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(predicate);
 
@@ -138,13 +135,15 @@ public sealed class WebSocketTestClient : IAsyncDisposable
                 WebSocketReceiveResult result;
                 do
                 {
-                    result = await _socket.ReceiveAsync(new ArraySegment<byte>(buffer), linked.Token)
+                    result = await _socket
+                        .ReceiveAsync(new ArraySegment<byte>(buffer), linked.Token)
                         .ConfigureAwait(false);
 
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
                         throw new InvalidOperationException(
-                            $"Socket closed after {seen} frame(s) without a frame matching the predicate.");
+                            $"Socket closed after {seen} frame(s) without a frame matching the predicate."
+                        );
                     }
 
                     if (result.MessageType == WebSocketMessageType.Text && result.Count > 0)
@@ -171,12 +170,12 @@ public sealed class WebSocketTestClient : IAsyncDisposable
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
-            throw new TimeoutException(
-                $"No frame matched the predicate within {timeout}. Observed {seen} frame(s).");
+            throw new TimeoutException($"No frame matched the predicate within {timeout}. Observed {seen} frame(s).");
         }
 
         throw new InvalidOperationException(
-            $"Socket left the Open state after {seen} frame(s) without a frame matching the predicate.");
+            $"Socket left the Open state after {seen} frame(s) without a frame matching the predicate."
+        );
     }
 
     private static void DisposeAll(List<JsonDocument> frames)
@@ -210,8 +209,7 @@ public sealed class WebSocketTestClient : IAsyncDisposable
     {
         if (_socket.State == WebSocketState.Open)
         {
-            await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "test done", ct)
-                .ConfigureAwait(false);
+            await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "test done", ct).ConfigureAwait(false);
         }
     }
 

@@ -26,19 +26,23 @@ public sealed class IPrProviderContractTests
     public async Task GetPrState_is_callable_through_the_interface()
     {
         (await Provider(PrLifecycle.Open).GetPrStateAsync(Repo, "42", CancellationToken.None))
-            .Should().Be(PrLifecycle.Open);
+            .Should()
+            .Be(PrLifecycle.Open);
         (await Provider(PrLifecycle.Merged).GetPrStateAsync(Repo, "42", CancellationToken.None))
-            .Should().Be(PrLifecycle.Merged);
+            .Should()
+            .Be(PrLifecycle.Merged);
         (await Provider(PrLifecycle.Abandoned).GetPrStateAsync(Repo, "42", CancellationToken.None))
-            .Should().Be(PrLifecycle.Abandoned);
+            .Should()
+            .Be(PrLifecycle.Abandoned);
     }
 
-    private static OpaqueCursor Cursor() => new()
-    {
-        Provider = "github",
-        Scope = "acme/widgets:open-prs",
-        CursorVersion = PrPollingService.CursorVersion,
-        CursorPayload = "{}",
-        HighWaterMark = null,
-    };
+    private static OpaqueCursor Cursor() =>
+        new()
+        {
+            Provider = "github",
+            Scope = "acme/widgets:open-prs",
+            CursorVersion = PrPollingService.CursorVersion,
+            CursorPayload = "{}",
+            HighWaterMark = null,
+        };
 }

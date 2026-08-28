@@ -39,11 +39,13 @@ public sealed class GitHubClonePrerequisitesProbeTests
                 StubBaseUrl,
                 workspaceBase.FullName,
                 callerCts.Token,
-                clientFactory: options => new SandboxClient(options, transport));
+                clientFactory: options => new SandboxClient(options, transport)
+            );
 
             var delete = stub.Observations.Should().ContainSingle(o => o.Method == "DELETE").Subject;
             delete.CallerTokenCancelled.Should().BeTrue("the stub cancels the caller's token as the DELETE arrives");
-            delete.RequestTokenCancelled.Should()
+            delete
+                .RequestTokenCancelled.Should()
                 .BeFalse("the teardown must run under its own bounded token, not the caller's");
 
             // The probe leaf is also the caller's directory to lose: cleanup must leave nothing behind.
@@ -71,11 +73,13 @@ public sealed class GitHubClonePrerequisitesProbeTests
                 StubBaseUrl,
                 workspaceBase.FullName,
                 CancellationToken.None,
-                clientFactory: _ => throw new InvalidOperationException(Payload));
+                clientFactory: _ => throw new InvalidOperationException(Payload)
+            );
 
             result.Verified.Should().BeFalse();
             result.Reason.Should().NotContain("SECRET-PAYLOAD").And.NotContain("sk-live-7f3a9c");
-            result.Reason.Should()
+            result
+                .Reason.Should()
                 .Contain(nameof(InvalidOperationException), "the category still has to be actionable");
         }
         finally
@@ -91,8 +95,7 @@ public sealed class GitHubClonePrerequisitesProbeTests
     /// </summary>
     private sealed class ProbeGatewayStub(CancellationTokenSource callerCts) : HttpMessageHandler
     {
-        private const string CreateResponse =
-            """
+        private const string CreateResponse = """
             { "session_id": "probe-sess-1", "container_id": "probe-c-1",
               "volumes": { "workspace": { "container_path": "/workspace", "read_only": false } } }
             """;
@@ -112,14 +115,12 @@ public sealed class GitHubClonePrerequisitesProbeTests
             }
         }
 
-        public readonly record struct Observation(
-            string Method,
-            bool CallerTokenCancelled,
-            bool RequestTokenCancelled);
+        public readonly record struct Observation(string Method, bool CallerTokenCancelled, bool RequestTokenCancelled);
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             if (request.Method == HttpMethod.Delete)
             {
@@ -132,7 +133,9 @@ public sealed class GitHubClonePrerequisitesProbeTests
                     new Observation(
                         request.Method.Method,
                         _callerCts.IsCancellationRequested,
-                        cancellationToken.IsCancellationRequested));
+                        cancellationToken.IsCancellationRequested
+                    )
+                );
             }
 
             var body = request.Method == HttpMethod.Post ? CreateResponse : "{}";
@@ -140,7 +143,8 @@ public sealed class GitHubClonePrerequisitesProbeTests
                 new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(body, Encoding.UTF8, "application/json"),
-                });
+                }
+            );
         }
     }
 }

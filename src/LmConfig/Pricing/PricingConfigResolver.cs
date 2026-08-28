@@ -22,7 +22,8 @@ public sealed class PricingConfigResolver : IPricingResolver
     public PricingConfigResolver(
         IReadOnlyDictionary<string, PricingConfig> pricingByModel,
         string? source = null,
-        string? version = null)
+        string? version = null
+    )
     {
         ArgumentNullException.ThrowIfNull(pricingByModel);
         _pricingByModel = pricingByModel;
@@ -62,7 +63,8 @@ public sealed class PricingConfigResolver : IPricingResolver
     public static PricingConfigResolver FromAppConfig(
         AppConfig appConfig,
         string? source = null,
-        string? version = null)
+        string? version = null
+    )
     {
         ArgumentNullException.ThrowIfNull(appConfig);
 
@@ -127,7 +129,8 @@ public sealed class PricingConfigResolver : IPricingResolver
 
             var first = offered[0];
             var agrees = offered.All(p =>
-                p.PromptPerMillion == first.PromptPerMillion && p.CompletionPerMillion == first.CompletionPerMillion);
+                p.PromptPerMillion == first.PromptPerMillion && p.CompletionPerMillion == first.CompletionPerMillion
+            );
 
             if (agrees)
             {

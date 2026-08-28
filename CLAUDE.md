@@ -23,7 +23,7 @@ dotnet test tests/LmCore.Tests/LmCore.Tests.csproj
 - `McpServers/` - MCP server implementations
 
 ## Coding Conventions
-- Use CSharpier for code formatting (`.csharpierrc.json`)
+- Use CSharpier for code formatting — config in `.csharpierrc`, version pinned in `.config/dotnet-tools.json`. It is the formatting authority: the pre-commit hook checks staged `.cs` files and CI runs `dotnet csharpier check .` over the whole tree. Run `dotnet csharpier format .` to fix. (Roslyn's own formatter, IDE0055, is off because its wrapping disagrees with CSharpier's.)
 - Follow `.editorconfig` rules for style guidelines
 - Do not use scripts to fix build errors/warnings - use autofixers or manually fix
 - When using Playwright, ALWAYS use `Task` tool to avoid polluting primary context

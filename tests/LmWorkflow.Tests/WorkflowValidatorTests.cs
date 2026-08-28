@@ -294,9 +294,7 @@ public class WorkflowValidatorTests
 
         var result = Validate(json);
         result.IsValid.Should().BeFalse();
-        result
-            .Errors.Should()
-            .Contain(e => e.Contains("unknown condition op") && e.Contains("between"));
+        result.Errors.Should().Contain(e => e.Contains("unknown condition op") && e.Contains("between"));
     }
 
     [Fact]
@@ -476,9 +474,7 @@ public class WorkflowValidatorTests
 
         var result = Validate(json);
         result.IsValid.Should().BeFalse();
-        result
-            .Errors.Should()
-            .Contain(e => e.Contains("reduce") && e.Contains("not supported in V1"));
+        result.Errors.Should().Contain(e => e.Contains("reduce") && e.Contains("not supported in V1"));
     }
 
     [Fact]
@@ -500,9 +496,7 @@ public class WorkflowValidatorTests
 
         var result = Validate(json);
         result.IsValid.Should().BeFalse();
-        result
-            .Errors.Should()
-            .Contain(e => e.Contains("tasksMode 'runtime'") && e.Contains("not supported in V1"));
+        result.Errors.Should().Contain(e => e.Contains("tasksMode 'runtime'") && e.Contains("not supported in V1"));
     }
 
     [Fact]
@@ -524,9 +518,7 @@ public class WorkflowValidatorTests
 
         var result = Validate(json);
         result.IsValid.Should().BeFalse();
-        result
-            .Errors.Should()
-            .Contain(e => e.Contains("quorum") && e.Contains("not supported in V1"));
+        result.Errors.Should().Contain(e => e.Contains("quorum") && e.Contains("not supported in V1"));
     }
 
     [Fact]
@@ -550,9 +542,7 @@ public class WorkflowValidatorTests
 
         var result = Validate(json);
         result.IsValid.Should().BeFalse();
-        result
-            .Errors.Should()
-            .Contain(e => e.Contains("upsert") && e.Contains("not supported in V1"));
+        result.Errors.Should().Contain(e => e.Contains("upsert") && e.Contains("not supported in V1"));
     }
 
     [Fact]
@@ -574,10 +564,7 @@ public class WorkflowValidatorTests
             }
             """;
 
-        AssertInvalid(
-            json,
-            "Task 'a' sets parallel=true, which is not supported in V1 (forEach runs sequentially)."
-        );
+        AssertInvalid(json, "Task 'a' sets parallel=true, which is not supported in V1 (forEach runs sequentially).");
     }
 
     [Fact]

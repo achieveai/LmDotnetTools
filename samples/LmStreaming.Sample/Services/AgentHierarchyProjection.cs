@@ -43,7 +43,8 @@ public static class AgentHierarchyProjection
         IReadOnlyList<SubAgentSummary> tabs,
         IReadOnlyList<AgentDirectoryEntry> nodes,
         string? viewerAgentId,
-        TranscriptVisibilityMode visibility)
+        TranscriptVisibilityMode visibility
+    )
     {
         ArgumentNullException.ThrowIfNull(tabs);
         ArgumentNullException.ThrowIfNull(nodes);
@@ -72,11 +73,10 @@ public static class AgentHierarchyProjection
             // placeholder: prefer building the row from it entirely, rather than layering the node's
             // hierarchy metadata onto a tab whose own Name/Template WithCollaboration deliberately never
             // touches (so the placeholder's blanks would otherwise survive into the presented row).
-            var row = node is null
-                ? tab
-                : IsUnresolvedPlaceholder(tab)
-                    ? SubAgentSummary.FromDirectoryEntry(node)
-                    : tab.WithCollaboration(node);
+            var row =
+                node is null ? tab
+                : IsUnresolvedPlaceholder(tab) ? SubAgentSummary.FromDirectoryEntry(node)
+                : tab.WithCollaboration(node);
 
             // A tab with no live node may still describe a collaboration agent: the durable index keeps
             // the hierarchy metadata, so a retained row can be authorized from its own persisted shape.
@@ -114,7 +114,8 @@ public static class AgentHierarchyProjection
     /// <exception cref="ArgumentNullException"><paramref name="tabs"/> or <paramref name="nodes"/> is null.</exception>
     public static IReadOnlyList<SubAgentSummary> UnmatchedDescendantRows(
         IReadOnlyList<SubAgentSummary> tabs,
-        IReadOnlyList<AgentDirectoryEntry> nodes)
+        IReadOnlyList<AgentDirectoryEntry> nodes
+    )
     {
         ArgumentNullException.ThrowIfNull(tabs);
         ArgumentNullException.ThrowIfNull(nodes);
@@ -157,7 +158,8 @@ public static class AgentHierarchyProjection
     /// <exception cref="ArgumentNullException"><paramref name="tabs"/> or <paramref name="nodes"/> is null.</exception>
     public static IReadOnlyList<SubAgentSummary> Enrich(
         IReadOnlyList<SubAgentSummary> tabs,
-        IReadOnlyList<AgentDirectoryEntry> nodes)
+        IReadOnlyList<AgentDirectoryEntry> nodes
+    )
     {
         ArgumentNullException.ThrowIfNull(tabs);
         ArgumentNullException.ThrowIfNull(nodes);
@@ -168,8 +170,12 @@ public static class AgentHierarchyProjection
             byAgentId[node.AgentId] = node;
         }
 
-        return [.. tabs.Select(tab =>
-            byAgentId.TryGetValue(NodeIdFor(tab), out var node) ? tab.WithCollaboration(node) : tab)];
+        return
+        [
+            .. tabs.Select(tab =>
+                byAgentId.TryGetValue(NodeIdFor(tab), out var node) ? tab.WithCollaboration(node) : tab
+            ),
+        ];
     }
 
     /// <summary>
@@ -183,7 +189,8 @@ public static class AgentHierarchyProjection
 
         return rows.FirstOrDefault(row =>
             string.Equals(row.AgentId, agentId, StringComparison.Ordinal)
-            || string.Equals(row.AgentNodeId, agentId, StringComparison.Ordinal));
+            || string.Equals(row.AgentNodeId, agentId, StringComparison.Ordinal)
+        );
     }
 
     /// <summary>
@@ -214,7 +221,8 @@ public static class AgentHierarchyProjection
         SubAgentSummary row,
         AgentDirectoryEntry? target,
         AgentDirectoryEntry? viewer,
-        TranscriptVisibilityMode visibility)
+        TranscriptVisibilityMode visibility
+    )
     {
         if (target is null)
         {
@@ -223,8 +231,7 @@ public static class AgentHierarchyProjection
 
         return row with
         {
-            IsCurrent = viewer is not null
-                && string.Equals(target.AgentId, viewer.AgentId, StringComparison.Ordinal),
+            IsCurrent = viewer is not null && string.Equals(target.AgentId, viewer.AgentId, StringComparison.Ordinal),
             IsReadable = TranscriptVisibilityPolicy.Evaluate(viewer, target, visibility).IsAllowed,
         };
     }

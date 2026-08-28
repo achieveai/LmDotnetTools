@@ -38,18 +38,16 @@ public class WorkflowControllerToolRestrictionTests
 
         handle
             .Loop.RegisteredToolNames.Should()
-            .BeEquivalentTo(
-                [
-                    "GetWorkflow",
-                    "SetCurrentNode",
-                    "SetState",
-                    "SetNotes",
-                    "Agent",
-                    "SendMessage",
-                    "CheckAgent",
-                    "WaitAgent",
-                ]
-            );
+            .BeEquivalentTo([
+                "GetWorkflow",
+                "SetCurrentNode",
+                "SetState",
+                "SetNotes",
+                "Agent",
+                "SendMessage",
+                "CheckAgent",
+                "WaitAgent",
+            ]);
     }
 
     [Fact]
@@ -59,11 +57,19 @@ public class WorkflowControllerToolRestrictionTests
         // controller run via SubAgentOptions.ExternalInheritableTools, and the controller's delegate
         // sub-agents inherit them — while the controller's own workflow-state tools stay excluded.
         var external = new InheritableToolSnapshot(
-            [new FunctionContract { Name = "Foo", Description = "Foo", Parameters = [] }],
+            [
+                new FunctionContract
+                {
+                    Name = "Foo",
+                    Description = "Foo",
+                    Parameters = [],
+                },
+            ],
             new Dictionary<string, ToolHandler>(StringComparer.Ordinal)
             {
                 ["Foo"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")),
-            });
+            }
+        );
 
         var options = new SubAgentOptions
         {
@@ -76,11 +82,7 @@ public class WorkflowControllerToolRestrictionTests
                     EnabledTools = null, // transparent delegate.
                 },
             },
-            NonInheritedToolNames =
-            [
-                .. WorkflowToolProvider.AllToolNames,
-                .. StartWorkflowToolProvider.ToolNames,
-            ],
+            NonInheritedToolNames = [.. WorkflowToolProvider.AllToolNames, .. StartWorkflowToolProvider.ToolNames],
             ExternalInheritableTools = external,
         };
 
@@ -99,8 +101,10 @@ public class WorkflowControllerToolRestrictionTests
         // Delegates inherit the launching conversation's "Foo"...
         snapshot.Contracts.Select(c => c.Name).Should().Contain("Foo");
         // ...but NEVER the controller's own workflow-state tools.
-        snapshot.Contracts.Select(c => c.Name)
-            .Should().NotContain(["GetWorkflow", "SetCurrentNode", "SetState", "SetNotes"]);
+        snapshot
+            .Contracts.Select(c => c.Name)
+            .Should()
+            .NotContain(["GetWorkflow", "SetCurrentNode", "SetState", "SetNotes"]);
     }
 
     [Fact]
@@ -124,10 +128,7 @@ public class WorkflowControllerToolRestrictionTests
         };
 
         var act = () => WorkflowManager.AssertRestrictedControllerTemplates(options);
-        act.Should()
-            .Throw<ArgumentException>()
-            .WithMessage("*NonInheritedToolNames*")
-            .WithMessage("*SetState*");
+        act.Should().Throw<ArgumentException>().WithMessage("*NonInheritedToolNames*").WithMessage("*SetState*");
     }
 
     [Fact]
@@ -144,11 +145,7 @@ public class WorkflowControllerToolRestrictionTests
                     EnabledTools = null, // transparent delegates inherit everything inheritable.
                 },
             },
-            NonInheritedToolNames =
-            [
-                .. WorkflowToolProvider.AllToolNames,
-                .. StartWorkflowToolProvider.ToolNames,
-            ],
+            NonInheritedToolNames = [.. WorkflowToolProvider.AllToolNames, .. StartWorkflowToolProvider.ToolNames],
         };
 
         var act = () => WorkflowManager.AssertRestrictedControllerTemplates(options);

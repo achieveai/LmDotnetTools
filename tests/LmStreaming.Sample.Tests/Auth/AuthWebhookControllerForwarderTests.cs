@@ -35,10 +35,8 @@ public sealed class AuthWebhookControllerForwarderTests
 
         public Task<OAuthAccessToken> GetAccessTokenAsync(
             IReadOnlyList<string>? scopes = null,
-            CancellationToken ct = default) =>
-            _token is not null
-                ? Task.FromResult(_token)
-                : throw new InvalidOperationException("not signed in");
+            CancellationToken ct = default
+        ) => _token is not null ? Task.FromResult(_token) : throw new InvalidOperationException("not signed in");
     }
 
     private sealed class StubResolutionPolicy(OAuthAccessToken? result) : IAuthResolutionPolicy
@@ -46,14 +44,20 @@ public sealed class AuthWebhookControllerForwarderTests
         public Task<OAuthAccessToken?> ResolveAsync(
             IOAuthTokenProvider provider,
             IReadOnlyList<string>? scopes,
-            CancellationToken cancellationToken) => Task.FromResult(result);
+            CancellationToken cancellationToken
+        ) => Task.FromResult(result);
     }
 
     private sealed class RecordingForwarder : IAuthWebhookForwarder
     {
         public List<(string SessionId, string ProviderId, string SigninUrl, string Reason)> RequiredCalls { get; } = [];
         public List<(AuthWebhookTarget? Target, string SessionId, string ProviderId)> CompletedCalls { get; } = [];
-        public List<(AuthWebhookTarget? Target, string SessionId, string ProviderId, string Reason)> DeniedCalls { get; } = [];
+        public List<(
+            AuthWebhookTarget? Target,
+            string SessionId,
+            string ProviderId,
+            string Reason
+        )> DeniedCalls { get; } = [];
 
         public AuthWebhookTarget? TargetToReturn { get; set; }
 
@@ -62,19 +66,31 @@ public sealed class AuthWebhookControllerForwarderTests
             string providerId,
             string signinUrl,
             string reason,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             RequiredCalls.Add((sessionId, providerId, signinUrl, reason));
             return Task.FromResult(TargetToReturn);
         }
 
-        public Task NotifyAuthCompletedAsync(AuthWebhookTarget? target, string sessionId, string providerId, CancellationToken ct)
+        public Task NotifyAuthCompletedAsync(
+            AuthWebhookTarget? target,
+            string sessionId,
+            string providerId,
+            CancellationToken ct
+        )
         {
             CompletedCalls.Add((target, sessionId, providerId));
             return Task.CompletedTask;
         }
 
-        public Task NotifyAuthDeniedAsync(AuthWebhookTarget? target, string sessionId, string providerId, string reason, CancellationToken ct)
+        public Task NotifyAuthDeniedAsync(
+            AuthWebhookTarget? target,
+            string sessionId,
+            string providerId,
+            string reason,
+            CancellationToken ct
+        )
         {
             DeniedCalls.Add((target, sessionId, providerId, reason));
             return Task.CompletedTask;
@@ -88,24 +104,36 @@ public sealed class AuthWebhookControllerForwarderTests
             string providerId,
             string signinUrl,
             string reason,
-            CancellationToken ct) => throw new InvalidOperationException("forwarder unreachable");
+            CancellationToken ct
+        ) => throw new InvalidOperationException("forwarder unreachable");
 
-        public Task NotifyAuthCompletedAsync(AuthWebhookTarget? target, string sessionId, string providerId, CancellationToken ct) =>
-            throw new InvalidOperationException("forwarder unreachable");
+        public Task NotifyAuthCompletedAsync(
+            AuthWebhookTarget? target,
+            string sessionId,
+            string providerId,
+            CancellationToken ct
+        ) => throw new InvalidOperationException("forwarder unreachable");
 
-        public Task NotifyAuthDeniedAsync(AuthWebhookTarget? target, string sessionId, string providerId, string reason, CancellationToken ct) =>
-            throw new InvalidOperationException("forwarder unreachable");
+        public Task NotifyAuthDeniedAsync(
+            AuthWebhookTarget? target,
+            string sessionId,
+            string providerId,
+            string reason,
+            CancellationToken ct
+        ) => throw new InvalidOperationException("forwarder unreachable");
     }
 
     private static AuthWebhookController CreateController(
         IOAuthTokenProvider provider,
         IAuthResolutionPolicy policy,
-        IAuthWebhookForwarder forwarder)
+        IAuthWebhookForwarder forwarder
+    )
     {
         var authOptions = new AuthOptions();
         var sessionSecretStore = new SessionSecretStore(
             Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-            NullLogger<SessionSecretStore>.Instance);
+            NullLogger<SessionSecretStore>.Instance
+        );
         // Tests below use "session-1" and "session-2" as their request session ids — seed both with
         // the same known Secret so a fixed Authorization header can authenticate either one.
         sessionSecretStore.SaveAsync("session-1", Secret).GetAwaiter().GetResult();
@@ -117,7 +145,8 @@ public sealed class AuthWebhookControllerForwarderTests
             policy,
             forwarder,
             authOptions,
-            NullLogger<AuthWebhookController>.Instance);
+            NullLogger<AuthWebhookController>.Instance
+        );
 
         var httpContext = new DefaultHttpContext();
         httpContext.Request.Headers.Authorization = Secret;
@@ -125,18 +154,19 @@ public sealed class AuthWebhookControllerForwarderTests
         return controller;
     }
 
-    private static AuthWebhookRequest NewRequest(string? sessionId, string providerId = "github") => new()
-    {
-        SessionId = sessionId,
-        AppId = "lmstreaming-sample",
-        ProviderId = providerId,
-        RuleId = providerId,
-        DestinationHost = "api.github.com",
-        DestinationPort = 443,
-        Method = "GET",
-        Path = "/user",
-        RequiredScopes = [],
-    };
+    private static AuthWebhookRequest NewRequest(string? sessionId, string providerId = "github") =>
+        new()
+        {
+            SessionId = sessionId,
+            AppId = "lmstreaming-sample",
+            ProviderId = providerId,
+            RuleId = providerId,
+            DestinationHost = "api.github.com",
+            DestinationPort = 443,
+            Method = "GET",
+            Path = "/user",
+            RequiredScopes = [],
+        };
 
     private static OAuthAccessToken NewToken() => new("tok-abc", DateTimeOffset.UtcNow.AddHours(1));
 
@@ -151,7 +181,9 @@ public sealed class AuthWebhookControllerForwarderTests
         var result = await controller.Evaluate("github", NewRequest("session-1"), CancellationToken.None);
 
         result.Should().BeOfType<OkObjectResult>();
-        forwarder.RequiredCalls.Should().BeEmpty("an immediately-available token never reaches the deferred/forwarder path");
+        forwarder
+            .RequiredCalls.Should()
+            .BeEmpty("an immediately-available token never reaches the deferred/forwarder path");
         forwarder.CompletedCalls.Should().BeEmpty();
         forwarder.DeniedCalls.Should().BeEmpty();
     }
@@ -160,7 +192,10 @@ public sealed class AuthWebhookControllerForwarderTests
     public async Task Deferred_deny_forwards_required_then_denied_with_the_same_captured_target()
     {
         var provider = new FakeTokenProvider("github"); // no token: falls through to the policy
-        var forwarder = new RecordingForwarder { TargetToReturn = new AuthWebhookTarget("thread-1", "run-1", "https://caller.test/hook") };
+        var forwarder = new RecordingForwarder
+        {
+            TargetToReturn = new AuthWebhookTarget("thread-1", "run-1", "https://caller.test/hook"),
+        };
         var controller = CreateController(provider, new StubResolutionPolicy(null), forwarder);
 
         var result = await controller.Evaluate("github", NewRequest("session-1"), CancellationToken.None);
@@ -168,8 +203,14 @@ public sealed class AuthWebhookControllerForwarderTests
         result.Should().BeOfType<OkObjectResult>();
         forwarder.RequiredCalls.Should().ContainSingle().Which.SessionId.Should().Be("session-1");
         forwarder.CompletedCalls.Should().BeEmpty();
-        forwarder.DeniedCalls.Should().ContainSingle()
-            .Which.Target.Should().Be(forwarder.TargetToReturn, "the terminal call must reuse the target captured at auth_required, not re-resolve it");
+        forwarder
+            .DeniedCalls.Should()
+            .ContainSingle()
+            .Which.Target.Should()
+            .Be(
+                forwarder.TargetToReturn,
+                "the terminal call must reuse the target captured at auth_required, not re-resolve it"
+            );
     }
 
     [Fact]
@@ -181,25 +222,35 @@ public sealed class AuthWebhookControllerForwarderTests
 
         await controller.Evaluate("github", NewRequest("session-1"), CancellationToken.None);
 
-        forwarder.RequiredCalls.Should().ContainSingle()
-            .Which.SigninUrl.Should().Be(
+        forwarder
+            .RequiredCalls.Should()
+            .ContainSingle()
+            .Which.SigninUrl.Should()
+            .Be(
                 "http://127.0.0.1:5000/auth/github",
-                "an external webhook receiver cannot resolve a same-origin relative path");
+                "an external webhook receiver cannot resolve a same-origin relative path"
+            );
     }
 
     [Fact]
     public async Task Deferred_allow_forwards_required_then_completed_with_the_same_captured_target()
     {
         var provider = new FakeTokenProvider("github"); // no token: falls through to the policy
-        var forwarder = new RecordingForwarder { TargetToReturn = new AuthWebhookTarget("thread-2", null, "https://caller.test/hook") };
+        var forwarder = new RecordingForwarder
+        {
+            TargetToReturn = new AuthWebhookTarget("thread-2", null, "https://caller.test/hook"),
+        };
         var controller = CreateController(provider, new StubResolutionPolicy(NewToken()), forwarder);
 
         var result = await controller.Evaluate("github", NewRequest("session-2"), CancellationToken.None);
 
         result.Should().BeOfType<OkObjectResult>();
-        forwarder.RequiredCalls.Should().ContainSingle("the target is resolved exactly once per webhook call, never re-resolved for the terminal outcome");
-        forwarder.CompletedCalls.Should().ContainSingle()
-            .Which.Target.Should().Be(forwarder.TargetToReturn);
+        forwarder
+            .RequiredCalls.Should()
+            .ContainSingle(
+                "the target is resolved exactly once per webhook call, never re-resolved for the terminal outcome"
+            );
+        forwarder.CompletedCalls.Should().ContainSingle().Which.Target.Should().Be(forwarder.TargetToReturn);
         forwarder.DeniedCalls.Should().BeEmpty();
     }
 
@@ -210,7 +261,10 @@ public sealed class AuthWebhookControllerForwarderTests
         // a missing session id can no longer fall through to an Ok allow/deny decision, unlike the
         // old global-secret design where the id was only needed for the (optional) forwarder calls.
         var provider = new FakeTokenProvider("github");
-        var forwarder = new RecordingForwarder { TargetToReturn = new AuthWebhookTarget("thread-3", null, "https://caller.test/hook") };
+        var forwarder = new RecordingForwarder
+        {
+            TargetToReturn = new AuthWebhookTarget("thread-3", null, "https://caller.test/hook"),
+        };
         var controller = CreateController(provider, new StubResolutionPolicy(null), forwarder);
 
         var result = await controller.Evaluate("github", NewRequest(sessionId: null), CancellationToken.None);
@@ -228,7 +282,8 @@ public sealed class AuthWebhookControllerForwarderTests
         // call claiming to be session B, even though both sessions are known to the store.
         var sessionSecretStore = new SessionSecretStore(
             Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-            NullLogger<SessionSecretStore>.Instance);
+            NullLogger<SessionSecretStore>.Instance
+        );
         await sessionSecretStore.SaveAsync("session-a", "secret-for-a");
         await sessionSecretStore.SaveAsync("session-b", "secret-for-b");
 
@@ -240,7 +295,8 @@ public sealed class AuthWebhookControllerForwarderTests
             new StubResolutionPolicy(null),
             forwarder,
             new AuthOptions(),
-            NullLogger<AuthWebhookController>.Instance);
+            NullLogger<AuthWebhookController>.Instance
+        );
         var httpContext = new DefaultHttpContext();
         httpContext.Request.Headers.Authorization = "secret-for-a";
         controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
@@ -259,7 +315,9 @@ public sealed class AuthWebhookControllerForwarderTests
 
         var result = await controller.Evaluate("github", NewRequest("session-1"), CancellationToken.None);
 
-        result.Should().BeOfType<OkObjectResult>("a forwarder exception must be logged and swallowed, never surfaced as a 500");
+        result
+            .Should()
+            .BeOfType<OkObjectResult>("a forwarder exception must be logged and swallowed, never surfaced as a 500");
         var ok = (OkObjectResult)result;
         ((AuthWebhookResponse)ok.Value!).Decision.Should().Be("allow");
     }
@@ -281,7 +339,11 @@ public sealed class AuthWebhookControllerForwarderTests
     public async Task Default_no_op_forwarder_preserves_pre_area3_allow_behavior()
     {
         var provider = new FakeTokenProvider("github");
-        var controller = CreateController(provider, new StubResolutionPolicy(NewToken()), new NoOpAuthWebhookForwarder());
+        var controller = CreateController(
+            provider,
+            new StubResolutionPolicy(NewToken()),
+            new NoOpAuthWebhookForwarder()
+        );
 
         var result = await controller.Evaluate("github", NewRequest("session-1"), CancellationToken.None);
 

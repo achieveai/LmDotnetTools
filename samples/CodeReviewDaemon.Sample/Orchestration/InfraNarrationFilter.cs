@@ -78,7 +78,7 @@ internal static partial class InfraNarrationFilter
     /// </summary>
     private const string RewrittenSandboxSentence =
         "Local build/test execution was not possible for this review; no results from running the code "
-            + "are reflected in this assessment.";
+        + "are reflected in this assessment.";
 
     /// <summary>
     /// Filters <paramref name="reviewBody"/> for the PR-facing comment. Returns the filtered body and every
@@ -156,8 +156,9 @@ internal static partial class InfraNarrationFilter
             // item ("2. Local build ...") became two lines, a markdown table row was torn into fragments that
             // no longer parse as a row, and a two-sentence bullet lost its marker on the continuation. The
             // filter's job is to change matched sentences, not to re-wrap the document around them.
-            List<(string? Prefix, List<(string Text, InfraCategory? Category, string SubTag)> Sentences)> perLine =
-                new(segment.Count);
+            List<(string? Prefix, List<(string Text, InfraCategory? Category, string SubTag)> Sentences)> perLine = new(
+                segment.Count
+            );
             var anyMatch = false;
             for (var li = 0; li < segment.Count; li++)
             {
@@ -359,7 +360,8 @@ internal static partial class InfraNarrationFilter
             return InfraCategory.SandboxTooling;
         }
 
-        var providerHit = ProviderReferencePattern().IsMatch(segmentText) && AccessBlockedPattern().IsMatch(segmentText);
+        var providerHit =
+            ProviderReferencePattern().IsMatch(segmentText) && AccessBlockedPattern().IsMatch(segmentText);
         var postingHit = PostingStatePattern().IsMatch(segmentText);
         if (providerHit || postingHit)
         {
@@ -426,14 +428,16 @@ internal static partial class InfraNarrationFilter
     // direction silently erases a defect report and nobody can tell it happened.
     [GeneratedRegex(
         @"\b(BLOCKERS?|CRITICAL|HIGH|MEDIUM|LOW|MUST|SHOULD|CONSIDER(?:ATION)?S?|FINDINGS?)\b",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex FindingHeadingWord();
 
     [GeneratedRegex(
         @"\[\s*(?:BLOCKERS?|CRITICAL|HIGH|MEDIUM|LOW|MUST|SHOULD|CONSIDER(?:ATION)?S?|FINDINGS?)\s*\]"
             + @"|^[\s>*_#`-]*(?:BLOCKERS?|CRITICAL|HIGH|MEDIUM|LOW|MUST|SHOULD|CONSIDER(?:ATION)?S?|FINDINGS?)"
             + @"\b\s*[:\-–—]",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex SeverityTagInText();
 
     // Broadened past "did not run"/"could not run" after the #113 fixture corpus turned up real phrasings a
@@ -442,7 +446,8 @@ internal static partial class InfraNarrationFilter
     // at all (run 160: "`dotnet` is unavailable in the sandbox").
     [GeneratedRegex(
         @"\b(could not (?:be )?(?:run|start|complete|execute)|did not (?:run|build|test|execute)|were not (?:run|executed)|was not (?:run|executed|possible)|no\b.{0,60}\b(?:were|was)\s+run\b|not (?:installed|found|available)|unavailable)\b",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex ExecutionBlockedPattern();
 
     // "npm" was deliberately dropped from this list (2026-08-10): bare "npm" has no fixture in the #113
@@ -455,17 +460,20 @@ internal static partial class InfraNarrationFilter
     // ProviderReferencePattern for exactly this kind of case.
     [GeneratedRegex(
         @"\b(sandbox|review environment|local environment|this environment|the checkout|toolchain|dependency resolution|dotnet|msbuild|jest)\b",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex EnvironmentReferencePattern();
 
     [GeneratedRegex(
         @"\b(azure devops|\bado\b|policy_evaluation_failed|azure artifacts|npm registry)\b",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex ProviderReferencePattern();
 
     [GeneratedRegex(
         @"\b(could not|cannot|failed|was blocked|were blocked|unavailable|returned)\b",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex AccessBlockedPattern();
 
     // Loose on purpose: real phrasing varies in what sits between "no" and the eventual "posted"/"made"
@@ -479,7 +487,8 @@ internal static partial class InfraNarrationFilter
     // verification.
     [GeneratedRegex(
         @"no\b.{0,40}\b(?:comments?|mutations?)\b.{0,40}\b(?:posted|made|modified)\b|per the collect-only|collect-only (?:instruction|delivery)",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex PostingStatePattern();
 
     // Sentence boundary: split after a `.`/`!`/`?` followed by whitespace. Checked against the full #113

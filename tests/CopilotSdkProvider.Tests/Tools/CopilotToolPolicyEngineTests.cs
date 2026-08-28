@@ -34,8 +34,7 @@ public class CopilotToolPolicyEngineTests
     [Fact]
     public void IsDynamicToolAllowed_OnlyRegisteredNames_ArePermitted()
     {
-        var policy = new CopilotToolPolicyEngine(
-            dynamicToolNames: ["calculate", "get_weather"]);
+        var policy = new CopilotToolPolicyEngine(dynamicToolNames: ["calculate", "get_weather"]);
 
         policy.IsDynamicToolAllowed("calculate").Should().BeTrue();
         policy.IsDynamicToolAllowed("get_weather").Should().BeTrue();
@@ -47,7 +46,8 @@ public class CopilotToolPolicyEngineTests
     {
         var policy = new CopilotToolPolicyEngine(
             dynamicToolNames: ["calculate", "get_weather"],
-            enabledTools: ["calculate"]);
+            enabledTools: ["calculate"]
+        );
 
         policy.IsDynamicToolAllowed("calculate").Should().BeTrue();
         policy.IsDynamicToolAllowed("get_weather").Should().BeFalse();
@@ -66,9 +66,7 @@ public class CopilotToolPolicyEngineTests
     [Fact]
     public void CaseInsensitive_ToolNameMatching()
     {
-        var policy = new CopilotToolPolicyEngine(
-            dynamicToolNames: ["Calculate"],
-            enabledTools: ["calculate"]);
+        var policy = new CopilotToolPolicyEngine(dynamicToolNames: ["Calculate"], enabledTools: ["calculate"]);
 
         policy.IsDynamicToolAllowed("CALCULATE").Should().BeTrue();
         policy.IsBuiltInAllowed("CALCULATE").Should().BeTrue();

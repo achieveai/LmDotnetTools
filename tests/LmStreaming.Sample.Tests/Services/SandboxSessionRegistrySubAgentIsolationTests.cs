@@ -41,9 +41,10 @@ public class SandboxSessionRegistrySubAgentIsolationTests
         // While A is live the gateway discovers a workspace sub-agent; the webhook registers it into
         // A's catalog (this is ContextDiscoveryController.TryActivateSubAgentAsync's TryRegister step).
         registry.TryGetSubAgentBinding(SessionId, "conversation-A", out var aForWebhook).Should().BeTrue();
-        aForWebhook!.Source.TryRegister(
-            "alpha_discovered",
-            Template("AlphaDiscovered", "Discovered by conversation A.")).Should().BeTrue();
+        aForWebhook!
+            .Source.TryRegister("alpha_discovered", Template("AlphaDiscovered", "Discovered by conversation A."))
+            .Should()
+            .BeTrue();
 
         bindingA.Source.Templates.Keys.Should().Contain("alpha_discovered");
 
@@ -52,17 +53,23 @@ public class SandboxSessionRegistrySubAgentIsolationTests
 
         // B's catalog source must carry the statics but NOT A's discovered sub-agent.
         bindingB.Source.Templates.Keys.Should().Contain("researcher");
-        bindingB.Source.Templates.Keys.Should().NotContain(
-            "alpha_discovered",
-            "a new conversation must not inherit sub-agents discovered/registered by a different conversation");
+        bindingB
+            .Source.Templates.Keys.Should()
+            .NotContain(
+                "alpha_discovered",
+                "a new conversation must not inherit sub-agents discovered/registered by a different conversation"
+            );
 
         // Probe what B's LLM would actually see: the Agent tool description (the catalog the
         // tools_echo probe surfaces) must not mention A's discovered sub-agent.
         var agentDescriptionForB = SubAgentToolDescriptionProbe.Render(bindingB.Source);
         agentDescriptionForB.Should().Contain("researcher");
-        agentDescriptionForB.Should().NotContain(
-            "alpha_discovered",
-            "conversation B's Agent tool catalog (what its model sees) must be isolated from A's discoveries");
+        agentDescriptionForB
+            .Should()
+            .NotContain(
+                "alpha_discovered",
+                "conversation B's Agent tool catalog (what its model sees) must be isolated from A's discoveries"
+            );
     }
 
     /// <summary>
@@ -83,9 +90,10 @@ public class SandboxSessionRegistrySubAgentIsolationTests
         var bindingA = registry.GetOrAddSubAgentBinding(SessionId, "conversation-A", staticSeed, AgentFactory);
 
         registry.TryGetSubAgentBinding(SessionId, "conversation-A", out var aForWebhook).Should().BeTrue();
-        aForWebhook!.Source.TryRegister(
-            "alpha_discovered",
-            Template("AlphaDiscovered", "Discovered by conversation A.")).Should().BeTrue();
+        aForWebhook!
+            .Source.TryRegister("alpha_discovered", Template("AlphaDiscovered", "Discovered by conversation A."))
+            .Should()
+            .BeTrue();
 
         bindingA.Source.Templates.Keys.Should().Contain("alpha_discovered");
     }
@@ -103,12 +111,9 @@ public class SandboxSessionRegistrySubAgentIsolationTests
                 typeof(string),
                 typeof(IReadOnlyDictionary<string, SubAgentTemplate>),
                 typeof(Func<IStreamingAgent>),
-            ]);
-        var legacyBinding = registry.GetOrAddSubAgentBinding(
-            SessionId,
-            "legacy-conversation",
-            seed,
-            AgentFactory);
+            ]
+        );
+        var legacyBinding = registry.GetOrAddSubAgentBinding(SessionId, "legacy-conversation", seed, AgentFactory);
         var (source, agentFactory) = legacyBinding;
 
         fourParameterOverload.Should().NotBeNull("existing compiled callers require the original CLR signature");
@@ -127,9 +132,7 @@ public class SandboxSessionRegistrySubAgentIsolationTests
         Func<IStreamingAgent> firstFactory = () => firstAgent;
         Func<IStreamingAgent> latestFactory = () => latestAgent;
         Func<SubAgentCharacteristics, SubAgentProviderAgent> latestCharacteristicsFactory =
-            _ => new SubAgentProviderAgent(
-                latestAgent,
-                ImmutableDictionary<string, object?>.Empty);
+            _ => new SubAgentProviderAgent(latestAgent, ImmutableDictionary<string, object?>.Empty);
         var seed = new Dictionary<string, SubAgentTemplate>
         {
             ["retained"] = new()
@@ -140,28 +143,25 @@ public class SandboxSessionRegistrySubAgentIsolationTests
             },
         };
 
-        var before = registry.AddOrUpdateSubAgentBinding(
-            SessionId,
-            "conversation",
-            seed,
-            firstFactory,
-            null);
+        var before = registry.AddOrUpdateSubAgentBinding(SessionId, "conversation", seed, firstFactory, null);
         var after = registry.AddOrUpdateSubAgentBinding(
             SessionId,
             "conversation",
             seed,
             latestFactory,
-            latestCharacteristicsFactory);
+            latestCharacteristicsFactory
+        );
 
         ReferenceEquals(before.Source, after.Source).Should().BeTrue();
         after.AgentFactory.Should().BeSameAs(latestFactory);
         after.CharacteristicsAgentFactory.Should().BeSameAs(latestCharacteristicsFactory);
-        after.Source.Templates["retained"].CharacteristicsAgentFactory!(
-                new SubAgentCharacteristics("explicit", null)
-                {
-                    IsModelExplicitlySelected = true,
-                })
-            .Agent.Should().BeSameAs(latestAgent);
+        after
+            .Source.Templates["retained"]
+            .CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics("explicit", null) { IsModelExplicitlySelected = true }
+            )
+            .Agent.Should()
+            .BeSameAs(latestAgent);
     }
 
     /// <summary>
@@ -185,8 +185,10 @@ public class SandboxSessionRegistrySubAgentIsolationTests
 
         registry.UnregisterThreadFromAllSessions("conversation-A");
 
-        registry.TryGetSubAgentBinding(SessionId, "conversation-A", out var binding)
-            .Should().BeFalse("a torn-down conversation's binding must be freed, not retained for the process lifetime");
+        registry
+            .TryGetSubAgentBinding(SessionId, "conversation-A", out var binding)
+            .Should()
+            .BeFalse("a torn-down conversation's binding must be freed, not retained for the process lifetime");
         binding.Should().BeNull();
         registry.GetSubAgentBindingsForSession(SessionId).Should().BeEmpty();
     }
@@ -207,7 +209,8 @@ public class SandboxSessionRegistrySubAgentIsolationTests
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(Unused)));
+            new HttpClient(new StubHandler(Unused))
+        );
 
         return new SandboxSessionRegistry(
             gateway,
@@ -217,14 +220,17 @@ public class SandboxSessionRegistrySubAgentIsolationTests
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(respond(request));
         }

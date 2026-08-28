@@ -108,9 +108,7 @@ public class ServerToolResponseConversionTests
                 new AnthropicBashCodeExecutionToolResultContent
                 {
                     ToolUseId = "srvtoolu_bash_01",
-                    Content = JsonSerializer.Deserialize<JsonElement>(
-                        """{"stdout":"hello","return_code":0}"""
-                    ),
+                    Content = JsonSerializer.Deserialize<JsonElement>("""{"stdout":"hello","return_code":0}"""),
                 },
             ],
             Usage = new AnthropicUsage { InputTokens = 100, OutputTokens = 50 },
@@ -300,8 +298,6 @@ public class ServerToolResponseConversionTests
         }
 
         var rootDir = currentDir ?? throw new InvalidOperationException("Could not find repository root");
-        return File.ReadAllText(
-            Path.Combine(rootDir, "tests", "AnthropicProvider.Tests", "TestFiles", filename)
-        );
+        return File.ReadAllText(Path.Combine(rootDir, "tests", "AnthropicProvider.Tests", "TestFiles", filename));
     }
 }

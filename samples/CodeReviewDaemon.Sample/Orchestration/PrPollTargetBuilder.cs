@@ -57,7 +57,8 @@ internal static class PrPollTargetBuilder
             {
                 throw new InvalidOperationException(
                     $"CodeReviewDaemon:EnabledRepos[{i}] is blank or whitespace-only (raw value: {Render(entry)}); "
-                    + "expected 'owner/repo' or 'org/project/repo'.");
+                        + "expected 'owner/repo' or 'org/project/repo'."
+                );
             }
 
             // Split WITHOUT RemoveEmptyEntries so an embedded '/' (an empty segment) is caught here rather than
@@ -68,7 +69,8 @@ internal static class PrPollTargetBuilder
             {
                 throw new InvalidOperationException(
                     $"CodeReviewDaemon:EnabledRepos[{i}] '{entry}' has {segments.Length} segment(s); expected "
-                    + "'owner/repo' (2) or 'org/project/repo' (3).");
+                        + "'owner/repo' (2) or 'org/project/repo' (3)."
+                );
             }
 
             for (var s = 0; s < segments.Length; s++)
@@ -78,7 +80,8 @@ internal static class PrPollTargetBuilder
                 {
                     throw new InvalidOperationException(
                         $"CodeReviewDaemon:EnabledRepos[{i}] '{entry}' has a blank segment at position {s} "
-                        + $"(raw value: {Render(segment)}); every owner/org/project/repo name must be non-empty.");
+                            + $"(raw value: {Render(segment)}); every owner/org/project/repo name must be non-empty."
+                    );
                 }
 
                 var bad = segment.IndexOfAny(['?', '#', '%']);
@@ -86,7 +89,8 @@ internal static class PrPollTargetBuilder
                 {
                     throw new InvalidOperationException(
                         $"CodeReviewDaemon:EnabledRepos[{i}] '{entry}' has a segment containing '{segment[bad]}'; "
-                        + "owner/org/project/repo names may not contain '? # %' (a '/' is the segment separator).");
+                            + "owner/org/project/repo names may not contain '? # %' (a '/' is the segment separator)."
+                    );
                 }
             }
         }
@@ -109,13 +113,22 @@ internal static class PrPollTargetBuilder
 
         foreach (var entry in options.EnabledRepos)
         {
-            var segments = (entry ?? string.Empty)
-                .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var segments = (entry ?? string.Empty).Split(
+                '/',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+            );
 
             var target = segments.Length switch
             {
                 2 => GitHubTarget(segments, mode, options.ReviewModelId, options.MaxPrAgeDays),
-                3 => AdoTarget(segments, mode, options.ReviewModelId, options.MaxPrAgeDays, options.EnableAdoProvider, logger),
+                3 => AdoTarget(
+                    segments,
+                    mode,
+                    options.ReviewModelId,
+                    options.MaxPrAgeDays,
+                    options.EnableAdoProvider,
+                    logger
+                ),
                 _ => null,
             };
 
@@ -127,7 +140,8 @@ internal static class PrPollTargetBuilder
             {
                 logger.LogWarning(
                     "Ignoring malformed EnabledRepos entry '{Entry}': expected 'owner/repo' or 'org/project/repo'.",
-                    entry);
+                    entry
+                );
             }
         }
 
@@ -150,13 +164,21 @@ internal static class PrPollTargetBuilder
             MaxPrAgeDays = maxPrAgeDays,
         };
 
-    private static PrPollTarget? AdoTarget(string[] segments, string mode, string? modelId, int maxPrAgeDays, bool enableAdoProvider, ILogger logger)
+    private static PrPollTarget? AdoTarget(
+        string[] segments,
+        string mode,
+        string? modelId,
+        int maxPrAgeDays,
+        bool enableAdoProvider,
+        ILogger logger
+    )
     {
         if (!enableAdoProvider)
         {
             logger.LogWarning(
                 "Skipping ADO repo '{Repo}' because EnableAdoProvider is off; no 'ado' provider is registered.",
-                string.Join('/', segments));
+                string.Join('/', segments)
+            );
             return null;
         }
 

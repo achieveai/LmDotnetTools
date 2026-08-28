@@ -166,9 +166,7 @@ public class DelayedResultCoordinatorTests
 
         foreach (var toolCallId in toolCallIds)
         {
-            coordinator.TryBeginResolve(toolCallId, $"fp-{toolCallId}", out var pending, out _)
-                .Should()
-                .BeTrue();
+            coordinator.TryBeginResolve(toolCallId, $"fp-{toolCallId}", out var pending, out _).Should().BeTrue();
             claims.Add(pending!);
         }
 
@@ -205,9 +203,7 @@ public class DelayedResultCoordinatorTests
             .Should()
             .BeFalse("one claim at a time; the holder decides this call's fate");
         second.Should().BeNull();
-        inFlight
-            .Should()
-            .Be("fp-1", "the caller needs the in-flight fingerprint to tell a redelivery from a conflict");
+        inFlight.Should().Be("fp-1", "the caller needs the in-flight fingerprint to tell a redelivery from a conflict");
     }
 
     [Fact]
@@ -235,7 +231,8 @@ public class DelayedResultCoordinatorTests
             "{}",
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             RunId,
-            GenerationId);
+            GenerationId
+        );
 
     private static ToolCallResultMessage Resolved(string toolCallId) =>
         new()

@@ -45,8 +45,7 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         }
     }
 
-    private static readonly string WellFormedMarkdown =
-        """
+    private static readonly string WellFormedMarkdown = """
         ---
         name: echo
         description: Echoes a marker.
@@ -54,22 +53,20 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         You are the echo sub-agent. Respond with the marker the user supplies.
         """;
 
-    private SandboxSession CreateSession() => new(
-        WorkspaceId: "default",
-        SessionId: SessionId,
-        WorkspaceRelPath: "default",
-        HostPath: _hostPath);
+    private SandboxSession CreateSession() =>
+        new(WorkspaceId: "default", SessionId: SessionId, WorkspaceRelPath: "default", HostPath: _hostPath);
 
     private (SandboxSessionRegistry Registry, WorkspaceSubAgentLoader Loader) CreateLoader(
-        Func<HttpRequestMessage, HttpResponseMessage> respond)
+        Func<HttpRequestMessage, HttpResponseMessage> respond
+    )
     {
         var handler = new StubHandler(respond);
-        var gatewayLifetimeClient = new HttpClient(new StubHandler(_ =>
-            new HttpResponseMessage(HttpStatusCode.OK)));
+        var gatewayLifetimeClient = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            gatewayLifetimeClient);
+            gatewayLifetimeClient
+        );
 
         var registry = new SandboxSessionRegistry(
             gateway,
@@ -79,11 +76,11 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
 
-        var loader = new WorkspaceSubAgentLoader(
-            registry,
-            NullLogger<WorkspaceSubAgentLoader>.Instance);
+        var loader = new WorkspaceSubAgentLoader(registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
 
         return (registry, loader);
     }
@@ -96,9 +93,16 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
     {
         var path = Path.Combine(".claude", "agents", "echo.md");
         await File.WriteAllTextAsync(Path.Combine(_hostPath, path), WellFormedMarkdown);
-        var (_, loader) = CreateLoader(_ => JsonOk($$"""
-            { "discovered": [ { "kind": "subagent", "name": "echo", "description": "Echoes a marker.", "path": "{{path.Replace("\\", "\\\\")}}" } ] }
-            """));
+        var (_, loader) = CreateLoader(_ =>
+            JsonOk(
+                $$"""
+                { "discovered": [ { "kind": "subagent", "name": "echo", "description": "Echoes a marker.", "path": "{{path.Replace(
+                    "\\",
+                    "\\\\"
+                )}}" } ] }
+                """
+            )
+        );
 
         var result = await loader.LoadAsync(CreateSession(), AgentFactory);
 
@@ -115,9 +119,13 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
     {
         // Kind-filter pin: skills and unknown kinds must not be mapped as sub-agents even when
         // their path resolves to a parseable file. The filter happens before the read.
-        var (_, loader) = CreateLoader(_ => JsonOk("""
-            { "discovered": [ { "kind": "skill", "name": "review", "description": "x", "path": ".claude/skills/review.md" } ] }
-            """));
+        var (_, loader) = CreateLoader(_ =>
+            JsonOk(
+                """
+                { "discovered": [ { "kind": "skill", "name": "review", "description": "x", "path": ".claude/skills/review.md" } ] }
+                """
+            )
+        );
 
         var result = await loader.LoadAsync(CreateSession(), AgentFactory);
 
@@ -148,14 +156,21 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         // a missing one and prove only the existing one comes through.
         var goodPath = Path.Combine(".claude", "agents", "echo.md");
         await File.WriteAllTextAsync(Path.Combine(_hostPath, goodPath), WellFormedMarkdown);
-        var (_, loader) = CreateLoader(_ => JsonOk($$"""
-            {
-              "discovered": [
-                { "kind": "subagent", "name": "missing", "description": "Missing file.", "path": ".claude/agents/missing.md" },
-                { "kind": "subagent", "name": "echo",    "description": "Echoes.",       "path": "{{goodPath.Replace("\\", "\\\\")}}" }
-              ]
-            }
-            """));
+        var (_, loader) = CreateLoader(_ =>
+            JsonOk(
+                $$"""
+                {
+                  "discovered": [
+                    { "kind": "subagent", "name": "missing", "description": "Missing file.", "path": ".claude/agents/missing.md" },
+                    { "kind": "subagent", "name": "echo",    "description": "Echoes.",       "path": "{{goodPath.Replace(
+                    "\\",
+                    "\\\\"
+                )}}" }
+                  ]
+                }
+                """
+            )
+        );
 
         var result = await loader.LoadAsync(CreateSession(), AgentFactory);
 
@@ -171,14 +186,24 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         var badPath = Path.Combine(".claude", "agents", "bad.md");
         await File.WriteAllTextAsync(Path.Combine(_hostPath, goodPath), WellFormedMarkdown);
         await File.WriteAllTextAsync(Path.Combine(_hostPath, badPath), "no frontmatter at all\n");
-        var (_, loader) = CreateLoader(_ => JsonOk($$"""
-            {
-              "discovered": [
-                { "kind": "subagent", "name": "bad",  "description": "x", "path": "{{badPath.Replace("\\", "\\\\")}}" },
-                { "kind": "subagent", "name": "echo", "description": "x", "path": "{{goodPath.Replace("\\", "\\\\")}}" }
-              ]
-            }
-            """));
+        var (_, loader) = CreateLoader(_ =>
+            JsonOk(
+                $$"""
+                {
+                  "discovered": [
+                    { "kind": "subagent", "name": "bad",  "description": "x", "path": "{{badPath.Replace(
+                    "\\",
+                    "\\\\"
+                )}}" },
+                    { "kind": "subagent", "name": "echo", "description": "x", "path": "{{goodPath.Replace(
+                    "\\",
+                    "\\\\"
+                )}}" }
+                  ]
+                }
+                """
+            )
+        );
 
         var result = await loader.LoadAsync(CreateSession(), AgentFactory);
 
@@ -190,9 +215,13 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
     public async Task LoadAsync_PathTraversalAttempt_IsSkipped()
     {
         // Path-injection guard at the loader boundary: a "../" item must never be read.
-        var (_, loader) = CreateLoader(_ => JsonOk("""
-            { "discovered": [ { "kind": "subagent", "name": "escape", "description": "x", "path": "../outside.md" } ] }
-            """));
+        var (_, loader) = CreateLoader(_ =>
+            JsonOk(
+                """
+                { "discovered": [ { "kind": "subagent", "name": "escape", "description": "x", "path": "../outside.md" } ] }
+                """
+            )
+        );
 
         var result = await loader.LoadAsync(CreateSession(), AgentFactory);
 
@@ -215,7 +244,8 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
             description: First.
             ---
             FIRST body.
-            """);
+            """
+        );
         await File.WriteAllTextAsync(
             Path.Combine(_hostPath, secondPath),
             """
@@ -224,15 +254,26 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
             description: Second.
             ---
             SECOND body.
-            """);
-        var (_, loader) = CreateLoader(_ => JsonOk($$"""
-            {
-              "discovered": [
-                { "kind": "subagent", "name": "echo-a", "description": "x", "path": "{{firstPath.Replace("\\", "\\\\")}}" },
-                { "kind": "subagent", "name": "echo-b", "description": "x", "path": "{{secondPath.Replace("\\", "\\\\")}}" }
-              ]
-            }
-            """));
+            """
+        );
+        var (_, loader) = CreateLoader(_ =>
+            JsonOk(
+                $$"""
+                {
+                  "discovered": [
+                    { "kind": "subagent", "name": "echo-a", "description": "x", "path": "{{firstPath.Replace(
+                    "\\",
+                    "\\\\"
+                )}}" },
+                    { "kind": "subagent", "name": "echo-b", "description": "x", "path": "{{secondPath.Replace(
+                    "\\",
+                    "\\\\"
+                )}}" }
+                  ]
+                }
+                """
+            )
+        );
 
         var result = await loader.LoadAsync(CreateSession(), AgentFactory);
 
@@ -246,9 +287,13 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         // A session without a resolved host workspace (e.g. gateway never mounted one) is a
         // valid mode for non-workspace providers — the loader must short-circuit, not throw.
         var session = new SandboxSession("default", SessionId, "default", HostPath: "");
-        var (_, loader) = CreateLoader(_ => JsonOk("""
-            { "discovered": [ { "kind": "subagent", "name": "echo", "description": "x", "path": "echo.md" } ] }
-            """));
+        var (_, loader) = CreateLoader(_ =>
+            JsonOk(
+                """
+                { "discovered": [ { "kind": "subagent", "name": "echo", "description": "x", "path": "echo.md" } ] }
+                """
+            )
+        );
 
         var result = await loader.LoadAsync(session, AgentFactory);
 
@@ -275,7 +320,8 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(_respond(request));
         }

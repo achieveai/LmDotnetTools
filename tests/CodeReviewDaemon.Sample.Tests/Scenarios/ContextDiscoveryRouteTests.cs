@@ -24,15 +24,21 @@ public sealed class ContextDiscoveryRouteTests
     private const string SessionId = "sess-1";
     private const string Secret = "test-discovery-secret";
 
-    private static object SampleEnvelope(string? sessionId = SessionId) => new
-    {
-        @event = "context_discovery",
-        session_id = sessionId,
-        discoveries = new[]
+    private static object SampleEnvelope(string? sessionId = SessionId) =>
+        new
         {
-            new { kind = "context_file", path = "CLAUDE.md", content = "repo rules" },
-        },
-    };
+            @event = "context_discovery",
+            session_id = sessionId,
+            discoveries = new[]
+            {
+                new
+                {
+                    kind = "context_file",
+                    path = "CLAUDE.md",
+                    content = "repo rules",
+                },
+            },
+        };
 
     /// <summary>
     /// Boots the daemon and seeds a per-session secret so a gateway-authenticated call can be validated,
@@ -43,7 +49,8 @@ public sealed class ContextDiscoveryRouteTests
     /// </summary>
     private static async Task<(DaemonWebAppFactory factory, HttpClient client)> NewClientWithSessionAsync(
         string sessionId,
-        string secret)
+        string secret
+    )
     {
         var factory = new DaemonWebAppFactory();
         await factory.Services.GetRequiredService<SessionSecretStore>().SaveAsync(sessionId, secret);
@@ -65,9 +72,12 @@ public sealed class ContextDiscoveryRouteTests
 
         using var response = await client.SendAsync(request);
 
-        response.StatusCode.Should().Be(
-            HttpStatusCode.OK,
-            "the gateway tears down the sandbox session when the discovery route is missing (404)");
+        response
+            .StatusCode.Should()
+            .Be(
+                HttpStatusCode.OK,
+                "the gateway tears down the sandbox session when the discovery route is missing (404)"
+            );
     }
 
     [Fact]

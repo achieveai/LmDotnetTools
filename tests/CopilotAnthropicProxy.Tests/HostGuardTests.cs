@@ -69,8 +69,10 @@ public sealed class HostGuardTests
     [Fact]
     public void Loopback_origin_and_same_origin_fetch_is_allowed()
     {
-        ProxyGuard.IsAllowed(
-            IPAddress.Loopback, "localhost:8787", "http://localhost:8787", "same-origin", Port).Should().BeTrue();
+        ProxyGuard
+            .IsAllowed(IPAddress.Loopback, "localhost:8787", "http://localhost:8787", "same-origin", Port)
+            .Should()
+            .BeTrue();
     }
 
     [Fact]
@@ -78,8 +80,10 @@ public sealed class HostGuardTests
     {
         // A page on another local port (another dev server, or something malicious) is still "loopback"
         // but must not be treated as same-origin with this proxy.
-        ProxyGuard.IsAllowed(
-            IPAddress.Loopback, "127.0.0.1:8787", "http://127.0.0.1:3000", null, Port).Should().BeFalse();
+        ProxyGuard
+            .IsAllowed(IPAddress.Loopback, "127.0.0.1:8787", "http://127.0.0.1:3000", null, Port)
+            .Should()
+            .BeFalse();
     }
 
     [Fact]

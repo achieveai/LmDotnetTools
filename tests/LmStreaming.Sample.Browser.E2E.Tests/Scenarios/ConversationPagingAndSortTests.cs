@@ -119,7 +119,8 @@ public sealed class ConversationPagingAndSortTests
             .Should()
             .BeGreaterThan(
                 PageSize,
-                "agent-owned threads must alone exceed one page, or filter-after-Take would still have returned a full page");
+                "agent-owned threads must alone exceed one page, or filter-after-Take would still have returned a full page"
+            );
 
         var (session, _) = await OpenSeededSidebarAsync();
         await using var scope = session;
@@ -132,10 +133,10 @@ public sealed class ConversationPagingAndSortTests
             .Should()
             .Equal(
                 ExpectedLastUsedTitles().Take(PageSize),
-                "the first page must be the 30 most recently used REAL conversations, in order — the store excludes agent-owned rows BEFORE it takes the page");
+                "the first page must be the 30 most recently used REAL conversations, in order — the store excludes agent-owned rows BEFORE it takes the page"
+            );
 
-        await session.SaveSuccessScreenshotAsync(
-            "ConversationPaging.first_page_is_full_of_real_conversations");
+        await session.SaveSuccessScreenshotAsync("ConversationPaging.first_page_is_full_of_real_conversations");
     }
 
     /// <summary>
@@ -157,14 +158,17 @@ public sealed class ConversationPagingAndSortTests
         threadIds
             .Should()
             .OnlyContain(
-                id => !id.StartsWith("subagent-", StringComparison.Ordinal)
+                id =>
+                    !id.StartsWith("subagent-", StringComparison.Ordinal)
                     && !id.StartsWith("workflow-", StringComparison.Ordinal),
-                "agent-owned threads are surfaced only through the sub-agent panel");
+                "agent-owned threads are surfaced only through the sub-agent panel"
+            );
         threadIds
             .Should()
             .HaveCount(
                 RealConversationCount,
-                "the exhausted list must hold every seeded real conversation — proving the check above swept all of them");
+                "the exhausted list must hold every seeded real conversation — proving the check above swept all of them"
+            );
     }
 
     /// <summary>
@@ -188,17 +192,15 @@ public sealed class ConversationPagingAndSortTests
             .Should()
             .BeEquivalentTo(
                 Enumerable.Range(1, RealConversationCount).Select(RealThreadId),
-                "every seeded conversation must be reachable by scrolling — none may be stranded behind the page boundary");
+                "every seeded conversation must be reachable by scrolling — none may be stranded behind the page boundary"
+            );
 
         var titles = await page.ConversationTitlesAsync();
         titles
             .Should()
             .Equal(ExpectedLastUsedTitles(), "the paged list must stay in last-used order across the page boundary");
 
-        listRequests
-            .Snapshot()
-            .Should()
-            .HaveCount(2, "45 rows at a page size of 30 is exactly two page requests");
+        listRequests.Snapshot().Should().HaveCount(2, "45 rows at a page size of 30 is exactly two page requests");
     }
 
     /// <summary>
@@ -260,19 +262,19 @@ public sealed class ConversationPagingAndSortTests
         await page.SelectSortModeAsync("created");
         await page.WaitForConversationCountAsync(PageSize);
         var createdTitles = await page.ConversationTitlesAsync();
-        createdTitles[0]
-            .Should()
-            .Be(RealTitle(RealConversationCount), "conversation 45 was created most recently");
+        createdTitles[0].Should().Be(RealTitle(RealConversationCount), "conversation 45 was created most recently");
         createdTitles[0]
             .Should()
             .NotBe(
                 lastUsedTitles[0],
-                "the two sort modes must order the list differently, or one of them is not being applied");
+                "the two sort modes must order the list differently, or one of them is not being applied"
+            );
         createdTitles
             .Should()
             .Equal(
                 ExpectedCreatedTitles().Take(PageSize),
-                "created order is newest-created first, which here is the exact reverse of last-used");
+                "created order is newest-created first, which here is the exact reverse of last-used"
+            );
     }
 
     /// <summary>
@@ -300,7 +302,8 @@ public sealed class ConversationPagingAndSortTests
             .Should()
             .Equal(
                 ExpectedCreatedTitles().Take(PageSize),
-                "the switch must start a fresh single page in the new order, never merge the pages fetched under the old one");
+                "the switch must start a fresh single page in the new order, never merge the pages fetched under the old one"
+            );
 
         var requests = listRequests.Snapshot();
         requests.Should().HaveCount(3, "two pages under last-used, then one fresh page under created");
@@ -355,7 +358,8 @@ public sealed class ConversationPagingAndSortTests
                     '/api/conversations?limit=30&offset=0&sort=' + encodeURIComponent(sort));
                 return { status: response.status, body: await response.text() };
             }",
-            sort);
+            sort
+        );
     }
 
     /// <summary>
@@ -415,7 +419,8 @@ public sealed class ConversationPagingAndSortTests
                     ThreadId = threadId,
                     LastUpdated = RealLastUsedMs(n),
                     Properties = ImmutableDictionary<string, object>.Empty.Add("title", RealTitle(n)),
-                });
+                }
+            );
         }
 
         // Agent-owned threads: every one newer than every real conversation, so they crowd the whole
@@ -436,10 +441,9 @@ public sealed class ConversationPagingAndSortTests
                 {
                     ThreadId = threadId,
                     LastUpdated = AgentOwnedBaseLastUsedMs + ((i + 1) * StepMs),
-                    Properties = ImmutableDictionary<string, object>.Empty.Add(
-                        "title",
-                        $"Agent thread {threadId}"),
-                });
+                    Properties = ImmutableDictionary<string, object>.Empty.Add("title", $"Agent thread {threadId}"),
+                }
+            );
         }
     }
 

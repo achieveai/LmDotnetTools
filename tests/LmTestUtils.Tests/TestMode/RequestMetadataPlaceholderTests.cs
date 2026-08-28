@@ -127,10 +127,7 @@ public class RequestMetadataPlaceholderTests
     {
         using var client = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0);
 
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            "http://test-mode/v1/chat/completions"
-        )
+        using var request = new HttpRequestMessage(HttpMethod.Post, "http://test-mode/v1/chat/completions")
         {
             Content = new StringContent(
                 """
@@ -152,8 +149,8 @@ public class RequestMetadataPlaceholderTests
 
         var body = await response.Content.ReadAsStringAsync();
         using var json = JsonDocument.Parse(body);
-        var content = json.RootElement
-            .GetProperty("choices")[0]
+        var content = json
+            .RootElement.GetProperty("choices")[0]
             .GetProperty("message")
             .GetProperty("content")
             .GetString();
@@ -167,10 +164,7 @@ public class RequestMetadataPlaceholderTests
     {
         using var client = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0);
 
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            "http://test-mode/v1/chat/completions"
-        )
+        using var request = new HttpRequestMessage(HttpMethod.Post, "http://test-mode/v1/chat/completions")
         {
             Content = new StringContent(
                 """
@@ -193,8 +187,8 @@ public class RequestMetadataPlaceholderTests
 
         var body = await response.Content.ReadAsStringAsync();
         using var json = JsonDocument.Parse(body);
-        var content = json.RootElement
-            .GetProperty("choices")[0]
+        var content = json
+            .RootElement.GetProperty("choices")[0]
             .GetProperty("message")
             .GetProperty("content")
             .GetString();
@@ -211,10 +205,7 @@ public class RequestMetadataPlaceholderTests
     {
         using var client = TestModeHttpClientFactory.CreateAnthropicTestClient(chunkDelayMs: 0);
 
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            "http://test-mode/v1/messages"
-        )
+        using var request = new HttpRequestMessage(HttpMethod.Post, "http://test-mode/v1/messages")
         {
             Content = new StringContent(
                 """
@@ -250,10 +241,7 @@ public class RequestMetadataPlaceholderTests
     {
         using var client = TestModeHttpClientFactory.CreateAnthropicTestClient(chunkDelayMs: 0);
 
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            "http://test-mode/v1/messages"
-        )
+        using var request = new HttpRequestMessage(HttpMethod.Post, "http://test-mode/v1/messages")
         {
             Content = new StringContent(
                 """
@@ -290,10 +278,7 @@ public class RequestMetadataPlaceholderTests
     {
         using var client = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0);
 
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            "http://test-mode/v1/chat/completions"
-        )
+        using var request = new HttpRequestMessage(HttpMethod.Post, "http://test-mode/v1/chat/completions")
         {
             Content = new StringContent(
                 """
@@ -315,8 +300,8 @@ public class RequestMetadataPlaceholderTests
 
         var body = await response.Content.ReadAsStringAsync();
         using var json = JsonDocument.Parse(body);
-        var content = json.RootElement
-            .GetProperty("choices")[0]
+        var content = json
+            .RootElement.GetProperty("choices")[0]
             .GetProperty("message")
             .GetProperty("content")
             .GetString();

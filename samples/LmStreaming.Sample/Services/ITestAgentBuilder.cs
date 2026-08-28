@@ -32,7 +32,5 @@ public interface ITestAgentBuilder
     /// Factory that yields the base provider agent; sub-agent templates typically reuse this
     /// (with their own system prompt) so sub-agents share the test transport.
     /// </param>
-    SubAgentOptions? CreateSubAgentOptions(
-        ILoggerFactory loggerFactory,
-        Func<IStreamingAgent> providerAgentFactory);
+    SubAgentOptions? CreateSubAgentOptions(ILoggerFactory loggerFactory, Func<IStreamingAgent> providerAgentFactory);
 }

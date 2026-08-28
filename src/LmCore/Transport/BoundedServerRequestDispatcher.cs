@@ -110,10 +110,7 @@ public sealed class BoundedServerRequestDispatcher : IAsyncDisposable
         // method — that must not miss the task. Registering below covers that; the token the
         // handler receives is already cancelled, so it unwinds immediately.
         var id = Interlocked.Increment(ref _nextDispatchId);
-        var linked = CancellationTokenSource.CreateLinkedTokenSource(
-            _shutdownCts.Token,
-            sessionToken
-        );
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCts.Token, sessionToken);
 
         // Register a completion signal before the handler can run, so a handler that finishes
         // immediately cannot remove an entry that has not been added yet and leak its slot.

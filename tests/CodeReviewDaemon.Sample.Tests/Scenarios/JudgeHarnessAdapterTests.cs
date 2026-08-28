@@ -27,7 +27,8 @@ public sealed class JudgeHarnessAdapterTests
 
     private static readonly IPromptReader Prompts = new PromptReader(
         typeof(DaemonAgentFactory).Assembly,
-        "CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml");
+        "CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml"
+    );
 
     /// <summary>
     /// The characterization test §4.2 asks for. Score <c>0</c> is persisted exactly as v1 persisted
@@ -194,27 +195,33 @@ public sealed class JudgeHarnessAdapterTests
 
     private static long SeedRun(ReviewStore store)
     {
-        var repoId = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "R_node_123",
-        });
-        return store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = "118",
-            HeadSha = "head-sha",
-            BaseSha = "base-sha",
-            TriggerWatermark = "wm-1",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "collect-only",
-            Stage = ReviewStage.Reviewed,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        }).Id;
+        var repoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "R_node_123",
+            }
+        );
+        return store
+            .CreateOrGetReviewRun(
+                new ReviewRun
+                {
+                    RepoId = repoId,
+                    PrId = "118",
+                    HeadSha = "head-sha",
+                    BaseSha = "base-sha",
+                    TriggerWatermark = "wm-1",
+                    ReviewKind = "full",
+                    VariantId = "primary",
+                    Mode = "collect-only",
+                    Stage = ReviewStage.Reviewed,
+                    WorkflowStatus = WorkflowStatus.Running,
+                    PrLifecycleState = PrLifecycleState.Open,
+                }
+            )
+            .Id;
     }
 
     /// <summary>

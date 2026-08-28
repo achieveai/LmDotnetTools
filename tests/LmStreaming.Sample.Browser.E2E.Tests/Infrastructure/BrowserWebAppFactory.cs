@@ -95,7 +95,8 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         HttpMessageHandler? sandboxGatewayHandler = null,
         SandboxGatewayOptions? sandboxOptions = null,
         IReadOnlyList<CopilotModelInfo>? copilotModels = null,
-        IReadOnlyDictionary<string, string?>? settings = null)
+        IReadOnlyDictionary<string, string?>? settings = null
+    )
     {
         // Scripted SSE modes ('test' / 'test-anthropic') drive a fake handler via ITestAgentBuilder.
         // 'claude-mock' (and other *-mock providers) drive the real CLI against the in-process
@@ -126,7 +127,8 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         {
             throw new ArgumentNullException(
                 nameof(sandboxOptions),
-                "A sandbox gateway handler requires test SandboxGatewayOptions (temp WorkspaceBasePath etc.).");
+                "A sandbox gateway handler requires test SandboxGatewayOptions (temp WorkspaceBasePath etc.)."
+            );
         }
 
         _providerMode = providerMode;
@@ -226,11 +228,14 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             if (_copilotModels is not null)
             {
                 services.RemoveAll<ProviderRegistry>();
-                services.AddSingleton(new ProviderRegistry(
-                    probe: null,
-                    mockHostIsRunning: () => false,
-                    copilotModels: _copilotModels,
-                    copilotTokenAvailable: () => true));
+                services.AddSingleton(
+                    new ProviderRegistry(
+                        probe: null,
+                        mockHostIsRunning: () => false,
+                        copilotModels: _copilotModels,
+                        copilotTokenAvailable: () => true
+                    )
+                );
             }
 
             // Stand-in sandbox gateway: rebuild the gateway lifetime + registry around the capturing
@@ -246,17 +251,17 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
                 services.AddSingleton(sandboxOptions);
 
                 services.RemoveAll<IWorkspaceStore>();
-                var workspacesPath = Path.Combine(
-                    Path.GetDirectoryName(_conversationPath)!,
-                    "workspaces");
+                var workspacesPath = Path.Combine(Path.GetDirectoryName(_conversationPath)!, "workspaces");
                 services.AddSingleton<IWorkspaceStore>(
-                    new FileWorkspaceStore(workspacesPath, sandboxOptions.ResolveWorkspace().Leaf));
+                    new FileWorkspaceStore(workspacesPath, sandboxOptions.ResolveWorkspace().Leaf)
+                );
 
                 services.RemoveAll<SandboxGatewayLifetime>();
                 services.AddSingleton(sp => new SandboxGatewayLifetime(
                     sp.GetRequiredService<SandboxGatewayOptions>(),
                     sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
-                    new HttpClient(_sandboxGatewayHandler, disposeHandler: false)));
+                    new HttpClient(_sandboxGatewayHandler, disposeHandler: false)
+                ));
 
                 services.RemoveAll<SandboxSessionRegistry>();
                 services.AddSingleton(sp => new SandboxSessionRegistry(
@@ -265,7 +270,8 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
                     sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
                     new HttpClient(_sandboxGatewayHandler, disposeHandler: false),
                     sp.GetRequiredService<AuthOptions>(),
-                    sp.GetRequiredService<SessionSecretStore>()));
+                    sp.GetRequiredService<SessionSecretStore>()
+                ));
             }
         });
     }

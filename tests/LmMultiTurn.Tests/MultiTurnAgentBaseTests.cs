@@ -39,8 +39,7 @@ public class MultiTurnAgentBaseTests
         /// Test-only door onto the protected fan-out, so the publish path can be driven directly
         /// instead of through a run. Publishing IS the code under test in the subscriber-race test.
         /// </summary>
-        public ValueTask PublishForTest(IMessage message, CancellationToken ct) =>
-            PublishToAllAsync(message, ct);
+        public ValueTask PublishForTest(IMessage message, CancellationToken ct) => PublishToAllAsync(message, ct);
 
         /// <summary>Test-only window into the protected pending-input count, used to prove inputs are
         /// queued (not yet drained) while the run loop is deterministically stalled.</summary>
@@ -55,7 +54,8 @@ public class MultiTurnAgentBaseTests
             IConversationStore? store = null,
             bool stripReceiptIdsFromAssignment = false,
             TimeSpan? fallbackGracePeriod = null,
-            Task? startGate = null)
+            Task? startGate = null
+        )
             : base(threadId, systemPrompt, store: store, logger: logger)
         {
             _messagesToReturn = messagesToReturn ?? [];
@@ -103,14 +103,16 @@ public class MultiTurnAgentBaseTests
                 // ClaudeAgentLoop's dequeue-deferred publisher) that may publish a
                 // RunAssignmentMessage that doesn't list the caller's receipt.
                 var publishedAssignment = _stripReceiptIdsFromAssignment
-                    ? assignment with { InputIds = [] }
+                    ? assignment with
+                    {
+                        InputIds = [],
+                    }
                     : assignment;
 
-                await PublishToAllAsync(new RunAssignmentMessage
-                {
-                    Assignment = publishedAssignment,
-                    ThreadId = ThreadId,
-                }, ct);
+                await PublishToAllAsync(
+                    new RunAssignmentMessage { Assignment = publishedAssignment, ThreadId = ThreadId },
+                    ct
+                );
 
                 try
                 {
@@ -152,13 +154,12 @@ public class MultiTurnAgentBaseTests
     {
         await using var agent = new TestMultiTurnAgent("thread-enforcement");
 
-        var receipt = await agent.TrySendAsync(new UserInput(
-            [new TextMessage { Text = "synthesize", Role = Role.User }],
-            SuppressSubAgentSpawning: true));
+        var receipt = await agent.TrySendAsync(
+            new UserInput([new TextMessage { Text = "synthesize", Role = Role.User }], SuppressSubAgentSpawning: true)
+        );
 
         receipt.Should().NotBeNull();
-        receipt!.SpawningSuppressed.Should().BeFalse(
-            "this agent accepts the flag but has nothing that will act on it");
+        receipt!.SpawningSuppressed.Should().BeFalse("this agent accepts the flag but has nothing that will act on it");
     }
 
     /// <summary>
@@ -171,12 +172,11 @@ public class MultiTurnAgentBaseTests
     {
         await using var agent = new TestMultiTurnAgent("thread-enforcement-send");
 
-        var receipt = await agent.SendAsync(new UserInput(
-            [new TextMessage { Text = "synthesize", Role = Role.User }],
-            SuppressSubAgentSpawning: true));
+        var receipt = await agent.SendAsync(
+            new UserInput([new TextMessage { Text = "synthesize", Role = Role.User }], SuppressSubAgentSpawning: true)
+        );
 
-        receipt.SpawningSuppressed.Should().BeFalse(
-            "SendAsync must state enforcement exactly as TrySendAsync does");
+        receipt.SpawningSuppressed.Should().BeFalse("SendAsync must state enforcement exactly as TrySendAsync does");
     }
 
     [Fact]
@@ -213,9 +213,7 @@ public class MultiTurnAgentBaseTests
     {
         // Arrange
         var testMessage = new TextMessage { Text = "Test response", Role = Role.Assistant };
-        var agent = new TestMultiTurnAgent(
-            "test-thread",
-            messagesToReturn: [testMessage]);
+        var agent = new TestMultiTurnAgent("test-thread", messagesToReturn: [testMessage]);
 
         var receivedMessages = new List<IMessage>();
 
@@ -261,17 +259,13 @@ public class MultiTurnAgentBaseTests
     {
         // Arrange
         var testMessage = new TextMessage { Text = "Response", Role = Role.Assistant };
-        var agent = new TestMultiTurnAgent(
-            "test-thread",
-            messagesToReturn: [testMessage]);
+        var agent = new TestMultiTurnAgent("test-thread", messagesToReturn: [testMessage]);
 
         using var cts = new CancellationTokenSource();
         var runTask = agent.RunAsync(cts.Token);
 
         // Act
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Hello", Role = Role.User }],
-            InputId: "test-input");
+        var userInput = new UserInput([new TextMessage { Text = "Hello", Role = Role.User }], InputId: "test-input");
 
         var receivedMessages = new List<IMessage>();
         await foreach (var msg in agent.ExecuteRunAsync(userInput, cts.Token))
@@ -302,14 +296,16 @@ public class MultiTurnAgentBaseTests
             "test-thread",
             messagesToReturn: [testMessage],
             stripReceiptIdsFromAssignment: true,
-            fallbackGracePeriod: TimeSpan.FromMilliseconds(100));
+            fallbackGracePeriod: TimeSpan.FromMilliseconds(100)
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = agent.RunAsync(cts.Token);
 
         var userInput = new UserInput(
             [new TextMessage { Text = "Hello", Role = Role.User }],
-            InputId: "fallback-test-input");
+            InputId: "fallback-test-input"
+        );
 
         // Act: enumerate ExecuteRunAsync. Wraps in WaitAsync so a hang fails the
         // test cleanly with TimeoutException instead of bleeding into xUnit's
@@ -352,7 +348,8 @@ public class MultiTurnAgentBaseTests
             firstRunMessages: [firstResponse],
             secondRunMessages: [secondResponse],
             stripReceiptOnFirstRun: true,
-            fallbackGracePeriod: TimeSpan.FromMilliseconds(200));
+            fallbackGracePeriod: TimeSpan.FromMilliseconds(200)
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = agent.RunAsync(cts.Token);
@@ -360,16 +357,12 @@ public class MultiTurnAgentBaseTests
         // Pre-queue an input that will become run #1 BEFORE we subscribe via
         // ExecuteRunAsync. This input belongs to a different caller (us, here,
         // simulating concurrent callers).
-        await agent.SendAsync(
-            [new TextMessage { Text = "First", Role = Role.User }],
-            inputId: "prior-input");
+        await agent.SendAsync([new TextMessage { Text = "First", Role = Role.User }], inputId: "prior-input");
 
         // Brief delay so run #1 starts and its assignment is published.
         await Task.Delay(50);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Second", Role = Role.User }],
-            InputId: "our-input");
+        var userInput = new UserInput([new TextMessage { Text = "Second", Role = Role.User }], InputId: "our-input");
 
         var receivedMessages = new List<IMessage>();
         var executeTask = Task.Run(async () =>
@@ -384,8 +377,13 @@ public class MultiTurnAgentBaseTests
 
         // Must have observed BOTH responses — the iterator should not have
         // terminated on run #1's completion.
-        receivedMessages.OfType<TextMessage>().Should().Contain(m => m.Text == "Second run response",
-            "ExecuteRunAsync must wait for our actual run, not yield-break on a prior run's completion");
+        receivedMessages
+            .OfType<TextMessage>()
+            .Should()
+            .Contain(
+                m => m.Text == "Second run response",
+                "ExecuteRunAsync must wait for our actual run, not yield-break on a prior run's completion"
+            );
 
         await cts.CancelAsync();
         await agent.StopAsync();
@@ -409,7 +407,8 @@ public class MultiTurnAgentBaseTests
             List<IMessage> firstRunMessages,
             List<IMessage> secondRunMessages,
             bool stripReceiptOnFirstRun,
-            TimeSpan fallbackGracePeriod)
+            TimeSpan fallbackGracePeriod
+        )
             : base(threadId)
         {
             _firstRunMessages = firstRunMessages;
@@ -438,15 +437,12 @@ public class MultiTurnAgentBaseTests
                 _runIndex++;
                 var assignment = await StartRunAsync(batch, ct: ct);
                 var stripReceipts = _stripReceiptOnFirstRun && _runIndex == 1;
-                var publishedAssignment = stripReceipts
-                    ? assignment with { InputIds = [] }
-                    : assignment;
+                var publishedAssignment = stripReceipts ? assignment with { InputIds = [] } : assignment;
 
-                await PublishToAllAsync(new RunAssignmentMessage
-                {
-                    Assignment = publishedAssignment,
-                    ThreadId = ThreadId,
-                }, ct);
+                await PublishToAllAsync(
+                    new RunAssignmentMessage { Assignment = publishedAssignment, ThreadId = ThreadId },
+                    ct
+                );
 
                 var messagesForThisRun = _runIndex == 1 ? _firstRunMessages : _secondRunMessages;
                 try
@@ -493,7 +489,8 @@ public class MultiTurnAgentBaseTests
         // Long-lived readers, so every snapshot has real entries to copy. They re-subscribe after a
         // drop because the publisher is entitled to evict a slow one, and an empty map races nothing.
         using var drainerLife = CancellationTokenSource.CreateLinkedTokenSource(life.Token);
-        var drainers = Enumerable.Range(0, Drainers)
+        var drainers = Enumerable
+            .Range(0, Drainers)
             .Select(_ => Task.Run(() => DrainUntilCancelledAsync(agent, drainerLife.Token)))
             .ToArray();
 
@@ -522,8 +519,9 @@ public class MultiTurnAgentBaseTests
             }
         };
 
-        await publish.Should().NotThrowAsync(
-            "a subscriber leaving mid-copy must never leave a null channel in the publisher's snapshot");
+        await publish
+            .Should()
+            .NotThrowAsync("a subscriber leaving mid-copy must never leave a null channel in the publisher's snapshot");
 
         await churnLife.CancelAsync();
         await churn;
@@ -535,16 +533,13 @@ public class MultiTurnAgentBaseTests
     /// Reads until cancelled, re-subscribing if the publisher drops the subscriber for being slow.
     /// Consuming is all that matters — the values are the test's noise, the churn is its signal.
     /// </summary>
-    private static async Task DrainUntilCancelledAsync(
-        TestMultiTurnAgent agent, CancellationToken ct)
+    private static async Task DrainUntilCancelledAsync(TestMultiTurnAgent agent, CancellationToken ct)
     {
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                await foreach (var _ in agent.SubscribeAsync(ct))
-                {
-                }
+                await foreach (var _ in agent.SubscribeAsync(ct)) { }
             }
         }
         catch (OperationCanceledException)
@@ -601,8 +596,7 @@ public class MultiTurnAgentBaseTests
 
         // Act & Assert
         var act = () => agent.RunAsync(cts.Token);
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*already running*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*already running*");
 
         // Cleanup
         await cts.CancelAsync();
@@ -673,10 +667,12 @@ public class MultiTurnAgentBaseTests
         // Assert - deterministic proof: all three sends completed while the run loop has
         // made zero progress (it never even started draining the channel), so SendAsync
         // cannot have waited on any processing to complete.
-        agent.ExecuteCallCount.Should().Be(0,
-            "SendAsync must return before the run loop even begins processing, not merely quickly");
-        agent.PendingInputCountForTest.Should().Be(3,
-            "all three inputs must be sitting in the channel, unread, while the run loop is stalled");
+        agent
+            .ExecuteCallCount.Should()
+            .Be(0, "SendAsync must return before the run loop even begins processing, not merely quickly");
+        agent
+            .PendingInputCountForTest.Should()
+            .Be(3, "all three inputs must be sitting in the channel, unread, while the run loop is stalled");
 
         receipt1.ReceiptId.Should().NotBe(receipt2.ReceiptId);
         receipt2.ReceiptId.Should().NotBe(receipt3.ReceiptId);
@@ -711,7 +707,8 @@ public class MultiTurnAgentBaseTests
         // Act
         var receipt = await agent.SendAsync(
             [new TextMessage { Text = "Hello", Role = Role.User }],
-            "correlation-test-input");
+            "correlation-test-input"
+        );
 
         // Wait for processing
         await Task.Delay(500);
@@ -722,8 +719,9 @@ public class MultiTurnAgentBaseTests
 
         var assignment = runAssignments.First();
         assignment.Assignment.InputIds.Should().NotBeNull();
-        assignment.Assignment.InputIds.Should().Contain(receipt.ReceiptId,
-            "RunAssignment.InputIds should include the ReceiptId from SendReceipt");
+        assignment
+            .Assignment.InputIds.Should()
+            .Contain(receipt.ReceiptId, "RunAssignment.InputIds should include the ReceiptId from SendReceipt");
 
         // Cleanup
         await cts.CancelAsync();
@@ -782,11 +780,10 @@ public class MultiTurnAgentBaseTests
         // Act
         var receipt1 = await agent.SendAsync(
             [new TextMessage { Text = "Test", Role = Role.User }],
-            inputId: "my-custom-id");
+            inputId: "my-custom-id"
+        );
 
-        var receipt2 = await agent.SendAsync(
-            [new TextMessage { Text = "Test", Role = Role.User }],
-            inputId: null);
+        var receipt2 = await agent.SendAsync([new TextMessage { Text = "Test", Role = Role.User }], inputId: null);
 
         // Assert
         receipt1.InputId.Should().Be("my-custom-id");
@@ -832,7 +829,13 @@ public class MultiTurnAgentBaseTests
 
         var priorMessages = new List<IMessage>
         {
-            new TextMessage { Text = "My name is Alice.", Role = Role.User, GenerationId = "g1", RunId = runId },
+            new TextMessage
+            {
+                Text = "My name is Alice.",
+                Role = Role.User,
+                GenerationId = "g1",
+                RunId = runId,
+            },
             new TextMessage
             {
                 Text = "Nice to meet you, Alice.",
@@ -843,7 +846,8 @@ public class MultiTurnAgentBaseTests
         };
         await store.AppendMessagesAsync(
             threadId,
-            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId));
+            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId)
+        );
         await store.SaveMetadataAsync(
             threadId,
             new ThreadMetadata
@@ -851,7 +855,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
         using var cts = new CancellationTokenSource();
@@ -869,7 +874,9 @@ public class MultiTurnAgentBaseTests
         // Assert: the prior conversation is back in the loop's history, so the next turn resends
         // it to the LLM.
         var history = agent.SnapshotHistoryForTest();
-        history.OfType<TextMessage>().Select(m => m.Text)
+        history
+            .OfType<TextMessage>()
+            .Select(m => m.Text)
             .Should()
             .Contain("My name is Alice.")
             .And.Contain("Nice to meet you, Alice.");
@@ -891,7 +898,13 @@ public class MultiTurnAgentBaseTests
 
         var priorMessages = new List<IMessage>
         {
-            new TextMessage { Text = "My name is Alice.", Role = Role.User, GenerationId = "g1", RunId = runId },
+            new TextMessage
+            {
+                Text = "My name is Alice.",
+                Role = Role.User,
+                GenerationId = "g1",
+                RunId = runId,
+            },
             new TextMessage
             {
                 Text = "Nice to meet you, Alice.",
@@ -902,7 +915,8 @@ public class MultiTurnAgentBaseTests
         };
         await store.AppendMessagesAsync(
             threadId,
-            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId));
+            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId)
+        );
         await store.SaveMetadataAsync(
             threadId,
             new ThreadMetadata
@@ -910,7 +924,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
         using var cts = new CancellationTokenSource();
@@ -957,42 +972,40 @@ public class MultiTurnAgentBaseTests
 
         // A corrupt row deliberately BETWEEN two healthy ones: a whole-list abort (the pre-fix
         // behavior) would lose the sibling after it, so restoring both proves per-record resilience.
-        var healthyBefore =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage
-                {
-                    Text = "before corrupt",
-                    Role = Role.User,
-                    GenerationId = "g1",
-                    RunId = runId,
-                },
-                threadId,
-                runId
-            ) with
+        var healthyBefore = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage
             {
-                Timestamp = 1,
-            };
+                Text = "before corrupt",
+                Role = Role.User,
+                GenerationId = "g1",
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 1,
+        };
         var corrupt = healthyBefore with
         {
             Id = "corrupt-record-1",
             Timestamp = 2,
             MessageJson = "{ this is not valid message json",
         };
-        var healthyAfter =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage
-                {
-                    Text = "after corrupt",
-                    Role = Role.Assistant,
-                    GenerationId = "g2",
-                    RunId = runId,
-                },
-                threadId,
-                runId
-            ) with
+        var healthyAfter = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage
             {
-                Timestamp = 3,
-            };
+                Text = "after corrupt",
+                Role = Role.Assistant,
+                GenerationId = "g2",
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 3,
+        };
 
         await store.AppendMessagesAsync(threadId, [healthyBefore, corrupt, healthyAfter]);
         await store.SaveMetadataAsync(
@@ -1002,7 +1015,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
 
@@ -1030,7 +1044,8 @@ public class MultiTurnAgentBaseTests
     [InlineData(false, true)]
     public async Task RecoverAsync_DropsBothHalvesOfAToolCallPair_WhenEitherHalfIsCorrupt(
         bool corruptTheCall,
-        bool pluralCallShape)
+        bool pluralCallShape
+    )
     {
         // A tool call and its result are TWO separate persisted rows (MessagePersistenceConverter is
         // strictly 1:1). Skipping one row per #489 therefore ORPHANS its partner, and nothing
@@ -1047,15 +1062,19 @@ public class MultiTurnAgentBaseTests
         const string runId = "prior-run";
         const string toolCallId = "call-1";
 
-        var healthyText =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
-                threadId,
-                runId
-            ) with
+        var healthyText = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage
             {
-                Timestamp = 1,
-            };
+                Text = "healthy text",
+                Role = Role.User,
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 1,
+        };
         IMessage callMessage = pluralCallShape
             ? new ToolsCallMessage
             {
@@ -1079,26 +1098,24 @@ public class MultiTurnAgentBaseTests
                 FunctionName = "do_thing",
                 FunctionArgs = "{}",
             };
-        var callRow =
-            MessagePersistenceConverter.ToPersistedMessage(callMessage, threadId, runId) with
+        var callRow = MessagePersistenceConverter.ToPersistedMessage(callMessage, threadId, runId) with
+        {
+            Timestamp = 2,
+        };
+        var resultRow = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolCallResultMessage
             {
-                Timestamp = 2,
-            };
-        var resultRow =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolCallResultMessage
-                {
-                    ToolCallId = toolCallId,
-                    ToolName = "do_thing",
-                    Result = "ok",
-                    RunId = runId,
-                },
-                threadId,
-                runId
-            ) with
-            {
-                Timestamp = 3,
-            };
+                ToolCallId = toolCallId,
+                ToolName = "do_thing",
+                Result = "ok",
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 3,
+        };
 
         // Only MessageJson is damaged — MessageType/Id survive, exactly as a bit-rotted row would.
         const string CorruptJson = "{ this is not valid message json";
@@ -1119,7 +1136,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
 
@@ -1129,16 +1147,21 @@ public class MultiTurnAgentBaseTests
         var history = agent.SnapshotHistoryForTest();
 
         // NEITHER half may survive — never exactly one.
-        history.OfType<ToolCallMessage>().Should().BeEmpty(
-            "a tool call whose result was skipped must not reach the provider");
-        history.OfType<ToolsCallMessage>().Should().BeEmpty(
-            "a tool call whose result was skipped must not reach the provider");
-        history.OfType<ToolCallResultMessage>().Should().BeEmpty(
-            "a tool result whose call was skipped must not reach the provider");
+        history
+            .OfType<ToolCallMessage>()
+            .Should()
+            .BeEmpty("a tool call whose result was skipped must not reach the provider");
+        history
+            .OfType<ToolsCallMessage>()
+            .Should()
+            .BeEmpty("a tool call whose result was skipped must not reach the provider");
+        history
+            .OfType<ToolCallResultMessage>()
+            .Should()
+            .BeEmpty("a tool result whose call was skipped must not reach the provider");
 
         // ...and the unrelated healthy row is still restored (#489's per-record win is intact).
-        history.OfType<TextMessage>().Select(m => m.Text).Should().ContainSingle()
-            .Which.Should().Be("healthy text");
+        history.OfType<TextMessage>().Select(m => m.Text).Should().ContainSingle().Which.Should().Be("healthy text");
         history.Count.Should().Be(1);
 
         await agent.DisposeAsync();
@@ -1147,8 +1170,7 @@ public class MultiTurnAgentBaseTests
     [Theory]
     [InlineData(true)] // the RESULT row was never written — a dangling tool_use
     [InlineData(false)] // the CALL row was never written — a dangling tool_result
-    public async Task RecoverAsync_DropsAnUnpairedToolMessage_WhenItsPartnerRowIsSimplyAbsent(
-        bool resultRowAbsent)
+    public async Task RecoverAsync_DropsAnUnpairedToolMessage_WhenItsPartnerRowIsSimplyAbsent(bool resultRowAbsent)
     {
         // ORIGIN B, with no corruption anywhere. PersistMessageAsync appends one row at a time and
         // swallows an append failure (`catch (Exception ex) { Logger.LogWarning(ex, "Failed to persist
@@ -1161,15 +1183,19 @@ public class MultiTurnAgentBaseTests
         const string runId = "prior-run";
         const string toolCallId = "append-was-lost";
 
-        var text =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
-                threadId,
-                runId
-            ) with
+        var text = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage
             {
-                Timestamp = 1,
-            };
+                Text = "healthy text",
+                Role = Role.User,
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 1,
+        };
         IMessage survivingHalf = resultRowAbsent
             ? new ToolCallMessage
             {
@@ -1186,11 +1212,10 @@ public class MultiTurnAgentBaseTests
                 Result = "ok",
                 RunId = runId,
             };
-        var survivingRow =
-            MessagePersistenceConverter.ToPersistedMessage(survivingHalf, threadId, runId) with
-            {
-                Timestamp = 2,
-            };
+        var survivingRow = MessagePersistenceConverter.ToPersistedMessage(survivingHalf, threadId, runId) with
+        {
+            Timestamp = 2,
+        };
 
         // The partner row is never appended at all — every row in this store deserializes cleanly.
         await store.AppendMessagesAsync(threadId, [text, survivingRow]);
@@ -1201,7 +1226,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
 
@@ -1211,8 +1237,7 @@ public class MultiTurnAgentBaseTests
         var history = agent.SnapshotHistoryForTest();
         history.OfType<ToolCallMessage>().Should().BeEmpty();
         history.OfType<ToolCallResultMessage>().Should().BeEmpty();
-        history.OfType<TextMessage>().Select(m => m.Text).Should().ContainSingle()
-            .Which.Should().Be("healthy text");
+        history.OfType<TextMessage>().Select(m => m.Text).Should().ContainSingle().Which.Should().Be("healthy text");
 
         await agent.DisposeAsync();
     }
@@ -1234,34 +1259,37 @@ public class MultiTurnAgentBaseTests
         var threadId = $"test-thread-unusable-id-{unusableId?.Trim().Length ?? -1}-{unusableId is null}";
         const string runId = "prior-run";
 
-        var text =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
-                threadId,
-                runId
-            ) with
+        var text = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage
             {
-                Timestamp = 1,
-            };
+                Text = "healthy text",
+                Role = Role.User,
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 1,
+        };
         // Deliberately ALONE: no result row anywhere. If the sweep treated this id as usable it would
         // look for a partner, find none, and drop the message.
-        var idLessCall =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolCallMessage
-                {
-                    Role = Role.Assistant,
-                    RunId = runId,
-                    ToolCallId = unusableId,
-                    FunctionName = "web_search",
-                    FunctionArgs = "{}",
-                    ExecutionTarget = ExecutionTarget.ProviderServer,
-                },
-                threadId,
-                runId
-            ) with
+        var idLessCall = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolCallMessage
             {
-                Timestamp = 2,
-            };
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCallId = unusableId,
+                FunctionName = "web_search",
+                FunctionArgs = "{}",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 2,
+        };
 
         await store.AppendMessagesAsync(threadId, [text, idLessCall]);
         await store.SaveMetadataAsync(
@@ -1271,14 +1299,18 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
 
         await agent.RecoverAsync();
 
-        agent.SnapshotHistoryForTest().OfType<ToolCallMessage>().Should().ContainSingle(
-            "a call with no usable id takes no part in pairing and must never be deleted");
+        agent
+            .SnapshotHistoryForTest()
+            .OfType<ToolCallMessage>()
+            .Should()
+            .ContainSingle("a call with no usable id takes no part in pairing and must never be deleted");
         agent.SnapshotHistoryForTest().Should().HaveCount(2);
 
         await agent.DisposeAsync();
@@ -1297,38 +1329,41 @@ public class MultiTurnAgentBaseTests
         var threadId = $"test-thread-plural-unusable-{unusableId?.Trim().Length ?? -1}-{unusableId is null}";
         const string runId = "prior-run";
 
-        var text =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
-                threadId,
-                runId
-            ) with
+        var text = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage
             {
-                Timestamp = 1,
-            };
-        var idLessCall =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolsCallMessage
-                {
-                    Role = Role.Assistant,
-                    RunId = runId,
-                    ToolCalls =
-                    [
-                        new ToolCall
-                        {
-                            ToolCallId = unusableId,
-                            FunctionName = "web_search",
-                            FunctionArgs = "{}",
-                            ExecutionTarget = ExecutionTarget.ProviderServer,
-                        },
-                    ],
-                },
-                threadId,
-                runId
-            ) with
+                Text = "healthy text",
+                Role = Role.User,
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 1,
+        };
+        var idLessCall = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolsCallMessage
             {
-                Timestamp = 2,
-            };
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        ToolCallId = unusableId,
+                        FunctionName = "web_search",
+                        FunctionArgs = "{}",
+                        ExecutionTarget = ExecutionTarget.ProviderServer,
+                    },
+                ],
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 2,
+        };
 
         await store.AppendMessagesAsync(threadId, [text, idLessCall]);
         await store.SaveMetadataAsync(
@@ -1338,14 +1373,18 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
 
         await agent.RecoverAsync();
 
-        agent.SnapshotHistoryForTest().OfType<ToolsCallMessage>().Should().ContainSingle(
-            "a call with no usable id takes no part in pairing and must never be deleted");
+        agent
+            .SnapshotHistoryForTest()
+            .OfType<ToolsCallMessage>()
+            .Should()
+            .ContainSingle("a call with no usable id takes no part in pairing and must never be deleted");
         agent.SnapshotHistoryForTest().Should().HaveCount(2);
 
         await agent.DisposeAsync();
@@ -1365,59 +1404,60 @@ public class MultiTurnAgentBaseTests
         const string runId = "prior-run";
         const string toolCallId = "call-answered-twice";
 
-        var text =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
-                threadId,
-                runId
-            ) with
+        var text = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage
             {
-                Timestamp = 1,
-            };
-        var callRow =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolCallMessage
-                {
-                    Role = Role.Assistant,
-                    RunId = runId,
-                    ToolCallId = toolCallId,
-                    FunctionName = "do_thing",
-                    FunctionArgs = "{}",
-                },
-                threadId,
-                runId
-            ) with
+                Text = "healthy text",
+                Role = Role.User,
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 1,
+        };
+        var callRow = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolCallMessage
             {
-                Timestamp = 2,
-            };
-        var singularResult =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolCallResultMessage
-                {
-                    ToolCallId = toolCallId,
-                    ToolName = "do_thing",
-                    Result = "ok",
-                    RunId = runId,
-                },
-                threadId,
-                runId
-            ) with
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCallId = toolCallId,
+                FunctionName = "do_thing",
+                FunctionArgs = "{}",
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 2,
+        };
+        var singularResult = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolCallResultMessage
             {
-                Timestamp = 3,
-            };
-        var pluralResult =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolsCallResultMessage
-                {
-                    RunId = runId,
-                    ToolCallResults = [new ToolCallResult(toolCallId, "ok again")],
-                },
-                threadId,
-                runId
-            ) with
+                ToolCallId = toolCallId,
+                ToolName = "do_thing",
+                Result = "ok",
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 3,
+        };
+        var pluralResult = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolsCallResultMessage
             {
-                Timestamp = 4,
-            };
+                RunId = runId,
+                ToolCallResults = [new ToolCallResult(toolCallId, "ok again")],
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 4,
+        };
 
         singularResult.Id.Should().NotBe(pluralResult.Id, "otherwise the store holds only one row");
 
@@ -1429,7 +1469,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
 
@@ -1437,10 +1478,11 @@ public class MultiTurnAgentBaseTests
 
         var history = agent.SnapshotHistoryForTest();
         history.OfType<ToolCallMessage>().Should().ContainSingle();
-        history.OfType<ToolCallResultMessage>().Should().ContainSingle(
-            "the first answer is still an answer");
-        history.OfType<ToolsCallResultMessage>().Should().ContainSingle(
-            "a second answer to the same call must not be consumed away");
+        history.OfType<ToolCallResultMessage>().Should().ContainSingle("the first answer is still an answer");
+        history
+            .OfType<ToolsCallResultMessage>()
+            .Should()
+            .ContainSingle("a second answer to the same call must not be consumed away");
         history.Should().HaveCount(4);
 
         await agent.DisposeAsync();
@@ -1458,58 +1500,60 @@ public class MultiTurnAgentBaseTests
         var threadId = "test-thread-cascading-drop";
         const string runId = "prior-run";
 
-        var text =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
-                threadId,
-                runId
-            ) with
+        var text = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage
             {
-                Timestamp = 1,
-            };
-        var twoCallRow =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolsCallMessage
-                {
-                    Role = Role.Assistant,
-                    RunId = runId,
-                    ToolCalls =
-                    [
-                        new ToolCall
-                        {
-                            ToolCallId = "call-a",
-                            FunctionName = "do_a",
-                            FunctionArgs = "{}",
-                        },
-                        new ToolCall
-                        {
-                            ToolCallId = "call-b",
-                            FunctionName = "do_b",
-                            FunctionArgs = "{}",
-                        },
-                    ],
-                },
-                threadId,
-                runId
-            ) with
+                Text = "healthy text",
+                Role = Role.User,
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 1,
+        };
+        var twoCallRow = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolsCallMessage
             {
-                Timestamp = 2,
-            };
-        var resultForA =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolCallResultMessage
-                {
-                    ToolCallId = "call-a",
-                    ToolName = "do_a",
-                    Result = "ok",
-                    RunId = runId,
-                },
-                threadId,
-                runId
-            ) with
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        ToolCallId = "call-a",
+                        FunctionName = "do_a",
+                        FunctionArgs = "{}",
+                    },
+                    new ToolCall
+                    {
+                        ToolCallId = "call-b",
+                        FunctionName = "do_b",
+                        FunctionArgs = "{}",
+                    },
+                ],
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 2,
+        };
+        var resultForA = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolCallResultMessage
             {
-                Timestamp = 3,
-            };
+                ToolCallId = "call-a",
+                ToolName = "do_a",
+                Result = "ok",
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 3,
+        };
 
         // call-b's result row is never written; call-a's is healthy and readable.
         await store.AppendMessagesAsync(threadId, [text, twoCallRow, resultForA]);
@@ -1520,7 +1564,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
 
@@ -1528,8 +1573,10 @@ public class MultiTurnAgentBaseTests
 
         var history = agent.SnapshotHistoryForTest();
         history.OfType<ToolsCallMessage>().Should().BeEmpty("call-b was never answered");
-        history.OfType<ToolCallResultMessage>().Should().BeEmpty(
-            "call-a's result is orphaned by the removal of the message that requested it");
+        history
+            .OfType<ToolCallResultMessage>()
+            .Should()
+            .BeEmpty("call-a's result is orphaned by the removal of the message that requested it");
         history.Should().ContainSingle();
 
         await agent.DisposeAsync();
@@ -1546,46 +1593,44 @@ public class MultiTurnAgentBaseTests
         const string runId = "prior-run";
         const string toolCallId = "call-plural";
 
-        var corrupt =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage { Text = "irrelevant", Role = Role.User, RunId = runId },
-                threadId,
-                runId
-            ) with
+        var corrupt = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage
             {
-                Id = "corrupt-unrelated",
-                Timestamp = 1,
-                MessageJson = "{ not json",
-            };
-        var callRow =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolCallMessage
-                {
-                    Role = Role.Assistant,
-                    RunId = runId,
-                    ToolCallId = toolCallId,
-                    FunctionName = "do_thing",
-                    FunctionArgs = "{}",
-                },
-                threadId,
-                runId
-            ) with
+                Text = "irrelevant",
+                Role = Role.User,
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Id = "corrupt-unrelated",
+            Timestamp = 1,
+            MessageJson = "{ not json",
+        };
+        var callRow = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolCallMessage
             {
-                Timestamp = 2,
-            };
-        var pluralResultRow =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolsCallResultMessage
-                {
-                    RunId = runId,
-                    ToolCallResults = [new ToolCallResult(toolCallId, "ok")],
-                },
-                threadId,
-                runId
-            ) with
-            {
-                Timestamp = 3,
-            };
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCallId = toolCallId,
+                FunctionName = "do_thing",
+                FunctionArgs = "{}",
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 2,
+        };
+        var pluralResultRow = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolsCallResultMessage { RunId = runId, ToolCallResults = [new ToolCallResult(toolCallId, "ok")] },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 3,
+        };
 
         await store.AppendMessagesAsync(threadId, [corrupt, callRow, pluralResultRow]);
         await store.SaveMetadataAsync(
@@ -1595,7 +1640,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
 
@@ -1603,8 +1649,10 @@ public class MultiTurnAgentBaseTests
 
         // The sweep DID run (a row was skipped) and still kept the pair intact.
         var history = agent.SnapshotHistoryForTest();
-        history.OfType<ToolCallMessage>().Should().ContainSingle(
-            "its answer is present, just in the plural message shape");
+        history
+            .OfType<ToolCallMessage>()
+            .Should()
+            .ContainSingle("its answer is present, just in the plural message shape");
         history.OfType<ToolsCallResultMessage>().Should().ContainSingle();
 
         await agent.DisposeAsync();
@@ -1620,21 +1668,17 @@ public class MultiTurnAgentBaseTests
         const string runId = "prior-run";
 
         var template = MessagePersistenceConverter.ToPersistedMessage(
-            new TextMessage { Text = "irrelevant", Role = Role.User, RunId = runId },
+            new TextMessage
+            {
+                Text = "irrelevant",
+                Role = Role.User,
+                RunId = runId,
+            },
             threadId,
-            runId);
-        var corruptA = template with
-        {
-            Id = "corrupt-a",
-            Timestamp = 1,
-            MessageJson = "{ not json",
-        };
-        var corruptB = template with
-        {
-            Id = "corrupt-b",
-            Timestamp = 2,
-            MessageJson = "also not json",
-        };
+            runId
+        );
+        var corruptA = template with { Id = "corrupt-a", Timestamp = 1, MessageJson = "{ not json" };
+        var corruptB = template with { Id = "corrupt-b", Timestamp = 2, MessageJson = "also not json" };
 
         await store.AppendMessagesAsync(threadId, [corruptA, corruptB]);
         await store.SaveMetadataAsync(
@@ -1644,7 +1688,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
 
@@ -1669,47 +1714,49 @@ public class MultiTurnAgentBaseTests
         const string runId = "prior-run";
         const string toolCallId = "call-9";
 
-        var healthyText =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
-                threadId,
-                runId
-            ) with
+        var healthyText = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage
             {
-                Timestamp = 1,
-            };
-        var callRow =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolCallMessage
-                {
-                    Role = Role.Assistant,
-                    RunId = runId,
-                    ToolCallId = toolCallId,
-                    FunctionName = "do_thing",
-                    FunctionArgs = "{}",
-                },
-                threadId,
-                runId
-            ) with
+                Text = "healthy text",
+                Role = Role.User,
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 1,
+        };
+        var callRow = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolCallMessage
             {
-                Timestamp = 2,
-            };
-        var resultRow =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new ToolCallResultMessage
-                {
-                    ToolCallId = toolCallId,
-                    ToolName = "do_thing",
-                    Result = "ok",
-                    RunId = runId,
-                },
-                threadId,
-                runId
-            ) with
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCallId = toolCallId,
+                FunctionName = "do_thing",
+                FunctionArgs = "{}",
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 2,
+        };
+        var resultRow = MessagePersistenceConverter.ToPersistedMessage(
+            new ToolCallResultMessage
             {
-                Timestamp = 3,
-                MessageJson = "{ this is not valid message json",
-            };
+                ToolCallId = toolCallId,
+                ToolName = "do_thing",
+                Result = "ok",
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 3,
+            MessageJson = "{ this is not valid message json",
+        };
 
         // 3 attempted: 1 unreadable (the result), 1 dropped for pairing (the call), 1 restored.
         await store.AppendMessagesAsync(threadId, [healthyText, callRow, resultRow]);
@@ -1720,18 +1767,18 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store, logger: logger);
 
         await agent.RecoverAsync();
 
-        var summary = logger.Entries.Should()
+        var summary = logger
+            .Entries.Should()
             .ContainSingle(e => e.Message.Contains("Recovered 1 of 3 persisted records"))
             .Which;
-        summary.Level.Should().Be(
-            LogLevel.Warning,
-            "records were dropped, so the summary must not sit at Information");
+        summary.Level.Should().Be(LogLevel.Warning, "records were dropped, so the summary must not sit at Information");
         summary.Message.Should().Contain("1 unreadable").And.Contain("1 unpaired");
 
         await agent.DisposeAsync();
@@ -1749,15 +1796,19 @@ public class MultiTurnAgentBaseTests
         var threadId = "test-thread-unknown-type";
         const string runId = "prior-run";
 
-        var healthy =
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
-                threadId,
-                runId
-            ) with
+        var healthy = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage
             {
-                Timestamp = 1,
-            };
+                Text = "healthy text",
+                Role = Role.User,
+                RunId = runId,
+            },
+            threadId,
+            runId
+        ) with
+        {
+            Timestamp = 1,
+        };
         var fromNewerBinary = healthy with
         {
             Id = "from-newer-binary",
@@ -1773,7 +1824,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store, logger: logger);
 
@@ -1782,14 +1834,21 @@ public class MultiTurnAgentBaseTests
         recovered.Should().BeTrue();
         agent.SnapshotHistoryForTest().Should().ContainSingle();
 
-        logger.Entries.Should().Contain(
-            e => e.Message.Contains("unknown message type")
-                && e.Message.Contains("some_future_message")
-                && e.Message.Contains("from-newer-binary"),
-            "a schema the running binary does not know must not read as a corrupt record");
-        logger.Entries.Should().NotContain(
-            e => e.Message.Contains("Skipping corrupt persisted record"),
-            "the unknown-type row must not also be reported as corruption");
+        logger
+            .Entries.Should()
+            .Contain(
+                e =>
+                    e.Message.Contains("unknown message type")
+                    && e.Message.Contains("some_future_message")
+                    && e.Message.Contains("from-newer-binary"),
+                "a schema the running binary does not know must not read as a corrupt record"
+            );
+        logger
+            .Entries.Should()
+            .NotContain(
+                e => e.Message.Contains("Skipping corrupt persisted record"),
+                "the unknown-type row must not also be reported as corruption"
+            );
 
         await agent.DisposeAsync();
     }
@@ -1810,7 +1869,8 @@ public class MultiTurnAgentBaseTests
             EventId eventId,
             TState state,
             Exception? exception,
-            Func<TState, Exception?, string> formatter)
+            Func<TState, Exception?, string> formatter
+        )
         {
             Entries.Add(new LogEntry(logLevel, formatter(state, exception)));
         }
@@ -1902,7 +1962,8 @@ public class MultiTurnAgentBaseTests
                 OwnerUserId = "entra-tid:owner-oid",
                 OwnerAppId = "codereview-daemon",
                 Visibility = Visibility.Shared,
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
 
@@ -1989,10 +2050,7 @@ public class MultiTurnAgentBaseTests
             ThreadId = threadId,
             LatestRunId = "old-run-id",
             LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            Properties = new Dictionary<string, object>
-            {
-                ["title"] = "Preserved Title",
-            }.ToImmutableDictionary(),
+            Properties = new Dictionary<string, object> { ["title"] = "Preserved Title" }.ToImmutableDictionary(),
         };
         await store.SaveMetadataAsync(threadId, initialMetadata);
 

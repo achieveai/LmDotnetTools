@@ -49,11 +49,12 @@ internal static class IdempotencyKey
     private static string Require(string value, string name) =>
         string.IsNullOrWhiteSpace(value)
             ? throw new ArgumentException($"Idempotency key component '{name}' must be non-empty.", nameof(value))
-            : value.Contains(':', StringComparison.Ordinal)
-                ? throw new ArgumentException(
-                    $"Idempotency key component '{name}' must not contain ':' (it is the segment separator).",
-                    nameof(value))
-                : value;
+        : value.Contains(':', StringComparison.Ordinal)
+            ? throw new ArgumentException(
+                $"Idempotency key component '{name}' must not contain ':' (it is the segment separator).",
+                nameof(value)
+            )
+        : value;
 
     private static string Fold(string value) => value.ToLowerInvariant();
 }
@@ -75,4 +76,5 @@ internal sealed record IdempotencyKeyComponents(
     string ArtifactKind,
     string ArtifactSubject,
     string HeadSha,
-    string VariantId);
+    string VariantId
+);

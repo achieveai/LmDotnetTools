@@ -43,7 +43,8 @@ public class ContextDiscoveryControllerTests
         WorkspaceSubAgentLoader? loader = null,
         ContextDiscoveryInjector? injector = null,
         ContextDiscoveryDiagnostics? diagnostics = null,
-        SessionSecretStore? sessionSecretStore = null)
+        SessionSecretStore? sessionSecretStore = null
+    )
     {
         sessionSecretStore ??= CreateSeededSessionSecretStore();
 
@@ -59,7 +60,8 @@ public class ContextDiscoveryControllerTests
             injector,
             diagnostics,
             new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
-            NullLogger<ContextDiscoveryController>.Instance);
+            NullLogger<ContextDiscoveryController>.Instance
+        );
 
         var httpContext = new DefaultHttpContext();
         if (authorizationHeader is not null)
@@ -75,7 +77,8 @@ public class ContextDiscoveryControllerTests
     {
         var store = new SessionSecretStore(
             Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-            NullLogger<SessionSecretStore>.Instance);
+            NullLogger<SessionSecretStore>.Instance
+        );
 
         foreach (var sessionId in WellKnownSessionIds)
         {
@@ -92,7 +95,8 @@ public class ContextDiscoveryControllerTests
         // while still letting it exercise the validation/dedup paths against the real registry.
         var pool = new MultiTurnAgentPool(
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         return new ContextDiscoveryInjector(
             registry,
@@ -100,7 +104,8 @@ public class ContextDiscoveryControllerTests
             new ContextDiscoveryFormatter(),
             new ContextDiscoveryOptions(),
             new ContextDiscoveryDiagnostics(),
-            NullLogger<ContextDiscoveryInjector>.Instance);
+            NullLogger<ContextDiscoveryInjector>.Instance
+        );
     }
 
     private static SandboxSessionRegistry CreateEmptyRegistry()
@@ -114,7 +119,8 @@ public class ContextDiscoveryControllerTests
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(UnusedRespond)));
+            new HttpClient(new StubHandler(UnusedRespond))
+        );
 
         return new SandboxSessionRegistry(
             gateway,
@@ -124,14 +130,16 @@ public class ContextDiscoveryControllerTests
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
     }
 
     // The gateway delivers a BATCHED `context_discovery` envelope (a `discoveries` array with the
     // session id at the envelope level). These helpers wrap a single item in that envelope so each
     // test reads as "one discovered item for a session".
-    private static ContextDiscoveryEnvelope Envelope(string? sessionId, params ContextDiscoveryItem[] items)
-        => new() { SessionId = sessionId, Discoveries = [.. items] };
+    private static ContextDiscoveryEnvelope Envelope(string? sessionId, params ContextDiscoveryItem[] items) =>
+        new() { SessionId = sessionId, Discoveries = [.. items] };
 
     [Fact]
     public async Task NotifyAsync_NoAuthorizationHeader_ReturnsUnauthorized()
@@ -186,7 +194,8 @@ public class ContextDiscoveryControllerTests
         // authenticate a call claiming to be session B, even though both sessions are known.
         var sessionSecretStore = new SessionSecretStore(
             Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-            NullLogger<SessionSecretStore>.Instance);
+            NullLogger<SessionSecretStore>.Instance
+        );
         await sessionSecretStore.SaveAsync("session-a", "secret-for-a");
         await sessionSecretStore.SaveAsync("session-b", "secret-for-b");
 
@@ -255,12 +264,15 @@ public class ContextDiscoveryControllerTests
         // empty file. The injector treats it as a drop downstream so nothing reaches the model,
         // but the contract at the boundary is "non-null is acceptable".
         var controller = CreateController(authorizationHeader: Secret);
-        var body = Envelope("session-x", new ContextDiscoveryItem
-        {
-            Kind = "context_file",
-            Path = "CLAUDE.md",
-            Content = string.Empty,
-        });
+        var body = Envelope(
+            "session-x",
+            new ContextDiscoveryItem
+            {
+                Kind = "context_file",
+                Path = "CLAUDE.md",
+                Content = string.Empty,
+            }
+        );
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -276,19 +288,28 @@ public class ContextDiscoveryControllerTests
         var registry = CreateEmptyRegistry();
         var controller = CreateController(authorizationHeader: Secret, registry: registry);
 
-        var body = Envelope("session-dispatch", new ContextDiscoveryItem
-        {
-            Kind = "context_file",
-            Path = "CLAUDE.md",
-            Content = "body",
-        });
+        var body = Envelope(
+            "session-dispatch",
+            new ContextDiscoveryItem
+            {
+                Kind = "context_file",
+                Path = "CLAUDE.md",
+                Content = "body",
+            }
+        );
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
         result.Should().BeOfType<OkResult>();
         registry
-            .TryMarkDiscoverySeen("session-dispatch", SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
-            .Should().BeFalse("the injector should have already marked this entry as seen during dispatch");
+            .TryMarkDiscoverySeen(
+                "session-dispatch",
+                SandboxSessionRegistry.SessionDiscoveryTarget,
+                "context_file",
+                "CLAUDE.md"
+            )
+            .Should()
+            .BeFalse("the injector should have already marked this entry as seen during dispatch");
     }
 
     [Fact]
@@ -299,13 +320,17 @@ public class ContextDiscoveryControllerTests
         var controller = CreateController(authorizationHeader: Secret, diagnostics: diagnostics);
 
         var result = await controller.NotifyAsync(
-            Envelope("session-diag", new ContextDiscoveryItem
-            {
-                Kind = "context_file",
-                Path = "CLAUDE.md",
-                Content = "body",
-            }),
-            CancellationToken.None);
+            Envelope(
+                "session-diag",
+                new ContextDiscoveryItem
+                {
+                    Kind = "context_file",
+                    Path = "CLAUDE.md",
+                    Content = "body",
+                }
+            ),
+            CancellationToken.None
+        );
 
         result.Should().BeOfType<OkResult>();
         var snapshot = diagnostics.Snapshot();
@@ -323,13 +348,17 @@ public class ContextDiscoveryControllerTests
         var controller = CreateController(authorizationHeader: "wrong-secret", diagnostics: diagnostics);
 
         _ = await controller.NotifyAsync(
-            Envelope("session-diag", new ContextDiscoveryItem
-            {
-                Kind = "context_file",
-                Path = "CLAUDE.md",
-                Content = "body",
-            }),
-            CancellationToken.None);
+            Envelope(
+                "session-diag",
+                new ContextDiscoveryItem
+                {
+                    Kind = "context_file",
+                    Path = "CLAUDE.md",
+                    Content = "body",
+                }
+            ),
+            CancellationToken.None
+        );
 
         diagnostics.Snapshot().Should().BeEmpty();
     }
@@ -338,13 +367,16 @@ public class ContextDiscoveryControllerTests
     public async Task NotifyAsync_CorrectSecret_WellFormedPayload_ReturnsOk()
     {
         var controller = CreateController(authorizationHeader: Secret);
-        var body = Envelope("session-validate", new ContextDiscoveryItem
-        {
-            Kind = "subagent",
-            Name = "echo",
-            Description = "Echoes a marker.",
-            Path = ".claude/agents/echo.md",
-        });
+        var body = Envelope(
+            "session-validate",
+            new ContextDiscoveryItem
+            {
+                Kind = "subagent",
+                Name = "echo",
+                Description = "Echoes a marker.",
+                Path = ".claude/agents/echo.md",
+            }
+        );
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -358,12 +390,15 @@ public class ContextDiscoveryControllerTests
         // must NOT try to resolve a sub-agent binding for them. Verifies that path stays a no-op
         // even for a session with no sub-agent bindings registered.
         var controller = CreateController(authorizationHeader: Secret);
-        var body = Envelope("session-skill-only", new ContextDiscoveryItem
-        {
-            Kind = "skill",
-            Name = "review-skill",
-            Path = ".claude/skills/review.md",
-        });
+        var body = Envelope(
+            "session-skill-only",
+            new ContextDiscoveryItem
+            {
+                Kind = "skill",
+                Name = "review-skill",
+                Path = ".claude/skills/review.md",
+            }
+        );
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -377,16 +412,17 @@ public class ContextDiscoveryControllerTests
         // the gateway shouldn't see a 5xx for an enrichment event. Best-effort no-op + 200 is
         // the contract.
         var registry = CreateEmptyRegistry();
-        var controller = CreateController(
-            authorizationHeader: Secret,
-            registry: registry);
+        var controller = CreateController(authorizationHeader: Secret, registry: registry);
 
-        var body = Envelope("session-not-in-registry", new ContextDiscoveryItem
-        {
-            Kind = "subagent",
-            Name = "ghost",
-            Path = ".claude/agents/ghost.md",
-        });
+        var body = Envelope(
+            "session-not-in-registry",
+            new ContextDiscoveryItem
+            {
+                Kind = "subagent",
+                Name = "ghost",
+                Path = ".claude/agents/ghost.md",
+            }
+        );
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -409,13 +445,18 @@ public class ContextDiscoveryControllerTests
 
             HttpResponseMessage Respond(HttpRequestMessage req)
             {
-                if (req.Method == HttpMethod.Post
-                    && req.RequestUri!.AbsolutePath.Contains("/sandboxes", StringComparison.Ordinal))
+                if (
+                    req.Method == HttpMethod.Post
+                    && req.RequestUri!.AbsolutePath.Contains("/sandboxes", StringComparison.Ordinal)
+                )
                 {
                     var containerPath = System.Text.Json.JsonSerializer.Serialize(hostPath);
                     var json =
-                        "{\"session_id\":\"" + gatewaySessionId + "\",\"volumes\":{\"workspace\":{\"container_path\":"
-                        + containerPath + ",\"read_only\":false}}}";
+                        "{\"session_id\":\""
+                        + gatewaySessionId
+                        + "\",\"volumes\":{\"workspace\":{\"container_path\":"
+                        + containerPath
+                        + ",\"read_only\":false}}}";
                     return new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent(json, Encoding.UTF8, "application/json"),
@@ -429,11 +470,13 @@ public class ContextDiscoveryControllerTests
             var gateway = new SandboxGatewayLifetime(
                 new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, AutoSpawn = false },
                 NullLogger<SandboxGatewayLifetime>.Instance,
-                new HttpClient(new StubHandler(Respond)));
+                new HttpClient(new StubHandler(Respond))
+            );
 
             var sessionSecretStore = new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance);
+                NullLogger<SessionSecretStore>.Instance
+            );
 
             await using var registry = new SandboxSessionRegistry(
                 gateway,
@@ -441,7 +484,8 @@ public class ContextDiscoveryControllerTests
                 NullLogger<SandboxSessionRegistry>.Instance,
                 new HttpClient(new StubHandler(Respond)),
                 new AuthOptions(),
-                sessionSecretStore);
+                sessionSecretStore
+            );
 
             // Create the shared session so the webhook can resolve it by id. The registry
             // auto-generates its own random per-session secret on creation — overwrite it with the
@@ -457,48 +501,51 @@ public class ContextDiscoveryControllerTests
             var characteristicsAgentB = new Mock<IStreamingAgent>().Object;
             SubAgentCharacteristics? receivedCharacteristicsB = null;
             Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactoryA =
-                _ => new SubAgentProviderAgent(
-                    characteristicsAgentA,
-                    ImmutableDictionary<string, object?>.Empty);
-            Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactoryB =
-                characteristics =>
-                {
-                    receivedCharacteristicsB = characteristics;
-                    return new SubAgentProviderAgent(
-                        characteristicsAgentB,
-                        ImmutableDictionary<string, object?>.Empty);
-                };
+                _ => new SubAgentProviderAgent(characteristicsAgentA, ImmutableDictionary<string, object?>.Empty);
+            Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactoryB = characteristics =>
+            {
+                receivedCharacteristicsB = characteristics;
+                return new SubAgentProviderAgent(characteristicsAgentB, ImmutableDictionary<string, object?>.Empty);
+            };
             var emptySeed = new Dictionary<string, SubAgentTemplate>();
             var bindingA = registry.AddOrUpdateSubAgentBinding(
                 gatewaySessionId,
                 "conv-A",
                 emptySeed,
                 () => agentA,
-                characteristicsFactoryA);
+                characteristicsFactoryA
+            );
             var bindingB = registry.AddOrUpdateSubAgentBinding(
                 gatewaySessionId,
                 "conv-B",
                 emptySeed,
                 () => agentB,
-                characteristicsFactoryB);
+                characteristicsFactoryB
+            );
 
             var loader = new WorkspaceSubAgentLoader(registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
             var controller = CreateController(
                 authorizationHeader: Secret,
                 registry: registry,
                 loader: loader,
-                sessionSecretStore: sessionSecretStore);
+                sessionSecretStore: sessionSecretStore
+            );
 
             var result = await controller.NotifyAsync(
-                Envelope(gatewaySessionId, new ContextDiscoveryItem
-                {
-                    Kind = "subagent",
-                    Name = "echo",
-                    QualifiedName = "plugin:echo",
-                    Path = "/marketplaces/official/plugin/agents/echo.md",
-                    Content = "---\nname: echo\ndescription: Echoes a marker.\nmodelintelligence: 5\n---\nYou are the inline echo sub-agent.",
-                }),
-                CancellationToken.None);
+                Envelope(
+                    gatewaySessionId,
+                    new ContextDiscoveryItem
+                    {
+                        Kind = "subagent",
+                        Name = "echo",
+                        QualifiedName = "plugin:echo",
+                        Path = "/marketplaces/official/plugin/agents/echo.md",
+                        Content =
+                            "---\nname: echo\ndescription: Echoes a marker.\nmodelintelligence: 5\n---\nYou are the inline echo sub-agent.",
+                    }
+                ),
+                CancellationToken.None
+            );
 
             result.Should().BeOfType<OkResult>();
 
@@ -506,26 +553,35 @@ public class ContextDiscoveryControllerTests
             bindingB.Source.Templates.Should().ContainKey("plugin:echo");
             bindingA.Source.Templates["plugin:echo"].SystemPrompt.Should().Contain("inline echo");
             bindingA.Source.Templates["plugin:echo"].AgentFactory().Should().BeSameAs(agentA);
-            bindingB.Source.Templates["plugin:echo"].AgentFactory().Should().BeSameAs(
-                agentB,
-                "conversation B's discovered sub-agent must spawn with B's provider, not the first conversation's");
+            bindingB
+                .Source.Templates["plugin:echo"]
+                .AgentFactory()
+                .Should()
+                .BeSameAs(
+                    agentB,
+                    "conversation B's discovered sub-agent must spawn with B's provider, not the first conversation's"
+                );
             bindingA.Source.Templates["plugin:echo"].CharacteristicsAgentFactory.Should().NotBeNull();
             bindingB.Source.Templates["plugin:echo"].CharacteristicsAgentFactory.Should().NotBeNull();
 
             var characteristics = new SubAgentCharacteristics("conversation-b-model", ReasoningEffort.High);
-            var reboundProvider = bindingB.Source.Templates["plugin:echo"]
+            var reboundProvider = bindingB
+                .Source.Templates["plugin:echo"]
                 .CharacteristicsAgentFactory!(characteristics);
 
             receivedCharacteristicsB.Should().BeSameAs(characteristics);
-            reboundProvider.Agent.Should().BeSameAs(
-                agentB,
-                "inherited webhook spawns must use the conversation's fresh legacy route");
-            var explicitProvider = bindingB.Source.Templates["plugin:echo"]
-                .CharacteristicsAgentFactory!(
-                    characteristics with { IsModelExplicitlySelected = true });
-            explicitProvider.Agent.Should().BeSameAs(
-                characteristicsAgentB,
-                "explicit webhook spawns must use the conversation's characteristics route");
+            reboundProvider
+                .Agent.Should()
+                .BeSameAs(agentB, "inherited webhook spawns must use the conversation's fresh legacy route");
+            var explicitProvider = bindingB
+                .Source.Templates["plugin:echo"]
+                .CharacteristicsAgentFactory!(characteristics with { IsModelExplicitlySelected = true });
+            explicitProvider
+                .Agent.Should()
+                .BeSameAs(
+                    characteristicsAgentB,
+                    "explicit webhook spawns must use the conversation's characteristics route"
+                );
         }
         finally
         {
@@ -554,7 +610,8 @@ public class ContextDiscoveryControllerTests
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(_respond(request));
         }

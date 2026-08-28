@@ -12,7 +12,8 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Recovery;
 internal sealed class StreamInterruptedAfterRecoveryException(Exception innerException)
     : Exception(
         $"{Classification}: the provider stream was interrupted again after its one automatic recovery attempt.",
-        innerException)
+        innerException
+    )
 {
     /// <summary>Stable, machine-readable classification token embedded in the message.</summary>
     public const string Classification = "stream_interrupted_after_recovery";

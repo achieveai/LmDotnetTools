@@ -14,7 +14,11 @@ public class NotifyMessageMappingTests
     public void NotifyMessage_MapsToUserMessage_ViaICanGetText()
     {
         var notify = NotifyMessage.Create(
-            NotifyKinds.SubAgentCompletion, detail: "done", sourceToolName: "Agent", sourceToolCallId: "c1");
+            NotifyKinds.SubAgentCompletion,
+            detail: "done",
+            sourceToolName: "Agent",
+            sourceToolCallId: "c1"
+        );
 
         var chatMessages = ChatCompletionRequest.FromMessage(notify).ToList();
 

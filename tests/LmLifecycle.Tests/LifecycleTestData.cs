@@ -11,8 +11,7 @@ namespace AchieveAi.LmDotnetTools.LmLifecycle.Tests;
 /// </remarks>
 internal static class LifecycleTestData
 {
-    public static readonly DateTimeOffset OccurredAtUtc =
-        new(2026, 7, 27, 8, 30, 0, TimeSpan.Zero);
+    public static readonly DateTimeOffset OccurredAtUtc = new(2026, 7, 27, 8, 30, 0, TimeSpan.Zero);
 
     public static readonly DateTimeOffset OccurredAtWithFraction =
         new DateTimeOffset(2026, 7, 27, 8, 30, 0, TimeSpan.Zero) + TimeSpan.FromTicks(1234567);
@@ -62,11 +61,7 @@ internal static class LifecycleTestData
         {
             RunId = "run-1",
             GenerationId = "gen-1",
-            Cause = new LifecycleRunCause
-            {
-                Kind = LifecycleRunCauseKinds.ToolResult,
-                ToolCallId = "tc-0",
-            },
+            Cause = new LifecycleRunCause { Kind = LifecycleRunCauseKinds.ToolResult, ToolCallId = "tc-0" },
             WasForked = false,
             AgentKind = LifecycleAgentKinds.Raw,
             ModelId = "model-x",

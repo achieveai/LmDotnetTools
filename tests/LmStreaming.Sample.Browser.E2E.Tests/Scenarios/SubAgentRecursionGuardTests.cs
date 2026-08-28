@@ -45,32 +45,46 @@ public sealed class SubAgentRecursionGuardTests
 
     // Level-2 chain — a single text turn. It must NEVER execute (a sub-agent can't spawn a sub-agent).
     private static string L2Chain() =>
-        Wrap(new { instruction_chain = new object[] { new { id = "l2", messages = new object[] { new { text = L2Marker } } } } });
+        Wrap(
+            new
+            {
+                instruction_chain = new object[]
+                {
+                    new { id = "l2", messages = new object[] { new { text = L2Marker } } },
+                },
+            }
+        );
 
     // Level-1 chain (the sub-agent the PARENT spawns): turn 1 attempts to spawn a level-2 sub-agent via
     // the Agent tool (which the sub-agent does NOT have), turn 2 ends the run with a leaf text.
     private static string L1Chain() =>
-        Wrap(new
-        {
-            instruction_chain = new object[]
+        Wrap(
+            new
             {
-                new
+                instruction_chain = new object[]
                 {
-                    id = "l1-spawn",
-                    messages = new object[]
+                    new
                     {
-                        new
+                        id = "l1-spawn",
+                        messages = new object[]
                         {
-                            tool_call = new object[]
+                            new
                             {
-                                new { name = "Agent", args = new { subagent_type = "general-purpose", prompt = L2Chain() } },
+                                tool_call = new object[]
+                                {
+                                    new
+                                    {
+                                        name = "Agent",
+                                        args = new { subagent_type = "general-purpose", prompt = L2Chain() },
+                                    },
+                                },
                             },
                         },
                     },
+                    new { id = "l1-text", messages = new object[] { new { text = "L1 leaf reached." } } },
                 },
-                new { id = "l1-text", messages = new object[] { new { text = "L1 leaf reached." } } },
-            },
-        });
+            }
+        );
 
     [Theory]
     [InlineData("test")]
@@ -115,7 +129,9 @@ public sealed class SubAgentRecursionGuardTests
         var result = page.Locator(".tool-call-result");
         await result.First.WaitForAsync();
         var resultText = string.Join(" ", await result.AllInnerTextsAsync());
-        resultText.Should().Contain("L1 leaf reached", "the sub-agent ran past its no-op level-2 spawn to its own leaf");
+        resultText
+            .Should()
+            .Contain("L1 leaf reached", "the sub-agent ran past its no-op level-2 spawn to its own leaf");
         resultText.Should().NotContain(L2Marker, "the level-2 chain never executes, so no RESULT carries its marker");
 
         await session.SaveSuccessScreenshotAsync($"SubAgentRecursionGuard.{providerMode}");
@@ -146,16 +162,19 @@ public sealed class SubAgentRecursionGuardTests
         if (providerMode == "test-anthropic")
         {
             var handler = new AnthropicTestSseMessageHandler(
-                loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>());
+                loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>()
+            );
             var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://test-mode/v1") };
             var anthropicClient = new AnthropicClient(
                 httpClient,
                 baseUrl: "http://test-mode/v1",
-                logger: loggerFactory.CreateLogger<AnthropicClient>());
+                logger: loggerFactory.CreateLogger<AnthropicClient>()
+            );
             return new AnthropicAgent(
                 "MockAnthropicSub",
                 anthropicClient,
-                loggerFactory.CreateLogger<AnthropicAgent>());
+                loggerFactory.CreateLogger<AnthropicAgent>()
+            );
         }
 
         var openHandler = new TestSseMessageHandler(loggerFactory.CreateLogger<TestSseMessageHandler>());
@@ -163,7 +182,8 @@ public sealed class SubAgentRecursionGuardTests
         var openClient = new OpenClient(
             openHttpClient,
             "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<OpenClient>());
+            logger: loggerFactory.CreateLogger<OpenClient>()
+        );
         return new OpenClientAgent("MockSub", openClient, loggerFactory.CreateLogger<OpenClientAgent>());
     }
 }

@@ -34,8 +34,7 @@ public class WorkflowControllerFreshStartTests
         var subAgentOptions = BuildSubAgentOptions();
 
         // --- Run #1: a fresh launch that persists a distinctive controller conversation under ThreadId. ---
-        var firstController = ScriptedController(_ =>
-            new TextMessage { Text = Run1Marker, Role = Role.Assistant });
+        var firstController = ScriptedController(_ => new TextMessage { Text = Run1Marker, Role = Role.Assistant });
         await using (
             var first = await WorkflowSession.StartAsync(
                 objective: "First run objective.",
@@ -103,7 +102,8 @@ public class WorkflowControllerFreshStartTests
             );
     }
 
-    private static string TextOf(IMessage message) => message is TextMessage text ? text.Text ?? string.Empty : string.Empty;
+    private static string TextOf(IMessage message) =>
+        message is TextMessage text ? text.Text ?? string.Empty : string.Empty;
 
     /// <summary>A sub-agent stub (unused by these text-only controllers, but required by the options).</summary>
     private static SubAgentOptions BuildSubAgentOptions()
@@ -119,9 +119,7 @@ public class WorkflowControllerFreshStartTests
             )
             .Returns(
                 Task.FromResult(
-                    ToAsyncEnumerable(
-                        [new TextMessage { Text = """{ "summary": "ok" }""", Role = Role.Assistant }]
-                    )
+                    ToAsyncEnumerable([new TextMessage { Text = """{ "summary": "ok" }""", Role = Role.Assistant }])
                 )
             );
 

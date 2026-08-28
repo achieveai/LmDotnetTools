@@ -99,8 +99,12 @@ public class SqliteNotifyWaitStoreTests
         await SqliteSchemaInitializer.InitializeSchemaAsync(factory);
         var store = new SqliteNotifyWaitStore(factory);
 
-        await store.SaveAsync(new NotifyWaitRecord("tc_notify", "threadA", "schedule", "{}", "a-label", null, 0, 1_000, 500, "active"));
-        await store.SaveAsync(new NotifyWaitRecord("tc_notify", "threadB", "schedule", "{}", "b-label", null, 0, 2_000, 1_500, "active"));
+        await store.SaveAsync(
+            new NotifyWaitRecord("tc_notify", "threadA", "schedule", "{}", "a-label", null, 0, 1_000, 500, "active")
+        );
+        await store.SaveAsync(
+            new NotifyWaitRecord("tc_notify", "threadB", "schedule", "{}", "b-label", null, 0, 2_000, 1_500, "active")
+        );
 
         // Both independently loadable — neither overwrote the other.
         var rowsA = await store.LoadActiveAsync("threadA");
@@ -112,7 +116,9 @@ public class SqliteNotifyWaitStoreTests
         await store.DeleteAsync("threadA", "tc_notify");
 
         (await store.LoadActiveAsync("threadA")).Should().BeEmpty();
-        (await store.LoadActiveAsync("threadB")).Should().ContainSingle(r => r.WaitId == "tc_notify" && r.Label == "b-label");
+        (await store.LoadActiveAsync("threadB"))
+            .Should()
+            .ContainSingle(r => r.WaitId == "tc_notify" && r.Label == "b-label");
     }
 
     /// <summary>

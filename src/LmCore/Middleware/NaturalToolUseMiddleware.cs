@@ -47,10 +47,7 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
         );
 
         // Create the function call middleware
-        _functionCallMiddleware = new FunctionCallMiddleware(
-            functions,
-            functionMap,
-            name: $"{Name}.FunctionCall");
+        _functionCallMiddleware = new FunctionCallMiddleware(functions, functionMap, name: $"{Name}.FunctionCall");
     }
 
     /// <summary>

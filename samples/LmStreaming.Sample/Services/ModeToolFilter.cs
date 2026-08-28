@@ -15,9 +15,7 @@ public static class ModeToolFilter
     /// Mode-enabled tool names. Null means "all tools enabled".
     /// </param>
     /// <returns>Filtered built-in tools, or null when none should be sent.</returns>
-    public static List<object>? FilterBuiltInTools(
-        List<object>? allBuiltInTools,
-        IReadOnlyList<string>? enabledTools)
+    public static List<object>? FilterBuiltInTools(List<object>? allBuiltInTools, IReadOnlyList<string>? enabledTools)
     {
         if (allBuiltInTools == null)
         {

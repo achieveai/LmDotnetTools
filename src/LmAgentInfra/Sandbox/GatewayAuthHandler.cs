@@ -26,7 +26,8 @@ public sealed class GatewayAuthHandler : DelegatingHandler
 
     protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 

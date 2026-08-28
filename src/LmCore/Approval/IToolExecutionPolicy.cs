@@ -35,7 +35,5 @@ public interface IToolExecutionPolicy
     /// <returns>
     /// <see cref="ToolApprovalVerdict.Allow"/> to continue; any other verdict blocks the call.
     /// </returns>
-    ValueTask<ToolApprovalVerdict> EvaluateAsync(
-        ToolApprovalContext context,
-        CancellationToken cancellationToken);
+    ValueTask<ToolApprovalVerdict> EvaluateAsync(ToolApprovalContext context, CancellationToken cancellationToken);
 }

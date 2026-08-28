@@ -400,7 +400,11 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
             return;
         }
 
-        if (!File.Exists(_options.EgressProxyExePath) || !File.Exists(_options.CaCertPath) || !File.Exists(_options.CaKeyPath))
+        if (
+            !File.Exists(_options.EgressProxyExePath)
+            || !File.Exists(_options.CaCertPath)
+            || !File.Exists(_options.CaKeyPath)
+        )
         {
             _logger.LogWarning(
                 "Egress proxy configured but a required file is missing (exe '{Exe}', ca '{Ca}', key '{Key}'); "
@@ -417,7 +421,9 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
             var psi = BuildProxyStartInfo();
             var proc =
                 Process.Start(psi)
-                ?? throw new InvalidOperationException($"Failed to start egress proxy '{_options.EgressProxyExePath}'.");
+                ?? throw new InvalidOperationException(
+                    $"Failed to start egress proxy '{_options.EgressProxyExePath}'."
+                );
 
             _proxyProcess = proc;
             _ownsProxy = true;
@@ -466,7 +472,10 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to start the egress proxy; sandbox token injection (GitHub/ADO) is disabled.");
+            _logger.LogWarning(
+                ex,
+                "Failed to start the egress proxy; sandbox token injection (GitHub/ADO) is disabled."
+            );
         }
     }
 

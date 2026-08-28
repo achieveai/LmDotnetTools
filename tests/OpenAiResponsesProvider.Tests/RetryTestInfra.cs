@@ -58,7 +58,9 @@ internal sealed class RecordingResponsesSseHandler : HttpMessageHandler
         var n = Interlocked.Increment(ref _count);
 
         Requests.Add(request);
-        var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(CancellationToken.None);
+        var body = request.Content is null
+            ? string.Empty
+            : await request.Content.ReadAsStringAsync(CancellationToken.None);
         Bodies.Add(body);
         AcceptHeaders.Add(request.Headers.Accept.ToString());
 

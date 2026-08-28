@@ -39,17 +39,14 @@ public sealed class WorkspaceSubAgentLoader
     private readonly ILogger<WorkspaceSubAgentLoader> _logger;
     private readonly SubAgentModelResolver? _modelResolver;
 
-    public WorkspaceSubAgentLoader(
-        SandboxSessionRegistry registry,
-        ILogger<WorkspaceSubAgentLoader> logger)
-        : this(registry, logger, null)
-    {
-    }
+    public WorkspaceSubAgentLoader(SandboxSessionRegistry registry, ILogger<WorkspaceSubAgentLoader> logger)
+        : this(registry, logger, null) { }
 
     internal WorkspaceSubAgentLoader(
         SandboxSessionRegistry registry,
         ILogger<WorkspaceSubAgentLoader> logger,
-        SubAgentModelResolver? modelResolver)
+        SubAgentModelResolver? modelResolver
+    )
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(logger);
@@ -69,7 +66,8 @@ public sealed class WorkspaceSubAgentLoader
     public async Task<IReadOnlyDictionary<string, SubAgentTemplate>> LoadAsync(
         SandboxSession session,
         Func<IStreamingAgent> agentFactory,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         return await LoadWithCharacteristicsAsync(session, agentFactory, null, ct).ConfigureAwait(false);
     }
@@ -81,7 +79,8 @@ public sealed class WorkspaceSubAgentLoader
         SandboxSession session,
         Func<IStreamingAgent> agentFactory,
         Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(agentFactory);
@@ -100,7 +99,8 @@ public sealed class WorkspaceSubAgentLoader
             _logger.LogWarning(
                 ex,
                 "Failed to list discovered items for session {SessionId}; continuing without workspace sub-agents",
-                session.SessionId);
+                session.SessionId
+            );
             return new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal);
         }
 
@@ -118,7 +118,8 @@ public sealed class WorkspaceSubAgentLoader
                     item,
                     agentFactory,
                     characteristicsAgentFactory,
-                    ct)
+                    ct
+                )
                 .ConfigureAwait(false);
             if (loaded is null || string.IsNullOrWhiteSpace(loaded.Name))
             {
@@ -130,7 +131,8 @@ public sealed class WorkspaceSubAgentLoader
             {
                 _logger.LogWarning(
                     "Discovered sub-agent {Key} collides with an earlier discovery; keeping the first occurrence",
-                    key);
+                    key
+                );
             }
         }
 
@@ -156,7 +158,8 @@ public sealed class WorkspaceSubAgentLoader
         SandboxSession session,
         SandboxSessionRegistry.DiscoveredItem item,
         Func<IStreamingAgent> agentFactory,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         return await LoadOneWithCharacteristicsAsync(session, item, agentFactory, null, ct).ConfigureAwait(false);
     }
@@ -169,7 +172,8 @@ public sealed class WorkspaceSubAgentLoader
         SandboxSessionRegistry.DiscoveredItem item,
         Func<IStreamingAgent> agentFactory,
         Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(item);
@@ -185,15 +189,14 @@ public sealed class WorkspaceSubAgentLoader
         // path below remains the fallback for real workspace .claude/agents/*.md whose path is relative.
         if (!string.IsNullOrWhiteSpace(item.Content))
         {
-            var stemFromName = string.IsNullOrWhiteSpace(item.QualifiedName)
-                ? item.Name
-                : item.QualifiedName;
+            var stemFromName = string.IsNullOrWhiteSpace(item.QualifiedName) ? item.Name : item.QualifiedName;
             var parsedInline = SubAgentMarkdownParser.Parse(item.Content, stemFromName);
             if (parsedInline is null)
             {
                 _logger.LogWarning(
                     "Skipping discovered sub-agent {Name}: inline content had no valid frontmatter or empty body",
-                    item.Name);
+                    item.Name
+                );
                 return null;
             }
 
@@ -205,7 +208,8 @@ public sealed class WorkspaceSubAgentLoader
             _logger.LogWarning(
                 "Skipping discovered sub-agent {Name}: session {SessionId} has no HostPath",
                 item.Name,
-                session.SessionId);
+                session.SessionId
+            );
             return null;
         }
 
@@ -216,7 +220,8 @@ public sealed class WorkspaceSubAgentLoader
                 "Skipping discovered sub-agent {Name}: path '{Path}' is outside workspace '{HostPath}'",
                 item.Name,
                 item.Path,
-                session.HostPath);
+                session.HostPath
+            );
             return null;
         }
 
@@ -235,7 +240,8 @@ public sealed class WorkspaceSubAgentLoader
                 ex,
                 "Skipping discovered sub-agent {Name}: failed to read '{Path}'",
                 item.Name,
-                fullPath);
+                fullPath
+            );
             return null;
         }
 
@@ -246,7 +252,8 @@ public sealed class WorkspaceSubAgentLoader
             _logger.LogWarning(
                 "Skipping discovered sub-agent {Name}: markdown at '{Path}' has no valid frontmatter or empty body",
                 item.Name,
-                fullPath);
+                fullPath
+            );
             return null;
         }
 
@@ -256,25 +263,24 @@ public sealed class WorkspaceSubAgentLoader
     private SubAgentTemplate MapParsed(
         ParsedSubAgent parsed,
         Func<IStreamingAgent> agentFactory,
-        Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory)
+        Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory
+    )
     {
         foreach (var diagnostic in parsed.Diagnostics)
         {
             _logger.LogWarning(
                 "Discovered sub-agent {Name} frontmatter diagnostic: {Diagnostic}",
                 parsed.Name,
-                diagnostic);
+                diagnostic
+            );
         }
 
-        var effectiveModel = _modelResolver?.Resolve(
-            parsed.Model,
-            parsed.ModelIntelligence);
-        var hasAuthorPinnedModel = !string.IsNullOrWhiteSpace(parsed.Model)
+        var effectiveModel = _modelResolver?.Resolve(parsed.Model, parsed.ModelIntelligence);
+        var hasAuthorPinnedModel =
+            !string.IsNullOrWhiteSpace(parsed.Model)
             && !string.Equals(parsed.Model.Trim(), "inherit", StringComparison.OrdinalIgnoreCase);
         var isTierResolved =
-            !hasAuthorPinnedModel
-            && parsed.ModelIntelligence is not null
-            && effectiveModel is not null;
+            !hasAuthorPinnedModel && parsed.ModelIntelligence is not null && effectiveModel is not null;
         var effectiveParsed = effectiveModel is null
             ? parsed
             : parsed with
@@ -282,10 +288,7 @@ public sealed class WorkspaceSubAgentLoader
                 Model = effectiveModel,
                 IsModelTierResolved = isTierResolved,
             };
-        return SubAgentTemplateMapper.Map(
-            effectiveParsed,
-            agentFactory,
-            DefaultMaxTurnsPerRun) with
+        return SubAgentTemplateMapper.Map(effectiveParsed, agentFactory, DefaultMaxTurnsPerRun) with
         {
             CharacteristicsAgentFactory = characteristicsAgentFactory,
             ModelIntelligence = parsed.ModelIntelligence,
@@ -305,7 +308,8 @@ public sealed class WorkspaceSubAgentLoader
     internal static void MergeBuiltInWins(
         IDictionary<string, SubAgentTemplate> builtIns,
         IReadOnlyDictionary<string, SubAgentTemplate> discovered,
-        Microsoft.Extensions.Logging.ILogger logger)
+        Microsoft.Extensions.Logging.ILogger logger
+    )
     {
         ArgumentNullException.ThrowIfNull(builtIns);
         ArgumentNullException.ThrowIfNull(discovered);
@@ -317,7 +321,8 @@ public sealed class WorkspaceSubAgentLoader
             {
                 logger.LogWarning(
                     "Discovered sub-agent {Name} collides with a built-in template; keeping the built-in",
-                    key);
+                    key
+                );
             }
         }
     }
@@ -330,9 +335,7 @@ public sealed class WorkspaceSubAgentLoader
     internal static string NormalizeBasePath(string hostPath)
     {
         var full = Path.GetFullPath(hostPath);
-        return full.EndsWith(Path.DirectorySeparatorChar)
-            ? full
-            : full + Path.DirectorySeparatorChar;
+        return full.EndsWith(Path.DirectorySeparatorChar) ? full : full + Path.DirectorySeparatorChar;
     }
 
     /// <summary>
@@ -363,9 +366,7 @@ public sealed class WorkspaceSubAgentLoader
             return false;
         }
 
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
         // basePath always carries a trailing separator (NormalizeBasePath); combined therefore
         // must START WITH that separator-terminated prefix to be "inside" basePath. Equality with

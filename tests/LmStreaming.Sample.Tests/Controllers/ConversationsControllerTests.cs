@@ -6,8 +6,8 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
 using LmStreaming.Sample.Tests.TestDoubles;
@@ -31,7 +31,8 @@ public class ConversationsControllerTests
         IChatModeStore modeStore,
         IWorkspaceStore? workspaceStore = null,
         ProviderRegistry? providerRegistry = null,
-        ConversationStatusResolver? statusResolver = null)
+        ConversationStatusResolver? statusResolver = null
+    )
     {
         return new ConversationsController(
             store,
@@ -39,14 +40,16 @@ public class ConversationsControllerTests
             modeStore,
             workspaceStore ?? Mock.Of<IWorkspaceStore>(),
             providerRegistry ?? new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
-            statusResolver ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
+            statusResolver
+                ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
             TimeProvider.System,
             new WorkflowRunRegistry(),
             TestAuthorizers.Disabled(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
-            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance));
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance)
+        );
     }
 
     /// <summary>Resolves any real system mode id (default mode, math-helper, etc.) — for tests that
@@ -65,7 +68,8 @@ public class ConversationsControllerTests
     {
         await using var pool = CreatePool();
         var modeStore = new Mock<IChatModeStore>();
-        modeStore.Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
+        modeStore
+            .Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
             .ReturnsAsync(SystemChatModes.GetById("math-helper"));
 
         var threadId = "thread-conflict";
@@ -78,7 +82,8 @@ public class ConversationsControllerTests
         var result = await controller.SwitchMode(
             threadId,
             new SwitchModeRequest { ModeId = "math-helper" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         conflict.StatusCode.Should().Be(409);
@@ -95,7 +100,8 @@ public class ConversationsControllerTests
     {
         await using var pool = CreatePool();
         var modeStore = new Mock<IChatModeStore>();
-        modeStore.Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
+        modeStore
+            .Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
             .ReturnsAsync(SystemChatModes.GetById("math-helper"));
 
         var threadId = "thread-idle";
@@ -107,7 +113,8 @@ public class ConversationsControllerTests
         var result = await controller.SwitchMode(
             threadId,
             new SwitchModeRequest { ModeId = "math-helper" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var payload = JsonSerializer.Serialize(ok.Value);
@@ -123,7 +130,8 @@ public class ConversationsControllerTests
     {
         await using var pool = CreatePool();
         var modeStore = new Mock<IChatModeStore>();
-        modeStore.Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
+        modeStore
+            .Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
             .ReturnsAsync(SystemChatModes.GetById("math-helper"));
 
         var threadId = "thread-stale";
@@ -137,7 +145,8 @@ public class ConversationsControllerTests
         var result = await controller.SwitchMode(
             threadId,
             new SwitchModeRequest { ModeId = "math-helper" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         result.Should().BeOfType<OkObjectResult>();
         pool.GetAgentMode(threadId)!.Id.Should().Be("math-helper");
@@ -148,7 +157,8 @@ public class ConversationsControllerTests
     {
         await using var pool = CreatePool();
         var modeStore = new Mock<IChatModeStore>();
-        modeStore.Setup(m => m.GetModeAsync("missing-mode", It.IsAny<CancellationToken>()))
+        modeStore
+            .Setup(m => m.GetModeAsync("missing-mode", It.IsAny<CancellationToken>()))
             .ReturnsAsync((ChatMode?)null);
 
         var controller = CreateController(Mock.Of<IConversationStore>(), pool, modeStore.Object);
@@ -156,7 +166,8 @@ public class ConversationsControllerTests
         var result = await controller.SwitchMode(
             "thread-404",
             new SwitchModeRequest { ModeId = "missing-mode" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var notFound = Assert.IsType<NotFoundObjectResult>(result);
         var payload = JsonSerializer.Serialize(notFound.Value);
@@ -174,7 +185,8 @@ public class ConversationsControllerTests
         await using var pool = await CreatePoolWithParkedAskUserQuestionAsync(threadId, toolCallId);
 
         var modeStore = new Mock<IChatModeStore>();
-        modeStore.Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
+        modeStore
+            .Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
             .ReturnsAsync(SystemChatModes.GetById("math-helper"));
 
         var controller = CreateController(Mock.Of<IConversationStore>(), pool, modeStore.Object);
@@ -182,7 +194,8 @@ public class ConversationsControllerTests
         var result = await controller.SwitchMode(
             threadId,
             new SwitchModeRequest { ModeId = "math-helper" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         conflict.StatusCode.Should().Be(409);
@@ -207,7 +220,8 @@ public class ConversationsControllerTests
         await using var pool = await CreatePoolWithParkedChildAskUserQuestionAsync(threadId, toolCallId);
 
         var modeStore = new Mock<IChatModeStore>();
-        modeStore.Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
+        modeStore
+            .Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
             .ReturnsAsync(SystemChatModes.GetById("math-helper"));
 
         var controller = CreateController(Mock.Of<IConversationStore>(), pool, modeStore.Object);
@@ -215,7 +229,8 @@ public class ConversationsControllerTests
         var result = await controller.SwitchMode(
             threadId,
             new SwitchModeRequest { ModeId = "math-helper" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         conflict.StatusCode.Should().Be(409);
@@ -250,7 +265,9 @@ public class ConversationsControllerTests
         await using var pool = await CreatePoolWithParkedAskUserQuestionAsync(threadId, toolCallId);
 
         // Precondition: the question really is pending before Delete runs.
-        (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeTrue();
+        (await pool.HasPendingAskUserQuestionAsync(threadId))
+            .Should()
+            .BeTrue();
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
@@ -272,13 +289,31 @@ public class ConversationsControllerTests
         var store = new InMemoryConversationStore();
         await store.SaveMetadataAsync(
             "thread-normal",
-            new ThreadMetadata { ThreadId = "thread-normal", LastUpdated = 2, Properties = ImmutableDictionary<string, object>.Empty });
+            new ThreadMetadata
+            {
+                ThreadId = "thread-normal",
+                LastUpdated = 2,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            }
+        );
         await store.SaveMetadataAsync(
             "subagent-abc123",
-            new ThreadMetadata { ThreadId = "subagent-abc123", LastUpdated = 1, Properties = ImmutableDictionary<string, object>.Empty });
+            new ThreadMetadata
+            {
+                ThreadId = "subagent-abc123",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            }
+        );
         await store.SaveMetadataAsync(
             "workflow-wf1-thread-normal",
-            new ThreadMetadata { ThreadId = "workflow-wf1-thread-normal", LastUpdated = 1, Properties = ImmutableDictionary<string, object>.Empty });
+            new ThreadMetadata
+            {
+                ThreadId = "workflow-wf1-thread-normal",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            }
+        );
 
         await using var pool = CreatePool();
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
@@ -288,9 +323,13 @@ public class ConversationsControllerTests
         var summaries = (result!.Value as IEnumerable<ConversationSummary>)!.ToList();
 
         summaries.Select(s => s.ThreadId).Should().Contain("thread-normal");
-        summaries.Select(s => s.ThreadId).Should().NotContain(id =>
-            id.StartsWith("subagent-", StringComparison.Ordinal)
-            || id.StartsWith("workflow-", StringComparison.Ordinal));
+        summaries
+            .Select(s => s.ThreadId)
+            .Should()
+            .NotContain(id =>
+                id.StartsWith("subagent-", StringComparison.Ordinal)
+                || id.StartsWith("workflow-", StringComparison.Ordinal)
+            );
     }
 
     #region List Paging Tests
@@ -335,24 +374,30 @@ public class ConversationsControllerTests
         for (var i = 0; i < RealCount; i++)
         {
             var threadId = $"thread-{1_000 + i}-real{i:D2}";
-            await store.SaveMetadataAsync(threadId, new ThreadMetadata
-            {
-                ThreadId = threadId,
-                LastUpdated = 1_000 + i,
-                Properties = ImmutableDictionary<string, object>.Empty,
-            });
+            await store.SaveMetadataAsync(
+                threadId,
+                new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    LastUpdated = 1_000 + i,
+                    Properties = ImmutableDictionary<string, object>.Empty,
+                }
+            );
         }
 
         // Newer than every real conversation, and more numerous than one page.
         for (var i = 0; i < AgentOwnedCount; i++)
         {
             var threadId = $"subagent-agent{i:D2}";
-            await store.SaveMetadataAsync(threadId, new ThreadMetadata
-            {
-                ThreadId = threadId,
-                LastUpdated = 100_000 + i,
-                Properties = ImmutableDictionary<string, object>.Empty,
-            });
+            await store.SaveMetadataAsync(
+                threadId,
+                new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    LastUpdated = 100_000 + i,
+                    Properties = ImmutableDictionary<string, object>.Empty,
+                }
+            );
         }
 
         await using var pool = CreatePool();
@@ -363,8 +408,7 @@ public class ConversationsControllerTests
         var summaries = (result!.Value as IEnumerable<ConversationSummary>)!.ToList();
 
         summaries.Should().HaveCount(SidebarPageSize);
-        summaries.Should().OnlyContain(s =>
-            !SubAgentSummary.IsAgentOwnedThreadId(s.ThreadId));
+        summaries.Should().OnlyContain(s => !SubAgentSummary.IsAgentOwnedThreadId(s.ThreadId));
     }
 
     /// <summary>
@@ -387,28 +431,33 @@ public class ConversationsControllerTests
         for (var i = 0; i < RealCount; i++)
         {
             var threadId = $"thread-{1_000 + i}-real{i:D2}";
-            await store.SaveMetadataAsync(threadId, new ThreadMetadata
-            {
-                ThreadId = threadId,
-                LastUpdated = 10_000 - (i * 2),
-                Properties = ImmutableDictionary<string, object>.Empty,
-            });
+            await store.SaveMetadataAsync(
+                threadId,
+                new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    LastUpdated = 10_000 - (i * 2),
+                    Properties = ImmutableDictionary<string, object>.Empty,
+                }
+            );
 
             var agentThreadId = $"subagent-agent{i:D2}";
-            await store.SaveMetadataAsync(agentThreadId, new ThreadMetadata
-            {
-                ThreadId = agentThreadId,
-                LastUpdated = 10_000 - (i * 2) - 1,
-                Properties = ImmutableDictionary<string, object>.Empty,
-            });
+            await store.SaveMetadataAsync(
+                agentThreadId,
+                new ThreadMetadata
+                {
+                    ThreadId = agentThreadId,
+                    LastUpdated = 10_000 - (i * 2) - 1,
+                    Properties = ImmutableDictionary<string, object>.Empty,
+                }
+            );
         }
 
         await using var pool = CreatePool();
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
         var first = await controller.List(limit: SidebarPageSize) as OkObjectResult;
-        var second = await controller.List(limit: SidebarPageSize, offset: SidebarPageSize)
-            as OkObjectResult;
+        var second = await controller.List(limit: SidebarPageSize, offset: SidebarPageSize) as OkObjectResult;
 
         var page1 = (first!.Value as IEnumerable<ConversationSummary>)!.Select(s => s.ThreadId).ToList();
         var page2 = (second!.Value as IEnumerable<ConversationSummary>)!.Select(s => s.ThreadId).ToList();
@@ -432,24 +481,33 @@ public class ConversationsControllerTests
     public async Task List_OrdersByCreationTime_WhenSortIsCreated()
     {
         var store = new InMemoryConversationStore();
-        await store.SaveMetadataAsync("thread-1000-aaa", new ThreadMetadata
-        {
-            ThreadId = "thread-1000-aaa",
-            LastUpdated = 9_000,
-            Properties = ImmutableDictionary<string, object>.Empty,
-        });
-        await store.SaveMetadataAsync("thread-2000-bbb", new ThreadMetadata
-        {
-            ThreadId = "thread-2000-bbb",
-            LastUpdated = 8_000,
-            Properties = ImmutableDictionary<string, object>.Empty,
-        });
-        await store.SaveMetadataAsync("thread-3000-ccc", new ThreadMetadata
-        {
-            ThreadId = "thread-3000-ccc",
-            LastUpdated = 7_000,
-            Properties = ImmutableDictionary<string, object>.Empty,
-        });
+        await store.SaveMetadataAsync(
+            "thread-1000-aaa",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-1000-aaa",
+                LastUpdated = 9_000,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            }
+        );
+        await store.SaveMetadataAsync(
+            "thread-2000-bbb",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-2000-bbb",
+                LastUpdated = 8_000,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            }
+        );
+        await store.SaveMetadataAsync(
+            "thread-3000-ccc",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-3000-ccc",
+                LastUpdated = 7_000,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            }
+        );
 
         await using var pool = CreatePool();
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
@@ -457,9 +515,13 @@ public class ConversationsControllerTests
         var lastUsed = await controller.List() as OkObjectResult;
         var created = await controller.List(sort: "CREATED") as OkObjectResult;
 
-        (lastUsed!.Value as IEnumerable<ConversationSummary>)!.Select(s => s.ThreadId).Should()
+        (lastUsed!.Value as IEnumerable<ConversationSummary>)!
+            .Select(s => s.ThreadId)
+            .Should()
             .Equal("thread-1000-aaa", "thread-2000-bbb", "thread-3000-ccc");
-        (created!.Value as IEnumerable<ConversationSummary>)!.Select(s => s.ThreadId).Should()
+        (created!.Value as IEnumerable<ConversationSummary>)!
+            .Select(s => s.ThreadId)
+            .Should()
             .Equal("thread-3000-ccc", "thread-2000-bbb", "thread-1000-aaa");
     }
 
@@ -505,12 +567,15 @@ public class ConversationsControllerTests
         for (var i = 0; i < 45; i++)
         {
             var threadId = $"thread-{1_000 + i}-real{i:D2}";
-            await store.SaveMetadataAsync(threadId, new ThreadMetadata
-            {
-                ThreadId = threadId,
-                LastUpdated = 1_000 + i,
-                Properties = ImmutableDictionary<string, object>.Empty,
-            });
+            await store.SaveMetadataAsync(
+                threadId,
+                new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    LastUpdated = 1_000 + i,
+                    Properties = ImmutableDictionary<string, object>.Empty,
+                }
+            );
         }
 
         await using var pool = CreatePool();
@@ -550,21 +615,25 @@ public class ConversationsControllerTests
                 LastUpdated = 1,
                 Properties = ImmutableDictionary<string, object>.Empty,
                 Visibility = stored,
-            });
+            }
+        );
 
         await using var pool = CreatePool();
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
         var result = Assert.IsType<OkObjectResult>(await controller.List());
         using var document = JsonDocument.Parse(
-            JsonSerializer.Serialize(result.Value, new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            }));
+            JsonSerializer.Serialize(
+                result.Value,
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+            )
+        );
 
         var summary = document.RootElement.EnumerateArray().Single();
         var hasVisibility = summary.TryGetProperty("visibility", out var visibility);
-        hasVisibility.Should().BeTrue("the conversation listing is the only conversation-shaped document the client reads");
+        hasVisibility
+            .Should()
+            .BeTrue("the conversation listing is the only conversation-shaped document the client reads");
         visibility.ValueKind.Should().Be(JsonValueKind.String);
         visibility.GetString().Should().Be(expected);
     }
@@ -574,15 +643,17 @@ public class ConversationsControllerTests
     {
         var store = new InMemoryConversationStore();
         var ledger = new UsageLedger("usage-thread");
-        ledger.UpsertAttempt(new UsageRecord
-        {
-            LogicalCallId = "a1",
-            ProviderAttemptId = "a1",
-            RootConversationId = "usage-thread",
-            RequestedModel = "model-A",
-            InputTokens = 100,
-            OutputTokens = 40,
-        });
+        ledger.UpsertAttempt(
+            new UsageRecord
+            {
+                LogicalCallId = "a1",
+                ProviderAttemptId = "a1",
+                RootConversationId = "usage-thread",
+                RequestedModel = "model-A",
+                InputTokens = 100,
+                OutputTokens = 40,
+            }
+        );
         await ConversationUsageProjection.SaveAsync(store, ledger.Snapshot());
 
         await using var pool = CreatePool();
@@ -612,18 +683,21 @@ public class ConversationsControllerTests
     {
         return new MultiTurnAgentPool(
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
     }
 
     private static MultiTurnAgentPool CreatePoolWithRegistry(
         FakeProviderRegistry registry,
-        InMemoryConversationStore store)
+        InMemoryConversationStore store
+    )
     {
         return new MultiTurnAgentPool(
             context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
             registry.ToReal(),
             store,
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
     }
 
     /// <summary>
@@ -633,37 +707,54 @@ public class ConversationsControllerTests
     /// Patterned on <c>ChatWebSocketManagerClientToolResultTests.CreatePoolWithParkedAskUserQuestionAsync</c>.
     /// </summary>
     private static async Task<MultiTurnAgentPool> CreatePoolWithParkedAskUserQuestionAsync(
-        string threadId, string toolCallId)
+        string threadId,
+        string toolCallId
+    )
     {
         var toolCall = new ToolCallMessage
         {
             FunctionName = AskUserQuestionToolProvider.ToolName,
-            FunctionArgs = JsonSerializer.Serialize(new
-            {
-                context = "Need to know which color to use.",
-                questions = new[]
+            FunctionArgs = JsonSerializer.Serialize(
+                new
                 {
-                    new { prompt = "Which color?", options = new object[] { new { label = "Red" }, new { label = "Blue" } } },
-                },
-            }),
+                    context = "Need to know which color to use.",
+                    questions = new[]
+                    {
+                        new
+                        {
+                            prompt = "Which color?",
+                            options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                        },
+                    },
+                }
+            ),
             ToolCallId = toolCallId,
             Role = Role.Assistant,
         };
 
         var mockAgent = new Mock<IStreamingAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(() => Task.FromResult(ToAsyncEnumerable(toolCall)));
 
         var pool = new MultiTurnAgentPool(
-            (tid, _, _) => new MultiTurnAgentPool.AgentCreationResult(
-                new MultiTurnAgentLoop(
-                    mockAgent.Object,
-                    new FunctionRegistry(),
-                    tid,
-                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            (tid, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(
+                    new MultiTurnAgentLoop(
+                        mockAgent.Object,
+                        new FunctionRegistry(),
+                        tid,
+                        logger: NullLogger<MultiTurnAgentLoop>.Instance
+                    )
+                ),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent(threadId, mode);
@@ -685,35 +776,53 @@ public class ConversationsControllerTests
     /// only checking the primary's own deferred calls.
     /// </summary>
     private static async Task<MultiTurnAgentPool> CreatePoolWithParkedChildAskUserQuestionAsync(
-        string threadId, string toolCallId)
+        string threadId,
+        string toolCallId
+    )
     {
         const string templateName = "asker";
 
         var childAskCall = new ToolCallMessage
         {
             FunctionName = AskUserQuestionToolProvider.ToolName,
-            FunctionArgs = JsonSerializer.Serialize(new
-            {
-                context = "Need to know which color to use.",
-                questions = new[]
+            FunctionArgs = JsonSerializer.Serialize(
+                new
                 {
-                    new { prompt = "Which color?", options = new object[] { new { label = "Red" }, new { label = "Blue" } } },
-                },
-            }),
+                    context = "Need to know which color to use.",
+                    questions = new[]
+                    {
+                        new
+                        {
+                            prompt = "Which color?",
+                            options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                        },
+                    },
+                }
+            ),
             ToolCallId = toolCallId,
             Role = Role.Assistant,
         };
 
         var childAgent = new Mock<IStreamingAgent>();
         childAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(() => Task.FromResult(ToAsyncEnumerable(childAskCall)));
 
         var parentAgent = new Mock<IStreamingAgent>();
         parentAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(() => Task.FromResult(ToAsyncEnumerable()));
 
         var subAgentOptions = new SubAgentOptions
@@ -731,20 +840,28 @@ public class ConversationsControllerTests
         };
 
         var pool = new MultiTurnAgentPool(
-            (tid, _, _) => new MultiTurnAgentPool.AgentCreationResult(
-                new MultiTurnAgentLoop(
-                    parentAgent.Object,
-                    new FunctionRegistry(),
-                    tid,
-                    subAgentOptions: subAgentOptions,
-                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            (tid, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(
+                    new MultiTurnAgentLoop(
+                        parentAgent.Object,
+                        new FunctionRegistry(),
+                        tid,
+                        subAgentOptions: subAgentOptions,
+                        logger: NullLogger<MultiTurnAgentLoop>.Instance
+                    )
+                ),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent(threadId, mode);
 
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-            templateName, "ask the user", name: "asker", runInBackground: true);
+            templateName,
+            "ask the user",
+            name: "asker",
+            runInBackground: true
+        );
         using var doc = JsonDocument.Parse(spawnJson);
         var agentId = doc.RootElement.GetProperty("agent_id").GetString()!;
 
@@ -764,7 +881,10 @@ public class ConversationsControllerTests
     /// waiting on a completion that will never come.
     /// </summary>
     private static Task WaitUntilChildAwaitingQuestionAsync(
-        SubAgentManager subAgentManager, string agentId, CancellationToken ct)
+        SubAgentManager subAgentManager,
+        string agentId,
+        CancellationToken ct
+    )
     {
         return Wait.UntilAsync(
             async () =>
@@ -774,7 +894,8 @@ public class ConversationsControllerTests
             $"the spawned child '{agentId}' parked on its own AskUserQuestion, i.e. registered a deferred tool call",
             TimeSpan.FromSeconds(30),
             TimeSpan.FromMilliseconds(20),
-            cancellationToken: ct);
+            cancellationToken: ct
+        );
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(params IMessage[] messages)
@@ -800,7 +921,8 @@ public class ConversationsControllerTests
         var result = await controller.SwitchProvider(
             threadId,
             new SwitchProviderRequest { ProviderId = "openai" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         conflict.StatusCode.Should().Be(409);
@@ -827,7 +949,8 @@ public class ConversationsControllerTests
         var result = await controller.SwitchProvider(
             threadId,
             new SwitchProviderRequest { ProviderId = "openai" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         conflict.StatusCode.Should().Be(409);
@@ -850,15 +973,21 @@ public class ConversationsControllerTests
 
         var threadId = "thread-prov-idle";
         var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
-        _ = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
-            threadId, currentMode, requestedProviderId: "test", requestResponseDumpFileName: null);
+        _ = (FakeMultiTurnAgent)
+            pool.GetOrCreateAgent(
+                threadId,
+                currentMode,
+                requestedProviderId: "test",
+                requestResponseDumpFileName: null
+            );
 
         var controller = CreateController(store, pool, Mock.Of<IChatModeStore>());
 
         var result = await controller.SwitchProvider(
             threadId,
             new SwitchProviderRequest { ProviderId = "openai" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var ok = Assert.IsType<OkObjectResult>(result);
         JsonSerializer.Serialize(ok.Value).Should().Contain("\"providerId\":\"openai\"");
@@ -879,15 +1008,21 @@ public class ConversationsControllerTests
 
         var threadId = "thread-prov-503";
         var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
-        _ = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
-            threadId, currentMode, requestedProviderId: "test", requestResponseDumpFileName: null);
+        _ = (FakeMultiTurnAgent)
+            pool.GetOrCreateAgent(
+                threadId,
+                currentMode,
+                requestedProviderId: "test",
+                requestResponseDumpFileName: null
+            );
 
         var controller = CreateController(store, pool, Mock.Of<IChatModeStore>());
 
         var result = await controller.SwitchProvider(
             threadId,
             new SwitchProviderRequest { ProviderId = "openai" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var obj = Assert.IsType<ObjectResult>(result);
         obj.StatusCode.Should().Be(503);
@@ -906,8 +1041,13 @@ public class ConversationsControllerTests
 
         var threadId = "thread-prov-stale";
         var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
-        var agent = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
-            threadId, currentMode, requestedProviderId: "test", requestResponseDumpFileName: null);
+        var agent = (FakeMultiTurnAgent)
+            pool.GetOrCreateAgent(
+                threadId,
+                currentMode,
+                requestedProviderId: "test",
+                requestResponseDumpFileName: null
+            );
         agent.CurrentRunId = "run-stale";
         agent.IsRunning = false;
 
@@ -916,7 +1056,8 @@ public class ConversationsControllerTests
         var result = await controller.SwitchProvider(
             threadId,
             new SwitchProviderRequest { ProviderId = "openai" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         result.Should().BeOfType<OkObjectResult>();
         pool.GetEffectiveProviderId(threadId, null).Should().Be("openai");
@@ -937,14 +1078,16 @@ public class ConversationsControllerTests
             {
                 ThreadId = "thread-prov-refresh",
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, "math-helper")
+                Properties = ImmutableDictionary<string, object>
+                    .Empty.SetItem(MultiTurnAgentPool.ModePropertyKey, "math-helper")
                     .SetItem(MultiTurnAgentPool.ProviderPropertyKey, "test"),
-            });
+            }
+        );
         await using var pool = CreatePoolWithRegistry(registry, store);
 
         var modeStore = new Mock<IChatModeStore>();
-        modeStore.Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
+        modeStore
+            .Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
             .ReturnsAsync(SystemChatModes.GetById("math-helper"));
 
         // No live agent for this thread → forces the persisted-mode fallback chain in the controller.
@@ -953,7 +1096,8 @@ public class ConversationsControllerTests
         var result = await controller.SwitchProvider(
             "thread-prov-refresh",
             new SwitchProviderRequest { ProviderId = "openai" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var ok = Assert.IsType<OkObjectResult>(result);
         JsonSerializer.Serialize(ok.Value).Should().Contain("\"providerId\":\"openai\"");
@@ -974,7 +1118,8 @@ public class ConversationsControllerTests
 
         var modeStore = new Mock<IChatModeStore>();
         // GetById on an unknown id returns null (typed ChatMode?), so every resolution attempt fails.
-        modeStore.Setup(m => m.GetModeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        modeStore
+            .Setup(m => m.GetModeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SystemChatModes.GetById("__no_such_mode__"));
 
         // No agent is created for this thread and no metadata is persisted → GetAgentMode is null and
@@ -984,18 +1129,23 @@ public class ConversationsControllerTests
         var result = await controller.SwitchProvider(
             "thread-prov-nomode",
             new SwitchProviderRequest { ProviderId = "openai" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var obj = Assert.IsType<ObjectResult>(result);
         obj.StatusCode.Should().Be(500);
-        JsonSerializer.Serialize(obj.Value)
-            .Should().Contain("Could not resolve the conversation");
+        JsonSerializer.Serialize(obj.Value).Should().Contain("Could not resolve the conversation");
         // The failed switch left the thread's persisted provider untouched.
         pool.GetEffectiveProviderId("thread-prov-nomode", null).Should().Be("test");
     }
 
     private static Workspace TestWorkspace(string id) =>
-        new() { Id = id, Name = id, DirectoryRelPath = id };
+        new()
+        {
+            Id = id,
+            Name = id,
+            DirectoryRelPath = id,
+        };
 
     [Fact]
     public async Task Provision_ReturnsOk_AndPersistsMetadata()
@@ -1003,7 +1153,8 @@ public class ConversationsControllerTests
         var store = new InMemoryConversationStore();
         await using var pool = CreatePool();
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
 
@@ -1012,7 +1163,8 @@ public class ConversationsControllerTests
             pool,
             ModeStoreResolvingSystemModes(),
             workspaceStore: workspaceStore.Object,
-            providerRegistry: registry);
+            providerRegistry: registry
+        );
 
         var result = await controller.Provision(
             new ProvisionConversationRequest
@@ -1021,7 +1173,8 @@ public class ConversationsControllerTests
                 ProviderId = "test",
                 ModeId = SystemChatModes.DefaultModeId,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var response = Assert.IsType<ProvisionConversationResponse>(ok.Value);
@@ -1045,7 +1198,8 @@ public class ConversationsControllerTests
         var store = new InMemoryConversationStore();
         await using var pool = CreatePool();
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
 
@@ -1054,7 +1208,8 @@ public class ConversationsControllerTests
             pool,
             ModeStoreResolvingSystemModes(),
             workspaceStore: workspaceStore.Object,
-            providerRegistry: registry);
+            providerRegistry: registry
+        );
 
         var result = await controller.Provision(
             new ProvisionConversationRequest
@@ -1064,7 +1219,8 @@ public class ConversationsControllerTests
                 ModeId = SystemChatModes.DefaultModeId,
                 SystemPromptAppendix = "REVIEW METHODOLOGY",
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var threadId = Assert
             .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
@@ -1079,7 +1235,11 @@ public class ConversationsControllerTests
         // factory makes; testing read and append separately would leave the join untested, and the join is
         // what was missing.
         var composed = await SystemPromptAugmenter.ComposeAsync(
-            store, threadId, "MODE PROMPT", ct: CancellationToken.None);
+            store,
+            threadId,
+            "MODE PROMPT",
+            ct: CancellationToken.None
+        );
         composed.Should().Be("MODE PROMPT\n\nREVIEW METHODOLOGY");
     }
 
@@ -1094,7 +1254,8 @@ public class ConversationsControllerTests
         var store = new InMemoryConversationStore();
         await using var pool = CreatePool();
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
 
@@ -1103,7 +1264,8 @@ public class ConversationsControllerTests
             pool,
             ModeStoreResolvingSystemModes(),
             workspaceStore: workspaceStore.Object,
-            providerRegistry: registry);
+            providerRegistry: registry
+        );
 
         var result = await controller.Provision(
             new ProvisionConversationRequest
@@ -1113,7 +1275,8 @@ public class ConversationsControllerTests
                 ModeId = SystemChatModes.DefaultModeId,
                 SystemPromptAppendix = "CALLER-INSTRUCTIONS",
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var threadId = Assert
             .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
@@ -1122,16 +1285,17 @@ public class ConversationsControllerTests
         // The prompt as the host has it by the time the loop is built: mode, then workspace suffix, then
         // the discovered-context block. ComposeAsync receives exactly this and may only append.
         const string HostBuilt = "MODE-PROMPT\n\nWORKSPACE-SUFFIX\n\nDISCOVERED-CONTEXT";
-        var composed = await SystemPromptAugmenter.ComposeAsync(
-            store, threadId, HostBuilt, ct: CancellationToken.None);
+        var composed = await SystemPromptAugmenter.ComposeAsync(store, threadId, HostBuilt, ct: CancellationToken.None);
 
         composed.Should().StartWith(HostBuilt, "the host-built prompt must survive intact, not be replaced");
         composed.Should().EndWith("CALLER-INSTRUCTIONS", "the caller's task has to be the last thing read");
-        composed.IndexOf("CALLER-INSTRUCTIONS", StringComparison.Ordinal)
+        composed
+            .IndexOf("CALLER-INSTRUCTIONS", StringComparison.Ordinal)
             .Should()
             .BeGreaterThan(
                 composed.IndexOf("DISCOVERED-CONTEXT", StringComparison.Ordinal),
-                "the appendix goes after the discovered CLAUDE.md/AGENTS.md block, not before it");
+                "the appendix goes after the discovered CLAUDE.md/AGENTS.md block, not before it"
+            );
     }
 
     [Fact]
@@ -1140,7 +1304,8 @@ public class ConversationsControllerTests
         var store = new InMemoryConversationStore();
         await using var pool = CreatePool();
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
 
@@ -1149,7 +1314,8 @@ public class ConversationsControllerTests
             pool,
             ModeStoreResolvingSystemModes(),
             workspaceStore: workspaceStore.Object,
-            providerRegistry: registry);
+            providerRegistry: registry
+        );
 
         var result = await controller.Provision(
             new ProvisionConversationRequest
@@ -1158,7 +1324,8 @@ public class ConversationsControllerTests
                 ProviderId = "test",
                 ModeId = SystemChatModes.DefaultModeId,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var threadId = Assert
             .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
@@ -1167,7 +1334,11 @@ public class ConversationsControllerTests
         var readBack = await SystemPromptAugmenter.ReadAppendixAsync(store, threadId, CancellationToken.None);
         readBack.Should().BeNull("every UI-created chat provisions without instructions");
         var composed = await SystemPromptAugmenter.ComposeAsync(
-            store, threadId, "MODE PROMPT", ct: CancellationToken.None);
+            store,
+            threadId,
+            "MODE PROMPT",
+            ct: CancellationToken.None
+        );
         composed.Should().Be("MODE PROMPT");
     }
 
@@ -1190,7 +1361,8 @@ public class ConversationsControllerTests
         var store = new InMemoryConversationStore();
         await using var pool = CreatePool();
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
 
@@ -1199,7 +1371,8 @@ public class ConversationsControllerTests
             pool,
             ModeStoreResolvingSystemModes(),
             workspaceStore: workspaceStore.Object,
-            providerRegistry: registry);
+            providerRegistry: registry
+        );
 
         var before = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var result = await controller.Provision(
@@ -1209,7 +1382,8 @@ public class ConversationsControllerTests
                 ProviderId = "test",
                 ModeId = SystemChatModes.DefaultModeId,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
         var after = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -1220,19 +1394,20 @@ public class ConversationsControllerTests
         await store.UpdateMetadataAsync(
             threadId,
             existing => existing! with { LastUpdated = BumpedLastUpdated },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var metadata = await store.LoadMetadataAsync(threadId, CancellationToken.None);
         var createdAt = ConversationListOptions.CreationTimestampOf(metadata!);
 
-        createdAt.Should().NotBe(
-            BumpedLastUpdated,
-            "an id without a parseable timestamp falls back to LastUpdated, which is the mutable key "
-                + "the created sort exists to avoid");
-        createdAt.Should().BeInRange(
-            before,
-            after,
-            "the id must encode the instant the conversation was provisioned");
+        createdAt
+            .Should()
+            .NotBe(
+                BumpedLastUpdated,
+                "an id without a parseable timestamp falls back to LastUpdated, which is the mutable key "
+                    + "the created sort exists to avoid"
+            );
+        createdAt.Should().BeInRange(before, after, "the id must encode the instant the conversation was provisioned");
     }
 
     [Fact]
@@ -1245,7 +1420,8 @@ public class ConversationsControllerTests
         var store = new InMemoryConversationStore();
         await using var pool = CreatePool();
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
 
@@ -1254,7 +1430,8 @@ public class ConversationsControllerTests
             pool,
             ModeStoreResolvingSystemModes(),
             workspaceStore: workspaceStore.Object,
-            providerRegistry: registry);
+            providerRegistry: registry
+        );
 
         var result = await controller.Provision(
             new ProvisionConversationRequest
@@ -1264,16 +1441,17 @@ public class ConversationsControllerTests
                 ModeId = SystemChatModes.DefaultModeId,
                 SubAgentModelId = "gpt-5.6-sol",
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var threadId = Assert
             .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
             .ThreadId;
 
         var readBack = await ConversationSubAgentModel.ReadAsync(store, threadId, CancellationToken.None);
-        readBack.Should().Be(
-            "gpt-5.6-sol",
-            "the model the caller configured at provision must be the one the agent build resolves");
+        readBack
+            .Should()
+            .Be("gpt-5.6-sol", "the model the caller configured at provision must be the one the agent build resolves");
     }
 
     [Fact]
@@ -1285,7 +1463,8 @@ public class ConversationsControllerTests
         var store = new InMemoryConversationStore();
         await using var pool = CreatePool();
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
 
@@ -1294,7 +1473,8 @@ public class ConversationsControllerTests
             pool,
             ModeStoreResolvingSystemModes(),
             workspaceStore: workspaceStore.Object,
-            providerRegistry: registry);
+            providerRegistry: registry
+        );
 
         var result = await controller.Provision(
             new ProvisionConversationRequest
@@ -1303,7 +1483,8 @@ public class ConversationsControllerTests
                 ProviderId = "test",
                 ModeId = SystemChatModes.DefaultModeId,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var threadId = Assert
             .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
@@ -1319,14 +1500,16 @@ public class ConversationsControllerTests
         var store = new InMemoryConversationStore();
         await using var pool = CreatePool();
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("missing-ws", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("missing-ws", It.IsAny<CancellationToken>()))
             .ReturnsAsync((Workspace?)null);
 
         var controller = CreateController(
             store,
             pool,
             ModeStoreResolvingSystemModes(),
-            workspaceStore: workspaceStore.Object);
+            workspaceStore: workspaceStore.Object
+        );
 
         var result = await controller.Provision(
             new ProvisionConversationRequest
@@ -1335,7 +1518,8 @@ public class ConversationsControllerTests
                 ProviderId = "test",
                 ModeId = SystemChatModes.DefaultModeId,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var notFound = Assert.IsType<NotFoundObjectResult>(result);
         JsonSerializer.Serialize(notFound.Value).Should().Contain("missing-ws");
@@ -1347,17 +1531,15 @@ public class ConversationsControllerTests
         var store = new InMemoryConversationStore();
         await using var pool = CreatePool();
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
         var modeStore = new Mock<IChatModeStore>();
-        modeStore.Setup(m => m.GetModeAsync("missing-mode", It.IsAny<CancellationToken>()))
+        modeStore
+            .Setup(m => m.GetModeAsync("missing-mode", It.IsAny<CancellationToken>()))
             .ReturnsAsync((ChatMode?)null);
 
-        var controller = CreateController(
-            store,
-            pool,
-            modeStore.Object,
-            workspaceStore: workspaceStore.Object);
+        var controller = CreateController(store, pool, modeStore.Object, workspaceStore: workspaceStore.Object);
 
         var result = await controller.Provision(
             new ProvisionConversationRequest
@@ -1366,7 +1548,8 @@ public class ConversationsControllerTests
                 ProviderId = "test",
                 ModeId = "missing-mode",
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var notFound = Assert.IsType<NotFoundObjectResult>(result);
         JsonSerializer.Serialize(notFound.Value).Should().Contain("missing-mode");
@@ -1378,7 +1561,8 @@ public class ConversationsControllerTests
         var store = new InMemoryConversationStore();
         await using var pool = CreatePool();
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
         // "openai" is not in the registry's available set → provider_unavailable, and no thread is minted.
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
@@ -1388,7 +1572,8 @@ public class ConversationsControllerTests
             pool,
             ModeStoreResolvingSystemModes(),
             workspaceStore: workspaceStore.Object,
-            providerRegistry: registry);
+            providerRegistry: registry
+        );
 
         var result = await controller.Provision(
             new ProvisionConversationRequest
@@ -1397,7 +1582,8 @@ public class ConversationsControllerTests
                 ProviderId = "openai",
                 ModeId = SystemChatModes.DefaultModeId,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var obj = Assert.IsType<ObjectResult>(result);
         obj.StatusCode.Should().Be(503);
@@ -1417,7 +1603,8 @@ public class ConversationsControllerTests
         var result = await controller.SendMessage(
             "thread-send-missing",
             new SendMessageRequest { Text = "hello" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var notFound = Assert.IsType<NotFoundObjectResult>(result);
         JsonSerializer.Serialize(notFound.Value).Should().Contain("unknown_thread");
@@ -1435,16 +1622,20 @@ public class ConversationsControllerTests
             {
                 ThreadId = threadId,
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
-            });
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    SystemChatModes.DefaultModeId
+                ),
+            }
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
         var result = await controller.SendMessage(
             threadId,
             new SendMessageRequest { Text = "hello" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var accepted = Assert.IsType<AcceptedResult>(result);
         var response = Assert.IsType<SendMessageResponse>(accepted.Value);
@@ -1461,9 +1652,12 @@ public class ConversationsControllerTests
         // enqueue — asking the pool is what proves it, because a fixture that merely returned 202
         // would look identical on the wire.
         pool.TryGetHandoffState(threadId, out var handoff).Should().BeTrue();
-        handoff.IsBusy.Should().BeTrue(
-            "an accepted turn the agent has not started is work in hand, and the send is the only "
-                + "place that knows it was accepted");
+        handoff
+            .IsBusy.Should()
+            .BeTrue(
+                "an accepted turn the agent has not started is work in hand, and the send is the only "
+                    + "place that knows it was accepted"
+            );
     }
 
     [Fact]
@@ -1482,14 +1676,16 @@ public class ConversationsControllerTests
             {
                 ThreadId = ThreadId,
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
-            });
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    SystemChatModes.DefaultModeId
+                ),
+            }
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
-        var agent = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
-            ThreadId,
-            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+        var agent = (FakeMultiTurnAgent)
+            pool.GetOrCreateAgent(ThreadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
         agent.CurrentRunId = null;
         agent.IsRunning = false;
         agent.RejectAsQueueFull = true;
@@ -1497,7 +1693,8 @@ public class ConversationsControllerTests
         var result = await controller.SendMessage(
             ThreadId,
             new SendMessageRequest { Text = "hello" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         Assert.IsType<ObjectResult>(result).StatusCode.Should().Be(503);
 
@@ -1530,7 +1727,8 @@ public class ConversationsControllerTests
                     // the entry must be created the same way or EnsureCallerMatches would raise a
                     // credential conflict instead of reaching the refresh path under test.
                     CallerCredential: null,
-                    SessionId: "sess-old"),
+                    SessionId: "sess-old"
+                ),
             },
             providerRegistry: null,
             conversationStore: null,
@@ -1538,7 +1736,8 @@ public class ConversationsControllerTests
             bindingSink: null,
             // The live session has already moved on — this is the migration having replaced it.
             liveSessionResolver: (_, _) =>
-                Task.FromResult(new SandboxSession("workspace-1", "sess-new", "workspace", "/workspace")));
+                Task.FromResult(new SandboxSession("workspace-1", "sess-new", "workspace", "/workspace"))
+        );
 
         var threadId = "thread-send-refresh-deferred";
         await store.SaveMetadataAsync(
@@ -1547,17 +1746,22 @@ public class ConversationsControllerTests
             {
                 ThreadId = threadId,
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
-            });
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    SystemChatModes.DefaultModeId
+                ),
+            }
+        );
 
-        var agent = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
-            threadId,
-            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
-            requestedProviderId: null,
-            requestResponseDumpFileName: null,
-            requestedWorkspaceId: "workspace-1",
-            callerCredential: null);
+        var agent = (FakeMultiTurnAgent)
+            pool.GetOrCreateAgent(
+                threadId,
+                SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+                requestedProviderId: null,
+                requestResponseDumpFileName: null,
+                requestedWorkspaceId: "workspace-1",
+                callerCredential: null
+            );
 
         // An active run is what makes the pool DEFER rather than replace (IsEntryInProgress).
         agent.CurrentRunId = "run-1";
@@ -1568,7 +1772,8 @@ public class ConversationsControllerTests
         var result = await controller.SendMessage(
             threadId,
             new SendMessageRequest { Text = "hello" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var obj = Assert.IsType<ObjectResult>(result);
         obj.StatusCode.Should().Be(503);
@@ -1607,14 +1812,16 @@ public class ConversationsControllerTests
                         new WorkspaceRef("workspace-1"),
                         credential,
                         credential,
-                        sessionId),
+                        sessionId
+                    ),
                 };
             },
             providerRegistry: null,
             conversationStore: null,
             NullLogger<MultiTurnAgentPool>.Instance,
-            liveSessionResolver: (_, _) => Task.FromResult(
-                new SandboxSession("workspace-1", "sess-live", "workspace", "/workspace")));
+            liveSessionResolver: (_, _) =>
+                Task.FromResult(new SandboxSession("workspace-1", "sess-live", "workspace", "/workspace"))
+        );
 
         await store.SaveMetadataAsync(
             threadId,
@@ -1622,16 +1829,20 @@ public class ConversationsControllerTests
             {
                 ThreadId = threadId,
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
-            });
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    SystemChatModes.DefaultModeId
+                ),
+            }
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
         var result = await controller.SendMessage(
             threadId,
             new SendMessageRequest { Text = "hello" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         Assert.IsType<AcceptedResult>(result);
 
@@ -1659,16 +1870,20 @@ public class ConversationsControllerTests
             {
                 ThreadId = threadId,
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
-            });
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    SystemChatModes.DefaultModeId
+                ),
+            }
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
         var result = await controller.SendMessage(
             threadId,
             new SendMessageRequest { Text = "hello" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var obj = Assert.IsType<ObjectResult>(result);
         obj.StatusCode.Should().Be(503);
@@ -1697,23 +1912,30 @@ public class ConversationsControllerTests
             {
                 ThreadId = threadId,
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
-            });
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    SystemChatModes.DefaultModeId
+                ),
+            }
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
         var result = await controller.SendMessage(
             threadId,
             new SendMessageRequest { Text = "hello" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var obj = Assert.IsType<ObjectResult>(result);
         obj.StatusCode.Should().Be(503);
         var body = JsonSerializer.Serialize(obj.Value);
         body.Should().Contain("agent_replaced");
-        body.Should().NotContain("queue_full",
-            "the two 503s mean opposite things about whether retrying THIS agent can ever work");
+        body.Should()
+            .NotContain(
+                "queue_full",
+                "the two 503s mean opposite things about whether retrying THIS agent can ever work"
+            );
 
         agent.SendCount.Should().Be(0, "a refused accept never reached the enqueue");
     }
@@ -1734,16 +1956,17 @@ public class ConversationsControllerTests
             {
                 ThreadId = threadId,
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
-            });
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    SystemChatModes.DefaultModeId
+                ),
+            }
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
-        Func<Task> act = () => controller.SendMessage(
-            threadId,
-            new SendMessageRequest { Text = "hello" },
-            CancellationToken.None);
+        Func<Task> act = () =>
+            controller.SendMessage(threadId, new SendMessageRequest { Text = "hello" }, CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
@@ -1764,17 +1987,19 @@ public class ConversationsControllerTests
             {
                 ThreadId = threadId,
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId)
+                Properties = ImmutableDictionary<string, object>
+                    .Empty.SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId)
                     .SetItem(MultiTurnAgentPool.ProviderPropertyKey, "openai"),
-            });
+            }
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
         var result = await controller.SendMessage(
             threadId,
             new SendMessageRequest { Text = "hello" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var obj = Assert.IsType<ObjectResult>(result);
         obj.StatusCode.Should().Be(503);
@@ -1816,7 +2041,12 @@ public class ConversationsControllerTests
         await using var pool = CreatePool();
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
-        var result = await controller.GetStatus("thread-status-missing", runId: "run-1", inputId: null, CancellationToken.None);
+        var result = await controller.GetStatus(
+            "thread-status-missing",
+            runId: "run-1",
+            inputId: null,
+            CancellationToken.None
+        );
 
         var notFound = Assert.IsType<NotFoundObjectResult>(result);
         JsonSerializer.Serialize(notFound.Value).Should().Contain("unknown_thread");
@@ -1830,7 +2060,13 @@ public class ConversationsControllerTests
         var threadId = "thread-status-runid-404";
         await store.SaveMetadataAsync(
             threadId,
-            new ThreadMetadata { ThreadId = threadId, LastUpdated = 1, Properties = ImmutableDictionary<string, object>.Empty });
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            }
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
@@ -1867,26 +2103,38 @@ public class ConversationsControllerTests
         var existingThreadId = "thread-status-discriminator";
         await store.SaveMetadataAsync(
             existingThreadId,
-            new ThreadMetadata { ThreadId = existingThreadId, LastUpdated = 1, Properties = ImmutableDictionary<string, object>.Empty });
+            new ThreadMetadata
+            {
+                ThreadId = existingThreadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            }
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
         var missingThread = Assert.IsType<NotFoundObjectResult>(
-            await controller.GetStatus("thread-never-minted", runId: "run-x", inputId: null, CancellationToken.None));
+            await controller.GetStatus("thread-never-minted", runId: "run-x", inputId: null, CancellationToken.None)
+        );
         var missingRun = Assert.IsType<NotFoundObjectResult>(
-            await controller.GetStatus(existingThreadId, runId: "run-x", inputId: null, CancellationToken.None));
+            await controller.GetStatus(existingThreadId, runId: "run-x", inputId: null, CancellationToken.None)
+        );
 
         var missingThreadCode = CodeOf(missingThread.Value);
         var missingRunCode = CodeOf(missingRun.Value);
 
         missingThreadCode.Should().Be("unknown_thread");
         missingRunCode.Should().Be("unknown_runId");
-        missingRunCode.Should().NotBe(
-            missingThreadCode,
-            "a client cannot tell an absent conversation from a bad run id once these codes agree");
+        missingRunCode
+            .Should()
+            .NotBe(
+                missingThreadCode,
+                "a client cannot tell an absent conversation from a bad run id once these codes agree"
+            );
 
         static string? CodeOf(object? body) =>
-            JsonSerializer.Deserialize<Dictionary<string, string>>(JsonSerializer.Serialize(body))
+            JsonSerializer
+                .Deserialize<Dictionary<string, string>>(JsonSerializer.Serialize(body))
                 ?.GetValueOrDefault("code");
     }
 
@@ -1900,11 +2148,22 @@ public class ConversationsControllerTests
         var threadId = "thread-status-inputid-404";
         await store.SaveMetadataAsync(
             threadId,
-            new ThreadMetadata { ThreadId = threadId, LastUpdated = 1, Properties = ImmutableDictionary<string, object>.Empty });
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            }
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
-        var result = await controller.GetStatus(threadId, runId: null, inputId: "input-unknown", CancellationToken.None);
+        var result = await controller.GetStatus(
+            threadId,
+            runId: null,
+            inputId: "input-unknown",
+            CancellationToken.None
+        );
 
         var notFound = Assert.IsType<NotFoundObjectResult>(result);
         var payload = JsonSerializer.Serialize(notFound.Value);
@@ -1920,11 +2179,18 @@ public class ConversationsControllerTests
         var threadId = "thread-status-runid-ok";
         await store.SaveMetadataAsync(
             threadId,
-            new ThreadMetadata { ThreadId = threadId, LastUpdated = 1, Properties = ImmutableDictionary<string, object>.Empty });
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            }
+        );
 
         var now = DateTimeOffset.UtcNow;
         await store.UpsertRunLedgerAsync(
-            new RunLedgerEntry(threadId, "run-ok", RunStatus.InProgress, ["input-ok"], now, now));
+            new RunLedgerEntry(threadId, "run-ok", RunStatus.InProgress, ["input-ok"], now, now)
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
@@ -1945,7 +2211,13 @@ public class ConversationsControllerTests
         var threadId = "thread-status-inputid-notstarted";
         await store.SaveMetadataAsync(
             threadId,
-            new ThreadMetadata { ThreadId = threadId, LastUpdated = 1, Properties = ImmutableDictionary<string, object>.Empty });
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            }
+        );
 
         await store.RecordAcceptedInputAsync(threadId, "input-queued", DateTimeOffset.UtcNow);
 

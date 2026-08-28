@@ -23,8 +23,8 @@ public sealed class LegacyTenantIdCollisionException : Exception
     public LegacyTenantIdCollisionException(string tenantId)
         : base(
             $"{Code}: Identity:LegacyTenantId is '{tenantId}', which already names a tenant that is "
-                + "not the quarantine tenant. Choose an unused id. Nothing was written.") =>
-        TenantId = tenantId;
+                + "not the quarantine tenant. Choose an unused id. Nothing was written."
+        ) => TenantId = tenantId;
 
     /// <summary>The configured legacy tenant id.</summary>
     public string TenantId { get; }
@@ -71,7 +71,8 @@ public sealed class ConversationOwnershipRepairHostedService : IHostedService
         IConversationStore conversationStore,
         IOptions<IdentityOptions> options,
         TimeProvider timeProvider,
-        ILogger<ConversationOwnershipRepairHostedService> logger)
+        ILogger<ConversationOwnershipRepairHostedService> logger
+    )
     {
         ArgumentNullException.ThrowIfNull(tenantStore);
         ArgumentNullException.ThrowIfNull(conversationStore);
@@ -95,28 +96,30 @@ public sealed class ConversationOwnershipRepairHostedService : IHostedService
         {
             throw new InvalidOperationException(
                 "Identity:LegacyTenantId must not be blank; it is the id every unclaimed "
-                    + "conversation is stamped with.");
+                    + "conversation is stamped with."
+            );
         }
 
         // Resolved ONCE, before anything is written, and the same value is used for the quarantine
         // row and for the stamp. A literal in one place and a configured value in the other would
         // stamp every conversation with a tenant that does not exist.
-        if (!await _tenantStore
+        if (
+            !await _tenantStore
                 .TryEnsureQuarantineTenantAsync(legacyTenantId, _timeProvider.GetUtcNow(), cancellationToken)
-                .ConfigureAwait(false))
+                .ConfigureAwait(false)
+        )
         {
             throw new LegacyTenantIdCollisionException(legacyTenantId);
         }
 
-        var normalization = await _tenantStore
-            .NormalizeEntraTenantIdsAsync(cancellationToken)
-            .ConfigureAwait(false);
+        var normalization = await _tenantStore.NormalizeEntraTenantIdsAsync(cancellationToken).ConfigureAwait(false);
 
         if (normalization.Rewritten > 0)
         {
             _logger.LogInformation(
                 "Normalized {NormalizedCount} stored Entra directory id(s) to lower case.",
-                normalization.Rewritten);
+                normalization.Rewritten
+            );
         }
 
         if (normalization.SkippedCollisions > 0)
@@ -130,7 +133,8 @@ public sealed class ConversationOwnershipRepairHostedService : IHostedService
                 "Left {SkippedCount} stored Entra directory id(s) un-normalized: each would collide "
                     + "with a row that already owns its canonical form. Those tenants are unreachable "
                     + "until the duplicate directory registration is resolved.",
-                normalization.SkippedCollisions);
+                normalization.SkippedCollisions
+            );
         }
 
         if (_conversationStore is not IConversationOwnershipStore ownership)
@@ -144,25 +148,26 @@ public sealed class ConversationOwnershipRepairHostedService : IHostedService
                     $"Identity:Enforce is on but the registered conversation store "
                         + $"({_conversationStore.GetType().Name}) does not implement "
                         + $"{nameof(IConversationOwnershipStore)}, so unclaimed conversations cannot "
-                        + "be stamped with the quarantine tenant.");
+                        + "be stamped with the quarantine tenant."
+                );
             }
 
             _logger.LogWarning(
                 "Conversation store {StoreType} does not implement {Interface}; the legacy tenant "
                     + "stamp was skipped. This is only safe while Identity:Enforce is false.",
                 _conversationStore.GetType().Name,
-                nameof(IConversationOwnershipStore));
+                nameof(IConversationOwnershipStore)
+            );
             return;
         }
 
-        var stamped = await ownership
-            .StampUnownedThreadsAsync(legacyTenantId, cancellationToken)
-            .ConfigureAwait(false);
+        var stamped = await ownership.StampUnownedThreadsAsync(legacyTenantId, cancellationToken).ConfigureAwait(false);
 
         _logger.LogInformation(
             "Legacy tenant repair stamped {StampedCount} conversation(s) with quarantine tenant {TenantId}.",
             stamped,
-            legacyTenantId);
+            legacyTenantId
+        );
     }
 
     /// <inheritdoc />

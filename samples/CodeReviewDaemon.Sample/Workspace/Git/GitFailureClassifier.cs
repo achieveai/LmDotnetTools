@@ -97,6 +97,8 @@ internal static class GitFailureClassifier
     /// </summary>
     private static bool IsMissingNestedGitDir(string text) =>
         text.Contains(NotARepositoryMarker + ": ", StringComparison.Ordinal)
-        && (text.Contains(".git/modules/", StringComparison.Ordinal)
-            || text.Contains(@".git\modules\", StringComparison.Ordinal));
+        && (
+            text.Contains(".git/modules/", StringComparison.Ordinal)
+            || text.Contains(@".git\modules\", StringComparison.Ordinal)
+        );
 }

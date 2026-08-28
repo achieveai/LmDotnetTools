@@ -49,15 +49,17 @@ public static class AgentTextCollector
         string? streamedGenerationId = null;
         string? runId = null;
 
-        await foreach (
-            var message in agent.ExecuteRunAsync(userInput, cancellationToken).ConfigureAwait(false)
-        )
+        await foreach (var message in agent.ExecuteRunAsync(userInput, cancellationToken).ConfigureAwait(false))
         {
             switch (message)
             {
                 case TextMessage finalized:
                     runId ??= finalized.RunId;
-                    if (!finalized.IsThinking && finalized.Role == Role.Assistant && !string.IsNullOrEmpty(finalized.Text))
+                    if (
+                        !finalized.IsThinking
+                        && finalized.Role == Role.Assistant
+                        && !string.IsNullOrEmpty(finalized.Text)
+                    )
                     {
                         // Keep only the LATEST generation's answer. A multi-turn tool-using agent narrates
                         // its process in intermediate turns and emits the finished answer in the final turn,
@@ -116,9 +118,10 @@ public static class AgentTextCollector
 
         // Prefer the provider's finalized message(s) when present; otherwise fall back to the accumulated
         // streaming deltas. One or the other — never summed — so the text is never doubled.
-        var (text, assistantMessageCount) = finalizedCount > 0
-            ? (finalizedText.ToString(), finalizedCount)
-            : (streamedText.ToString(), streamedText.Length > 0 ? 1 : 0);
+        var (text, assistantMessageCount) =
+            finalizedCount > 0
+                ? (finalizedText.ToString(), finalizedCount)
+                : (streamedText.ToString(), streamedText.Length > 0 ? 1 : 0);
 
         return new AgentTextResult(text, runId ?? agent.CurrentRunId, assistantMessageCount);
     }

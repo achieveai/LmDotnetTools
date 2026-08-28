@@ -128,10 +128,7 @@ public class WebSearchToolTests
     {
         var provider = new FakeWebSearchProvider
         {
-            Result = new WebSearchResult
-            {
-                Items = [new WebSearchItem { Title = "T", Url = "https://t.example" }],
-            },
+            Result = new WebSearchResult { Items = [new WebSearchItem { Title = "T", Url = "https://t.example" }] },
         };
         var tool = CreateTool(provider);
 

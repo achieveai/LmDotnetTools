@@ -15,8 +15,10 @@ public class SandboxSessionRegistryResolverTests
 
     private sealed class ThrowingHandler : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("HTTP not expected in resolver unit tests");
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        ) => throw new InvalidOperationException("HTTP not expected in resolver unit tests");
     }
 
     private static SandboxSessionRegistry CreateRegistry()
@@ -35,7 +37,8 @@ public class SandboxSessionRegistryResolverTests
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance)
+                NullLogger<SessionSecretStore>.Instance
+            )
         );
     }
 
@@ -44,7 +47,11 @@ public class SandboxSessionRegistryResolverTests
     {
         await using var registry = CreateRegistry();
 
-        var result = await registry.ResolveThreadWorkspaceSessionAsync("thread-none", "default", requestCredential: null);
+        var result = await registry.ResolveThreadWorkspaceSessionAsync(
+            "thread-none",
+            "default",
+            requestCredential: null
+        );
 
         result.Outcome.Should().Be(SandboxSessionResolutionOutcome.NoSession);
         result.Session.Should().BeNull();
@@ -60,7 +67,11 @@ public class SandboxSessionRegistryResolverTests
         );
 
         // The persisted conversation workspace is authoritative — a binding for another workspace id is not a match.
-        var result = await registry.ResolveThreadWorkspaceSessionAsync("thread-ws", "some-other-workspace", requestCredential: null);
+        var result = await registry.ResolveThreadWorkspaceSessionAsync(
+            "thread-ws",
+            "some-other-workspace",
+            requestCredential: null
+        );
 
         result.Outcome.Should().Be(SandboxSessionResolutionOutcome.NoSession);
     }
@@ -100,7 +111,11 @@ public class SandboxSessionRegistryResolverTests
             new SandboxEstablishedBinding(new WorkspaceRef("default"), owner, owner)
         );
 
-        var result = await registry.ResolveThreadWorkspaceSessionAsync("thread-null-cred", "default", requestCredential: null);
+        var result = await registry.ResolveThreadWorkspaceSessionAsync(
+            "thread-null-cred",
+            "default",
+            requestCredential: null
+        );
 
         result.Outcome.Should().Be(SandboxSessionResolutionOutcome.CredentialConflict);
         result.Session.Should().BeNull();
@@ -118,10 +133,15 @@ public class SandboxSessionRegistryResolverTests
         // security fix does NOT break the ordinary same-origin file browser.
         registry.PublishEstablishedBinding(
             "thread-default-owned",
-            new SandboxEstablishedBinding(new WorkspaceRef("default"), registry.DefaultCredential, CallerCredential: null)
+            new SandboxEstablishedBinding(
+                new WorkspaceRef("default"),
+                registry.DefaultCredential,
+                CallerCredential: null
+            )
         );
 
-        var act = () => registry.ResolveThreadWorkspaceSessionAsync("thread-default-owned", "default", requestCredential: null);
+        var act = () =>
+            registry.ResolveThreadWorkspaceSessionAsync("thread-default-owned", "default", requestCredential: null);
 
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
@@ -135,7 +155,11 @@ public class SandboxSessionRegistryResolverTests
         // origins even though the effective app ids match.
         registry.PublishEstablishedBinding(
             "thread-interactive",
-            new SandboxEstablishedBinding(new WorkspaceRef("default"), registry.DefaultCredential, CallerCredential: null)
+            new SandboxEstablishedBinding(
+                new WorkspaceRef("default"),
+                registry.DefaultCredential,
+                CallerCredential: null
+            )
         );
 
         var result = await registry.ResolveThreadWorkspaceSessionAsync(
@@ -162,7 +186,11 @@ public class SandboxSessionRegistryResolverTests
             new SandboxEstablishedBinding(new WorkspaceRef("default"), explicitOwner, explicitOwner)
         );
 
-        var result = await registry.ResolveThreadWorkspaceSessionAsync("thread-explicit-default", "default", requestCredential: null);
+        var result = await registry.ResolveThreadWorkspaceSessionAsync(
+            "thread-explicit-default",
+            "default",
+            requestCredential: null
+        );
 
         result.Outcome.Should().Be(SandboxSessionResolutionOutcome.CredentialConflict);
         result.ExistingAppId.Should().Be(registry.DefaultCredential.AppId);
@@ -255,9 +283,11 @@ public class SandboxSessionRegistryResolverTests
         // ...and the background path passes the gate on the same binding, tripping the throwing stub.
         var act = () => registry.ResolveThreadWorkspaceSessionForBackgroundAsync("thread-background", "default");
 
-        _ = await act.Should().ThrowAsync<InvalidOperationException>(
-            "a drain loop has no caller, so there is no provenance to compare - and comparing anyway "
-                + "denies every flush of an S2S-created conversation, forever and silently");
+        _ = await act.Should()
+            .ThrowAsync<InvalidOperationException>(
+                "a drain loop has no caller, so there is no provenance to compare - and comparing anyway "
+                    + "denies every flush of an S2S-created conversation, forever and silently"
+            );
     }
 
     /// <summary>

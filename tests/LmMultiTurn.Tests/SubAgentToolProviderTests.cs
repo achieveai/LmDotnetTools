@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -7,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -29,11 +29,14 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     public Task InitializeAsync()
     {
         _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         var researcher = new SubAgentTemplate
@@ -54,11 +57,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
 
         var options = new SubAgentOptions
         {
-            Templates = new Dictionary<string, SubAgentTemplate>
-            {
-                ["researcher"] = researcher,
-                ["coder"] = coder,
-            },
+            Templates = new Dictionary<string, SubAgentTemplate> { ["researcher"] = researcher, ["coder"] = coder },
             MaxConcurrentSubAgents = 5,
         };
 
@@ -69,7 +68,8 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: _source);
+            source: _source
+        );
 
         _provider = new SubAgentToolProvider(_manager, _source);
 
@@ -86,7 +86,8 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     }
 
     private static async IAsyncEnumerable<IMessage> BlockingStream(
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct
+    )
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         yield break;
@@ -100,16 +101,17 @@ public class SubAgentToolProviderTests : IAsyncLifetime
 
         // Assert
         functions.Should().HaveCount(4);
-        functions.Select(f => f.Contract.Name)
-            .Should().BeEquivalentTo(["Agent", "SendMessage", "CheckAgent", "WaitAgent"]);
+        functions
+            .Select(f => f.Contract.Name)
+            .Should()
+            .BeEquivalentTo(["Agent", "SendMessage", "CheckAgent", "WaitAgent"]);
     }
 
     [Fact]
     public void AgentDescriptor_EmbedsTemplateCatalog()
     {
         // Act
-        var agent = _provider!.GetFunctions()
-            .First(f => f.Contract.Name == "Agent");
+        var agent = _provider!.GetFunctions().First(f => f.Contract.Name == "Agent");
 
         // Assert: each template's key, Description, and WhenToUse appear in the
         // tool description so the parent LLM can pick the right sub-agent type.
@@ -125,13 +127,22 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     public void AgentDescriptor_HasParityParameters()
     {
         // Act
-        var agent = _provider!.GetFunctions()
-            .First(f => f.Contract.Name == "Agent");
+        var agent = _provider!.GetFunctions().First(f => f.Contract.Name == "Agent");
         var paramNames = agent.Contract.Parameters!.Select(p => p.Name).ToList();
 
         // Assert: Claude Code parity parameters present; legacy ones gone.
-        paramNames.Should().Contain(
-            ["subagent_type", "prompt", "description", "name", "model", "run_in_background", "add_tools", "remove_tools"]);
+        paramNames
+            .Should()
+            .Contain([
+                "subagent_type",
+                "prompt",
+                "description",
+                "name",
+                "model",
+                "run_in_background",
+                "add_tools",
+                "remove_tools",
+            ]);
         paramNames.Should().NotContain("template_name");
         paramNames.Should().NotContain("task");
         paramNames.Should().NotContain("agent_id");
@@ -141,8 +152,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     public void AgentDescriptor_SteersTowardReusingLiveSubAgentsViaSendMessage()
     {
         // Act
-        var agent = _provider!.GetFunctions()
-            .First(f => f.Contract.Name == "Agent");
+        var agent = _provider!.GetFunctions().First(f => f.Contract.Name == "Agent");
 
         // Assert: the Agent description nudges the controller/loop to CONTINUE a still-live
         // sub-agent with SendMessage before spawning a brand-new one for the same/follow-up work.
@@ -155,8 +165,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     public void AgentDescriptor_NameParameter_AsksForAReadableHandleAndNotesAutoDerivedFallback()
     {
         // Act
-        var agent = _provider!.GetFunctions()
-            .First(f => f.Contract.Name == "Agent");
+        var agent = _provider!.GetFunctions().First(f => f.Contract.Name == "Agent");
         var nameParam = agent.Contract.Parameters!.First(p => p.Name == "name");
 
         // Assert: guidance asks for a short human-readable handle and documents that the host
@@ -170,8 +179,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     public void SendMessageDescriptor_PrefersContinuationOverSpawningANewAgent()
     {
         // Act
-        var sendMessage = _provider!.GetFunctions()
-            .First(f => f.Contract.Name == "SendMessage");
+        var sendMessage = _provider!.GetFunctions().First(f => f.Contract.Name == "SendMessage");
 
         // Assert: SendMessage steers the model to prefer continuing an existing agent over
         // spawning a fresh one when it already has the context for the work.
@@ -191,8 +199,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         var act = () => agentHandler(args, new ToolCallContext(), CancellationToken.None);
 
         // Assert
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*prompt*required*");
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*prompt*required*");
     }
 
     [Fact]
@@ -206,8 +213,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         var act = () => agentHandler(args, new ToolCallContext(), CancellationToken.None);
 
         // Assert
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*subagent_type*required*");
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*subagent_type*required*");
     }
 
     [Fact]
@@ -218,16 +224,14 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         // available agents — NOT throw — so the loop hands the LLM the catalog to self-correct with
         // instead of the run collapsing to general-purpose.
         var agentHandler = GetHandler("Agent");
-        var args = JsonSerializer.Serialize(
-            new { subagent_type = "no-such-agent", prompt = "do something" });
+        var args = JsonSerializer.Serialize(new { subagent_type = "no-such-agent", prompt = "do something" });
 
         var result = await agentHandler(args, new ToolCallContext(), CancellationToken.None);
 
         var resolved = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject;
         resolved.Payload.IsError.Should().BeTrue();
         resolved.Payload.ErrorCode.Should().Be("unknown_subagent_type");
-        resolved.Payload.Text.Should().Contain("Unknown template")
-            .And.Contain("researcher").And.Contain("coder");
+        resolved.Payload.Text.Should().Contain("Unknown template").And.Contain("researcher").And.Contain("coder");
     }
 
     [Fact]
@@ -252,27 +256,35 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             [],
             new Dictionary<string, ToolHandler>(),
             options,
-            source);
+            source
+        );
         var provider = new SubAgentToolProvider(manager, source);
         var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
         _subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
-                (_, _, ct) => Task.FromResult(BlockingStream(ct)));
+                (_, _, ct) => Task.FromResult(BlockingStream(ct))
+            );
         _ = await manager.SpawnAsync("researcher", "first", runInBackground: true);
 
         var result = await handler(
-            JsonSerializer.Serialize(new
-            {
-                subagent_type = "researcher",
-                prompt = "overflow",
-                run_in_background = true,
-            }),
+            JsonSerializer.Serialize(
+                new
+                {
+                    subagent_type = "researcher",
+                    prompt = "overflow",
+                    run_in_background = true,
+                }
+            ),
             new ToolCallContext(),
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var resolved = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject;
         resolved.Payload.IsError.Should().BeTrue();
@@ -307,11 +319,19 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: source);
+            source: source
+        );
         var provider = new SubAgentToolProvider(manager, source);
         var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
 
-        var args = JsonSerializer.Serialize(new { subagent_type = "researcher", prompt = "do it", name = "analyze" });
+        var args = JsonSerializer.Serialize(
+            new
+            {
+                subagent_type = "researcher",
+                prompt = "do it",
+                name = "analyze",
+            }
+        );
         var result = await handler(args, new ToolCallContext(), CancellationToken.None);
 
         var resolved = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject;
@@ -331,8 +351,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         var act = () => handler(args, new ToolCallContext(), CancellationToken.None);
 
         // Assert
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*target*required*");
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*target*required*");
     }
 
     [Fact]
@@ -346,8 +365,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         var act = () => handler(args, new ToolCallContext(), CancellationToken.None);
 
         // Assert
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*prompt*required*");
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*prompt*required*");
     }
 
     [Fact]
@@ -361,8 +379,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         var act = () => handler(args, new ToolCallContext(), CancellationToken.None);
 
         // Assert
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*agent_id*required*");
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*agent_id*required*");
     }
 
     [Fact]
@@ -380,9 +397,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
                 },
             },
             SpawnModelSelectionResolver = name =>
-                name == "unit:1:task"
-                    ? new SubAgentSpawnModelSelection(Model: null, ModelIntelligence: null)
-                    : null,
+                name == "unit:1:task" ? new SubAgentSpawnModelSelection(Model: null, ModelIntelligence: null) : null,
             TierModelResolver = tier =>
             {
                 observed = new SubAgentSpawnModelSelection(null, tier);
@@ -395,21 +410,26 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             [],
             new Dictionary<string, ToolHandler>(),
             options,
-            source);
+            source
+        );
         var provider = new SubAgentToolProvider(manager, source);
         var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
-        var args = JsonSerializer.Serialize(new
-        {
-            subagent_type = "researcher",
-            prompt = "work",
-            name = "unit:1:task",
-            model = "",
-            modelIntelligence = 0,
-        });
+        var args = JsonSerializer.Serialize(
+            new
+            {
+                subagent_type = "researcher",
+                prompt = "work",
+                name = "unit:1:task",
+                model = "",
+                modelIntelligence = 0,
+            }
+        );
 
         _ = await handler(args, new ToolCallContext(), CancellationToken.None);
 
-        observed.Should().BeNull(because: "the workflow unit's authoritative null tier must erase the LLM's placeholder zero");
+        observed
+            .Should()
+            .BeNull(because: "the workflow unit's authoritative null tier must erase the LLM's placeholder zero");
     }
 
     [Fact]
@@ -438,15 +458,18 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             [],
             new Dictionary<string, ToolHandler>(),
             options,
-            source);
+            source
+        );
         var provider = new SubAgentToolProvider(manager, source);
         var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
-        var args = JsonSerializer.Serialize(new
-        {
-            subagent_type = "researcher",
-            prompt = "work",
-            modelIntelligence = 0,
-        });
+        var args = JsonSerializer.Serialize(
+            new
+            {
+                subagent_type = "researcher",
+                prompt = "work",
+                modelIntelligence = 0,
+            }
+        );
 
         _ = await handler(args, new ToolCallContext(), CancellationToken.None);
 
@@ -460,21 +483,25 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         // template into the shared source, the next GetFunctions() call must surface it in the
         // Agent tool's catalog. The ToolCallInjectionMiddleware re-invokes the function-set
         // factory each request, so this provider must NOT cache its descriptor list.
-        var beforeRegister = _provider!.GetFunctions()
-            .First(f => f.Contract.Name == "Agent").Contract.Description!;
+        var beforeRegister = _provider!.GetFunctions().First(f => f.Contract.Name == "Agent").Contract.Description!;
         beforeRegister.Should().NotContain("reviewer");
 
-        _source!.TryRegister("reviewer", new SubAgentTemplate
-        {
-            Name = "reviewer",
-            SystemPrompt = "You are a reviewer.",
-            Description = "Reviews pull requests for correctness.",
-            WhenToUse = "Use after coder completes a change.",
-            AgentFactory = () => _subAgentMock.Object,
-        }).Should().BeTrue();
+        _source!
+            .TryRegister(
+                "reviewer",
+                new SubAgentTemplate
+                {
+                    Name = "reviewer",
+                    SystemPrompt = "You are a reviewer.",
+                    Description = "Reviews pull requests for correctness.",
+                    WhenToUse = "Use after coder completes a change.",
+                    AgentFactory = () => _subAgentMock.Object,
+                }
+            )
+            .Should()
+            .BeTrue();
 
-        var afterRegister = _provider!.GetFunctions()
-            .First(f => f.Contract.Name == "Agent").Contract.Description!;
+        var afterRegister = _provider!.GetFunctions().First(f => f.Contract.Name == "Agent").Contract.Description!;
         afterRegister.Should().Contain("reviewer");
         afterRegister.Should().Contain("Reviews pull requests for correctness.");
         afterRegister.Should().Contain("Use after coder completes a change.");
@@ -486,19 +513,22 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         // The subagent_type parameter description carries a comma-separated enum list of
         // available template keys; this must also reflect a TryRegister-added template so the
         // parent LLM knows it can pick the new type.
-        _source!.TryRegister("reviewer", new SubAgentTemplate
-        {
-            Name = "reviewer",
-            SystemPrompt = "You are a reviewer.",
-            Description = "Reviews PRs.",
-            WhenToUse = "After coder.",
-            AgentFactory = () => _subAgentMock.Object,
-        });
+        _source!.TryRegister(
+            "reviewer",
+            new SubAgentTemplate
+            {
+                Name = "reviewer",
+                SystemPrompt = "You are a reviewer.",
+                Description = "Reviews PRs.",
+                WhenToUse = "After coder.",
+                AgentFactory = () => _subAgentMock.Object,
+            }
+        );
 
-        var subagentTypeDesc = _provider!.GetFunctions()
+        var subagentTypeDesc = _provider!
+            .GetFunctions()
             .First(f => f.Contract.Name == "Agent")
-            .Contract.Parameters!
-            .First(p => p.Name == "subagent_type")
+            .Contract.Parameters!.First(p => p.Name == "subagent_type")
             .Description!;
 
         subagentTypeDesc.Should().Contain("researcher");
@@ -515,13 +545,19 @@ public class SubAgentToolProviderTests : IAsyncLifetime
 
         using (provider.SuppressSpawning())
         {
-            provider.GetFunctions().Select(f => f.Contract.Name)
-                .Should().BeEquivalentTo(["SendMessage", "CheckAgent", "WaitAgent"]);
+            provider
+                .GetFunctions()
+                .Select(f => f.Contract.Name)
+                .Should()
+                .BeEquivalentTo(["SendMessage", "CheckAgent", "WaitAgent"]);
         }
 
         // Suppression is scoped: the very next contract build advertises spawning again.
-        provider.GetFunctions().Select(f => f.Contract.Name)
-            .Should().BeEquivalentTo(["Agent", "SendMessage", "CheckAgent", "WaitAgent"]);
+        provider
+            .GetFunctions()
+            .Select(f => f.Contract.Name)
+            .Should()
+            .BeEquivalentTo(["Agent", "SendMessage", "CheckAgent", "WaitAgent"]);
     }
 
     [Fact]
@@ -552,8 +588,11 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         // re-advertise spawning while the outer scope still expects it hidden.
         inner.Dispose();
         inner.Dispose();
-        provider.GetFunctions().Select(f => f.Contract.Name)
-            .Should().NotContain("Agent", "the outer scope is still open");
+        provider
+            .GetFunctions()
+            .Select(f => f.Contract.Name)
+            .Should()
+            .NotContain("Agent", "the outer scope is still open");
 
         outer.Dispose();
         provider.GetFunctions().Select(f => f.Contract.Name).Should().Contain("Agent");

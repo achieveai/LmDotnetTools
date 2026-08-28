@@ -30,111 +30,102 @@ public static class ResponseEventParser
             throw new JsonException("Response event payload must be a JSON object");
         }
 
-        var type = obj["type"]?.GetValue<string>()
+        var type =
+            obj["type"]?.GetValue<string>()
             ?? throw new JsonException("Response event payload missing 'type' discriminator");
 
-        var seq = obj["sequence_number"] is JsonNode s && s.GetValueKind() == JsonValueKind.Number
-            ? s.GetValue<int>()
-            : (int?)null;
+        var seq =
+            obj["sequence_number"] is JsonNode s && s.GetValueKind() == JsonValueKind.Number
+                ? s.GetValue<int>()
+                : (int?)null;
 
         return type switch
         {
             ResponseEventTypes.ResponseCreated
-                or ResponseEventTypes.ResponseInProgress
-                or ResponseEventTypes.ResponseCompleted
-                or ResponseEventTypes.ResponseFailed =>
-                    new ResponseLifecycleEvent
-                    {
-                        Type = type,
-                        SequenceNumber = seq,
-                        Response = ToElement(obj["response"]),
-                    },
+            or ResponseEventTypes.ResponseInProgress
+            or ResponseEventTypes.ResponseCompleted
+            or ResponseEventTypes.ResponseFailed => new ResponseLifecycleEvent
+            {
+                Type = type,
+                SequenceNumber = seq,
+                Response = ToElement(obj["response"]),
+            },
 
-            ResponseEventTypes.OutputItemAdded
-                or ResponseEventTypes.OutputItemDone =>
-                    new ResponseOutputItemEvent
-                    {
-                        Type = type,
-                        SequenceNumber = seq,
-                        OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
-                        Item = ToElement(obj["item"]),
-                    },
+            ResponseEventTypes.OutputItemAdded or ResponseEventTypes.OutputItemDone => new ResponseOutputItemEvent
+            {
+                Type = type,
+                SequenceNumber = seq,
+                OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
+                Item = ToElement(obj["item"]),
+            },
 
-            ResponseEventTypes.ContentPartAdded
-                or ResponseEventTypes.ContentPartDone =>
-                    new ResponseContentPartEvent
-                    {
-                        Type = type,
-                        SequenceNumber = seq,
-                        ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
-                        OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
-                        ContentIndex = obj["content_index"]?.GetValue<int>() ?? 0,
-                        Part = ToElement(obj["part"]),
-                    },
+            ResponseEventTypes.ContentPartAdded or ResponseEventTypes.ContentPartDone => new ResponseContentPartEvent
+            {
+                Type = type,
+                SequenceNumber = seq,
+                ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
+                OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
+                ContentIndex = obj["content_index"]?.GetValue<int>() ?? 0,
+                Part = ToElement(obj["part"]),
+            },
 
-            ResponseEventTypes.OutputTextDelta =>
-                new ResponseOutputTextDeltaEvent
-                {
-                    Type = type,
-                    SequenceNumber = seq,
-                    ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
-                    OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
-                    ContentIndex = obj["content_index"]?.GetValue<int>() ?? 0,
-                    Delta = obj["delta"]?.GetValue<string>() ?? string.Empty,
-                },
+            ResponseEventTypes.OutputTextDelta => new ResponseOutputTextDeltaEvent
+            {
+                Type = type,
+                SequenceNumber = seq,
+                ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
+                OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
+                ContentIndex = obj["content_index"]?.GetValue<int>() ?? 0,
+                Delta = obj["delta"]?.GetValue<string>() ?? string.Empty,
+            },
 
-            ResponseEventTypes.OutputTextDone =>
-                new ResponseOutputTextDoneEvent
-                {
-                    Type = type,
-                    SequenceNumber = seq,
-                    ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
-                    OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
-                    ContentIndex = obj["content_index"]?.GetValue<int>() ?? 0,
-                    Text = obj["text"]?.GetValue<string>() ?? string.Empty,
-                },
+            ResponseEventTypes.OutputTextDone => new ResponseOutputTextDoneEvent
+            {
+                Type = type,
+                SequenceNumber = seq,
+                ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
+                OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
+                ContentIndex = obj["content_index"]?.GetValue<int>() ?? 0,
+                Text = obj["text"]?.GetValue<string>() ?? string.Empty,
+            },
 
-            ResponseEventTypes.FunctionCallArgumentsDelta =>
-                new ResponseFunctionCallArgumentsDeltaEvent
-                {
-                    Type = type,
-                    SequenceNumber = seq,
-                    ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
-                    OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
-                    Delta = obj["delta"]?.GetValue<string>() ?? string.Empty,
-                },
+            ResponseEventTypes.FunctionCallArgumentsDelta => new ResponseFunctionCallArgumentsDeltaEvent
+            {
+                Type = type,
+                SequenceNumber = seq,
+                ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
+                OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
+                Delta = obj["delta"]?.GetValue<string>() ?? string.Empty,
+            },
 
-            ResponseEventTypes.FunctionCallArgumentsDone =>
-                new ResponseFunctionCallArgumentsDoneEvent
-                {
-                    Type = type,
-                    SequenceNumber = seq,
-                    ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
-                    OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
-                    Arguments = obj["arguments"]?.GetValue<string>() ?? string.Empty,
-                },
+            ResponseEventTypes.FunctionCallArgumentsDone => new ResponseFunctionCallArgumentsDoneEvent
+            {
+                Type = type,
+                SequenceNumber = seq,
+                ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
+                OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
+                Arguments = obj["arguments"]?.GetValue<string>() ?? string.Empty,
+            },
 
-            ResponseEventTypes.ReasoningSummaryTextDelta =>
-                new ResponseReasoningSummaryTextDeltaEvent
-                {
-                    Type = type,
-                    SequenceNumber = seq,
-                    ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
-                    OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
-                    SummaryIndex = obj["summary_index"]?.GetValue<int>() ?? 0,
-                    Delta = obj["delta"]?.GetValue<string>() ?? string.Empty,
-                },
+            ResponseEventTypes.ReasoningSummaryTextDelta => new ResponseReasoningSummaryTextDeltaEvent
+            {
+                Type = type,
+                SequenceNumber = seq,
+                ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
+                OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
+                SummaryIndex = obj["summary_index"]?.GetValue<int>() ?? 0,
+                Delta = obj["delta"]?.GetValue<string>() ?? string.Empty,
+            },
 
-            ResponseEventTypes.ReasoningSummaryTextDone =>
-                new ResponseReasoningSummaryTextDoneEvent
-                {
-                    Type = type,
-                    SequenceNumber = seq,
-                    ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
-                    OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
-                    SummaryIndex = obj["summary_index"]?.GetValue<int>() ?? 0,
-                    Text = obj["text"]?.GetValue<string>() ?? string.Empty,
-                },
+            ResponseEventTypes.ReasoningSummaryTextDone => new ResponseReasoningSummaryTextDoneEvent
+            {
+                Type = type,
+                SequenceNumber = seq,
+                ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
+                OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
+                SummaryIndex = obj["summary_index"]?.GetValue<int>() ?? 0,
+                Text = obj["text"]?.GetValue<string>() ?? string.Empty,
+            },
 
             _ => new GenericResponseEvent
             {

@@ -84,7 +84,8 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         _ = messages;
         _ = parentRunId;
@@ -117,7 +118,8 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (SendGate is { } gate)
         {
@@ -149,7 +151,8 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
 #pragma warning disable CS1998, IDE0391 // Async iterator lacks 'await' - intentional empty stub using yield break
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         _ = userInput;
         _ = ct;
@@ -171,7 +174,8 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
     public bool KeepSubscriptionOpen { get; set; }
 
     public async IAsyncEnumerable<IMessage> SubscribeAsync(
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         if (!KeepSubscriptionOpen)
         {
@@ -284,8 +288,7 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
 /// the controller gates on, and <see cref="LastInput"/> records the <see cref="UserInput"/> it received so a
 /// test can prove the flag actually reached the agent rather than merely being echoed back.
 /// </summary>
-internal sealed class SpawnSuppressingFakeAgent(string threadId)
-    : FakeMultiTurnAgent(threadId), ISpawnSuppressingAgent
+internal sealed class SpawnSuppressingFakeAgent(string threadId) : FakeMultiTurnAgent(threadId), ISpawnSuppressingAgent
 {
     /// <summary>The last input handed to the capability-aware send path (null until one arrives).</summary>
     public UserInput? LastInput { get; private set; }

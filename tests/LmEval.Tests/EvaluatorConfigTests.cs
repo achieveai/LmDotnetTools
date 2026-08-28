@@ -84,10 +84,7 @@ public class EvaluatorConfigTests
         // The arbiter's ABSENCE is hashed as explicitly as its presence: it changes how every
         // straddle resolves.
         var withArbiter = Build(
-            options: new HarnessOptions
-            {
-                ArbiterJudge = new ScoringJudge("arb", "openai", _ => 9.0),
-            }
+            options: new HarnessOptions { ArbiterJudge = new ScoringJudge("arb", "openai", _ => 9.0) }
         );
 
         withArbiter.Hash.Should().NotBe(Build().Hash);
@@ -96,17 +93,13 @@ public class EvaluatorConfigTests
     [Fact]
     public void Changing_only_the_abstain_floor_moves_the_hash()
     {
-        Build(options: new HarnessOptions { AbstainFloor = 0.5 })
-            .Hash.Should()
-            .NotBe(Build().Hash);
+        Build(options: new HarnessOptions { AbstainFloor = 0.5 }).Hash.Should().NotBe(Build().Hash);
     }
 
     [Fact]
     public void Changing_only_the_dispersion_alarm_moves_the_hash()
     {
-        Build(options: new HarnessOptions { DispersionAlarm = 2.0 })
-            .Hash.Should()
-            .NotBe(Build().Hash);
+        Build(options: new HarnessOptions { DispersionAlarm = 2.0 }).Hash.Should().NotBe(Build().Hash);
     }
 
     [Fact]
@@ -137,9 +130,7 @@ public class EvaluatorConfigTests
     {
         var act = () => Build([new OpaqueGate()]);
 
-        act.Should()
-            .Throw<ArgumentException>()
-            .WithMessage("*does not implement IConfigurationFingerprint*");
+        act.Should().Throw<ArgumentException>().WithMessage("*does not implement IConfigurationFingerprint*");
     }
 
     [Fact]
@@ -210,10 +201,7 @@ public class EvaluatorConfigTests
             Build(
                 [],
                 [new ScoringJudge("shared", "anthropic", _ => 8.0)],
-                new HarnessOptions
-                {
-                    ArbiterJudge = new ScoringJudge("shared", "openai", _ => 9.0),
-                }
+                new HarnessOptions { ArbiterJudge = new ScoringJudge("shared", "openai", _ => 9.0) }
             );
 
         act.Should().Throw<ArgumentException>().WithMessage("*is also a panel judge id*");
@@ -288,12 +276,7 @@ public class EvaluatorConfigTests
                 Build(
                     options: new HarnessOptions
                     {
-                        ArbiterJudge = new ScoringJudge(
-                            "arb",
-                            "anthropic",
-                            _ => 8.0,
-                            modelId: "vendor/arb-2"
-                        ),
+                        ArbiterJudge = new ScoringJudge("arb", "anthropic", _ => 8.0, modelId: "vendor/arb-2"),
                     }
                 )
             ),
@@ -303,12 +286,7 @@ public class EvaluatorConfigTests
                 Build(
                     options: new HarnessOptions
                     {
-                        ArbiterJudge = new ScoringJudge(
-                            "arb",
-                            "google",
-                            _ => 8.0,
-                            modelId: "vendor/arb-1"
-                        ),
+                        ArbiterJudge = new ScoringJudge("arb", "google", _ => 8.0, modelId: "vendor/arb-1"),
                     }
                 )
             ),
@@ -317,9 +295,7 @@ public class EvaluatorConfigTests
         using var scope = new AssertionScope();
         foreach (var (field, baseline, moved) in rows)
         {
-            moved
-                .Hash.Should()
-                .NotBe(baseline.Hash, "moving only {0} must move the evaluator hash", field);
+            moved.Hash.Should().NotBe(baseline.Hash, "moving only {0} must move the evaluator hash", field);
         }
     }
 
@@ -350,12 +326,8 @@ public class EvaluatorConfigTests
     [Fact]
     public void The_declared_weights_hash_by_content_and_not_by_enumeration_order()
     {
-        var forward = Build(
-            reliabilityWeights: new Dictionary<string, double> { ["j-a"] = 0.9, ["j-b"] = 0.4 }
-        );
-        var reverse = Build(
-            reliabilityWeights: new Dictionary<string, double> { ["j-b"] = 0.4, ["j-a"] = 0.9 }
-        );
+        var forward = Build(reliabilityWeights: new Dictionary<string, double> { ["j-a"] = 0.9, ["j-b"] = 0.4 });
+        var reverse = Build(reliabilityWeights: new Dictionary<string, double> { ["j-b"] = 0.4, ["j-a"] = 0.9 });
 
         forward.Hash.Should().Be(reverse.Hash);
     }
@@ -368,8 +340,7 @@ public class EvaluatorConfigTests
     [Fact]
     public void A_weight_off_its_scale_is_refused_when_the_configuration_is_frozen()
     {
-        var act = () =>
-            Build(reliabilityWeights: new Dictionary<string, double> { ["j-a"] = 1.5 });
+        var act = () => Build(reliabilityWeights: new Dictionary<string, double> { ["j-a"] = 1.5 });
 
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
@@ -395,9 +366,7 @@ public class EvaluatorConfigTests
                 (_, _) => Task.FromResult("SCORE: 8")
             );
 
-        Build([], [Judge("temperature=1.0")])
-            .Hash.Should()
-            .NotBe(Build([], [Judge("temperature=0.0")]).Hash);
+        Build([], [Judge("temperature=1.0")]).Hash.Should().NotBe(Build([], [Judge("temperature=0.0")]).Hash);
     }
 
     /// <summary>
@@ -443,8 +412,7 @@ public class EvaluatorConfigTests
     [InlineData("v\u001f1")]
     public void A_fingerprint_that_could_forge_a_hash_boundary_is_refused(string forged)
     {
-        var act = () =>
-            Build([], [new ScoringJudge("j-a", "anthropic", _ => 8.0, fingerprint: forged)]);
+        var act = () => Build([], [new ScoringJudge("j-a", "anthropic", _ => 8.0, fingerprint: forged)]);
 
         act.Should().Throw<ArgumentException>().WithMessage("*boundary*");
     }

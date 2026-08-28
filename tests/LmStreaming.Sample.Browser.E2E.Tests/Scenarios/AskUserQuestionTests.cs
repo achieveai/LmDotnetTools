@@ -33,24 +33,27 @@ public sealed class AskUserQuestionTests
         return ScriptedSseResponder
             .New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-            .Turn(t => t.ToolCall(
-                "AskUserQuestion",
-                new
-                {
-                    context = "Need to know your favorite color before continuing.",
-                    questions = new object[]
+            .Turn(t =>
+                t.ToolCall(
+                    "AskUserQuestion",
+                    new
                     {
-                        new
+                        context = "Need to know your favorite color before continuing.",
+                        questions = new object[]
                         {
-                            prompt = "Pick a color",
-                            options = new object[]
+                            new
                             {
-                                new { label = "Red", value = "red" },
-                                new { label = "Blue", value = "blue" },
+                                prompt = "Pick a color",
+                                options = new object[]
+                                {
+                                    new { label = "Red", value = "red" },
+                                    new { label = "Blue", value = "blue" },
+                                },
                             },
                         },
-                    },
-                }))
+                    }
+                )
+            )
             .Turn(t => t.Text(followUpText))
             .Build();
     }
@@ -92,12 +95,14 @@ public sealed class AskUserQuestionTests
         await page.AssistantText().WaitForTextContainsAsync("Great, blue it is", timeoutMs: 20_000);
         await page.WaitForStreamIdleAsync();
 
-        responder.RemainingTurns["parent"]
+        responder
+            .RemainingTurns["parent"]
             .Should()
             .Be(0, "the full scripted plan (ask -> answer -> follow-up) ran to completion");
 
         await session.SaveSuccessScreenshotAsync(
-            $"AskUserQuestion.Answering_a_single_select_question_resolves_and_resumes_the_run_{providerMode}");
+            $"AskUserQuestion.Answering_a_single_select_question_resolves_and_resumes_the_run_{providerMode}"
+        );
     }
 
     [Fact]
@@ -130,7 +135,8 @@ public sealed class AskUserQuestionTests
         responder.RemainingTurns["parent"].Should().Be(0);
 
         await session.SaveSuccessScreenshotAsync(
-            "AskUserQuestion.Skip_resolves_the_question_as_skipped_and_resumes_the_run");
+            "AskUserQuestion.Skip_resolves_the_question_as_skipped_and_resumes_the_run"
+        );
     }
 
     /// <summary>
@@ -189,6 +195,7 @@ public sealed class AskUserQuestionTests
         responder.RemainingTurns["parent"].Should().Be(0);
 
         await session.SaveSuccessScreenshotAsync(
-            "AskUserQuestion.Pending_question_survives_reload_and_can_still_be_answered");
+            "AskUserQuestion.Pending_question_survives_reload_and_can_still_be_answered"
+        );
     }
 }

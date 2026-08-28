@@ -104,7 +104,8 @@ internal static class ReviewLoopSubAgentSurface
             {
                 throw new InvalidOperationException(
                     $"Review loop wrapper '{current.GetType().Name}' reports itself as its own inner loop, "
-                        + $"so its '{typeof(T).Name}' capability cannot be resolved.");
+                        + $"so its '{typeof(T).Name}' capability cannot be resolved."
+                );
             }
 
             current = wrapper.Inner;
@@ -112,7 +113,8 @@ internal static class ReviewLoopSubAgentSurface
 
         throw new InvalidOperationException(
             $"Review loop decorator chain exceeded {MaxWrapperDepth} levels while resolving the "
-                + $"'{typeof(T).Name}' capability of '{agent.GetType().Name}'; the wrappers are probably cyclic.");
+                + $"'{typeof(T).Name}' capability of '{agent.GetType().Name}'; the wrappers are probably cyclic."
+        );
     }
 
     private static IReviewLoopSubAgentSurface? Resolve(IMultiTurnAgent agent, int depth)
@@ -123,7 +125,8 @@ internal static class ReviewLoopSubAgentSurface
         {
             throw new InvalidOperationException(
                 $"Review loop decorator chain exceeded {MaxWrapperDepth} levels while resolving the "
-                    + $"sub-agent surface of '{agent.GetType().Name}'; the wrappers are probably cyclic.");
+                    + $"sub-agent surface of '{agent.GetType().Name}'; the wrappers are probably cyclic."
+            );
         }
 
         var declared = agent as IReviewLoopSubAgentSurface;
@@ -137,7 +140,8 @@ internal static class ReviewLoopSubAgentSurface
             {
                 throw new InvalidOperationException(
                     $"Review loop wrapper '{agent.GetType().Name}' reports itself as its own inner loop, "
-                        + "so its sub-agent surface cannot be resolved.");
+                        + "so its sub-agent surface cannot be resolved."
+                );
             }
 
             wrapped = Resolve(wrapper.Inner, depth + 1);
@@ -152,12 +156,10 @@ internal static class ReviewLoopSubAgentSurface
     }
 
     /// <summary>A decorator's own surface laid over the surface of what it wraps, member by member.</summary>
-    private sealed class MergedSurface(
-        IReviewLoopSubAgentSurface outer,
-        IReviewLoopSubAgentSurface inner) : IReviewLoopSubAgentSurface
+    private sealed class MergedSurface(IReviewLoopSubAgentSurface outer, IReviewLoopSubAgentSurface inner)
+        : IReviewLoopSubAgentSurface
     {
-        public IReviewSubAgentCompletionSource? CompletionSource =>
-            outer.CompletionSource ?? inner.CompletionSource;
+        public IReviewSubAgentCompletionSource? CompletionSource => outer.CompletionSource ?? inner.CompletionSource;
 
         public Func<IDisposable>? SuppressSpawning => outer.SuppressSpawning ?? inner.SuppressSpawning;
     }

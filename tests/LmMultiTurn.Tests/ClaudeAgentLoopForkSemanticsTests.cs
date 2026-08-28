@@ -34,20 +34,21 @@ public class ClaudeAgentLoopForkSemanticsTests
             claudeOptions: options,
             mcpServers: null,
             threadId: "claude-fork-test",
-            clientFactory: (_, _) => mockClient);
+            clientFactory: (_, _) => mockClient
+        );
 
         var (received, _) = await DriveOneRunAsync(loop, parentRunId: "parent-run-abc");
 
         var assignment = received.OfType<RunAssignmentMessage>().Should().ContainSingle().Subject;
-        assignment.Assignment.ParentRunId.Should().Be(
-            "parent-run-abc",
-            "caller-supplied UserInput.ParentRunId must be threaded into RunAssignment");
+        assignment
+            .Assignment.ParentRunId.Should()
+            .Be("parent-run-abc", "caller-supplied UserInput.ParentRunId must be threaded into RunAssignment");
 
         var completed = received.OfType<RunCompletedMessage>().Should().ContainSingle().Subject;
         completed.WasForked.Should().BeTrue("the run originated from an explicit caller fork");
-        completed.ForkedToRunId.Should().Be(
-            completed.CompletedRunId,
-            "ForkedToRunId must point to the new run when WasForked is true");
+        completed
+            .ForkedToRunId.Should()
+            .Be(completed.CompletedRunId, "ForkedToRunId must point to the new run when WasForked is true");
     }
 
     [Fact]
@@ -66,7 +67,8 @@ public class ClaudeAgentLoopForkSemanticsTests
             claudeOptions: options,
             mcpServers: null,
             threadId: "claude-no-fork-test",
-            clientFactory: (_, _) => mockClient);
+            clientFactory: (_, _) => mockClient
+        );
 
         var (received, _) = await DriveOneRunAsync(loop, parentRunId: null);
 
@@ -91,7 +93,8 @@ public class ClaudeAgentLoopForkSemanticsTests
             claudeOptions: options,
             mcpServers: null,
             threadId: "claude-empty-parent-test",
-            clientFactory: (_, _) => mockClient);
+            clientFactory: (_, _) => mockClient
+        );
 
         var (received, _) = await DriveOneRunAsync(loop, parentRunId: string.Empty);
 
@@ -127,18 +130,25 @@ public class ClaudeAgentLoopForkSemanticsTests
             claudeOptions: options,
             mcpServers: null,
             threadId: "claude-no-client-tools-test",
-            clientFactory: (_, _) => mockClient);
+            clientFactory: (_, _) => mockClient
+        );
 
         _ = await DriveOneRunAsync(loop, parentRunId: null);
 
         mockClient.LastRequest.Should().NotBeNull();
         var allowedTools = mockClient.LastRequest!.AllowedTools ?? string.Empty;
-        allowedTools.Should().NotContain(
-            AskUserQuestionToolProvider.ToolName,
-            "ClaudeAgentLoop's built-in --tools allow-list must never advertise the client-only AskUserQuestion tool");
-        allowedTools.Should().NotContain(
-            NotifyClientToolProvider.ToolName,
-            "ClaudeAgentLoop's built-in --tools allow-list must never advertise the client-only NotifyClient tool");
+        allowedTools
+            .Should()
+            .NotContain(
+                AskUserQuestionToolProvider.ToolName,
+                "ClaudeAgentLoop's built-in --tools allow-list must never advertise the client-only AskUserQuestion tool"
+            );
+        allowedTools
+            .Should()
+            .NotContain(
+                NotifyClientToolProvider.ToolName,
+                "ClaudeAgentLoop's built-in --tools allow-list must never advertise the client-only NotifyClient tool"
+            );
 
         var mcpServerNames = mockClient.LastRequest.McpServers?.Keys ?? Enumerable.Empty<string>();
         mcpServerNames.Should().NotContain(AskUserQuestionToolProvider.ToolName);
@@ -151,7 +161,8 @@ public class ClaudeAgentLoopForkSemanticsTests
     /// </summary>
     private static async Task<(List<IMessage> Messages, Task Run)> DriveOneRunAsync(
         ClaudeAgentLoop loop,
-        string? parentRunId)
+        string? parentRunId
+    )
     {
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
@@ -159,7 +170,8 @@ public class ClaudeAgentLoopForkSemanticsTests
         var userInput = new UserInput(
             [new TextMessage { Text = "hi", Role = Role.User }],
             InputId: "fork-input",
-            ParentRunId: parentRunId);
+            ParentRunId: parentRunId
+        );
 
         var received = new List<IMessage>();
         var executeTask = Task.Run(async () =>
@@ -208,7 +220,8 @@ public class ClaudeAgentLoopForkSemanticsTests
 
         public async IAsyncEnumerable<IMessage> SendMessagesAsync(
             IEnumerable<IMessage> messages,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
         {
             CurrentSession = new SessionInfo
             {
@@ -225,7 +238,8 @@ public class ClaudeAgentLoopForkSemanticsTests
         }
 
         public async IAsyncEnumerable<IMessage> SubscribeToMessagesAsync(
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
         {
             CurrentSession = new SessionInfo
             {
@@ -240,11 +254,10 @@ public class ClaudeAgentLoopForkSemanticsTests
             }
         }
 
-        public Task SendAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default)
-            => Task.CompletedTask;
+        public Task SendAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
 
-        public Task<bool> SendExitCommandAsync(CancellationToken cancellationToken = default)
-            => Task.FromResult(true);
+        public Task<bool> SendExitCommandAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
 
         public Task ShutdownAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
         {

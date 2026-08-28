@@ -36,7 +36,8 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 public sealed record GenerationAbandonedMessage(
     [property: JsonPropertyName("threadId")] string? ThreadId,
     [property: JsonPropertyName("runId")] string? RunId,
-    [property: JsonPropertyName("generationId")] string? GenerationId) : IMessage
+    [property: JsonPropertyName("generationId")] string? GenerationId
+) : IMessage
 {
     // IMessage-only members: not part of this message's content-free wire contract (see class
     // summary). JsonIgnore keeps them out of serialization regardless of which JsonSerializerOptions

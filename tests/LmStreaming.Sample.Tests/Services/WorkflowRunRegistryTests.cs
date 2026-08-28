@@ -11,8 +11,7 @@ namespace LmStreaming.Sample.Tests.Services;
 /// </summary>
 public sealed class WorkflowRunRegistryTests : IDisposable
 {
-    private readonly string _dir =
-        Path.Combine(Path.GetTempPath(), "wf-index-" + Guid.NewGuid().ToString("N"));
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "wf-index-" + Guid.NewGuid().ToString("N"));
 
     public void Dispose()
     {
@@ -151,7 +150,8 @@ public sealed class WorkflowRunRegistryTests : IDisposable
                     StructuralDepth = 2,
                     DelegationDepth = 1,
                     Status = AgentCollaborationStatuses.Completed,
-                });
+                }
+            );
 
         registry.PersistTabs("t1", [tab]);
         var restored = new WorkflowRunRegistry(_dir).GetPersistedTabs("t1").Should().ContainSingle().Subject;
@@ -180,7 +180,8 @@ public sealed class WorkflowRunRegistryTests : IDisposable
                     AgentKind = nameof(AgentKind.SubAgent),
                     IsLive = true,
                 },
-            ]);
+            ]
+        );
 
         var restored = new WorkflowRunRegistry(_dir).GetPersistedTabs("t1").Single();
 
@@ -191,14 +192,13 @@ public sealed class WorkflowRunRegistryTests : IDisposable
     public void PersistTabs_NeverWritesViewerScopedFlags()
     {
         var registry = new WorkflowRunRegistry(_dir);
-        registry.PersistTabs(
-            "t1",
-            [Tab("subagent", "d1", "completed") with { IsCurrent = true, IsReadable = true }]);
+        registry.PersistTabs("t1", [Tab("subagent", "d1", "completed") with { IsCurrent = true, IsReadable = true }]);
 
         var raw = File.ReadAllText(Directory.GetFiles(_dir, "*.json").Single());
 
-        raw.Should().NotContain("isCurrent").And.NotContain("isReadable",
-            "those answer 'for this reader', and every later reader is a different one");
+        raw.Should()
+            .NotContain("isCurrent")
+            .And.NotContain("isReadable", "those answer 'for this reader', and every later reader is a different one");
     }
 
     [Fact]
@@ -212,7 +212,8 @@ public sealed class WorkflowRunRegistryTests : IDisposable
             [{"agentId":"wf1","kind":"workflow","name":"review","template":"code-review",
               "task":"review pr","status":"running","threadId":"workflow-w1-t1",
               "lastActivityUtc":"2026-07-01T10:00:00+00:00"}]
-            """);
+            """
+        );
 
         var restored = new WorkflowRunRegistry(_dir).GetPersistedTabs("t1").Should().ContainSingle().Subject;
 
@@ -240,16 +241,20 @@ public sealed class WorkflowRunRegistryTests : IDisposable
                 Tab("subagent", "oldest", "completed", activityMinute: 1),
                 Tab("subagent", "middle", "completed", activityMinute: 2),
                 Tab("subagent", "newest", "completed", activityMinute: 3),
-            ]);
+            ]
+        );
         // A fourth run arrives on a later snapshot, taking the merged set over the cap.
         registry.PersistTabs("t1", [Tab("subagent", "live", "running", activityMinute: 0)]);
 
         var retained = registry.GetPersistedTabs("t1").Select(t => t.AgentId).ToList();
 
         retained.Should().HaveCount(3, "retention is the cap, not a suggestion");
-        retained.Should().BeEquivalentTo(
-            ["live", "newest", "middle"],
-            "the live snapshot is never evicted, and the rest go by most recent activity");
+        retained
+            .Should()
+            .BeEquivalentTo(
+                ["live", "newest", "middle"],
+                "the live snapshot is never evicted, and the rest go by most recent activity"
+            );
     }
 
     [Fact]

@@ -110,8 +110,8 @@ public record CopilotSdkOptions
     ///     entries also flow through the same file. The temp file is created at
     ///     transport startup and deleted on shutdown.
     /// </summary>
-    public IReadOnlyDictionary<string, McpServerConfig> McpServers { get; init; }
-        = ImmutableDictionary<string, McpServerConfig>.Empty;
+    public IReadOnlyDictionary<string, McpServerConfig> McpServers { get; init; } =
+        ImmutableDictionary<string, McpServerConfig>.Empty;
 
     /// <summary>
     ///     Names of MCP servers the Copilot CLI should be told to disable. Each

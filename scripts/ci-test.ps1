@@ -70,11 +70,15 @@ if (-not $SkipRestore) {
     }
 }
 
-# Format gate: enforce that .editorconfig whitespace rules pass before
-# building. Pairs with the centralized TreatWarningsAsErrors flag so the
-# build step below catches any analyzer warning as an error.
-Invoke-CiStep "format whitespace verify" {
-    dotnet format whitespace $solution --verify-no-changes --verbosity diagnostic --no-restore
+# Format gate: enforce the repository's canonical CSharpier output over the WHOLE tree before
+# building. It checks every tracked .cs file, not just the solution's, because the pre-commit
+# hook only ever sees staged files -- a file changed by a merge, a revert, or a --no-verify
+# commit reaches main unchecked, and this is the step that catches it. CSharpier is pinned in
+# .config/dotnet-tools.json (restored above), so the hook, the editor and this gate all format
+# identically. Pairs with the centralized TreatWarningsAsErrors flag so the build step below
+# catches any analyzer warning as an error.
+Invoke-CiStep "csharpier format verify" {
+    dotnet csharpier check .
 }
 
 Invoke-CiStep "build solution" {

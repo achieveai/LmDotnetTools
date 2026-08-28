@@ -11,7 +11,8 @@ internal sealed record SubmoduleDenied(string Path, string Url, string Reason);
 /// <summary>The result of a selective submodule walk: what was initialized and what was refused.</summary>
 internal sealed record SubmoduleInitOutcome(
     IReadOnlyList<string> InitializedPaths,
-    IReadOnlyList<SubmoduleDenied> Denied);
+    IReadOnlyList<SubmoduleDenied> Denied
+);
 
 /// <summary>
 /// Implements the plan §3 selective, recursive submodule init — never a blanket
@@ -84,7 +85,8 @@ internal sealed class SubmoduleInitializer
             _logger.LogWarning(
                 "Submodule recursion depth {Depth} reached at '{Dir}'; not descending further.",
                 depth,
-                relativeDir);
+                relativeDir
+            );
             return;
         }
 
@@ -103,7 +105,8 @@ internal sealed class SubmoduleInitializer
                 "'.gitmodules' at '{Path}' exceeds the {Limit}-byte read limit; not descending into any "
                     + "submodule declared there.",
                 gitmodulesPath,
-                SandboxReadLimits.RepositoryFileBytes);
+                SandboxReadLimits.RepositoryFileBytes
+            );
             return;
         }
 
@@ -129,7 +132,8 @@ internal sealed class SubmoduleInitializer
                     "Submodule '{Path}' ({Url}) denied: {Reason}",
                     submodulePath,
                     entry.Url,
-                    decision.Reason);
+                    decision.Reason
+                );
 
                 // Declining to init is not enough on a POOLED slot. SlotHygiene runs before this run's policy
                 // exists and deliberately restores EVERY registered submodule's checkout to the recorded
@@ -147,7 +151,8 @@ internal sealed class SubmoduleInitializer
                         "Submodule '{Path}' was denied but its worktree could not be removed: {Failure}. Any "
                             + "checkout a prior lease left there is still present in this review.",
                         submodulePath,
-                        failure);
+                        failure
+                    );
                     reason = $"{decision.Reason}; deinit failed: {failure}";
                 }
 
@@ -155,8 +160,11 @@ internal sealed class SubmoduleInitializer
                 continue;
             }
 
-            var result = await _git
-                .RunAsync(["submodule", "update", "--init", "--", entry.Path], levelDir, cancellationToken)
+            var result = await _git.RunAsync(
+                    ["submodule", "update", "--init", "--", entry.Path],
+                    levelDir,
+                    cancellationToken
+                )
                 .ConfigureAwait(false);
             if (!result.Succeeded)
             {
@@ -167,21 +175,16 @@ internal sealed class SubmoduleInitializer
                     new SubmoduleDenied(
                         submodulePath,
                         entry.Url,
-                        $"git submodule update failed (exit {result.ExitCode}): {result.Stderr}"));
+                        $"git submodule update failed (exit {result.ExitCode}): {result.Stderr}"
+                    )
+                );
                 continue;
             }
 
             initialized.Add(submodulePath);
 
             // Recurse: re-parse the nested .gitmodules and repeat under the resolved remote.
-            await InitLevelAsync(
-                    repoRoot,
-                    submodulePath,
-                    url,
-                    initialized,
-                    denied,
-                    depth + 1,
-                    cancellationToken)
+            await InitLevelAsync(repoRoot, submodulePath, url, initialized, denied, depth + 1, cancellationToken)
                 .ConfigureAwait(false);
         }
     }
@@ -197,14 +200,13 @@ internal sealed class SubmoduleInitializer
     /// no-op — cheaper and more reliable than parsing <c>git submodule status</c> prefixes to find out first.
     /// </para>
     /// </summary>
-    private async Task<string?> DeinitAsync(
-        string levelDir,
-        string entryPath,
-        CancellationToken cancellationToken
-    )
+    private async Task<string?> DeinitAsync(string levelDir, string entryPath, CancellationToken cancellationToken)
     {
-        var result = await _git
-            .RunAsync(["submodule", "deinit", "--force", "--", entryPath], levelDir, cancellationToken)
+        var result = await _git.RunAsync(
+                ["submodule", "deinit", "--force", "--", entryPath],
+                levelDir,
+                cancellationToken
+            )
             .ConfigureAwait(false);
         if (result.Succeeded)
         {
@@ -223,8 +225,7 @@ internal sealed class SubmoduleInitializer
     {
         if (url.Kind is not (GitUrlKind.Https or GitUrlKind.Http))
         {
-            return PolicyDecision.Deny(
-                $"submodule transport '{url.Kind}' is not permitted (only HTTP/HTTPS)");
+            return PolicyDecision.Deny($"submodule transport '{url.Kind}' is not permitted (only HTTP/HTTPS)");
         }
 
         // Azure DevOps legacy-host equivalence: a repo's own .gitmodules may declare the historical
@@ -239,7 +240,8 @@ internal sealed class SubmoduleInitializer
             _provider,
             url.Host,
             "GET",
-            $"{url.RepoPath}.git/info/refs?service=git-upload-pack");
+            $"{url.RepoPath}.git/info/refs?service=git-upload-pack"
+        );
         return _policy.Decide(request);
     }
 

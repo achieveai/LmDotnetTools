@@ -28,9 +28,7 @@ public class ForEachCompositionTests
 
         var units = runtime.ComposeNextExpectedAction();
 
-        units.Select(u => u.Name)
-            .Should()
-            .Equal("fan:1:task:0", "fan:1:task:1", "fan:1:task:2");
+        units.Select(u => u.Name).Should().Equal("fan:1:task:0", "fan:1:task:1", "fan:1:task:2");
         units.Should().OnlyContain(u => u.SubagentType == "general-purpose");
     }
 
@@ -86,7 +84,10 @@ public class ForEachCompositionTests
         array[2]!["text"]!.GetValue<string>().Should().Be("v2");
 
         // Each element's text was appended to state.results (one append per validated unit).
-        runtime.State["results"]!.AsArray().Should().HaveCount(3);
+        runtime.State["results"]!
+            .AsArray()
+            .Should()
+            .HaveCount(3);
     }
 
     [Fact]
@@ -109,15 +110,15 @@ public class ForEachCompositionTests
         runtime.ObserveResult("tc_0_again", """{ "text": "second" }""", isError: false);
 
         // The append target did NOT grow and the recorded output is unchanged.
-        runtime.State["results"]!.AsArray().Should().HaveCount(1);
+        runtime.State["results"]!
+            .AsArray()
+            .Should()
+            .HaveCount(1);
         runtime.Outputs["fan"]!["task"]![0]!["text"]!.GetValue<string>().Should().Be("first");
 
         // The status stays validated, and the second toolCallId is surfaced as unmatched.
         var projection = runtime.GetProjection(null);
         projection["tasks"]!["fan:1:task:0"]!.GetValue<string>().Should().Be("validated");
-        projection["unmatched"]!.AsArray()
-            .Select(n => n!.GetValue<string>())
-            .Should()
-            .Contain("tc_0_again");
+        projection["unmatched"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Contain("tc_0_again");
     }
 }

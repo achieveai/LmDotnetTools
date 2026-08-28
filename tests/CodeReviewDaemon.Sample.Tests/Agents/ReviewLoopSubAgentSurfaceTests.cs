@@ -27,10 +27,12 @@ public sealed class ReviewLoopSubAgentSurfaceTests
         var surface = ReviewLoopSubAgentSurface.Resolve(wrapper);
 
         surface.Should().NotBeNull();
-        surface!.CompletionSource.Should().BeSameAs(
-            ownSource, "a wrapper that declares a capability of its own overrides the loop it wraps");
-        surface.SuppressSpawning.Should().BeSameAs(
-            inner.SuppressSpawning, "a capability the wrapper does NOT declare must not be lost");
+        surface!
+            .CompletionSource.Should()
+            .BeSameAs(ownSource, "a wrapper that declares a capability of its own overrides the loop it wraps");
+        surface
+            .SuppressSpawning.Should()
+            .BeSameAs(inner.SuppressSpawning, "a capability the wrapper does NOT declare must not be lost");
     }
 
     /// <summary>
@@ -114,7 +116,9 @@ public sealed class ReviewLoopSubAgentSurfaceTests
     private sealed class StubCompletionSource : IReviewSubAgentCompletionSource
     {
         public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
-            ReviewRun run, string parentThreadId, CancellationToken ct) =>
-            Task.FromResult(new ReviewSubAgentTreeSnapshot([]));
+            ReviewRun run,
+            string parentThreadId,
+            CancellationToken ct
+        ) => Task.FromResult(new ReviewSubAgentTreeSnapshot([]));
     }
 }

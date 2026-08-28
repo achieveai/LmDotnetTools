@@ -20,42 +20,50 @@ public sealed class GitHubOAuthProviderTests : LoggingTestBase
     private const string TokenEndpointPath = "/login/oauth/access_token";
 
     public GitHubOAuthProviderTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private static GitHubAuthOptions Options() =>
-        new() { ClientId = "test-client", ClientSecret = "test-secret", Scopes = ["repo", "read:org"] };
+        new()
+        {
+            ClientId = "test-client",
+            ClientSecret = "test-secret",
+            Scopes = ["repo", "read:org"],
+        };
 
     private GitHubOAuthProvider NewProvider(IOAuthTokenStore store, HttpClient http) =>
         new(Options(), store, http, LoggerFactory.CreateLogger<GitHubOAuthProvider>());
 
-    private FileOAuthTokenStore NewStore(string dir) =>
-        new(dir, LoggerFactory.CreateLogger<FileOAuthTokenStore>());
+    private FileOAuthTokenStore NewStore(string dir) => new(dir, LoggerFactory.CreateLogger<FileOAuthTokenStore>());
 
-    private static OAuthTokenRecord Record(
-        string refresh,
-        string access,
-        DateTimeOffset? expiry) =>
+    private static OAuthTokenRecord Record(string refresh, string access, DateTimeOffset? expiry) =>
         new("github", "octocat", refresh, access, expiry, ["repo", "read:org"]);
 
     /// <summary>A handler that fails the test if any HTTP call is attempted.</summary>
     private static HttpClient NoHttpExpected() =>
-        new(new FakeHttpMessageHandler((_, _) =>
-            throw new InvalidOperationException("No HTTP call was expected for this case.")));
+        new(
+            new FakeHttpMessageHandler(
+                (_, _) => throw new InvalidOperationException("No HTTP call was expected for this case.")
+            )
+        );
 
     /// <summary>A handler that answers the GitHub token endpoint with the given JSON; captures the body.</summary>
     private static HttpClient TokenEndpoint(string json, CapturedRequestContainer captured) =>
-        new(new FakeHttpMessageHandler(async (request, ct) =>
-        {
-            request.RequestUri!.AbsolutePath.Should().Be(TokenEndpointPath);
-            captured.Request = request;
-            captured.RequestBody = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(ct);
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(json, Encoding.UTF8, "application/json"),
-            };
-        }));
+        new(
+            new FakeHttpMessageHandler(
+                async (request, ct) =>
+                {
+                    request.RequestUri!.AbsolutePath.Should().Be(TokenEndpointPath);
+                    captured.Request = request;
+                    captured.RequestBody = request.Content is null
+                        ? string.Empty
+                        : await request.Content.ReadAsStringAsync(ct);
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(json, Encoding.UTF8, "application/json"),
+                    };
+                }
+            )
+        );
 
     [Fact]
     public async Task GetAccessToken_returns_stored_nonexpiring_token_without_calling_github()
@@ -69,7 +77,10 @@ public sealed class GitHubOAuthProviderTests : LoggingTestBase
         var provider = NewProvider(store, http);
 
         var token = await provider.GetAccessTokenAsync();
-        Logger.LogInformation("Non-expiring path returned a token of length {Len} (value not logged).", token.Value.Length);
+        Logger.LogInformation(
+            "Non-expiring path returned a token of length {Len} (value not logged).",
+            token.Value.Length
+        );
 
         token.Value.Should().Be("tok-stored");
         LogTestEnd();
@@ -101,11 +112,15 @@ public sealed class GitHubOAuthProviderTests : LoggingTestBase
         var captured = new CapturedRequestContainer();
         using var http = TokenEndpoint(
             """{"access_token":"new-access","refresh_token":"r2","expires_in":3600,"token_type":"bearer"}""",
-            captured);
+            captured
+        );
         var provider = NewProvider(store, http);
 
         var token = await provider.GetAccessTokenAsync();
-        Logger.LogInformation("Refresh grant body contained grant_type=refresh_token: {HasGrant}", captured.RequestBody.Contains("refresh_token"));
+        Logger.LogInformation(
+            "Refresh grant body contained grant_type=refresh_token: {HasGrant}",
+            captured.RequestBody.Contains("refresh_token")
+        );
 
         token.Value.Should().Be("new-access");
         captured.RequestBody.Should().Contain("grant_type=refresh_token");
@@ -128,7 +143,8 @@ public sealed class GitHubOAuthProviderTests : LoggingTestBase
         var captured = new CapturedRequestContainer();
         using var http = TokenEndpoint(
             """{"access_token":"new-access","expires_in":3600,"token_type":"bearer"}""",
-            captured);
+            captured
+        );
         var provider = NewProvider(store, http);
 
         var token = await provider.GetAccessTokenAsync();
@@ -161,7 +177,9 @@ public sealed class GitHubOAuthProviderTests : LoggingTestBase
 
         // Run 1: a prior process persisted a token.
         var store1 = NewStore(temp.Path);
-        await store1.SaveAsync(Record(refresh: "", access: "persisted-token", expiry: DateTimeOffset.UtcNow.AddYears(50)));
+        await store1.SaveAsync(
+            Record(refresh: "", access: "persisted-token", expiry: DateTimeOffset.UtcNow.AddYears(50))
+        );
 
         // Run 2 (restart): a brand-new provider + store over the SAME directory.
         var store2 = NewStore(temp.Path);
@@ -170,7 +188,11 @@ public sealed class GitHubOAuthProviderTests : LoggingTestBase
 
         provider.Status.State.Should().Be(OAuthSignInState.NotStarted); // before hydrate
         await provider.HydrateFromStoreAsync();
-        Logger.LogInformation("After hydrate: state={State}, account={Account}", provider.Status.State, provider.Status.Account);
+        Logger.LogInformation(
+            "After hydrate: state={State}, account={Account}",
+            provider.Status.State,
+            provider.Status.Account
+        );
 
         provider.Status.State.Should().Be(OAuthSignInState.SignedIn);
         provider.Status.Account.Should().Be("octocat");
@@ -189,7 +211,8 @@ public sealed class GitHubOAuthProviderTests : LoggingTestBase
             redirectUri: "http://127.0.0.1:53117/callback",
             scopes: ["repo", "read:org"],
             state: "state-xyz",
-            codeChallenge: "challenge-abc");
+            codeChallenge: "challenge-abc"
+        );
         Logger.LogInformation("Authorize URL: {Url}", url);
 
         url.Should().StartWith("https://github.com/login/oauth/authorize?");
@@ -205,7 +228,10 @@ public sealed class GitHubOAuthProviderTests : LoggingTestBase
     private sealed class TempDir : IDisposable
     {
         public TempDir() =>
-            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "gh-oauth-test-" + Guid.NewGuid().ToString("N"));
+            Path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                "gh-oauth-test-" + Guid.NewGuid().ToString("N")
+            );
 
         public string Path { get; }
 

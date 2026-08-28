@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using AchieveAi.LmDotnetTools.LmCore.Approval;
 using AchieveAi.LmDotnetTools.LmLifecycle.Approval;
-
 // Both namespaces define ToolApprovalOutcomes. The wire vocabulary is the one a submitted decision
 // speaks, so it is named explicitly rather than left to which using won the lookup.
 using WireOutcomes = AchieveAi.LmDotnetTools.LmLifecycle.ToolApprovalOutcomes;
@@ -66,10 +65,7 @@ public enum RemoteApprovalSettleStatus
 /// <see cref="RemoteApprovalSettleStatus.AlreadyDecided"/> and
 /// <see cref="RemoteApprovalSettleStatus.Contradicted"/>; otherwise <c>null</c>.
 /// </param>
-public readonly record struct RemoteApprovalSettlement(
-    RemoteApprovalSettleStatus Status,
-    string? Outcome
-);
+public readonly record struct RemoteApprovalSettlement(RemoteApprovalSettleStatus Status, string? Outcome);
 
 /// <summary>What one approver's allow did to a request's outstanding ballot.</summary>
 internal enum RemoteApprovalBallot
@@ -112,8 +108,9 @@ public sealed class RemoteApprovalTicket : IDisposable
     private static readonly object AbandonedMarker = new();
 
     private readonly RemoteApprovalStore _store;
-    private readonly TaskCompletionSource<ToolApprovalDecision> _completion =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<ToolApprovalDecision> _completion = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
 
     /// <summary>
     /// Guards <see cref="_allowed"/>. Separate from the store's own lock because a ballot belongs to
@@ -183,8 +180,7 @@ public sealed class RemoteApprovalTicket : IDisposable
     /// </summary>
     /// <param name="claim">The decision, or <see cref="AbandonedMarker"/>.</param>
     /// <returns><c>true</c> for the single caller that made the transition.</returns>
-    private bool TryClaim(object claim) =>
-        Interlocked.CompareExchange(ref _claim, claim, null) is null;
+    private bool TryClaim(object claim) => Interlocked.CompareExchange(ref _claim, claim, null) is null;
 
     /// <summary>Claims the request for <paramref name="decision"/> and stamps the settle time.</summary>
     internal bool TryDecide(ToolApprovalDecision decision, DateTimeOffset now)
@@ -239,8 +235,7 @@ public sealed class RemoteApprovalTicket : IDisposable
     }
 
     /// <summary>Hands the decision to the waiting gate.</summary>
-    internal void PublishDecision(ToolApprovalDecision decision) =>
-        _ = _completion.TrySetResult(decision);
+    internal void PublishDecision(ToolApprovalDecision decision) => _ = _completion.TrySetResult(decision);
 
     /// <summary>Fails the waiting gate, so a withdrawn request does not wait out its full expiry.</summary>
     internal void PublishWithdrawal() => _ = _completion.TrySetCanceled();
@@ -274,9 +269,7 @@ public sealed class RemoteApprovalStore
     /// repeat across a restart and a counter always does, either of which would let a decision from a
     /// previous process land on a fresh request that happens to reuse its id.
     /// </summary>
-    private static readonly string ProcessEpoch = Convert.ToHexStringLower(
-        RandomNumberGenerator.GetBytes(8)
-    );
+    private static readonly string ProcessEpoch = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8));
 
     private readonly RemoteApprovalOptions _options;
     private readonly TimeProvider _timeProvider;
@@ -287,8 +280,7 @@ public sealed class RemoteApprovalStore
     /// request in place — rather than removing it and recording the answer elsewhere — is what makes
     /// "first decision wins" observable: a retry finds the same entry and reads the same answer.
     /// </summary>
-    private readonly ConcurrentDictionary<string, RemoteApprovalTicket> _tickets =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, RemoteApprovalTicket> _tickets = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Guards the admission counters and the tombstone queue. A plain lock is appropriate here
@@ -459,10 +451,7 @@ public sealed class RemoteApprovalStore
         // "You were not asked" is reported as unknown, exactly like another owner's request id. An
         // approval-capable subscriber that was not frozen into this request cannot use the endpoint to
         // learn that the id is real, let alone substitute its answer for the one that was solicited.
-        if (
-            decision.SubscriptionId is not { Length: > 0 } submitter
-            || !ticket.Approvers.Contains(submitter)
-        )
+        if (decision.SubscriptionId is not { Length: > 0 } submitter || !ticket.Approvers.Contains(submitter))
         {
             _logger.LogWarning(
                 "Subscription {SubscriptionId} submitted a decision for a request it was not asked to approve; refused as unknown.",
@@ -488,10 +477,7 @@ public sealed class RemoteApprovalStore
         {
             // Expiry reads as unknown rather than as its own status: the tool call has already been
             // blocked by the time this arrives, so the honest answer is "there is nothing to decide".
-            _logger.LogInformation(
-                "Discarding decision for expired approval {RequestId}.",
-                decision.RequestId
-            );
+            _logger.LogInformation("Discarding decision for expired approval {RequestId}.", decision.RequestId);
             return Unknown();
         }
 
@@ -698,29 +684,19 @@ public sealed class RemoteApprovalStore
         }
     }
 
-    private static RemoteApprovalSettlement Unknown() =>
-        new(RemoteApprovalSettleStatus.Unknown, null);
+    private static RemoteApprovalSettlement Unknown() => new(RemoteApprovalSettleStatus.Unknown, null);
 
     /// <summary>
     /// Compares a late decision against the one that stands. The arguments hash is already known to
     /// match (<see cref="ToolApprovalDecision.Matches"/> ran first), so allow-versus-deny is the only
     /// way the two can disagree.
     /// </summary>
-    private static RemoteApprovalSettlement Resolve(
-        ToolApprovalDecision standing,
-        ToolApprovalDecision submitted
-    )
+    private static RemoteApprovalSettlement Resolve(ToolApprovalDecision standing, ToolApprovalDecision submitted)
     {
-        var identical = string.Equals(
-            standing.Decision,
-            submitted.Decision,
-            StringComparison.Ordinal
-        );
+        var identical = string.Equals(standing.Decision, submitted.Decision, StringComparison.Ordinal);
 
         return new RemoteApprovalSettlement(
-            identical
-                ? RemoteApprovalSettleStatus.AlreadyDecided
-                : RemoteApprovalSettleStatus.Contradicted,
+            identical ? RemoteApprovalSettleStatus.AlreadyDecided : RemoteApprovalSettleStatus.Contradicted,
             standing.Decision
         );
     }

@@ -85,7 +85,8 @@ public sealed class AgentHierarchyService(
     WorkflowRunRegistry workflowRunRegistry,
     IConversationStore store,
     ILogger<AgentHierarchyService> logger,
-    SubAgentScanCoverageCache scanCoverageCache)
+    SubAgentScanCoverageCache scanCoverageCache
+)
 {
     /// <summary>
     ///     Assembles one conversation's agent rows: the live sub-agent/workflow snapshot, unioned with the
@@ -98,8 +99,11 @@ public sealed class AgentHierarchyService(
     /// </param>
     /// <param name="ct">Cancellation for the cold-path store lookup.</param>
     /// <returns>The rows, whether the thread exists at all, and the live collaboration when there is one.</returns>
-    public async Task<(IReadOnlyList<SubAgentSummary> Rows, bool IsKnown, AgentCollaborationSetup? Collaboration)>
-        BuildAsync(string threadId, string? viewerAgentId, CancellationToken ct)
+    public async Task<(
+        IReadOnlyList<SubAgentSummary> Rows,
+        bool IsKnown,
+        AgentCollaborationSetup? Collaboration
+    )> BuildAsync(string threadId, string? viewerAgentId, CancellationToken ct)
     {
         var summaries = new List<SubAgentSummary>();
         var isLive = agentPool.TryGet(threadId, out var agent) && agent is not null;
@@ -121,7 +125,8 @@ public sealed class AgentHierarchyService(
         if (isLive && workflowRunRegistry.TryGet(threadId, out var workflowManager) && workflowManager is not null)
         {
             workflowTabs.AddRange(
-                workflowManager.ListRuns()
+                workflowManager
+                    .ListRuns()
                     .Select(r => new SubAgentSummary
                     {
                         AgentId = r.WorkflowId,
@@ -242,7 +247,8 @@ public sealed class AgentHierarchyService(
                 rows,
                 collaboration.Directory.Snapshot(),
                 viewerAgentId ?? collaboration.AgentId,
-                collaboration.Options.TranscriptVisibility);
+                collaboration.Options.TranscriptVisibility
+            );
         }
 
         // A live conversation, or one with persisted tabs, always answers 200. Otherwise the
@@ -253,9 +259,7 @@ public sealed class AgentHierarchyService(
         // conversation with no sub-agents gets a spurious 404 and the client's sub-agent panel logs
         // "Failed to list sub-agents" on every 3s poll. The store is only touched on this cold path,
         // so the live hot path is unchanged.
-        var isKnown = isLive
-            || merged.Count > 0
-            || await store.LoadMetadataAsync(threadId, ct) is not null;
+        var isKnown = isLive || merged.Count > 0 || await store.LoadMetadataAsync(threadId, ct) is not null;
 
         return (rows, isKnown, loop?.Collaboration);
     }
@@ -276,7 +280,8 @@ public sealed class AgentHierarchyService(
         string threadId,
         string agentId,
         string? viewerAgentId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var (rows, isKnown, collaboration) = await BuildAsync(threadId, viewerAgentId, ct);
         if (!isKnown)
@@ -345,7 +350,8 @@ public sealed class AgentHierarchyService(
         IReadOnlyList<SubAgentSummary> rows,
         string agentId,
         string? viewerAgentId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var hasRetainedHierarchy = viewerAgentId is null && rows.Any(r => r.ToNodeRecord() is not null);
         if (!hasRetainedHierarchy)
@@ -384,11 +390,12 @@ public sealed class AgentHierarchyService(
         SubAgentSummary? row,
         AgentCollaborationSetup collaboration,
         string? viewerAgentId,
-        string agentId) =>
+        string agentId
+    ) =>
         row is null
             ? TranscriptAccessReasons.UnknownTarget
-            : collaboration.Bundle
-                .EvaluateTranscriptAccess(viewerAgentId ?? collaboration.AgentId, row.AgentNodeId ?? agentId)
+            : collaboration
+                .Bundle.EvaluateTranscriptAccess(viewerAgentId ?? collaboration.AgentId, row.AgentNodeId ?? agentId)
                 .Reason;
 
     /// <summary>
@@ -406,7 +413,8 @@ public sealed class AgentHierarchyService(
     /// </remarks>
     private static IReadOnlyList<SubAgentSummary> PersistableRowsFor(
         IReadOnlyList<SubAgentSummary> tabs,
-        IReadOnlyList<AgentDirectoryEntry> nodes) =>
+        IReadOnlyList<AgentDirectoryEntry> nodes
+    ) =>
         [
             .. AgentHierarchyProjection.Enrich(tabs, nodes),
             .. AgentHierarchyProjection.UnmatchedDescendantRows(tabs, nodes),
@@ -449,7 +457,8 @@ public sealed class AgentHierarchyService(
     private async Task<IReadOnlyList<SubAgentSummary>> GetOrScanPersistedSubAgentChildrenAsync(
         string threadId,
         object owner,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (scanCoverageCache.TryGetRecovered(threadId, owner, out var cached))
         {
@@ -484,16 +493,20 @@ public sealed class AgentHierarchyService(
     /// </remarks>
     private async Task<IReadOnlyList<SubAgentSummary>> ScanPersistedSubAgentChildrenAsync(
         string threadId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         // Narrowed by the database, not in memory (#388a). The scope comes from the ROOT row's own
         // tenant - see SubAgentScanScope for why a principal is not available here and would be the
         // wrong thing to use if it were. A root with no tenant falls back to the unscoped overload
         // rather than guessing at a sentinel one.
         var scope = await SubAgentScanScope.ForRootAsync(store, threadId, ct);
-        var threads = (scope is null
-            ? await store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct: ct)
-            : await store.ListThreadsAsync(scope, SubAgentScanMaxThreads + 1, 0, ct: ct)) ?? [];
+        var threads =
+            (
+                scope is null
+                    ? await store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct: ct)
+                    : await store.ListThreadsAsync(scope, SubAgentScanMaxThreads + 1, 0, ct: ct)
+            ) ?? [];
 
         var scanned = Math.Min(threads.Count, SubAgentScanMaxThreads);
         var found = new List<SubAgentSummary>();
@@ -512,7 +525,8 @@ public sealed class AgentHierarchyService(
                 "Sub-agent scan for {ThreadId} stopped at the {MaxThreads}-thread cap; "
                     + "children persisted beyond that point are not listed.",
                 threadId,
-                SubAgentScanMaxThreads);
+                SubAgentScanMaxThreads
+            );
         }
 
         return found;

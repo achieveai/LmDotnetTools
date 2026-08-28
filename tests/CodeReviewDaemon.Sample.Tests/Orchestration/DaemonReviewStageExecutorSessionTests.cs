@@ -23,7 +23,11 @@ public sealed class DaemonReviewStageExecutorSessionTests
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
         var provisioner = new RecordingProvisioner();
-        var executor = BuildExecutor(store, new CodeReviewDaemonOptions { EnableToolAssistedReview = true }, provisioner);
+        var executor = BuildExecutor(
+            store,
+            new CodeReviewDaemonOptions { EnableToolAssistedReview = true },
+            provisioner
+        );
         var run = SeedRun(store);
 
         await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -37,7 +41,11 @@ public sealed class DaemonReviewStageExecutorSessionTests
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
         var provisioner = new RecordingProvisioner();
-        var executor = BuildExecutor(store, new CodeReviewDaemonOptions { EnableToolAssistedReview = false }, provisioner);
+        var executor = BuildExecutor(
+            store,
+            new CodeReviewDaemonOptions { EnableToolAssistedReview = false },
+            provisioner
+        );
         var run = SeedRun(store);
 
         await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -46,11 +54,20 @@ public sealed class DaemonReviewStageExecutorSessionTests
     }
 
     private static DaemonReviewStageExecutor BuildExecutor(
-        ReviewStore store, CodeReviewDaemonOptions options, IReviewSessionProvisioner provisioner)
+        ReviewStore store,
+        CodeReviewDaemonOptions options,
+        IReviewSessionProvisioner provisioner
+    )
     {
         var runner = new FakeSandboxCommandRunner()
-            .OnArgvContains("rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a git repo"))
-            .OnArgvContains("diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty));
+            .OnArgvContains(
+                "rev-parse --is-inside-work-tree",
+                new SandboxCommandResult(1, string.Empty, "not a git repo")
+            )
+            .OnArgvContains(
+                "diff",
+                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty)
+            );
         var fileSystem = new FakeSandboxFileSystem();
 
         return new DaemonReviewStageExecutor(
@@ -61,32 +78,37 @@ public sealed class DaemonReviewStageExecutorSessionTests
             options,
             [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
-            provisioner);
+            provisioner
+        );
     }
 
     private static ReviewRun SeedRun(ReviewStore store)
     {
-        var repoId = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "repo-stable-1",
-        });
-        return store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = "118",
-            HeadSha = "head-sha",
-            BaseSha = "base-sha",
-            TriggerWatermark = "wm-1",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "collect-only",
-            Stage = ReviewStage.Discovered,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        });
+        var repoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-stable-1",
+            }
+        );
+        return store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = "118",
+                HeadSha = "head-sha",
+                BaseSha = "base-sha",
+                TriggerWatermark = "wm-1",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Running,
+                PrLifecycleState = PrLifecycleState.Open,
+            }
+        );
     }
 
     /// <summary>Records <c>GetOrCreateAsync</c> calls and hands back a session whose fake runner/fs
@@ -102,10 +124,22 @@ public sealed class DaemonReviewStageExecutorSessionTests
         {
             GetOrCreateCalls++;
             var runner = new FakeSandboxCommandRunner()
-                .OnArgvContains("rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a git repo"))
-                .OnArgvContains("diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty));
-            return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
-                $"session-{run.Id}", $"/workspace/review-run-{run.Id}", runner, new FakeSandboxFileSystem()));
+                .OnArgvContains(
+                    "rev-parse --is-inside-work-tree",
+                    new SandboxCommandResult(1, string.Empty, "not a git repo")
+                )
+                .OnArgvContains(
+                    "diff",
+                    new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty)
+                );
+            return Task.FromResult<ReviewRunSession?>(
+                new ReviewRunSession(
+                    $"session-{run.Id}",
+                    $"/workspace/review-run-{run.Id}",
+                    runner,
+                    new FakeSandboxFileSystem()
+                )
+            );
         }
 
         public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct)

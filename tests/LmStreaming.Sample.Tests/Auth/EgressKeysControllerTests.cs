@@ -23,14 +23,28 @@ public sealed class EgressKeysControllerTests
     private static (EgressKeysController controller, PredefinedKeyRegistry registry, DirectoryInfo dir) NewController()
     {
         var dir = Directory.CreateTempSubdirectory("egr-ctl");
-        var registry = new PredefinedKeyRegistry(dir.FullName, new NoopStore(), new HttpClient(), NullLoggerFactory.Instance);
+        var registry = new PredefinedKeyRegistry(
+            dir.FullName,
+            new NoopStore(),
+            new HttpClient(),
+            NullLoggerFactory.Instance
+        );
         return (new EgressKeysController(registry, NullLogger<EgressKeysController>.Instance), registry, dir);
     }
 
-    private static EgressKeyRequest CustomReq(string host, params (string name, string value)[] headers) => new(
-        Id: null, Host: host, Kind: "custom-headers",
-        Headers: [.. headers.Select(h => new EgressHeaderInput(h.name, h.value))],
-        HeaderName: null, TokenEndpoint: null, ClientId: null, ClientSecret: null, RefreshToken: null, Scopes: null);
+    private static EgressKeyRequest CustomReq(string host, params (string name, string value)[] headers) =>
+        new(
+            Id: null,
+            Host: host,
+            Kind: "custom-headers",
+            Headers: [.. headers.Select(h => new EgressHeaderInput(h.name, h.value))],
+            HeaderName: null,
+            TokenEndpoint: null,
+            ClientId: null,
+            ClientSecret: null,
+            RefreshToken: null,
+            Scopes: null
+        );
 
     [Fact]
     public async Task Post_creates_custom_headers_entry_and_masks_secrets()
@@ -40,13 +54,21 @@ public sealed class EgressKeysControllerTests
         {
             var result = await controller.Upsert(CustomReq("api.example.com", ("Cookie", "sid=abc")));
 
-            var view = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<EgressKeyView>().Subject;
+            var view = result
+                .Should()
+                .BeOfType<OkObjectResult>()
+                .Which.Value.Should()
+                .BeOfType<EgressKeyView>()
+                .Subject;
             view.Kind.Should().Be("custom-headers");
             view.Host.Should().Be("api.example.com");
             view.HeaderNames.Should().Equal("Cookie");
             // EgressKeyView exposes no header/secret VALUE fields at all — masking is by shape.
-            typeof(EgressKeyView).GetProperties().Select(p => p.Name)
-                .Should().NotContain(["Headers", "Value", "ClientSecret", "RefreshToken"]);
+            typeof(EgressKeyView)
+                .GetProperties()
+                .Select(p => p.Name)
+                .Should()
+                .NotContain(["Headers", "Value", "ClientSecret", "RefreshToken"]);
         }
         finally
         {
@@ -77,7 +99,9 @@ public sealed class EgressKeysControllerTests
         var (controller, _, dir) = NewController();
         try
         {
-            (await controller.Upsert(CustomReq("api.example.com", ("Host", "evil")))).Should().BeOfType<BadRequestObjectResult>();
+            (await controller.Upsert(CustomReq("api.example.com", ("Host", "evil"))))
+                .Should()
+                .BeOfType<BadRequestObjectResult>();
         }
         finally
         {
@@ -92,8 +116,17 @@ public sealed class EgressKeysControllerTests
         try
         {
             var req = new EgressKeyRequest(
-                Id: null, Host: "api.example.com", Kind: "client-credentials", Headers: null, HeaderName: null,
-                TokenEndpoint: "https://token.example/oauth", ClientId: "cid", ClientSecret: null, RefreshToken: null, Scopes: null);
+                Id: null,
+                Host: "api.example.com",
+                Kind: "client-credentials",
+                Headers: null,
+                HeaderName: null,
+                TokenEndpoint: "https://token.example/oauth",
+                ClientId: "cid",
+                ClientSecret: null,
+                RefreshToken: null,
+                Scopes: null
+            );
 
             (await controller.Upsert(req)).Should().BeOfType<BadRequestObjectResult>();
         }
@@ -110,15 +143,37 @@ public sealed class EgressKeysControllerTests
         try
         {
             var create = new EgressKeyRequest(
-                Id: null, Host: "api.example.com", Kind: "client-credentials", Headers: null, HeaderName: null,
-                TokenEndpoint: "https://token.example/oauth", ClientId: "cid", ClientSecret: "the-secret", RefreshToken: null, Scopes: null);
-            var created = (await controller.Upsert(create)).Should().BeOfType<OkObjectResult>().Which.Value
-                .Should().BeOfType<EgressKeyView>().Subject;
+                Id: null,
+                Host: "api.example.com",
+                Kind: "client-credentials",
+                Headers: null,
+                HeaderName: null,
+                TokenEndpoint: "https://token.example/oauth",
+                ClientId: "cid",
+                ClientSecret: "the-secret",
+                RefreshToken: null,
+                Scopes: null
+            );
+            var created = (await controller.Upsert(create))
+                .Should()
+                .BeOfType<OkObjectResult>()
+                .Which.Value.Should()
+                .BeOfType<EgressKeyView>()
+                .Subject;
 
             // Edit only the host; leave the secret blank → it must be preserved.
-            var edit = create with { Id = created.Id, Host = "api2.example.com", ClientSecret = null };
-            var updated = (await controller.Upsert(edit)).Should().BeOfType<OkObjectResult>().Which.Value
-                .Should().BeOfType<EgressKeyView>().Subject;
+            var edit = create with
+            {
+                Id = created.Id,
+                Host = "api2.example.com",
+                ClientSecret = null,
+            };
+            var updated = (await controller.Upsert(edit))
+                .Should()
+                .BeOfType<OkObjectResult>()
+                .Which.Value.Should()
+                .BeOfType<EgressKeyView>()
+                .Subject;
 
             updated.Host.Should().Be("api2.example.com");
             updated.HasClientSecret.Should().BeTrue();
@@ -137,16 +192,32 @@ public sealed class EgressKeysControllerTests
         try
         {
             var created = (await controller.Upsert(CustomReq("api.example.com", ("X-Api-Key", "secret-abc"))))
-                .Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<EgressKeyView>().Subject;
+                .Should()
+                .BeOfType<OkObjectResult>()
+                .Which.Value.Should()
+                .BeOfType<EgressKeyView>()
+                .Subject;
 
             // GET masks header values, so an edit re-sends the header NAME with a blank value. Changing
             // only the host must preserve the stored value, not wipe/reject it.
             var edit = new EgressKeyRequest(
-                Id: created.Id, Host: "api2.example.com", Kind: "custom-headers",
+                Id: created.Id,
+                Host: "api2.example.com",
+                Kind: "custom-headers",
                 Headers: [new EgressHeaderInput("X-Api-Key", "")],
-                HeaderName: null, TokenEndpoint: null, ClientId: null, ClientSecret: null, RefreshToken: null, Scopes: null);
-            var updated = (await controller.Upsert(edit)).Should().BeOfType<OkObjectResult>().Which.Value
-                .Should().BeOfType<EgressKeyView>().Subject;
+                HeaderName: null,
+                TokenEndpoint: null,
+                ClientId: null,
+                ClientSecret: null,
+                RefreshToken: null,
+                Scopes: null
+            );
+            var updated = (await controller.Upsert(edit))
+                .Should()
+                .BeOfType<OkObjectResult>()
+                .Which.Value.Should()
+                .BeOfType<EgressKeyView>()
+                .Subject;
 
             updated.Host.Should().Be("api2.example.com");
             registry.Find(created.Id)!.Headers.Single().Value.Should().Be("secret-abc");
@@ -164,7 +235,9 @@ public sealed class EgressKeysControllerTests
         try
         {
             // No existing entry to preserve from → a blank value on a fresh header is an error.
-            (await controller.Upsert(CustomReq("api.example.com", ("X-New", "")))).Should().BeOfType<BadRequestObjectResult>();
+            (await controller.Upsert(CustomReq("api.example.com", ("X-New", ""))))
+                .Should()
+                .BeOfType<BadRequestObjectResult>();
         }
         finally
         {
@@ -221,8 +294,12 @@ public sealed class EgressKeysControllerTests
         var (controller, _, dir) = NewController();
         try
         {
-            var created = (await controller.Upsert(CustomReq("api.example.com", ("X-Key", "v")))).Should()
-                .BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<EgressKeyView>().Subject;
+            var created = (await controller.Upsert(CustomReq("api.example.com", ("X-Key", "v"))))
+                .Should()
+                .BeOfType<OkObjectResult>()
+                .Which.Value.Should()
+                .BeOfType<EgressKeyView>()
+                .Subject;
 
             (await controller.Delete(created.Id)).Should().BeOfType<NoContentResult>();
             (await controller.Delete("missing")).Should().BeOfType<NotFoundResult>();

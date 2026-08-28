@@ -21,7 +21,10 @@ public class McpToolCompositionTests
         var tools = body["result"]!["tools"]!.AsArray();
 
         tools.Should().HaveCount(2);
-        tools.Single(t => t!["name"]!.GetValue<string>() == "web_search")!["unknown"]!.GetValue<string>().Should().Be("kept");
+        tools.Single(t => t!["name"]!.GetValue<string>() == "web_search")!["unknown"]!
+            .GetValue<string>()
+            .Should()
+            .Be("kept");
         tools.Single(t => t!["name"]!.GetValue<string>() == "web_fetch").Should().NotBeNull();
     }
 
@@ -148,7 +151,8 @@ public class McpToolCompositionTests
     {
         var jinaCalls = 0;
         var githubCalls = 0;
-        var catalog = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"web_search\",\"inputSchema\":{\"type\":\"object\"}}]}}";
+        var catalog =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"web_search\",\"inputSchema\":{\"type\":\"object\"}}]}}";
         var error = "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000,\"message\":\"github failed\"}}";
         await using var factory = CreateFactory(
             catalog,
@@ -185,7 +189,13 @@ public class McpToolCompositionTests
         var headers = new Dictionary<string, string> { ["X-MCP-Tools"] = "web_search" };
 
         using var list = await SendAsync(client, "/mcp", ListRequest(), "session-1", headers);
-        using var call = await SendAsync(client, "/mcp", CallRequest("web_search", 2, "{\"query\":\"status\"}"), "session-1", headers);
+        using var call = await SendAsync(
+            client,
+            "/mcp",
+            CallRequest("web_search", 2, "{\"query\":\"status\"}"),
+            "session-1",
+            headers
+        );
 
         jinaCalls.Should().Be(1);
     }
@@ -256,7 +266,13 @@ public class McpToolCompositionTests
             {
                 githubCalls++;
                 return Task.FromResult(
-                    request.Content is null ? TestUpstream.Json("{}") : TestUpstream.Json(githubCalls == 1 ? paginated : "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"github\"}]}}")
+                    request.Content is null
+                        ? TestUpstream.Json("{}")
+                        : TestUpstream.Json(
+                            githubCalls == 1
+                                ? paginated
+                                : "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"github\"}]}}"
+                        )
                 );
             }
         );
@@ -340,7 +356,8 @@ public class McpToolCompositionTests
         await using var factory = CreateFactory(EmptyListResponse());
         using var client = factory.CreateClient();
         using var list = await SendAsync(client, "/mcp", ListRequest(), "session-1");
-        const string malformed = "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"web_search\",\"arguments\":[]}}";
+        const string malformed =
+            "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"web_search\",\"arguments\":[]}}";
 
         using var call = await SendAsync(client, "/mcp", malformed, "session-1");
         var body = JsonNode.Parse(await call.Content.ReadAsStringAsync())!;
@@ -353,12 +370,13 @@ public class McpToolCompositionTests
     public async Task ToolsList_SessionlessResponseHeaderDoesNotInjectLocalTools()
     {
         await using var factory = new ProxyWebAppFactory(
-            (_, _) => Task.FromResult(
-                TestUpstream.Json(
-                    EmptyListResponse(),
-                    headers: new Dictionary<string, string> { ["Mcp-Session-Id"] = "upstream-session" }
-                )
-            ),
+            (_, _) =>
+                Task.FromResult(
+                    TestUpstream.Json(
+                        EmptyListResponse(),
+                        headers: new Dictionary<string, string> { ["Mcp-Session-Id"] = "upstream-session" }
+                    )
+                ),
             jinaApiKey: "jina-key",
             jinaUpstream: (_, _) => throw new InvalidOperationException("Jina must not run")
         );
@@ -376,7 +394,12 @@ public class McpToolCompositionTests
         using var client = factory.CreateClient();
 
         using var list = await SendAsync(client, "/mcp", ListRequest(), "session-1");
-        using var call = await SendAsync(client, "/mcp", CallRequest("web_fetch", "call-1", "{\"url\":\"http://127.0.0.1/secret\"}"), "session-1");
+        using var call = await SendAsync(
+            client,
+            "/mcp",
+            CallRequest("web_fetch", "call-1", "{\"url\":\"http://127.0.0.1/secret\"}"),
+            "session-1"
+        );
         var body = JsonNode.Parse(await call.Content.ReadAsStringAsync())!;
 
         body["id"]!.GetValue<string>().Should().Be("call-1");
@@ -399,9 +422,10 @@ public class McpToolCompositionTests
                     return Task.FromResult(new HttpResponseMessage(HttpStatusCode.MethodNotAllowed));
                 }
 
-                var body = githubCalls == 1
-                    ? EmptyListResponse()
-                    : "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"github\"}]}}";
+                var body =
+                    githubCalls == 1
+                        ? EmptyListResponse()
+                        : "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"github\"}]}}";
                 return Task.FromResult(TestUpstream.Json(body));
             },
             jina: (_, _) =>
@@ -438,7 +462,9 @@ public class McpToolCompositionTests
                 {
                     1 or 2 => TestUpstream.Json(EmptyListResponse()),
                     3 => TestUpstream.Json("{}", HttpStatusCode.NotFound),
-                    _ => TestUpstream.Json("{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"github\"}]}}"),
+                    _ => TestUpstream.Json(
+                        "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"github\"}]}}"
+                    ),
                 };
                 return Task.FromResult(response);
             }
@@ -447,7 +473,12 @@ public class McpToolCompositionTests
 
         using var regularList = await SendAsync(client, "/mcp", ListRequest(), "session-1");
         using var readonlyList = await SendAsync(client, "/mcp/readonly", ListRequest(), "session-1");
-        using var expired = await SendAsync(client, "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"resources/list\"}", "session-1");
+        using var expired = await SendAsync(
+            client,
+            "/mcp",
+            "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"resources/list\"}",
+            "session-1"
+        );
         expired.StatusCode.Should().Be(HttpStatusCode.NotFound);
         using var regularCall = await SendAsync(client, "/mcp", CallRequest("web_search", 4), "session-1");
 
@@ -497,14 +528,29 @@ public class McpToolCompositionTests
             github: (_, _) =>
             {
                 githubCalls++;
-                var body = githubCalls == 1 ? EmptyListResponse() : "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"github\"}]}}";
+                var body =
+                    githubCalls == 1
+                        ? EmptyListResponse()
+                        : "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"github\"}]}}";
                 return Task.FromResult(TestUpstream.Json(body));
             }
         );
         using var client = factory.CreateClient();
 
-        using var list = await SendAsync(client, "/mcp", ListRequest(), "session-1", new Dictionary<string, string> { ["X-MCP-Host"] = "one" });
-        using var call = await SendAsync(client, "/mcp", CallRequest("web_search", 2), "session-1", new Dictionary<string, string> { ["X-MCP-Host"] = "two" });
+        using var list = await SendAsync(
+            client,
+            "/mcp",
+            ListRequest(),
+            "session-1",
+            new Dictionary<string, string> { ["X-MCP-Host"] = "one" }
+        );
+        using var call = await SendAsync(
+            client,
+            "/mcp",
+            CallRequest("web_search", 2),
+            "session-1",
+            new Dictionary<string, string> { ["X-MCP-Host"] = "two" }
+        );
 
         (await call.Content.ReadAsStringAsync()).Should().Contain("github");
         githubCalls.Should().Be(2);

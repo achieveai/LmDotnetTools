@@ -11,12 +11,13 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 /// </summary>
 public class ToolCallInjectionMiddlewareTests
 {
-    private static FunctionContract Contract(string name) => new()
-    {
-        Name = name,
-        Description = $"Test function {name}",
-        Parameters = [],
-    };
+    private static FunctionContract Contract(string name) =>
+        new()
+        {
+            Name = name,
+            Description = $"Test function {name}",
+            Parameters = [],
+        };
 
     [Fact]
     public async Task InvokeAsync_InvokesFactoryEachCall_ReflectsMutationOnNextCall()
@@ -30,12 +31,16 @@ public class ToolCallInjectionMiddlewareTests
         var capturedOptions = new List<GenerateReplyOptions?>();
         var mockAgent = new Mock<IAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (_, opts, _) => capturedOptions.Add(opts))
+                (_, opts, _) => capturedOptions.Add(opts)
+            )
             .ReturnsAsync([new TextMessage { Text = "ok", Role = Role.Assistant }]);
 
         var context = new MiddlewareContext([new TextMessage { Text = "hi", Role = Role.User }]);
@@ -60,12 +65,16 @@ public class ToolCallInjectionMiddlewareTests
         var capturedOptions = new List<GenerateReplyOptions?>();
         var mockAgent = new Mock<IStreamingAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (_, opts, _) => capturedOptions.Add(opts))
+                (_, opts, _) => capturedOptions.Add(opts)
+            )
             .ReturnsAsync(EmptyStream());
 
         var context = new MiddlewareContext([new TextMessage { Text = "hi", Role = Role.User }]);
@@ -92,18 +101,19 @@ public class ToolCallInjectionMiddlewareTests
         GenerateReplyOptions? captured = null;
         var mockAgent = new Mock<IAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (_, opts, _) => captured = opts)
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, opts, _) => captured = opts)
             .ReturnsAsync([new TextMessage { Text = "ok", Role = Role.Assistant }]);
 
         _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
-        captured!.Functions!.Select(f => f.Name)
-            .Should().BeEquivalentTo(["middleware", "existing"]);
+        captured!.Functions!.Select(f => f.Name).Should().BeEquivalentTo(["middleware", "existing"]);
     }
 
     [Fact]

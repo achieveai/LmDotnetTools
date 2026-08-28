@@ -45,26 +45,25 @@ public class ClaudeAgentLoopSystemInitRelayTests
 
         var mockClient = new ScriptedClaudeAgentSdkClient(scriptedMessages, expectedSessionId);
 
-        var options = new ClaudeAgentSdkOptions
-        {
-            Mode = ClaudeAgentSdkMode.Interactive,
-            MaxTurnsPerRun = 5,
-        };
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.Interactive, MaxTurnsPerRun = 5 };
 
         await using var loop = new ClaudeAgentLoop(
             claudeOptions: options,
             mcpServers: null,
             threadId: "interactive-session-test",
-            clientFactory: (_, _) => mockClient);
+            clientFactory: (_, _) => mockClient
+        );
 
         var (received, _) = await DriveOneRunAsync(loop);
 
-        received.OfType<SystemInitMessage>().Should().BeEmpty(
-            "SystemInitMessage is SDK metadata and must not be published to consumers");
+        received
+            .OfType<SystemInitMessage>()
+            .Should()
+            .BeEmpty("SystemInitMessage is SDK metadata and must not be published to consumers");
         received.OfType<TextMessage>().Should().Contain(t => t.Text == "hello");
 
-        loop.CurrentSessionId.Should().Be(expectedSessionId,
-            "Interactive mode must capture SessionId from SystemInitMessage");
+        loop.CurrentSessionId.Should()
+            .Be(expectedSessionId, "Interactive mode must capture SessionId from SystemInitMessage");
     }
 
     [Fact]
@@ -84,26 +83,25 @@ public class ClaudeAgentLoopSystemInitRelayTests
 
         var mockClient = new ScriptedClaudeAgentSdkClient(scriptedMessages, expectedSessionId);
 
-        var options = new ClaudeAgentSdkOptions
-        {
-            Mode = ClaudeAgentSdkMode.OneShot,
-            MaxTurnsPerRun = 5,
-        };
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot, MaxTurnsPerRun = 5 };
 
         await using var loop = new ClaudeAgentLoop(
             claudeOptions: options,
             mcpServers: null,
             threadId: "oneshot-session-test",
-            clientFactory: (_, _) => mockClient);
+            clientFactory: (_, _) => mockClient
+        );
 
         var (received, _) = await DriveOneRunAsync(loop);
 
-        received.OfType<SystemInitMessage>().Should().BeEmpty(
-            "OneShot path must not publish SystemInitMessage either");
+        received.OfType<SystemInitMessage>().Should().BeEmpty("OneShot path must not publish SystemInitMessage either");
 
-        loop.CurrentSessionId.Should().Be(expectedSessionId,
-            "OneShot mode must capture SessionId from IClaudeAgentSdkClient.CurrentSession " +
-            "since the SDK does not surface SystemInitMessage in this path");
+        loop.CurrentSessionId.Should()
+            .Be(
+                expectedSessionId,
+                "OneShot mode must capture SessionId from IClaudeAgentSdkClient.CurrentSession "
+                    + "since the SDK does not surface SystemInitMessage in this path"
+            );
     }
 
     [Fact]
@@ -121,18 +119,17 @@ public class ClaudeAgentLoopSystemInitRelayTests
         var store = new InMemoryConversationStore();
         var threadId = "oneshot-persist-test";
 
-        var options = new ClaudeAgentSdkOptions
-        {
-            Mode = ClaudeAgentSdkMode.OneShot,
-            MaxTurnsPerRun = 5,
-        };
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot, MaxTurnsPerRun = 5 };
 
-        await using (var loop = new ClaudeAgentLoop(
-            claudeOptions: options,
-            mcpServers: null,
-            threadId: threadId,
-            store: store,
-            clientFactory: (_, _) => mockClient))
+        await using (
+            var loop = new ClaudeAgentLoop(
+                claudeOptions: options,
+                mcpServers: null,
+                threadId: threadId,
+                store: store,
+                clientFactory: (_, _) => mockClient
+            )
+        )
         {
             await DriveOneRunAsync(loop);
         }
@@ -140,13 +137,18 @@ public class ClaudeAgentLoopSystemInitRelayTests
         var metadata = await store.LoadMetadataAsync(threadId);
         metadata.Should().NotBeNull();
         metadata!.SessionMappings.Should().NotBeNull();
-        metadata.SessionMappings!.Should().ContainKey($"claude-sdk:{expectedSessionId}",
-            "ClaudeAgentLoop must persist the SDK session id into ThreadMetadata.SessionMappings " +
-            "so a later process can resume the session");
+        metadata
+            .SessionMappings!.Should()
+            .ContainKey(
+                $"claude-sdk:{expectedSessionId}",
+                "ClaudeAgentLoop must persist the SDK session id into ThreadMetadata.SessionMappings "
+                    + "so a later process can resume the session"
+            );
         metadata.LatestRunId.Should().NotBeNullOrEmpty();
-        metadata.SessionMappings![$"claude-sdk:{expectedSessionId}"]
-            .Should().Be(metadata.LatestRunId,
-                "the mapping value must be the run id the session id belongs to");
+        metadata
+            .SessionMappings![$"claude-sdk:{expectedSessionId}"]
+            .Should()
+            .Be(metadata.LatestRunId, "the mapping value must be the run id the session id belongs to");
     }
 
     [Fact]
@@ -180,18 +182,18 @@ public class ClaudeAgentLoopSystemInitRelayTests
                 OwnerUserId = "entra-tid:owner-oid",
                 OwnerAppId = "codereview-daemon",
                 Visibility = Visibility.Shared,
-            });
+            }
+        );
 
-        await using (var loop = new ClaudeAgentLoop(
-            claudeOptions: new ClaudeAgentSdkOptions
-            {
-                Mode = ClaudeAgentSdkMode.OneShot,
-                MaxTurnsPerRun = 5,
-            },
-            mcpServers: null,
-            threadId: threadId,
-            store: store,
-            clientFactory: (_, _) => mockClient))
+        await using (
+            var loop = new ClaudeAgentLoop(
+                claudeOptions: new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot, MaxTurnsPerRun = 5 },
+                mcpServers: null,
+                threadId: threadId,
+                store: store,
+                clientFactory: (_, _) => mockClient
+            )
+        )
         {
             await DriveOneRunAsync(loop);
         }
@@ -224,17 +226,14 @@ public class ClaudeAgentLoopSystemInitRelayTests
 
         var mockClient = new ScriptedClaudeAgentSdkClient(scriptedMessages, expectedSessionId);
 
-        var options = new ClaudeAgentSdkOptions
-        {
-            Mode = ClaudeAgentSdkMode.OneShot,
-            MaxTurnsPerRun = 5,
-        };
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot, MaxTurnsPerRun = 5 };
 
         await using var loop = new ClaudeAgentLoop(
             claudeOptions: options,
             mcpServers: null,
             threadId: "oneshot-dispose-test",
-            clientFactory: (_, _) => mockClient);
+            clientFactory: (_, _) => mockClient
+        );
 
         await DriveOneRunAsync(loop);
 
@@ -252,9 +251,7 @@ public class ClaudeAgentLoopSystemInitRelayTests
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "hi", Role = Role.User }],
-            InputId: "test-input");
+        var userInput = new UserInput([new TextMessage { Text = "hi", Role = Role.User }], InputId: "test-input");
 
         var received = new List<IMessage>();
         var executeTask = Task.Run(async () =>
@@ -308,7 +305,8 @@ public class ClaudeAgentLoopSystemInitRelayTests
 
         public async IAsyncEnumerable<IMessage> SendMessagesAsync(
             IEnumerable<IMessage> messages,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
         {
             // Simulate the SDK populating CurrentSession when it parses
             // SystemInitEvent — happens before the first message is yielded
@@ -331,7 +329,8 @@ public class ClaudeAgentLoopSystemInitRelayTests
         }
 
         public async IAsyncEnumerable<IMessage> SubscribeToMessagesAsync(
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
         {
             CurrentSession = new SessionInfo
             {
@@ -347,11 +346,10 @@ public class ClaudeAgentLoopSystemInitRelayTests
             }
         }
 
-        public Task SendAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default)
-            => Task.CompletedTask;
+        public Task SendAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
 
-        public Task<bool> SendExitCommandAsync(CancellationToken cancellationToken = default)
-            => Task.FromResult(true);
+        public Task<bool> SendExitCommandAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
 
         public Task ShutdownAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
         {

@@ -57,7 +57,8 @@ public sealed class McpConfigLoader : IAsyncDisposable
     /// <returns>Dictionary of server name to MCP client</returns>
     public async Task<Dictionary<string, McpClient>> LoadFromFileAsync(
         string configPath,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         ArgumentException.ThrowIfNullOrEmpty(configPath);
 
@@ -98,7 +99,8 @@ public sealed class McpConfigLoader : IAsyncDisposable
         _logger.LogInformation(
             "MCP servers loaded: {LoadedCount}/{TotalCount}",
             _clients.Count,
-            config.McpServers.Count);
+            config.McpServers.Count
+        );
 
         return _clients;
     }
@@ -106,7 +108,8 @@ public sealed class McpConfigLoader : IAsyncDisposable
     private async Task<McpClient> CreateClientAsync(
         string serverName,
         LocalMcpServerConfig config,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (string.IsNullOrEmpty(config.Command))
         {
@@ -117,7 +120,8 @@ public sealed class McpConfigLoader : IAsyncDisposable
             "Starting MCP server: {ServerName}, Command: {Command}, Args: [{Args}]",
             serverName,
             config.Command,
-            string.Join(", ", config.Args ?? []));
+            string.Join(", ", config.Args ?? [])
+        );
 
         var transportOptions = new StdioClientTransportOptions
         {
@@ -143,7 +147,8 @@ public sealed class McpConfigLoader : IAsyncDisposable
                 "MCP server '{ServerName}' provides {ToolCount} tool(s): [{Tools}]",
                 serverName,
                 tools.Count,
-                string.Join(", ", tools.Select(t => t.Name)));
+                string.Join(", ", tools.Select(t => t.Name))
+            );
         }
         catch (Exception ex)
         {

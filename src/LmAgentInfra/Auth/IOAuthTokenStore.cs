@@ -7,7 +7,8 @@ public sealed record OAuthTokenRecord(
     string RefreshToken,
     string? AccessToken,
     DateTimeOffset? AccessTokenExpiresAtUtc,
-    IReadOnlyList<string> Scopes);
+    IReadOnlyList<string> Scopes
+);
 
 /// <summary>File-backed store for OAuth refresh/access tokens, keyed by provider id.</summary>
 public interface IOAuthTokenStore

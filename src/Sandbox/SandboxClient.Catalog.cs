@@ -26,7 +26,8 @@ public sealed partial class SandboxClient
             relativeUri += $"?marketplaces={Uri.EscapeDataString(string.Join(',', marketplaces))}";
         }
 
-        using var response = await SendRestAsync(HttpMethod.Get, relativeUri, body: null, sessionId: null, ct).ConfigureAwait(false);
+        using var response = await SendRestAsync(HttpMethod.Get, relativeUri, body: null, sessionId: null, ct)
+            .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             throw MapErrorResponse(response, "marketplace preview");
@@ -35,7 +36,9 @@ public sealed partial class SandboxClient
         MarketplaceCatalogDto? payload;
         try
         {
-            payload = await response.Content.ReadFromJsonAsync<MarketplaceCatalogDto>(SandboxJson.RestOptions, ct).ConfigureAwait(false);
+            payload = await response
+                .Content.ReadFromJsonAsync<MarketplaceCatalogDto>(SandboxJson.RestOptions, ct)
+                .ConfigureAwait(false);
         }
         catch (JsonException ex)
         {
@@ -69,7 +72,12 @@ public sealed partial class SandboxClient
         try
         {
             var selected = SelectNonNullOrThrow(payload.Selected, static alias => alias, operation, statusCode);
-            var marketplaceEntries = SelectNonNullOrThrow(payload.Marketplaces, dto => ToEntry(dto, operation, statusCode), operation, statusCode);
+            var marketplaceEntries = SelectNonNullOrThrow(
+                payload.Marketplaces,
+                dto => ToEntry(dto, operation, statusCode),
+                operation,
+                statusCode
+            );
             return new SandboxMarketplaceCatalog(selected, marketplaceEntries, payload.Capabilities?.PluginFiltering);
         }
         catch (ArgumentException ex)
@@ -88,7 +96,10 @@ public sealed partial class SandboxClient
     /// workspace, over the existing session-discovery REST endpoint. V1: this is a narrow read of
     /// already-discovered items — it does not add proactive discovery or crawling.
     /// </summary>
-    public async Task<IReadOnlyList<SandboxDiscoveredItem>> ListDiscoveredAsync(string sessionId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<SandboxDiscoveredItem>> ListDiscoveredAsync(
+        string sessionId,
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
 
@@ -108,7 +119,9 @@ public sealed partial class SandboxClient
         DiscoveredItemsResponseDto? payload;
         try
         {
-            payload = await response.Content.ReadFromJsonAsync<DiscoveredItemsResponseDto>(SandboxJson.RestOptions, ct).ConfigureAwait(false);
+            payload = await response
+                .Content.ReadFromJsonAsync<DiscoveredItemsResponseDto>(SandboxJson.RestOptions, ct)
+                .ConfigureAwait(false);
         }
         catch (JsonException ex)
         {
@@ -138,7 +151,14 @@ public sealed partial class SandboxClient
         {
             return SelectNonNullOrThrow(
                 payload.Items,
-                item => new SandboxDiscoveredItem(item.Kind, item.Name, item.Description, item.Path, item.Content, item.QualifiedName),
+                item => new SandboxDiscoveredItem(
+                    item.Kind,
+                    item.Name,
+                    item.Description,
+                    item.Path,
+                    item.Content,
+                    item.QualifiedName
+                ),
                 operation,
                 statusCode
             );
@@ -155,7 +175,11 @@ public sealed partial class SandboxClient
     }
 
     private static SandboxMarketplaceEntry ToEntry(MarketplaceEntryDto dto, string operation, int statusCode) =>
-        new(dto.Alias, dto.Error, SelectNonNullOrThrow(dto.Plugins, plugin => ToPlugin(plugin, operation, statusCode), operation, statusCode));
+        new(
+            dto.Alias,
+            dto.Error,
+            SelectNonNullOrThrow(dto.Plugins, plugin => ToPlugin(plugin, operation, statusCode), operation, statusCode)
+        );
 
     private static SandboxMarketplacePlugin ToPlugin(MarketplacePluginDto dto, string operation, int statusCode) =>
         new(
@@ -166,7 +190,9 @@ public sealed partial class SandboxClient
             SelectNonNullOrThrow(dto.Agents, ToAgent, operation, statusCode)
         );
 
-    private static SandboxMarketplaceSkill ToSkill(MarketplaceSkillDto dto) => new(dto.Name, dto.Description, dto.Plugin, dto.Marketplace, dto.Path);
+    private static SandboxMarketplaceSkill ToSkill(MarketplaceSkillDto dto) =>
+        new(dto.Name, dto.Description, dto.Plugin, dto.Marketplace, dto.Path);
 
-    private static SandboxMarketplaceAgent ToAgent(MarketplaceAgentDto dto) => new(dto.Name, dto.Description, dto.Plugin, dto.Marketplace, dto.Path);
+    private static SandboxMarketplaceAgent ToAgent(MarketplaceAgentDto dto) =>
+        new(dto.Name, dto.Description, dto.Plugin, dto.Marketplace, dto.Path);
 }

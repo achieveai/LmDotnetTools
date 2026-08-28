@@ -91,9 +91,7 @@ public sealed class SandboxLifecycleOwnerResolver : ILifecycleOwnerResolver
         // This is not inference from the envelope: both ids are used only as keys into the host's
         // own binding map, and a thread that is not in that map yields nothing regardless of what
         // the envelope claims.
-        return ValueTask.FromResult(
-            OwnerOf(correlation.ThreadId) ?? OwnerOf(correlation.ParentThreadId)
-        );
+        return ValueTask.FromResult(OwnerOf(correlation.ThreadId) ?? OwnerOf(correlation.ParentThreadId));
     }
 
     /// <inheritdoc />
@@ -113,10 +111,7 @@ public sealed class SandboxLifecycleOwnerResolver : ILifecycleOwnerResolver
     }
 
     /// <inheritdoc />
-    public ValueTask<LifecycleOwnerKey?> ResolveCallerAsync(
-        string appId,
-        CancellationToken cancellationToken = default
-    )
+    public ValueTask<LifecycleOwnerKey?> ResolveCallerAsync(string appId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -125,9 +120,7 @@ public sealed class SandboxLifecycleOwnerResolver : ILifecycleOwnerResolver
         // nothing by itself. What an owner key can actually reach is decided on the other side — a
         // conversation resolves to an owner only if that app created it. An unknown app therefore
         // gets a well-formed key that matches no conversation, which is the same as getting nothing.
-        return ValueTask.FromResult(
-            string.IsNullOrWhiteSpace(appId) ? null : LifecycleOwnerKey.ForAppId(appId)
-        );
+        return ValueTask.FromResult(string.IsNullOrWhiteSpace(appId) ? null : LifecycleOwnerKey.ForAppId(appId));
     }
 
     private LifecycleOwnerKey? OwnerOf(string? threadId)

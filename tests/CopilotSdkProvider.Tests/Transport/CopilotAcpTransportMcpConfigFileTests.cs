@@ -26,7 +26,10 @@ public sealed class CopilotAcpTransportMcpConfigFileTests
 
         public string? CapturedMcpConfigFilePath { get; private set; }
 
-        public Task<IProcessHandle> LaunchAsync(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
+        public Task<IProcessHandle> LaunchAsync(
+            ProcessLaunchRequest request,
+            CancellationToken cancellationToken = default
+        )
         {
             LastRequest = request;
 
@@ -52,30 +55,42 @@ public sealed class CopilotAcpTransportMcpConfigFileTests
 
     private static string? InvokeBuildMcpConfigFileContent(
         CopilotAcpTransport transport,
-        IReadOnlyDictionary<string, McpServerConfig>? mcpServers)
+        IReadOnlyDictionary<string, McpServerConfig>? mcpServers
+    )
     {
         var method = typeof(CopilotAcpTransport).GetMethod(
             "BuildMcpConfigFileContent",
-            BindingFlags.Instance | BindingFlags.NonPublic);
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
         Assert.NotNull(method);
         return (string?)method.Invoke(transport, [mcpServers]);
     }
 
-    private static async Task RunStartAsync(CopilotAcpTransport transport, string workingDir, IReadOnlyDictionary<string, McpServerConfig>? mcp)
+    private static async Task RunStartAsync(
+        CopilotAcpTransport transport,
+        string workingDir,
+        IReadOnlyDictionary<string, McpServerConfig>? mcp
+    )
     {
-        var startMethod = typeof(CopilotAcpTransport).GetMethods(BindingFlags.Public | BindingFlags.Instance)
+        var startMethod = typeof(CopilotAcpTransport)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
             .First(m => m.Name == "StartAsync" && m.GetParameters().Length == 7);
 
-        var task = (Task)startMethod.Invoke(transport,
-        [
-            workingDir,
-            "ghp_test",
-            "https://example.test",
-            mcp,
-            (Func<string, JsonElement?, CancellationToken, Task<JsonElement>>)((_, _, _) => Task.FromResult(default(JsonElement))),
-            (Action<string, JsonElement?>)((_, _) => { }),
-            CancellationToken.None,
-        ])!;
+        var task = (Task)
+            startMethod.Invoke(
+                transport,
+                [
+                    workingDir,
+                    "ghp_test",
+                    "https://example.test",
+                    mcp,
+                    (Func<string, JsonElement?, CancellationToken, Task<JsonElement>>)(
+                        (_, _, _) => Task.FromResult(default(JsonElement))
+                    ),
+                    (Action<string, JsonElement?>)((_, _) => { }),
+                    CancellationToken.None,
+                ]
+            )!;
         await task;
     }
 
@@ -99,7 +114,8 @@ public sealed class CopilotAcpTransportMcpConfigFileTests
             ["github"] = McpServerConfig.CreateStdio(
                 command: "npx",
                 args: ["-y", "@github/mcp"],
-                env: new Dictionary<string, string> { ["TOKEN"] = "abc", ["EXTRA"] = "1" }),
+                env: new Dictionary<string, string> { ["TOKEN"] = "abc", ["EXTRA"] = "1" }
+            ),
         };
 
         var content = InvokeBuildMcpConfigFileContent(transport, mcp);
@@ -133,7 +149,8 @@ public sealed class CopilotAcpTransportMcpConfigFileTests
         {
             ["remote"] = McpServerConfig.CreateHttp(
                 url: "https://example.com/mcp",
-                headers: new Dictionary<string, string> { ["X-Auth"] = "bearer" }),
+                headers: new Dictionary<string, string> { ["X-Auth"] = "bearer" }
+            ),
         };
 
         var content = InvokeBuildMcpConfigFileContent(transport, mcp);
@@ -210,7 +227,12 @@ public sealed class CopilotAcpTransportMcpConfigFileTests
         var transport = new CopilotAcpTransport(new CopilotSdkOptions());
         var mcp = new Dictionary<string, McpServerConfig>
         {
-            ["noargs"] = new McpServerConfig { Type = "stdio", Command = "cmd", Args = null },
+            ["noargs"] = new McpServerConfig
+            {
+                Type = "stdio",
+                Command = "cmd",
+                Args = null,
+            },
         };
 
         var content = InvokeBuildMcpConfigFileContent(transport, mcp);
@@ -226,11 +248,7 @@ public sealed class CopilotAcpTransportMcpConfigFileTests
     public async Task StartAsync_without_mcp_servers_omits_flag_and_creates_no_file()
     {
         var recorder = new RecordingLauncher();
-        var options = new CopilotSdkOptions
-        {
-            CopilotCliPath = "copilot-cli-mock",
-            ProcessLauncher = recorder,
-        };
+        var options = new CopilotSdkOptions { CopilotCliPath = "copilot-cli-mock", ProcessLauncher = recorder };
 
         await using var transport = new CopilotAcpTransport(options);
 
@@ -256,11 +274,7 @@ public sealed class CopilotAcpTransportMcpConfigFileTests
     public async Task StartAsync_with_stdio_server_injects_flag_writes_file_and_declares_host_path()
     {
         var recorder = new RecordingLauncher();
-        var options = new CopilotSdkOptions
-        {
-            CopilotCliPath = "copilot-cli-mock",
-            ProcessLauncher = recorder,
-        };
+        var options = new CopilotSdkOptions { CopilotCliPath = "copilot-cli-mock", ProcessLauncher = recorder };
         var mcp = new Dictionary<string, McpServerConfig>
         {
             ["github"] = McpServerConfig.CreateStdio("npx", ["-y", "@github/mcp"]),
@@ -282,7 +296,9 @@ public sealed class CopilotAcpTransportMcpConfigFileTests
 
         recorder.LastRequest.Should().NotBeNull();
         recorder.LastRequest!.Arguments.Should().StartWith(["--acp", "--stdio"]);
-        var flagArg = recorder.LastRequest.Arguments.Single(a => a.StartsWith("--additional-mcp-config=@", StringComparison.Ordinal));
+        var flagArg = recorder.LastRequest.Arguments.Single(a =>
+            a.StartsWith("--additional-mcp-config=@", StringComparison.Ordinal)
+        );
         flagArg.Should().StartWith("--additional-mcp-config=@");
 
         recorder.CapturedMcpConfigFilePath.Should().NotBeNull();
@@ -291,19 +307,16 @@ public sealed class CopilotAcpTransportMcpConfigFileTests
         var entry = doc.RootElement.GetProperty("mcpServers").GetProperty("github");
         entry.GetProperty("command").GetString().Should().Be("npx");
 
-        recorder.LastRequest.HostPaths.Should().Contain(p =>
-            p.Kind == HostPathKind.McpConfigFile && p.Path == recorder.CapturedMcpConfigFilePath);
+        recorder
+            .LastRequest.HostPaths.Should()
+            .Contain(p => p.Kind == HostPathKind.McpConfigFile && p.Path == recorder.CapturedMcpConfigFilePath);
     }
 
     [Fact]
     public async Task StartAsync_cleans_up_temp_file_after_launch_failure()
     {
         var recorder = new RecordingLauncher();
-        var options = new CopilotSdkOptions
-        {
-            CopilotCliPath = "copilot-cli-mock",
-            ProcessLauncher = recorder,
-        };
+        var options = new CopilotSdkOptions { CopilotCliPath = "copilot-cli-mock", ProcessLauncher = recorder };
         var mcp = new Dictionary<string, McpServerConfig>
         {
             ["github"] = McpServerConfig.CreateStdio("npx", ["-y", "@github/mcp"]),

@@ -125,9 +125,7 @@ public class DelayedResultDurableContinuationTests
                     + "was already carrying its result"
             );
         var record = await race.RecordAsync("tc_race");
-        record
-            .ChildRunId.Should()
-            .NotBeNull("the retry has to finish the job the refused attempt could not");
+        record.ChildRunId.Should().NotBeNull("the retry has to finish the job the refused attempt could not");
 
         await race.Watcher.WaitForCompletionsAsync(2);
         race.Publisher.Payloads<RunStartedPayload>(LifecycleEventTypes.RunStarted)
@@ -184,47 +182,59 @@ public class DelayedResultDurableContinuationTests
             .RunId;
         await store.UpdateMetadataAsync(
             threadId,
-            existing => (existing ?? new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 }) with
-            {
-                Properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty)
-                    .SetItem("spawn_suppressed_run_id", requestingRunId),
-            });
+            existing =>
+                (existing ?? new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 }) with
+                {
+                    Properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
+                        "spawn_suppressed_run_id",
+                        requestingRunId
+                    ),
+                }
+        );
 
         var advertised = new List<IReadOnlyList<string>>();
         var provider = new Mock<IStreamingAgent>();
-        _ = provider.Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, options, _) =>
-            {
-                advertised.Add(options.Functions?.Select(f => f.Name).ToList() ?? []);
-                return Task.FromResult(Provider.ToAsyncEnumerable(
-                    [new TextMessage { Text = "done", Role = Role.Assistant }]));
-            });
+        _ = provider
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, options, _) =>
+                {
+                    advertised.Add(options.Functions?.Select(f => f.Name).ToList() ?? []);
+                    return Task.FromResult(
+                        Provider.ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }])
+                    );
+                }
+            );
 
         await using var resumed = new MultiTurnAgentLoop(
             provider.Object,
             DeferringRegistry(["tc_1"]),
             threadId,
             store: store,
-            subAgentOptions: new SubAgentOptions
-            {
-                Templates = new Dictionary<string, SubAgentTemplate>(),
-            },
+            subAgentOptions: new SubAgentOptions { Templates = new Dictionary<string, SubAgentTemplate>() },
             lifecycleServices: new MultiTurnLifecycleServices
             {
                 Publisher = NullLifecyclePublisher.Instance,
                 LifecycleStore = store,
-            });
+            }
+        );
         (await resumed.RecoverAsync()).Should().BeTrue();
         using var cts = new CancellationTokenSource(Patience);
         await using var watcher = new MessageWatcher(resumed);
         _ = resumed.RunAsync(cts.Token);
         await watcher.WaitForCompletionsAsync(1);
 
-        advertised.Should().ContainSingle().Which.Should().NotContain(
-            "Agent", "the recovered child continues the run whose persisted receipt promised no spawning");
+        advertised
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .NotContain("Agent", "the recovered child continues the run whose persisted receipt promised no spawning");
         await cts.CancelAsync();
     }
 
@@ -339,14 +349,7 @@ public class DelayedResultDurableContinuationTests
 
         var abandoned = new Provider();
         await using (
-            var failing = NewLoop(
-                abandoned,
-                threadId,
-                store,
-                null,
-                out var firstCts,
-                lifecycleStore: crippled
-            )
+            var failing = NewLoop(abandoned, threadId, store, null, out var firstCts, lifecycleStore: crippled)
         )
         {
             (await failing.RecoverAsync()).Should().BeTrue();
@@ -454,9 +457,7 @@ public class DelayedResultDurableContinuationTests
             .Should()
             .BeEquivalentTo(["tc_1", "tc_late"], "each result is owed exactly one continuation");
         children.Select(c => c.RunId).Should().OnlyHaveUniqueItems();
-        provider
-            .CallCount.Should()
-            .Be(3, "the recovered continuation, the user turn, and the continuation it earned");
+        provider.CallCount.Should().Be(3, "the recovered continuation, the user turn, and the continuation it earned");
         (await LoadResultsAsync(store, threadId))
             .Should()
             .NotContain(m => m.IsDeferred, "both calls were answered and both answers were carried");
@@ -479,11 +480,7 @@ public class DelayedResultDurableContinuationTests
             threadId,
             inputChannelCapacity: 1,
             store: new InMemoryConversationStore(),
-            lifecycleServices: new MultiTurnLifecycleServices
-            {
-                Publisher = publisher,
-                LifecycleStore = store,
-            }
+            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store }
         );
         using var cts = new CancellationTokenSource();
         await using var watcher = new MessageWatcher(loop);
@@ -508,9 +505,7 @@ public class DelayedResultDurableContinuationTests
         await childStarted.Task.WaitAsync(Patience);
 
         // Fill the queue, so the wake-up for tc_b cannot be written until the loop drains.
-        _ = await loop.SendAsync(
-            [NotifyMessage.Create(NotifyKinds.SubAgentCompletion, label: "filler")]
-        );
+        _ = await loop.SendAsync([NotifyMessage.Create(NotifyKinds.SubAgentCompletion, label: "filler")]);
 
         using var resolver = new CancellationTokenSource();
         var committed = await loop.TryResolveToolCallAsync("tc_b", "result-b", ct: resolver.Token);
@@ -557,10 +552,7 @@ public class DelayedResultDurableContinuationTests
         // afterwards is left with no record to attach itself to. This is the only way the late
         // attach can find nothing, and it is a normal deployment rather than a fault.
         var logger = new RecordingLogger();
-        await using var race = await ParkRace.StartAsync(
-            configure: s => s.ForgetsDeferrals = true,
-            logger: logger
-        );
+        await using var race = await ParkRace.StartAsync(configure: s => s.ForgetsDeferrals = true, logger: logger);
 
         (await race.ReleaseAndFinishAsync()).Should().Be(ResolveToolCallOutcome.Resolved);
         await race.Watcher.WaitForCompletionsAsync(2);
@@ -825,8 +817,7 @@ public class DelayedResultDurableContinuationTests
             return runs.SelectMany(r => r.DeferredToolCalls).Single(d => d.ToolCallId == toolCallId);
         }
 
-        public Task<IReadOnlyList<ToolCallResultMessage>> ResultsAsync() =>
-            LoadResultsAsync(Inner, ThreadId);
+        public Task<IReadOnlyList<ToolCallResultMessage>> ResultsAsync() => LoadResultsAsync(Inner, ThreadId);
 
         public async ValueTask DisposeAsync()
         {
@@ -854,13 +845,15 @@ public class DelayedResultDurableContinuationTests
             LifecycleStore = store,
         };
 
-        await using (var parking = new MultiTurnAgentLoop(
-            new Provider("tc_1").Mock.Object,
-            DeferringRegistry(["tc_1"]),
-            threadId,
-            store: store,
-            lifecycleServices: services
-        ))
+        await using (
+            var parking = new MultiTurnAgentLoop(
+                new Provider("tc_1").Mock.Object,
+                DeferringRegistry(["tc_1"]),
+                threadId,
+                store: store,
+                lifecycleServices: services
+            )
+        )
         {
             using var cts = new CancellationTokenSource();
             await using var watcher = new MessageWatcher(parking);
@@ -873,13 +866,15 @@ public class DelayedResultDurableContinuationTests
         // The second process takes the result and commits it. Its loop is never started, so the
         // continuation it names is committed and then abandoned — exactly the state a crash between
         // persisting the result and running the child leaves behind.
-        await using (var abandoning = new MultiTurnAgentLoop(
-            new Provider().Mock.Object,
-            DeferringRegistry(["tc_1"]),
-            threadId,
-            store: store,
-            lifecycleServices: services
-        ))
+        await using (
+            var abandoning = new MultiTurnAgentLoop(
+                new Provider().Mock.Object,
+                DeferringRegistry(["tc_1"]),
+                threadId,
+                store: store,
+                lifecycleServices: services
+            )
+        )
         {
             (await abandoning.RecoverAsync()).Should().BeTrue();
             (await abandoning.TryResolveToolCallAsync("tc_1", "the-answer"))
@@ -889,9 +884,7 @@ public class DelayedResultDurableContinuationTests
 
         var runs = await store.ListRunLifecycleAsync(threadId);
         var record = runs.SelectMany(r => r.DeferredToolCalls).Single(d => d.ToolCallId == "tc_1");
-        record
-            .ChildRunId.Should()
-            .NotBeNull("a resolution applied to a parked call names its child run as it commits");
+        record.ChildRunId.Should().NotBeNull("a resolution applied to a parked call names its child run as it commits");
         runs.Should()
             .NotContain(
                 r => r.RunId == record.ChildRunId,
@@ -926,8 +919,7 @@ public class DelayedResultDurableContinuationTests
         );
     }
 
-    private static TaskCompletionSource<bool> NewGate() =>
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static TaskCompletionSource<bool> NewGate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private static string ToolNameFor(string toolCallId) => $"defer_{toolCallId}";
 
@@ -970,24 +962,13 @@ public class DelayedResultDurableContinuationTests
     )
     {
         var persisted = await store.LoadMessagesAsync(threadId);
-        return
-        [
-            .. MessagePersistenceConverter
-                .FromPersistedMessages(persisted)
-                .OfType<ToolCallResultMessage>(),
-        ];
+        return [.. MessagePersistenceConverter.FromPersistedMessages(persisted).OfType<ToolCallResultMessage>()];
     }
 
     /// <summary>Every result carried for <paramref name="toolCallId"/>, however it was framed.</summary>
-    private static IReadOnlyList<string> ResultsFor(
-        IReadOnlyList<IMessage> request,
-        string toolCallId
-    ) =>
+    private static IReadOnlyList<string> ResultsFor(IReadOnlyList<IMessage> request, string toolCallId) =>
         [
-            .. request
-                .OfType<ToolCallResultMessage>()
-                .Where(m => m.ToolCallId == toolCallId)
-                .Select(m => m.Result),
+            .. request.OfType<ToolCallResultMessage>().Where(m => m.ToolCallId == toolCallId).Select(m => m.Result),
             .. request
                 .OfType<ToolsCallResultMessage>()
                 .SelectMany(m => m.ToolCallResults)
@@ -1030,19 +1011,18 @@ public class DelayedResultDurableContinuationTests
                             _ = _defersByCall.TryGetValue(_requests.Count, out defers);
                         }
 
-                        IReadOnlyList<IMessage> reply =
-                            defers is { Length: > 0 }
-                                ?
-                                [
-                                    .. defers.Select(id => new ToolCallMessage
-                                    {
-                                        FunctionName = ToolNameFor(id),
-                                        FunctionArgs = "{}",
-                                        ToolCallId = id,
-                                        Role = Role.Assistant,
-                                    }),
-                                ]
-                                : [new TextMessage { Text = "all done", Role = Role.Assistant }];
+                        IReadOnlyList<IMessage> reply = defers is { Length: > 0 }
+                            ?
+                            [
+                                .. defers.Select(id => new ToolCallMessage
+                                {
+                                    FunctionName = ToolNameFor(id),
+                                    FunctionArgs = "{}",
+                                    ToolCallId = id,
+                                    Role = Role.Assistant,
+                                }),
+                            ]
+                            : [new TextMessage { Text = "all done", Role = Role.Assistant }];
 
                         return Task.FromResult(ToAsyncEnumerable(reply));
                     }
@@ -1111,9 +1091,7 @@ public class DelayedResultDurableContinuationTests
     private sealed class MessageWatcher : IAsyncDisposable
     {
         private readonly CancellationTokenSource _cts = new();
-        private readonly Dictionary<string, TaskCompletionSource<bool>> _signals = new(
-            StringComparer.Ordinal
-        );
+        private readonly Dictionary<string, TaskCompletionSource<bool>> _signals = new(StringComparer.Ordinal);
         private readonly Lock _gate = new();
         private readonly Task _pump;
         private int _completions;
@@ -1237,10 +1215,7 @@ public class DelayedResultDurableContinuationTests
         /// <summary>Runs on the loop's own thread as a run is recorded as started.</summary>
         public Func<RunLifecycleState, Task>? BeforeRunStarted { get; set; }
 
-        public async Task RecordRunStartedAsync(
-            RunLifecycleState state,
-            CancellationToken ct = default
-        )
+        public async Task RecordRunStartedAsync(RunLifecycleState state, CancellationToken ct = default)
         {
             if (BeforeRunStarted != null)
             {
@@ -1250,10 +1225,8 @@ public class DelayedResultDurableContinuationTests
             await inner.RecordRunStartedAsync(state, ct);
         }
 
-        public Task<RunLifecycleState?> LoadRunLifecycleAsync(
-            string runId,
-            CancellationToken ct = default
-        ) => inner.LoadRunLifecycleAsync(runId, ct);
+        public Task<RunLifecycleState?> LoadRunLifecycleAsync(string runId, CancellationToken ct = default) =>
+            inner.LoadRunLifecycleAsync(runId, ct);
 
         public Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
             string threadId,
@@ -1277,10 +1250,7 @@ public class DelayedResultDurableContinuationTests
             string runId,
             DeferredToolCallRecord record,
             CancellationToken ct = default
-        ) =>
-            ForgetsDeferrals
-                ? Task.FromResult(record)
-                : inner.RecordDeferredToolCallAsync(runId, record, ct);
+        ) => ForgetsDeferrals ? Task.FromResult(record) : inner.RecordDeferredToolCallAsync(runId, record, ct);
 
         public async Task<DeferredResolutionOutcome> TryResolveDeferredToolCallAsync(
             string threadId,
@@ -1326,13 +1296,7 @@ public class DelayedResultDurableContinuationTests
 
             return AttachReturns != null
                 ? await AttachReturns(childRunId)
-                : await inner.AttachDeferredChildRunAsync(
-                    threadId,
-                    toolCallId,
-                    childRunId,
-                    attachedAt,
-                    ct
-                );
+                : await inner.AttachDeferredChildRunAsync(threadId, toolCallId, childRunId, attachedAt, ct);
         }
     }
 
@@ -1350,10 +1314,8 @@ public class DelayedResultDurableContinuationTests
         public Task RecordRunStartedAsync(RunLifecycleState state, CancellationToken ct = default) =>
             inner.RecordRunStartedAsync(state, ct);
 
-        public Task<RunLifecycleState?> LoadRunLifecycleAsync(
-            string runId,
-            CancellationToken ct = default
-        ) => inner.LoadRunLifecycleAsync(runId, ct);
+        public Task<RunLifecycleState?> LoadRunLifecycleAsync(string runId, CancellationToken ct = default) =>
+            inner.LoadRunLifecycleAsync(runId, ct);
 
         public Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
             string threadId,

@@ -196,9 +196,7 @@ public sealed class WebSearchTool
     ///     Accepts a country (Jina <c>gl</c>) only when it is a two-letter alpha code; otherwise omits it.
     /// </summary>
     private static string? NormalizeCountry(string? country) =>
-        country is { Length: 2 } && char.IsAsciiLetter(country[0]) && char.IsAsciiLetter(country[1])
-            ? country
-            : null;
+        country is { Length: 2 } && char.IsAsciiLetter(country[0]) && char.IsAsciiLetter(country[1]) ? country : null;
 
     /// <summary>
     ///     Accepts a language (Jina <c>hl</c>) only when it matches <c>^[A-Za-z]{2,5}(-[A-Za-z0-9]{1,8})?$</c>

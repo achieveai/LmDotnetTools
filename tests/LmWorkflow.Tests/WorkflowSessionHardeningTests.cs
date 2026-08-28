@@ -49,9 +49,7 @@ public class WorkflowSessionHardeningTests
         }
 
         // Disposal drained the pending best-effort saves; the throwing store surfaced a Warning with the id.
-        logger
-            .Entries.Should()
-            .Contain(e => e.Level == LogLevel.Warning && e.Message.Contains("wf-log-1"));
+        logger.Entries.Should().Contain(e => e.Level == LogLevel.Warning && e.Message.Contains("wf-log-1"));
     }
 
     // ---- FIX: read-only host accessors on the run handle ---------------------------------------
@@ -135,8 +133,7 @@ public class WorkflowSessionHardeningTests
             _ => new TextMessage { Text = "Workflow finished.", Role = Role.Assistant },
         };
 
-    private static SubAgentOptions EmptyOptions() =>
-        new() { Templates = new Dictionary<string, SubAgentTemplate>() };
+    private static SubAgentOptions EmptyOptions() => new() { Templates = new Dictionary<string, SubAgentTemplate>() };
 
     private static Mock<IStreamingAgent> ScriptedController(Func<int, IMessage> script)
     {
@@ -187,19 +184,13 @@ public class WorkflowSessionHardeningTests
     /// <summary>An <see cref="IWorkflowStore"/> whose <see cref="SaveAsync"/> always throws (a store outage).</summary>
     private sealed class ThrowingStore : IWorkflowStore
     {
-        public Task SaveAsync(
-            string instanceId,
-            WorkflowInstanceSnapshot snapshot,
-            CancellationToken ct = default
-        ) => throw new InvalidOperationException("simulated store outage");
+        public Task SaveAsync(string instanceId, WorkflowInstanceSnapshot snapshot, CancellationToken ct = default) =>
+            throw new InvalidOperationException("simulated store outage");
 
-        public Task<WorkflowInstanceSnapshot?> LoadAsync(
-            string instanceId,
-            CancellationToken ct = default
-        ) => Task.FromResult<WorkflowInstanceSnapshot?>(null);
+        public Task<WorkflowInstanceSnapshot?> LoadAsync(string instanceId, CancellationToken ct = default) =>
+            Task.FromResult<WorkflowInstanceSnapshot?>(null);
 
-        public Task DeleteAsync(string instanceId, CancellationToken ct = default) =>
-            Task.CompletedTask;
+        public Task DeleteAsync(string instanceId, CancellationToken ct = default) => Task.CompletedTask;
 
         public Task<IReadOnlyList<string>> ListAsync(CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<string>>([]);

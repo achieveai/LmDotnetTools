@@ -19,18 +19,22 @@ public sealed class ReviewStoreTests
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
 
-        var first = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotNetTools",
-        });
-        var second = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "GitHub",
-            OrgOrOwner = "AchieveAI",
-            RepoName = "lmdotnettools",
-        });
+        var first = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotNetTools",
+            }
+        );
+        var second = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "GitHub",
+                OrgOrOwner = "AchieveAI",
+                RepoName = "lmdotnettools",
+            }
+        );
 
         second.Should().Be(first, "casing-only differences must normalize to the same repo row");
     }
@@ -41,8 +45,23 @@ public sealed class ReviewStoreTests
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
 
-        var github = store.EnsureRepo(new RepoIdentity { Provider = "github", OrgOrOwner = "achieveai", RepoName = "repo-a" });
-        var ado = store.EnsureRepo(new RepoIdentity { Provider = "azure-devops", OrgOrOwner = "achieveai", Project = "proj", RepoName = "repo-a" });
+        var github = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "repo-a",
+            }
+        );
+        var ado = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "azure-devops",
+                OrgOrOwner = "achieveai",
+                Project = "proj",
+                RepoName = "repo-a",
+            }
+        );
 
         ado.Should().NotBe(github, "provider/project differences are distinct identities");
     }
@@ -50,7 +69,12 @@ public sealed class ReviewStoreTests
     [Fact]
     public void Normalized_key_is_lowercased_while_display_name_keeps_original_casing()
     {
-        var identity = new RepoIdentity { Provider = "GitHub", OrgOrOwner = "AchieveAI", RepoName = "LmDotNetTools" };
+        var identity = new RepoIdentity
+        {
+            Provider = "GitHub",
+            OrgOrOwner = "AchieveAI",
+            RepoName = "LmDotNetTools",
+        };
 
         identity.NormalizedKey.Should().Be("github/achieveai/lmdotnettools");
         identity.DisplayName.Should().Be("AchieveAI/LmDotNetTools");
@@ -82,9 +106,13 @@ public sealed class ReviewStoreTests
         var first = store.CreateOrGetReviewRun(SampleRun(repoId) with { TriggerWatermark = "wm-1" });
         var second = store.CreateOrGetReviewRun(SampleRun(repoId) with { TriggerWatermark = "wm-2" });
 
-        second.Id.Should().Be(first.Id,
-            "trigger_watermark (the PR updated_at) is NOT part of the identity — posting a review comment "
-                + "mutates updated_at, so keying on it would spawn a duplicate run + review on the next poll");
+        second
+            .Id.Should()
+            .Be(
+                first.Id,
+                "trigger_watermark (the PR updated_at) is NOT part of the identity — posting a review comment "
+                    + "mutates updated_at, so keying on it would spawn a duplicate run + review on the next poll"
+            );
     }
 
     [Fact]
@@ -99,9 +127,13 @@ public sealed class ReviewStoreTests
         var collectOnly = store.CreateOrGetReviewRun(SampleRun(repoId) with { Mode = "collect-only" });
         var afterPostingEnabled = store.CreateOrGetReviewRun(SampleRun(repoId) with { Mode = "post" });
 
-        afterPostingEnabled.Id.Should().Be(collectOnly.Id,
-            "mode (post vs collect-only) is an authorization decision, NOT part of a review's identity — "
-                + "keying on it would re-review every open PR the moment posting is toggled");
+        afterPostingEnabled
+            .Id.Should()
+            .Be(
+                collectOnly.Id,
+                "mode (post vs collect-only) is an authorization decision, NOT part of a review's identity — "
+                    + "keying on it would re-review every open PR the moment posting is toggled"
+            );
         afterPostingEnabled.Mode.Should().Be("collect-only", "the existing run is returned as-is, not re-seeded");
     }
 
@@ -138,15 +170,17 @@ public sealed class ReviewStoreTests
         using var store = new ReviewStore(db.ConnectionString);
         var repoId = store.EnsureRepo(SampleRepo());
 
-        var created = store.CreateOrGetReviewRun(SampleRun(repoId) with
-        {
-            ModelProvider = "anthropic",
-            ModelId = "claude-opus-4-8",
-            PromptTemplateHash = "sha256:abc",
-            PolicyBundleVersion = "policy-v3",
-            FeatureFlagSnapshot = "{\"collectOnly\":true}",
-            MergeSha = "merge-sha",
-        });
+        var created = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                ModelProvider = "anthropic",
+                ModelId = "claude-opus-4-8",
+                PromptTemplateHash = "sha256:abc",
+                PolicyBundleVersion = "policy-v3",
+                FeatureFlagSnapshot = "{\"collectOnly\":true}",
+                MergeSha = "merge-sha",
+            }
+        );
 
         var reloaded = store.GetReviewRun(created.Id);
         reloaded.Should().NotBeNull();
@@ -186,7 +220,14 @@ public sealed class ReviewStoreTests
         _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-old", Stage = ReviewStage.Reviewed });
         _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-new", Stage = ReviewStage.Posted });
         // A different PR's completed run must not be counted.
-        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "200", HeadSha = "sha-other", Stage = ReviewStage.Reviewed });
+        _ = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                PrId = "200",
+                HeadSha = "sha-other",
+                Stage = ReviewStage.Reviewed,
+            }
+        );
         var current = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-current" });
 
         var summary = store.GetPriorReviewSummary(repoId, "118", current.Id);
@@ -202,7 +243,13 @@ public sealed class ReviewStoreTests
         using var store = new ReviewStore(db.ConnectionString);
         var repoId = store.EnsureRepo(SampleRepo());
 
-        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-ctx", Stage = ReviewStage.ContextReady });
+        _ = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                HeadSha = "sha-ctx",
+                Stage = ReviewStage.ContextReady,
+            }
+        );
         var current = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-current" });
 
         var summary = store.GetPriorReviewSummary(repoId, "118", current.Id);
@@ -218,7 +265,14 @@ public sealed class ReviewStoreTests
         using var store = new ReviewStore(db.ConnectionString);
         var repoId = store.EnsureRepo(SampleRepo());
 
-        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-b", VariantId = "b", Stage = ReviewStage.Reviewed });
+        _ = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                HeadSha = "sha-b",
+                VariantId = "b",
+                Stage = ReviewStage.Reviewed,
+            }
+        );
         var current = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-current" });
 
         var summary = store.GetPriorReviewSummary(repoId, "118", current.Id);
@@ -233,24 +287,37 @@ public sealed class ReviewStoreTests
     [InlineData(true, false)] // task's example: fork PR against a private target
     [InlineData(false, true)] // same-org PR against a public target — both differ from the fail-closed defaults
     [InlineData(false, false)]
-    public void The_confidentiality_trust_signals_round_trip_the_exact_stored_values(bool isForkPr, bool isTargetRepoPublic)
+    public void The_confidentiality_trust_signals_round_trip_the_exact_stored_values(
+        bool isForkPr,
+        bool isTargetRepoPublic
+    )
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var repoId = store.EnsureRepo(SampleRepo());
 
-        var created = store.CreateOrGetReviewRun(SampleRun(repoId) with
-        {
-            IsForkPr = isForkPr,
-            IsTargetRepoPublic = isTargetRepoPublic,
-        });
+        var created = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                IsForkPr = isForkPr,
+                IsTargetRepoPublic = isTargetRepoPublic,
+            }
+        );
 
         var reloaded = store.GetReviewRun(created.Id);
         reloaded.Should().NotBeNull();
-        reloaded!.IsForkPr.Should().Be(isForkPr,
-            "the persisted fork signal must survive reload rather than fall back to the fail-closed default (true)");
-        reloaded.IsTargetRepoPublic.Should().Be(isTargetRepoPublic,
-            "the persisted target-visibility signal must survive reload rather than fall back to the fail-closed default (true)");
+        reloaded!
+            .IsForkPr.Should()
+            .Be(
+                isForkPr,
+                "the persisted fork signal must survive reload rather than fall back to the fail-closed default (true)"
+            );
+        reloaded
+            .IsTargetRepoPublic.Should()
+            .Be(
+                isTargetRepoPublic,
+                "the persisted target-visibility signal must survive reload rather than fall back to the fail-closed default (true)"
+            );
     }
 
     // ── ListReviewedPrsAsync (PR-lifecycle sweeper) ───────────────────────────────────────────────
@@ -297,7 +364,13 @@ public sealed class ReviewStoreTests
 
         var withAuthor = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrAuthor = "octocat" });
         var withoutAuthor = store.CreateOrGetReviewRun(
-            SampleRun(repoId) with { PrId = "200", HeadSha = "sha-x", PrAuthor = null });
+            SampleRun(repoId) with
+            {
+                PrId = "200",
+                HeadSha = "sha-x",
+                PrAuthor = null,
+            }
+        );
 
         store.GetReviewRun(withAuthor.Id)!.PrAuthor.Should().Be("octocat");
 
@@ -326,7 +399,8 @@ public sealed class ReviewStoreTests
             {
                 PrTitle = "Remove the stale featureflag entry",
                 PrDescription = "The ECS task definition still carries the flag.",
-            });
+            }
+        );
         var bare = store.CreateOrGetReviewRun(
             SampleRun(repoId) with
             {
@@ -334,7 +408,8 @@ public sealed class ReviewStoreTests
                 HeadSha = "sha-y",
                 PrTitle = null,
                 PrDescription = null,
-            });
+            }
+        );
 
         var reloaded = store.GetReviewRun(described.Id)!;
         reloaded.PrTitle.Should().Be("Remove the stale featureflag entry");
@@ -357,16 +432,27 @@ public sealed class ReviewStoreTests
         // recorded, then reviewed again after. A DISTINCT over pr_author would emit PR 118 TWICE — the
         // sweeper would sweep it twice, and one of those rows would have erased the author.
         _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "118", HeadSha = "sha-1", PrAuthor = null });
-        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "118", HeadSha = "sha-2", PrAuthor = "octocat" });
+        _ = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                PrId = "118",
+                HeadSha = "sha-2",
+                PrAuthor = "octocat",
+            }
+        );
         _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "200", HeadSha = "sha-3", PrAuthor = null });
 
         var reviewed = await store.ListReviewedPrsAsync(CancellationToken.None);
 
         reviewed.Should().HaveCount(2, "runs for the same PR collapse to one row even when only some carry an author");
-        reviewed.Single(r => r.PrId == "118").Author.Should().Be(
-            "octocat", "a recorded author must win over a run that predates the column");
-        reviewed.Single(r => r.PrId == "200").Author.Should().BeNull(
-            "a PR no run recorded an author for stays unknown rather than borrowing another PR's");
+        reviewed
+            .Single(r => r.PrId == "118")
+            .Author.Should()
+            .Be("octocat", "a recorded author must win over a run that predates the column");
+        reviewed
+            .Single(r => r.PrId == "200")
+            .Author.Should()
+            .BeNull("a PR no run recorded an author for stays unknown rather than borrowing another PR's");
     }
 
     // ── §12 opaque cursor resync tolerance ────────────────────────────────────────────────────────
@@ -433,7 +519,13 @@ public sealed class ReviewStoreTests
         using var store = new ReviewStore(db.ConnectionString);
 
         store.SaveCursor(SampleCursor(CurrentCursorVersion));
-        store.SaveCursor(SampleCursor(CurrentCursorVersion) with { CursorPayload = "{\"page\":5}", HighWaterMark = "later" });
+        store.SaveCursor(
+            SampleCursor(CurrentCursorVersion) with
+            {
+                CursorPayload = "{\"page\":5}",
+                HighWaterMark = "later",
+            }
+        );
 
         var result = store.ReadCursor("github", "achieveai/repo:open-prs", CurrentCursorVersion);
         result.Cursor!.CursorPayload.Should().Be("{\"page\":5}");
@@ -466,7 +558,15 @@ public sealed class ReviewStoreTests
         var entry = store.EnqueueOutbox(SampleOutbox(runId));
 
         store.TryTransitionOutbox(entry.Id, OutboxStatus.Pending, OutboxStatus.Sending).Should().BeTrue();
-        store.TryTransitionOutbox(entry.Id, OutboxStatus.Sending, OutboxStatus.Posted, providerResponseId: "gh-comment-42").Should().BeTrue();
+        store
+            .TryTransitionOutbox(
+                entry.Id,
+                OutboxStatus.Sending,
+                OutboxStatus.Posted,
+                providerResponseId: "gh-comment-42"
+            )
+            .Should()
+            .BeTrue();
 
         var reloaded = store.GetOutbox(entry.Id);
         reloaded!.Status.Should().Be(OutboxStatus.Posted);
@@ -509,22 +609,26 @@ public sealed class ReviewStoreTests
         using var store = new ReviewStore(db.ConnectionString);
         var runId = SeedRun(store);
 
-        _ = store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = runId,
-            ArtifactSchemaVersion = 1,
-            ArtifactKind = "b-variant-review",
-            Provider = "github",
-            Payload = "{\"score\":7}",
-        });
-        _ = store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = runId,
-            ArtifactSchemaVersion = 1,
-            ArtifactKind = "judge",
-            Provider = "github",
-            Payload = "{\"rationale\":\"ok\"}",
-        });
+        _ = store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = runId,
+                ArtifactSchemaVersion = 1,
+                ArtifactKind = "b-variant-review",
+                Provider = "github",
+                Payload = "{\"score\":7}",
+            }
+        );
+        _ = store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = runId,
+                ArtifactSchemaVersion = 1,
+                ArtifactKind = "judge",
+                Provider = "github",
+                Payload = "{\"rationale\":\"ok\"}",
+            }
+        );
 
         var artifacts = store.GetArtifacts(runId);
         artifacts.Should().HaveCount(2);
@@ -545,8 +649,10 @@ public sealed class ReviewStoreTests
         _ = store.AddArtifact(SampleArtifact(runId, "review-provisional", "{\"n\":2}"));
 
         store.TryGetLatestArtifact(runId, "review-provisional")!.Payload.Should().Be("{\"n\":2}");
-        store.GetArtifacts(runId)
-            .Should().HaveCount(3, "the lookup reads the newest row, it never replaces or prunes the append-only history");
+        store
+            .GetArtifacts(runId)
+            .Should()
+            .HaveCount(3, "the lookup reads the newest row, it never replaces or prunes the append-only history");
     }
 
     [Fact]
@@ -654,14 +760,15 @@ public sealed class ReviewStoreTests
         list.Should().Throw<ArgumentException>();
     }
 
-    private static ReviewArtifact SampleArtifact(long runId, string kind, string payload) => new()
-    {
-        ReviewRunId = runId,
-        ArtifactSchemaVersion = 1,
-        ArtifactKind = kind,
-        Provider = "github",
-        Payload = payload,
-    };
+    private static ReviewArtifact SampleArtifact(long runId, string kind, string payload) =>
+        new()
+        {
+            ReviewRunId = runId,
+            ArtifactSchemaVersion = 1,
+            ArtifactKind = kind,
+            Provider = "github",
+            Payload = payload,
+        };
 
     // ── §7 GetRepo rehydration ──────────────────────────────────────────────────────────────────
 
@@ -724,36 +831,43 @@ public sealed class ReviewStoreTests
         // An async gate rather than a Barrier: workers are released simultaneously without first parking
         // eight thread-pool threads, so the contention is real even on a small pool.
         var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var work = Enumerable.Range(0, Workers)
-            .Select(worker => Task.Run(async () =>
-            {
-                await start.Task;
-                for (var i = 0; i < PerWorker; i++)
+        var work = Enumerable
+            .Range(0, Workers)
+            .Select(worker =>
+                Task.Run(async () =>
                 {
-                    _ = store.AddArtifact(new ReviewArtifact
+                    await start.Task;
+                    for (var i = 0; i < PerWorker; i++)
                     {
-                        ReviewRunId = runId,
-                        ArtifactSchemaVersion = 1,
-                        ArtifactKind = "review",
-                        Provider = "github",
-                        Payload = $"{{\"worker\":{worker},\"i\":{i}}}",
-                    });
+                        _ = store.AddArtifact(
+                            new ReviewArtifact
+                            {
+                                ReviewRunId = runId,
+                                ArtifactSchemaVersion = 1,
+                                ArtifactKind = "review",
+                                Provider = "github",
+                                Payload = $"{{\"worker\":{worker},\"i\":{i}}}",
+                            }
+                        );
 
-                    // Readers that STREAM while the other workers write — the case a per-command lock
-                    // would still get wrong.
-                    _ = store.GetArtifacts(runId);
-                    _ = store.GetReviewRun(runId);
-                    _ = await store.ListReviewedPrsAsync(CancellationToken.None);
-                }
-            }))
+                        // Readers that STREAM while the other workers write — the case a per-command lock
+                        // would still get wrong.
+                        _ = store.GetArtifacts(runId);
+                        _ = store.GetReviewRun(runId);
+                        _ = await store.ListReviewedPrsAsync(CancellationToken.None);
+                    }
+                })
+            )
             .ToList();
 
         start.SetResult();
         var drain = async () => await Task.WhenAll(work);
 
         _ = await drain.Should().NotThrowAsync("every operation serializes on the store's gate");
-        store.GetArtifacts(runId).Should().HaveCount(
-            Workers * PerWorker, "no write was lost, duplicated, or rolled back by a racing command");
+        store
+            .GetArtifacts(runId)
+            .Should()
+            .HaveCount(Workers * PerWorker, "no write was lost, duplicated, or rolled back by a racing command");
     }
 
     // ── the delta-review cutoff and the dedup-context signal (#225 items 1 + 2) ───────────────────
@@ -766,9 +880,13 @@ public sealed class ReviewStoreTests
         var repoId = store.EnsureRepo(SampleRepo());
         _ = store.CreateOrGetReviewRun(SampleRun(repoId));
 
-        store.GetLastPostedReviewAt(repoId, "118").Should().BeNull(
-            "null is a real answer — it is what lets the fetch-failure path tell a first review, which is safe "
-                + "to post blind, from a re-review, which is not");
+        store
+            .GetLastPostedReviewAt(repoId, "118")
+            .Should()
+            .BeNull(
+                "null is a real answer — it is what lets the fetch-failure path tell a first review, which is safe "
+                    + "to post blind, from a re-review, which is not"
+            );
     }
 
     [Fact]
@@ -802,8 +920,10 @@ public sealed class ReviewStoreTests
 
         store.MarkReviewPosted(first, firstPostedAt);
 
-        store.GetLastPostedReviewAt(repoId, "118").Should().Be(
-            firstPostedAt, "the newer run has posted nothing yet, so the older run's delivery is still the cutoff");
+        store
+            .GetLastPostedReviewAt(repoId, "118")
+            .Should()
+            .Be(firstPostedAt, "the newer run has posted nothing yet, so the older run's delivery is still the cutoff");
     }
 
     [Fact]
@@ -835,8 +955,10 @@ public sealed class ReviewStoreTests
 
         store.MarkReviewPosted(reviewed, DateTimeOffset.Parse("2026-07-20T10:00:00Z"));
 
-        store.GetLastPostedReviewAt(repoId, "119").Should().BeNull(
-            "a cutoff that leaked across PRs would silence a never-reviewed PR's whole conversation");
+        store
+            .GetLastPostedReviewAt(repoId, "119")
+            .Should()
+            .BeNull("a cutoff that leaked across PRs would silence a never-reviewed PR's whole conversation");
     }
 
     [Fact]
@@ -852,10 +974,14 @@ public sealed class ReviewStoreTests
 
         store.MarkReviewPosted(runId, offsetInstant);
 
-        store.GetLastPostedReviewAt(repoId, "118").Should().Be(
-            offsetInstant, "DateTimeOffset equality is by instant, and the stored form must preserve it");
-        store.GetLastPostedReviewAt(repoId, "118")!.Value.Offset.Should().Be(
-            TimeSpan.Zero, "everything is normalized to UTC so lexicographic MAX stays chronological");
+        store
+            .GetLastPostedReviewAt(repoId, "118")
+            .Should()
+            .Be(offsetInstant, "DateTimeOffset equality is by instant, and the stored form must preserve it");
+        store
+            .GetLastPostedReviewAt(repoId, "118")!
+            .Value.Offset.Should()
+            .Be(TimeSpan.Zero, "everything is normalized to UTC so lexicographic MAX stays chronological");
     }
 
     [Fact]
@@ -865,8 +991,12 @@ public sealed class ReviewStoreTests
         using var store = new ReviewStore(db.ConnectionString);
         var runId = SeedRun(store);
 
-        store.WasDedupContextLost(runId).Should().BeFalse(
-            "the default has to be 'not lost', or every row predating the column would stop posting on upgrade");
+        store
+            .WasDedupContextLost(runId)
+            .Should()
+            .BeFalse(
+                "the default has to be 'not lost', or every row predating the column would stop posting on upgrade"
+            );
     }
 
     [Fact]
@@ -889,47 +1019,51 @@ public sealed class ReviewStoreTests
 
     // ── shared fixtures ───────────────────────────────────────────────────────────────────────────
 
-    private static RepoIdentity SampleRepo() => new()
-    {
-        Provider = "github",
-        OrgOrOwner = "achieveai",
-        RepoName = "LmDotnetTools",
-        RepoStableId = "R_node_123",
-    };
+    private static RepoIdentity SampleRepo() =>
+        new()
+        {
+            Provider = "github",
+            OrgOrOwner = "achieveai",
+            RepoName = "LmDotnetTools",
+            RepoStableId = "R_node_123",
+        };
 
-    private static ReviewRun SampleRun(long repoId) => new()
-    {
-        RepoId = repoId,
-        PrId = "118",
-        HeadSha = "head-sha",
-        BaseSha = "base-sha",
-        TriggerWatermark = "wm-1",
-        ReviewKind = "full",
-        VariantId = "primary",
-        Mode = "collect-only",
-        Stage = ReviewStage.Discovered,
-        WorkflowStatus = WorkflowStatus.Pending,
-        PrLifecycleState = PrLifecycleState.Open,
-    };
+    private static ReviewRun SampleRun(long repoId) =>
+        new()
+        {
+            RepoId = repoId,
+            PrId = "118",
+            HeadSha = "head-sha",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "collect-only",
+            Stage = ReviewStage.Discovered,
+            WorkflowStatus = WorkflowStatus.Pending,
+            PrLifecycleState = PrLifecycleState.Open,
+        };
 
-    private static OpaqueCursor SampleCursor(int version) => new()
-    {
-        Provider = "github",
-        Scope = "achieveai/repo:open-prs",
-        CursorVersion = version,
-        CursorPayload = "{\"page\":2}",
-        HighWaterMark = "2026-06-01T00:00:00Z",
-    };
+    private static OpaqueCursor SampleCursor(int version) =>
+        new()
+        {
+            Provider = "github",
+            Scope = "achieveai/repo:open-prs",
+            CursorVersion = version,
+            CursorPayload = "{\"page\":2}",
+            HighWaterMark = "2026-06-01T00:00:00Z",
+        };
 
-    private static OutboxEntry SampleOutbox(long runId) => new()
-    {
-        IdempotencyKey = "v1:github:achieveai::R_node_123:118:PostReviewComment:summary:body:wm-1:primary",
-        Provider = "github",
-        ReviewRunId = runId,
-        Operation = "PostReviewComment",
-        ArtifactKind = "summary",
-        Status = OutboxStatus.Pending,
-    };
+    private static OutboxEntry SampleOutbox(long runId) =>
+        new()
+        {
+            IdempotencyKey = "v1:github:achieveai::R_node_123:118:PostReviewComment:summary:body:wm-1:primary",
+            Provider = "github",
+            ReviewRunId = runId,
+            Operation = "PostReviewComment",
+            ArtifactKind = "summary",
+            Status = OutboxStatus.Pending,
+        };
 
     private static long SeedRun(ReviewStore store)
     {

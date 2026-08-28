@@ -34,7 +34,8 @@ public sealed class DeveloperLearningsLedgerTests
     private static DeveloperObservation Pr(
         int day,
         IReadOnlyList<string> exposure,
-        params DeveloperObservationHit[] hits) =>
+        params DeveloperObservationHit[] hits
+    ) =>
         new(
             DeveloperObservation.CurrentSchemaVersion,
             $"azure-devops/o365exchange/weve_da/nova/{5000 + day}",
@@ -44,20 +45,23 @@ public sealed class DeveloperLearningsLedgerTests
             new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddDays(day).ToString("O"),
             [1],
             exposure,
-            DeveloperObservation.DedupeByPattern(hits));
+            DeveloperObservation.DedupeByPattern(hits)
+        );
 
     private static IReadOnlyList<PatternStanding> Compute(
         IReadOnlyList<DeveloperObservation> observations,
         IReadOnlyDictionary<string, string>? dimensions = null,
         LearningsThresholds? thresholds = null,
         IReadOnlySet<string>? suppressed = null,
-        DateTimeOffset? now = null) =>
+        DateTimeOffset? now = null
+    ) =>
         DeveloperLearningsLedger.Compute(
             observations,
             dimensions ?? new Dictionary<string, string>(StringComparer.Ordinal) { [NullGuard] = ExceptionDim },
             thresholds ?? LearningsThresholds.Defaults,
             suppressed ?? NoSuppression,
-            now ?? Now);
+            now ?? Now
+        );
 
     [Fact]
     public void Two_findings_of_one_pattern_in_one_PR_are_one_occurrence()
@@ -86,11 +90,10 @@ public sealed class DeveloperLearningsLedgerTests
     {
         // Without Laplace smoothing one hit in one exposed PR gives p = 1.0, so (1-p)^n = 0 for any streak
         // and the very next clean PR declares the pattern fixed on one data point.
-        var standing = Compute(
-        [
-            Pr(1, [ExceptionDim], Hit(NullGuard)),
-            Pr(2, [ExceptionDim]),
-        ]).Should().ContainSingle().Subject;
+        var standing = Compute([Pr(1, [ExceptionDim], Hit(NullGuard)), Pr(2, [ExceptionDim])])
+            .Should()
+            .ContainSingle()
+            .Subject;
 
         standing.Rate.Should().BeApproximately(2.0 / 3.0, 1e-9, "(1+1)/(1+2) with smoothing");
         standing.State.Should().NotBe(PatternState.Resolved);
@@ -101,14 +104,16 @@ public sealed class DeveloperLearningsLedgerTests
     {
         // Four PRs follow the hit but only ONE ran the dimension. The streak is 1, not 4 — otherwise a
         // developer's record improves when the reviewer stops looking, which is the opposite of progress.
-        var standing = Compute(
-        [
-            Pr(1, [ExceptionDim], Hit(NullGuard)),
-            Pr(2, [TestDim]),
-            Pr(3, [TestDim]),
-            Pr(4, [TestDim]),
-            Pr(5, [ExceptionDim]),
-        ]).Should().ContainSingle().Subject;
+        var standing = Compute([
+                Pr(1, [ExceptionDim], Hit(NullGuard)),
+                Pr(2, [TestDim]),
+                Pr(3, [TestDim]),
+                Pr(4, [TestDim]),
+                Pr(5, [ExceptionDim]),
+            ])
+            .Should()
+            .ContainSingle()
+            .Subject;
 
         standing.CleanStreak.Should().Be(1, "only one of the four later PRs exercised this dimension");
         standing.State.Should().NotBe(PatternState.Resolved);
@@ -150,7 +155,11 @@ public sealed class DeveloperLearningsLedgerTests
         // rate 3/6 = 0.50, luck 0.5^3 = 0.125 — comfortably inside [0.05, 0.95), so the state is decided by
         // which of the two numbers the rule actually compares against.
         var thresholds = new LearningsThresholds(
-            ResolutionConfidence: 0.95, ActiveWindowPrs: 3, ExposureStalenessDays: 90, CohortDropThreshold: 0.40);
+            ResolutionConfidence: 0.95,
+            ActiveWindowPrs: 3,
+            ExposureStalenessDays: 90,
+            CohortDropThreshold: 0.40
+        );
 
         List<DeveloperObservation> ledger =
         [
@@ -189,13 +198,15 @@ public sealed class DeveloperLearningsLedgerTests
             .. Enumerable.Range(2, 12).Select(d => Pr(d, [ExceptionDim])),
         ];
 
-        Compute(ledger, now: MuchLater).Should().ContainSingle().Which.State
-            .Should().Be(PatternState.Unjudgeable, "the newest exposure is over 90 days before now");
+        Compute(ledger, now: MuchLater)
+            .Should()
+            .ContainSingle()
+            .Which.State.Should()
+            .Be(PatternState.Unjudgeable, "the newest exposure is over 90 days before now");
 
         // Positive control: the identical ledger judged close to its own last exposure is NOT Unjudgeable,
         // so the assertion above is about staleness and not about the ledger being unjudgeable anyway.
-        Compute(ledger, now: Now)
-            .Should().ContainSingle().Which.State.Should().NotBe(PatternState.Unjudgeable);
+        Compute(ledger, now: Now).Should().ContainSingle().Which.State.Should().NotBe(PatternState.Unjudgeable);
     }
 
     [Fact]
@@ -240,10 +251,10 @@ public sealed class DeveloperLearningsLedgerTests
         clean.State.Should().Be(PatternState.Resolved);
         clean.Provisional.Should().BeFalse();
 
-        var suppressed = Compute(
-            ledger,
-            suppressed: new HashSet<string>(StringComparer.Ordinal) { ExceptionDim })
-            .Should().ContainSingle().Subject;
+        var suppressed = Compute(ledger, suppressed: new HashSet<string>(StringComparer.Ordinal) { ExceptionDim })
+            .Should()
+            .ContainSingle()
+            .Subject;
         suppressed.State.Should().Be(PatternState.Resolved, "the resolution is marked, never blocked");
         suppressed.Provisional.Should().BeTrue();
     }
@@ -257,7 +268,8 @@ public sealed class DeveloperLearningsLedgerTests
                 [ExceptionDim] = [1.0, 1.2, 0.8, 0.1],
                 [TestDim] = [1.0, 1.2, 0.8, 0.9],
             },
-            LearningsThresholds.Defaults.CohortDropThreshold);
+            LearningsThresholds.Defaults.CohortDropThreshold
+        );
 
         suppressed.Should().Contain(ExceptionDim);
         suppressed.Should().NotContain(TestDim, "a normal window must not be flagged");
@@ -278,11 +290,8 @@ public sealed class DeveloperLearningsLedgerTests
         // Dedupe is per pattern, not per PR. Two DIFFERENT mistakes in one PR are two occurrences.
         var standings = Compute(
             [Pr(1, [ExceptionDim, TestDim], Hit(NullGuard), Hit(Retry, TestDim))],
-            new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                [NullGuard] = ExceptionDim,
-                [Retry] = TestDim,
-            });
+            new Dictionary<string, string>(StringComparer.Ordinal) { [NullGuard] = ExceptionDim, [Retry] = TestDim }
+        );
 
         standings.Should().HaveCount(2);
         standings.Should().OnlyContain(s => s.Occurrences == 1);
@@ -293,13 +302,15 @@ public sealed class DeveloperLearningsLedgerTests
     {
         // The rate's denominator is exposed PRs inside the first-to-last-hit window. Widening it to all PRs
         // depresses every rate, which makes resolution easier the less the reviewer looked.
-        var standing = Compute(
-        [
-            Pr(1, [ExceptionDim], Hit(NullGuard)),
-            Pr(2, [TestDim]),
-            Pr(3, [TestDim]),
-            Pr(4, [ExceptionDim], Hit(NullGuard)),
-        ]).Should().ContainSingle().Subject;
+        var standing = Compute([
+                Pr(1, [ExceptionDim], Hit(NullGuard)),
+                Pr(2, [TestDim]),
+                Pr(3, [TestDim]),
+                Pr(4, [ExceptionDim], Hit(NullGuard)),
+            ])
+            .Should()
+            .ContainSingle()
+            .Subject;
 
         standing.ExposedInWindow.Should().Be(2, "only two PRs in the window ran this dimension");
         standing.Rate.Should().BeApproximately(3.0 / 4.0, 1e-9, "(2+1)/(2+2)");

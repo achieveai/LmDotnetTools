@@ -22,7 +22,8 @@ public sealed class IdempotencyKeyTests
             ArtifactKind: "review",
             ArtifactSubject: "summary",
             HeadSha: "wm-1",
-            VariantId: "primary");
+            VariantId: "primary"
+        );
 
     [Fact]
     public void Build_renders_the_canonical_v1_shape()
@@ -36,11 +37,7 @@ public sealed class IdempotencyKeyTests
     public void Build_emits_an_empty_segment_for_a_null_project_keeping_the_segment_count_fixed()
     {
         var github = IdempotencyKey.Build(GithubComponents());
-        var ado = IdempotencyKey.Build(GithubComponents() with
-        {
-            Provider = "azure-devops",
-            Project = "Platform",
-        });
+        var ado = IdempotencyKey.Build(GithubComponents() with { Provider = "azure-devops", Project = "Platform" });
 
         // Both keys have exactly the same number of segments — the project slot is present either way.
         github.Split(':').Should().HaveCount(11);
@@ -52,12 +49,14 @@ public sealed class IdempotencyKeyTests
     [Fact]
     public void Build_case_folds_the_human_identity_but_not_the_opaque_stable_id()
     {
-        var key = IdempotencyKey.Build(GithubComponents() with
-        {
-            Provider = "GitHub",
-            OrgOrOwner = "Acme",
-            RepoStableId = "R_NoDe_123",
-        });
+        var key = IdempotencyKey.Build(
+            GithubComponents() with
+            {
+                Provider = "GitHub",
+                OrgOrOwner = "Acme",
+                RepoStableId = "R_NoDe_123",
+            }
+        );
 
         key.Should().Contain(":github:acme:");
         key.Should().Contain(":R_NoDe_123:", "the opaque provider id is preserved verbatim");

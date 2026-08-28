@@ -54,7 +54,11 @@ public sealed class SandboxLiveContractTests
             appKey,
             executionTimeout: executionTimeout,
             transportTimeout: TimeSpan.FromSeconds(30),
-            allowInsecureDevelopmentTransport: string.Equals(serverAddress.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            allowInsecureDevelopmentTransport: string.Equals(
+                serverAddress.Scheme,
+                Uri.UriSchemeHttp,
+                StringComparison.OrdinalIgnoreCase
+            )
         );
         return new SandboxClient(options);
     }
@@ -88,10 +92,7 @@ public sealed class SandboxLiveContractTests
         var sessionId = await CreateSandboxAsync();
         try
         {
-            var result = await Client.ExecuteAsync(
-                sessionId,
-                new SandboxCommand(["echo", "-n", "hello-exact"])
-            );
+            var result = await Client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "-n", "hello-exact"]));
 
             result.ExitCode.Should().Be(0);
             result.StandardOutput.Should().Be("hello-exact");
@@ -146,8 +147,7 @@ public sealed class SandboxLiveContractTests
             second.OperationId.Should().Be(first.OperationId);
 
             var content = await Client.ReadTextFileAsync(sessionId, "opid-probe.txt");
-            content.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                .Should().ContainSingle(line => line == marker);
+            content.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().ContainSingle(line => line == marker);
         }
         finally
         {
@@ -239,13 +239,17 @@ public sealed class SandboxLiveContractTests
             var operations = await Client.ListDirectoryAsync(sessionId, ".mcp-gateway/operations");
             operations.Should().Contain(opId, "the executed operation must have left an artifact directory");
             var generation = (await Client.ListDirectoryAsync(sessionId, $".mcp-gateway/operations/{opId}"))
-                .Should().ContainSingle("a single execution produces a single generation").Subject;
+                .Should()
+                .ContainSingle("a single execution produces a single generation")
+                .Subject;
             var stdoutPath = $".mcp-gateway/operations/{opId}/{generation}/stdout";
 
             // Non-vacuity: the artifact is genuinely there and genuinely this command's output BEFORE the
             // delete, so every "it is gone" assertion below is about the delete and not about a path that
             // was never right.
-            (await Client.ReadTextFileAsync(sessionId, stdoutPath)).Should().Be("artifact-probe");
+            (await Client.ReadTextFileAsync(sessionId, stdoutPath))
+                .Should()
+                .Be("artifact-probe");
 
             await Client.DeleteOperationAsync(sessionId, opId);
 
@@ -256,9 +260,11 @@ public sealed class SandboxLiveContractTests
             // gone, one empty directory per deleted operation is not, and a reader of this test should see
             // which of the two this call actually promises.
             (await Client.ListDirectoryAsync(sessionId, $".mcp-gateway/operations/{opId}"))
-                .Should().BeEmpty("the generation directory holding the artifacts must be gone");
+                .Should()
+                .BeEmpty("the generation directory holding the artifacts must be gone");
             (await Client.ListDirectoryAsync(sessionId, ".mcp-gateway/operations"))
-                .Should().Contain(opId, "cleanup is generation-scoped: the empty per-operation directory is left behind");
+                .Should()
+                .Contain(opId, "cleanup is generation-scoped: the empty per-operation directory is left behind");
 
             // PIN the artifact-GET refusal, and pin it BY COMPARISON: a path under a never-executed
             // operation id is the "never existed" control. Whatever shape the gateway chooses, the deleted
@@ -280,7 +286,9 @@ public sealed class SandboxLiveContractTests
             // internal to ExecuteAsync, so DELETE is the reachable probe of record existence). A second
             // delete of the same id must be indistinguishable from a delete of an id that never existed.
             var secondDelete = await CaptureAsync(() => Client.DeleteOperationAsync(sessionId, opId));
-            var neverExistentDelete = await CaptureAsync(() => Client.DeleteOperationAsync(sessionId, neverExistentOpId));
+            var neverExistentDelete = await CaptureAsync(() =>
+                Client.DeleteOperationAsync(sessionId, neverExistentOpId)
+            );
 
             secondDelete.Should().NotBeNull("deleting an already-deleted operation is not silently a no-op");
             neverExistentDelete.Should().NotBeNull();
@@ -319,7 +327,8 @@ public sealed class SandboxLiveContractTests
             while (DateTimeOffset.UtcNow < deadline)
             {
                 var captured = await CaptureAsync(() => Client.DeleteOperationAsync(sessionId, opId));
-                captured.Should()
+                captured
+                    .Should()
                     .NotBeNull("a RUNNING operation must never be deleted successfully — deletion is not cancellation");
                 if (captured!.Kind == SandboxErrorKind.Conflict)
                 {
@@ -344,7 +353,9 @@ public sealed class SandboxLiveContractTests
 
             // Once terminal, the SAME delete succeeds — the refusal was about the operation's state, not a
             // permanent bar, which is what makes "wait, then delete" a real cleanup strategy.
-            (await running).ExitCode.Should().Be(0);
+            (await running)
+                .ExitCode.Should()
+                .Be(0);
             await Client.DeleteOperationAsync(sessionId, opId);
         }
         finally
@@ -481,7 +492,11 @@ public sealed class SandboxLiveContractTests
             wrongKey,
             executionTimeout: TimeSpan.FromSeconds(30),
             transportTimeout: TimeSpan.FromSeconds(15),
-            allowInsecureDevelopmentTransport: string.Equals(serverAddress.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            allowInsecureDevelopmentTransport: string.Equals(
+                serverAddress.Scheme,
+                Uri.UriSchemeHttp,
+                StringComparison.OrdinalIgnoreCase
+            )
         );
 
         using var wrongClient = new SandboxClient(options);

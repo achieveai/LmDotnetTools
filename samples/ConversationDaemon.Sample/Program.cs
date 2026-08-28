@@ -9,10 +9,7 @@ using ConversationDaemon.Sample;
 var baseUrl = ResolveBaseUrl(args).TrimEnd('/');
 Console.WriteLine($"ConversationDaemon: driving LmStreaming.Sample at {baseUrl}");
 
-using var httpClient = new HttpClient
-{
-    BaseAddress = new Uri(baseUrl + "/", UriKind.Absolute),
-};
+using var httpClient = new HttpClient { BaseAddress = new Uri(baseUrl + "/", UriKind.Absolute) };
 var client = new DaemonRestClient(httpClient);
 
 using var cts = new CancellationTokenSource();
@@ -27,8 +24,7 @@ try
 {
     // Step 1 — provision a conversation (server mints the thread id).
     Console.WriteLine();
-    Console.WriteLine(
-        "Provisioning a conversation (workspace=default, mode=default, provider=test-anthropic)...");
+    Console.WriteLine("Provisioning a conversation (workspace=default, mode=default, provider=test-anthropic)...");
     var threadId = await client.ProvisionAsync("default", "test-anthropic", "default", ct);
     Console.WriteLine($"  thread id: {threadId}");
 
@@ -37,7 +33,8 @@ try
         threadId,
         title: "Headless daemon demo",
         preview: "Provisioned and driven over REST by ConversationDaemon.Sample.",
-        ct);
+        ct
+    );
     Console.WriteLine("  metadata set (title + preview).");
 
     // Step 3 — print the browser deep-link (the web client reads ?threadId= at the site root).
@@ -55,31 +52,23 @@ try
         threadId,
         "Sub-agent delegation (nested instruction chain)",
         DaemonPrompts.SubAgentDelegation,
-        ct);
+        ct
+    );
 
     // Step 6 — Wait / park-and-wake: assert the run parks, then that it auto-resumes (AC5).
     Console.WriteLine();
     Console.WriteLine("Step: Wait / park-and-wake (3s timer)");
     var waitInputId = await client.SendMessageAsync(threadId, DaemonPrompts.WaitParkAndWake, ct);
     Console.WriteLine($"  sent (inputId={waitInputId}); waiting for the run to PARK on the timer...");
-    await ConversationScript.WaitForDeferredWaitAsync(
-        client,
-        threadId,
-        TimeSpan.FromSeconds(40),
-        ct);
+    await ConversationScript.WaitForDeferredWaitAsync(client, threadId, TimeSpan.FromSeconds(40), ct);
     Console.WriteLine("  confirmed: the run parked (a deferred Wait is persisted, is_deferred=true).");
     Console.WriteLine("  waiting for the timer to fire and the run to auto-resume...");
-    await ConversationScript.WaitForRunToCompleteAsync(
-        client,
-        threadId,
-        TimeSpan.FromSeconds(60),
-        ct);
+    await ConversationScript.WaitForRunToCompleteAsync(client, threadId, TimeSpan.FromSeconds(60), ct);
     var waitStatus = await client.GetStatusByInputIdAsync(threadId, waitInputId, ct);
     Console.WriteLine($"  resumed: run status = {waitStatus.Status}.");
 
     Console.WriteLine();
-    Console.WriteLine(
-        "Done. The conversation is now idle — open the link above to continue it in the web UI:");
+    Console.WriteLine("Done. The conversation is now idle — open the link above to continue it in the web UI:");
     Console.WriteLine($"  {deepLink}");
     return 0;
 }
@@ -126,7 +115,8 @@ static async Task RunStepAsync(
     string threadId,
     string label,
     string prompt,
-    CancellationToken ct)
+    CancellationToken ct
+)
 {
     Console.WriteLine();
     Console.WriteLine($"Step: {label}");

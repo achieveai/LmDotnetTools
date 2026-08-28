@@ -180,11 +180,7 @@ public class TaskManagerTests
         // Arrange
         var tasks = new List<TaskManager.BulkTaskItem>
         {
-            new()
-            {
-                Task = "Main task",
-                SubTasks = ["", "Valid subtask", "   ", null!],
-            },
+            new() { Task = "Main task", SubTasks = ["", "Valid subtask", "   ", null!] },
         };
 
         // Act
@@ -683,16 +679,8 @@ public class TaskManagerTests
                 {
                     var bulkTasks = new List<TaskManager.BulkTaskItem>
                     {
-                        new()
-                        {
-                            Task = $"Bulk {opNum} Task 1",
-                            SubTasks = [$"Sub {opNum}.1"],
-                        },
-                        new()
-                        {
-                            Task = $"Bulk {opNum} Task 2",
-                            SubTasks = [$"Sub {opNum}.2"],
-                        },
+                        new() { Task = $"Bulk {opNum} Task 1", SubTasks = [$"Sub {opNum}.1"] },
+                        new() { Task = $"Bulk {opNum} Task 2", SubTasks = [$"Sub {opNum}.2"] },
                     };
                     return _taskManager.BulkInitialize(bulkTasks).Text;
                 })
@@ -725,13 +713,12 @@ public class TaskManagerTests
         // Act
         for (int i = 0; i < updateCount; i++)
         {
-            var status =
-                (i % 3) switch
-                {
-                    0 => "not started",
-                    1 => "in progress",
-                    _ => "completed",
-                };
+            var status = (i % 3) switch
+            {
+                0 => "not started",
+                1 => "in progress",
+                _ => "completed",
+            };
             tasks.Add(Task.Run(() => _taskManager.UpdateTask(taskId, status: status).Text));
         }
 
@@ -759,7 +746,9 @@ public class TaskManagerTests
         for (int i = 0; i < noteCount; i++)
         {
             var noteNum = i;
-            tasks.Add(Task.Run(() => _taskManager.ManageNotes(taskId, noteText: $"Note {noteNum}", action: "add").Text));
+            tasks.Add(
+                Task.Run(() => _taskManager.ManageNotes(taskId, noteText: $"Note {noteNum}", action: "add").Text)
+            );
         }
 
         var results = await Task.WhenAll(tasks);
@@ -1315,11 +1304,7 @@ public class TaskManagerTests
             .GetFunctions()
             .First(f => f.Contract.Name == "get-task");
 
-        var result = await getTask.Handler(
-            """{"taskId":"999"}""",
-            new ToolCallContext(),
-            CancellationToken.None
-        );
+        var result = await getTask.Handler("""{"taskId":"999"}""", new ToolCallContext(), CancellationToken.None);
 
         var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
         resolved.Payload.IsError.Should().BeTrue();
@@ -1339,11 +1324,7 @@ public class TaskManagerTests
             .GetFunctions()
             .First(f => f.Contract.Name == "add-task");
 
-        var result = await addTask.Handler(
-            """{"title":"Test task"}""",
-            new ToolCallContext(),
-            CancellationToken.None
-        );
+        var result = await addTask.Handler("""{"title":"Test task"}""", new ToolCallContext(), CancellationToken.None);
 
         var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
         resolved.Payload.IsError.Should().BeFalse();

@@ -26,12 +26,7 @@ public sealed record CorpusSnapshot
     /// </summary>
     private const char Separator = '\u001f';
 
-    private CorpusSnapshot(
-        string corpusId,
-        IReadOnlyList<Candidate> items,
-        string snapshotHash,
-        string taskType
-    )
+    private CorpusSnapshot(string corpusId, IReadOnlyList<Candidate> items, string snapshotHash, string taskType)
     {
         CorpusId = corpusId;
         Items = items;
@@ -86,9 +81,7 @@ public sealed record CorpusSnapshot
         }
 
         var taskType = items[0].TaskType;
-        var mixed = items.FirstOrDefault(i =>
-            !string.Equals(i.TaskType, taskType, StringComparison.Ordinal)
-        );
+        var mixed = items.FirstOrDefault(i => !string.Equals(i.TaskType, taskType, StringComparison.Ordinal));
         if (mixed is not null)
         {
             throw new ArgumentException(
@@ -251,10 +244,5 @@ public interface ICorpusReader
     /// <see cref="CorpusPage.Truncated"/> says so.
     /// </param>
     /// <param name="cancellationToken">Cancellation.</param>
-    Task<CorpusPage> LoadAsync(
-        string corpusId,
-        long afterCursor,
-        int limit,
-        CancellationToken cancellationToken
-    );
+    Task<CorpusPage> LoadAsync(string corpusId, long afterCursor, int limit, CancellationToken cancellationToken);
 }

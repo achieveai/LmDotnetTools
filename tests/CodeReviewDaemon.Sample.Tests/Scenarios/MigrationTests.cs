@@ -19,7 +19,9 @@ public sealed class MigrationTests
         using var connection = SqliteConnectionFactory.Open(db.ConnectionString);
 
         ReadScalar(connection, "PRAGMA journal_mode;").Should().Be("wal");
-        ReadScalar(connection, "PRAGMA busy_timeout;").Should().Be(SqliteConnectionFactory.BusyTimeoutMilliseconds.ToString());
+        ReadScalar(connection, "PRAGMA busy_timeout;")
+            .Should()
+            .Be(SqliteConnectionFactory.BusyTimeoutMilliseconds.ToString());
         ReadScalar(connection, "PRAGMA foreign_keys;").Should().Be("1");
     }
 
@@ -47,7 +49,9 @@ public sealed class MigrationTests
         MigrationRunner.Migrate(connection);
 
         ColumnExists(connection, "review_run", "is_fork_pr").Should().BeTrue("migration v2 adds is_fork_pr");
-        ColumnExists(connection, "review_run", "is_target_repo_public").Should().BeTrue("migration v2 adds is_target_repo_public");
+        ColumnExists(connection, "review_run", "is_target_repo_public")
+            .Should()
+            .BeTrue("migration v2 adds is_target_repo_public");
     }
 
     [Fact]
@@ -59,12 +63,14 @@ public sealed class MigrationTests
         MigrationRunner.Migrate(connection);
 
         TableExists(connection, "deep_link_conversation").Should().BeTrue("migration v3 creates the ledger");
-        ColumnExists(connection, "deep_link_conversation", "minted_at").Should()
+        ColumnExists(connection, "deep_link_conversation", "minted_at")
+            .Should()
             .BeTrue("age since minting is the retention sweep's only input");
         // Deliberately parentless. A foreign key to review_run would let a cascade take the conversation
         // down with its run — and the entire point of the ledger is that the deep-link outlives the review.
         ReadScalar(connection, "SELECT COUNT(*) FROM pragma_foreign_key_list('deep_link_conversation');")
-            .Should().Be("0");
+            .Should()
+            .Be("0");
     }
 
     [Fact]
@@ -115,8 +121,7 @@ public sealed class MigrationTests
 
         var act = () => MigrationRunner.Migrate(connection);
 
-        act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*newer than this build*");
+        act.Should().Throw<InvalidOperationException>().WithMessage("*newer than this build*");
     }
 
     [Fact]
@@ -127,10 +132,7 @@ public sealed class MigrationTests
         // it cleanly. Driven with a crafted set via the internal overload.
         using var db = new TempSqliteDatabase();
         using var connection = SqliteConnectionFactory.Open(db.ConnectionString);
-        var migrations = new List<Migration>
-        {
-            new(1, "CREATE TABLE good (id INTEGER); THIS_IS_NOT_VALID_SQL;"),
-        };
+        var migrations = new List<Migration> { new(1, "CREATE TABLE good (id INTEGER); THIS_IS_NOT_VALID_SQL;") };
 
         var act = () => MigrationRunner.Migrate(connection, migrations);
 
@@ -148,11 +150,15 @@ public sealed class MigrationTests
         // busy_timeout) and converge, without a double-apply or corruption. Each opens its own connection.
         using var db = new TempSqliteDatabase();
 
-        var tasks = Enumerable.Range(0, 3).Select(_ => Task.Run(() =>
-        {
-            using var connection = SqliteConnectionFactory.Open(db.ConnectionString);
-            MigrationRunner.Migrate(connection);
-        }));
+        var tasks = Enumerable
+            .Range(0, 3)
+            .Select(_ =>
+                Task.Run(() =>
+                {
+                    using var connection = SqliteConnectionFactory.Open(db.ConnectionString);
+                    MigrationRunner.Migrate(connection);
+                })
+            );
 
         var act = async () => await Task.WhenAll(tasks);
 

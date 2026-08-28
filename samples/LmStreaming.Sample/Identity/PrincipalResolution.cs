@@ -14,9 +14,7 @@ namespace LmStreaming.Sample.Identity;
 /// </remarks>
 public sealed record PrincipalResolution
 {
-    private PrincipalResolution()
-    {
-    }
+    private PrincipalResolution() { }
 
     /// <summary>The resolved principal, or null when <see cref="IsRejected"/>.</summary>
     public Principal? Principal { get; private init; }

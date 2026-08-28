@@ -41,9 +41,7 @@ public class TaskOutputToleranceTests
         runtime.GetProjection(null)["tasks"]![unit]!.GetValue<string>();
 
     private static bool ReSurfaced(WorkflowRuntime runtime, string unit) =>
-        runtime
-            .GetProjection(null)["nextExpectedAction"]!.AsArray()
-            .Any(n => n!["name"]!.GetValue<string>() == unit);
+        runtime.GetProjection(null)["nextExpectedAction"]!.AsArray().Any(n => n!["name"]!.GetValue<string>() == unit);
 
     [Fact]
     public void NoSchema_FreeFormMarkdown_IsStoredAsStringWithoutFailing()
@@ -56,7 +54,10 @@ public class TaskOutputToleranceTests
         StatusOf(runtime, Unit).Should().Be("validated");
         ReSurfaced(runtime, Unit).Should().BeFalse();
         // The free-form reply is preserved verbatim as the task output (a JSON string value), not discarded.
-        runtime.Outputs["analyze"]!["task"]!.GetValue<string>().Should().Be(MarkdownReport);
+        runtime.Outputs["analyze"]!["task"]!
+            .GetValue<string>()
+            .Should()
+            .Be(MarkdownReport);
     }
 
     [Fact]

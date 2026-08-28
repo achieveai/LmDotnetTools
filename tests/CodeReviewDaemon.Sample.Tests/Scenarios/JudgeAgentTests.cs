@@ -22,9 +22,7 @@ public sealed class JudgeAgentTests : LoggingTestBase
     private const string Provider = "github";
 
     public JudgeAgentTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     [Fact]
     public async Task JudgeAsync_persists_only_a_judge_artifact_with_score_rationale_and_variant()
@@ -43,10 +41,11 @@ public sealed class JudgeAgentTests : LoggingTestBase
             }
         );
 
-        var verdict = await Judge(agent, store).JudgeAsync(
-            new JudgeRequest(reviewRunId, Provider, "b", "Grade this review:\n## Review\n..."),
-            CancellationToken.None
-        );
+        var verdict = await Judge(agent, store)
+            .JudgeAsync(
+                new JudgeRequest(reviewRunId, Provider, "b", "Grade this review:\n## Review\n..."),
+                CancellationToken.None
+            );
 
         verdict.Score.Should().Be(8);
         verdict.Rationale.Should().Be("Thorough; caught the null deref.");
@@ -66,17 +65,15 @@ public sealed class JudgeAgentTests : LoggingTestBase
         var properties = payload.RootElement.EnumerateObject().Select(p => p.Name).ToList();
         properties
             .Should()
-            .BeEquivalentTo(
-                [
-                    "Score",
-                    "Rationale",
-                    "VariantId",
-                    "JudgeModelId",
-                    "GeneratorModelId",
-                    "SelfGraded",
-                    "BallotCount",
-                ]
-            );
+            .BeEquivalentTo([
+                "Score",
+                "Rationale",
+                "VariantId",
+                "JudgeModelId",
+                "GeneratorModelId",
+                "SelfGraded",
+                "BallotCount",
+            ]);
         ReadInt(payload, "Score").Should().Be(8);
         ReadString(payload, "Rationale").Should().Be("Thorough; caught the null deref.");
         ReadString(payload, "VariantId").Should().Be("b");
@@ -99,10 +96,8 @@ public sealed class JudgeAgentTests : LoggingTestBase
             }
         );
 
-        var verdict = await Judge(agent, store).JudgeAsync(
-            new JudgeRequest(reviewRunId, Provider, "primary", "grade"),
-            CancellationToken.None
-        );
+        var verdict = await Judge(agent, store)
+            .JudgeAsync(new JudgeRequest(reviewRunId, Provider, "primary", "grade"), CancellationToken.None);
 
         verdict.Score.Should().Be(5);
         verdict.Rationale.Should().Be("Adequate.");
@@ -125,10 +120,8 @@ public sealed class JudgeAgentTests : LoggingTestBase
             }
         );
 
-        var verdict = await Judge(agent, store).JudgeAsync(
-            new JudgeRequest(reviewRunId, Provider, "b", "grade"),
-            CancellationToken.None
-        );
+        var verdict = await Judge(agent, store)
+            .JudgeAsync(new JudgeRequest(reviewRunId, Provider, "b", "grade"), CancellationToken.None);
 
         // A malformed verdict carries NO score, with the raw text as the rationale — still persisted.
         // v1 invented a 0 here, which is a legitimate worst grade under this rubric and therefore
@@ -155,10 +148,8 @@ public sealed class JudgeAgentTests : LoggingTestBase
             }
         );
 
-        _ = await Judge(agent, store).JudgeAsync(
-            new JudgeRequest(reviewRunId, Provider, "primary", "grade"),
-            CancellationToken.None
-        );
+        _ = await Judge(agent, store)
+            .JudgeAsync(new JudgeRequest(reviewRunId, Provider, "primary", "grade"), CancellationToken.None);
 
         using var payload = JsonDocument.Parse(store.GetArtifacts(reviewRunId)[0].Payload);
         ReadString(payload, "VariantId").Should().Be("primary");
@@ -175,26 +166,32 @@ public sealed class JudgeAgentTests : LoggingTestBase
 
     private static long SeedRun(ReviewStore store)
     {
-        var repoId = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "R_node_123",
-        });
-        return store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = "118",
-            HeadSha = "head-sha",
-            BaseSha = "base-sha",
-            TriggerWatermark = "wm-1",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "collect-only",
-            Stage = ReviewStage.Reviewed,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        }).Id;
+        var repoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "R_node_123",
+            }
+        );
+        return store
+            .CreateOrGetReviewRun(
+                new ReviewRun
+                {
+                    RepoId = repoId,
+                    PrId = "118",
+                    HeadSha = "head-sha",
+                    BaseSha = "base-sha",
+                    TriggerWatermark = "wm-1",
+                    ReviewKind = "full",
+                    VariantId = "primary",
+                    Mode = "collect-only",
+                    Stage = ReviewStage.Reviewed,
+                    WorkflowStatus = WorkflowStatus.Running,
+                    PrLifecycleState = PrLifecycleState.Open,
+                }
+            )
+            .Id;
     }
 }

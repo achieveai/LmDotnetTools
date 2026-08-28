@@ -18,8 +18,6 @@ public sealed class NullLifecyclePublisher : ILifecyclePublisher
     private NullLifecyclePublisher() { }
 
     /// <inheritdoc />
-    public ValueTask PublishAsync(
-        LifecycleEventEnvelope envelope,
-        CancellationToken cancellationToken = default
-    ) => ValueTask.CompletedTask;
+    public ValueTask PublishAsync(LifecycleEventEnvelope envelope, CancellationToken cancellationToken = default) =>
+        ValueTask.CompletedTask;
 }

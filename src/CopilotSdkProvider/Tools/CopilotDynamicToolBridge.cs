@@ -25,7 +25,8 @@ public sealed class CopilotDynamicToolBridge
         IEnumerable<FunctionContract> contracts,
         IDictionary<string, Func<string, Task<string>>> handlers,
         CopilotToolPolicyEngine toolPolicy,
-        ILogger<CopilotDynamicToolBridge>? logger = null)
+        ILogger<CopilotDynamicToolBridge>? logger = null
+    )
     {
         _contractsByName = (contracts ?? throw new ArgumentNullException(nameof(contracts)))
             .Where(static c => !string.IsNullOrWhiteSpace(c.Name))
@@ -34,7 +35,8 @@ public sealed class CopilotDynamicToolBridge
 
         _handlersByName = new Dictionary<string, Func<string, Task<string>>>(
             handlers ?? throw new ArgumentNullException(nameof(handlers)),
-            StringComparer.OrdinalIgnoreCase);
+            StringComparer.OrdinalIgnoreCase
+        );
         _toolPolicy = toolPolicy ?? throw new ArgumentNullException(nameof(toolPolicy));
         _logger = logger;
         _json = JsonSerializerOptionsFactory.CreateForProduction();
@@ -58,7 +60,8 @@ public sealed class CopilotDynamicToolBridge
                     Name = toolName,
                     Description = contract.Description,
                     InputSchema = schemaElement,
-                });
+                }
+            );
         }
 
         return specs;
@@ -66,7 +69,8 @@ public sealed class CopilotDynamicToolBridge
 
     public async Task<CopilotDynamicToolCallResponse> ExecuteAsync(
         CopilotDynamicToolCallRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
         var start = DateTimeOffset.UtcNow;
@@ -78,7 +82,8 @@ public sealed class CopilotDynamicToolBridge
                 "copilot.dynamic_tool.execution",
                 "denied",
                 request.Tool,
-                (DateTimeOffset.UtcNow - start).TotalMilliseconds);
+                (DateTimeOffset.UtcNow - start).TotalMilliseconds
+            );
             return Failure($"Tool '{request.Tool}' is not enabled for this session.");
         }
 
@@ -89,7 +94,8 @@ public sealed class CopilotDynamicToolBridge
                 "copilot.dynamic_tool.execution",
                 "failed",
                 request.Tool,
-                (DateTimeOffset.UtcNow - start).TotalMilliseconds);
+                (DateTimeOffset.UtcNow - start).TotalMilliseconds
+            );
             return Failure($"Tool '{request.Tool}' is not registered.");
         }
 
@@ -103,7 +109,8 @@ public sealed class CopilotDynamicToolBridge
                 "copilot.dynamic_tool.execution",
                 "completed",
                 request.Tool,
-                (DateTimeOffset.UtcNow - start).TotalMilliseconds);
+                (DateTimeOffset.UtcNow - start).TotalMilliseconds
+            );
             return Success(result);
         }
         catch (OperationCanceledException)
@@ -117,7 +124,8 @@ public sealed class CopilotDynamicToolBridge
                 "{event_type} {event_status} {tool_name}",
                 "copilot.dynamic_tool.execution",
                 "failed",
-                request.Tool);
+                request.Tool
+            );
             return Failure(ex.Message);
         }
     }
@@ -127,14 +135,7 @@ public sealed class CopilotDynamicToolBridge
         return new CopilotDynamicToolCallResponse
         {
             Success = true,
-            ContentItems =
-            [
-                new CopilotDynamicToolContentItem
-                {
-                    Type = "text",
-                    Text = text,
-                },
-            ],
+            ContentItems = [new CopilotDynamicToolContentItem { Type = "text", Text = text }],
         };
     }
 
@@ -143,14 +144,7 @@ public sealed class CopilotDynamicToolBridge
         return new CopilotDynamicToolCallResponse
         {
             Success = false,
-            ContentItems =
-            [
-                new CopilotDynamicToolContentItem
-                {
-                    Type = "text",
-                    Text = message,
-                },
-            ],
+            ContentItems = [new CopilotDynamicToolContentItem { Type = "text", Text = message }],
         };
     }
 }

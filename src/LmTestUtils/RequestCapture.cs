@@ -181,14 +181,12 @@ public class AnthropicRequestCapture
     /// <summary>
     ///     Whether the system prompt is in array form (indicates prompt caching is active).
     /// </summary>
-    public bool SystemIsArray =>
-        _requestJson.TryGetProperty("system", out var s) && s.ValueKind == JsonValueKind.Array;
+    public bool SystemIsArray => _requestJson.TryGetProperty("system", out var s) && s.ValueKind == JsonValueKind.Array;
 
     /// <summary>
     ///     Gets the raw system JsonElement for detailed inspection (cache_control, etc.).
     /// </summary>
-    public JsonElement? SystemRaw =>
-        _requestJson.TryGetProperty("system", out var s) ? s : null;
+    public JsonElement? SystemRaw => _requestJson.TryGetProperty("system", out var s) ? s : null;
 
     /// <summary>
     ///     Gets the tools from the request

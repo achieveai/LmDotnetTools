@@ -13,9 +13,8 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 /// </summary>
 public class AnthropicClientBaseUrlTests : LoggingTestBase
 {
-    public AnthropicClientBaseUrlTests(ITestOutputHelper output) : base(output)
-    {
-    }
+    public AnthropicClientBaseUrlTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Fact]
     public async Task DefaultUrl_ShouldUseApiAnthropicV1()
@@ -45,8 +44,10 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
             );
 
             // Assert
-            Assert.True(requestCapture.WasSentTo("/v1/messages"),
-                $"Request should be sent to /v1/messages. Actual URI: {requestCapture.LastRequest?.RequestUri}");
+            Assert.True(
+                requestCapture.WasSentTo("/v1/messages"),
+                $"Request should be sent to /v1/messages. Actual URI: {requestCapture.LastRequest?.RequestUri}"
+            );
 
             var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
             Logger.LogInformation("Default URL request URI: {RequestUri}", requestUri);
@@ -283,10 +284,7 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
         Logger.LogInformation("Testing request_url_echo integration with base URL");
 
         // Arrange
-        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory,
-            chunkDelayMs: 0
-        );
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
 
         var client = new AnthropicClient(
             "test-api-key",
@@ -323,10 +321,7 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
         Logger.LogInformation("Testing request_headers_echo with Anthropic client");
 
         // Arrange
-        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory,
-            chunkDelayMs: 0
-        );
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
 
         var client = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);

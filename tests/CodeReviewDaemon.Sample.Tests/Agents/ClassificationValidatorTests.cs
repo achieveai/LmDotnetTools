@@ -12,11 +12,12 @@ namespace CodeReviewDaemon.Sample.Tests.Agents;
 /// </summary>
 public sealed class ClassificationValidatorTests
 {
-    private static readonly IReadOnlySet<string> Refs =
-        new HashSet<string>(StringComparer.Ordinal) { "f1", "f2" };
+    private static readonly IReadOnlySet<string> Refs = new HashSet<string>(StringComparer.Ordinal) { "f1", "f2" };
 
-    private static readonly IReadOnlySet<string> Known =
-        new HashSet<string>(StringComparer.Ordinal) { "missing-null-guard-on-dto" };
+    private static readonly IReadOnlySet<string> Known = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "missing-null-guard-on-dto",
+    };
 
     private static string Reply(string classifications) =>
         "{\"schemaVersion\":1,\"classifications\":[" + classifications + "]}";
@@ -30,13 +31,24 @@ public sealed class ClassificationValidatorTests
         string title = "Unbounded retry on transient failure",
         string what = "The code retries a failing call without a ceiling.",
         string why = "A dependency outage turns into a self-inflicted overload.",
-        string how = "Give every retry loop a bounded attempt count and a backoff.") =>
+        string how = "Give every retry loop a bounded attempt count and a backoff."
+    ) =>
         "{\"findingRef\":\"f1\",\"isRecurringRisk\":true,\"patternId\":null,\"newPattern\":{"
-        + "\"slug\":\"" + slug + "\","
-        + "\"title\":\"" + title + "\","
-        + "\"whatItIs\":\"" + what + "\","
-        + "\"whyItMatters\":\"" + why + "\","
-        + "\"howToAvoid\":\"" + how + "\"}}";
+        + "\"slug\":\""
+        + slug
+        + "\","
+        + "\"title\":\""
+        + title
+        + "\","
+        + "\"whatItIs\":\""
+        + what
+        + "\","
+        + "\"whyItMatters\":\""
+        + why
+        + "\","
+        + "\"howToAvoid\":\""
+        + how
+        + "\"}}";
 
     [Fact]
     public void A_known_pattern_id_is_accepted()
@@ -44,9 +56,12 @@ public sealed class ClassificationValidatorTests
         // Positive control. Without it, every rejection test below could pass against a validator that
         // refuses absolutely everything.
         var outcome = ClassificationValidator.Validate(
-            Reply("""{"findingRef":"f1","isRecurringRisk":true,"patternId":"missing-null-guard-on-dto","newPattern":null}"""),
+            Reply(
+                """{"findingRef":"f1","isRecurringRisk":true,"patternId":"missing-null-guard-on-dto","newPattern":null}"""
+            ),
             Refs,
-            Known);
+            Known
+        );
 
         outcome.Rejected.Should().BeFalse(outcome.RejectionReason);
         outcome.Accepted.Should().ContainSingle().Which.PatternId.Should().Be("missing-null-guard-on-dto");
@@ -56,11 +71,17 @@ public sealed class ClassificationValidatorTests
     public void A_well_formed_new_pattern_is_accepted()
     {
         var outcome = ClassificationValidator.Validate(
-            Reply(NewPattern("unbounded-retry-on-transient-failure")), Refs, Known);
+            Reply(NewPattern("unbounded-retry-on-transient-failure")),
+            Refs,
+            Known
+        );
 
         outcome.Rejected.Should().BeFalse(outcome.RejectionReason);
-        outcome.Accepted.Should().ContainSingle()
-            .Which.NewPattern!.Slug.Should().Be("unbounded-retry-on-transient-failure");
+        outcome
+            .Accepted.Should()
+            .ContainSingle()
+            .Which.NewPattern!.Slug.Should()
+            .Be("unbounded-retry-on-transient-failure");
     }
 
     [Fact]
@@ -71,7 +92,8 @@ public sealed class ClassificationValidatorTests
         var outcome = ClassificationValidator.Validate(
             Reply("""{"findingRef":"f1","isRecurringRisk":true,"patternId":"null-guard-absent","newPattern":null}"""),
             Refs,
-            Known);
+            Known
+        );
 
         outcome.Rejected.Should().BeTrue();
         outcome.RejectionReason.Should().Contain("null-guard-absent");
@@ -108,7 +130,10 @@ public sealed class ClassificationValidatorTests
         // contract; the classifications it produced in the same breath are not more trustworthy for
         // happening to parse, and salvaging them makes one misunderstanding a permanent corruption.
         var outcome = ClassificationValidator.Validate(
-            Reply(NewPattern("unbounded-retry-on-transient-failure", what: prose)), Refs, Known);
+            Reply(NewPattern("unbounded-retry-on-transient-failure", what: prose)),
+            Refs,
+            Known
+        );
 
         outcome.Rejected.Should().BeTrue();
         outcome.RejectionReason.Should().Contain("a fact the daemon owns");
@@ -123,7 +148,8 @@ public sealed class ClassificationValidatorTests
         var outcome = ClassificationValidator.Validate(
             Reply("""{"findingRef":"f1","isRecurringRisk":false,"patternId":null,"newPattern":null}"""),
             Refs,
-            Known);
+            Known
+        );
 
         outcome.Rejected.Should().BeFalse(outcome.RejectionReason);
         var only = outcome.Accepted.Should().ContainSingle().Subject;
@@ -135,13 +161,25 @@ public sealed class ClassificationValidatorTests
     [Fact]
     public void Naming_both_routes_or_neither_is_rejected()
     {
-        ClassificationValidator.Validate(
-            Reply("""{"findingRef":"f1","isRecurringRisk":true,"patternId":"missing-null-guard-on-dto","newPattern":{"slug":"unbounded-retry-on-transient-failure","title":"t","whatItIs":"a","whyItMatters":"b","howToAvoid":"c"}}"""),
-            Refs, Known).Rejected.Should().BeTrue();
+        ClassificationValidator
+            .Validate(
+                Reply(
+                    """{"findingRef":"f1","isRecurringRisk":true,"patternId":"missing-null-guard-on-dto","newPattern":{"slug":"unbounded-retry-on-transient-failure","title":"t","whatItIs":"a","whyItMatters":"b","howToAvoid":"c"}}"""
+                ),
+                Refs,
+                Known
+            )
+            .Rejected.Should()
+            .BeTrue();
 
-        ClassificationValidator.Validate(
-            Reply("""{"findingRef":"f1","isRecurringRisk":true,"patternId":null,"newPattern":null}"""),
-            Refs, Known).Rejected.Should().BeTrue();
+        ClassificationValidator
+            .Validate(
+                Reply("""{"findingRef":"f1","isRecurringRisk":true,"patternId":null,"newPattern":null}"""),
+                Refs,
+                Known
+            )
+            .Rejected.Should()
+            .BeTrue();
     }
 
     [Fact]
@@ -149,9 +187,16 @@ public sealed class ClassificationValidatorTests
     {
         // The refs are opaque ids the daemon minted for this PR. Anything else is a classification of
         // something that is not in front of us, and attaching it would attribute another PR's finding here.
-        ClassificationValidator.Validate(
-            Reply("""{"findingRef":"f99","isRecurringRisk":true,"patternId":"missing-null-guard-on-dto","newPattern":null}"""),
-            Refs, Known).Rejected.Should().BeTrue();
+        ClassificationValidator
+            .Validate(
+                Reply(
+                    """{"findingRef":"f99","isRecurringRisk":true,"patternId":"missing-null-guard-on-dto","newPattern":null}"""
+                ),
+                Refs,
+                Known
+            )
+            .Rejected.Should()
+            .BeTrue();
     }
 
     [Fact]
@@ -159,8 +204,10 @@ public sealed class ClassificationValidatorTests
     {
         // Proposing a slug that already exists would silently re-author prose the spec says is written
         // once and never revised in v1.
-        ClassificationValidator.Validate(
-            Reply(NewPattern("missing-null-guard-on-dto")), Refs, Known).Rejected.Should().BeTrue();
+        ClassificationValidator
+            .Validate(Reply(NewPattern("missing-null-guard-on-dto")), Refs, Known)
+            .Rejected.Should()
+            .BeTrue();
     }
 
     [Theory]
@@ -174,7 +221,8 @@ public sealed class ClassificationValidatorTests
         var outcome = ClassificationValidator.Validate(json, Refs, Known);
 
         outcome.Rejected.Should().BeTrue();
-        outcome.RejectionReason.Should().NotBeNullOrWhiteSpace(
-            "a refusal with no stated reason is indistinguishable from a crash");
+        outcome
+            .RejectionReason.Should()
+            .NotBeNullOrWhiteSpace("a refusal with no stated reason is indistinguishable from a crash");
     }
 }

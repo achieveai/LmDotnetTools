@@ -29,18 +29,18 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
             RepoName = "widgets",
             RepoStableId = "R_node_123",
         },
-        "7");
+        "7"
+    );
 
     public GitHubReviewCommentPublisherTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private GitHubReviewCommentPublisher Publisher(FakeHttpMessageHandler handler) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
-            LoggerFactory.CreateLogger<GitHubReviewCommentPublisher>());
+            LoggerFactory.CreateLogger<GitHubReviewCommentPublisher>()
+        );
 
     [Fact]
     public void Provider_id_is_github()
@@ -52,9 +52,14 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
     public async Task PostReviewComment_posts_to_the_comments_endpoint_embedding_the_marker()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Post, "/issues/7/comments", """{"id":555}""", HttpStatusCode.Created);
+            HttpMethod.Post,
+            "/issues/7/comments",
+            """{"id":555}""",
+            HttpStatusCode.Created
+        );
 
-        var posted = await Publisher(handler).PostReviewCommentAsync(Target, Key, "## Review\nLGTM", CancellationToken.None);
+        var posted = await Publisher(handler)
+            .PostReviewCommentAsync(Target, Key, "## Review\nLGTM", CancellationToken.None);
 
         posted.ProviderResponseId.Should().Be("555");
         var request = handler.Requests.Should().ContainSingle().Subject;
@@ -70,11 +75,13 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
     [Fact]
     public async Task FindPostedComment_returns_the_comment_carrying_the_marker()
     {
-        var listJson = JsonSerializer.Serialize(new[]
-        {
-            new { id = 100, body = "unrelated comment" },
-            new { id = 200, body = $"## Review\nLGTM\n\n<!-- idempotency-key:{Key} -->" },
-        });
+        var listJson = JsonSerializer.Serialize(
+            new[]
+            {
+                new { id = 100, body = "unrelated comment" },
+                new { id = 200, body = $"## Review\nLGTM\n\n<!-- idempotency-key:{Key} -->" },
+            }
+        );
         var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/issues/7/comments", listJson);
 
         var found = await Publisher(handler).FindPostedCommentAsync(Target, Key, CancellationToken.None);
@@ -98,7 +105,11 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
     public async Task PostReviewComment_throws_on_a_non_success_status()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Post, "/issues/7/comments", """{"message":"forbidden"}""", HttpStatusCode.Forbidden);
+            HttpMethod.Post,
+            "/issues/7/comments",
+            """{"message":"forbidden"}""",
+            HttpStatusCode.Forbidden
+        );
 
         var act = () => Publisher(handler).PostReviewCommentAsync(Target, Key, "body", CancellationToken.None);
 
@@ -114,37 +125,83 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         // therefore post ONLY through the wrapper-free issue-comments endpoint. Prompt-text assertions cannot
         // catch a regression here; this pins the actual HTTP the publisher emits.
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Post, "/issues/7/comments", """{"id":777}""", HttpStatusCode.Created);
+            HttpMethod.Post,
+            "/issues/7/comments",
+            """{"id":777}""",
+            HttpStatusCode.Created
+        );
 
         await Publisher(handler).PostReviewCommentAsync(Target, Key, "## Review\nfinding", CancellationToken.None);
 
         var post = handler.Requests.Should().ContainSingle(r => r.Method == HttpMethod.Post).Subject;
-        post.Uri.ToString().Should().Be(
-            "https://api.github.com/repos/acme/widgets/issues/7/comments",
-            "the only wrapper-free write is the issue-comments endpoint");
-        handler.Requests.Should().NotContain(
-            r => r.Uri.ToString().Contains("/replies", StringComparison.Ordinal),
-            "POST .../comments/{id}/replies wraps each reply in its own empty review — the #224 spam");
-        handler.Requests.Should().NotContain(
-            r => r.Uri.ToString().Contains("/pulls/", StringComparison.Ordinal)
-                && r.Uri.ToString().Contains("/comments", StringComparison.Ordinal),
-            "standalone POST /pulls/{pr}/comments also wraps each write in an empty review");
+        post.Uri.ToString()
+            .Should()
+            .Be(
+                "https://api.github.com/repos/acme/widgets/issues/7/comments",
+                "the only wrapper-free write is the issue-comments endpoint"
+            );
+        handler
+            .Requests.Should()
+            .NotContain(
+                r => r.Uri.ToString().Contains("/replies", StringComparison.Ordinal),
+                "POST .../comments/{id}/replies wraps each reply in its own empty review — the #224 spam"
+            );
+        handler
+            .Requests.Should()
+            .NotContain(
+                r =>
+                    r.Uri.ToString().Contains("/pulls/", StringComparison.Ordinal)
+                    && r.Uri.ToString().Contains("/comments", StringComparison.Ordinal),
+                "standalone POST /pulls/{pr}/comments also wraps each write in an empty review"
+            );
     }
 
     [Fact]
     public async Task ListExisting_returns_inline_findings_and_review_summaries()
     {
-        var comments = JsonSerializer.Serialize(new object[]
-        {
-            new { path = "src/Foo.cs", line = 42, body = "Must — null deref here", user = new { login = "revobot" } },
-            new { path = "src/Bar.cs", original_line = 7, body = "Should — extract this", user = new { login = "alice" } },
-            new { path = "src/Baz.cs", line = 3, body = "   ", user = new { login = "revobot" } }, // blank → skipped
-        });
-        var reviews = JsonSerializer.Serialize(new object[]
-        {
-            new { body = "Reviewed PR 7 — 1 Must, 1 Should", user = new { login = "revobot" }, state = "COMMENTED" },
-            new { body = "", user = new { login = "revobot" }, state = "COMMENTED" }, // empty body → skipped
-        });
+        var comments = JsonSerializer.Serialize(
+            new object[]
+            {
+                new
+                {
+                    path = "src/Foo.cs",
+                    line = 42,
+                    body = "Must — null deref here",
+                    user = new { login = "revobot" },
+                },
+                new
+                {
+                    path = "src/Bar.cs",
+                    original_line = 7,
+                    body = "Should — extract this",
+                    user = new { login = "alice" },
+                },
+                new
+                {
+                    path = "src/Baz.cs",
+                    line = 3,
+                    body = "   ",
+                    user = new { login = "revobot" },
+                }, // blank → skipped
+            }
+        );
+        var reviews = JsonSerializer.Serialize(
+            new object[]
+            {
+                new
+                {
+                    body = "Reviewed PR 7 — 1 Must, 1 Should",
+                    user = new { login = "revobot" },
+                    state = "COMMENTED",
+                },
+                new
+                {
+                    body = "",
+                    user = new { login = "revobot" },
+                    state = "COMMENTED",
+                }, // empty body → skipped
+            }
+        );
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "/pulls/7/comments", comments)
             .OnJson(HttpMethod.Get, "/pulls/7/reviews", reviews)
@@ -153,10 +210,12 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
         existing.Should().HaveCount(3, "two non-blank inline comments + one non-empty review summary");
-        existing.Should().ContainSingle(e =>
-            e.Path == "src/Foo.cs" && e.Line == "42" && e.Body.Contains("null deref") && e.Author == "revobot");
-        existing.Should().ContainSingle(e =>
-            e.Path == "src/Bar.cs" && e.Line == "7" && e.Author == "alice"); // original_line fallback when line is absent
+        existing
+            .Should()
+            .ContainSingle(e =>
+                e.Path == "src/Foo.cs" && e.Line == "42" && e.Body.Contains("null deref") && e.Author == "revobot"
+            );
+        existing.Should().ContainSingle(e => e.Path == "src/Bar.cs" && e.Line == "7" && e.Author == "alice"); // original_line fallback when line is absent
         existing.Should().ContainSingle(e => e.Path == null && e.Body.Contains("Reviewed PR 7"));
     }
 
@@ -165,11 +224,24 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
     {
         // GitHub's reviews list includes PENDING (unsubmitted) drafts. Treating a draft body as posted discussion
         // lets a stale draft from a failed posting run suppress the valid submitted replacement — so it is skipped.
-        var reviews = JsonSerializer.Serialize(new object[]
-        {
-            new { body = "Reviewed PR 7 — submitted", user = new { login = "revobot" }, state = "COMMENTED", submitted_at = "2026-07-20T10:00:00Z" },
-            new { body = "draft in progress — do not dedup", user = new { login = "revobot" }, state = "PENDING" },
-        });
+        var reviews = JsonSerializer.Serialize(
+            new object[]
+            {
+                new
+                {
+                    body = "Reviewed PR 7 — submitted",
+                    user = new { login = "revobot" },
+                    state = "COMMENTED",
+                    submitted_at = "2026-07-20T10:00:00Z",
+                },
+                new
+                {
+                    body = "draft in progress — do not dedup",
+                    user = new { login = "revobot" },
+                    state = "PENDING",
+                },
+            }
+        );
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
             .OnJson(HttpMethod.Get, "/pulls/7/reviews", reviews)
@@ -178,8 +250,9 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
         existing.Should().ContainSingle(e => e.Body.Contains("submitted"));
-        existing.Should().NotContain(
-            e => e.Body.Contains("draft in progress"), "a PENDING/unsubmitted draft must not seed dedup");
+        existing
+            .Should()
+            .NotContain(e => e.Body.Contains("draft in progress"), "a PENDING/unsubmitted draft must not seed dedup");
     }
 
     [Fact]
@@ -190,11 +263,25 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         // and an ADO review would see different amounts of the same conversation while both believed they saw all
         // of it (#225 item 4). Both now go through ExistingCommentBody, and the ADO suite asserts the same two
         // facts against the same numbers; a change to one publisher alone cannot satisfy both files.
-        var reviews = JsonSerializer.Serialize(new object[]
-        {
-            new { body = "HEAD-" + new string('a', 1_400), user = new { login = "alice" }, state = "COMMENTED", submitted_at = "2026-07-20T10:00:00Z" },
-            new { body = "LONG-" + new string('b', 4_000), user = new { login = "alice" }, state = "COMMENTED", submitted_at = "2026-07-20T11:00:00Z" },
-        });
+        var reviews = JsonSerializer.Serialize(
+            new object[]
+            {
+                new
+                {
+                    body = "HEAD-" + new string('a', 1_400),
+                    user = new { login = "alice" },
+                    state = "COMMENTED",
+                    submitted_at = "2026-07-20T10:00:00Z",
+                },
+                new
+                {
+                    body = "LONG-" + new string('b', 4_000),
+                    user = new { login = "alice" },
+                    state = "COMMENTED",
+                    submitted_at = "2026-07-20T11:00:00Z",
+                },
+            }
+        );
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
             .OnJson(HttpMethod.Get, "/pulls/7/reviews", reviews)
@@ -206,11 +293,17 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         // the signal that settles a thread ("fixed in abc123") sits at the END of a conversation, so a tight cap
         // removed exactly the part that resolves it and kept the finding — which is how a settled thread gets
         // re-raised. Restore a 280-char cap on either publisher and this goes red.
-        existing.Should().ContainSingle(e => e.Body.StartsWith("HEAD-", StringComparison.Ordinal))
-            .Which.Body.Length.Should().Be(1_405, "a body under the shared cap is carried verbatim");
+        existing
+            .Should()
+            .ContainSingle(e => e.Body.StartsWith("HEAD-", StringComparison.Ordinal))
+            .Which.Body.Length.Should()
+            .Be(1_405, "a body under the shared cap is carried verbatim");
 
         // …and the cap is still a real cap, so one pathological comment cannot spend the reviewer's context.
-        var capped = existing.Should().ContainSingle(e => e.Body.StartsWith("LONG-", StringComparison.Ordinal)).Which.Body;
+        var capped = existing
+            .Should()
+            .ContainSingle(e => e.Body.StartsWith("LONG-", StringComparison.Ordinal))
+            .Which.Body;
         capped.Length.Should().Be(2_001, "2,000 characters plus the ellipsis that marks the cut");
         capped.Should().EndWith("…", "a truncated comment must be distinguishable from a terse one");
     }
@@ -220,11 +313,25 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
     {
         // The publisher posts its SUMMARY via /issues/{pr}/comments, and humans ask questions there; those must
         // reach dedup/reply handling, so the scan now merges that endpoint (PR-level, no path/line).
-        var issueComments = JsonSerializer.Serialize(new object[]
-        {
-            new { id = 900, body = "## Re-Review Summary: PR #7", user = new { login = "revobot" }, created_at = "2026-07-20T10:00:00Z" },
-            new { id = 901, body = "@revobot is this still needed?", user = new { login = "alice" }, created_at = "2026-07-21T09:00:00Z" },
-        });
+        var issueComments = JsonSerializer.Serialize(
+            new object[]
+            {
+                new
+                {
+                    id = 900,
+                    body = "## Re-Review Summary: PR #7",
+                    user = new { login = "revobot" },
+                    created_at = "2026-07-20T10:00:00Z",
+                },
+                new
+                {
+                    id = 901,
+                    body = "@revobot is this still needed?",
+                    user = new { login = "alice" },
+                    created_at = "2026-07-21T09:00:00Z",
+                },
+            }
+        );
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
             .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]")
@@ -232,7 +339,9 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
-        existing.Should().ContainSingle(e => e.Path == null && e.Body.Contains("Re-Review Summary") && e.Author == "revobot");
+        existing
+            .Should()
+            .ContainSingle(e => e.Path == null && e.Body.Contains("Re-Review Summary") && e.Author == "revobot");
         existing.Should().ContainSingle(e => e.Path == null && e.Body.Contains("still needed") && e.Author == "alice");
     }
 
@@ -244,16 +353,49 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         // its per-line drafts must also be dropped, else a stale draft finding suppresses its valid submitted
         // replacement. Correlate pull_request_review_id against the PENDING review ids and drop matching inline
         // comments.
-        var reviews = JsonSerializer.Serialize(new object[]
-        {
-            new { id = 5001, body = "", user = new { login = "revobot" }, state = "PENDING" },
-            new { id = 5002, body = "submitted review", user = new { login = "revobot" }, state = "COMMENTED", submitted_at = "2026-07-20T10:00:00Z" },
-        });
-        var comments = JsonSerializer.Serialize(new object[]
-        {
-            new { body = "DRAFT-inline-finding", path = "src/Foo.cs", line = 3, pull_request_review_id = 5001, user = new { login = "revobot" }, created_at = "2026-07-20T09:00:00Z" },
-            new { body = "SUBMITTED-inline-finding", path = "src/Foo.cs", line = 9, pull_request_review_id = 5002, user = new { login = "revobot" }, created_at = "2026-07-20T10:00:00Z" },
-        });
+        var reviews = JsonSerializer.Serialize(
+            new object[]
+            {
+                new
+                {
+                    id = 5001,
+                    body = "",
+                    user = new { login = "revobot" },
+                    state = "PENDING",
+                },
+                new
+                {
+                    id = 5002,
+                    body = "submitted review",
+                    user = new { login = "revobot" },
+                    state = "COMMENTED",
+                    submitted_at = "2026-07-20T10:00:00Z",
+                },
+            }
+        );
+        var comments = JsonSerializer.Serialize(
+            new object[]
+            {
+                new
+                {
+                    body = "DRAFT-inline-finding",
+                    path = "src/Foo.cs",
+                    line = 3,
+                    pull_request_review_id = 5001,
+                    user = new { login = "revobot" },
+                    created_at = "2026-07-20T09:00:00Z",
+                },
+                new
+                {
+                    body = "SUBMITTED-inline-finding",
+                    path = "src/Foo.cs",
+                    line = 9,
+                    pull_request_review_id = 5002,
+                    user = new { login = "revobot" },
+                    created_at = "2026-07-20T10:00:00Z",
+                },
+            }
+        );
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "/pulls/7/comments", comments)
             .OnJson(HttpMethod.Get, "/pulls/7/reviews", reviews)
@@ -262,9 +404,12 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
         existing.Should().ContainSingle(e => e.Body.Contains("SUBMITTED-inline-finding"));
-        existing.Should().NotContain(
-            e => e.Body.Contains("DRAFT-inline-finding"),
-            "inline comments belonging to a PENDING draft review must not seed dedup");
+        existing
+            .Should()
+            .NotContain(
+                e => e.Body.Contains("DRAFT-inline-finding"),
+                "inline comments belonging to a PENDING draft review must not seed dedup"
+            );
     }
 
     [Fact]
@@ -277,9 +422,12 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
 
         await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
-        handler.Requests.Should().Contain(
-            r => r.Uri.ToString().Contains("/pulls/7/comments") && r.Uri.ToString().Contains("direction=desc"),
-            "inline comments must be fetched newest-first so the page cap keeps recent findings, not the oldest");
+        handler
+            .Requests.Should()
+            .Contain(
+                r => r.Uri.ToString().Contains("/pulls/7/comments") && r.Uri.ToString().Contains("direction=desc"),
+                "inline comments must be fetched newest-first so the page cap keeps recent findings, not the oldest"
+            );
     }
 
     [Fact]
@@ -318,7 +466,13 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
             .ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
 
     private static object Comment(int id, string body, int age) =>
-        new { id, body, user = new { login = "alice" }, created_at = Timestamp(age) };
+        new
+        {
+            id,
+            body,
+            user = new { login = "alice" },
+            created_at = Timestamp(age),
+        };
 
     /// <summary>Filler ahead of the item under test, oldest first, exactly as GitHub returns it.</summary>
     private static List<object> Filler(int count, string bodyPrefix, int startId) =>
@@ -334,11 +488,15 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
     /// <c>sort</c>/<c>direction</c> silently ignored, which is the behaviour these tests exist to pin.
     /// </summary>
     private static FakeHttpMessageHandler OnAscendingListing(
-        FakeHttpMessageHandler handler, string pathContains, IReadOnlyList<object> itemsOldestFirst)
+        FakeHttpMessageHandler handler,
+        string pathContains,
+        IReadOnlyList<object> itemsOldestFirst
+    )
     {
         var pageCount = Math.Max(1, (itemsOldestFirst.Count + PageSize - 1) / PageSize);
         return handler.On(
-            req => req.Method == HttpMethod.Get
+            req =>
+                req.Method == HttpMethod.Get
                 && req.RequestUri is not null
                 && req.RequestUri.ToString().Contains(pathContains, StringComparison.Ordinal),
             req =>
@@ -347,8 +505,7 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
                 var slice = itemsOldestFirst.Skip((page - 1) * PageSize).Take(PageSize).ToArray();
                 var response = new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent(
-                        JsonSerializer.Serialize(slice), Encoding.UTF8, "application/json"),
+                    Content = new StringContent(JsonSerializer.Serialize(slice), Encoding.UTF8, "application/json"),
                 };
 
                 if (pageCount > 1)
@@ -363,22 +520,26 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
                     {
                         links.Insert(
                             0,
-                            $"<https://api.github.com{pathContains}?per_page={PageSize}&page={page + 1}>; rel=\"next\"");
+                            $"<https://api.github.com{pathContains}?per_page={PageSize}&page={page + 1}>; rel=\"next\""
+                        );
                     }
 
                     response.Headers.TryAddWithoutValidation("Link", string.Join(", ", links));
                 }
 
                 return response;
-            });
+            }
+        );
     }
 
     private static int PageOf(Uri uri)
     {
         foreach (var pair in uri.Query.TrimStart('?').Split('&'))
         {
-            if (pair.StartsWith("page=", StringComparison.Ordinal)
-                && int.TryParse(pair.AsSpan("page=".Length), CultureInfo.InvariantCulture, out var page))
+            if (
+                pair.StartsWith("page=", StringComparison.Ordinal)
+                && int.TryParse(pair.AsSpan("page=".Length), CultureInfo.InvariantCulture, out var page)
+            )
             {
                 return page;
             }
@@ -389,9 +550,11 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
 
     /// <summary>The <c>page=</c> values requested against one path, in the order they were requested.</summary>
     private static int[] PagesRequested(FakeHttpMessageHandler handler, string pathContains) =>
-        [.. handler.Requests
-            .Where(r => r.Uri.ToString().Contains(pathContains, StringComparison.Ordinal))
-            .Select(r => PageOf(r.Uri))];
+        [
+            .. handler
+                .Requests.Where(r => r.Uri.ToString().Contains(pathContains, StringComparison.Ordinal))
+                .Select(r => PageOf(r.Uri)),
+        ];
 
     [Fact]
     public async Task ListExisting_reads_a_question_at_the_tail_that_a_forward_walk_cannot_reach()
@@ -404,15 +567,16 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
 
         var handler = new FakeHttpMessageHandler();
         OnAscendingListing(handler, "/issues/7/comments", conversation);
-        handler
-            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
-            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
+        handler.OnJson(HttpMethod.Get, "/pulls/7/comments", "[]").OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
-        existing.Should().ContainSingle(
-            e => e.Body.Contains("still needed"),
-            "the newest comment sits on the last page, which is where the reader must start");
+        existing
+            .Should()
+            .ContainSingle(
+                e => e.Body.Contains("still needed"),
+                "the newest comment sits on the last page, which is where the reader must start"
+            );
     }
 
     [Fact]
@@ -424,32 +588,59 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         // valid submitted replacement, the very failure the PENDING filter exists to prevent.
         List<object> reviews =
         [
-            .. Enumerable.Range(0, PageSize * (PagesBeyondTheCap - 1))
-                .Select(i => (object)new
-                {
-                    id = 1000 + i,
-                    body = $"older-review-{i}",
-                    user = new { login = "alice" },
-                    state = "COMMENTED",
-                    submitted_at = Timestamp(i),
-                }),
-            new { id = 5001, body = "", user = new { login = "revobot" }, state = "PENDING" },
+            .. Enumerable
+                .Range(0, PageSize * (PagesBeyondTheCap - 1))
+                .Select(i =>
+                    (object)
+                        new
+                        {
+                            id = 1000 + i,
+                            body = $"older-review-{i}",
+                            user = new { login = "alice" },
+                            state = "COMMENTED",
+                            submitted_at = Timestamp(i),
+                        }
+                ),
+            new
+            {
+                id = 5001,
+                body = "",
+                user = new { login = "revobot" },
+                state = "PENDING",
+            },
         ];
 
         var handler = new FakeHttpMessageHandler();
         OnAscendingListing(handler, "/pulls/7/reviews", reviews);
         handler
-            .OnJson(HttpMethod.Get, "/pulls/7/comments", JsonSerializer.Serialize(new object[]
-            {
-                new { body = "DRAFT-inline-finding", path = "src/Foo.cs", line = 3, pull_request_review_id = 5001, user = new { login = "revobot" }, created_at = "2026-07-20T09:00:00Z" },
-            }))
+            .OnJson(
+                HttpMethod.Get,
+                "/pulls/7/comments",
+                JsonSerializer.Serialize(
+                    new object[]
+                    {
+                        new
+                        {
+                            body = "DRAFT-inline-finding",
+                            path = "src/Foo.cs",
+                            line = 3,
+                            pull_request_review_id = 5001,
+                            user = new { login = "revobot" },
+                            created_at = "2026-07-20T09:00:00Z",
+                        },
+                    }
+                )
+            )
             .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
-        existing.Should().NotContain(
-            e => e.Body.Contains("DRAFT-inline-finding"),
-            "the draft is the newest review, so only a tail-first listing can find its id and suppress it");
+        existing
+            .Should()
+            .NotContain(
+                e => e.Body.Contains("DRAFT-inline-finding"),
+                "the draft is the newest review, so only a tail-first listing can find its id and suppress it"
+            );
     }
 
     [Fact]
@@ -481,9 +672,12 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
 
         await Publisher(handler).FindPostedCommentAsync(Target, Key, CancellationToken.None);
 
-        PagesRequested(handler, "/issues/7/comments").Should().Equal(
-            [1, 7, 6, 5, 4, 3],
-            "page 1 locates the tail via rel=\"last\"; the walk then runs backwards and stops at the cap");
+        PagesRequested(handler, "/issues/7/comments")
+            .Should()
+            .Equal(
+                [1, 7, 6, 5, 4, 3],
+                "page 1 locates the tail via rel=\"last\"; the walk then runs backwards and stops at the cap"
+            );
     }
 
     [Fact]
@@ -494,15 +688,15 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         // sequence is newest-first.
         var handler = new FakeHttpMessageHandler();
         OnAscendingListing(handler, "/issues/7/comments", Filler(PageSize + 30, "chatter", 100));
-        handler
-            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
-            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
+        handler.OnJson(HttpMethod.Get, "/pulls/7/comments", "[]").OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
         existing.Should().HaveCount(PageSize + 30);
-        existing.Select(e => e.PublishedAt).Should().BeInDescendingOrder(
-            "a listing walked tail-first must be newest-first end to end, not page by page");
+        existing
+            .Select(e => e.PublishedAt)
+            .Should()
+            .BeInDescendingOrder("a listing walked tail-first must be newest-first end to end, not page by page");
     }
 
     [Fact]
@@ -515,14 +709,14 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
 
         var handler = new FakeHttpMessageHandler();
         OnAscendingListing(handler, "/issues/7/comments", conversation);
-        handler
-            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
-            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
+        handler.OnJson(HttpMethod.Get, "/pulls/7/comments", "[]").OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
-        handler.CountRequests("/issues/7/comments").Should().Be(
-            6, "one request locates the tail, then MaxListPages bounds the walk");
+        handler
+            .CountRequests("/issues/7/comments")
+            .Should()
+            .Be(6, "one request locates the tail, then MaxListPages bounds the walk");
         existing.Should().HaveCount(PageSize * 5);
         existing.Should().Contain(e => e.Body == "chatter-4999", "the newest comment is what dedup needs");
         existing.Should().NotContain(e => e.Body == "chatter-0", "the cap must drop the oldest end");
@@ -534,14 +728,12 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         // GitHub sends no Link header at all when the listing fits on one page. Treating a missing rel="last"
         // as anything but "page 1 is the tail" would either re-fetch nothing or walk off the end.
         var handler = new FakeHttpMessageHandler();
-        OnAscendingListing(handler, "/issues/7/comments",
-        [
-            Comment(1, "first question", 0),
-            Comment(2, "second question", 1),
-        ]);
-        handler
-            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
-            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
+        OnAscendingListing(
+            handler,
+            "/issues/7/comments",
+            [Comment(1, "first question", 0), Comment(2, "second question", 1)]
+        );
+        handler.OnJson(HttpMethod.Get, "/pulls/7/comments", "[]").OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 

@@ -23,7 +23,8 @@ internal sealed class DaemonAuthEventNotifier(ILogger<DaemonAuthEventNotifier> l
         logger.LogWarning(
             "Auth required for provider {ProviderId}: {Reason}. A one-time human sign-in is needed before sandbox egress to this provider can be authorized.",
             providerId,
-            reason);
+            reason
+        );
         return Task.CompletedTask;
     }
 

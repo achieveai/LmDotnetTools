@@ -14,7 +14,8 @@ internal sealed record ReviewRunSession(
     string SessionId,
     string HostPath,
     ISandboxCommandRunner CommandRunner,
-    ISandboxFileSystem FileSystem);
+    ISandboxFileSystem FileSystem
+);
 
 internal interface IReviewSessionProvisioner
 {
@@ -44,7 +45,8 @@ internal interface IReviewSessionProvisioner
     async Task<ReviewRunSession> GetOrCreateRequiredForSlotAsync(
         ReviewRun run,
         ReviewSlot slot,
-        CancellationToken ct) =>
+        CancellationToken ct
+    ) =>
         await GetOrCreateForSlotAsync(run, slot, ct).ConfigureAwait(false)
         ?? throw new InvalidOperationException($"Run {run.Id}: the required pooled slot session was not provisioned.");
 
@@ -119,7 +121,8 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         SandboxCredential credential = default,
         string? workspaceBasePath = null,
         string? gatewayBaseUrl = null,
-        Func<string, bool>? diskSpaceProbe = null)
+        Func<string, bool>? diskSpaceProbe = null
+    )
     {
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -127,9 +130,8 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         _logger = loggerFactory.CreateLogger<ReviewSessionProvisioner>();
         _credential = credential;
         _workspaceBasePath = workspaceBasePath;
-        _gatewayBaseUrl = gatewayBaseUrl
-            ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
-            ?? "http://127.0.0.1:3000";
+        _gatewayBaseUrl =
+            gatewayBaseUrl ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000";
         _diskSpaceProbe = diskSpaceProbe;
     }
 
@@ -148,9 +150,10 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     /// cref="CodeReviewDaemonOptions.WorkspaceHostRoot"/>), defaulted beside the binary exactly like
     /// Program.cs's ReviewBot host-root default when the operator has not configured one.
     /// </summary>
-    private string HostWorkspaceRoot => string.IsNullOrWhiteSpace(_options.WorkspaceHostRoot)
-        ? Path.Combine(AppContext.BaseDirectory, "workspaces")
-        : _options.WorkspaceHostRoot;
+    private string HostWorkspaceRoot =>
+        string.IsNullOrWhiteSpace(_options.WorkspaceHostRoot)
+            ? Path.Combine(AppContext.BaseDirectory, "workspaces")
+            : _options.WorkspaceHostRoot;
 
     public async Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
     {
@@ -174,7 +177,10 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
             _logger.LogWarning(
                 "Run {RunId}: cannot mount pooled slot '{SlotPath}' under workspace base '{Base}'; "
                     + "falling back to the per-run session mount.",
-                run.Id, slot.HostPath, _workspaceBasePath ?? "(unset)");
+                run.Id,
+                slot.HostPath,
+                _workspaceBasePath ?? "(unset)"
+            );
             return await GetOrCreateAsync(run, ct).ConfigureAwait(false);
         }
 
@@ -184,7 +190,8 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     public async Task<ReviewRunSession> GetOrCreateRequiredForSlotAsync(
         ReviewRun run,
         ReviewSlot slot,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(slot);
@@ -194,12 +201,14 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         {
             throw new InvalidOperationException(
                 $"Run {run.Id}: pooled slot '{slot.HostPath}' cannot be mounted under workspace base "
-                    + $"'{_workspaceBasePath ?? "(unset)"}'.");
+                    + $"'{_workspaceBasePath ?? "(unset)"}'."
+            );
         }
 
         return await ProvisionAsync(run, slotRelPath, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException(
-                $"Run {run.Id}: the required pooled slot session was not provisioned.");
+                $"Run {run.Id}: the required pooled slot session was not provisioned."
+            );
     }
 
     /// <summary>
@@ -215,7 +224,10 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
             _logger.LogWarning(
                 "Run {RunId}: host workspace root '{HostRoot}' has less than {MinFreeDiskBytes} bytes free; "
                     + "declining to provision a sandbox session.",
-                run.Id, HostWorkspaceRoot, MinFreeDiskBytes);
+                run.Id,
+                HostWorkspaceRoot,
+                MinFreeDiskBytes
+            );
             return null;
         }
 
@@ -223,19 +235,24 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         var session = await _sessions
             .GetOrCreateLiveSessionAsync(
                 new WorkspaceRef(workspaceId, DirectoryRelPath: directoryRelPath, Marketplaces: _options.Marketplaces),
-                ct)
+                ct
+            )
             .ConfigureAwait(false);
 
-        return _bySession.GetOrAdd(session.SessionId, id =>
-        {
-            var adapter = new SandboxSessionAdapter(
-                _gatewayBaseUrl,
-                id,
-                _loggerFactory.CreateLogger<SandboxSessionAdapter>(),
-                _credential,
-                _options.Limits);
-            return new ReviewRunSession(id, session.HostPath, adapter, adapter);
-        });
+        return _bySession.GetOrAdd(
+            session.SessionId,
+            id =>
+            {
+                var adapter = new SandboxSessionAdapter(
+                    _gatewayBaseUrl,
+                    id,
+                    _loggerFactory.CreateLogger<SandboxSessionAdapter>(),
+                    _credential,
+                    _options.Limits
+                );
+                return new ReviewRunSession(id, session.HostPath, adapter, adapter);
+            }
+        );
     }
 
     /// <summary>
@@ -253,10 +270,12 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         }
 
         var relative = Path.GetRelativePath(_workspaceBasePath, slot.HostPath);
-        if (Path.IsPathRooted(relative)
+        if (
+            Path.IsPathRooted(relative)
             || relative.Equals("..", StringComparison.Ordinal)
             || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
-            || relative.StartsWith("../", StringComparison.Ordinal))
+            || relative.StartsWith("../", StringComparison.Ordinal)
+        )
         {
             return null;
         }
@@ -290,7 +309,11 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Unable to determine free disk space for '{HostRoot}'; assuming sufficient.", HostWorkspaceRoot);
+            _logger.LogWarning(
+                ex,
+                "Unable to determine free disk space for '{HostRoot}'; assuming sufficient.",
+                HostWorkspaceRoot
+            );
             return true;
         }
     }
@@ -368,7 +391,8 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
                 ex,
                 "Host-dir cleanup REFUSED for {HostDir} — it was not deleted and nothing under it was touched. "
                     + "Investigate the entry named in the message before reusing this host workspace root.",
-                hostDir);
+                hostDir
+            );
         }
         catch (Exception ex)
         {

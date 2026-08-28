@@ -20,8 +20,11 @@ public sealed class DaemonAuthRegistrationTests
 
         var policy = factory.Services.GetRequiredService<IAuthResolutionPolicy>();
 
-        policy.Should().BeOfType<FailFastDaemonAuthPolicy>(
-            "the unattended daemon fails fast rather than holding the webhook call open for a human");
+        policy
+            .Should()
+            .BeOfType<FailFastDaemonAuthPolicy>(
+                "the unattended daemon fails fast rather than holding the webhook call open for a human"
+            );
     }
 
     [Fact]
@@ -29,9 +32,7 @@ public sealed class DaemonAuthRegistrationTests
     {
         using var factory = new DaemonWebAppFactory();
 
-        var providerIds = factory.Services
-            .GetServices<IOAuthTokenProvider>()
-            .Select(p => p.ProviderId);
+        var providerIds = factory.Services.GetServices<IOAuthTokenProvider>().Select(p => p.ProviderId);
 
         providerIds.Should().BeEquivalentTo(["github"], "ADO is opt-in via EnableAdoProvider");
     }
@@ -41,11 +42,10 @@ public sealed class DaemonAuthRegistrationTests
     {
         using var factory = new DaemonWebAppFactory();
         using var adoEnabled = factory.WithWebHostBuilder(builder =>
-            builder.UseSetting("CodeReviewDaemon:EnableAdoProvider", "true"));
+            builder.UseSetting("CodeReviewDaemon:EnableAdoProvider", "true")
+        );
 
-        var providerIds = adoEnabled.Services
-            .GetServices<IOAuthTokenProvider>()
-            .Select(p => p.ProviderId);
+        var providerIds = adoEnabled.Services.GetServices<IOAuthTokenProvider>().Select(p => p.ProviderId);
 
         providerIds.Should().BeEquivalentTo(["github", "ado"]);
     }

@@ -44,7 +44,12 @@ public sealed class CopilotAnthropicLiveTests
 
         var reply = await agent.GenerateReplyAsync(
             [new TextMessage { Role = Role.User, Text = "Reply with the single word: READY" }],
-            new GenerateReplyOptions { ModelId = model, MaxToken = 64, Temperature = 0 },
+            new GenerateReplyOptions
+            {
+                ModelId = model,
+                MaxToken = 64,
+                Temperature = 0,
+            },
             cancellationToken
         );
 
@@ -71,7 +76,12 @@ public sealed class CopilotAnthropicLiveTests
 
         var stream = await agent.GenerateReplyStreamingAsync(
             [new TextMessage { Role = Role.User, Text = "Count from 1 to 5, separated by spaces." }],
-            new GenerateReplyOptions { ModelId = model, MaxToken = 128, Temperature = 0 },
+            new GenerateReplyOptions
+            {
+                ModelId = model,
+                MaxToken = 128,
+                Temperature = 0,
+            },
             cancellationToken
         );
 
@@ -123,24 +133,26 @@ public sealed class CopilotAnthropicLiveTests
 
         // Same request as a normal chat turn, but with the Anthropic server-side web_search tool
         // enabled via BuiltInTools — the one thing the Copilot backend refuses.
-        var exception = await Record.ExceptionAsync(() => agent.GenerateReplyAsync(
-            [new TextMessage { Role = Role.User, Text = "What is today's top news headline? Use web search." }],
-            new GenerateReplyOptions
-            {
-                ModelId = model,
-                MaxToken = 256,
-                Temperature = 0,
-                BuiltInTools = [new AnthropicWebSearchTool()],
-            },
-            cancellationToken
-        ));
+        var exception = await Record.ExceptionAsync(() =>
+            agent.GenerateReplyAsync(
+                [new TextMessage { Role = Role.User, Text = "What is today's top news headline? Use web search." }],
+                new GenerateReplyOptions
+                {
+                    ModelId = model,
+                    MaxToken = 256,
+                    Temperature = 0,
+                    BuiltInTools = [new AnthropicWebSearchTool()],
+                },
+                cancellationToken
+            )
+        );
 
         _output.WriteLine($"Rejection: {exception}");
-        exception.Should()
-            .NotBeNull("the Copilot backend rejects the Anthropic server-side web_search tool");
+        exception.Should().NotBeNull("the Copilot backend rejects the Anthropic server-side web_search tool");
 
         var httpException = exception as HttpRequestException;
-        httpException.Should()
+        httpException
+            .Should()
             .NotBeNull("the rejection surfaces as an HttpRequestException; actual: {0}", exception?.GetType().Name);
         httpException!.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         // The human-readable Copilot error; assert loosely so wording drift doesn't break the canary.

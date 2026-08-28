@@ -15,8 +15,9 @@ namespace LmStreaming.Sample.Tests;
 /// </summary>
 public sealed class PublishLaunchDestinationTests : IDisposable
 {
-    private readonly string _root = Directory.CreateDirectory(
-        Path.Combine(Path.GetTempPath(), "pldest-" + Guid.NewGuid().ToString("N"))).FullName;
+    private readonly string _root = Directory
+        .CreateDirectory(Path.Combine(Path.GetTempPath(), "pldest-" + Guid.NewGuid().ToString("N")))
+        .FullName;
 
     public void Dispose()
     {
@@ -47,7 +48,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         File.WriteAllText(Path.Combine(assetsDir, assetFileName), $"console.log('{assetToken}');");
         File.WriteAllText(
             Path.Combine(staged, "wwwroot", "dist", "index.html"),
-            $"<html><body><script src=\"/dist/assets/{assetFileName}\"></script></body></html>");
+            $"<html><body><script src=\"/dist/assets/{assetFileName}\"></script></body></html>"
+        );
 
         if (decoyEnvContent is not null)
         {
@@ -62,7 +64,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         string name,
         string oldAssetToken,
         string envContent = "REAL_DESTINATION_ENV=1",
-        bool seedNotifyWaitsDb = true)
+        bool seedNotifyWaitsDb = true
+    )
     {
         var destination = Path.Combine(parent, name);
         var assetsDir = Path.Combine(destination, "wwwroot", "dist", "assets");
@@ -75,7 +78,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         File.WriteAllText(Path.Combine(assetsDir, oldAssetFileName), "console.log('old');");
         File.WriteAllText(
             Path.Combine(destination, "wwwroot", "dist", "index.html"),
-            $"<html><body><script src=\"/dist/assets/{oldAssetFileName}\"></script></body></html>");
+            $"<html><body><script src=\"/dist/assets/{oldAssetFileName}\"></script></body></html>"
+        );
 
         WriteFile(destination, "conversations", "thread-1.json", "{\"id\":\"thread-1\"}");
         WriteFile(destination, "oauth-tokens", "token.json", "secret-token-value");
@@ -106,21 +110,24 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         await using (var factory = new SqliteConnectionFactory(databasePath))
         {
             var store = new SqliteNotifyWaitStore(factory);
-            await store.SaveAsync(new NotifyWaitRecord(
-                WaitId: "wait-1",
-                ThreadId: "thread-1",
-                Kind: "notify",
-                Args: "{}",
-                Label: "preserve-test",
-                MaxFires: 1,
-                FiresSoFar: 0,
-                TimeoutAtUnixMs: DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds(),
-                ArmedAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                // Lowercase to match production's convention (TriggerRuntime.cs writes "active") and
-                // SqliteNotifyWaitStore.LoadActiveAsync's `status = 'active'` filter -- SQLite's default
-                // BINARY collation is case-sensitive, so a capitalized value here would silently never
-                // match the read-back query regardless of whether the preserve-copy itself is correct.
-                Status: "active"));
+            await store.SaveAsync(
+                new NotifyWaitRecord(
+                    WaitId: "wait-1",
+                    ThreadId: "thread-1",
+                    Kind: "notify",
+                    Args: "{}",
+                    Label: "preserve-test",
+                    MaxFires: 1,
+                    FiresSoFar: 0,
+                    TimeoutAtUnixMs: DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds(),
+                    ArmedAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    // Lowercase to match production's convention (TriggerRuntime.cs writes "active") and
+                    // SqliteNotifyWaitStore.LoadActiveAsync's `status = 'active'` filter -- SQLite's default
+                    // BINARY collation is case-sensitive, so a capitalized value here would silently never
+                    // match the read-back query regardless of whether the preserve-copy itself is correct.
+                    Status: "active"
+                )
+            );
 
             // Force a WAL checkpoint so the sidecars reflect a coherent, fully-committed snapshot --
             // standing in for the "app stopped" state Checkpoint B relies on before this file and its
@@ -150,7 +157,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         string name,
         bool hasExe,
         bool hasAppsettings,
-        bool hasIndex)
+        bool hasIndex
+    )
     {
         var destination = Path.Combine(parent, name);
         Directory.CreateDirectory(destination);
@@ -190,8 +198,11 @@ public sealed class PublishLaunchDestinationTests : IDisposable
     }
 
     private static string? FindSiblingWithSuffix(string parent, string destinationName, string suffix) =>
-        Directory.GetDirectories(parent)
-            .FirstOrDefault(d => Path.GetFileName(d).StartsWith($"{destinationName}.{suffix}", StringComparison.Ordinal));
+        Directory
+            .GetDirectories(parent)
+            .FirstOrDefault(d =>
+                Path.GetFileName(d).StartsWith($"{destinationName}.{suffix}", StringComparison.Ordinal)
+            );
 
     private static string ProcessDelegateThatThrowsIfInvoked =>
         "{ param() throw 'TEST FAILURE: process enumeration must not be invoked for this destination state' }";
@@ -199,15 +210,14 @@ public sealed class PublishLaunchDestinationTests : IDisposable
     private static string ProcessDelegateReportingRunningOnCall(int callNumber, string executablePath)
     {
         var quotedPath = PublishLaunchScriptHost.QuoteSingle(executablePath);
-        return "{ param() " +
-            "if (-not (Get-Variable -Name __pldCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldCallCount = 0 }; " +
-            "$script:__pldCallCount++; " +
-            $"if ($script:__pldCallCount -eq {callNumber}) {{ return @([pscustomobject]@{{ Id = 4321; Path = '{quotedPath}' }}) }}; " +
-            "return @() }";
+        return "{ param() "
+            + "if (-not (Get-Variable -Name __pldCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldCallCount = 0 }; "
+            + "$script:__pldCallCount++; "
+            + $"if ($script:__pldCallCount -eq {callNumber}) {{ return @([pscustomobject]@{{ Id = 4321; Path = '{quotedPath}' }}) }}; "
+            + "return @() }";
     }
 
-    private static string MoveDelegateThatFailsOnCall(int callNumber) =>
-        MoveDelegateThatFailsOnCalls(callNumber);
+    private static string MoveDelegateThatFailsOnCall(int callNumber) => MoveDelegateThatFailsOnCalls(callNumber);
 
     /// <summary>
     /// A move delegate that throws on each of <paramref name="callNumbers"/> (1-based) and performs
@@ -217,11 +227,11 @@ public sealed class PublishLaunchDestinationTests : IDisposable
     private static string MoveDelegateThatFailsOnCalls(params int[] callNumbers)
     {
         var condition = string.Join(" -or ", callNumbers.Select(n => $"$script:__pldMoveCallCount -eq {n}"));
-        return "{ param($From, $To) " +
-            "if (-not (Get-Variable -Name __pldMoveCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldMoveCallCount = 0 }; " +
-            "$script:__pldMoveCallCount++; " +
-            $"if ({condition}) {{ throw ('Simulated move failure on call ' + $script:__pldMoveCallCount) }}; " +
-            "[System.IO.Directory]::Move($From, $To) }";
+        return "{ param($From, $To) "
+            + "if (-not (Get-Variable -Name __pldMoveCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldMoveCallCount = 0 }; "
+            + "$script:__pldMoveCallCount++; "
+            + $"if ({condition}) {{ throw ('Simulated move failure on call ' + $script:__pldMoveCallCount) }}; "
+            + "[System.IO.Directory]::Move($From, $To) }";
     }
 
     /// <summary>
@@ -244,15 +254,16 @@ public sealed class PublishLaunchDestinationTests : IDisposable
     private static string MoveDelegateThatFailsTransientlyThenSucceeds(
         int transientFailureCount,
         string markerFrom,
-        string markerExisting)
+        string markerExisting
+    )
     {
         var quotedMarkerFrom = PublishLaunchScriptHost.QuoteSingle(markerFrom);
         var quotedMarkerExisting = PublishLaunchScriptHost.QuoteSingle(markerExisting);
-        return "{ param($From, $To) " +
-            "if (-not (Get-Variable -Name __pldTransientCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldTransientCallCount = 0 }; " +
-            "$script:__pldTransientCallCount++; " +
-            $"if ($script:__pldTransientCallCount -le {transientFailureCount}) {{ [System.IO.Directory]::Move('{quotedMarkerFrom}', '{quotedMarkerExisting}') }}; " +
-            "[System.IO.Directory]::Move($From, $To) }";
+        return "{ param($From, $To) "
+            + "if (-not (Get-Variable -Name __pldTransientCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldTransientCallCount = 0 }; "
+            + "$script:__pldTransientCallCount++; "
+            + $"if ($script:__pldTransientCallCount -le {transientFailureCount}) {{ [System.IO.Directory]::Move('{quotedMarkerFrom}', '{quotedMarkerExisting}') }}; "
+            + "[System.IO.Directory]::Move($From, $To) }";
     }
 
     /// <summary>
@@ -269,17 +280,18 @@ public sealed class PublishLaunchDestinationTests : IDisposable
     private static string MoveDelegateThatFailsSwapThenRecoversRollbackViaRetry(
         int rollbackTransientFailureCount,
         string markerFrom,
-        string markerExisting)
+        string markerExisting
+    )
     {
         var quotedMarkerFrom = PublishLaunchScriptHost.QuoteSingle(markerFrom);
         var quotedMarkerExisting = PublishLaunchScriptHost.QuoteSingle(markerExisting);
         var lastTransientCall = 2 + rollbackTransientFailureCount;
-        return "{ param($From, $To) " +
-            "if (-not (Get-Variable -Name __pldSwapRollbackCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldSwapRollbackCallCount = 0 }; " +
-            "$script:__pldSwapRollbackCallCount++; " +
-            "if ($script:__pldSwapRollbackCallCount -eq 2) { throw ('Simulated non-transient swap failure on call ' + $script:__pldSwapRollbackCallCount) }; " +
-            $"if ($script:__pldSwapRollbackCallCount -ge 3 -and $script:__pldSwapRollbackCallCount -le {lastTransientCall}) {{ [System.IO.Directory]::Move('{quotedMarkerFrom}', '{quotedMarkerExisting}') }}; " +
-            "[System.IO.Directory]::Move($From, $To) }";
+        return "{ param($From, $To) "
+            + "if (-not (Get-Variable -Name __pldSwapRollbackCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldSwapRollbackCallCount = 0 }; "
+            + "$script:__pldSwapRollbackCallCount++; "
+            + "if ($script:__pldSwapRollbackCallCount -eq 2) { throw ('Simulated non-transient swap failure on call ' + $script:__pldSwapRollbackCallCount) }; "
+            + $"if ($script:__pldSwapRollbackCallCount -ge 3 -and $script:__pldSwapRollbackCallCount -le {lastTransientCall}) {{ [System.IO.Directory]::Move('{quotedMarkerFrom}', '{quotedMarkerExisting}') }}; "
+            + "[System.IO.Directory]::Move($From, $To) }";
     }
 
     /// <summary>A probe delegate that always reports the executable as free (nothing holds it).</summary>
@@ -302,9 +314,9 @@ public sealed class PublishLaunchDestinationTests : IDisposable
     /// <paramref name="processName"/> is still readable, because <c>ProcessName</c> needs no privilege.
     /// </summary>
     private static string ProcessDelegateWithUnreadablePath(string processName) =>
-        "{ param() return @([pscustomobject]@{ Id = 9876; ProcessName = '" +
-        PublishLaunchScriptHost.QuoteSingle(processName) +
-        "'; Path = $null }) }";
+        "{ param() return @([pscustomobject]@{ Id = 9876; ProcessName = '"
+        + PublishLaunchScriptHost.QuoteSingle(processName)
+        + "'; Path = $null }) }";
 
     // ----------------------------------------------------------------------------------------
     // Destination classification (Test-DestinationState)
@@ -316,7 +328,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var missingPath = Path.Combine(_root, "does-not-exist");
 
         var result = PublishLaunchScriptHost.InvokeForJson(
-            $"Test-DestinationState -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(missingPath)}'");
+            $"Test-DestinationState -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(missingPath)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
         using var json = JsonDocument.Parse(result.StandardOutput);
@@ -329,7 +342,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var empty = CreateEmptyDestination(_root, "empty-dest");
 
         var result = PublishLaunchScriptHost.InvokeForJson(
-            $"Test-DestinationState -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(empty)}'");
+            $"Test-DestinationState -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(empty)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
         using var json = JsonDocument.Parse(result.StandardOutput);
@@ -345,13 +359,18 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         File.SetAttributes(hiddenFile, FileAttributes.Hidden);
 
         var result = PublishLaunchScriptHost.InvokeForJson(
-            $"Test-DestinationState -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+            $"Test-DestinationState -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
         using var json = JsonDocument.Parse(result.StandardOutput);
-        json.RootElement.GetProperty("State").GetString().Should().Be(
-            "Unrecognized",
-            "a hidden entry still counts as an entry -- the directory is not empty and has no recognition markers");
+        json.RootElement.GetProperty("State")
+            .GetString()
+            .Should()
+            .Be(
+                "Unrecognized",
+                "a hidden entry still counts as an entry -- the directory is not empty and has no recognition markers"
+            );
     }
 
     [Fact]
@@ -360,7 +379,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var destination = CreateRecognizedDestination(_root, "recognized-dest", "abc111");
 
         var result = PublishLaunchScriptHost.InvokeForJson(
-            $"Test-DestinationState -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+            $"Test-DestinationState -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
         using var json = JsonDocument.Parse(result.StandardOutput);
@@ -375,17 +395,20 @@ public sealed class PublishLaunchDestinationTests : IDisposable
     public void DestinationState_Unrecognized_WhenMarkersAreAbsentOrOnlyTwoOfThree(
         bool hasExe,
         bool hasAppsettings,
-        bool hasIndex)
+        bool hasIndex
+    )
     {
         var destination = CreateUnrecognizedDestination(
             _root,
             $"unrecognized-{hasExe}-{hasAppsettings}-{hasIndex}",
             hasExe,
             hasAppsettings,
-            hasIndex);
+            hasIndex
+        );
 
         var result = PublishLaunchScriptHost.InvokeForJson(
-            $"Test-DestinationState -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+            $"Test-DestinationState -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
         using var json = JsonDocument.Parse(result.StandardOutput);
@@ -400,20 +423,34 @@ public sealed class PublishLaunchDestinationTests : IDisposable
     public void Deploy_Unrecognized_FailsBeforeAnyCandidateCreated_DestinationUntouched()
     {
         var staged = CreateStagedDirectory(_root, "fresh1");
-        var destination = CreateUnrecognizedDestination(_root, "unrecognized-dest", hasExe: true, hasAppsettings: true, hasIndex: false);
+        var destination = CreateUnrecognizedDestination(
+            _root,
+            "unrecognized-dest",
+            hasExe: true,
+            hasAppsettings: true,
+            hasIndex: false
+        );
         var sentinelBefore = File.ReadAllText(Path.Combine(destination, "LmStreaming.Sample.exe"));
         var entriesBefore = Directory.GetFileSystemEntries(destination).Length;
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}"
+        );
 
         result.Succeeded.Should().BeFalse("an Unrecognized non-empty destination must be rejected");
         result.StandardError.Should().Contain("Unrecognized");
-        File.ReadAllText(Path.Combine(destination, "LmStreaming.Sample.exe")).Should().Be(sentinelBefore, "the destination must be untouched");
-        Directory.GetFileSystemEntries(destination).Length.Should().Be(entriesBefore, "no candidate/backup work should have started");
-        FindSiblingWithSuffix(_root, "unrecognized-dest", "candidate-").Should().BeNull("no candidate sibling may ever be created for an Unrecognized destination");
+        File.ReadAllText(Path.Combine(destination, "LmStreaming.Sample.exe"))
+            .Should()
+            .Be(sentinelBefore, "the destination must be untouched");
+        Directory
+            .GetFileSystemEntries(destination)
+            .Length.Should()
+            .Be(entriesBefore, "no candidate/backup work should have started");
+        FindSiblingWithSuffix(_root, "unrecognized-dest", "candidate-")
+            .Should()
+            .BeNull("no candidate sibling may ever be created for an Unrecognized destination");
     }
 
     // ----------------------------------------------------------------------------------------
@@ -430,16 +467,25 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var expectedAssetHash = Hash(Path.Combine(staged, "wwwroot", "dist", "assets", "app.missing1.js"));
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
         Directory.Exists(destination).Should().BeTrue();
-        File.Exists(Path.Combine(destination, "LmStreaming.Sample.exe")).Should().BeTrue("the Missing-destination deploy must copy the staged output byte-for-byte");
-        Hash(Path.Combine(destination, "LmStreaming.Sample.exe")).Should().Be(expectedExeHash, "the Missing-destination deploy must copy the staged output byte-for-byte");
-        File.Exists(Path.Combine(destination, "wwwroot", "dist", "assets", "app.missing1.js")).Should().BeTrue("the staged asset must survive the swap unchanged");
-        Hash(Path.Combine(destination, "wwwroot", "dist", "assets", "app.missing1.js")).Should().Be(expectedAssetHash, "the staged asset must survive the swap unchanged");
+        File.Exists(Path.Combine(destination, "LmStreaming.Sample.exe"))
+            .Should()
+            .BeTrue("the Missing-destination deploy must copy the staged output byte-for-byte");
+        Hash(Path.Combine(destination, "LmStreaming.Sample.exe"))
+            .Should()
+            .Be(expectedExeHash, "the Missing-destination deploy must copy the staged output byte-for-byte");
+        File.Exists(Path.Combine(destination, "wwwroot", "dist", "assets", "app.missing1.js"))
+            .Should()
+            .BeTrue("the staged asset must survive the swap unchanged");
+        Hash(Path.Combine(destination, "wwwroot", "dist", "assets", "app.missing1.js"))
+            .Should()
+            .Be(expectedAssetHash, "the staged asset must survive the swap unchanged");
 
         // The single move is FROM A CANDIDATE ASSEMBLED AS A SAME-PARENT SIBLING OF THE
         // DESTINATION, not from $StagedDirectory directly: $StagedDirectory can live on a
@@ -448,9 +494,18 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         // staged itself would also consume it, unlike every other branch (Empty/Recognized both
         // leave $StagedDirectory intact for the caller). So staged must still exist afterwards,
         // and no leftover candidate/backup sibling should remain once the single rename succeeds.
-        Directory.Exists(staged).Should().BeTrue("the staged directory must be left intact by the deploy, exactly like the Empty and Recognized branches -- only a same-parent candidate assembled from it is ever moved");
-        FindSiblingWithSuffix(_root, "missing-dest", "candidate-").Should().BeNull("the candidate must have been renamed into place, leaving no leftover candidate sibling");
-        FindSiblingWithSuffix(_root, "missing-dest", "backup-").Should().BeNull("there was nothing pre-existing to back up for a Missing destination");
+        Directory
+            .Exists(staged)
+            .Should()
+            .BeTrue(
+                "the staged directory must be left intact by the deploy, exactly like the Empty and Recognized branches -- only a same-parent candidate assembled from it is ever moved"
+            );
+        FindSiblingWithSuffix(_root, "missing-dest", "candidate-")
+            .Should()
+            .BeNull("the candidate must have been renamed into place, leaving no leftover candidate sibling");
+        FindSiblingWithSuffix(_root, "missing-dest", "backup-")
+            .Should()
+            .BeNull("there was nothing pre-existing to back up for a Missing destination");
     }
 
     [Fact]
@@ -465,20 +520,35 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var destination = CreateEmptyDestination(_root, "empty-rollback-dest");
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-MoveDelegate {MoveDelegateThatFailsOnCall(2)}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-MoveDelegate {MoveDelegateThatFailsOnCall(2)}"
+        );
 
-        result.Succeeded.Should().BeFalse("the second rename (candidate -> destination) was made to fail deterministically");
+        result
+            .Succeeded.Should()
+            .BeFalse("the second rename (candidate -> destination) was made to fail deterministically");
         result.StandardError.Should().Contain("rolled back");
 
         Directory.Exists(destination).Should().BeTrue("the destination must exist after rollback");
-        Directory.GetFileSystemEntries(destination).Should().BeEmpty("the destination was empty before this run and must be byte-identical (empty) after rollback");
+        Directory
+            .GetFileSystemEntries(destination)
+            .Should()
+            .BeEmpty("the destination was empty before this run and must be byte-identical (empty) after rollback");
 
-        FindSiblingWithSuffix(_root, "empty-rollback-dest", "backup-").Should().BeNull("the backup must have been renamed back onto the destination path, so no backup sibling remains");
+        FindSiblingWithSuffix(_root, "empty-rollback-dest", "backup-")
+            .Should()
+            .BeNull("the backup must have been renamed back onto the destination path, so no backup sibling remains");
         var candidate = FindSiblingWithSuffix(_root, "empty-rollback-dest", "candidate-");
-        candidate.Should().NotBeNull("the candidate must be retained on disk for inspection, not deleted, after a rollback");
-        File.ReadAllText(Path.Combine(candidate!, "appsettings.json")).Should().Be("{\"source\":\"staged\"}", "the retained candidate is the fully-assembled one from before the failed swap");
+        candidate
+            .Should()
+            .NotBeNull("the candidate must be retained on disk for inspection, not deleted, after a rollback");
+        File.ReadAllText(Path.Combine(candidate!, "appsettings.json"))
+            .Should()
+            .Be(
+                "{\"source\":\"staged\"}",
+                "the retained candidate is the fully-assembled one from before the failed swap"
+            );
     }
 
     [Fact]
@@ -493,7 +563,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var staged = CreateStagedDirectory(_root, "sidecarleak1");
         File.WriteAllText(
             Path.Combine(staged, "notify-waits.db-wal"),
-            "STALE STAGED WAL -- must never leak into the destination");
+            "STALE STAGED WAL -- must never leak into the destination"
+        );
 
         // seedNotifyWaitsDb: false -- the existing destination has no notify-waits.db (and
         // therefore no sidecars) at all, so Copy-PreserveSet's own sidecar copy is a no-op here;
@@ -501,12 +572,16 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var destination = CreateRecognizedDestination(_root, "sidecar-leak-dest", "oldSC", seedNotifyWaitsDb: false);
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
-        File.Exists(Path.Combine(destination, "notify-waits.db-wal")).Should().BeFalse(
-            "a stray sidecar present in the staged output must never leak into the destination -- Copy-ReplaceSet must exclude notify-waits.db's sidecar names, not just the bare db filename");
+        File.Exists(Path.Combine(destination, "notify-waits.db-wal"))
+            .Should()
+            .BeFalse(
+                "a stray sidecar present in the staged output must never leak into the destination -- Copy-ReplaceSet must exclude notify-waits.db's sidecar names, not just the bare db filename"
+            );
     }
 
     [Fact]
@@ -516,16 +591,20 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var destination = CreateEmptyDestination(_root, "empty-dest");
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
         AssertByteIdentical(
             Path.Combine(staged, "LmStreaming.Sample.exe"),
             Path.Combine(destination, "LmStreaming.Sample.exe"),
-            "the Empty-destination deploy must land the staged output byte-for-byte");
-        FindSiblingWithSuffix(_root, "empty-dest", "backup-").Should().BeNull("the backup (the old empty directory) must be removed after a successful swap");
+            "the Empty-destination deploy must land the staged output byte-for-byte"
+        );
+        FindSiblingWithSuffix(_root, "empty-dest", "backup-")
+            .Should()
+            .BeNull("the backup (the old empty directory) must be removed after a successful swap");
     }
 
     // ----------------------------------------------------------------------------------------
@@ -553,19 +632,21 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         };
         var hashesBefore = preserveRelativeFiles.ToDictionary(
             relative => relative,
-            relative => Hash(Path.Combine(destination, relative)));
+            relative => Hash(Path.Combine(destination, relative))
+        );
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
 
         foreach (var relative in preserveRelativeFiles)
         {
-            Hash(Path.Combine(destination, relative)).Should().Be(
-                hashesBefore[relative],
-                $"preserved path '{relative}' must be byte-identical after the swap");
+            Hash(Path.Combine(destination, relative))
+                .Should()
+                .Be(hashesBefore[relative], $"preserved path '{relative}' must be byte-identical after the swap");
         }
 
         // Replace-set must have come from staging.
@@ -575,16 +656,22 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         // Functional coherence proof (not only a byte hash): open the post-swap notify-waits.db
         // through the real production store and confirm the previously-committed row is readable.
         var readBack = await ReadNotifyWaitsAsync(Path.Combine(destination, "notify-waits.db"));
-        readBack.Should().ContainSingle(r => r.WaitId == "wait-1" && r.ThreadId == "thread-1" && r.Label == "preserve-test");
+        readBack
+            .Should()
+            .ContainSingle(r => r.WaitId == "wait-1" && r.ThreadId == "thread-1" && r.Label == "preserve-test");
 
         // The successful-Recognized path's backup cleanup was previously asserted ONLY for the Empty
         // branch. A retained backup here is not cosmetic: it is a full second copy of the previous
         // deployment, including oauth-tokens/ and .env, left unencrypted beside the live directory
         // and silently doubling disk use on every upgrade.
-        FindSiblingWithSuffix(_root, "recognized-dest", "backup-").Should().BeNull(
-            "the previous deployment's backup must be removed after a successful swap, not left beside the destination holding a second copy of .env and oauth-tokens/");
-        FindSiblingWithSuffix(_root, "recognized-dest", "candidate-").Should().BeNull(
-            "the candidate must have been renamed into place, leaving no leftover sibling");
+        FindSiblingWithSuffix(_root, "recognized-dest", "backup-")
+            .Should()
+            .BeNull(
+                "the previous deployment's backup must be removed after a successful swap, not left beside the destination holding a second copy of .env and oauth-tokens/"
+            );
+        FindSiblingWithSuffix(_root, "recognized-dest", "candidate-")
+            .Should()
+            .BeNull("the candidate must have been renamed into place, leaving no leftover sibling");
     }
 
     [Fact]
@@ -601,25 +688,47 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var envHashBefore = Hash(Path.Combine(destination, ".env"));
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-MoveDelegate {MoveDelegateThatFailsOnCalls(2, 3)}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-MoveDelegate {MoveDelegateThatFailsOnCalls(2, 3)}"
+        );
 
         result.Succeeded.Should().BeFalse("both the swap and its rollback were made to fail deterministically");
 
         var backup = FindSiblingWithSuffix(_root, "dblfail-dest", "backup-");
         var candidate = FindSiblingWithSuffix(_root, "dblfail-dest", "candidate-");
-        backup.Should().NotBeNull("the previous deployment is still on disk under its backup name -- that is the whole recovery path");
+        backup
+            .Should()
+            .NotBeNull(
+                "the previous deployment is still on disk under its backup name -- that is the whole recovery path"
+            );
         candidate.Should().NotBeNull("the assembled candidate must be retained for inspection");
-        Directory.Exists(destination).Should().BeFalse("sanity: the destination genuinely does not exist in this window -- that is what makes naming the backup path load-bearing");
+        Directory
+            .Exists(destination)
+            .Should()
+            .BeFalse(
+                "sanity: the destination genuinely does not exist in this window -- that is what makes naming the backup path load-bearing"
+            );
 
         var stderr = result.StandardError;
-        stderr.Should().Contain(backup!, "the error must name the exact backup directory the operator has to rename back");
+        stderr
+            .Should()
+            .Contain(backup!, "the error must name the exact backup directory the operator has to rename back");
         stderr.Should().Contain(candidate!, "the error must name the retained candidate");
-        stderr.Should().Contain("Swap error", "the ORIGINAL swap failure must survive -- not be replaced by the rollback's own exception");
+        stderr
+            .Should()
+            .Contain(
+                "Swap error",
+                "the ORIGINAL swap failure must survive -- not be replaced by the rollback's own exception"
+            );
         stderr.Should().Contain("Rollback error", "the rollback failure must be reported too");
 
-        Hash(Path.Combine(backup!, ".env")).Should().Be(envHashBefore, "the operator's only copy of .env must be intact inside the backup the error points them at");
+        Hash(Path.Combine(backup!, ".env"))
+            .Should()
+            .Be(
+                envHashBefore,
+                "the operator's only copy of .env must be intact inside the backup the error points them at"
+            );
     }
 
     private static async Task<IReadOnlyList<NotifyWaitRecord>> ReadNotifyWaitsAsync(string databasePath)
@@ -636,12 +745,15 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var destination = CreateRecognizedDestination(_root, "recognized-dest", "old2", envContent: "REAL_ENV=42");
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
         var finalEnv = File.ReadAllText(Path.Combine(destination, ".env"));
-        finalEnv.Should().Be("REAL_ENV=42", "the destination .env must be the pre-existing one, never the staged decoy");
+        finalEnv
+            .Should()
+            .Be("REAL_ENV=42", "the destination .env must be the pre-existing one, never the staged decoy");
         finalEnv.Should().NotContain("DECOY_FROM_STAGING");
     }
 
@@ -654,12 +766,19 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         File.Exists(oldAssetPath).Should().BeTrue("sanity: the old hashed asset must exist before the run");
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
-        File.Exists(oldAssetPath).Should().BeFalse("the old hashed Vite asset must not survive -- the candidate's wwwroot/dist is built solely from the fresh staged output");
-        File.Exists(Path.Combine(destination, "wwwroot", "dist", "assets", "app.newhash1.js")).Should().BeTrue("the new hashed asset must be present");
+        File.Exists(oldAssetPath)
+            .Should()
+            .BeFalse(
+                "the old hashed Vite asset must not survive -- the candidate's wwwroot/dist is built solely from the fresh staged output"
+            );
+        File.Exists(Path.Combine(destination, "wwwroot", "dist", "assets", "app.newhash1.js"))
+            .Should()
+            .BeTrue("the new hashed asset must be present");
     }
 
     // ----------------------------------------------------------------------------------------
@@ -672,17 +791,19 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var stagedForMissing = CreateStagedDirectory(_root, "chkm1");
         var missingDestination = Path.Combine(_root, "missing-nocheck-dest");
         var missingResult = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(stagedForMissing)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(missingDestination)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(stagedForMissing)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(missingDestination)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}"
+        );
         missingResult.Succeeded.Should().BeTrue(missingResult.StandardError);
 
         var stagedForEmpty = CreateStagedDirectory(_root, "chke1");
         var emptyDestination = CreateEmptyDestination(_root, "empty-nocheck-dest");
         var emptyResult = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(stagedForEmpty)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(emptyDestination)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(stagedForEmpty)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(emptyDestination)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}"
+        );
         emptyResult.Succeeded.Should().BeTrue(emptyResult.StandardError);
     }
 
@@ -695,14 +816,17 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var originalExeContent = File.ReadAllText(exePath);
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateReportingRunningOnCall(1, exePath)}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateReportingRunningOnCall(1, exePath)}"
+        );
 
         result.Succeeded.Should().BeFalse("Checkpoint A must fail fast when the destination executable is running");
         result.StandardError.Should().Contain("Checkpoint A");
         File.ReadAllText(exePath).Should().Be(originalExeContent, "destination must be untouched");
-        FindSiblingWithSuffix(_root, "recognized-dest", "candidate-").Should().BeNull("no candidate may be created once Checkpoint A fails -- it runs before staging/candidate work");
+        FindSiblingWithSuffix(_root, "recognized-dest", "candidate-")
+            .Should()
+            .BeNull("no candidate may be created once Checkpoint A fails -- it runs before staging/candidate work");
     }
 
     [Fact]
@@ -714,17 +838,26 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var originalAppsettings = File.ReadAllText(Path.Combine(destination, "appsettings.json"));
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateReportingRunningOnCall(2, exePath)}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateReportingRunningOnCall(2, exePath)}"
+        );
 
-        result.Succeeded.Should().BeFalse("Checkpoint B must fail before the preserve-list is read from the live destination");
+        result
+            .Succeeded.Should()
+            .BeFalse("Checkpoint B must fail before the preserve-list is read from the live destination");
         result.StandardError.Should().Contain("Checkpoint B");
-        File.ReadAllText(Path.Combine(destination, "appsettings.json")).Should().Be(originalAppsettings, "destination must be untouched");
+        File.ReadAllText(Path.Combine(destination, "appsettings.json"))
+            .Should()
+            .Be(originalAppsettings, "destination must be untouched");
         var candidate = FindSiblingWithSuffix(_root, "recognized-dest", "candidate-");
         candidate.Should().NotBeNull("the candidate is retained for inspection, not deleted");
-        File.Exists(Path.Combine(candidate!, "appsettings.json")).Should().BeTrue("the replace-set copy (Step 4) must have already happened before Checkpoint B");
-        File.Exists(Path.Combine(candidate!, "conversations", "thread-1.json")).Should().BeFalse("the preserve-set copy (Step 6) must NOT have run -- Checkpoint B blocked it");
+        File.Exists(Path.Combine(candidate!, "appsettings.json"))
+            .Should()
+            .BeTrue("the replace-set copy (Step 4) must have already happened before Checkpoint B");
+        File.Exists(Path.Combine(candidate!, "conversations", "thread-1.json"))
+            .Should()
+            .BeFalse("the preserve-set copy (Step 6) must NOT have run -- Checkpoint B blocked it");
     }
 
     [Fact]
@@ -736,16 +869,21 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var originalAppsettings = File.ReadAllText(Path.Combine(destination, "appsettings.json"));
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateReportingRunningOnCall(3, exePath)}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateReportingRunningOnCall(3, exePath)}"
+        );
 
         result.Succeeded.Should().BeFalse("Checkpoint C must fail immediately before the swap");
         result.StandardError.Should().Contain("Checkpoint C");
-        File.ReadAllText(Path.Combine(destination, "appsettings.json")).Should().Be(originalAppsettings, "destination must be untouched -- no rename has happened yet");
+        File.ReadAllText(Path.Combine(destination, "appsettings.json"))
+            .Should()
+            .Be(originalAppsettings, "destination must be untouched -- no rename has happened yet");
         var candidate = FindSiblingWithSuffix(_root, "recognized-dest", "candidate-");
         candidate.Should().NotBeNull("the candidate is retained for inspection");
-        File.Exists(Path.Combine(candidate!, "conversations", "thread-1.json")).Should().BeTrue("the preserve-set copy (Step 6) must have completed before Checkpoint C");
+        File.Exists(Path.Combine(candidate!, "conversations", "thread-1.json"))
+            .Should()
+            .BeTrue("the preserve-set copy (Step 6) must have completed before Checkpoint C");
     }
 
     [Fact]
@@ -766,17 +904,28 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var bogusProjectFile = Path.Combine(_root, "does-not-exist.csproj");
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationPublish -ProjectFile '{PublishLaunchScriptHost.QuoteSingle(bogusProjectFile)}' " +
-            $"-ClientAppDirectory '{PublishLaunchScriptHost.QuoteSingle(bogusClientAppDirectory)}' " +
-            "-Configuration Debug " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-RepositoryRoot '{PublishLaunchScriptHost.QuoteSingle(_root)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateReportingRunningOnCall(1, exePath)}",
-            TimeSpan.FromSeconds(60));
+            $"Invoke-DestinationPublish -ProjectFile '{PublishLaunchScriptHost.QuoteSingle(bogusProjectFile)}' "
+                + $"-ClientAppDirectory '{PublishLaunchScriptHost.QuoteSingle(bogusClientAppDirectory)}' "
+                + "-Configuration Debug "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-RepositoryRoot '{PublishLaunchScriptHost.QuoteSingle(_root)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateReportingRunningOnCall(1, exePath)}",
+            TimeSpan.FromSeconds(60)
+        );
 
         result.Succeeded.Should().BeFalse("Checkpoint A must reject a running destination executable");
-        result.StandardError.Should().Contain("Checkpoint A", "the early check inside Invoke-DestinationPublish must be the one that fails, not a later build/npm error");
-        result.StandardOutput.Should().NotContain("Build client", "Checkpoint A must run BEFORE the client build phase, so that phase's marker must never be printed");
+        result
+            .StandardError.Should()
+            .Contain(
+                "Checkpoint A",
+                "the early check inside Invoke-DestinationPublish must be the one that fails, not a later build/npm error"
+            );
+        result
+            .StandardOutput.Should()
+            .NotContain(
+                "Build client",
+                "Checkpoint A must run BEFORE the client build phase, so that phase's marker must never be printed"
+            );
     }
 
     // ----------------------------------------------------------------------------------------
@@ -792,21 +941,40 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var conversationsHashBefore = Hash(Path.Combine(destination, "conversations", "thread-1.json"));
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-MoveDelegate {MoveDelegateThatFailsOnCall(2)}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-MoveDelegate {MoveDelegateThatFailsOnCall(2)}"
+        );
 
-        result.Succeeded.Should().BeFalse("the second rename (candidate -> destination) was made to fail deterministically");
+        result
+            .Succeeded.Should()
+            .BeFalse("the second rename (candidate -> destination) was made to fail deterministically");
         result.StandardError.Should().Contain("rolled back");
 
         Directory.Exists(destination).Should().BeTrue("the destination must exist after rollback");
-        Hash(Path.Combine(destination, "appsettings.json")).Should().Be(appsettingsHashBefore, "destination content must be byte-identical to its pre-run state after rollback");
-        Hash(Path.Combine(destination, "conversations", "thread-1.json")).Should().Be(conversationsHashBefore, "preserved data must also be byte-identical after rollback");
+        Hash(Path.Combine(destination, "appsettings.json"))
+            .Should()
+            .Be(
+                appsettingsHashBefore,
+                "destination content must be byte-identical to its pre-run state after rollback"
+            );
+        Hash(Path.Combine(destination, "conversations", "thread-1.json"))
+            .Should()
+            .Be(conversationsHashBefore, "preserved data must also be byte-identical after rollback");
 
-        FindSiblingWithSuffix(_root, "recognized-dest", "backup-").Should().BeNull("the backup must have been renamed back onto the destination path, so no backup sibling remains");
+        FindSiblingWithSuffix(_root, "recognized-dest", "backup-")
+            .Should()
+            .BeNull("the backup must have been renamed back onto the destination path, so no backup sibling remains");
         var candidate = FindSiblingWithSuffix(_root, "recognized-dest", "candidate-");
-        candidate.Should().NotBeNull("the candidate must be retained on disk for inspection, not deleted, after a rollback");
-        File.ReadAllText(Path.Combine(candidate!, "appsettings.json")).Should().Be("{\"source\":\"staged\"}", "the retained candidate is the fully-assembled one from before the failed swap");
+        candidate
+            .Should()
+            .NotBeNull("the candidate must be retained on disk for inspection, not deleted, after a rollback");
+        File.ReadAllText(Path.Combine(candidate!, "appsettings.json"))
+            .Should()
+            .Be(
+                "{\"source\":\"staged\"}",
+                "the retained candidate is the fully-assembled one from before the failed swap"
+            );
     }
 
     [Fact]
@@ -828,19 +996,28 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var markerExisting = Directory.CreateDirectory(Path.Combine(_root, "transient-marker-existing")).FullName;
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-MoveDelegate {MoveDelegateThatFailsTransientlyThenSucceeds(2, markerFrom, markerExisting)}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-MoveDelegate {MoveDelegateThatFailsTransientlyThenSucceeds(2, markerFrom, markerExisting)}"
+        );
 
-        result.Succeeded.Should().BeTrue(
-            "two transient IOExceptions on the first move must be absorbed by the retry -- " + result.StandardError);
-        File.ReadAllText(Path.Combine(destination, "appsettings.json")).Should().Be(
-            "{\"source\":\"staged\"}",
-            "the deploy must have completed for real, landing the staged content, not merely reported success");
-        FindSiblingWithSuffix(_root, "transient-retry-dest", "backup-").Should().BeNull(
-            "a successful swap -- retried or not -- must still remove the backup sibling");
-        FindSiblingWithSuffix(_root, "transient-retry-dest", "candidate-").Should().BeNull(
-            "a successful swap -- retried or not -- must still leave no candidate sibling behind");
+        result
+            .Succeeded.Should()
+            .BeTrue(
+                "two transient IOExceptions on the first move must be absorbed by the retry -- " + result.StandardError
+            );
+        File.ReadAllText(Path.Combine(destination, "appsettings.json"))
+            .Should()
+            .Be(
+                "{\"source\":\"staged\"}",
+                "the deploy must have completed for real, landing the staged content, not merely reported success"
+            );
+        FindSiblingWithSuffix(_root, "transient-retry-dest", "backup-")
+            .Should()
+            .BeNull("a successful swap -- retried or not -- must still remove the backup sibling");
+        FindSiblingWithSuffix(_root, "transient-retry-dest", "candidate-")
+            .Should()
+            .BeNull("a successful swap -- retried or not -- must still leave no candidate sibling behind");
     }
 
     [Fact]
@@ -861,30 +1038,53 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var appsettingsHashBefore = Hash(Path.Combine(destination, "appsettings.json"));
         var conversationsHashBefore = Hash(Path.Combine(destination, "conversations", "thread-1.json"));
         var markerFrom = Directory.CreateDirectory(Path.Combine(_root, "transient-rollback-marker-from")).FullName;
-        var markerExisting = Directory.CreateDirectory(Path.Combine(_root, "transient-rollback-marker-existing")).FullName;
+        var markerExisting = Directory
+            .CreateDirectory(Path.Combine(_root, "transient-rollback-marker-existing"))
+            .FullName;
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-MoveDelegate {MoveDelegateThatFailsSwapThenRecoversRollbackViaRetry(2, markerFrom, markerExisting)}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-MoveDelegate {MoveDelegateThatFailsSwapThenRecoversRollbackViaRetry(2, markerFrom, markerExisting)}"
+        );
 
-        result.Succeeded.Should().BeFalse(
-            "the swap itself was made to fail deterministically, so the deploy as a whole still reports failure even though the rollback recovered");
-        result.StandardError.Should().Contain(
-            "rolled back",
-            "two transient IOExceptions on the ROLLBACK move must be absorbed by the same retry that #371 added, landing the successful-rollback message rather than the double-failure one");
-        result.StandardError.Should().NotContain(
-            "ALSO FAILED",
-            "a recovered rollback must not report the double-failure path");
+        result
+            .Succeeded.Should()
+            .BeFalse(
+                "the swap itself was made to fail deterministically, so the deploy as a whole still reports failure even though the rollback recovered"
+            );
+        result
+            .StandardError.Should()
+            .Contain(
+                "rolled back",
+                "two transient IOExceptions on the ROLLBACK move must be absorbed by the same retry that #371 added, landing the successful-rollback message rather than the double-failure one"
+            );
+        result
+            .StandardError.Should()
+            .NotContain("ALSO FAILED", "a recovered rollback must not report the double-failure path");
 
         Directory.Exists(destination).Should().BeTrue("the destination must exist after a recovered rollback");
-        Hash(Path.Combine(destination, "appsettings.json")).Should().Be(appsettingsHashBefore, "destination content must be byte-identical to its pre-run state once the retried rollback completes");
-        Hash(Path.Combine(destination, "conversations", "thread-1.json")).Should().Be(conversationsHashBefore, "preserved data must also be byte-identical after the recovered rollback");
+        Hash(Path.Combine(destination, "appsettings.json"))
+            .Should()
+            .Be(
+                appsettingsHashBefore,
+                "destination content must be byte-identical to its pre-run state once the retried rollback completes"
+            );
+        Hash(Path.Combine(destination, "conversations", "thread-1.json"))
+            .Should()
+            .Be(conversationsHashBefore, "preserved data must also be byte-identical after the recovered rollback");
 
-        FindSiblingWithSuffix(_root, "transient-rollback-dest", "backup-").Should().BeNull(
-            "a recovered rollback -- retried or not -- must still rename the backup back onto the destination path, leaving no backup sibling");
+        FindSiblingWithSuffix(_root, "transient-rollback-dest", "backup-")
+            .Should()
+            .BeNull(
+                "a recovered rollback -- retried or not -- must still rename the backup back onto the destination path, leaving no backup sibling"
+            );
         var candidate = FindSiblingWithSuffix(_root, "transient-rollback-dest", "candidate-");
-        candidate.Should().NotBeNull("the assembled candidate must still be retained on disk for inspection after a recovered rollback");
+        candidate
+            .Should()
+            .NotBeNull(
+                "the assembled candidate must still be retained on disk for inspection after a recovered rollback"
+            );
     }
 
     // ----------------------------------------------------------------------------------------
@@ -910,16 +1110,31 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         // legitimately be running an unrelated "LmStreaming.Sample" process at the same time (e.g.
         // a dev server in another worktree/session) -- the property this test needs is "this
         // deploy call started no NEW instance", not "no instance exists anywhere on the box".
-        var pidsBefore = System.Diagnostics.Process.GetProcessesByName("LmStreaming.Sample").Select(p => p.Id).ToHashSet();
+        var pidsBefore = System
+            .Diagnostics.Process.GetProcessesByName("LmStreaming.Sample")
+            .Select(p => p.Id)
+            .ToHashSet();
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
-        result.StandardOutput.Should().NotContain("Launch published executable", "Invoke-DestinationDeploy never launches anything -- there is no launch phase reachable from it");
-        var pidsAfter = System.Diagnostics.Process.GetProcessesByName("LmStreaming.Sample").Select(p => p.Id).ToHashSet();
-        pidsAfter.Except(pidsBefore).Should().BeEmpty("no NEW real process by that name may be started as a result of this deploy");
+        result
+            .StandardOutput.Should()
+            .NotContain(
+                "Launch published executable",
+                "Invoke-DestinationDeploy never launches anything -- there is no launch phase reachable from it"
+            );
+        var pidsAfter = System
+            .Diagnostics.Process.GetProcessesByName("LmStreaming.Sample")
+            .Select(p => p.Id)
+            .ToHashSet();
+        pidsAfter
+            .Except(pidsBefore)
+            .Should()
+            .BeEmpty("no NEW real process by that name may be started as a result of this deploy");
     }
 
     // ----------------------------------------------------------------------------------------
@@ -944,11 +1159,16 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         // call operator (exactly how a real caller runs it, not dot-sourced), so it is the only
         // test that actually exercises that wiring.
         var destination = CreateUnrecognizedDestination(
-            _root, "real-invocation-unrecognized-dest", hasExe: true, hasAppsettings: true, hasIndex: false);
+            _root,
+            "real-invocation-unrecognized-dest",
+            hasExe: true,
+            hasAppsettings: true,
+            hasIndex: false
+        );
 
         var command =
-            $"& '{PublishLaunchScriptHost.QuoteSingle(PublishLaunchScriptHost.ScriptPath)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'";
+            $"& '{PublishLaunchScriptHost.QuoteSingle(PublishLaunchScriptHost.ScriptPath)}' "
+            + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'";
         var result = PublishLaunchScriptHost.Run(command, TimeSpan.FromSeconds(30));
 
         // Test-DestinationState and the Unrecognized throw run synchronously, before any
@@ -959,10 +1179,29 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         // build/publish -- something this test's bounded 30s timeout is deliberately too short for,
         // so a regression fails this test either via a wrong-content assertion or via a timeout,
         // not by silently passing.
-        result.Succeeded.Should().BeFalse("an Unrecognized destination passed via a real top-level -DestinationDirectory invocation must be rejected");
-        result.StandardError.Should().Contain("Unrecognized", "the destination branch, not the default pipeline, must run when -DestinationDirectory is bound on the script's real command line");
-        result.StandardOutput.Should().NotContain("Resolve port", "the default pipeline's port-resolution phase must never run once -DestinationDirectory is explicitly bound");
-        result.StandardOutput.Should().NotContain("Build client", "the default pipeline's client build must never run for an explicit -DestinationDirectory invocation");
+        result
+            .Succeeded.Should()
+            .BeFalse(
+                "an Unrecognized destination passed via a real top-level -DestinationDirectory invocation must be rejected"
+            );
+        result
+            .StandardError.Should()
+            .Contain(
+                "Unrecognized",
+                "the destination branch, not the default pipeline, must run when -DestinationDirectory is bound on the script's real command line"
+            );
+        result
+            .StandardOutput.Should()
+            .NotContain(
+                "Resolve port",
+                "the default pipeline's port-resolution phase must never run once -DestinationDirectory is explicitly bound"
+            );
+        result
+            .StandardOutput.Should()
+            .NotContain(
+                "Build client",
+                "the default pipeline's client build must never run for an explicit -DestinationDirectory invocation"
+            );
     }
 
     // ----------------------------------------------------------------------------------------
@@ -983,12 +1222,18 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         using var holder = new FileStream(exePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
         var result = PublishLaunchScriptHost.InvokeForJson(
-            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' " +
-            "-ProcessEnumerationDelegate { param() return @() }");
+            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' "
+                + "-ProcessEnumerationDelegate { param() return @() }"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
-        result.StandardOutput.Trim().Should().Be("true",
-            "a file that cannot be opened exclusively is held by something, and the rename this predicate guards would fail -- enumeration returning nothing must not override that");
+        result
+            .StandardOutput.Trim()
+            .Should()
+            .Be(
+                "true",
+                "a file that cannot be opened exclusively is held by something, and the rename this predicate guards would fail -- enumeration returning nothing must not override that"
+            );
     }
 
     [Fact]
@@ -1002,8 +1247,9 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         File.WriteAllText(exePath, "x");
 
         var result = PublishLaunchScriptHost.InvokeForJson(
-            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' " +
-            "-ProcessEnumerationDelegate { param() return @() }");
+            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' "
+                + "-ProcessEnumerationDelegate { param() return @() }"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
         result.StandardOutput.Trim().Should().Be("false");
@@ -1021,13 +1267,19 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         File.WriteAllText(exePath, "x");
 
         var result = PublishLaunchScriptHost.InvokeForJson(
-            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateWithUnreadablePath("elevated")} " +
-            $"-ExclusiveOpenProbeDelegate {ProbeDelegateReportingNotHeld}");
+            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateWithUnreadablePath("elevated")} "
+                + $"-ExclusiveOpenProbeDelegate {ProbeDelegateReportingNotHeld}"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
-        result.StandardOutput.Trim().Should().Be("true",
-            "a process whose NAME matches the target executable but whose path cannot be read is indeterminate, and indeterminate must count as held");
+        result
+            .StandardOutput.Trim()
+            .Should()
+            .Be(
+                "true",
+                "a process whose NAME matches the target executable but whose path cannot be read is indeterminate, and indeterminate must count as held"
+            );
     }
 
     [Fact]
@@ -1042,13 +1294,19 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         File.WriteAllText(exePath, "x");
 
         var result = PublishLaunchScriptHost.InvokeForJson(
-            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateWithUnreadablePath("csrss")} " +
-            $"-ExclusiveOpenProbeDelegate {ProbeDelegateReportingNotHeld}");
+            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateWithUnreadablePath("csrss")} "
+                + $"-ExclusiveOpenProbeDelegate {ProbeDelegateReportingNotHeld}"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
-        result.StandardOutput.Trim().Should().Be("false",
-            "an unrelated SYSTEM process that merely refuses to reveal its path must not be mistaken for our executable");
+        result
+            .StandardOutput.Trim()
+            .Should()
+            .Be(
+                "false",
+                "an unrelated SYSTEM process that merely refuses to reveal its path must not be mistaken for our executable"
+            );
     }
 
     [Fact]
@@ -1065,16 +1323,21 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         using (var holder = new FileStream(exePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
         {
             var result = PublishLaunchScriptHost.InvokeForEffect(
-                $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-                $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-                "-ProcessEnumerationDelegate { param() return @() }");
+                $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                    + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                    + "-ProcessEnumerationDelegate { param() return @() }"
+            );
 
             result.Succeeded.Should().BeFalse("the destination executable is locked, so the swap's rename would fail");
             result.StandardError.Should().Contain("Checkpoint A");
         }
 
-        Hash(exePath).Should().Be(exeHashBefore, "the destination must be entirely untouched when a checkpoint refuses");
-        FindSiblingWithSuffix(_root, "locked-chk-dest", "candidate-").Should().BeNull("Checkpoint A runs before any candidate is created");
+        Hash(exePath)
+            .Should()
+            .Be(exeHashBefore, "the destination must be entirely untouched when a checkpoint refuses");
+        FindSiblingWithSuffix(_root, "locked-chk-dest", "candidate-")
+            .Should()
+            .BeNull("Checkpoint A runs before any candidate is created");
     }
 
     // ----------------------------------------------------------------------------------------
@@ -1095,9 +1358,12 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         File.Delete(Path.Combine(staged, "appsettings.json"));
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Confirm-PublishArtifact -PublishDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}'");
+            $"Confirm-PublishArtifact -PublishDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}'"
+        );
 
-        result.Succeeded.Should().BeFalse("an artifact the classifier would later call Unrecognized must fail validation now");
+        result
+            .Succeeded.Should()
+            .BeFalse("an artifact the classifier would later call Unrecognized must fail validation now");
         result.StandardError.Should().Contain("appsettings.json");
     }
 
@@ -1108,7 +1374,8 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var staged = CreateStagedDirectory(_root, "complete1");
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Confirm-PublishArtifact -PublishDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}'");
+            $"Confirm-PublishArtifact -PublishDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
     }
@@ -1125,13 +1392,18 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var envHashBefore = Hash(Path.Combine(destination, ".env"));
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+        );
 
         result.Succeeded.Should().BeFalse("the assembled candidate is not a complete artifact");
-        Hash(Path.Combine(destination, "appsettings.json")).Should().Be(appsettingsHashBefore, "the destination must be untouched");
+        Hash(Path.Combine(destination, "appsettings.json"))
+            .Should()
+            .Be(appsettingsHashBefore, "the destination must be untouched");
         Hash(Path.Combine(destination, ".env")).Should().Be(envHashBefore, "preserved data must be untouched");
-        FindSiblingWithSuffix(_root, "nosettings-dest", "backup-").Should().BeNull("no rename ever happened, so no backup exists");
+        FindSiblingWithSuffix(_root, "nosettings-dest", "backup-")
+            .Should()
+            .BeNull("no rename ever happened, so no backup exists");
     }
 
     // ----------------------------------------------------------------------------------------
@@ -1155,14 +1427,26 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         File.WriteAllText(Path.Combine(orphan, ".env"), "PRECIOUS=1");
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}"
+        );
 
-        result.Succeeded.Should().BeFalse("a Missing destination with leftover deploy siblings is an interrupted deploy, not a fresh install");
-        result.StandardError.Should().Contain(orphan, "the error must name the exact sibling so the operator knows what to rename back");
-        Directory.Exists(destination).Should().BeFalse("nothing may be deployed while the interrupted state is unresolved");
-        File.ReadAllText(Path.Combine(orphan, ".env")).Should().Be("PRECIOUS=1", "the orphaned sibling must be left exactly as found");
+        result
+            .Succeeded.Should()
+            .BeFalse(
+                "a Missing destination with leftover deploy siblings is an interrupted deploy, not a fresh install"
+            );
+        result
+            .StandardError.Should()
+            .Contain(orphan, "the error must name the exact sibling so the operator knows what to rename back");
+        Directory
+            .Exists(destination)
+            .Should()
+            .BeFalse("nothing may be deployed while the interrupted state is unresolved");
+        File.ReadAllText(Path.Combine(orphan, ".env"))
+            .Should()
+            .Be("PRECIOUS=1", "the orphaned sibling must be left exactly as found");
     }
 
     [Fact]
@@ -1176,9 +1460,10 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var destination = Path.Combine(_root, "orphan2-dest");
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
         Directory.Exists(destination).Should().BeTrue();
@@ -1201,23 +1486,33 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         // new machine is legitimate, and a seeded .env would be indistinguishable from a real one --
         // shadowing the operator's own copy and then being preserved forever by Copy-PreserveSet.
         var staged = CreateStagedDirectory(_root, "fresh-" + state);
-        var destination = state == "missing"
-            ? Path.Combine(_root, "fresh-missing-dest")
-            : CreateEmptyDestination(_root, "fresh-empty-dest");
+        var destination =
+            state == "missing"
+                ? Path.Combine(_root, "fresh-missing-dest")
+                : CreateEmptyDestination(_root, "fresh-empty-dest");
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
-            $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' "
+                + $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}"
+        );
 
-        result.Succeeded.Should().BeTrue("a fresh install is legitimate and must not be blocked: " + result.StandardError);
+        result
+            .Succeeded.Should()
+            .BeTrue("a fresh install is legitimate and must not be blocked: " + result.StandardError);
 
         // Write-Warning under `pwsh -Command` lands on STDOUT ("WARNING: ..."), not stderr --
         // verified directly rather than assumed; asserting on stderr silently passed nothing.
-        result.StandardOutput.Should().Contain("WARNING", "the fresh-install notice must be a real warning, not a quiet Write-Host line");
+        result
+            .StandardOutput.Should()
+            .Contain("WARNING", "the fresh-install notice must be a real warning, not a quiet Write-Host line");
         result.StandardOutput.Should().Contain(".env", "the warning must name what is missing");
         result.StandardOutput.Should().Contain(destination, "the warning must name the exact deployment it applies to");
-        File.Exists(Path.Combine(destination, ".env")).Should().BeFalse("no placeholder .env may be seeded -- it would be indistinguishable from a real one and preserved forever");
+        File.Exists(Path.Combine(destination, ".env"))
+            .Should()
+            .BeFalse(
+                "no placeholder .env may be seeded -- it would be indistinguishable from a real one and preserved forever"
+            );
     }
 
     [Fact]
@@ -1229,11 +1524,14 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var destination = CreateRecognizedDestination(_root, "nowarn-dest", "oldNW");
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
-            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' "
+                + $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
-        result.StandardOutput.Should().NotContain("Fresh deployment", "an upgrade preserves .env, so the fresh-install warning must not fire");
+        result
+            .StandardOutput.Should()
+            .NotContain("Fresh deployment", "an upgrade preserves .env, so the fresh-install warning must not fire");
         File.Exists(Path.Combine(destination, ".env")).Should().BeTrue();
     }
 
@@ -1252,13 +1550,19 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         // expression in parentheses, and a parenthesized expression cannot contain a statement
         // separator.
         var result = PublishLaunchScriptHost.InvokeForJson(
-            $"& {{ Set-Location -LiteralPath '{PublishLaunchScriptHost.QuoteSingle(_root)}'; " +
-            "Resolve-DestinationDirectory -DestinationDirectory 'relative-deploy' }");
+            $"& {{ Set-Location -LiteralPath '{PublishLaunchScriptHost.QuoteSingle(_root)}'; "
+                + "Resolve-DestinationDirectory -DestinationDirectory 'relative-deploy' }"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
-        result.StandardOutput.Trim().Trim('"').Should().Be(
-            Path.Combine(_root, "relative-deploy").Replace("\\", "\\\\"),
-            "a relative destination must resolve against the caller's working directory, absolutely");
+        result
+            .StandardOutput.Trim()
+            .Trim('"')
+            .Should()
+            .Be(
+                Path.Combine(_root, "relative-deploy").Replace("\\", "\\\\"),
+                "a relative destination must resolve against the caller's working directory, absolutely"
+            );
     }
 
     [Fact]
@@ -1270,11 +1574,15 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var withSlash = Path.Combine(_root, "trailing-deploy") + Path.DirectorySeparatorChar;
 
         var result = PublishLaunchScriptHost.InvokeForJson(
-            $"Resolve-DestinationDirectory -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(withSlash)}'");
+            $"Resolve-DestinationDirectory -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(withSlash)}'"
+        );
 
         result.Succeeded.Should().BeTrue(result.StandardError);
-        result.StandardOutput.Trim().Trim('"').Should().Be(
-            Path.Combine(_root, "trailing-deploy").Replace("\\", "\\\\"));
+        result
+            .StandardOutput.Trim()
+            .Trim('"')
+            .Should()
+            .Be(Path.Combine(_root, "trailing-deploy").Replace("\\", "\\\\"));
     }
 
     [Fact]
@@ -1285,9 +1593,12 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         var driveRoot = Path.GetPathRoot(Path.GetTempPath())!;
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"Resolve-DestinationDirectory -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(driveRoot)}'");
+            $"Resolve-DestinationDirectory -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(driveRoot)}'"
+        );
 
-        result.Succeeded.Should().BeFalse("deploying to a volume root must be refused explicitly, not fail obscurely inside the swap");
+        result
+            .Succeeded.Should()
+            .BeFalse("deploying to a volume root must be refused explicitly, not fail obscurely inside the swap");
         result.StandardError.Should().Contain("root");
     }
 
@@ -1320,12 +1631,17 @@ public sealed class PublishLaunchDestinationTests : IDisposable
             @"Recovery required: rename 'C:\Program Files\Some Deployment Directory\app.backup-20260101T000000000Z-1234' back onto 'C:\Program Files\Some Deployment Directory\app' to recover.";
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
-            $"& {{ throw '{PublishLaunchScriptHost.QuoteSingle(message)}' }}");
+            $"& {{ throw '{PublishLaunchScriptHost.QuoteSingle(message)}' }}"
+        );
 
         result.Succeeded.Should().BeFalse("a thrown message must still make the invocation fail");
-        result.StandardError.Trim('\r', '\n').Should().Be(
-            message,
-            "stderr must carry the message the script composed, byte for byte -- not a formatter-rendered version of it, wrapped or otherwise");
+        result
+            .StandardError.Trim('\r', '\n')
+            .Should()
+            .Be(
+                message,
+                "stderr must carry the message the script composed, byte for byte -- not a formatter-rendered version of it, wrapped or otherwise"
+            );
     }
 
     // ----------------------------------------------------------------------------------------
@@ -1340,10 +1656,13 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         // comment -- all of which this file now contains plenty of, and any of which would make the
         // script fail at dot-source time on the operator's machine rather than here.
         var result = PublishLaunchScriptHost.Run(
-            "$e = $null; $t = $null; " +
-            $"[System.Management.Automation.Language.Parser]::ParseFile('{PublishLaunchScriptHost.QuoteSingle(PublishLaunchScriptHost.ScriptPath)}', [ref]$t, [ref]$e) | Out-Null; " +
-            "if ($e) { $e | ForEach-Object { \"$($_.Extent.StartLineNumber): $($_.Message)\" }; exit 1 }");
+            "$e = $null; $t = $null; "
+                + $"[System.Management.Automation.Language.Parser]::ParseFile('{PublishLaunchScriptHost.QuoteSingle(PublishLaunchScriptHost.ScriptPath)}', [ref]$t, [ref]$e) | Out-Null; "
+                + "if ($e) { $e | ForEach-Object { \"$($_.Extent.StartLineNumber): $($_.Message)\" }; exit 1 }"
+        );
 
-        result.Succeeded.Should().BeTrue("publish-launch.ps1 must parse cleanly: " + result.StandardOutput + result.StandardError);
+        result
+            .Succeeded.Should()
+            .BeTrue("publish-launch.ps1 must parse cleanly: " + result.StandardOutput + result.StandardError);
     }
 }

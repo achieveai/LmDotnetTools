@@ -57,9 +57,7 @@ public sealed class SqliteTenantStore : ITenantStore
     }
 
     /// <inheritdoc />
-    public async Task<TenantRecord?> FindByEntraTenantIdAsync(
-        string entraTenantId,
-        CancellationToken ct = default)
+    public async Task<TenantRecord?> FindByEntraTenantIdAsync(string entraTenantId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(entraTenantId);
 
@@ -70,14 +68,13 @@ public sealed class SqliteTenantStore : ITenantStore
                 "SELECT tenant_id, entra_tenant_id, display_name, status, created_at, created_by "
                     + "FROM tenants WHERE entra_tenant_id = $key;",
                 NormalizeEntraTenantId(entraTenantId)!,
-                ct)
+                ct
+            )
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public async Task<TenantRecord?> FindByTenantIdAsync(
-        string tenantId,
-        CancellationToken ct = default)
+    public async Task<TenantRecord?> FindByTenantIdAsync(string tenantId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
 
@@ -85,7 +82,8 @@ public sealed class SqliteTenantStore : ITenantStore
                 "SELECT tenant_id, entra_tenant_id, display_name, status, created_at, created_by "
                     + "FROM tenants WHERE tenant_id = $key;",
                 tenantId,
-                ct)
+                ct
+            )
             .ConfigureAwait(false);
     }
 
@@ -119,7 +117,8 @@ public sealed class SqliteTenantStore : ITenantStore
     public async Task<TenantProvisionOutcome> ProvisionAsync(
         TenantRecord tenant,
         string firstAdminUpn,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(tenant);
         ArgumentException.ThrowIfNullOrWhiteSpace(tenant.TenantId);
@@ -144,8 +143,10 @@ public sealed class SqliteTenantStore : ITenantStore
 
         var normalizedEntraTenantId = NormalizeEntraTenantId(tenant.EntraTenantId);
 
-        if (normalizedEntraTenantId is { } entra
-            && await ExistsAsync(connection, transaction, "entra_tenant_id", entra, ct).ConfigureAwait(false))
+        if (
+            normalizedEntraTenantId is { } entra
+            && await ExistsAsync(connection, transaction, "entra_tenant_id", entra, ct).ConfigureAwait(false)
+        )
         {
             transaction.Rollback();
             return TenantProvisionOutcome.EntraTenantIdClaimed;
@@ -160,11 +161,12 @@ public sealed class SqliteTenantStore : ITenantStore
                 """;
             _ = insertTenant.Parameters.AddWithValue("$tenantId", tenant.TenantId);
             _ = insertTenant.Parameters.AddWithValue(
-                "$entraTenantId", (object?)normalizedEntraTenantId ?? DBNull.Value);
+                "$entraTenantId",
+                (object?)normalizedEntraTenantId ?? DBNull.Value
+            );
             _ = insertTenant.Parameters.AddWithValue("$displayName", tenant.DisplayName);
             _ = insertTenant.Parameters.AddWithValue("$status", FormatStatus(tenant.Status));
-            _ = insertTenant.Parameters.AddWithValue(
-                "$createdAt", tenant.CreatedAt.ToUnixTimeMilliseconds());
+            _ = insertTenant.Parameters.AddWithValue("$createdAt", tenant.CreatedAt.ToUnixTimeMilliseconds());
             _ = insertTenant.Parameters.AddWithValue("$createdBy", tenant.CreatedBy);
             _ = await insertTenant.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
@@ -178,8 +180,7 @@ public sealed class SqliteTenantStore : ITenantStore
                 """;
             _ = insertAdmin.Parameters.AddWithValue("$tenantId", tenant.TenantId);
             _ = insertAdmin.Parameters.AddWithValue("$upn", Normalize(firstAdminUpn));
-            _ = insertAdmin.Parameters.AddWithValue(
-                "$grantedAt", tenant.CreatedAt.ToUnixTimeMilliseconds());
+            _ = insertAdmin.Parameters.AddWithValue("$grantedAt", tenant.CreatedAt.ToUnixTimeMilliseconds());
             _ = insertAdmin.Parameters.AddWithValue("$grantedBy", tenant.CreatedBy);
             _ = await insertAdmin.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
@@ -193,14 +194,14 @@ public sealed class SqliteTenantStore : ITenantStore
         SqliteTransaction transaction,
         string column,
         string value,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
 
         // The column name comes from this file's own two call sites, never from input.
-        command.CommandText =
-            FormattableString.Invariant($"SELECT COUNT(*) FROM tenants WHERE {column} = $value;");
+        command.CommandText = FormattableString.Invariant($"SELECT COUNT(*) FROM tenants WHERE {column} = $value;");
         _ = command.Parameters.AddWithValue("$value", value);
 
         var count = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
@@ -213,7 +214,8 @@ public sealed class SqliteTenantStore : ITenantStore
         string upn,
         string userId,
         DateTimeOffset boundAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
         ArgumentException.ThrowIfNullOrWhiteSpace(upn);
@@ -262,8 +264,7 @@ public sealed class SqliteTenantStore : ITenantStore
         using (var read = connection.CreateCommand())
         {
             read.Transaction = transaction;
-            read.CommandText =
-                "SELECT tenant_id, entra_tenant_id FROM tenants WHERE entra_tenant_id IS NOT NULL;";
+            read.CommandText = "SELECT tenant_id, entra_tenant_id FROM tenants WHERE entra_tenant_id IS NOT NULL;";
 
             using var reader = await read.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -311,8 +312,7 @@ public sealed class SqliteTenantStore : ITenantStore
 
             using var update = connection.CreateCommand();
             update.Transaction = transaction;
-            update.CommandText =
-                "UPDATE tenants SET entra_tenant_id = $canonical WHERE tenant_id = $tenantId;";
+            update.CommandText = "UPDATE tenants SET entra_tenant_id = $canonical WHERE tenant_id = $tenantId;";
             _ = update.Parameters.AddWithValue("$canonical", canonical);
             _ = update.Parameters.AddWithValue("$tenantId", tenantId);
             updated += await update.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
@@ -326,7 +326,8 @@ public sealed class SqliteTenantStore : ITenantStore
     public async Task<bool> TryEnsureQuarantineTenantAsync(
         string tenantId,
         DateTimeOffset createdAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
 
@@ -339,8 +340,7 @@ public sealed class SqliteTenantStore : ITenantStore
         // pass the check. That is the concurrent-startup case this whole path exists under.
         using var transaction = connection.BeginTransaction(deferred: false);
 
-        var existing = await ReadQuarantineStateAsync(connection, transaction, tenantId, ct)
-            .ConfigureAwait(false);
+        var existing = await ReadQuarantineStateAsync(connection, transaction, tenantId, ct).ConfigureAwait(false);
 
         if (existing == QuarantineState.OtherTenant)
         {
@@ -386,12 +386,12 @@ public sealed class SqliteTenantStore : ITenantStore
         SqliteConnection connection,
         SqliteTransaction transaction,
         string tenantId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText =
-            "SELECT entra_tenant_id, status FROM tenants WHERE tenant_id = $tenantId;";
+        command.CommandText = "SELECT entra_tenant_id, status FROM tenants WHERE tenant_id = $tenantId;";
         _ = command.Parameters.AddWithValue("$tenantId", tenantId);
 
         using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -400,17 +400,14 @@ public sealed class SqliteTenantStore : ITenantStore
             return QuarantineState.Absent;
         }
 
-        var isQuarantine = reader.IsDBNull(0)
-            && string.Equals(reader.GetString(1), StatusQuarantined, StringComparison.Ordinal);
+        var isQuarantine =
+            reader.IsDBNull(0) && string.Equals(reader.GetString(1), StatusQuarantined, StringComparison.Ordinal);
 
         return isQuarantine ? QuarantineState.Quarantine : QuarantineState.OtherTenant;
     }
 
     /// <inheritdoc />
-    public async Task<bool> IsTenantAdminAsync(
-        string tenantId,
-        string userId,
-        CancellationToken ct = default)
+    public async Task<bool> IsTenantAdminAsync(string tenantId, string userId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
         ArgumentException.ThrowIfNullOrWhiteSpace(userId);
@@ -419,8 +416,7 @@ public sealed class SqliteTenantStore : ITenantStore
 
         await using var connection = await _factory.GetConnectionAsync(ct).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText =
-            "SELECT COUNT(*) FROM tenant_admins WHERE tenant_id = $tenantId AND user_id = $userId;";
+        command.CommandText = "SELECT COUNT(*) FROM tenant_admins WHERE tenant_id = $tenantId AND user_id = $userId;";
         _ = command.Parameters.AddWithValue("$tenantId", tenantId);
         _ = command.Parameters.AddWithValue("$userId", userId);
 
@@ -469,21 +465,23 @@ public sealed class SqliteTenantStore : ITenantStore
             : trimmed.ToLowerInvariant();
     }
 
-    private static string FormatStatus(TenantStatus status) => status switch
-    {
-        TenantStatus.Suspended => StatusSuspended,
-        TenantStatus.Quarantined => StatusQuarantined,
-        _ => StatusActive,
-    };
+    private static string FormatStatus(TenantStatus status) =>
+        status switch
+        {
+            TenantStatus.Suspended => StatusSuspended,
+            TenantStatus.Quarantined => StatusQuarantined,
+            _ => StatusActive,
+        };
 
     /// <summary>
     /// Reads a status column. Anything that is not exactly <c>active</c> reads as suspended: an
     /// unrecognised status must fail closed, never grant sign-in.
     /// </summary>
-    private static TenantStatus ParseStatus(string status) => status switch
-    {
-        StatusActive => TenantStatus.Active,
-        StatusQuarantined => TenantStatus.Quarantined,
-        _ => TenantStatus.Suspended,
-    };
+    private static TenantStatus ParseStatus(string status) =>
+        status switch
+        {
+            StatusActive => TenantStatus.Active,
+            StatusQuarantined => TenantStatus.Quarantined,
+            _ => TenantStatus.Suspended,
+        };
 }

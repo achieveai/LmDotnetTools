@@ -36,14 +36,15 @@ internal sealed class FakeReviewCommentPublisher : IReviewCommentPublisher
     public Task<PostedComment?> FindPostedCommentAsync(
         ReviewCommentTarget target,
         string idempotencyKey,
-        CancellationToken cancellationToken) =>
-        Task.FromResult(_byKey.TryGetValue(idempotencyKey, out var comment) ? comment : null);
+        CancellationToken cancellationToken
+    ) => Task.FromResult(_byKey.TryGetValue(idempotencyKey, out var comment) ? comment : null);
 
     public Task<PostedComment> PostReviewCommentAsync(
         ReviewCommentTarget target,
         string idempotencyKey,
         string body,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         PostedKeys.Add(idempotencyKey);
         PostedBodies.Add(body);
@@ -69,7 +70,8 @@ internal sealed class FakeReviewCommentPublisher : IReviewCommentPublisher
 
     public Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
         ReviewCommentTarget target,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ListCallCount++;
         return ListFailure is { } failure

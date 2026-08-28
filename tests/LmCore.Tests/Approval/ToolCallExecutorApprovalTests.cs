@@ -14,15 +14,13 @@ public class ToolCallExecutorApprovalTests
         {
             ToolCalls =
             [
-                .. toolCallIds.Select(
-                    id => new ToolCall
-                    {
-                        FunctionName = "echo",
-                        FunctionArgs = $$"""{"id":"{{id}}"}""",
-                        ToolCallId = id,
-                        ExecutionTarget = ExecutionTarget.LocalFunction,
-                    }
-                ),
+                .. toolCallIds.Select(id => new ToolCall
+                {
+                    FunctionName = "echo",
+                    FunctionArgs = $$"""{"id":"{{id}}"}""",
+                    ToolCallId = id,
+                    ExecutionTarget = ExecutionTarget.LocalFunction,
+                }),
             ],
             Role = Role.Assistant,
             ThreadId = "thread_1",
@@ -111,10 +109,7 @@ public class ToolCallExecutorApprovalTests
         );
 
         Assert.Equal(["call_1", "call_3"], order);
-        Assert.Equal(
-            ["call_1", "call_2", "call_3"],
-            result.ToolCallResults.Select(r => r.ToolCallId)
-        );
+        Assert.Equal(["call_1", "call_2", "call_3"], result.ToolCallResults.Select(r => r.ToolCallId));
         Assert.False(result.ToolCallResults[0].IsError);
         Assert.True(result.ToolCallResults[1].IsError);
         Assert.False(result.ToolCallResults[2].IsError);

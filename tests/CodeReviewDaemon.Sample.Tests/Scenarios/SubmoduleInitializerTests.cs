@@ -18,18 +18,16 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class SubmoduleInitializerTests : LoggingTestBase
 {
     private const string RepoRoot = "/work/target";
-    private static readonly GitRemoteUrl RepoRemote =
-        GitRemoteUrl.Parse("https://github.com/acme/widgets.git");
+    private static readonly GitRemoteUrl RepoRemote = GitRemoteUrl.Parse("https://github.com/acme/widgets.git");
 
     // The reviewed ADO repo's superproject remote (modern host); its own .gitmodules below use the LEGACY
     // {org}.visualstudio.com host, exercising the canonicalizer in SubmoduleInitializer.DecideFetch.
-    private static readonly GitRemoteUrl AdoRepoRemote =
-        GitRemoteUrl.Parse("https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/MCQdbDEV");
+    private static readonly GitRemoteUrl AdoRepoRemote = GitRemoteUrl.Parse(
+        "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/MCQdbDEV"
+    );
 
     public SubmoduleInitializerTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private static OperationPolicy CreatePolicy() =>
         new(
@@ -42,10 +40,9 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
                 ReviewBotHost: "github.com",
                 ReviewBotRepoPath: "/acme/reviewbot",
                 ApiHost: "api.github.com",
-                AllowedSubmodules:
-                [
-                    new SubmoduleAllowRule("github.com", "/acme/shared-lib"),
-                ]));
+                AllowedSubmodules: [new SubmoduleAllowRule("github.com", "/acme/shared-lib")]
+            )
+        );
 
     private SubmoduleInitializer CreateInitializer(
         ISandboxCommandRunner runner,
@@ -57,7 +54,8 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
             fileSystem,
             CreatePolicy(),
             "github",
-            logger ?? LoggerFactory.CreateLogger<SubmoduleInitializer>());
+            logger ?? LoggerFactory.CreateLogger<SubmoduleInitializer>()
+        );
 
     // An ADO allow-list keyed to the MODERN dev.azure.com host+path (as BuildStoreSubmoduleAllowList emits):
     // the reviewed repo's own first-party submodules LibProfiler + "Microsoft%20Orleans". SecretLib is a
@@ -78,18 +76,18 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
                 [
                     new SubmoduleAllowRule("dev.azure.com", "/mcqdbdev/MCQdb_Development/_git/LibProfiler"),
                     new SubmoduleAllowRule("dev.azure.com", "/mcqdbdev/MCQdb_Development/_git/Microsoft%20Orleans"),
-                ]));
+                ]
+            )
+        );
 
-    private SubmoduleInitializer CreateAdoInitializer(
-        ISandboxCommandRunner runner,
-        ISandboxFileSystem fileSystem
-    ) =>
+    private SubmoduleInitializer CreateAdoInitializer(ISandboxCommandRunner runner, ISandboxFileSystem fileSystem) =>
         new(
             new GitRunner(runner),
             fileSystem,
             CreateAdoPolicy(),
             "ado",
-            LoggerFactory.CreateLogger<SubmoduleInitializer>());
+            LoggerFactory.CreateLogger<SubmoduleInitializer>()
+        );
 
     [Fact]
     public async Task Initializes_an_allowed_submodule_and_denies_an_off_allow_list_sibling()
@@ -105,8 +103,7 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
             	url = https://github.com/other/secret.git
             """;
 
-        var outcome = await CreateInitializer(runner, fs)
-            .InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
+        var outcome = await CreateInitializer(runner, fs).InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
 
         outcome.InitializedPaths.Should().Equal("vendor/shared-lib");
         outcome.Denied.Should().ContainSingle();
@@ -136,8 +133,7 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
             	url = https://github.com/evil/deep.git
             """;
 
-        var outcome = await CreateInitializer(runner, fs)
-            .InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
+        var outcome = await CreateInitializer(runner, fs).InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
 
         outcome.InitializedPaths.Should().Equal("vendor/shared-lib");
         outcome.Denied.Should().ContainSingle();
@@ -156,14 +152,16 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
             	url = https://github.com/attacker/shared-lib.git
             """;
 
-        var outcome = await CreateInitializer(runner, fs)
-            .InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
+        var outcome = await CreateInitializer(runner, fs).InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
 
         outcome.InitializedPaths.Should().BeEmpty();
         outcome.Denied.Should().ContainSingle();
-        Argv(runner).Should().NotContain(
-            argv => argv.Contains("--init", StringComparison.Ordinal),
-            "a denied submodule must never be init'd");
+        Argv(runner)
+            .Should()
+            .NotContain(
+                argv => argv.Contains("--init", StringComparison.Ordinal),
+                "a denied submodule must never be init'd"
+            );
     }
 
     /// <summary>
@@ -184,16 +182,21 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
             	url = https://github.com/attacker/shared-lib.git
             """;
 
-        var outcome = await CreateInitializer(runner, fs)
-            .InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
+        var outcome = await CreateInitializer(runner, fs).InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
 
         outcome.Denied.Should().ContainSingle();
-        var deinit = runner.Commands.Should().ContainSingle(
-            command => string.Join(' ', command.Argv).Contains("submodule deinit", StringComparison.Ordinal))
+        var deinit = runner
+            .Commands.Should()
+            .ContainSingle(command =>
+                string.Join(' ', command.Argv).Contains("submodule deinit", StringComparison.Ordinal)
+            )
             .Subject;
-        string.Join(' ', deinit.Argv).Should().EndWith(
-            "submodule deinit --force -- vendor/shared-lib",
-            "--force is required: the leftover checkout is dirty relative to a policy that now denies it");
+        string.Join(' ', deinit.Argv)
+            .Should()
+            .EndWith(
+                "submodule deinit --force -- vendor/shared-lib",
+                "--force is required: the leftover checkout is dirty relative to a policy that now denies it"
+            );
         deinit.WorkingDirectory.Should().Be(RepoRoot);
     }
 
@@ -205,8 +208,10 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
     [Fact]
     public async Task Says_so_in_the_denial_when_a_denied_submodules_worktree_could_not_be_removed()
     {
-        var runner = new FakeSandboxCommandRunner()
-            .OnArgvContains("submodule deinit", new SandboxCommandResult(1, string.Empty, "fatal: no such path"));
+        var runner = new FakeSandboxCommandRunner().OnArgvContains(
+            "submodule deinit",
+            new SandboxCommandResult(1, string.Empty, "fatal: no such path")
+        );
         var fs = new FakeSandboxFileSystem();
         var logger = new CapturingLogger<SubmoduleInitializer>();
         fs.Files[$"{RepoRoot}/.gitmodules"] = """
@@ -220,10 +225,13 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
 
         var denied = outcome.Denied.Should().ContainSingle().Subject;
         denied.Path.Should().Be("vendor/shared-lib");
-        denied.Reason.Should().Contain(
-            "fatal: no such path", "the caller can only classify a failed removal if it carries git's reason");
-        logger.CountAtLevel(LogLevel.Error, "worktree could not be removed").Should().Be(
-            1, "a denial that did not take effect on disk is an enforcement failure, not a warning");
+        denied
+            .Reason.Should()
+            .Contain("fatal: no such path", "the caller can only classify a failed removal if it carries git's reason");
+        logger
+            .CountAtLevel(LogLevel.Error, "worktree could not be removed")
+            .Should()
+            .Be(1, "a denial that did not take effect on disk is an enforcement failure, not a warning");
     }
 
     private static List<string> Argv(FakeSandboxCommandRunner runner) =>
@@ -241,8 +249,7 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
             	url = ../../evil/secret.git
             """;
 
-        var outcome = await CreateInitializer(runner, fs)
-            .InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
+        var outcome = await CreateInitializer(runner, fs).InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
 
         outcome.InitializedPaths.Should().BeEmpty();
         outcome.Denied.Should().ContainSingle();
@@ -262,14 +269,16 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
             	url = {deniedUrl}
             """;
 
-        var outcome = await CreateInitializer(runner, fs)
-            .InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
+        var outcome = await CreateInitializer(runner, fs).InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
 
         outcome.InitializedPaths.Should().BeEmpty();
         outcome.Denied.Should().ContainSingle();
-        Argv(runner).Should().NotContain(
-            argv => argv.Contains("--init", StringComparison.Ordinal),
-            "a denied transport must never be init'd");
+        Argv(runner)
+            .Should()
+            .NotContain(
+                argv => argv.Contains("--init", StringComparison.Ordinal),
+                "a denied transport must never be init'd"
+            );
     }
 
     [Fact]
@@ -343,17 +352,16 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
                 AllowedSubmodules:
                 [
                     new SubmoduleAllowRule("dev.azure.com", "/mcqdbdev/MCQdb_Development/_git/MCQdbDEV"),
-                ]));
+                ]
+            )
+        );
 
-    private const string EncodedTraversalPrefix =
-        "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/MCQdbDEV.git/";
+    private const string EncodedTraversalPrefix = "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/MCQdbDEV.git/";
 
-    private const string EncodedTraversalSuffix =
-        "/mcqdbdev/MCQdb_Development/_git/SecretRepo";
+    private const string EncodedTraversalSuffix = "/mcqdbdev/MCQdb_Development/_git/SecretRepo";
 
     /// <summary>The reviewer's verbatim attack URL.</summary>
-    private const string EncodedTraversalUrl =
-        EncodedTraversalPrefix + "%2e%2e/%2e%2e/%2e%2e" + EncodedTraversalSuffix;
+    private const string EncodedTraversalUrl = EncodedTraversalPrefix + "%2e%2e/%2e%2e/%2e%2e" + EncodedTraversalSuffix;
 
     [Theory]
     // The reviewer's exact URL, then the spellings a single-escape blocklist would miss.
@@ -373,20 +381,26 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
             """;
 
         var outcome = await new SubmoduleInitializer(
-                new GitRunner(runner),
-                fs,
-                CreateAdoStorePolicy(),
-                "ado",
-                LoggerFactory.CreateLogger<SubmoduleInitializer>())
-            .InitializeAsync(RepoRoot, AdoRepoRemote, CancellationToken.None);
+            new GitRunner(runner),
+            fs,
+            CreateAdoStorePolicy(),
+            "ado",
+            LoggerFactory.CreateLogger<SubmoduleInitializer>()
+        ).InitializeAsync(RepoRoot, AdoRepoRemote, CancellationToken.None);
 
-        outcome.InitializedPaths.Should().BeEmpty(
-            "a percent-escape in the path beyond the allow-listed repo is what the upstream server decodes "
-                + "back into a separator, so it can never be treated as data inside that repo");
+        outcome
+            .InitializedPaths.Should()
+            .BeEmpty(
+                "a percent-escape in the path beyond the allow-listed repo is what the upstream server decodes "
+                    + "back into a separator, so it can never be treated as data inside that repo"
+            );
         outcome.Denied.Should().ContainSingle();
-        Argv(runner).Should().NotContain(
-            argv => argv.Contains("--init", StringComparison.Ordinal),
-            "a denied submodule must never be init'd");
+        Argv(runner)
+            .Should()
+            .NotContain(
+                argv => argv.Contains("--init", StringComparison.Ordinal),
+                "a denied submodule must never be init'd"
+            );
     }
 
     /// <summary>
@@ -403,12 +417,12 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
             "ado",
             url.Host,
             "GET",
-            $"{url.RepoPath}.git/info/refs?service=git-upload-pack");
+            $"{url.RepoPath}.git/info/refs?service=git-upload-pack"
+        );
 
         var policy = CreateAdoStorePolicy();
         policy.Decide(request).IsAllowed.Should().BeFalse();
-        policy.ShouldInjectCredential(request).Should().BeFalse(
-            "a denied operation must never be credential-injected");
+        policy.ShouldInjectCredential(request).Should().BeFalse("a denied operation must never be credential-injected");
     }
 
     [Fact]
@@ -417,8 +431,7 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         var fs = new FakeSandboxFileSystem();
 
-        var outcome = await CreateInitializer(runner, fs)
-            .InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
+        var outcome = await CreateInitializer(runner, fs).InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
 
         outcome.InitializedPaths.Should().BeEmpty();
         outcome.Denied.Should().BeEmpty();
@@ -433,8 +446,7 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
         // apart, so silence here is the failure, not the empty result.
         var runner = new FakeSandboxCommandRunner();
         var fs = new FakeSandboxFileSystem();
-        fs.Files[RepoRoot + "/.gitmodules"] =
-            new string('x', (int)SandboxReadLimits.RepositoryFileBytes + 1);
+        fs.Files[RepoRoot + "/.gitmodules"] = new string('x', (int)SandboxReadLimits.RepositoryFileBytes + 1);
         var logger = new CapturingLogger<SubmoduleInitializer>();
 
         var outcome = await CreateInitializer(runner, fs, logger)
@@ -442,8 +454,10 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
 
         outcome.InitializedPaths.Should().BeEmpty();
         outcome.Denied.Should().BeEmpty();
-        logger.CountAtLevel(LogLevel.Warning, ".gitmodules").Should().Be(
-            1, "an operator cannot otherwise distinguish a refused level from one with nothing to descend into");
+        logger
+            .CountAtLevel(LogLevel.Warning, ".gitmodules")
+            .Should()
+            .Be(1, "an operator cannot otherwise distinguish a refused level from one with nothing to descend into");
         runner.Commands.Should().BeEmpty("nothing was parsed, so nothing may be initialized off it");
     }
 }

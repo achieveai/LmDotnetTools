@@ -93,48 +93,50 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
         // Copilot auth token + x-interaction-id). The helper performs the status check internally, so
         // the processor must NOT call EnsureSuccessStatusCode — it hands back the still-open response
         // and its stream so enumeration happens OUTSIDE the retry scope.
-        var setup = await HttpRetryHelper.ExecuteHttpWithRetryAsync(
-            async () =>
-            {
-                // `using` so the per-attempt request + JsonContent are disposed once the response
-                // headers are read; with ResponseHeadersRead the response stream is owned by the
-                // returned HttpResponseMessage, so disposing the request here does not affect it.
-                using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _responsesPath)
+        var setup = await HttpRetryHelper
+            .ExecuteHttpWithRetryAsync(
+                async () =>
                 {
-                    Content = JsonContent.Create(streamingRequest, options: s_serializerOptions),
-                };
-                httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+                    // `using` so the per-attempt request + JsonContent are disposed once the response
+                    // headers are read; with ResponseHeadersRead the response stream is owned by the
+                    // returned HttpResponseMessage, so disposing the request here does not affect it.
+                    using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _responsesPath)
+                    {
+                        Content = JsonContent.Create(streamingRequest, options: s_serializerOptions),
+                    };
+                    httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
 
-                _logger.LogDebug(
-                    "POST {Path} model={Model} inputItemCount={InputCount} stream=true",
-                    _responsesPath,
-                    streamingRequest.Model,
-                    streamingRequest.Input.Count
-                );
+                    _logger.LogDebug(
+                        "POST {Path} model={Model} inputItemCount={InputCount} stream=true",
+                        _responsesPath,
+                        streamingRequest.Model,
+                        streamingRequest.Input.Count
+                    );
 
-                return await _http
-                    .SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                    .ConfigureAwait(false);
-            },
-            async response =>
-            {
-                // If acquiring the stream fails/cancels, the tuple is never returned and the iterator's
-                // finally never runs — dispose the response here so the connection is not pinned.
-                try
+                    return await _http
+                        .SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                        .ConfigureAwait(false);
+                },
+                async response =>
                 {
-                    var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                    return (Response: response, Stream: stream);
-                }
-                catch
-                {
-                    response.Dispose();
-                    throw;
-                }
-            },
-            _logger,
-            _retryOptions,
-            cancellationToken
-        ).ConfigureAwait(false);
+                    // If acquiring the stream fails/cancels, the tuple is never returned and the iterator's
+                    // finally never runs — dispose the response here so the connection is not pinned.
+                    try
+                    {
+                        var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                        return (Response: response, Stream: stream);
+                    }
+                    catch
+                    {
+                        response.Dispose();
+                        throw;
+                    }
+                },
+                _logger,
+                _retryOptions,
+                cancellationToken
+            )
+            .ConfigureAwait(false);
 
         try
         {
@@ -161,7 +163,13 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
         [EnumeratorCancellation] CancellationToken cancellationToken
     )
     {
-        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, 1024, leaveOpen: true);
+        using var reader = new StreamReader(
+            stream,
+            Encoding.UTF8,
+            detectEncodingFromByteOrderMarks: false,
+            1024,
+            leaveOpen: true
+        );
         var dataBuffer = new StringBuilder();
 
         // Fully async/cancellation-driven: do NOT gate on StreamReader.EndOfStream, which performs a

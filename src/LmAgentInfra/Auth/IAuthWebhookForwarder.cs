@@ -21,9 +21,16 @@ public interface IAuthWebhookForwarder
         string providerId,
         string signinUrl,
         string reason,
-        CancellationToken ct);
+        CancellationToken ct
+    );
 
     Task NotifyAuthCompletedAsync(AuthWebhookTarget? target, string sessionId, string providerId, CancellationToken ct);
 
-    Task NotifyAuthDeniedAsync(AuthWebhookTarget? target, string sessionId, string providerId, string reason, CancellationToken ct);
+    Task NotifyAuthDeniedAsync(
+        AuthWebhookTarget? target,
+        string sessionId,
+        string providerId,
+        string reason,
+        CancellationToken ct
+    );
 }

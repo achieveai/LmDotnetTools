@@ -54,7 +54,12 @@ public sealed class WorkflowMockProviderTests
                             objective = "e2e",
                             steps = new object[]
                             {
-                                new { id = "s", kind = "start", next = "t" },
+                                new
+                                {
+                                    id = "s",
+                                    kind = "start",
+                                    next = "t",
+                                },
                                 new { id = "t", kind = "end" },
                             },
                         },

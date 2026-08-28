@@ -29,7 +29,12 @@ public class IMessageSerializationTests
     public void TextUpdateMessage_ShouldSerializeWithTypeDiscriminator()
     {
         // Arrange
-        var message = new TextUpdateMessage { Role = Role.Assistant, Text = "Hi", IsUpdate = true };
+        var message = new TextUpdateMessage
+        {
+            Role = Role.Assistant,
+            Text = "Hi",
+            IsUpdate = true,
+        };
 
         // Act
         var json = JsonSerializer.Serialize<IMessage>(message, _jsonOptions);
@@ -63,7 +68,15 @@ public class IMessageSerializationTests
         var original = new ToolsCallMessage
         {
             Role = Role.Assistant,
-            ToolCalls = [new ToolCall { FunctionName = "test_func", ToolCallId = "call_1", FunctionArgs = "{}" }]
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    FunctionName = "test_func",
+                    ToolCallId = "call_1",
+                    FunctionArgs = "{}",
+                },
+            ],
         };
 
         // Act
@@ -84,8 +97,13 @@ public class IMessageSerializationTests
         IMessage[] messages =
         [
             new TextMessage { Role = Role.User, Text = "Hello" },
-            new TextUpdateMessage { Role = Role.Assistant, Text = "Hi", IsUpdate = true },
-            new TextMessage { Role = Role.Assistant, Text = "Hi there!" }
+            new TextUpdateMessage
+            {
+                Role = Role.Assistant,
+                Text = "Hi",
+                IsUpdate = true,
+            },
+            new TextMessage { Role = Role.Assistant, Text = "Hi there!" },
         ];
 
         // Act

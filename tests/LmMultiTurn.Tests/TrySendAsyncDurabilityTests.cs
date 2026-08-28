@@ -15,8 +15,7 @@ namespace LmMultiTurn.Tests;
 /// </summary>
 public class TrySendAsyncDurabilityTests
 {
-    private static List<IMessage> UserMessages(string text) =>
-        [new TextMessage { Text = text, Role = Role.User }];
+    private static List<IMessage> UserMessages(string text) => [new TextMessage { Text = text, Role = Role.User }];
 
     [Fact]
     public async Task TrySendAsync_WhenStoreRecordFails_PropagatesException_AndNeverWritesToChannel()
@@ -32,8 +31,7 @@ public class TrySendAsyncDurabilityTests
         var act = () => agent.TrySendAsync(UserMessages("hello"), inputId: "input-1").AsTask();
 
         // Assert: the exception propagates (maps to HTTP 500) and no SendReceipt is produced.
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*simulated durable-store failure*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*simulated durable-store failure*");
 
         // Assert (behavioral): the channel was never written to. Start the loop and give it a
         // moment — if anything had been enqueued the loop would drain it and bump the counter.
@@ -41,8 +39,9 @@ public class TrySendAsyncDurabilityTests
         _ = agent.RunAsync(cts.Token);
         await Task.Delay(150);
 
-        agent.DrainedInputCount.Should().Be(0,
-            "a store failure must block the enqueue entirely — nothing may reach the input channel");
+        agent
+            .DrainedInputCount.Should()
+            .Be(0, "a store failure must block the enqueue entirely — nothing may reach the input channel");
 
         await cts.CancelAsync();
     }
@@ -54,11 +53,7 @@ public class TrySendAsyncDurabilityTests
         // The drain loop is intentionally NOT started, so the channel stays full.
         var store = new FaultInjectingLedgerStore();
         var threadId = "thread-queue-full";
-        await using var agent = new LedgerTestAgent(
-            threadId,
-            store,
-            persistRunLedger: true,
-            inputChannelCapacity: 2);
+        await using var agent = new LedgerTestAgent(threadId, store, persistRunLedger: true, inputChannelCapacity: 2);
 
         // Fill the channel to capacity — both of these succeed.
         var receipt1 = await agent.TrySendAsync(UserMessages("first"), inputId: "queued-1");
@@ -77,10 +72,13 @@ public class TrySendAsyncDurabilityTests
         // the two successfully-queued inputs' records remain — proving only the rejected one was
         // removed, not the whole batch.
         var accepted = await store.ListAcceptedInputIdsAsync(threadId);
-        accepted.Should().Contain("queued-1")
-            .And.Contain("queued-2");
-        accepted.Should().NotContain("rejected-3",
-            "the compensating RemoveAcceptedInputAsync must undo the accepted-input record for the rejected send");
+        accepted.Should().Contain("queued-1").And.Contain("queued-2");
+        accepted
+            .Should()
+            .NotContain(
+                "rejected-3",
+                "the compensating RemoveAcceptedInputAsync must undo the accepted-input record for the rejected send"
+            );
     }
 
     [Fact]
@@ -137,8 +135,12 @@ public class TrySendAsyncDurabilityTests
         // Assert: the pre-run acceptance record is gone now that the run ledger itself covers the
         // input id — it must not be retained forever once folded (see StartRunAsync).
         var acceptedAfterRun = await store.ListAcceptedInputIdsAsync(threadId);
-        acceptedAfterRun.Should().NotContain("fold-1",
-            "once StartRunAsync folds the input id into the run's ledger InputIds, the pre-run acceptance record must be cleaned up rather than retained forever");
+        acceptedAfterRun
+            .Should()
+            .NotContain(
+                "fold-1",
+                "once StartRunAsync folds the input id into the run's ledger InputIds, the pre-run acceptance record must be cleaned up rather than retained forever"
+            );
 
         await cts.CancelAsync();
     }
@@ -186,13 +188,17 @@ public class TrySendAsyncDurabilityTests
             // Assert: the failed run loop must not have published a RunCompletedMessage — the REST
             // status API's ledger-as-source-of-truth invariant would otherwise be violated (a
             // subscriber sees "completed" while GET /status still reports InProgress forever).
-            received.OfType<RunCompletedMessage>().Should().BeEmpty(
-                "the terminal ledger write failed, so CompleteRunAsync must never reach the publish call");
+            received
+                .OfType<RunCompletedMessage>()
+                .Should()
+                .BeEmpty("the terminal ledger write failed, so CompleteRunAsync must never reach the publish call");
 
             // Assert: the failure actually propagated out of the run loop rather than being
             // swallowed.
             var awaitRun = async () => await runTask;
-            await awaitRun.Should().ThrowAsync<InvalidOperationException>()
+            await awaitRun
+                .Should()
+                .ThrowAsync<InvalidOperationException>()
                 .WithMessage("*simulated terminal-ledger-write failure*");
         }
         finally
@@ -205,9 +211,7 @@ public class TrySendAsyncDurabilityTests
             {
                 await agent.DisposeAsync();
             }
-            catch (InvalidOperationException)
-            {
-            }
+            catch (InvalidOperationException) { }
         }
     }
 
@@ -225,14 +229,14 @@ public class TrySendAsyncDurabilityTests
             string threadId,
             IConversationStore store,
             bool persistRunLedger,
-            int inputChannelCapacity = 100)
+            int inputChannelCapacity = 100
+        )
             : base(
                 threadId,
                 store: store,
                 inputChannelCapacity: inputChannelCapacity,
-                persistRunLedger: persistRunLedger)
-        {
-        }
+                persistRunLedger: persistRunLedger
+            ) { }
 
         protected override async Task RunLoopAsync(CancellationToken ct)
         {
@@ -280,7 +284,8 @@ public class TrySendAsyncDurabilityTests
             string threadId,
             string inputId,
             DateTimeOffset acceptedAt,
-            CancellationToken ct = default)
+            CancellationToken ct = default
+        )
         {
             CallLog.Add("RecordAccepted:" + inputId);
 
@@ -316,22 +321,29 @@ public class TrySendAsyncDurabilityTests
         public Task<RunLedgerEntry?> LoadRunLedgerAsync(string runId, CancellationToken ct = default) =>
             _inner.LoadRunLedgerAsync(runId, ct);
 
-        public Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(string threadId, CancellationToken ct = default) =>
-            _inner.ListRunLedgerAsync(threadId, ct);
+        public Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => _inner.ListRunLedgerAsync(threadId, ct);
 
         // === IConversationStore (plain forwarding) ===
 
         public Task AppendMessagesAsync(
             string threadId,
             IReadOnlyList<PersistedMessage> messages,
-            CancellationToken ct = default) =>
-            _inner.AppendMessagesAsync(threadId, messages, ct);
+            CancellationToken ct = default
+        ) => _inner.AppendMessagesAsync(threadId, messages, ct);
 
-        public Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default) =>
-            _inner.ReplaceMessageAsync(threadId, replacement, ct);
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => _inner.ReplaceMessageAsync(threadId, replacement, ct);
 
-        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default) =>
-            _inner.LoadMessagesAsync(threadId, ct);
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => _inner.LoadMessagesAsync(threadId, ct);
 
         public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
             _inner.SaveMetadataAsync(threadId, metadata, ct);
@@ -342,8 +354,8 @@ public class TrySendAsyncDurabilityTests
         public Task UpdateMetadataAsync(
             string threadId,
             Func<ThreadMetadata?, ThreadMetadata> update,
-            CancellationToken ct = default) =>
-            _inner.UpdateMetadataAsync(threadId, update, ct);
+            CancellationToken ct = default
+        ) => _inner.UpdateMetadataAsync(threadId, update, ct);
 
         public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
             _inner.DeleteThreadAsync(threadId, ct);
@@ -352,7 +364,7 @@ public class TrySendAsyncDurabilityTests
             int limit = 50,
             int offset = 0,
             ConversationListOptions? options = null,
-            CancellationToken ct = default) =>
-            _inner.ListThreadsAsync(limit, offset, options, ct);
+            CancellationToken ct = default
+        ) => _inner.ListThreadsAsync(limit, offset, options, ct);
     }
 }

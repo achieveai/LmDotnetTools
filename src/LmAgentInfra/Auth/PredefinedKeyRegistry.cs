@@ -40,7 +40,8 @@ public sealed class PredefinedKeyRegistry
         string baseDirectory,
         IOAuthTokenStore tokenStore,
         HttpClient httpClient,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(baseDirectory);
         _tokenStore = tokenStore ?? throw new ArgumentNullException(nameof(tokenStore));
@@ -73,7 +74,11 @@ public sealed class PredefinedKeyRegistry
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "Failed to parse predefined egress keys file {File}; starting with none.", _filePath);
+            _logger.LogWarning(
+                ex,
+                "Failed to parse predefined egress keys file {File}; starting with none.",
+                _filePath
+            );
         }
     }
 
@@ -117,8 +122,8 @@ public sealed class PredefinedKeyRegistry
             _ = _providers.TryGetValue(entry.Id, out var existing);
             var credentialChanged = existing is null || PredefinedKeyProvider.CredentialChanged(existing.Entry, entry);
 
-            var candidate = _providers.Values
-                .Select(p => p.Entry)
+            var candidate = _providers
+                .Values.Select(p => p.Entry)
                 .Where(e => !string.Equals(e.Id, entry.Id, StringComparison.Ordinal))
                 .Append(entry)
                 .ToList();
@@ -159,8 +164,8 @@ public sealed class PredefinedKeyRegistry
                 return false;
             }
 
-            var candidate = _providers.Values
-                .Select(p => p.Entry)
+            var candidate = _providers
+                .Values.Select(p => p.Entry)
                 .Where(e => !string.Equals(e.Id, id, StringComparison.Ordinal))
                 .ToList();
             await AtomicJsonFile.WriteAsync(_filePath, candidate, JsonOptions, ct).ConfigureAwait(false);
@@ -191,7 +196,11 @@ public sealed class PredefinedKeyRegistry
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Best-effort cleanup of the persisted token for predefined key {Id} failed.", entryId);
+            _logger.LogWarning(
+                ex,
+                "Best-effort cleanup of the persisted token for predefined key {Id} failed.",
+                entryId
+            );
         }
     }
 }

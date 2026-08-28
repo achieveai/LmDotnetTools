@@ -16,11 +16,10 @@ public sealed class AnthropicSpecificTests
     [Fact]
     public async Task Extended_thinking_is_streamed_as_reasoning_frames()
     {
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t
-                    .Thinking(128)
-                    .Text("Final answer after reasoning."))
+            .Turn(t => t.Thinking(128).Text("Final answer after reasoning."))
             .Build();
 
         var builder = new ScriptedBuilder(responder.AsAnthropicHandler());
@@ -33,9 +32,7 @@ public sealed class AnthropicSpecificTests
         await client.SendUserMessageAsync("think then answer");
         using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(20));
 
-        var reasoningFrames = frames
-            .OfMessageType("reasoning_update", "reasoning")
-            .ToList();
+        var reasoningFrames = frames.OfMessageType("reasoning_update", "reasoning").ToList();
         reasoningFrames.Should().NotBeEmpty("Anthropic thinking should produce reasoning frames");
 
         var streamedText = frames.ConcatText();
@@ -45,11 +42,10 @@ public sealed class AnthropicSpecificTests
     [Fact]
     public async Task Cache_metrics_surface_in_usage_frame()
     {
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t
-                    .CacheMetrics(cacheCreationInputTokens: 42, cacheReadInputTokens: 17)
-                    .Text("cached reply"))
+            .Turn(t => t.CacheMetrics(cacheCreationInputTokens: 42, cacheReadInputTokens: 17).Text("cached reply"))
             .Build();
 
         var builder = new ScriptedBuilder(responder.AsAnthropicHandler());
@@ -62,11 +58,10 @@ public sealed class AnthropicSpecificTests
         await client.SendUserMessageAsync("hit the cache");
         using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(20));
 
-        var usageFrame = frames
-            .OfMessageType("usage")
-            .FirstOrDefault(HasCacheMetrics);
-        usageFrame.ValueKind.Should().NotBe(JsonValueKind.Undefined,
-            "a usage frame with cache-creation/cache-read metrics should be emitted");
+        var usageFrame = frames.OfMessageType("usage").FirstOrDefault(HasCacheMetrics);
+        usageFrame
+            .ValueKind.Should()
+            .NotBe(JsonValueKind.Undefined, "a usage frame with cache-creation/cache-read metrics should be emitted");
     }
 
     private static bool HasCacheMetrics(JsonElement frame)
@@ -84,15 +79,12 @@ public sealed class AnthropicSpecificTests
 
     private static bool HasPositiveInt(JsonElement obj, string name)
     {
-        return obj.TryGetProperty(name, out var prop)
-            && prop.ValueKind == JsonValueKind.Number
-            && prop.GetInt32() > 0;
+        return obj.TryGetProperty(name, out var prop) && prop.ValueKind == JsonValueKind.Number && prop.GetInt32() > 0;
     }
 
     private static bool HasExtraProperty(JsonElement usage, string name)
     {
-        if (!usage.TryGetProperty("extra_properties", out var extras)
-            || extras.ValueKind != JsonValueKind.Object)
+        if (!usage.TryGetProperty("extra_properties", out var extras) || extras.ValueKind != JsonValueKind.Object)
         {
             return false;
         }

@@ -15,7 +15,8 @@ internal sealed record PreparedCheckout(
     string TargetDir,
     string NotesDir,
     string Branch,
-    MergeBaseOutcome MergeBase = MergeBaseOutcome.Resolved);
+    MergeBaseOutcome MergeBase = MergeBaseOutcome.Resolved
+);
 
 internal interface IReviewSlotPreparer
 {
@@ -27,8 +28,7 @@ internal interface IReviewSlotPreparer
     /// a fixed container path instead. <see cref="RecloneStoreAsync"/> carries no such duty — its wipe guards
     /// the root itself.
     /// </summary>
-    Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken) =>
-        Task.CompletedTask;
+    Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken) => Task.CompletedTask;
 
     Task RecloneStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken) =>
         Task.CompletedTask;
@@ -43,7 +43,8 @@ internal interface IReviewSlotPreparer
         string defaultBranch,
         string notesRelPath,
         OperationPolicy policy,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken
+    ) =>
         PrepareAsync(
             new ReviewSlot(0, "/workspace", storeRoot, scratchRoot),
             run,
@@ -53,7 +54,8 @@ internal interface IReviewSlotPreparer
             defaultBranch,
             notesRelPath,
             policy,
-            cancellationToken);
+            cancellationToken
+        );
 
     // Compatibility seam for existing fakes and the S2S host-owned preparation path while the in-process
     // executor moves to the container-rooted overload above.
@@ -66,7 +68,8 @@ internal interface IReviewSlotPreparer
         string defaultBranch,
         string notesRelPath,
         OperationPolicy policy,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken
+    );
 }
 
 /// <summary>
@@ -91,7 +94,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         string provider,
         ILoggerFactory loggerFactory,
         bool requireSdkOwnershipMarker = false,
-        bool enableObjectStoreMaintenance = false)
+        bool enableObjectStoreMaintenance = false
+    )
     {
         _git = git ?? throw new ArgumentNullException(nameof(git));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
@@ -108,8 +112,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         ArgumentException.ThrowIfNullOrWhiteSpace(storeRoot);
         ArgumentException.ThrowIfNullOrWhiteSpace(storeUrl);
 
-        var probe = await _git
-            .RunAsync(["-C", storeRoot, "rev-parse", "--git-dir"], storeRoot, cancellationToken)
+        var probe = await _git.RunAsync(["-C", storeRoot, "rev-parse", "--git-dir"], storeRoot, cancellationToken)
             .ConfigureAwait(false);
         if (probe.Succeeded)
         {
@@ -131,7 +134,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 
             _logger.LogInformation(
                 "Review store {StoreRoot} predates SDK ownership; re-cloning once through the run sandbox.",
-                storeRoot);
+                storeRoot
+            );
             await RecloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -141,8 +145,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         var entries = await _fileSystem.ListFilesAsync(storeRoot, cancellationToken).ConfigureAwait(false);
         if (entries.Count > 0)
         {
-            throw new SlotNeedsRecloneException(
-                $"Review store '{storeRoot}' exists but is not a valid git checkout.");
+            throw new SlotNeedsRecloneException($"Review store '{storeRoot}' exists but is not a valid git checkout.");
         }
 
         await CloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
@@ -159,35 +162,33 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         }
         else
         {
-            var remove = await _git.CommandRunner
-                .RunAsync(new SandboxCommand(["rm", "-rf", "--", storeRoot]), cancellationToken)
+            var remove = await _git
+                .CommandRunner.RunAsync(new SandboxCommand(["rm", "-rf", "--", storeRoot]), cancellationToken)
                 .ConfigureAwait(false);
             if (!remove.Succeeded)
             {
                 throw new InvalidOperationException(
-                    $"Removing corrupt review store '{storeRoot}' failed (exit {remove.ExitCode}): {remove.Stderr}");
+                    $"Removing corrupt review store '{storeRoot}' failed (exit {remove.ExitCode}): {remove.Stderr}"
+                );
             }
         }
 
         await CloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task CloneStoreAsync(
-        string storeRoot,
-        string storeUrl,
-        CancellationToken cancellationToken)
+    private async Task CloneStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken)
     {
         // `/workspace` is the container mount root: real inside the sandbox, absent on the daemon host — and
         // HostGitCommandRunner fails a command whose working directory does not exist, so pinning it there
         // would make the first-use host clone impossible. The clone names an absolute target either way.
         var workingDirectory = _fileSystem is HostFileSystem ? null : "/workspace";
-        var clone = await _git
-            .RunAsync(["clone", storeUrl, storeRoot], workingDirectory, cancellationToken)
+        var clone = await _git.RunAsync(["clone", storeUrl, storeRoot], workingDirectory, cancellationToken)
             .ConfigureAwait(false);
         if (!clone.Succeeded)
         {
             throw new InvalidOperationException(
-                $"Cloning the review store at '{storeRoot}' failed (exit {clone.ExitCode}): {clone.Stderr}");
+                $"Cloning the review store at '{storeRoot}' failed (exit {clone.ExitCode}): {clone.Stderr}"
+            );
         }
 
         if (_requireSdkOwnershipMarker)
@@ -207,7 +208,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         string defaultBranch,
         string notesRelPath,
         OperationPolicy policy,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken
+    ) =>
         PrepareAsync(
             run,
             slot.StorePath,
@@ -218,7 +220,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             defaultBranch,
             notesRelPath,
             policy,
-            cancellationToken);
+            cancellationToken
+        );
 
     public async Task<PreparedCheckout> PrepareAsync(
         ReviewRun run,
@@ -230,7 +233,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         string defaultBranch,
         string notesRelPath,
         OperationPolicy policy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentException.ThrowIfNullOrWhiteSpace(storeRoot);
@@ -250,7 +254,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         {
             case HygieneVerdict.NeedsReclone:
                 throw new SlotNeedsRecloneException(
-                    $"Run {run.Id}: review store '{storeRoot}' is structurally unusable; re-clone required.");
+                    $"Run {run.Id}: review store '{storeRoot}' is structurally unusable; re-clone required."
+                );
 
             // The store's own cleanup could not be walked past an UNREADABLE entry, and a re-clone is the one
             // repair that must not run: it begins by wiping the store, and the wipe refuses on that same entry
@@ -261,7 +266,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             case HygieneVerdict.HostPathUnreadable:
                 throw new SlotAddressUnusableException(
                     $"Run {run.Id}: review store '{storeRoot}' cannot have its cleanup walked (an entry under it "
-                        + "is unreadable); a re-clone would refuse on the same entry, so the slot is retired.");
+                        + "is unreadable); a re-clone would refuse on the same entry, so the slot is retired."
+                );
 
             // The cleanliness probe did not answer, so the store is neither known clean nor known dirty. Raise
             // a type of its own rather than reusing either neighbour: SlotNeedsRecloneException would spend
@@ -272,7 +278,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 throw new SlotProbeUnansweredException(
                     $"Run {run.Id}: the cleanliness probe on review store '{storeRoot}' returned no answer, so "
                         + "the store is not known to be clean; releasing the slot to be re-probed on the next "
-                        + "lease rather than reviewing an unverified tree or re-cloning a store that may be fine.");
+                        + "lease rather than reviewing an unverified tree or re-cloning a store that may be fine."
+                );
 
             case HygieneVerdict.Clean:
             default:
@@ -280,11 +287,19 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         }
 
         await RunGitOrThrowAsync(
-                ["-C", storeRoot, "fetch", "origin"], storeRoot, run, "fetching origin", cancellationToken)
+                ["-C", storeRoot, "fetch", "origin"],
+                storeRoot,
+                run,
+                "fetching origin",
+                cancellationToken
+            )
             .ConfigureAwait(false);
 
-        var verify = await _git
-            .RunAsync(["-C", storeRoot, "rev-parse", "--verify", $"origin/{branch}"], storeRoot, cancellationToken)
+        var verify = await _git.RunAsync(
+                ["-C", storeRoot, "rev-parse", "--verify", $"origin/{branch}"],
+                storeRoot,
+                cancellationToken
+            )
             .ConfigureAwait(false);
         var checkoutSource = verify.Succeeded ? $"origin/{branch}" : defaultBranch;
         await RunGitOrThrowAsync(
@@ -292,11 +307,17 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 storeRoot,
                 run,
                 $"checking out branch '{branch}' from '{checkoutSource}'",
-                cancellationToken)
+                cancellationToken
+            )
             .ConfigureAwait(false);
 
         var initializer = new SubmoduleInitializer(
-            _git, _fileSystem, policy, _provider, _loggerFactory.CreateLogger<SubmoduleInitializer>());
+            _git,
+            _fileSystem,
+            policy,
+            _provider,
+            _loggerFactory.CreateLogger<SubmoduleInitializer>()
+        );
         var outcome = await initializer
             .InitializeAsync(storeRoot, GitRemoteUrl.Parse(storeUrl), cancellationToken)
             .ConfigureAwait(false);
@@ -307,21 +328,25 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 run.Id,
                 denied.Path,
                 denied.Url,
-                denied.Reason);
+                denied.Reason
+            );
         }
 
         if (!outcome.InitializedPaths.Contains(submoduleRelPath, StringComparer.Ordinal))
         {
-            var reason = outcome.Denied
-                .FirstOrDefault(d => string.Equals(d.Path, submoduleRelPath, StringComparison.Ordinal))?.Reason;
+            var reason = outcome
+                .Denied.FirstOrDefault(d => string.Equals(d.Path, submoduleRelPath, StringComparison.Ordinal))
+                ?.Reason;
             if (GitFailureClassifier.Classify(reason) != GitFailureKind.Corrupt)
             {
                 throw new InvalidOperationException(
-                    $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize (transient/unknown): {reason}");
+                    $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize (transient/unknown): {reason}"
+                );
             }
 
             throw new SlotCorruptException(
-                $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize; store needs re-clone. {reason}");
+                $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize; store needs re-clone. {reason}"
+            );
         }
 
         var targetDir = PosixJoin(storeRoot, submoduleRelPath);
@@ -330,7 +355,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 targetDir,
                 run,
                 "fetching the PR commits",
-                cancellationToken)
+                cancellationToken
+            )
             .ConfigureAwait(false);
 
         // Deliberately AFTER the PR-commit fetch and BEFORE the head checkout: the fetch is what gives head
@@ -347,7 +373,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 targetDir,
                 run,
                 "checking out the PR head",
-                cancellationToken)
+                cancellationToken
+            )
             .ConfigureAwait(false);
 
         if (_fileSystem is HostFileSystem)
@@ -356,20 +383,13 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         }
         else
         {
-            await RunCommandOrThrowAsync(
-                    ["rm", "-rf", "--", scratchRoot], run, "clearing scratch", cancellationToken)
+            await RunCommandOrThrowAsync(["rm", "-rf", "--", scratchRoot], run, "clearing scratch", cancellationToken)
                 .ConfigureAwait(false);
-            await RunCommandOrThrowAsync(
-                    ["mkdir", "-p", "--", scratchRoot], run, "creating scratch", cancellationToken)
+            await RunCommandOrThrowAsync(["mkdir", "-p", "--", scratchRoot], run, "creating scratch", cancellationToken)
                 .ConfigureAwait(false);
         }
 
-        return new PreparedCheckout(
-            storeRoot,
-            targetDir,
-            PosixJoin(storeRoot, notesRelPath),
-            branch,
-            mergeBase);
+        return new PreparedCheckout(storeRoot, targetDir, PosixJoin(storeRoot, notesRelPath), branch, mergeBase);
     }
 
     private async Task RunGitOrThrowAsync(
@@ -377,7 +397,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         string workingDirectory,
         ReviewRun run,
         string action,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var result = await _git.RunAsync(gitArgs, workingDirectory, cancellationToken).ConfigureAwait(false);
         if (!result.Succeeded)
@@ -399,18 +420,19 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         IReadOnlyList<string> argv,
         ReviewRun run,
         string action,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
-        var result = await _git.CommandRunner
-            .RunAsync(new SandboxCommand(argv), cancellationToken)
+        var result = await _git
+            .CommandRunner.RunAsync(new SandboxCommand(argv), cancellationToken)
             .ConfigureAwait(false);
         if (!result.Succeeded)
         {
             throw new InvalidOperationException(
-                $"Run {run.Id}: {action} failed (exit {result.ExitCode}): {result.Stderr}");
+                $"Run {run.Id}: {action} failed (exit {result.ExitCode}): {result.Stderr}"
+            );
         }
     }
 
-    private static string PosixJoin(string root, string relative) =>
-        $"{root.TrimEnd('/')}/{relative.Trim('/')}";
+    private static string PosixJoin(string root, string relative) => $"{root.TrimEnd('/')}/{relative.Trim('/')}";
 }

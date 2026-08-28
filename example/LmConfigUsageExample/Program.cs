@@ -3,9 +3,9 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
-using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
+using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -100,19 +100,15 @@ list references from above tool calls with book name, chapter, page number
             .Build();
 
         // Configure Serilog from configuration
-        Log.Logger = new LoggerConfiguration()
-            .ReadFrom.Configuration(configuration)
-            .CreateLogger();
+        Log.Logger = new LoggerConfiguration().ReadFrom.Configuration(configuration).CreateLogger();
 
         try
         {
             Log.Information("LmConfigUsageExample starting up");
 
-            return await Parser.Default.ParseArguments<CommandLineOptions>(args)
-                .MapResult(
-                    async options => await RunWithOptionsAsync(options),
-                    _ => Task.FromResult(1)
-                );
+            return await Parser
+                .Default.ParseArguments<CommandLineOptions>(args)
+                .MapResult(async options => await RunWithOptionsAsync(options), _ => Task.FromResult(1));
         }
         catch (Exception ex)
         {
@@ -171,7 +167,13 @@ list references from above tool calls with book name, chapter, page number
             {
                 var model = options.Model ?? "openai/gpt-5.1-codex-mini"; // "qwen/qwen3-235b-a22b-thinking-2507"; // "x-ai/grok-4.1-fast"; // "openrouter/bert-nebulon-alpha";
                 Console.WriteLine($"=== Background Agentic Loop Example with {model} ===\n");
-                await RunBackgroundAgenticLoopExample(options.Prompt, model, options.Temperature, options.MaxTurns, options.Verbose);
+                await RunBackgroundAgenticLoopExample(
+                    options.Prompt,
+                    model,
+                    options.Temperature,
+                    options.MaxTurns,
+                    options.Verbose
+                );
                 return 0;
             }
 
@@ -185,7 +187,12 @@ list references from above tool calls with book name, chapter, page number
             if (options.RunClaudeBackground)
             {
                 Console.WriteLine("=== ClaudeAgentSDK Background Loop Example ===\n");
-                await RunClaudeAgentSdkBackgroundLoopExample(options.Prompt, options.Temperature, options.MaxTurns, options.Verbose);
+                await RunClaudeAgentSdkBackgroundLoopExample(
+                    options.Prompt,
+                    options.Temperature,
+                    options.MaxTurns,
+                    options.Verbose
+                );
                 return 0;
             }
 
@@ -193,13 +200,21 @@ list references from above tool calls with book name, chapter, page number
             if (!string.IsNullOrEmpty(options.Model))
             {
                 Console.WriteLine($"=== Agentic Loop Example with {options.Model} ===\n");
-                await RunAgenticExample(options.Prompt, options.Model, options.Temperature, options.MaxTurns, options.Verbose);
+                await RunAgenticExample(
+                    options.Prompt,
+                    options.Model,
+                    options.Temperature,
+                    options.MaxTurns,
+                    options.Verbose
+                );
                 return 0;
             }
 
             // Default: Run ClaudeAgentSDK in OneShot mode
             Console.WriteLine("=== ClaudeAgentSDK One-Shot Mode (default) ===\n");
-            Console.WriteLine("Tip: Use --help to see all options, --grok for Grok example, --model <id> for other models.\n");
+            Console.WriteLine(
+                "Tip: Use --help to see all options, --grok for Grok example, --model <id> for other models.\n"
+            );
             await RunClaudeAgentSdkOneShotExample(options.Prompt, options.Temperature);
             return 0;
         }
@@ -227,16 +242,16 @@ list references from above tool calls with book name, chapter, page number
         _ = services.AddLmConfigFromFile("models.json");
 
         var serviceProvider = services.BuildServiceProvider();
-        var appConfig = serviceProvider.GetRequiredService<IOptions<AchieveAi.LmDotnetTools.LmConfig.Models.AppConfig>>();
+        var appConfig = serviceProvider.GetRequiredService<
+            IOptions<AchieveAi.LmDotnetTools.LmConfig.Models.AppConfig>
+        >();
         var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
 
         var models = appConfig.Value.Models;
         Console.WriteLine($"Total models: {models.Count}\n");
 
         // Group models by provider family
-        var groupedModels = models
-            .GroupBy(m => GetModelFamily(m.Id))
-            .OrderBy(g => g.Key);
+        var groupedModels = models.GroupBy(m => GetModelFamily(m.Id)).OrderBy(g => g.Key);
 
         foreach (var group in groupedModels)
         {
@@ -275,10 +290,14 @@ list references from above tool calls with book name, chapter, page number
         _ = services.AddLmConfigFromFile("models.json");
 
         var serviceProvider = services.BuildServiceProvider();
-        var appConfig = serviceProvider.GetRequiredService<IOptions<AchieveAi.LmDotnetTools.LmConfig.Models.AppConfig>>();
+        var appConfig = serviceProvider.GetRequiredService<
+            IOptions<AchieveAi.LmDotnetTools.LmConfig.Models.AppConfig>
+        >();
         var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
 
-        var providers = appConfig.Value.ProviderRegistry ?? new Dictionary<string, AchieveAi.LmDotnetTools.LmConfig.Models.ProviderConnectionInfo>();
+        var providers =
+            appConfig.Value.ProviderRegistry
+            ?? new Dictionary<string, AchieveAi.LmDotnetTools.LmConfig.Models.ProviderConnectionInfo>();
         Console.WriteLine($"Total providers: {providers.Count}\n");
 
         foreach (var (providerName, providerInfo) in providers.OrderBy(p => p.Key))
@@ -826,7 +845,13 @@ list references from above tool calls with book name, chapter, page number
     /// Agentic Loop Example with configurable model
     /// Demonstrates the agentic loop pattern with middleware chain
     /// </summary>
-    private static async Task RunAgenticExample(string prompt, string modelId, float temperature, int maxTurns, bool verbose)
+    private static async Task RunAgenticExample(
+        string prompt,
+        string modelId,
+        float temperature,
+        int maxTurns,
+        bool verbose
+    )
     {
         try
         {
@@ -856,11 +881,18 @@ list references from above tool calls with book name, chapter, page number
     /// Background Agentic Loop Example
     /// Demonstrates the background agentic loop with event queues and multiple subscribers
     /// </summary>
-    private static async Task RunBackgroundAgenticLoopExample(string prompt, string modelId, float temperature, int maxTurns, bool verbose)
+    private static async Task RunBackgroundAgenticLoopExample(
+        string prompt,
+        string modelId,
+        float temperature,
+        int maxTurns,
+        bool verbose
+    )
     {
         try
         {
-            prompt = @"Which of the following is the most appropriate treatment for a patient with tuberculosis in which mycobacterium is resistant to both isoniazid and rifampicin?
+            prompt =
+                @"Which of the following is the most appropriate treatment for a patient with tuberculosis in which mycobacterium is resistant to both isoniazid and rifampicin?
     A. 6 drugs for 9 months and 4 drugs for 18 months
     B. 7 drugs for 4-6 months and 4 drugs for 5 months
     C. 5 drugs for 6 months and 4 drugs for 14-16 months
@@ -904,11 +936,14 @@ list references from above tool calls with book name, chapter, page number
             if (mcpClients.Count > 0)
             {
                 Console.WriteLine($"✓ Loaded {mcpClients.Count} MCP server(s) from .mcp.json");
-                var mcpProviderLogger = serviceProvider.GetService<ILogger<AchieveAi.LmDotnetTools.McpMiddleware.McpClientFunctionProvider>>();
+                var mcpProviderLogger = serviceProvider.GetService<
+                    ILogger<AchieveAi.LmDotnetTools.McpMiddleware.McpClientFunctionProvider>
+                >();
                 _ = await registry.AddMcpClientsAsync(
                     new Dictionary<string, ModelContextProtocol.Client.McpClient>(mcpClients),
                     providerName: "McpServers",
-                    logger: mcpProviderLogger);
+                    logger: mcpProviderLogger
+                );
             }
 
             // Build and display registered functions for debugging
@@ -932,11 +967,7 @@ list references from above tool calls with book name, chapter, page number
                 Temperature = 1.0f, // Required for thinking models
                 ExtraProperties = new Dictionary<string, object?>
                 {
-                    ["reasoning"] = new Dictionary<string, object?>
-                    {
-                        ["effort"] = "medium",
-                        ["max_tokens"] = 4096,
-                    },
+                    ["reasoning"] = new Dictionary<string, object?> { ["effort"] = "medium", ["max_tokens"] = 4096 },
                     ["parallel_tool_calls"] = true,
                 }.ToImmutableDictionary(),
             };
@@ -951,99 +982,121 @@ list references from above tool calls with book name, chapter, page number
                 systemPrompt: DefaultSystemPrompt,
                 defaultOptions: defaultOptions,
                 maxTurnsPerRun: maxTurns,
-                logger: logger);
+                logger: logger
+            );
 
             using var cts = new CancellationTokenSource();
 
             // Track run completions for "send and wait" pattern
-            var runCompletions = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<bool>>();
+            var runCompletions = new System.Collections.Concurrent.ConcurrentDictionary<
+                string,
+                TaskCompletionSource<bool>
+            >();
 
             // Start UI subscriber (displays messages)
-            var uiTask = Task.Run(async () =>
-            {
-                Console.WriteLine("[UI Subscriber] Connected\n");
-                await foreach (var msg in loop.SubscribeAsync(cts.Token))
+            var uiTask = Task.Run(
+                async () =>
                 {
-                    switch (msg)
+                    Console.WriteLine("[UI Subscriber] Connected\n");
+                    await foreach (var msg in loop.SubscribeAsync(cts.Token))
                     {
-                        case RunAssignmentMessage assignment:
-                            Console.WriteLine($"\n[Run Started] RunId: {assignment.Assignment.RunId}");
-                            Console.WriteLine($"              GenerationId: {assignment.Assignment.GenerationId}");
-                            if (assignment.Assignment.WasInjected)
-                            {
-                                Console.WriteLine($"              (Injected from parent: {assignment.Assignment.ParentRunId})");
-                            }
-                            break;
-                        case RunCompletedMessage completed:
-                            Console.WriteLine($"\n[Run Completed] RunId: {completed.CompletedRunId}");
-                            if (completed.WasForked)
-                            {
-                                Console.WriteLine($"                Forked to: {completed.ForkedToRunId}");
-                            }
-                            // Signal completion for any waiters
-                            if (runCompletions.TryRemove(completed.CompletedRunId, out var tcs))
-                            {
-                                _ = tcs.TrySetResult(true);
-                            }
-                            break;
-                        case TextMessage textMsg when !string.IsNullOrEmpty(textMsg.Text):
-                            Console.Write(textMsg.Text);
-                            break;
-                        case TextUpdateMessage textUpdate when !string.IsNullOrEmpty(textUpdate.Text):
-                            Console.Write(textUpdate.Text);
-                            break;
-                        case ToolCallMessage toolCall:
-                            Console.WriteLine($"\n[Tool Call] {toolCall.FunctionName}({toolCall.FunctionArgs})");
-                            break;
-                        case ToolCallUpdateMessage toolCall:
-                            if (string.IsNullOrWhiteSpace(toolCall.FunctionArgs))
-                            {
-                                Console.Write($"\n[Tool Call] {toolCall.FunctionName} - ");
-                            }
-                            else
-                            {
-                                Console.Write(toolCall.FunctionArgs);
-                            }
-                            break;
-                        case ToolCallResultMessage toolResult:
-                            Console.WriteLine($"[Tool Result] {toolResult.Result[..Math.Min(100, toolResult.Result.Length)]}...");
-                            break;
-                        case ReasoningMessage reasoningMsg when !string.IsNullOrEmpty(reasoningMsg.Reasoning):
-                            Console.ForegroundColor = ConsoleColor.DarkYellow;
-                            Console.WriteLine($"\n[Thinking] {reasoningMsg.Reasoning}");
-                            Console.ResetColor();
-                            break;
-                        case ReasoningUpdateMessage reasoningUpdate when !string.IsNullOrEmpty(reasoningUpdate.Reasoning):
-                            Console.ForegroundColor = ConsoleColor.DarkYellow;
-                            Console.Write(reasoningUpdate.Reasoning);
-                            Console.ResetColor();
-                            break;
-
-                        default:
-                            // Ignore other message types
-                            break;
-                    }
-                }
-            }, cts.Token);
-
-            // Start persistence subscriber (just logs)
-            var persistTask = Task.Run(async () =>
-            {
-                Console.WriteLine("[Persistence Subscriber] Connected\n");
-                var count = 0;
-                await foreach (var msg in loop.SubscribeAsync(cts.Token))
-                {
-                    if (msg is TextMessage or ToolsCallMessage or ToolsCallResultMessage or RunAssignmentMessage or RunCompletedMessage)
-                    {
-                        count++;
-                        if (verbose)
+                        switch (msg)
                         {
-                            Console.WriteLine($"[Persist] Stored message #{count}: {msg.GetType().Name}");
+                            case RunAssignmentMessage assignment:
+                                Console.WriteLine($"\n[Run Started] RunId: {assignment.Assignment.RunId}");
+                                Console.WriteLine($"              GenerationId: {assignment.Assignment.GenerationId}");
+                                if (assignment.Assignment.WasInjected)
+                                {
+                                    Console.WriteLine(
+                                        $"              (Injected from parent: {assignment.Assignment.ParentRunId})"
+                                    );
+                                }
+                                break;
+                            case RunCompletedMessage completed:
+                                Console.WriteLine($"\n[Run Completed] RunId: {completed.CompletedRunId}");
+                                if (completed.WasForked)
+                                {
+                                    Console.WriteLine($"                Forked to: {completed.ForkedToRunId}");
+                                }
+                                // Signal completion for any waiters
+                                if (runCompletions.TryRemove(completed.CompletedRunId, out var tcs))
+                                {
+                                    _ = tcs.TrySetResult(true);
+                                }
+                                break;
+                            case TextMessage textMsg when !string.IsNullOrEmpty(textMsg.Text):
+                                Console.Write(textMsg.Text);
+                                break;
+                            case TextUpdateMessage textUpdate when !string.IsNullOrEmpty(textUpdate.Text):
+                                Console.Write(textUpdate.Text);
+                                break;
+                            case ToolCallMessage toolCall:
+                                Console.WriteLine($"\n[Tool Call] {toolCall.FunctionName}({toolCall.FunctionArgs})");
+                                break;
+                            case ToolCallUpdateMessage toolCall:
+                                if (string.IsNullOrWhiteSpace(toolCall.FunctionArgs))
+                                {
+                                    Console.Write($"\n[Tool Call] {toolCall.FunctionName} - ");
+                                }
+                                else
+                                {
+                                    Console.Write(toolCall.FunctionArgs);
+                                }
+                                break;
+                            case ToolCallResultMessage toolResult:
+                                Console.WriteLine(
+                                    $"[Tool Result] {toolResult.Result[..Math.Min(100, toolResult.Result.Length)]}..."
+                                );
+                                break;
+                            case ReasoningMessage reasoningMsg when !string.IsNullOrEmpty(reasoningMsg.Reasoning):
+                                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                                Console.WriteLine($"\n[Thinking] {reasoningMsg.Reasoning}");
+                                Console.ResetColor();
+                                break;
+                            case ReasoningUpdateMessage reasoningUpdate
+                                when !string.IsNullOrEmpty(reasoningUpdate.Reasoning):
+                                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                                Console.Write(reasoningUpdate.Reasoning);
+                                Console.ResetColor();
+                                break;
+
+                            default:
+                                // Ignore other message types
+                                break;
                         }
                     }
-                }
-                Console.WriteLine($"[Persistence] Total messages stored: {count}");
-            }, cts.Token);
+                },
+                cts.Token
+            );
+
+            // Start persistence subscriber (just logs)
+            var persistTask = Task.Run(
+                async () =>
+                {
+                    Console.WriteLine("[Persistence Subscriber] Connected\n");
+                    var count = 0;
+                    await foreach (var msg in loop.SubscribeAsync(cts.Token))
+                    {
+                        if (
+                            msg
+                            is TextMessage
+                                or ToolsCallMessage
+                                or ToolsCallResultMessage
+                                or RunAssignmentMessage
+                                or RunCompletedMessage
+                        )
+                        {
+                            count++;
+                            if (verbose)
+                            {
+                                Console.WriteLine($"[Persist] Stored message #{count}: {msg.GetType().Name}");
+                            }
+                        }
+                    }
+                    Console.WriteLine($"[Persistence] Total messages stored: {count}");
+                },
+                cts.Token
+            );
 
             // Start the background loop
             var loopTask = loop.RunAsync(cts.Token);
@@ -1057,7 +1110,8 @@ list references from above tool calls with book name, chapter, page number
             {
                 var receipt = await loop.SendAsync(
                     [new TextMessage { Text = text, Role = Role.User }],
-                    inputId: inputId);
+                    inputId: inputId
+                );
 
                 if (waitForCompletion)
                 {
@@ -1105,7 +1159,11 @@ list references from above tool calls with book name, chapter, page number
 
                     // Send the message and wait for completion
                     // Note: SendAsync returns SendReceipt (fire-and-forget). RunAssignment comes via subscriber.
-                    var receipt = await SendAndWaitAsync(input, Guid.NewGuid().ToString("N")[..8], waitForCompletion: true);
+                    var receipt = await SendAndWaitAsync(
+                        input,
+                        Guid.NewGuid().ToString("N")[..8],
+                        waitForCompletion: true
+                    );
 
                     Console.WriteLine($"[Client] Message queued with receipt: {receipt.ReceiptId}");
                 }
@@ -1146,11 +1204,13 @@ list references from above tool calls with book name, chapter, page number
         string prompt,
         float temperature,
         int maxTurns,
-        bool verbose)
+        bool verbose
+    )
     {
         try
         {
-            prompt = @"Which of the following is the most appropriate treatment for a patient with tuberculosis in which mycobacterium is resistant to both isoniazid and rifampicin?
+            prompt =
+                @"Which of the following is the most appropriate treatment for a patient with tuberculosis in which mycobacterium is resistant to both isoniazid and rifampicin?
     A. 6 drugs for 9 months and 4 drugs for 18 months
     B. 7 drugs for 4-6 months and 4 drugs for 5 months
     C. 5 drugs for 6 months and 4 drugs for 14-16 months
@@ -1173,7 +1233,7 @@ list references from above tool calls with book name, chapter, page number
                 McpConfigPath = ".mcp.json",
                 Mode = ClaudeAgentSdkMode.Interactive, // Also works with OneShot
                 MaxThinkingTokens = 8092,
-                MaxTurnsPerRun = maxTurns
+                MaxTurnsPerRun = maxTurns,
             };
 
             // Load MCP servers from .mcp.json
@@ -1205,7 +1265,9 @@ list references from above tool calls with book name, chapter, page number
                             }
                             else
                             {
-                                Console.WriteLine($"  - {name}: {config.Command} {string.Join(" ", config.Args ?? [])}");
+                                Console.WriteLine(
+                                    $"  - {name}: {config.Command} {string.Join(" ", config.Args ?? [])}"
+                                );
                             }
                         }
 
@@ -1239,11 +1301,7 @@ list references from above tool calls with book name, chapter, page number
             Console.WriteLine($"  - dotnet-weather: HTTP endpoint at {mcpServer.McpEndpointUrl}\n");
 
             // Create default options
-            var defaultOptions = new GenerateReplyOptions
-            {
-                ModelId = "claude-haiku-4-5",
-                Temperature = temperature,
-            };
+            var defaultOptions = new GenerateReplyOptions { ModelId = "claude-haiku-4-5", Temperature = temperature };
 
             // Create the ClaudeAgentLoop
             var threadId = Guid.NewGuid().ToString("N");
@@ -1254,55 +1312,63 @@ list references from above tool calls with book name, chapter, page number
                 systemPrompt: DefaultSystemPrompt,
                 defaultOptions: defaultOptions,
                 logger: logger,
-                loggerFactory: loggerFactory);
+                loggerFactory: loggerFactory
+            );
 
             using var cts = new CancellationTokenSource();
 
             // Track run completions
-            var runCompletions = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<bool>>();
+            var runCompletions = new System.Collections.Concurrent.ConcurrentDictionary<
+                string,
+                TaskCompletionSource<bool>
+            >();
 
             // Start UI subscriber
-            var uiTask = Task.Run(async () =>
-            {
-                Console.WriteLine("[UI Subscriber] Connected\n");
-                await foreach (var msg in loop.SubscribeAsync(cts.Token))
+            var uiTask = Task.Run(
+                async () =>
                 {
-                    switch (msg)
+                    Console.WriteLine("[UI Subscriber] Connected\n");
+                    await foreach (var msg in loop.SubscribeAsync(cts.Token))
                     {
-                        case RunAssignmentMessage assignment:
-                            Console.WriteLine($"\n[Run Started] RunId: {assignment.Assignment.RunId}");
-                            break;
-                        case RunCompletedMessage completed:
-                            Console.WriteLine($"\n[Run Completed] RunId: {completed.CompletedRunId}");
-                            if (runCompletions.TryRemove(completed.CompletedRunId, out var tcs))
-                            {
-                                _ = tcs.TrySetResult(true);
-                            }
+                        switch (msg)
+                        {
+                            case RunAssignmentMessage assignment:
+                                Console.WriteLine($"\n[Run Started] RunId: {assignment.Assignment.RunId}");
+                                break;
+                            case RunCompletedMessage completed:
+                                Console.WriteLine($"\n[Run Completed] RunId: {completed.CompletedRunId}");
+                                if (runCompletions.TryRemove(completed.CompletedRunId, out var tcs))
+                                {
+                                    _ = tcs.TrySetResult(true);
+                                }
 
-                            break;
-                        case TextMessage textMsg when !string.IsNullOrEmpty(textMsg.Text):
-                            Console.Write(textMsg.Text);
-                            break;
-                        case TextUpdateMessage textUpdate when !string.IsNullOrEmpty(textUpdate.Text):
-                            Console.Write(textUpdate.Text);
-                            break;
-                        case ReasoningMessage reasoning:
-                            Console.WriteLine($"\n[Thinking] {reasoning.Reasoning}");
-                            break;
-                        case ToolCallMessage toolCall:
-                            Console.WriteLine($"\n[Tool Call] {toolCall.FunctionName}({toolCall.FunctionArgs})");
-                            break;
-                        case ToolCallResultMessage toolResult:
-                            var resultPreview = toolResult.Result.Length > 100
-                                ? toolResult.Result[..100] + "..."
-                                : toolResult.Result;
-                            Console.WriteLine($"[Tool Result] {resultPreview}");
-                            break;
-                        default:
-                            break;
+                                break;
+                            case TextMessage textMsg when !string.IsNullOrEmpty(textMsg.Text):
+                                Console.Write(textMsg.Text);
+                                break;
+                            case TextUpdateMessage textUpdate when !string.IsNullOrEmpty(textUpdate.Text):
+                                Console.Write(textUpdate.Text);
+                                break;
+                            case ReasoningMessage reasoning:
+                                Console.WriteLine($"\n[Thinking] {reasoning.Reasoning}");
+                                break;
+                            case ToolCallMessage toolCall:
+                                Console.WriteLine($"\n[Tool Call] {toolCall.FunctionName}({toolCall.FunctionArgs})");
+                                break;
+                            case ToolCallResultMessage toolResult:
+                                var resultPreview =
+                                    toolResult.Result.Length > 100
+                                        ? toolResult.Result[..100] + "..."
+                                        : toolResult.Result;
+                                Console.WriteLine($"[Tool Result] {resultPreview}");
+                                break;
+                            default:
+                                break;
+                        }
                     }
-                }
-            }, cts.Token);
+                },
+                cts.Token
+            );
 
             // Start the background loop
             var loopTask = loop.RunAsync(cts.Token);
@@ -1316,7 +1382,8 @@ list references from above tool calls with book name, chapter, page number
             {
                 var receipt = await loop.SendAsync(
                     [new TextMessage { Text = text, Role = Role.User }],
-                    inputId: inputId);
+                    inputId: inputId
+                );
 
                 if (waitForCompletion)
                 {
@@ -1358,7 +1425,11 @@ list references from above tool calls with book name, chapter, page number
                         break;
                     }
 
-                    var receipt = await SendAndWaitAsync(input, Guid.NewGuid().ToString("N")[..8], waitForCompletion: true);
+                    var receipt = await SendAndWaitAsync(
+                        input,
+                        Guid.NewGuid().ToString("N")[..8],
+                        waitForCompletion: true
+                    );
                     Console.WriteLine($"[Client] Message queued with receipt: {receipt.ReceiptId}");
                 }
             }

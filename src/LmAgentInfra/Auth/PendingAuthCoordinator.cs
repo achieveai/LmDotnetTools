@@ -22,7 +22,8 @@ public sealed record PendingAuthInfo(string ProviderId, string SigninUrl, string
 public sealed class PendingAuthCoordinator(
     IAuthEventNotifier notifier,
     AuthOptions options,
-    ILogger<PendingAuthCoordinator> logger)
+    ILogger<PendingAuthCoordinator> logger
+)
 {
     private sealed class PendingEntry
     {
@@ -52,7 +53,8 @@ public sealed class PendingAuthCoordinator(
     public async Task<OAuthAccessToken?> WaitForTokenAsync(
         IOAuthTokenProvider provider,
         IReadOnlyList<string>? scopes,
-        CancellationToken gatewayCt)
+        CancellationToken gatewayCt
+    )
     {
         ArgumentNullException.ThrowIfNull(provider);
 
@@ -82,7 +84,8 @@ public sealed class PendingAuthCoordinator(
                     entry.Info.ProviderId,
                     entry.Info.SigninUrl,
                     entry.Info.Reason,
-                    CancellationToken.None);
+                    CancellationToken.None
+                );
             }
 
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(gatewayCt);
@@ -100,7 +103,8 @@ public sealed class PendingAuthCoordinator(
                     logger.LogInformation(
                         "Deferred-auth hold for provider {ProviderId} timed out after {HoldTimeout}; denying.",
                         provider.ProviderId,
-                        holdTimeout);
+                        holdTimeout
+                    );
                     return null;
                 }
 
@@ -122,7 +126,8 @@ public sealed class PendingAuthCoordinator(
                     {
                         logger.LogInformation(
                             "Deferred-auth hold for provider {ProviderId} observed a fresh sign-in failure; denying early.",
-                            provider.ProviderId);
+                            provider.ProviderId
+                        );
                         return null;
                     }
                 }
@@ -159,7 +164,8 @@ public sealed class PendingAuthCoordinator(
                 Info = new PendingAuthInfo(
                     providerId,
                     AuthSigninUrls.BuildSigninUrl(providerId),
-                    AuthSigninUrls.BuildReason(providerId)),
+                    AuthSigninUrls.BuildReason(providerId)
+                ),
                 WaiterCount = 1,
             };
             _pending[providerId] = entry;

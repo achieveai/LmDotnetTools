@@ -80,9 +80,7 @@ public static class TranscriptVisibilityPolicy
 
         // Checked before anything else that could allow: a shared identifier across two collaborations
         // must never be enough to read across the boundary between them.
-        if (
-            !string.Equals(reader.CollaborationId, target.CollaborationId, StringComparison.Ordinal)
-        )
+        if (!string.Equals(reader.CollaborationId, target.CollaborationId, StringComparison.Ordinal))
         {
             return Deny(TranscriptAccessReasons.CrossCollaboration);
         }

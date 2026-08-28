@@ -28,7 +28,8 @@ public static class MessagePersistenceConverter
         IMessage message,
         string threadId,
         string runId,
-        JsonSerializerOptions? jsonOptions = null)
+        JsonSerializerOptions? jsonOptions = null
+    )
     {
         ArgumentNullException.ThrowIfNull(message);
 
@@ -81,9 +82,7 @@ public static class MessagePersistenceConverter
     /// <param name="jsonOptions">Optional JSON serializer options. Defaults to snake_case with IMessageJsonConverter.</param>
     /// <returns>The deserialized IMessage.</returns>
     /// <exception cref="JsonException">Thrown if deserialization fails.</exception>
-    public static IMessage FromPersistedMessage(
-        PersistedMessage persisted,
-        JsonSerializerOptions? jsonOptions = null)
+    public static IMessage FromPersistedMessage(PersistedMessage persisted, JsonSerializerOptions? jsonOptions = null)
     {
         ArgumentNullException.ThrowIfNull(persisted);
 
@@ -101,12 +100,10 @@ public static class MessagePersistenceConverter
         IEnumerable<IMessage> messages,
         string threadId,
         string runId,
-        JsonSerializerOptions? jsonOptions = null)
+        JsonSerializerOptions? jsonOptions = null
+    )
     {
-        return
-        [
-            .. messages.Select(m => ToPersistedMessage(m, threadId, runId, jsonOptions))
-        ];
+        return [.. messages.Select(m => ToPersistedMessage(m, threadId, runId, jsonOptions))];
     }
 
     /// <summary>
@@ -120,12 +117,10 @@ public static class MessagePersistenceConverter
     /// </remarks>
     public static IReadOnlyList<IMessage> FromPersistedMessages(
         IEnumerable<PersistedMessage> persistedMessages,
-        JsonSerializerOptions? jsonOptions = null)
+        JsonSerializerOptions? jsonOptions = null
+    )
     {
-        return
-        [
-            .. persistedMessages.Select(p => FromPersistedMessage(p, jsonOptions))
-        ];
+        return [.. persistedMessages.Select(p => FromPersistedMessage(p, jsonOptions))];
     }
 
     /// <summary>
@@ -171,7 +166,8 @@ public static class MessagePersistenceConverter
         IReadOnlyList<PersistedMessage> persistedMessages,
         Action<PersistedMessage, Exception>? onSkipped = null,
         JsonSerializerOptions? jsonOptions = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         ArgumentNullException.ThrowIfNull(persistedMessages);
 
@@ -262,8 +258,7 @@ public static class MessagePersistenceConverter
                     changed = true;
                 }
             }
-        }
-        while (changed);
+        } while (changed);
 
         var kept = new List<IMessage>(messages.Count);
         for (var i = 0; i < messages.Count; i++)
@@ -322,8 +317,7 @@ public static class MessagePersistenceConverter
     /// Keeping is always the safe direction here: an unpairable message is passed through untouched
     /// rather than deleted on a guess.
     /// </remarks>
-    private static IEnumerable<string> WithId(string? id) =>
-        string.IsNullOrWhiteSpace(id) ? [] : [id];
+    private static IEnumerable<string> WithId(string? id) => string.IsNullOrWhiteSpace(id) ? [] : [id];
 
     /// <summary>The usable ids among <paramref name="ids"/>. See <see cref="WithId"/> on the predicate.</summary>
     private static IEnumerable<string> Usable(IEnumerable<string?> ids) =>

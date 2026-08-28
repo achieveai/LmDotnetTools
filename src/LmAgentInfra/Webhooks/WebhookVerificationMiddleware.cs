@@ -36,7 +36,8 @@ public sealed class WebhookVerificationMiddleware
         WebhookRequestVerifier verifier,
         DeliveryReplayCache replayCache,
         WebhookVerificationLimits limits,
-        ILogger<WebhookVerificationMiddleware> logger)
+        ILogger<WebhookVerificationMiddleware> logger
+    )
     {
         _next = next ?? throw new ArgumentNullException(nameof(next));
         _verifier = verifier ?? throw new ArgumentNullException(nameof(verifier));
@@ -58,8 +59,10 @@ public sealed class WebhookVerificationMiddleware
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (!HttpMethods.IsPost(request.Method)
-            || !request.Path.StartsWithSegments(RoutePrefix, StringComparison.OrdinalIgnoreCase, out var remaining))
+        if (
+            !HttpMethods.IsPost(request.Method)
+            || !request.Path.StartsWithSegments(RoutePrefix, StringComparison.OrdinalIgnoreCase, out var remaining)
+        )
         {
             return false;
         }
@@ -108,13 +111,18 @@ public sealed class WebhookVerificationMiddleware
             body,
             request.Headers[WebhookHeaderNames.Signature],
             request.Headers[WebhookHeaderNames.Timestamp],
-            request.Headers[WebhookHeaderNames.DeliveryId]);
+            request.Headers[WebhookHeaderNames.DeliveryId]
+        );
 
         var now = DateTimeOffset.UtcNow;
         var result = _verifier.Verify(input, now);
         if (!result.IsValid)
         {
-            _logger.LogWarning("Rejected webhook callback for provider {Provider}: {Rejection}.", input.Provider, result.Rejection);
+            _logger.LogWarning(
+                "Rejected webhook callback for provider {Provider}: {Rejection}.",
+                input.Provider,
+                result.Rejection
+            );
             await RejectAsync(context, StatusFor(result.Rejection), result.Rejection.ToString()).ConfigureAwait(false);
             return;
         }
@@ -127,7 +135,8 @@ public sealed class WebhookVerificationMiddleware
             _logger.LogWarning(
                 "Rejected replayed webhook delivery {DeliveryIdPrefix} for provider {Provider}.",
                 Truncate(input.DeliveryId!),
-                input.Provider);
+                input.Provider
+            );
             await RejectAsync(context, StatusCodes.Status409Conflict, "duplicate delivery").ConfigureAwait(false);
             return;
         }
@@ -173,17 +182,17 @@ public sealed class WebhookVerificationMiddleware
     }
 
     /// <summary>A short, correlation-only prefix of a delivery id (never the full single-use value).</summary>
-    private static string Truncate(string deliveryId) =>
-        deliveryId.Length <= 8 ? "…" : deliveryId[..8] + "…";
+    private static string Truncate(string deliveryId) => deliveryId.Length <= 8 ? "…" : deliveryId[..8] + "…";
 
-    private static int StatusFor(WebhookRejection rejection) => rejection switch
-    {
-        WebhookRejection.UnknownProvider => StatusCodes.Status404NotFound,
-        WebhookRejection.UnsupportedContentType => StatusCodes.Status415UnsupportedMediaType,
-        WebhookRejection.BodyTooLarge => StatusCodes.Status413PayloadTooLarge,
-        WebhookRejection.MissingHeaders => StatusCodes.Status400BadRequest,
-        _ => StatusCodes.Status401Unauthorized,
-    };
+    private static int StatusFor(WebhookRejection rejection) =>
+        rejection switch
+        {
+            WebhookRejection.UnknownProvider => StatusCodes.Status404NotFound,
+            WebhookRejection.UnsupportedContentType => StatusCodes.Status415UnsupportedMediaType,
+            WebhookRejection.BodyTooLarge => StatusCodes.Status413PayloadTooLarge,
+            WebhookRejection.MissingHeaders => StatusCodes.Status400BadRequest,
+            _ => StatusCodes.Status401Unauthorized,
+        };
 
     private static async Task RejectAsync(HttpContext context, int statusCode, string reason)
     {

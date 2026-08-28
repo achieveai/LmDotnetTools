@@ -13,7 +13,12 @@ namespace CodeReviewDaemon.Sample.Tests.Agents;
 public sealed class ReviewSubAgentSafeInventoryTests
 {
     private static ReviewSubAgentNode Node(
-        string agentId, string template, ReviewSubAgentStatus status, string? name = null, string? failureCode = null) =>
+        string agentId,
+        string template,
+        ReviewSubAgentStatus status,
+        string? name = null,
+        string? failureCode = null
+    ) =>
         new()
         {
             AgentId = agentId,
@@ -29,16 +34,24 @@ public sealed class ReviewSubAgentSafeInventoryTests
     [Fact]
     public void ToSafeInventory_reports_only_name_template_status_and_failure_code()
     {
-        var snapshot = new ReviewSubAgentTreeSnapshot(
-        [
+        var snapshot = new ReviewSubAgentTreeSnapshot([
             Node("agent-1", "code-reviewer:security-review", ReviewSubAgentStatus.Completed, name: "security"),
-            Node("agent-2", "code-reviewer:performance-review", ReviewSubAgentStatus.Error, failureCode: "context_window"),
+            Node(
+                "agent-2",
+                "code-reviewer:performance-review",
+                ReviewSubAgentStatus.Error,
+                failureCode: "context_window"
+            ),
         ]);
 
         var inventory = snapshot.ToSafeInventory();
 
         inventory.Should().Contain("security").And.Contain("code-reviewer:security-review").And.Contain("Completed");
-        inventory.Should().Contain("code-reviewer:performance-review").And.Contain("Error").And.Contain("context_window");
+        inventory
+            .Should()
+            .Contain("code-reviewer:performance-review")
+            .And.Contain("Error")
+            .And.Contain("context_window");
         inventory.Should().NotContain("agent-1").And.NotContain("agent-2");
         inventory.Should().NotContain("thread-agent-1").And.NotContain("thread-parent");
     }
@@ -49,8 +62,10 @@ public sealed class ReviewSubAgentSafeInventoryTests
         var a = Node("agent-a", "code-reviewer:a", ReviewSubAgentStatus.Completed, name: "alpha");
         var b = Node("agent-b", "code-reviewer:b", ReviewSubAgentStatus.Stopped, name: "beta");
 
-        new ReviewSubAgentTreeSnapshot([a, b]).ToSafeInventory()
-            .Should().Be(new ReviewSubAgentTreeSnapshot([b, a]).ToSafeInventory());
+        new ReviewSubAgentTreeSnapshot([a, b])
+            .ToSafeInventory()
+            .Should()
+            .Be(new ReviewSubAgentTreeSnapshot([b, a]).ToSafeInventory());
     }
 
     [Fact]
@@ -59,7 +74,9 @@ public sealed class ReviewSubAgentSafeInventoryTests
         // A blank inventory would read as a truncated prompt; the synthesis turn must be told plainly that
         // there is nothing delivered to fold in, so it synthesizes from its own analysis instead of hunting
         // for children that never existed.
-        new ReviewSubAgentTreeSnapshot([]).ToSafeInventory()
-            .Should().Be(ReviewSubAgentTreeSnapshot.NoSubAgents);
+        new ReviewSubAgentTreeSnapshot([])
+            .ToSafeInventory()
+            .Should()
+            .Be(ReviewSubAgentTreeSnapshot.NoSubAgents);
     }
 }

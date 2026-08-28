@@ -40,8 +40,12 @@ public class ProgramEnvFileResolutionTests
         {
             Environment.SetEnvironmentVariable(OverrideVariable, tempFile);
 
-            InvokeFindEnvFile().Should().Be(tempFile,
-                "an explicit LMSTREAMING_ENV_FILE pointing at a real file must win over the ancestor walk-up");
+            InvokeFindEnvFile()
+                .Should()
+                .Be(
+                    tempFile,
+                    "an explicit LMSTREAMING_ENV_FILE pointing at a real file must win over the ancestor walk-up"
+                );
         }
         finally
         {
@@ -67,8 +71,15 @@ public class ProgramEnvFileResolutionTests
             Environment.SetEnvironmentVariable(OverrideVariable, null);
             var withNoOverride = InvokeFindEnvFile();
 
-            withMissingOverride.Should().NotBe(missingPath, "a non-existent override path must never be returned as-is");
-            withMissingOverride.Should().Be(withNoOverride, "a missing override must fall back to exactly the same result as having no override");
+            withMissingOverride
+                .Should()
+                .NotBe(missingPath, "a non-existent override path must never be returned as-is");
+            withMissingOverride
+                .Should()
+                .Be(
+                    withNoOverride,
+                    "a missing override must fall back to exactly the same result as having no override"
+                );
         }
         finally
         {
@@ -87,8 +98,9 @@ public class ProgramEnvFileResolutionTests
         {
             Environment.SetEnvironmentVariable(OverrideVariable, null);
 
-            InvokeFindEnvFile().Should().BeNull(
-                "with no override set, the test process's own ancestor chain has no .env/.env.test to find");
+            InvokeFindEnvFile()
+                .Should()
+                .BeNull("with no override set, the test process's own ancestor chain has no .env/.env.test to find");
         }
         finally
         {

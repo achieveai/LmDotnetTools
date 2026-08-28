@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using Microsoft.Extensions.Logging;
 using Xunit.Abstractions;
+
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class DataDrivenFunctionToolTests : LoggingTestBase
@@ -19,7 +20,8 @@ public class DataDrivenFunctionToolTests : LoggingTestBase
 
     private readonly ProviderTestDataManager _testDataManager = new();
 
-    public DataDrivenFunctionToolTests(ITestOutputHelper output) : base(output) { }
+    public DataDrivenFunctionToolTests(ITestOutputHelper output)
+        : base(output) { }
 
     private static string EnvTestPath =>
         Path.Combine(TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
@@ -37,7 +39,8 @@ public class DataDrivenFunctionToolTests : LoggingTestBase
         Logger.LogTrace(
             "Loaded {MessageCount} messages and options with {FunctionCount} functions",
             messages.Length,
-            options.Functions?.Length ?? 0);
+            options.Functions?.Length ?? 0
+        );
 
         messages = PrepareInstructionDrivenMessages(testName, messages, options);
 
@@ -67,8 +70,7 @@ public class DataDrivenFunctionToolTests : LoggingTestBase
             Assert.Equal(2, toolCalls.Count);
             Assert.Contains(
                 toolCalls,
-                tc =>
-                    tc.FunctionName == "python_mcp-list_directory" && tc.FunctionArgs == "{\"relative_path\":\".\"}"
+                tc => tc.FunctionName == "python_mcp-list_directory" && tc.FunctionArgs == "{\"relative_path\":\".\"}"
             );
             Assert.Contains(
                 toolCalls,
@@ -96,7 +98,11 @@ public class DataDrivenFunctionToolTests : LoggingTestBase
             Assert.Contains(responseWithoutUsage, m => m is TextMessage);
         }
 
-        Logger.LogTrace("Test {TestName} completed successfully with {ToolCallCount} tool calls", testName, toolCalls.Count);
+        Logger.LogTrace(
+            "Test {TestName} completed successfully with {ToolCallCount} tool calls",
+            testName,
+            toolCalls.Count
+        );
     }
 
     private static IMessage[] PrepareInstructionDrivenMessages(
@@ -114,15 +120,13 @@ public class DataDrivenFunctionToolTests : LoggingTestBase
         string instruction;
         if (testName.Contains("MultiFunctionTool", StringComparison.Ordinal))
         {
-            instruction =
-                """
+            instruction = """
                 <|instruction_start|>{"instruction_chain":[{"id_message":"multi-tool","messages":[{"tool_call":[{"name":"python_mcp-list_directory","args":{"relative_path":"."}},{"name":"python_mcp-get_directory_tree","args":{"relative_path":"code"}}]}]}]}<|instruction_end|>
                 """;
         }
         else if (testName.Contains("WeatherFunctionTool", StringComparison.Ordinal))
         {
-            instruction =
-                """
+            instruction = """
                 <|instruction_start|>{"instruction_chain":[{"id_message":"weather-tool","messages":[{"tool_call":[{"name":"getWeather","args":{"location":"San Francisco"}}]}]}]}<|instruction_end|>
                 """;
         }
@@ -135,8 +139,7 @@ public class DataDrivenFunctionToolTests : LoggingTestBase
         else
         {
             // ToolCallResultTool-style input: no function definitions, expect summarized text response.
-            instruction =
-                """
+            instruction = """
                 <|instruction_start|>{"instruction_chain":[{"id_message":"tool-result-summary","messages":[{"text_message":{"length":60}}]}]}<|instruction_end|>
                 """;
         }

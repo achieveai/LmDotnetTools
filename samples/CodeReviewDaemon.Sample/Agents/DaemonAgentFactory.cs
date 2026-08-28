@@ -36,7 +36,9 @@ internal static class DaemonAgentFactory
     public const string ReviewFeedbackExtractionProfileId = "review-feedback-extraction";
 
     private static readonly IPromptReader Prompts = new PromptReader(
-        typeof(DaemonAgentFactory).Assembly, "CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml");
+        typeof(DaemonAgentFactory).Assembly,
+        "CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml"
+    );
 
     /// <summary>
     /// Identifies the prompt TEMPLATES this build reviews with — a digest over the <c>review</c> and
@@ -55,8 +57,8 @@ internal static class DaemonAgentFactory
     /// and a full digest buys nothing at that job.
     /// </para>
     /// </summary>
-    public static string ReviewPromptTemplateHash { get; } = ComputeTemplateHash(
-        Prompts.GetPrompt("review").Value, Prompts.GetPrompt("synthesis").Value);
+    public static string ReviewPromptTemplateHash { get; } =
+        ComputeTemplateHash(Prompts.GetPrompt("review").Value, Prompts.GetPrompt("synthesis").Value);
 
     /// <summary>
     /// The digest itself, over the raw template texts in the order given. Kept separate from
@@ -80,8 +82,9 @@ internal static class DaemonAgentFactory
             _ = subject.Append(template.Length).Append(':').Append(template).Append('\u001F');
         }
 
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(subject.ToString())))
-            .ToLowerInvariant()[..16];
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(subject.ToString()))).ToLowerInvariant()[
+            ..16
+        ];
     }
 
     /// <summary>
@@ -120,7 +123,8 @@ internal static class DaemonAgentFactory
             Name: "Review Agent",
             SystemPrompt: Prompts.GetPrompt("review").PromptText(collectOnly),
             EnabledTools: null,
-            EnabledBuiltInTools: []);
+            EnabledBuiltInTools: []
+        );
     }
 
     /// <summary>
@@ -135,16 +139,12 @@ internal static class DaemonAgentFactory
     /// turn's answer is by construction incomplete, so posting could never have belonged there.
     /// </para>
     /// </summary>
-    public static string CreateSynthesisPrompt(
-        IReadOnlyDictionary<string, object> variables, string subAgentInventory)
+    public static string CreateSynthesisPrompt(IReadOnlyDictionary<string, object> variables, string subAgentInventory)
     {
         ArgumentNullException.ThrowIfNull(variables);
         ArgumentException.ThrowIfNullOrWhiteSpace(subAgentInventory);
 
-        var withInventory = new Dictionary<string, object>(variables)
-        {
-            ["sub_agent_inventory"] = subAgentInventory,
-        };
+        var withInventory = new Dictionary<string, object>(variables) { ["sub_agent_inventory"] = subAgentInventory };
         return Prompts.GetPrompt("synthesis").PromptText(withInventory);
     }
 
@@ -160,7 +160,9 @@ internal static class DaemonAgentFactory
     /// used verbatim.
     /// </summary>
     public static AgentProfile CreateVariantProfile(
-        ReviewVariant variant, IReadOnlyDictionary<string, object>? variables = null)
+        ReviewVariant variant,
+        IReadOnlyDictionary<string, object>? variables = null
+    )
     {
         ArgumentNullException.ThrowIfNull(variant);
         ArgumentException.ThrowIfNullOrWhiteSpace(variant.SystemPrompt);
@@ -174,7 +176,8 @@ internal static class DaemonAgentFactory
             Name: $"Review Agent ({variant.VariantId})",
             SystemPrompt: systemPrompt,
             EnabledTools: null,
-            EnabledBuiltInTools: []);
+            EnabledBuiltInTools: []
+        );
     }
 
     /// <summary>
@@ -193,7 +196,8 @@ internal static class DaemonAgentFactory
             Name: "Judge Agent",
             SystemPrompt: Prompts.GetPrompt("judge", "v1.0").PromptText(),
             EnabledTools: null,
-            EnabledBuiltInTools: []);
+            EnabledBuiltInTools: []
+        );
 
     /// <summary>
     /// Builds the at-close knowledge-extraction profile (design §1/§2). Its prompt carries the durable
@@ -208,7 +212,8 @@ internal static class DaemonAgentFactory
             Name: "Knowledge Extraction Agent",
             SystemPrompt: Prompts.GetPrompt("knowledge-extraction").PromptText(),
             EnabledTools: null,
-            EnabledBuiltInTools: []);
+            EnabledBuiltInTools: []
+        );
 
     /// <summary>
     /// Builds the at-close per-developer review-feedback profile. Its prompt carries the
@@ -224,5 +229,6 @@ internal static class DaemonAgentFactory
             Name: "Review Feedback Extraction Agent",
             SystemPrompt: Prompts.GetPrompt("review-feedback-extraction").PromptText(),
             EnabledTools: null,
-            EnabledBuiltInTools: []);
+            EnabledBuiltInTools: []
+        );
 }

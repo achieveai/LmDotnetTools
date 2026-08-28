@@ -19,10 +19,10 @@ public sealed class NonOwningConversationStoreTests
     {
         var wrapper = new NonOwningConversationStore(new InMemoryConversationStore());
 
-        ((object)wrapper is IAsyncDisposable).Should().BeFalse(
-            "a child must never be able to dispose the shared store");
-        ((object)wrapper is IDisposable).Should().BeFalse(
-            "a child must never be able to dispose the shared store");
+        ((object)wrapper is IAsyncDisposable)
+            .Should()
+            .BeFalse("a child must never be able to dispose the shared store");
+        ((object)wrapper is IDisposable).Should().BeFalse("a child must never be able to dispose the shared store");
     }
 
     [Fact]
@@ -33,7 +33,8 @@ public sealed class NonOwningConversationStoreTests
         var message = MessagePersistenceConverter.ToPersistedMessage(
             new TextMessage { Text = "hi from child", Role = Role.Assistant },
             ThreadId,
-            "run-1");
+            "run-1"
+        );
 
         // Write through the wrapper...
         await wrapper.AppendMessagesAsync(ThreadId, [message]);
@@ -65,20 +66,25 @@ public sealed class NonOwningConversationStoreTests
     private static NonOwningConversationStore WithProvenance(
         IConversationStore underlying,
         string childThreadId,
-        string parentThreadId) =>
+        string parentThreadId
+    ) =>
         new(
             underlying,
             childThreadId,
-            () => SubAgentProvenance.Build(
-                parentThreadId,
-                new SubAgentSnapshot(
-                    AgentId: "child-1",
-                    Name: "alpha",
-                    TemplateName: "code-reviewer:security",
-                    Task: "check auth",
-                    Status: SubAgentStatus.Running,
-                    ThreadId: childThreadId,
-                    LastActivityUtc: null)));
+            () =>
+                SubAgentProvenance.Build(
+                    parentThreadId,
+                    new SubAgentSnapshot(
+                        AgentId: "child-1",
+                        Name: "alpha",
+                        TemplateName: "code-reviewer:security",
+                        Task: "check auth",
+                        Status: SubAgentStatus.Running,
+                        ThreadId: childThreadId,
+                        LastActivityUtc: null
+                    )
+                )
+        );
 
     [Fact]
     public async Task NonOwningWrapper_StampsProvenance_OnBothMetadataWritePaths()
@@ -86,24 +92,25 @@ public sealed class NonOwningConversationStoreTests
         var underlying = new InMemoryConversationStore();
         var wrapper = WithProvenance(underlying, ThreadId, "thread-parent");
 
-        await wrapper.SaveMetadataAsync(
-            ThreadId,
-            new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 });
+        await wrapper.SaveMetadataAsync(ThreadId, new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 });
 
         var saved = await underlying.LoadMetadataAsync(ThreadId);
-        SubAgentProvenance.TryProject(saved!, "thread-parent")!.Template
-            .Should().Be("code-reviewer:security");
+        SubAgentProvenance.TryProject(saved!, "thread-parent")!.Template.Should().Be("code-reviewer:security");
 
         // UpdateMetadataAsync is the path MultiTurnAgentBase actually takes after each run, and it must
         // preserve properties the caller set as well as add the stamp.
         await wrapper.UpdateMetadataAsync(
             ThreadId,
-            existing => (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 }) with
-            {
-                LastUpdated = 2,
-                Properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty)
-                    .SetItem("usage.records", "kept"),
-            });
+            existing =>
+                (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 }) with
+                {
+                    LastUpdated = 2,
+                    Properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
+                        "usage.records",
+                        "kept"
+                    ),
+                }
+        );
 
         var updated = await underlying.LoadMetadataAsync(ThreadId);
         updated!.Properties!["usage.records"].Should().Be("kept");
@@ -123,11 +130,11 @@ public sealed class NonOwningConversationStoreTests
 
         await wrapper.SaveMetadataAsync(
             "thread-root",
-            new ThreadMetadata { ThreadId = "thread-root", LastUpdated = 1 });
+            new ThreadMetadata { ThreadId = "thread-root", LastUpdated = 1 }
+        );
 
         var saved = await underlying.LoadMetadataAsync("thread-root");
-        (saved!.Properties?.ContainsKey(SubAgentProvenance.ParentThreadIdKey) ?? false)
-            .Should().BeFalse();
+        (saved!.Properties?.ContainsKey(SubAgentProvenance.ParentThreadIdKey) ?? false).Should().BeFalse();
     }
 
     /// <summary>
@@ -145,30 +152,39 @@ public sealed class NonOwningConversationStoreTests
         var wrapper = new NonOwningConversationStore(
             underlying,
             ThreadId,
-            () => SubAgentProvenance.Build(
-                "thread-parent",
-                new SubAgentSnapshot(
-                    AgentId: "child-1",
-                    Name: "alpha",
-                    TemplateName: "code-reviewer:security",
-                    Task: "check auth",
-                    Status: SubAgentStatus.Completed,
-                    ThreadId: ThreadId,
-                    LastActivityUtc: null,
-                    TerminalAtUtc: terminalAt)));
+            () =>
+                SubAgentProvenance.Build(
+                    "thread-parent",
+                    new SubAgentSnapshot(
+                        AgentId: "child-1",
+                        Name: "alpha",
+                        TemplateName: "code-reviewer:security",
+                        Task: "check auth",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: ThreadId,
+                        LastActivityUtc: null,
+                        TerminalAtUtc: terminalAt
+                    )
+                )
+        );
 
         // Mirrors the manager's causal push: an atomic update against metadata that may not exist yet.
         await wrapper.UpdateMetadataAsync(
             ThreadId,
-            existing => existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 });
+            existing => existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 }
+        );
 
         var saved = await underlying.LoadMetadataAsync(ThreadId);
         var projected = SubAgentProvenance.TryProject(saved!, "thread-parent");
 
         projected!.Status.Should().Be("completed");
-        projected.LastActivityUtc.Should().Be(terminalAt,
-            "the exact terminal instant captured at the transition must survive, not a value " +
-            "recomputed at write time");
+        projected
+            .LastActivityUtc.Should()
+            .Be(
+                terminalAt,
+                "the exact terminal instant captured at the transition must survive, not a value "
+                    + "recomputed at write time"
+            );
     }
 
     /// <summary>
@@ -188,18 +204,23 @@ public sealed class NonOwningConversationStoreTests
 
         // Mirrors Program.cs's describeChild: re-resolved fresh on every write from the live
         // (mutable) manager state, not frozen at construction time.
-        SubAgentSnapshot Snapshot() => new(
-            AgentId: "child-1",
-            Name: "alpha",
-            TemplateName: "code-reviewer:security",
-            Task: "check auth",
-            Status: status,
-            ThreadId: ThreadId,
-            LastActivityUtc: null,
-            TerminalAtUtc: status == SubAgentStatus.Completed ? terminalAt : null);
+        SubAgentSnapshot Snapshot() =>
+            new(
+                AgentId: "child-1",
+                Name: "alpha",
+                TemplateName: "code-reviewer:security",
+                Task: "check auth",
+                Status: status,
+                ThreadId: ThreadId,
+                LastActivityUtc: null,
+                TerminalAtUtc: status == SubAgentStatus.Completed ? terminalAt : null
+            );
 
         var wrapper = new NonOwningConversationStore(
-            underlying, ThreadId, () => SubAgentProvenance.Build("thread-parent", Snapshot()));
+            underlying,
+            ThreadId,
+            () => SubAgentProvenance.Build("thread-parent", Snapshot())
+        );
 
         // First write: terminal (Completed) — TerminalAtKey lands in persisted metadata.
         await wrapper.SaveMetadataAsync(ThreadId, new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 });
@@ -217,16 +238,21 @@ public sealed class NonOwningConversationStoreTests
         // property-less ThreadMetadata would mask the bug by discarding the stale key anyway.
         await wrapper.UpdateMetadataAsync(
             ThreadId,
-            existing => (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 }) with
-            {
-                LastUpdated = 2,
-            });
+            existing =>
+                (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 }) with
+                {
+                    LastUpdated = 2,
+                }
+        );
         var afterRestart = await underlying.LoadMetadataAsync(ThreadId);
 
-        afterRestart!.Properties!.Should().NotContainKey(SubAgentProvenance.TerminalAtKey,
-            "a restarted, currently-running child must not still report a stale terminal instant " +
-            "in its PERSISTED metadata");
+        afterRestart!
+            .Properties!.Should()
+            .NotContainKey(
+                SubAgentProvenance.TerminalAtKey,
+                "a restarted, currently-running child must not still report a stale terminal instant "
+                    + "in its PERSISTED metadata"
+            );
         SubAgentProvenance.TryProject(afterRestart, "thread-parent")!.Status.Should().Be("running");
     }
 }
-

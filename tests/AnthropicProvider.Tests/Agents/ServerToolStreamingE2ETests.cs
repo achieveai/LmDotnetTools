@@ -41,12 +41,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
-        var agent = new AnthropicAgent(
-            "TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
-        );
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
 
         var messages = new[]
         {
@@ -63,29 +63,28 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         await foreach (var msg in await agent.GenerateReplyStreamingAsync(messages, options))
         {
             responseMessages.Add(msg);
-            Logger.LogDebug(
-                "Streamed message: {MessageType}, Role={Role}",
-                msg.GetType().Name,
-                msg.Role
-            );
+            Logger.LogDebug("Streamed message: {MessageType}, Role={Role}", msg.GetType().Name, msg.Role);
         }
 
-        Logger.LogInformation(
-            "Streaming complete: {MessageCount} messages received",
-            responseMessages.Count
-        );
+        Logger.LogInformation("Streaming complete: {MessageCount} messages received", responseMessages.Count);
 
         // Verify 4-block structure
         // In streaming mode, text arrives as TextUpdateMessage (not TextMessage)
         // Server tool use arrives as ToolCallUpdateMessage (preview at start + final at stop)
         var textUpdates = responseMessages.OfType<TextUpdateMessage>().ToList();
-        var serverToolUpdateMessages = responseMessages.OfType<ToolCallUpdateMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
-        var serverToolResultMessages = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
+        var serverToolUpdateMessages = responseMessages
+            .OfType<ToolCallUpdateMessage>()
+            .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
+            .ToList();
+        var serverToolResultMessages = responseMessages
+            .OfType<ToolCallResultMessage>()
+            .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
+            .ToList();
         var textWithCitationsMessages = responseMessages.OfType<TextWithCitationsMessage>().ToList();
 
         Logger.LogDebug(
             "Message breakdown: TextUpdates={TextUpdateCount}, ServerToolUpdates={ToolUpdateCount}, "
-            + "ServerToolResult={ResultCount}, TextWithCitations={CitationsCount}",
+                + "ServerToolResult={ResultCount}, TextWithCitations={CitationsCount}",
             textUpdates.Count,
             serverToolUpdateMessages.Count,
             serverToolResultMessages.Count,
@@ -107,7 +106,8 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         Assert.False(toolResult.IsError);
 
         // Verify text content via ICanGetText (covers both TextMessage and TextUpdateMessage)
-        var allText = responseMessages.OfType<ICanGetText>()
+        var allText = responseMessages
+            .OfType<ICanGetText>()
             .Select(m => m.GetText())
             .Where(t => !string.IsNullOrEmpty(t))
             .ToList();
@@ -126,12 +126,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
-        var agent = new AnthropicAgent(
-            "TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
-        );
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
 
         var messages = new[]
         {
@@ -146,23 +146,22 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var responseMessages = (await agent.GenerateReplyAsync(messages, options)).ToList();
 
-        Logger.LogInformation(
-            "Non-streaming response: {MessageCount} messages received",
-            responseMessages.Count
-        );
+        Logger.LogInformation("Non-streaming response: {MessageCount} messages received", responseMessages.Count);
 
         foreach (var msg in responseMessages)
         {
-            Logger.LogDebug(
-                "Response message: {MessageType}, Role={Role}",
-                msg.GetType().Name,
-                msg.Role
-            );
+            Logger.LogDebug("Response message: {MessageType}, Role={Role}", msg.GetType().Name, msg.Role);
         }
 
         // Same assertions as streaming test
-        var serverToolUseMessages = responseMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
-        var serverToolResultMessages = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
+        var serverToolUseMessages = responseMessages
+            .OfType<ToolCallMessage>()
+            .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
+            .ToList();
+        var serverToolResultMessages = responseMessages
+            .OfType<ToolCallResultMessage>()
+            .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
+            .ToList();
 
         Assert.Single(serverToolUseMessages);
         Assert.Single(serverToolResultMessages);
@@ -187,11 +186,15 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         // --- Streaming path ---
         var streamingCapture = new RequestCapture();
         var streamingClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, streamingCapture, chunkDelayMs: 0
+            LoggerFactory,
+            streamingCapture,
+            chunkDelayMs: 0
         );
         var streamingAnthropicClient = new AnthropicClient("test-api-key", httpClient: streamingClient);
         var streamingAgent = new AnthropicAgent(
-            "StreamAgent", streamingAnthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
+            "StreamAgent",
+            streamingAnthropicClient,
+            LoggerFactory.CreateLogger<AnthropicAgent>()
         );
 
         var messages = new[]
@@ -211,38 +214,44 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             streamingMessages.Add(msg);
         }
 
-        Logger.LogDebug(
-            "Streaming produced {Count} messages",
-            streamingMessages.Count
-        );
+        Logger.LogDebug("Streaming produced {Count} messages", streamingMessages.Count);
 
         // --- Non-streaming path ---
         var nonStreamingCapture = new RequestCapture();
         var nonStreamingClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, nonStreamingCapture, chunkDelayMs: 0
+            LoggerFactory,
+            nonStreamingCapture,
+            chunkDelayMs: 0
         );
         var nonStreamingAnthropicClient = new AnthropicClient("test-api-key", httpClient: nonStreamingClient);
         var nonStreamingAgent = new AnthropicAgent(
-            "NonStreamAgent", nonStreamingAnthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
+            "NonStreamAgent",
+            nonStreamingAnthropicClient,
+            LoggerFactory.CreateLogger<AnthropicAgent>()
         );
 
         var nonStreamingMessages = (await nonStreamingAgent.GenerateReplyAsync(messages, options)).ToList();
 
-        Logger.LogDebug(
-            "Non-streaming produced {Count} messages",
-            nonStreamingMessages.Count
-        );
+        Logger.LogDebug("Non-streaming produced {Count} messages", nonStreamingMessages.Count);
 
         // Compare server tool message counts
         // Streaming emits ToolCallUpdateMessage (not ToolCallMessage), non-streaming emits ToolCallMessage
-        var streamingToolUpdateCount = streamingMessages.OfType<ToolCallUpdateMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
-        var streamingToolResultCount = streamingMessages.OfType<ToolCallResultMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
-        var nonStreamingToolUseCount = nonStreamingMessages.OfType<ToolCallMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
-        var nonStreamingToolResultCount = nonStreamingMessages.OfType<ToolCallResultMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var streamingToolUpdateCount = streamingMessages
+            .OfType<ToolCallUpdateMessage>()
+            .Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var streamingToolResultCount = streamingMessages
+            .OfType<ToolCallResultMessage>()
+            .Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var nonStreamingToolUseCount = nonStreamingMessages
+            .OfType<ToolCallMessage>()
+            .Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var nonStreamingToolResultCount = nonStreamingMessages
+            .OfType<ToolCallResultMessage>()
+            .Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
 
         Logger.LogInformation(
             "Comparison: Streaming(ToolUpdates={StreamToolUpdates}, ToolResult={StreamToolResult}) "
-            + "vs NonStreaming(ToolUse={NonStreamToolUse}, ToolResult={NonStreamToolResult})",
+                + "vs NonStreaming(ToolUse={NonStreamToolUse}, ToolResult={NonStreamToolResult})",
             streamingToolUpdateCount,
             streamingToolResultCount,
             nonStreamingToolUseCount,
@@ -256,8 +265,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         Assert.Equal(1, nonStreamingToolResultCount);
 
         // Compare tool use IDs and names (streaming uses last ToolCallUpdateMessage)
-        var streamToolUse = streamingMessages.OfType<ToolCallUpdateMessage>().Last(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
-        var nonStreamToolUse = nonStreamingMessages.OfType<ToolCallMessage>().First(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var streamToolUse = streamingMessages
+            .OfType<ToolCallUpdateMessage>()
+            .Last(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var nonStreamToolUse = nonStreamingMessages
+            .OfType<ToolCallMessage>()
+            .First(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.Equal(streamToolUse.FunctionName, nonStreamToolUse.FunctionName);
         Assert.Equal(streamToolUse.ToolCallId, nonStreamToolUse.ToolCallId);
     }
@@ -272,12 +285,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
-        var agent = new AnthropicAgent(
-            "TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
-        );
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
 
         var options = new GenerateReplyOptions
         {
@@ -297,10 +310,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             turn1Responses.Add(msg);
         }
 
-        Logger.LogDebug(
-            "Turn 1 produced {Count} messages",
-            turn1Responses.Count
-        );
+        Logger.LogDebug("Turn 1 produced {Count} messages", turn1Responses.Count);
 
         // Turn 2: follow-up question with full history
         var turn2Instruction = """
@@ -320,10 +330,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             turn2Responses.Add(msg);
         }
 
-        Logger.LogDebug(
-            "Turn 2 produced {Count} messages",
-            turn2Responses.Count
-        );
+        Logger.LogDebug("Turn 2 produced {Count} messages", turn2Responses.Count);
 
         // Inspect the turn 2 request wire format
         Assert.Equal(2, requestCapture.RequestCount);
@@ -331,10 +338,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         using var doc = JsonDocument.Parse(turn2Body);
         var requestMessages = doc.RootElement.GetProperty("messages");
 
-        Logger.LogDebug(
-            "Turn 2 request has {MessageCount} messages",
-            requestMessages.GetArrayLength()
-        );
+        Logger.LogDebug("Turn 2 request has {MessageCount} messages", requestMessages.GetArrayLength());
 
         // Verify wire format constraints
         var hasServerToolUse = false;
@@ -346,11 +350,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             var role = msg.GetProperty("role").GetString();
 
             // No consecutive same-role messages
-            Assert.NotEqual(
-                previousRole,
-                role,
-                StringComparer.Ordinal
-            );
+            Assert.NotEqual(previousRole, role, StringComparer.Ordinal);
             previousRole = role;
 
             if (msg.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
@@ -378,9 +378,11 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
                         );
                     }
 
-                    if (typeStr == "tool_result"
+                    if (
+                        typeStr == "tool_result"
                         && block.TryGetProperty("tool_use_id", out var toolUseId)
-                        && toolUseId.GetString() == "srvtoolu_kimi_01")
+                        && toolUseId.GetString() == "srvtoolu_kimi_01"
+                    )
                     {
                         hasToolResult = true;
                         Assert.Equal("user", role);
@@ -414,9 +416,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         var handler = FakeHttpMessageHandler.CreateSseStreamHandler(events);
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://api.anthropic.com/v1") };
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
-        var agent = new AnthropicAgent(
-            "TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
-        );
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
 
         var messages = new[]
         {
@@ -436,26 +436,24 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             await foreach (var msg in await agent.GenerateReplyStreamingAsync(messages, options))
             {
                 responseMessages.Add(msg);
-                Logger.LogDebug(
-                    "Streamed message: {MessageType}",
-                    msg.GetType().Name
-                );
+                Logger.LogDebug("Streamed message: {MessageType}", msg.GetType().Name);
             }
         });
 
         Assert.Null(exception);
-        Logger.LogInformation(
-            "Mismatched IDs parsed without error: {MessageCount} messages",
-            responseMessages.Count
-        );
+        Logger.LogInformation("Mismatched IDs parsed without error: {MessageCount} messages", responseMessages.Count);
 
         // Verify both messages have correct tool names despite mismatched IDs
         // Streaming emits ToolCallUpdateMessage, not ToolCallMessage
-        var toolUse = responseMessages.OfType<ToolCallUpdateMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var toolUse = responseMessages
+            .OfType<ToolCallUpdateMessage>()
+            .FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolUse);
         Assert.Equal("web_search", toolUse.FunctionName);
 
-        var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var toolResult = responseMessages
+            .OfType<ToolCallResultMessage>()
+            .FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
         Assert.Equal("web_search", toolResult.ToolName);
     }
@@ -480,12 +478,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
-        var agent = new AnthropicAgent(
-            "TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
-        );
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
 
         var messages = new[]
         {
@@ -500,21 +498,16 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var responseMessages = (await agent.GenerateReplyAsync(messages, options)).ToList();
 
-        Logger.LogInformation(
-            "Error result test: {MessageCount} messages received",
-            responseMessages.Count
-        );
+        Logger.LogInformation("Error result test: {MessageCount} messages received", responseMessages.Count);
 
         foreach (var msg in responseMessages)
         {
-            Logger.LogDebug(
-                "Response message: {MessageType}, Role={Role}",
-                msg.GetType().Name,
-                msg.Role
-            );
+            Logger.LogDebug("Response message: {MessageType}, Role={Role}", msg.GetType().Name, msg.Role);
         }
 
-        var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var toolResult = responseMessages
+            .OfType<ToolCallResultMessage>()
+            .FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
         Assert.True(toolResult.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
@@ -549,45 +542,39 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
-        var agent = new AnthropicAgent(
-            "TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
-        );
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
 
         var messages = new[]
         {
             new TextMessage { Role = Role.User, Text = webFetchInstructionChain },
         };
 
-        var options = new GenerateReplyOptions
-        {
-            ModelId = "claude-sonnet-4-20250514",
-        };
+        var options = new GenerateReplyOptions { ModelId = "claude-sonnet-4-20250514" };
 
         var responseMessages = (await agent.GenerateReplyAsync(messages, options)).ToList();
 
-        Logger.LogInformation(
-            "web_fetch non-streaming: {MessageCount} messages received",
-            responseMessages.Count
-        );
+        Logger.LogInformation("web_fetch non-streaming: {MessageCount} messages received", responseMessages.Count);
 
         foreach (var msg in responseMessages)
         {
-            Logger.LogDebug(
-                "Response message: {MessageType}, Role={Role}",
-                msg.GetType().Name,
-                msg.Role
-            );
+            Logger.LogDebug("Response message: {MessageType}, Role={Role}", msg.GetType().Name, msg.Role);
         }
 
-        var toolUse = responseMessages.OfType<ToolCallMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var toolUse = responseMessages
+            .OfType<ToolCallMessage>()
+            .FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolUse);
         Assert.Equal("web_fetch", toolUse.FunctionName);
         Assert.Equal("srvtoolu_fetch_01", toolUse.ToolCallId);
 
-        var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var toolResult = responseMessages
+            .OfType<ToolCallResultMessage>()
+            .FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
         Assert.Equal("web_fetch", toolResult.ToolName);
         Assert.False(toolResult.IsError);
@@ -598,10 +585,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         using var doc = JsonDocument.Parse(body);
         var requestMessages = doc.RootElement.GetProperty("messages");
 
-        Logger.LogDebug(
-            "Non-streaming request body for web_fetch: {RequestBody}",
-            body
-        );
+        Logger.LogDebug("Non-streaming request body for web_fetch: {RequestBody}", body);
 
         // The response JSON should NOT contain "web_search_tool_result"
         Assert.DoesNotContain("web_search_tool_result", body);
@@ -627,12 +611,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
-        var agent = new AnthropicAgent(
-            "TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
-        );
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
 
         var messages = new[]
         {
@@ -649,19 +633,14 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         await foreach (var msg in await agent.GenerateReplyStreamingAsync(messages, options))
         {
             responseMessages.Add(msg);
-            Logger.LogDebug(
-                "Streamed message: {MessageType}, Role={Role}",
-                msg.GetType().Name,
-                msg.Role
-            );
+            Logger.LogDebug("Streamed message: {MessageType}, Role={Role}", msg.GetType().Name, msg.Role);
         }
 
-        Logger.LogInformation(
-            "Streaming error result: {MessageCount} messages received",
-            responseMessages.Count
-        );
+        Logger.LogInformation("Streaming error result: {MessageCount} messages received", responseMessages.Count);
 
-        var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var toolResult = responseMessages
+            .OfType<ToolCallResultMessage>()
+            .FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
         Assert.True(toolResult.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
@@ -692,12 +671,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
-        var agent = new AnthropicAgent(
-            "TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
-        );
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
 
         var messages = new[]
         {
@@ -713,10 +692,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         // Use non-streaming to get the full JSON response body
         var responseMessages = (await agent.GenerateReplyAsync(messages, options)).ToList();
 
-        Logger.LogInformation(
-            "Wire format test: {MessageCount} messages received",
-            responseMessages.Count
-        );
+        Logger.LogInformation("Wire format test: {MessageCount} messages received", responseMessages.Count);
 
         // Inspect the raw HTTP response to verify the wire JSON structure
         Assert.Equal(1, requestCapture.RequestCount);
@@ -726,7 +702,9 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         // via the messages it produces. But to verify wire format, we inspect the handler output.
         // Since we can't easily capture the response body, verify via the parsed message properties
         // AND verify the request body doesn't contain incorrect type strings.
-        var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var toolResult = responseMessages
+            .OfType<ToolCallResultMessage>()
+            .FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
         Assert.True(toolResult.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
@@ -754,12 +732,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
-        var agent = new AnthropicAgent(
-            "TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
-        );
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
 
         var options = new GenerateReplyOptions
         {
@@ -808,8 +786,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         var toolUseIds = new List<string>();
         foreach (var msg in requestMessages.EnumerateArray())
         {
-            if (!msg.TryGetProperty("content", out var content)
-                || content.ValueKind != JsonValueKind.Array)
+            if (!msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
             {
                 continue;
             }
@@ -824,30 +801,23 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
                 var typeStr = blockType.GetString();
 
                 // Collect IDs from server_tool_use blocks
-                if (typeStr == "server_tool_use"
-                    && block.TryGetProperty("id", out var id))
+                if (typeStr == "server_tool_use" && block.TryGetProperty("id", out var id))
                 {
                     toolUseIds.Add(id.GetString()!);
                 }
 
                 // Also collect IDs from tool_use blocks (local tools)
-                if (typeStr == "tool_use"
-                    && block.TryGetProperty("id", out var toolId))
+                if (typeStr == "tool_use" && block.TryGetProperty("id", out var toolId))
                 {
                     toolUseIds.Add(toolId.GetString()!);
                 }
             }
         }
 
-        Logger.LogInformation(
-            "Turn 2 wire format tool_use IDs: {ToolUseIds}",
-            string.Join(", ", toolUseIds)
-        );
+        Logger.LogInformation("Turn 2 wire format tool_use IDs: {ToolUseIds}", string.Join(", ", toolUseIds));
 
         // Critical: no duplicate tool_use IDs in the wire format
-        Assert.Equal(
-            toolUseIds.Count,
-            toolUseIds.Distinct().Count());
+        Assert.Equal(toolUseIds.Count, toolUseIds.Distinct().Count());
     }
 
     /// <summary>
@@ -855,105 +825,112 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
     /// </summary>
     private static List<SseEvent> BuildMismatchedIdSseEvents()
     {
-        return [
-        // message_start
-        new SseEvent
-        {
-            Event = "message_start",
-            Data = JsonSerializer.Serialize(new
+        return
+        [
+            // message_start
+            new SseEvent
             {
-                type = "message_start",
-                message = new
-                {
-                    id = "msg_mismatch_01",
-                    type = "message",
-                    role = "assistant",
-                    model = "claude-sonnet-4-20250514",
-                    content = Array.Empty<object>(),
-                    stop_reason = (string?)null,
-                    usage = new { input_tokens = 50, output_tokens = 0 },
-                },
-            }),
-        },
-        // server_tool_use with id "srvtoolu_AAA"
-        new SseEvent
-        {
-            Event = "content_block_start",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_start",
-                index = 0,
-                content_block = new
-                {
-                    type = "server_tool_use",
-                    id = "srvtoolu_AAA",
-                    name = "web_search",
-                    input = new { },
-                },
-            }),
-        },
-        new SseEvent
-        {
-            Event = "content_block_delta",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_delta",
-                index = 0,
-                delta = new { type = "input_json_delta", partial_json = "{\"query\":\"test\"}" },
-            }),
-        },
-        new SseEvent
-        {
-            Event = "content_block_stop",
-            Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 }),
-        },
-        // web_search_tool_result with DIFFERENT tool_use_id "srvtoolu_BBB"
-        new SseEvent
-        {
-            Event = "content_block_start",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_start",
-                index = 1,
-                content_block = new
-                {
-                    type = "web_search_tool_result",
-                    tool_use_id = "srvtoolu_BBB",
-                    content = new[]
+                Event = "message_start",
+                Data = JsonSerializer.Serialize(
+                    new
                     {
-                        new
+                        type = "message_start",
+                        message = new
                         {
-                            type = "web_search_result",
-                            url = "https://example.com",
-                            title = "Test Result",
-                            encrypted_content = "enc...",
-                            page_age = "1 hour ago",
+                            id = "msg_mismatch_01",
+                            type = "message",
+                            role = "assistant",
+                            model = "claude-sonnet-4-20250514",
+                            content = Array.Empty<object>(),
+                            stop_reason = (string?)null,
+                            usage = new { input_tokens = 50, output_tokens = 0 },
                         },
-                    },
-                },
-            }),
-        },
-        new SseEvent
-        {
-            Event = "content_block_stop",
-            Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 1 }),
-        },
-        // message_delta and message_stop
-        new SseEvent
-        {
-            Event = "message_delta",
-            Data = JsonSerializer.Serialize(new
+                    }
+                ),
+            },
+            // server_tool_use with id "srvtoolu_AAA"
+            new SseEvent
             {
-                type = "message_delta",
-                delta = new { stop_reason = "end_turn", stop_sequence = (string?)null },
-                usage = new { input_tokens = 50, output_tokens = 20 },
-            }),
-        },
-        new SseEvent
-        {
-            Event = "message_stop",
-            Data = JsonSerializer.Serialize(new { type = "message_stop" }),
-        },
-    ];
+                Event = "content_block_start",
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_start",
+                        index = 0,
+                        content_block = new
+                        {
+                            type = "server_tool_use",
+                            id = "srvtoolu_AAA",
+                            name = "web_search",
+                            input = new { },
+                        },
+                    }
+                ),
+            },
+            new SseEvent
+            {
+                Event = "content_block_delta",
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_delta",
+                        index = 0,
+                        delta = new { type = "input_json_delta", partial_json = "{\"query\":\"test\"}" },
+                    }
+                ),
+            },
+            new SseEvent
+            {
+                Event = "content_block_stop",
+                Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 }),
+            },
+            // web_search_tool_result with DIFFERENT tool_use_id "srvtoolu_BBB"
+            new SseEvent
+            {
+                Event = "content_block_start",
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_start",
+                        index = 1,
+                        content_block = new
+                        {
+                            type = "web_search_tool_result",
+                            tool_use_id = "srvtoolu_BBB",
+                            content = new[]
+                            {
+                                new
+                                {
+                                    type = "web_search_result",
+                                    url = "https://example.com",
+                                    title = "Test Result",
+                                    encrypted_content = "enc...",
+                                    page_age = "1 hour ago",
+                                },
+                            },
+                        },
+                    }
+                ),
+            },
+            new SseEvent
+            {
+                Event = "content_block_stop",
+                Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 1 }),
+            },
+            // message_delta and message_stop
+            new SseEvent
+            {
+                Event = "message_delta",
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "message_delta",
+                        delta = new { stop_reason = "end_turn", stop_sequence = (string?)null },
+                        usage = new { input_tokens = 50, output_tokens = 20 },
+                    }
+                ),
+            },
+            new SseEvent { Event = "message_stop", Data = JsonSerializer.Serialize(new { type = "message_stop" }) },
+        ];
     }
 }

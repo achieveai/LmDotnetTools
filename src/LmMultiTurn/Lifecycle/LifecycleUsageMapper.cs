@@ -31,7 +31,8 @@ internal static class LifecycleUsageMapper
     /// </remarks>
     public static LifecycleUsage? ToLifecycleUsage(
         Usage? usage,
-        string completeness = LifecycleUsageCompleteness.Complete)
+        string completeness = LifecycleUsageCompleteness.Complete
+    )
     {
         if (usage == null)
         {

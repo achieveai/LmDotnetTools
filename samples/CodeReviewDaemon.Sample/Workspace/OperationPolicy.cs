@@ -56,7 +56,8 @@ internal sealed record OperationRequest(
     string Provider,
     string Host,
     string Method,
-    string Path);
+    string Path
+);
 
 /// <summary>
 /// An allow-listed submodule destination: the host plus the repository path prefix that may be
@@ -78,7 +79,8 @@ internal sealed record ReviewScope(
     string ReviewBotHost,
     string ReviewBotRepoPath,
     string ApiHost,
-    IReadOnlyList<SubmoduleAllowRule> AllowedSubmodules)
+    IReadOnlyList<SubmoduleAllowRule> AllowedSubmodules
+)
 {
     /// <summary>
     /// The path prefix every provider-API request for this run must fall under (e.g.
@@ -181,14 +183,13 @@ internal sealed class OperationPolicy
         // Scoped to the provider-API operations on purpose: git transport legitimately POSTs
         // (git-upload-pack is a POST), so a blanket method ban would break every fetch. The distinction is
         // the operation's ARM, not the host — on ADO the API host and the git host are the same name.
-        if (!_allowWriteOperations
-            && IsProviderApiOperation(request.Operation)
-            && IsMutatingMethod(request.Method))
+        if (!_allowWriteOperations && IsProviderApiOperation(request.Operation) && IsMutatingMethod(request.Method))
         {
             return PolicyDecision.Deny(
                 $"this policy is collect-only and has no provider-API write capability; refusing "
                     + $"{request.Method.ToUpperInvariant()} '{StripQuery(request.Path)}' "
-                    + $"({request.Operation})");
+                    + $"({request.Operation})"
+            );
         }
 
         return request.Operation switch
@@ -197,7 +198,8 @@ internal sealed class OperationPolicy
                 request,
                 _scope.TargetHost,
                 _scope.TargetRepoPath,
-                "target repository"),
+                "target repository"
+            ),
 
             SandboxOperation.FetchForkHead => _scope.ForkHost is null || _scope.ForkRepoPath is null
                 ? PolicyDecision.Deny("no fork remote is in scope for this review")
@@ -216,7 +218,11 @@ internal sealed class OperationPolicy
                 : DecideApi(request, "POST", "post review comment", allowReadOnlyProjectRoutes: false),
 
             SandboxOperation.ReadProviderMetadata => DecideApi(
-                request, "GET", "read provider metadata", allowReadOnlyProjectRoutes: true),
+                request,
+                "GET",
+                "read provider metadata",
+                allowReadOnlyProjectRoutes: true
+            ),
 
             _ => PolicyDecision.Deny($"unknown operation '{request.Operation}'"),
         };
@@ -234,17 +240,18 @@ internal sealed class OperationPolicy
     /// positively so adding a case to <see cref="SandboxOperation"/> forces a decision here rather than
     /// defaulting into "not an API operation, therefore ungated".
     /// </summary>
-    private static bool IsProviderApiOperation(SandboxOperation operation) => operation switch
-    {
-        SandboxOperation.PostReviewComment or SandboxOperation.ReadProviderMetadata => true,
-        SandboxOperation.FetchTarget
+    private static bool IsProviderApiOperation(SandboxOperation operation) =>
+        operation switch
+        {
+            SandboxOperation.PostReviewComment or SandboxOperation.ReadProviderMetadata => true,
+            SandboxOperation.FetchTarget
             or SandboxOperation.FetchForkHead
             or SandboxOperation.FetchSubmodule
             or SandboxOperation.PushReviewBot => false,
-        // An operation nobody classified is treated as API-addressing, which is the conservative side of
-        // this predicate: it only ever makes the collect-only gate FIRE, never makes it stand down.
-        _ => true,
-    };
+            // An operation nobody classified is treated as API-addressing, which is the conservative side of
+            // this predicate: it only ever makes the collect-only gate FIRE, never makes it stand down.
+            _ => true,
+        };
 
     /// <summary>
     /// Whether <paramref name="method"/> mutates provider-side state. Anything that is not one of the
@@ -264,49 +271,43 @@ internal sealed class OperationPolicy
     {
         if (!HostMatches(request.Host, expectedHost))
         {
-            return PolicyDecision.Deny(
-                $"host '{request.Host}' is not the {label} host '{expectedHost}'");
+            return PolicyDecision.Deny($"host '{request.Host}' is not the {label} host '{expectedHost}'");
         }
 
         if (!PathUnderRepo(request.Path, expectedRepoPath))
         {
-            return PolicyDecision.Deny(
-                $"path '{request.Path}' is outside the {label} '{expectedRepoPath}'");
+            return PolicyDecision.Deny($"path '{request.Path}' is outside the {label} '{expectedRepoPath}'");
         }
 
         var service = ClassifyGitService(request.Path);
         if (service != GitService.UploadPack)
         {
-            return PolicyDecision.Deny(
-                $"only fetch (git-upload-pack) is permitted on the {label}; got {service}");
+            return PolicyDecision.Deny($"only fetch (git-upload-pack) is permitted on the {label}; got {service}");
         }
 
         return PolicyDecision.Allow($"fetch from {label} '{expectedRepoPath}'");
     }
 
-    private PolicyDecision DecideReceivePack(
-        OperationRequest request,
-        string expectedHost,
-        string expectedRepoPath
-    )
+    private PolicyDecision DecideReceivePack(OperationRequest request, string expectedHost, string expectedRepoPath)
     {
         if (!HostMatches(request.Host, expectedHost))
         {
-            return PolicyDecision.Deny(
-                $"push host '{request.Host}' is not the ReviewBot host '{expectedHost}'");
+            return PolicyDecision.Deny($"push host '{request.Host}' is not the ReviewBot host '{expectedHost}'");
         }
 
         if (!PathUnderRepo(request.Path, expectedRepoPath))
         {
             return PolicyDecision.Deny(
-                $"push path '{request.Path}' is outside the ReviewBot repo '{expectedRepoPath}'");
+                $"push path '{request.Path}' is outside the ReviewBot repo '{expectedRepoPath}'"
+            );
         }
 
         var service = ClassifyGitService(request.Path);
         if (service != GitService.ReceivePack)
         {
             return PolicyDecision.Deny(
-                $"only push (git-receive-pack) is permitted on the ReviewBot repo; got {service}");
+                $"only push (git-receive-pack) is permitted on the ReviewBot repo; got {service}"
+            );
         }
 
         return PolicyDecision.Allow($"push to ReviewBot repo '{expectedRepoPath}'");
@@ -322,15 +323,15 @@ internal sealed class OperationPolicy
                 if (service != GitService.UploadPack)
                 {
                     return PolicyDecision.Deny(
-                        $"only fetch is permitted on submodule '{rule.RepoPath}'; got {service}");
+                        $"only fetch is permitted on submodule '{rule.RepoPath}'; got {service}"
+                    );
                 }
 
                 return PolicyDecision.Allow($"fetch allow-listed submodule '{rule.RepoPath}'");
             }
         }
 
-        return PolicyDecision.Deny(
-            $"submodule '{request.Host}{StripQuery(request.Path)}' is not on the allow-list");
+        return PolicyDecision.Deny($"submodule '{request.Host}{StripQuery(request.Path)}' is not on the allow-list");
     }
 
     /// <summary>
@@ -343,18 +344,17 @@ internal sealed class OperationPolicy
         OperationRequest request,
         string expectedMethod,
         string label,
-        bool allowReadOnlyProjectRoutes)
+        bool allowReadOnlyProjectRoutes
+    )
     {
         if (!HostMatches(request.Host, _scope.ApiHost))
         {
-            return PolicyDecision.Deny(
-                $"host '{request.Host}' is not the provider API host '{_scope.ApiHost}'");
+            return PolicyDecision.Deny($"host '{request.Host}' is not the provider API host '{_scope.ApiHost}'");
         }
 
         if (!string.Equals(request.Method, expectedMethod, StringComparison.OrdinalIgnoreCase))
         {
-            return PolicyDecision.Deny(
-                $"{label} requires {expectedMethod}; got {request.Method}");
+            return PolicyDecision.Deny($"{label} requires {expectedMethod}; got {request.Method}");
         }
 
         // When the concrete repo route is known (per-run policy, PR #121 H2), the request path must fall
@@ -362,12 +362,15 @@ internal sealed class OperationPolicy
         // run's OWN project-scoped read routes are the only exception (see ApiWorkItemPaths): ADO publishes
         // work items nowhere else, and a reviewer that cannot tell whether the diff does what was asked is a
         // reviewer the review is wrong without.
-        if (_scope.ApiRepoPathPrefix is { } prefix
+        if (
+            _scope.ApiRepoPathPrefix is { } prefix
             && !PathUnderApiPrefix(request.Path, prefix)
-            && !IsReadOnlyProjectRoute(request.Path, allowReadOnlyProjectRoutes))
+            && !IsReadOnlyProjectRoute(request.Path, allowReadOnlyProjectRoutes)
+        )
         {
             return PolicyDecision.Deny(
-                $"{label} path '{StripQuery(request.Path)}' is outside the run's API route '{prefix}'");
+                $"{label} path '{StripQuery(request.Path)}' is outside the run's API route '{prefix}'"
+            );
         }
 
         return PolicyDecision.Allow($"{label} on '{_scope.ApiHost}'");
@@ -429,7 +432,8 @@ internal sealed class OperationPolicy
         string.Equals(
             PathCanonicalizer.NormalizeForComparison(actual),
             PathCanonicalizer.NormalizeForComparison(expected),
-            StringComparison.Ordinal);
+            StringComparison.Ordinal
+        );
 
     /// <summary>
     /// True when the request path targets the git smart-HTTP endpoints of <paramref name="repoPath"/>

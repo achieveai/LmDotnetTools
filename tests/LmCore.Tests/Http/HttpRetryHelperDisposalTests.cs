@@ -115,10 +115,7 @@ public sealed class HttpRetryHelperDisposalTests
         responses.Should().ContainSingle().Which.Disposed.Should().BeTrue();
     }
 
-    private static Task<HttpResponseMessage> NewResponse(
-        List<TrackingHttpResponseMessage> sink,
-        HttpStatusCode status
-    )
+    private static Task<HttpResponseMessage> NewResponse(List<TrackingHttpResponseMessage> sink, HttpStatusCode status)
     {
         var response = new TrackingHttpResponseMessage(status) { Content = new StringContent($"error {(int)status}") };
         sink.Add(response);

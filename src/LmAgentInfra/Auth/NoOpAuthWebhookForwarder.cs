@@ -12,11 +12,21 @@ public sealed class NoOpAuthWebhookForwarder : IAuthWebhookForwarder
         string providerId,
         string signinUrl,
         string reason,
-        CancellationToken ct) => Task.FromResult<AuthWebhookTarget?>(null);
+        CancellationToken ct
+    ) => Task.FromResult<AuthWebhookTarget?>(null);
 
-    public Task NotifyAuthCompletedAsync(AuthWebhookTarget? target, string sessionId, string providerId, CancellationToken ct) =>
-        Task.CompletedTask;
+    public Task NotifyAuthCompletedAsync(
+        AuthWebhookTarget? target,
+        string sessionId,
+        string providerId,
+        CancellationToken ct
+    ) => Task.CompletedTask;
 
-    public Task NotifyAuthDeniedAsync(AuthWebhookTarget? target, string sessionId, string providerId, string reason, CancellationToken ct) =>
-        Task.CompletedTask;
+    public Task NotifyAuthDeniedAsync(
+        AuthWebhookTarget? target,
+        string sessionId,
+        string providerId,
+        string reason,
+        CancellationToken ct
+    ) => Task.CompletedTask;
 }

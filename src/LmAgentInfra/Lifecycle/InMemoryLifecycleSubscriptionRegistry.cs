@@ -57,11 +57,9 @@ public sealed class InMemoryLifecycleSubscriptionRegistry : ILifecycleSubscripti
     /// someone else. A constant rather than an interpolated message on purpose: any per-case detail,
     /// down to the phrasing, would let a caller enumerate which subscription ids are real.
     /// </summary>
-    private const string NotAuthorizedMessage =
-        "The subscription is unknown or is not owned by the caller.";
+    private const string NotAuthorizedMessage = "The subscription is unknown or is not owned by the caller.";
 
-    private readonly ConcurrentDictionary<string, LifecycleSubscription> _subscriptions =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, LifecycleSubscription> _subscriptions = new(StringComparer.Ordinal);
 
     // Serializes the capacity check with the insert it guards. Reading Count and then adding without
     // this gate lets N concurrent registrations all observe the same last free slot and all take it,
@@ -263,11 +261,7 @@ public sealed class InMemoryLifecycleSubscriptionRegistry : ILifecycleSubscripti
     }
 
     /// <inheritdoc />
-    public bool TryGet(
-        LifecycleOwnerKey owner,
-        string subscriptionId,
-        out LifecycleSubscription? subscription
-    )
+    public bool TryGet(LifecycleOwnerKey owner, string subscriptionId, out LifecycleSubscription? subscription)
     {
         ArgumentNullException.ThrowIfNull(owner);
 

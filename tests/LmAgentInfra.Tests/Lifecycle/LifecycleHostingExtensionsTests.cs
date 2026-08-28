@@ -49,8 +49,7 @@ public sealed class LifecycleHostingExtensionsTests
     /// <summary>The route of a controller that lives in this assembly, standing in for the host's own.</summary>
     private const string HostProbeRoute = "api/host/probe";
 
-    private static readonly Assembly LifecycleAssembly =
-        typeof(LifecycleSubscriptionsController).Assembly;
+    private static readonly Assembly LifecycleAssembly = typeof(LifecycleSubscriptionsController).Assembly;
 
     [Fact]
     public void Nothing_is_registered_until_a_flag_is_set()
@@ -104,10 +103,7 @@ public sealed class LifecycleHostingExtensionsTests
             .GetRequiredService<IOptionsMonitor<HttpClientFactoryOptions>>()
             .Get(LifecycleHostingExtensions.DeliveryHttpClientName);
 
-        using var probe = new HandlerBuilderProbe
-        {
-            Name = LifecycleHostingExtensions.DeliveryHttpClientName,
-        };
+        using var probe = new HandlerBuilderProbe { Name = LifecycleHostingExtensions.DeliveryHttpClientName };
         foreach (var action in options.HttpMessageHandlerBuilderActions)
         {
             action(probe);
@@ -116,11 +112,7 @@ public sealed class LifecycleHostingExtensionsTests
         // A 302 from an allow-listed callback would otherwise re-POST the signed body — conversation
         // content, or a tool's arguments — to whatever host the response named. The sender reports a
         // 3xx as a permanent rejection, and that report is only honest if nothing chased it first.
-        probe
-            .PrimaryHandler.Should()
-            .BeOfType<SocketsHttpHandler>()
-            .Which.AllowAutoRedirect.Should()
-            .BeFalse();
+        probe.PrimaryHandler.Should().BeOfType<SocketsHttpHandler>().Which.AllowAutoRedirect.Should().BeFalse();
     }
 
     [Fact]
@@ -130,18 +122,13 @@ public sealed class LifecycleHostingExtensionsTests
         _ = services.AddLogging();
         _ = services.AddLifecycleDelivery(Configuration(delivery: true));
 
-        _ = services
-            .Should()
-            .ContainSingle(descriptor => descriptor.ServiceType == typeof(ILifecycleOwnerResolver));
+        _ = services.Should().ContainSingle(descriptor => descriptor.ServiceType == typeof(ILifecycleOwnerResolver));
 
         // Resolved rather than read off the descriptor, and that is the point of the assertion as
         // much as the type is: building it must not reach for a SandboxSessionRegistry, which is not
         // registered here and which — on a host where it is — depends on this object's own dependent.
         using var provider = services.BuildServiceProvider();
-        provider
-            .GetRequiredService<ILifecycleOwnerResolver>()
-            .Should()
-            .BeOfType<SandboxLifecycleOwnerResolver>();
+        provider.GetRequiredService<ILifecycleOwnerResolver>().Should().BeOfType<SandboxLifecycleOwnerResolver>();
     }
 
     [Fact]
@@ -198,14 +185,9 @@ public sealed class LifecycleHostingExtensionsTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Approval_wiring_does_not_depend_on_the_order_the_host_called_these_in(
-        bool approvalFirst
-    )
+    public void Approval_wiring_does_not_depend_on_the_order_the_host_called_these_in(bool approvalFirst)
     {
-        using var provider = BuildServices(
-            Configuration(delivery: true, approval: true),
-            approvalFirst: approvalFirst
-        );
+        using var provider = BuildServices(Configuration(delivery: true, approval: true), approvalFirst: approvalFirst);
 
         var bundle = provider.GetRequiredService<MultiTurnLifecycleServices>();
 
@@ -255,9 +237,7 @@ public sealed class LifecycleHostingExtensionsTests
     {
         var configuration = Configuration(delivery: true);
         var builder = CreateHostBuilder();
-        _ = WithLifecycleServices(builder, configuration)
-            .AddControllers()
-            .AddLifecycleControlPlane(configuration);
+        _ = WithLifecycleServices(builder, configuration).AddControllers().AddLifecycleControlPlane(configuration);
 
         await using var app = builder.Build();
         var templates = RouteTemplates(app.Services);
@@ -271,9 +251,7 @@ public sealed class LifecycleHostingExtensionsTests
         templates.Should().NotContain(t => t.StartsWith("api/auth/", StringComparison.Ordinal));
 
         // Approval is off, so its route is absent rather than present-and-refusing.
-        templates
-            .Should()
-            .NotContain(t => t.StartsWith("api/lifecycle/approvals", StringComparison.Ordinal));
+        templates.Should().NotContain(t => t.StartsWith("api/lifecycle/approvals", StringComparison.Ordinal));
 
         // ...and the host's own controllers are untouched. Narrowing discovery meant replacing MVC's
         // default provider, which makes this method responsible for everyone else's controllers too.
@@ -285,9 +263,7 @@ public sealed class LifecycleHostingExtensionsTests
     {
         var configuration = Configuration(delivery: true, approval: true);
         var builder = CreateHostBuilder();
-        _ = WithLifecycleServices(builder, configuration)
-            .AddControllers()
-            .AddLifecycleControlPlane(configuration);
+        _ = WithLifecycleServices(builder, configuration).AddControllers().AddLifecycleControlPlane(configuration);
 
         await using var app = builder.Build();
         var templates = RouteTemplates(app.Services);
@@ -318,10 +294,7 @@ public sealed class LifecycleHostingExtensionsTests
             .NotContain(t => t.StartsWith("api/lifecycle", StringComparison.Ordinal))
             .And.Contain(HostProbeRoute);
 
-        parts!
-            .ApplicationParts.OfType<AssemblyPart>()
-            .Should()
-            .NotContain(part => part.Assembly == LifecycleAssembly);
+        parts!.ApplicationParts.OfType<AssemblyPart>().Should().NotContain(part => part.Assembly == LifecycleAssembly);
     }
 
     [Fact]
@@ -348,9 +321,7 @@ public sealed class LifecycleHostingExtensionsTests
         templates.Should().Contain("api/auth/egress-keys");
         templates.Should().Contain("api/auth/webhook/{provider}");
 
-        templates
-            .Should()
-            .NotContain(t => t.StartsWith("api/lifecycle/approvals", StringComparison.Ordinal));
+        templates.Should().NotContain(t => t.StartsWith("api/lifecycle/approvals", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -497,8 +468,7 @@ public sealed class LifecycleHostingExtensionsTests
             _ = builder.Services.AddLifecycleDelivery(configuration);
         }
 
-        var act = () =>
-            _ = builder.Services.AddControllers().AddLifecycleControlPlane(configuration);
+        var act = () => _ = builder.Services.AddControllers().AddLifecycleControlPlane(configuration);
 
         var message = act.Should().Throw<InvalidOperationException>().Which.Message;
         message.Should().Contain(missing);
@@ -552,10 +522,7 @@ public sealed class LifecycleHostingExtensionsTests
         using var egressKeys = await client.GetAsync("api/auth/egress-keys");
         egressKeys.StatusCode.Should().Be(HttpStatusCode.NotFound);
 
-        using var authWebhook = await client.PostAsync(
-            "api/auth/webhook/github",
-            JsonContent.Create(new { })
-        );
+        using var authWebhook = await client.PostAsync("api/auth/webhook/github", JsonContent.Create(new { }));
         authWebhook.StatusCode.Should().Be(HttpStatusCode.NotFound);
 
         await app.StopAsync();
@@ -707,10 +674,7 @@ public sealed class LifecycleHostingExtensionsTests
         elsewhere = $"{origin}/elsewhere";
 
         await using var services = BuildServices(DeliveryToLoopback(allowPrivate: true));
-        var result = await SendOneAsync(
-            services,
-            new Uri($"http://localhost:{new Uri(origin).Port}/hook")
-        );
+        var result = await SendOneAsync(services, new Uri($"http://localhost:{new Uri(origin).Port}/hook"));
 
         Volatile.Read(ref hooked).Should().Be(1, "the delivery reached the endpoint it was sent to");
         Volatile.Read(ref followed).Should().Be(0, "and went no further");
@@ -736,9 +700,7 @@ public sealed class LifecycleHostingExtensionsTests
                 // Otherwise registration refuses the plaintext callback for an unrelated reason and
                 // the connect rule is never reached.
                 ["Lifecycle:Delivery:RequireHttpsCallbacks"] = "false",
-                ["Lifecycle:Delivery:AllowPrivateCallbackAddresses"] = allowPrivate
-                    ? "true"
-                    : "false",
+                ["Lifecycle:Delivery:AllowPrivateCallbackAddresses"] = allowPrivate ? "true" : "false",
             }
         );
 
@@ -747,10 +709,7 @@ public sealed class LifecycleHostingExtensionsTests
     /// the container's own sender — the sender, not the pipeline, so the only egress check in play is
     /// the one performed at connect time.
     /// </summary>
-    private static async Task<LifecycleDeliveryResult> SendOneAsync(
-        IServiceProvider services,
-        Uri callback
-    )
+    private static async Task<LifecycleDeliveryResult> SendOneAsync(IServiceProvider services, Uri callback)
     {
         var grant = services
             .GetRequiredService<ILifecycleSubscriptionRegistry>()
@@ -833,10 +792,7 @@ public sealed class LifecycleHostingExtensionsTests
     /// the services behind them — but "published with nothing behind it" is the exact failure that
     /// method exists to prevent, so it refuses to be the one that creates it.
     /// </summary>
-    private static IServiceCollection WithLifecycleServices(
-        WebApplicationBuilder builder,
-        IConfiguration configuration
-    )
+    private static IServiceCollection WithLifecycleServices(WebApplicationBuilder builder, IConfiguration configuration)
     {
         _ = builder.Services.AddSingleton<ILifecycleOwnerResolver>(new NoOwnerResolver());
         _ = builder.Services.AddLifecycleDelivery(configuration);
@@ -860,9 +816,7 @@ public sealed class LifecycleHostingExtensionsTests
         [
             .. services
                 .GetRequiredService<IActionDescriptorCollectionProvider>()
-                .ActionDescriptors.Items.Select(action =>
-                    action.AttributeRouteInfo?.Template ?? string.Empty
-                )
+                .ActionDescriptors.Items.Select(action => action.AttributeRouteInfo?.Template ?? string.Empty)
                 .OrderBy(template => template, StringComparer.Ordinal),
         ];
 
@@ -902,8 +856,7 @@ public sealed class LifecycleHostingExtensionsTests
     /// from <see cref="ControllerFeatureProvider"/> is a convenience rather than a requirement, and a
     /// host that implemented the interface directly is every bit as authoritative.
     /// </summary>
-    private sealed class HostInterfaceFeatureProvider
-        : IApplicationFeatureProvider<ControllerFeature>
+    private sealed class HostInterfaceFeatureProvider : IApplicationFeatureProvider<ControllerFeature>
     {
         public void PopulateFeature(IEnumerable<ApplicationPart> parts, ControllerFeature feature)
         {

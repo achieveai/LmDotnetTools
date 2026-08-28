@@ -276,8 +276,7 @@ public class CodexEventParserTests
     [InlineData("timeout", false, "timed_out")]
     [InlineData("unknown_status", false, "success")]
     [InlineData("unknown_status", true, "error")]
-    public void NormalizeInternalToolStatus_NormalizesCorrectly(
-        string? status, bool hasError, string expected)
+    public void NormalizeInternalToolStatus_NormalizesCorrectly(string? status, bool hasError, string expected)
     {
         CodexEventParser.NormalizeInternalToolStatus(status, hasError).Should().Be(expected);
     }
@@ -297,8 +296,7 @@ public class CodexEventParserTests
     [InlineData("todo_list", "todo_list")]
     [InlineData("unknown", null)]
     [InlineData(null, null)]
-    public void NormalizeInternalToolName_NormalizesCorrectly(
-        string? itemType, string? expected)
+    public void NormalizeInternalToolName_NormalizesCorrectly(string? itemType, string? expected)
     {
         CodexEventParser.NormalizeInternalToolName(itemType).Should().Be(expected);
     }
@@ -311,8 +309,7 @@ public class CodexEventParserTests
     public void TryParseInternalToolItem_ValidWebSearch_ReturnsTrue()
     {
         var el = Parse("""{"item": {"type": "webSearch", "id": "call-1", "query": "test"}}""");
-        var result = CodexEventParser.TryParseInternalToolItem(
-            el, out var item, out var toolName, out var toolCallId);
+        var result = CodexEventParser.TryParseInternalToolItem(el, out var item, out var toolName, out var toolCallId);
 
         result.Should().BeTrue();
         toolName.Should().Be("web_search");
@@ -323,8 +320,7 @@ public class CodexEventParserTests
     public void TryParseInternalToolItem_ValidCommandExecution_UsesCallId()
     {
         var el = Parse("""{"item": {"type": "command_execution", "call_id": "cmd-1"}}""");
-        var result = CodexEventParser.TryParseInternalToolItem(
-            el, out _, out var toolName, out var toolCallId);
+        var result = CodexEventParser.TryParseInternalToolItem(el, out _, out var toolName, out var toolCallId);
 
         result.Should().BeTrue();
         toolName.Should().Be("command_execution");
@@ -335,31 +331,27 @@ public class CodexEventParserTests
     public void TryParseInternalToolItem_UnknownType_ReturnsFalse()
     {
         var el = Parse("""{"item": {"type": "unknown_tool", "id": "x"}}""");
-        CodexEventParser.TryParseInternalToolItem(
-            el, out _, out _, out _).Should().BeFalse();
+        CodexEventParser.TryParseInternalToolItem(el, out _, out _, out _).Should().BeFalse();
     }
 
     [Fact]
     public void TryParseInternalToolItem_MissingId_ReturnsFalse()
     {
         var el = Parse("""{"item": {"type": "webSearch"}}""");
-        CodexEventParser.TryParseInternalToolItem(
-            el, out _, out _, out _).Should().BeFalse();
+        CodexEventParser.TryParseInternalToolItem(el, out _, out _, out _).Should().BeFalse();
     }
 
     [Fact]
     public void TryParseInternalToolItem_MissingItem_ReturnsFalse()
     {
         var el = Parse("""{"other": "data"}""");
-        CodexEventParser.TryParseInternalToolItem(
-            el, out _, out _, out _).Should().BeFalse();
+        CodexEventParser.TryParseInternalToolItem(el, out _, out _, out _).Should().BeFalse();
     }
 
     [Fact]
     public void TryParseInternalToolItem_NullElement_ReturnsFalse()
     {
-        CodexEventParser.TryParseInternalToolItem(
-            null, out _, out _, out _).Should().BeFalse();
+        CodexEventParser.TryParseInternalToolItem(null, out _, out _, out _).Should().BeFalse();
     }
 
     #endregion

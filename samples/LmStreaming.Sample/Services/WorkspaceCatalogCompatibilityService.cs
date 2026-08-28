@@ -74,16 +74,15 @@ public sealed class WorkspaceCatalogCompatibilityService
     public WorkspaceCatalogCompatibilityService(
         IMarketplaceCatalogClient client,
         SandboxGatewayOptions gatewayOptions,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _gatewayOptions = gatewayOptions ?? throw new ArgumentNullException(nameof(gatewayOptions));
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
-    public async Task<WorkspaceCompatibilityResult> EvaluateAsync(
-        Workspace workspace,
-        CancellationToken ct = default)
+    public async Task<WorkspaceCompatibilityResult> EvaluateAsync(Workspace workspace, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(workspace);
         var catalog = await GetCatalogAsync(ct);
@@ -91,12 +90,7 @@ public sealed class WorkspaceCatalogCompatibilityService
         {
             // Unavailable, never Incompatible: no marketplace was compared against anything, so the
             // empty UnsupportedMarketplaces below is "nothing was checked", not "nothing failed".
-            return new WorkspaceCompatibilityResult(
-                WorkspaceCompatibility.Unavailable,
-                [],
-                [],
-                catalog.Error
-            );
+            return new WorkspaceCompatibilityResult(WorkspaceCompatibility.Unavailable, [], [], catalog.Error);
         }
 
         var available = catalog.Aliases;
@@ -112,17 +106,13 @@ public sealed class WorkspaceCatalogCompatibilityService
         }
 
         return new WorkspaceCompatibilityResult(
-            unsupported.Count == 0
-                ? WorkspaceCompatibility.Compatible
-                : WorkspaceCompatibility.Incompatible,
+            unsupported.Count == 0 ? WorkspaceCompatibility.Compatible : WorkspaceCompatibility.Incompatible,
             unsupported,
             available
         );
     }
 
-    public async Task ValidateForMutationAsync(
-        IReadOnlyList<string> marketplaces,
-        CancellationToken ct = default)
+    public async Task ValidateForMutationAsync(IReadOnlyList<string> marketplaces, CancellationToken ct = default)
     {
         var probe = new Workspace
         {
@@ -166,7 +156,8 @@ public sealed class WorkspaceCatalogCompatibilityService
     public async Task ValidatePluginsForMutationAsync(
         IReadOnlyList<string> marketplaces,
         IReadOnlyList<PluginRef>? pluginSelection,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (pluginSelection is null)
         {
@@ -186,9 +177,11 @@ public sealed class WorkspaceCatalogCompatibilityService
         for (var index = 0; index < pluginSelection.Count; index++)
         {
             var candidate = pluginSelection[index];
-            if (candidate is null
+            if (
+                candidate is null
                 || string.IsNullOrWhiteSpace(candidate.Marketplace)
-                || string.IsNullOrWhiteSpace(candidate.Plugin))
+                || string.IsNullOrWhiteSpace(candidate.Plugin)
+            )
             {
                 malformed.Add(index);
             }
@@ -308,12 +301,9 @@ public sealed class WorkspaceCatalogCompatibilityService
         try
         {
             var catalog = await _client.GetCatalogAsync(null, CancellationToken.None);
-            var aliases = catalog.Marketplaces
-                .Select(x => x.Alias)
-                .Distinct(StringComparer.Ordinal)
-                .ToArray();
-            var availablePlugins = catalog.Marketplaces
-                .SelectMany(m => m.Plugins.Select(p => new PluginRef(m.Alias, p.Name)))
+            var aliases = catalog.Marketplaces.Select(x => x.Alias).Distinct(StringComparer.Ordinal).ToArray();
+            var availablePlugins = catalog
+                .Marketplaces.SelectMany(m => m.Plugins.Select(p => new PluginRef(m.Alias, p.Name)))
                 .ToArray();
             return new CatalogSnapshot(
                 true,
@@ -344,9 +334,7 @@ public sealed class WorkspaceCatalogCompatibilityService
 
 public sealed class UnsupportedWorkspaceMarketplacesException : InvalidOperationException
 {
-    public UnsupportedWorkspaceMarketplacesException(
-        IReadOnlyList<string> unsupported,
-        IReadOnlyList<string> available)
+    public UnsupportedWorkspaceMarketplacesException(IReadOnlyList<string> unsupported, IReadOnlyList<string> available)
         : base($"Unsupported marketplace aliases: {string.Join(", ", unsupported)}.")
     {
         UnsupportedMarketplaces = unsupported;
@@ -379,8 +367,11 @@ public sealed class UnsupportedWorkspacePluginsException : Exception
     /// </param>
     public UnsupportedWorkspacePluginsException(
         IReadOnlyList<PluginRef> unsupportedPlugins,
-        IReadOnlyList<PluginRef> availablePlugins)
-        : base($"Unsupported plugins: {string.Join(", ", unsupportedPlugins.Select(p => $"{p.Marketplace}/{p.Plugin}"))}")
+        IReadOnlyList<PluginRef> availablePlugins
+    )
+        : base(
+            $"Unsupported plugins: {string.Join(", ", unsupportedPlugins.Select(p => $"{p.Marketplace}/{p.Plugin}"))}"
+        )
     {
         UnsupportedPlugins = unsupportedPlugins;
         AvailablePlugins = availablePlugins;
@@ -407,7 +398,8 @@ public sealed class MalformedWorkspacePluginSelectionException : Exception
     public MalformedWorkspacePluginSelectionException(IReadOnlyList<int> indexes)
         : base(
             "Plugin selection contains entries that are null or have a blank marketplace or plugin "
-                + $"name, at index: {string.Join(", ", indexes)}.")
+                + $"name, at index: {string.Join(", ", indexes)}."
+        )
     {
         Indexes = indexes;
     }
@@ -420,7 +412,5 @@ public sealed class MalformedWorkspacePluginSelectionException : Exception
 public sealed class GatewayPluginFilteringUnsupportedException : Exception
 {
     public GatewayPluginFilteringUnsupportedException()
-        : base("The gateway does not support plugin filtering; an explicit plugin selection cannot be applied.")
-    {
-    }
+        : base("The gateway does not support plugin filtering; an explicit plugin selection cannot be applied.") { }
 }

@@ -80,34 +80,30 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
     /// <summary>Role name that carries the tenant-admin rights of spec 7.3.</summary>
     public const string AdminRole = "admin";
 
-    private static readonly IReadOnlyDictionary<string, AccessAction[]> SupportedActions =
-        new Dictionary<string, AccessAction[]>(StringComparer.Ordinal)
-        {
-            [ResourceTypes.Conversation] =
-            [
-                AccessAction.Read,
-                AccessAction.Write,
-                AccessAction.Delete,
-                AccessAction.Share,
-            ],
-            [ResourceTypes.Workspace] =
-            [
-                AccessAction.Read,
-                AccessAction.Use,
-                AccessAction.Write,
-                AccessAction.Delete,
-                AccessAction.Share,
-            ],
-            [ResourceTypes.Mode] =
-            [
-                AccessAction.Read,
-                AccessAction.Use,
-                AccessAction.Write,
-                AccessAction.Delete,
-                AccessAction.Share,
-                AccessAction.Publish,
-            ],
-        };
+    private static readonly IReadOnlyDictionary<string, AccessAction[]> SupportedActions = new Dictionary<
+        string,
+        AccessAction[]
+    >(StringComparer.Ordinal)
+    {
+        [ResourceTypes.Conversation] = [AccessAction.Read, AccessAction.Write, AccessAction.Delete, AccessAction.Share],
+        [ResourceTypes.Workspace] =
+        [
+            AccessAction.Read,
+            AccessAction.Use,
+            AccessAction.Write,
+            AccessAction.Delete,
+            AccessAction.Share,
+        ],
+        [ResourceTypes.Mode] =
+        [
+            AccessAction.Read,
+            AccessAction.Use,
+            AccessAction.Write,
+            AccessAction.Delete,
+            AccessAction.Share,
+            AccessAction.Publish,
+        ],
+    };
 
     private readonly IResourceGrantStore _grants;
     private readonly IAuditSink _audit;
@@ -123,7 +119,8 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
         IResourceGrantStore grants,
         IAuditSink audit,
         IEnforcementGate enforcement,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider
+    )
     {
         ArgumentNullException.ThrowIfNull(grants);
         ArgumentNullException.ThrowIfNull(audit);
@@ -152,7 +149,8 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
         Principal principal,
         ResourceDescriptor resource,
         AccessAction action,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         EvaluateInternalAsync(
             principal,
             resource,
@@ -160,7 +158,8 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
             grantSupplied: false,
             suppliedGrant: null,
             writeAudit: true,
-            ct);
+            ct
+        );
 
     /// <inheritdoc />
     public ValueTask<AccessDecision> EvaluateCapabilityAsync(
@@ -168,18 +167,12 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
         ResourceDescriptor resource,
         AccessAction action,
         GrantRole? suppliedGrant,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         // A probe, not an attempt (#487): the grant arrives from the caller so no store round trip
         // is made, and the decision is NOT audited - a display-time capability check is not an
         // access event, and auditing it would bury real refusals under one deny per listed row.
-        EvaluateInternalAsync(
-            principal,
-            resource,
-            action,
-            grantSupplied: true,
-            suppliedGrant,
-            writeAudit: false,
-            ct);
+        EvaluateInternalAsync(principal, resource, action, grantSupplied: true, suppliedGrant, writeAudit: false, ct);
 
     /// <summary>
     /// The decision of spec 7.4, shared by the attempt and capability seams. The two differ only in
@@ -193,7 +186,8 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
         bool grantSupplied,
         GrantRole? suppliedGrant,
         bool writeAudit,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(principal);
         ArgumentNullException.ThrowIfNull(resource);
@@ -206,16 +200,11 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
             throw new ArgumentOutOfRangeException(
                 nameof(action),
                 action,
-                $"Action is not defined for resource type '{resource.Ref.Type}' (spec 7.2).");
+                $"Action is not defined for resource type '{resource.Ref.Type}' (spec 7.2)."
+            );
         }
 
-        var decision = await ComputeAsync(
-                principal,
-                resource,
-                action,
-                grantSupplied,
-                suppliedGrant,
-                ct)
+        var decision = await ComputeAsync(principal, resource, action, grantSupplied, suppliedGrant, ct)
             .ConfigureAwait(false);
 
         return writeAudit ? Audit(principal, resource, action, decision) : decision;
@@ -231,7 +220,8 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
         AccessAction action,
         bool grantSupplied,
         GrantRole? suppliedGrant,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         // Step 0.
         if (!_enforcement.IsEnforced)
@@ -263,20 +253,14 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
             // roles, and never becomes a tenant member. The non-null guard on OwnerAppId is the
             // null rule of 7.1 principle 4: C# == on two nulls is true, which would hand every
             // unowned resource to every service credential.
-            var appOwns = resource.OwnerAppId is not null
+            var appOwns =
+                resource.OwnerAppId is not null
                 && string.Equals(resource.OwnerAppId, principal.AppId, StringComparison.Ordinal);
 
             return appOwns ? RightsForAppOwner(action) : AccessDecision.Deny("app_only_no_owner");
         }
 
-        return await ResolveForUserAsync(
-                principal,
-                resource,
-                action,
-                user,
-                grantSupplied,
-                suppliedGrant,
-                ct)
+        return await ResolveForUserAsync(principal, resource, action, user, grantSupplied, suppliedGrant, ct)
             .ConfigureAwait(false);
     }
 
@@ -293,14 +277,14 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
         string user,
         bool grantSupplied,
         GrantRole? suppliedGrant,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var relationships = new List<(ResourceRelationship Relationship, GrantRole? Grant)>(4);
 
         // The non-null guard is the rule, not defensive style: a legacy row with no owner would
         // otherwise match every principal whose EffectiveUserId is also null.
-        if (resource.OwnerUserId is not null
-            && string.Equals(resource.OwnerUserId, user, StringComparison.Ordinal))
+        if (resource.OwnerUserId is not null && string.Equals(resource.OwnerUserId, user, StringComparison.Ordinal))
         {
             relationships.Add((ResourceRelationship.Owner, null));
         }
@@ -357,7 +341,9 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
         ResourceRelationship relationship,
         AccessAction action,
         Visibility visibility,
-        GrantRole? grantRole) => relationship switch
+        GrantRole? grantRole
+    ) =>
+        relationship switch
         {
             ResourceRelationship.Owner => RightsForOwner(action, visibility),
             ResourceRelationship.Grantee => RightsForGrantee(action, visibility, grantRole),
@@ -386,10 +372,7 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
         };
     }
 
-    private static AccessDecision RightsForGrantee(
-        AccessAction action,
-        Visibility visibility,
-        GrantRole? grantRole)
+    private static AccessDecision RightsForGrantee(AccessAction action, Visibility visibility, GrantRole? grantRole)
     {
         // The publication freeze is uniform across relationships. Stated per relationship it
         // drifts: an editor grant issued before publication would keep writing a published
@@ -399,8 +382,7 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
         return action switch
         {
             AccessAction.Read or AccessAction.Use => AccessDecision.AllowGrant,
-            AccessAction.Write when !confersWrite =>
-                AccessDecision.Deny("grant_does_not_confer_action"),
+            AccessAction.Write when !confersWrite => AccessDecision.Deny("grant_does_not_confer_action"),
             AccessAction.Write => visibility == Visibility.TenantPublished
                 ? AccessDecision.Deny("grant_write_frozen_by_publication")
                 : AccessDecision.AllowGrant,
@@ -422,40 +404,45 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
             _ => AccessDecision.AllowAdmin,
         };
 
-    private static AccessDecision RightsForTenantMember(AccessAction action) => action switch
-    {
-        AccessAction.Read or AccessAction.Use => AccessDecision.Allow("tenant_member"),
-        AccessAction.Publish => AccessDecision.Deny("publish_is_admin_only"),
-        _ => AccessDecision.Deny("tenant_member_read_only"),
-    };
+    private static AccessDecision RightsForTenantMember(AccessAction action) =>
+        action switch
+        {
+            AccessAction.Read or AccessAction.Use => AccessDecision.Allow("tenant_member"),
+            AccessAction.Publish => AccessDecision.Deny("publish_is_admin_only"),
+            _ => AccessDecision.Deny("tenant_member_read_only"),
+        };
 
-    private static AccessDecision RightsForAppOwner(AccessAction action) => action switch
-    {
-        AccessAction.Read or AccessAction.Use or AccessAction.Write or AccessAction.Delete =>
-            AccessDecision.AllowAppOwner,
-        AccessAction.Share => AccessDecision.Deny("app_cannot_share"),
-        _ => AccessDecision.Deny("publish_is_admin_only"),
-    };
+    private static AccessDecision RightsForAppOwner(AccessAction action) =>
+        action switch
+        {
+            AccessAction.Read or AccessAction.Use or AccessAction.Write or AccessAction.Delete =>
+                AccessDecision.AllowAppOwner,
+            AccessAction.Share => AccessDecision.Deny("app_cannot_share"),
+            _ => AccessDecision.Deny("publish_is_admin_only"),
+        };
 
     private AccessDecision Audit(
         Principal principal,
         ResourceDescriptor resource,
         AccessAction action,
-        AccessDecision decision)
+        AccessDecision decision
+    )
     {
-        _audit.Write(new AuthorizationAuditRecord
-        {
-            Actor = principal.Actor,
-            OnBehalfOf = principal.OnBehalfOf,
-            TenantId = principal.TenantId,
-            AppId = principal.AppId,
-            Source = principal.Source,
-            Permission = action,
-            Resource = resource.Ref,
-            Outcome = decision.Allowed ? AuthorizationOutcome.Allow : AuthorizationOutcome.Deny,
-            Reason = decision.Reason,
-            EventClass = decision.Allowed ? AuditEventClass.Routine : AuditEventClass.Security,
-        });
+        _audit.Write(
+            new AuthorizationAuditRecord
+            {
+                Actor = principal.Actor,
+                OnBehalfOf = principal.OnBehalfOf,
+                TenantId = principal.TenantId,
+                AppId = principal.AppId,
+                Source = principal.Source,
+                Permission = action,
+                Resource = resource.Ref,
+                Outcome = decision.Allowed ? AuthorizationOutcome.Allow : AuthorizationOutcome.Deny,
+                Reason = decision.Reason,
+                EventClass = decision.Allowed ? AuditEventClass.Routine : AuditEventClass.Security,
+            }
+        );
 
         return decision;
     }

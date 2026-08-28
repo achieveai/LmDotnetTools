@@ -111,10 +111,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     var requestUrl = $"{_baseUrl}/messages";
                     Logger.LogTrace("Constructing chat completion request to {RequestUrl}", requestUrl);
 
-                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, requestUrl)
-                    {
-                        Content = content,
-                    };
+                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, requestUrl) { Content = content };
 
                     // Add beta headers for built-in tools that require them
                     AddBetaHeaders(requestMessage, request);
@@ -199,10 +196,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     var requestUrl = $"{_baseUrl}/messages";
                     Logger.LogTrace("Constructing streaming request to {RequestUrl}", requestUrl);
 
-                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, requestUrl)
-                    {
-                        Content = content,
-                    };
+                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, requestUrl) { Content = content };
 
                     // Add beta headers for built-in tools that require them
                     AddBetaHeaders(requestMessage, request);

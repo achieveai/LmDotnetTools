@@ -23,11 +23,8 @@ public class CopilotAcpTransportDispatchTests
     {
         using var fake = new FakeCliProcess();
         await using var transport = new CopilotAcpTransport(
-            new CopilotSdkOptions
-            {
-                CopilotCliPath = "copilot-cli-mock",
-                ProcessLauncher = fake.Launcher,
-            });
+            new CopilotSdkOptions { CopilotCliPath = "copilot-cli-mock", ProcessLauncher = fake.Launcher }
+        );
 
         // Stands in for an approval nobody has answered yet.
         var parked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -54,10 +51,10 @@ public class CopilotAcpTransportDispatchTests
                     return JsonDocument.Parse($$"""{"answered":"{{method}}"}""").RootElement.Clone();
                 },
                 notificationHandler: (method, _) => notified.TrySetResult(method),
-                ct: CancellationToken.None);
+                ct: CancellationToken.None
+            );
 
-            await fake.WriteStdoutLineAsync(
-                """{"jsonrpc":"2.0","id":1,"method":"session/request_permission"}""");
+            await fake.WriteStdoutLineAsync("""{"jsonrpc":"2.0","id":1,"method":"session/request_permission"}""");
             await parkedEntered.Task.WaitAsync(Generous);
 
             // The reader is now past the parked request. Inline handling would never get here.
@@ -72,7 +69,8 @@ public class CopilotAcpTransportDispatchTests
             Assert.Equal("fs/read_text_file", second.Result.GetProperty("answered").GetString());
             Assert.False(
                 parkedFinished.Task.IsCompleted,
-                "the first handler had already returned, so nothing was proven");
+                "the first handler had already returned, so nothing was proven"
+            );
 
             // Releasing the approval answers the first request, out of arrival order.
             _ = parked.TrySetResult();
@@ -96,11 +94,8 @@ public class CopilotAcpTransportDispatchTests
     {
         using var fake = new FakeCliProcess();
         await using var transport = new CopilotAcpTransport(
-            new CopilotSdkOptions
-            {
-                CopilotCliPath = "copilot-cli-mock",
-                ProcessLauncher = fake.Launcher,
-            });
+            new CopilotSdkOptions { CopilotCliPath = "copilot-cli-mock", ProcessLauncher = fake.Launcher }
+        );
 
         var parkedEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handlerCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -129,10 +124,10 @@ public class CopilotAcpTransportDispatchTests
                     return default;
                 },
                 notificationHandler: (_, _) => { },
-                ct: CancellationToken.None);
+                ct: CancellationToken.None
+            );
 
-            await fake.WriteStdoutLineAsync(
-                """{"jsonrpc":"2.0","id":1,"method":"session/request_permission"}""");
+            await fake.WriteStdoutLineAsync("""{"jsonrpc":"2.0","id":1,"method":"session/request_permission"}""");
             await parkedEntered.Task.WaitAsync(Generous);
 
             // Shutdown cancels the handler rather than waiting on an answer that is not coming.

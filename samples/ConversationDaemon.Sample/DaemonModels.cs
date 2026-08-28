@@ -27,7 +27,5 @@ internal sealed record SwitchResult(string? Warning);
 internal sealed class DaemonConnectionException : Exception
 {
     public DaemonConnectionException(string message, Exception innerException)
-        : base(message, innerException)
-    {
-    }
+        : base(message, innerException) { }
 }

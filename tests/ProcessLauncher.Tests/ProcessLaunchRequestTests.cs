@@ -58,11 +58,7 @@ public class ProcessLaunchRequestTests
     [Fact]
     public void EnvironmentOverrides_AcceptNullValuesToClearVariables()
     {
-        var env = new Dictionary<string, string?>
-        {
-            ["FOO"] = "bar",
-            ["BAZ"] = null,
-        };
+        var env = new Dictionary<string, string?> { ["FOO"] = "bar", ["BAZ"] = null };
 
         var request = new ProcessLaunchRequest
         {

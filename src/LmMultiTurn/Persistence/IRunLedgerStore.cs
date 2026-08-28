@@ -60,7 +60,8 @@ public interface IRunLedgerStore
         string threadId,
         string inputId,
         DateTimeOffset acceptedAt,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Removes a previously-recorded accepted-input entry. Idempotent — a no-op if no such

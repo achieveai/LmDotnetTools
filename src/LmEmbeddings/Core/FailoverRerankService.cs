@@ -17,7 +17,8 @@ public class FailoverRerankService : IRerankService, IDisposable
         IRerankService primary,
         IRerankService backup,
         FailoverOptions options,
-        ILogger<FailoverRerankService>? logger = null)
+        ILogger<FailoverRerankService>? logger = null
+    )
     {
         _primary = primary ?? throw new ArgumentNullException(nameof(primary));
         _backup = backup ?? throw new ArgumentNullException(nameof(backup));
@@ -28,7 +29,8 @@ public class FailoverRerankService : IRerankService, IDisposable
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 options.PrimaryRequestTimeout,
-                "PrimaryRequestTimeout must be greater than TimeSpan.Zero.");
+                "PrimaryRequestTimeout must be greater than TimeSpan.Zero."
+            );
         }
 
         if (options.RecoveryInterval.HasValue && options.RecoveryInterval.Value <= TimeSpan.Zero)
@@ -36,33 +38,39 @@ public class FailoverRerankService : IRerankService, IDisposable
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 options.RecoveryInterval,
-                "RecoveryInterval must be greater than TimeSpan.Zero when specified.");
+                "RecoveryInterval must be greater than TimeSpan.Zero when specified."
+            );
         }
 
         _logger = logger ?? NullLogger<FailoverRerankService>.Instance;
-        _executor = new FailoverExecutor<IRerankService>(
-            primary, backup, options, _logger, "rerank service");
+        _executor = new FailoverExecutor<IRerankService>(primary, backup, options, _logger, "rerank service");
     }
 
     public async Task<RerankResponse> RerankAsync(RerankRequest request, CancellationToken cancellationToken = default)
     {
-        return await _executor.ExecuteAsync(
-            (svc, ct) => svc.RerankAsync(request, ct),
-            cancellationToken).ConfigureAwait(false);
+        return await _executor
+            .ExecuteAsync((svc, ct) => svc.RerankAsync(request, ct), cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    public async Task<RerankResponse> RerankAsync(string query, IReadOnlyList<string> documents, string model, int? topK = null, CancellationToken cancellationToken = default)
+    public async Task<RerankResponse> RerankAsync(
+        string query,
+        IReadOnlyList<string> documents,
+        string model,
+        int? topK = null,
+        CancellationToken cancellationToken = default
+    )
     {
-        return await _executor.ExecuteAsync(
-            (svc, ct) => svc.RerankAsync(query, documents, model, topK, ct),
-            cancellationToken).ConfigureAwait(false);
+        return await _executor
+            .ExecuteAsync((svc, ct) => svc.RerankAsync(query, documents, model, topK, ct), cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
     {
-        return await _executor.ExecuteAsync(
-            (svc, ct) => svc.GetAvailableModelsAsync(ct),
-            cancellationToken).ConfigureAwait(false);
+        return await _executor
+            .ExecuteAsync((svc, ct) => svc.GetAvailableModelsAsync(ct), cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -77,11 +85,23 @@ public class FailoverRerankService : IRerankService, IDisposable
 #pragma warning disable CA1031 // Intentional: must dispose both services even if one throws
     public void Dispose()
     {
-        try { (_primary as IDisposable)?.Dispose(); }
-        catch (Exception ex) { _logger.LogWarning(ex, "Failed to dispose primary rerank service."); }
+        try
+        {
+            (_primary as IDisposable)?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to dispose primary rerank service.");
+        }
 
-        try { (_backup as IDisposable)?.Dispose(); }
-        catch (Exception ex) { _logger.LogWarning(ex, "Failed to dispose backup rerank service."); }
+        try
+        {
+            (_backup as IDisposable)?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to dispose backup rerank service.");
+        }
 
         GC.SuppressFinalize(this);
     }

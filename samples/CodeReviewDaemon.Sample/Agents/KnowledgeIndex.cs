@@ -62,7 +62,9 @@ internal static class KnowledgeIndex
             return null;
         }
 
-        string title = string.Empty, scope = string.Empty, updated = string.Empty;
+        string title = string.Empty,
+            scope = string.Empty,
+            updated = string.Empty;
         IReadOnlyList<string> tags = [];
         IReadOnlyList<string> sourcePrs = [];
 
@@ -173,8 +175,7 @@ internal static class KnowledgeIndex
     /// half-read Knowledge Base indistinguishable from a small one in the daemon's logs, which is the exact
     /// blindness the retrieval logging exists to end.
     /// </summary>
-    public static IReadOnlyList<KnowledgeEntryMeta> ParseIndex(
-        string? indexJsonl, int maxRecords, out bool truncated)
+    public static IReadOnlyList<KnowledgeEntryMeta> ParseIndex(string? indexJsonl, int maxRecords, out bool truncated)
     {
         truncated = false;
         if (string.IsNullOrWhiteSpace(indexJsonl) || maxRecords <= 0)
@@ -195,9 +196,16 @@ internal static class KnowledgeIndex
             var lineBreak = rest.IndexOfAny('\n', '\r');
             var line = lineBreak < 0 ? rest : rest[..lineBreak];
             var start = at;
-            at = lineBreak < 0
-                ? indexJsonl.Length
-                : at + lineBreak + (rest[lineBreak] == '\r' && lineBreak + 1 < rest.Length && rest[lineBreak + 1] == '\n' ? 2 : 1);
+            at =
+                lineBreak < 0
+                    ? indexJsonl.Length
+                    : at
+                        + lineBreak
+                        + (
+                            rest[lineBreak] == '\r' && lineBreak + 1 < rest.Length && rest[lineBreak + 1] == '\n'
+                                ? 2
+                                : 1
+                        );
 
             if (line.IsWhiteSpace())
             {
@@ -240,9 +248,11 @@ internal static class KnowledgeIndex
     /// with no path cannot be Read by the agent, so surfacing it would only waste prompt budget).</summary>
     private static KnowledgeEntryMeta? ReadEntry(JsonElement root)
     {
-        if (root.ValueKind != JsonValueKind.Object
+        if (
+            root.ValueKind != JsonValueKind.Object
             || !root.TryGetProperty("file", out var fileElement)
-            || fileElement.ValueKind != JsonValueKind.String)
+            || fileElement.ValueKind != JsonValueKind.String
+        )
         {
             return null;
         }
@@ -256,7 +266,8 @@ internal static class KnowledgeIndex
                 ReadStringArray(root, "tags"),
                 ReadString(root, "scope"),
                 ReadStringArray(root, "sourcePrs"),
-                ReadString(root, "updated"));
+                ReadString(root, "updated")
+            );
     }
 
     private static string ReadString(JsonElement root, string name) =>

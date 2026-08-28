@@ -46,12 +46,20 @@ public class FileBrowserControllerTests
             {
                 ThreadId = ThreadId,
                 LastUpdated = 0,
-                Properties = ImmutableDictionary<string, object>.Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, workspaceId),
+                Properties = ImmutableDictionary<string, object>.Empty.Add(
+                    MultiTurnAgentPool.WorkspacePropertyKey,
+                    workspaceId
+                ),
             };
         store.Setup(s => s.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>())).ReturnsAsync(metadata);
 
         var browser = new FakeFileBrowser();
-        var controller = new FileBrowserController(store.Object, browser, TestAuthorizers.Disabled(), NullLogger<FileBrowserController>.Instance)
+        var controller = new FileBrowserController(
+            store.Object,
+            browser,
+            TestAuthorizers.Disabled(),
+            NullLogger<FileBrowserController>.Instance
+        )
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };
@@ -61,20 +69,30 @@ public class FileBrowserControllerTests
     private static (FileBrowserController Controller, FakeFileBrowser Browser) BuildUnknownThread()
     {
         var store = new Mock<IConversationStore>();
-        store.Setup(s => s.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>())).ReturnsAsync((ThreadMetadata?)null);
+        store
+            .Setup(s => s.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ThreadMetadata?)null);
         var browser = new FakeFileBrowser();
-        var controller = new FileBrowserController(store.Object, browser, TestAuthorizers.Disabled(), NullLogger<FileBrowserController>.Instance)
+        var controller = new FileBrowserController(
+            store.Object,
+            browser,
+            TestAuthorizers.Disabled(),
+            NullLogger<FileBrowserController>.Instance
+        )
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };
         return (controller, browser);
     }
 
-    private static SandboxDirectoryEntry File(string name, long? size = 10, bool lossy = false) => new(name, SandboxEntryType.File, size, lossy);
+    private static SandboxDirectoryEntry File(string name, long? size = 10, bool lossy = false) =>
+        new(name, SandboxEntryType.File, size, lossy);
 
-    private static SandboxDirectoryEntry Dir(string name, bool lossy = false) => new(name, SandboxEntryType.Directory, null, lossy);
+    private static SandboxDirectoryEntry Dir(string name, bool lossy = false) =>
+        new(name, SandboxEntryType.Directory, null, lossy);
 
-    private static SandboxDirectoryEntry Symlink(string name, bool lossy = false) => new(name, SandboxEntryType.Symlink, null, lossy);
+    private static SandboxDirectoryEntry Symlink(string name, bool lossy = false) =>
+        new(name, SandboxEntryType.Symlink, null, lossy);
 
     // -------- Prologue --------
 
@@ -117,7 +135,12 @@ public class FileBrowserControllerTests
     public async Task List_CredentialConflict_Returns409()
     {
         var (controller, browser) = Build();
-        browser.Resolution = new SandboxSessionResolution(SandboxSessionResolutionOutcome.CredentialConflict, null, "owner", "intruder");
+        browser.Resolution = new SandboxSessionResolution(
+            SandboxSessionResolutionOutcome.CredentialConflict,
+            null,
+            "owner",
+            "intruder"
+        );
         var result = await controller.List(ThreadId, path: null, CancellationToken.None);
         result.Should().BeOfType<ConflictObjectResult>();
     }
@@ -144,7 +167,10 @@ public class FileBrowserControllerTests
         {
             ThreadId = ThreadId,
             LastUpdated = 0,
-            Properties = ImmutableDictionary<string, object>.Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, "default"),
+            Properties = ImmutableDictionary<string, object>.Empty.Add(
+                MultiTurnAgentPool.WorkspacePropertyKey,
+                "default"
+            ),
         };
         // Serialize + deserialize to reproduce the on-disk store's JsonElement-valued properties exactly.
         var roundTripped = JsonSerializer.Deserialize<ThreadMetadata>(JsonSerializer.Serialize(stringMeta))!;
@@ -154,7 +180,12 @@ public class FileBrowserControllerTests
         store.Setup(s => s.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>())).ReturnsAsync(roundTripped);
         var browser = new FakeFileBrowser();
         browser.Listings[""] = [File("a.txt")];
-        var controller = new FileBrowserController(store.Object, browser, TestAuthorizers.Disabled(), NullLogger<FileBrowserController>.Instance)
+        var controller = new FileBrowserController(
+            store.Object,
+            browser,
+            TestAuthorizers.Disabled(),
+            NullLogger<FileBrowserController>.Instance
+        )
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };
@@ -162,7 +193,12 @@ public class FileBrowserControllerTests
         var result = await controller.List(ThreadId, path: null, CancellationToken.None);
 
         // The workspace resolves and the real listing is returned — NOT a no_session_yet state.
-        var listing = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<DirectoryListingDto>().Subject;
+        var listing = result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<DirectoryListingDto>()
+            .Subject;
         // Pin the EXTRACTED value, not merely "not no-session": the id handed to the resolver and echoed on
         // the DTO must both be exactly "default" (a loose ToString() of a non-string JsonElement, or a wrong
         // non-empty value, would still yield a listing but a different id here).
@@ -183,12 +219,20 @@ public class FileBrowserControllerTests
         {
             ThreadId = ThreadId,
             LastUpdated = 0,
-            Properties = ImmutableDictionary<string, object>.Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, element),
+            Properties = ImmutableDictionary<string, object>.Empty.Add(
+                MultiTurnAgentPool.WorkspacePropertyKey,
+                element
+            ),
         };
         var store = new Mock<IConversationStore>();
         store.Setup(s => s.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>())).ReturnsAsync(metadata);
         var browser = new FakeFileBrowser();
-        var controller = new FileBrowserController(store.Object, browser, TestAuthorizers.Disabled(), NullLogger<FileBrowserController>.Instance)
+        var controller = new FileBrowserController(
+            store.Object,
+            browser,
+            TestAuthorizers.Disabled(),
+            NullLogger<FileBrowserController>.Instance
+        )
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };
@@ -207,9 +251,19 @@ public class FileBrowserControllerTests
     public async Task List_Root_ReturnsEntries()
     {
         var (controller, browser) = Build();
-        browser.Listings[""] = [File("a.txt"), Dir("sub"), new SandboxDirectoryEntry("link", SandboxEntryType.Symlink, null, false)];
+        browser.Listings[""] =
+        [
+            File("a.txt"),
+            Dir("sub"),
+            new SandboxDirectoryEntry("link", SandboxEntryType.Symlink, null, false),
+        ];
         var result = await controller.List(ThreadId, path: "", CancellationToken.None);
-        var listing = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<DirectoryListingDto>().Which;
+        var listing = result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<DirectoryListingDto>()
+            .Which;
         listing.Entries.Should().HaveCount(3);
         listing.MoreCount.Should().Be(0);
         listing.Entries.Select(e => e.Type).Should().Contain("symlink");
@@ -221,7 +275,12 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [.. Enumerable.Range(0, 501).Select(i => File($"f{i}.txt"))];
         var result = await controller.List(ThreadId, path: "", CancellationToken.None);
-        var listing = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<DirectoryListingDto>().Which;
+        var listing = result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<DirectoryListingDto>()
+            .Which;
         listing.Entries.Should().HaveCount(500);
         listing.MoreCount.Should().Be(1);
     }
@@ -252,7 +311,12 @@ public class FileBrowserControllerTests
         browser.Listings[""] = [Dir("sub")];
         browser.Listings["sub"] = [File("b.txt")];
         var result = await controller.List(ThreadId, path: "sub", CancellationToken.None);
-        var listing = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<DirectoryListingDto>().Which;
+        var listing = result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<DirectoryListingDto>()
+            .Which;
         listing.Path.Should().Be("sub");
         listing.Entries.Should().ContainSingle().Which.Name.Should().Be("b.txt");
     }
@@ -314,7 +378,15 @@ public class FileBrowserControllerTests
         var result = await controller.List(ThreadId, path: "a\\b", CancellationToken.None);
 
         var bad = result.Should().BeOfType<BadRequestObjectResult>().Subject;
-        bad.Value.Should().BeEquivalentTo(new { error = "invalid_path", code = "invalid_path", threadId = ThreadId });
+        bad.Value.Should()
+            .BeEquivalentTo(
+                new
+                {
+                    error = "invalid_path",
+                    code = "invalid_path",
+                    threadId = ThreadId,
+                }
+            );
     }
 
     // -------- Preview --------
@@ -325,7 +397,12 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [File("image.png", size: 10)];
         var result = await controller.Preview(ThreadId, "image.png", CancellationToken.None);
-        var preview = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<PreviewResultDto>().Which;
+        var preview = result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which;
         preview.Previewable.Should().BeFalse();
         preview.Reason.Should().Be("binary");
         browser.ReadCalls.Should().Be(0);
@@ -339,8 +416,17 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [Dir(".conversations")];
         browser.Listings[".conversations"] = [File("fix-the-login-bug-a3f9.jsonl", size: 10)];
-        var result = await controller.Preview(ThreadId, ".conversations/fix-the-login-bug-a3f9.jsonl", CancellationToken.None);
-        var preview = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<PreviewResultDto>().Which;
+        var result = await controller.Preview(
+            ThreadId,
+            ".conversations/fix-the-login-bug-a3f9.jsonl",
+            CancellationToken.None
+        );
+        var preview = result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which;
         preview.Previewable.Should().BeFalse();
         preview.Reason.Should().Be("excluded");
         browser.ReadCalls.Should().Be(0);
@@ -352,7 +438,13 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [File("big.txt", size: FileBrowserLimits.PreviewByteCap + 1)];
         var result = await controller.Preview(ThreadId, "big.txt", CancellationToken.None);
-        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<PreviewResultDto>().Which.Reason.Should().Be("too_large");
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which.Reason.Should()
+            .Be("too_large");
         browser.ReadCalls.Should().Be(0);
     }
 
@@ -363,7 +455,13 @@ public class FileBrowserControllerTests
         browser.Listings[""] = [File("a.txt", size: 4)];
         browser.FileBytes = [0xFF, 0xFE, 0x00, 0x80];
         var result = await controller.Preview(ThreadId, "a.txt", CancellationToken.None);
-        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<PreviewResultDto>().Which.Reason.Should().Be("not_utf8");
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which.Reason.Should()
+            .Be("not_utf8");
     }
 
     [Theory]
@@ -379,7 +477,12 @@ public class FileBrowserControllerTests
         browser.Listings[""] = [File("a.txt", size: bytes.Length)];
         browser.FileBytes = bytes;
         var result = await controller.Preview(ThreadId, "a.txt", CancellationToken.None);
-        var preview = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<PreviewResultDto>().Which;
+        var preview = result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which;
         preview.Previewable.Should().BeTrue();
         preview.Text.Should().Be(text);
         preview.LineCount.Should().Be(expectedLines);
@@ -399,7 +502,13 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [];
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile(fileName, [1, 2, 3]), relativePath: null, CancellationToken.None);
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile(fileName, [1, 2, 3]),
+            relativePath: null,
+            CancellationToken.None
+        );
         result.Should().BeOfType<BadRequestObjectResult>();
     }
 
@@ -409,7 +518,13 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [];
         // A declared over-cap length is rejected before any read (no bytes needed).
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("big.bin", [], declaredLength: FileBrowserLimits.MaxFileBytes + 1), relativePath: null, CancellationToken.None);
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile("big.bin", [], declaredLength: FileBrowserLimits.MaxFileBytes + 1),
+            relativePath: null,
+            CancellationToken.None
+        );
         result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status413PayloadTooLarge);
     }
 
@@ -419,8 +534,20 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [Dir("sub")];
         browser.Listings["sub"] = [];
-        var result = await controller.Upload(ThreadId, "sub", new FakeFormFile("note.txt", [9, 8, 7]), relativePath: null, CancellationToken.None);
-        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<UploadResultDto>().Which.Name.Should().Be("note.txt");
+        var result = await controller.Upload(
+            ThreadId,
+            "sub",
+            new FakeFormFile("note.txt", [9, 8, 7]),
+            relativePath: null,
+            CancellationToken.None
+        );
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<UploadResultDto>()
+            .Which.Name.Should()
+            .Be("note.txt");
         browser.Writes.Should().ContainSingle();
         browser.Writes[0].Path.Should().Be("sub/note.txt");
         browser.Writes[0].Bytes.Should().Equal(9, 8, 7);
@@ -432,7 +559,13 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [];
         browser.WriteThrows = new SandboxException(SandboxErrorKind.Conflict, "target locked");
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("note.txt", [1]), relativePath: null, CancellationToken.None);
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile("note.txt", [1]),
+            relativePath: null,
+            CancellationToken.None
+        );
         result.Should().BeOfType<ConflictObjectResult>();
     }
 
@@ -465,7 +598,13 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [File("a.txt")];
-        browser.ExecResult = new SandboxCommandResult { ExitCode = 1, StandardOutput = "", StandardError = "denied", OperationId = "op" };
+        browser.ExecResult = new SandboxCommandResult
+        {
+            ExitCode = 1,
+            StandardOutput = "",
+            StandardError = "denied",
+            OperationId = "op",
+        };
         var result = await controller.Delete(ThreadId, "a.txt", CancellationToken.None);
         result.Should().BeOfType<UnprocessableEntityObjectResult>();
     }
@@ -487,8 +626,18 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [];
-        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("newdir"), CancellationToken.None);
-        var dto = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<CreateDirectoryResultDto>().Which;
+        var result = await controller.CreateDirectory(
+            ThreadId,
+            "",
+            new CreateDirectoryRequest("newdir"),
+            CancellationToken.None
+        );
+        var dto = result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<CreateDirectoryResultDto>()
+            .Which;
         dto.Path.Should().Be("newdir");
         // A single `mkdir --` under the resolved (verified real) directory — NOT `mkdir -p`, which would follow a
         // symlink in the chain. `--` keeps a leading-dash name an operand.
@@ -502,8 +651,19 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [Dir("sub")];
         browser.Listings["sub"] = [];
-        var result = await controller.CreateDirectory(ThreadId, "sub", new CreateDirectoryRequest("child"), CancellationToken.None);
-        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<CreateDirectoryResultDto>().Which.Path.Should().Be("sub/child");
+        var result = await controller.CreateDirectory(
+            ThreadId,
+            "sub",
+            new CreateDirectoryRequest("child"),
+            CancellationToken.None
+        );
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<CreateDirectoryResultDto>()
+            .Which.Path.Should()
+            .Be("sub/child");
         browser.Commands[0].Arguments.Should().Equal("mkdir", "--", "sub/child");
     }
 
@@ -512,9 +672,20 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [Dir("existing")];
-        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("existing"), CancellationToken.None);
+        var result = await controller.CreateDirectory(
+            ThreadId,
+            "",
+            new CreateDirectoryRequest("existing"),
+            CancellationToken.None
+        );
         // An existing REAL directory is idempotent success — no mkdir is run (server verifies the type first).
-        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<CreateDirectoryResultDto>().Which.Path.Should().Be("existing");
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<CreateDirectoryResultDto>()
+            .Which.Path.Should()
+            .Be("existing");
         browser.Commands.Should().BeEmpty();
     }
 
@@ -524,7 +695,12 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         // #214: an existing symlink at the path must FAIL — never silently 200 by letting `mkdir -p` follow it.
         browser.Listings[""] = [Symlink("linked")];
-        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("linked"), CancellationToken.None);
+        var result = await controller.CreateDirectory(
+            ThreadId,
+            "",
+            new CreateDirectoryRequest("linked"),
+            CancellationToken.None
+        );
         result.Should().BeOfType<ConflictObjectResult>();
         browser.Commands.Should().BeEmpty();
     }
@@ -534,7 +710,12 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [File("readme.md")];
-        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("readme.md"), CancellationToken.None);
+        var result = await controller.CreateDirectory(
+            ThreadId,
+            "",
+            new CreateDirectoryRequest("readme.md"),
+            CancellationToken.None
+        );
         result.Should().BeOfType<ConflictObjectResult>();
         browser.Commands.Should().BeEmpty();
     }
@@ -552,7 +733,12 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [];
-        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest(name), CancellationToken.None);
+        var result = await controller.CreateDirectory(
+            ThreadId,
+            "",
+            new CreateDirectoryRequest(name),
+            CancellationToken.None
+        );
         result.Should().BeOfType<BadRequestObjectResult>();
         browser.Commands.Should().BeEmpty();
     }
@@ -573,8 +759,19 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [];
         // A non-zero `mkdir -p` exit (e.g. a file/symlink already occupies the path) is a structured failure.
-        browser.ExecResult = new SandboxCommandResult { ExitCode = 1, StandardOutput = "", StandardError = "File exists", OperationId = "op" };
-        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("clash"), CancellationToken.None);
+        browser.ExecResult = new SandboxCommandResult
+        {
+            ExitCode = 1,
+            StandardOutput = "",
+            StandardError = "File exists",
+            OperationId = "op",
+        };
+        var result = await controller.CreateDirectory(
+            ThreadId,
+            "",
+            new CreateDirectoryRequest("clash"),
+            CancellationToken.None
+        );
         result.Should().BeOfType<UnprocessableEntityObjectResult>();
     }
 
@@ -583,7 +780,12 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Resolution = new SandboxSessionResolution(SandboxSessionResolutionOutcome.NoSession, null, null, null);
-        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("newdir"), CancellationToken.None);
+        var result = await controller.CreateDirectory(
+            ThreadId,
+            "",
+            new CreateDirectoryRequest("newdir"),
+            CancellationToken.None
+        );
         result.Should().BeOfType<ConflictObjectResult>();
         browser.Commands.Should().BeEmpty();
     }
@@ -595,14 +797,23 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [];
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("readme.md", [1, 2, 3]), relativePath: "proj/docs/readme.md", CancellationToken.None);
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile("readme.md", [1, 2, 3]),
+            relativePath: "proj/docs/readme.md",
+            CancellationToken.None
+        );
         result.Should().BeOfType<OkObjectResult>();
         // Parents are created ONE component at a time with `mkdir --` (never `mkdir -p`), so no symlink in the
         // chain can be followed; the write lands at the full relative destination.
-        browser.Commands.Select(c => c.Arguments).Should().SatisfyRespectively(
-            first => first.Should().Equal("mkdir", "--", "proj"),
-            second => second.Should().Equal("mkdir", "--", "proj/docs")
-        );
+        browser
+            .Commands.Select(c => c.Arguments)
+            .Should()
+            .SatisfyRespectively(
+                first => first.Should().Equal("mkdir", "--", "proj"),
+                second => second.Should().Equal("mkdir", "--", "proj/docs")
+            );
         browser.Writes.Should().ContainSingle();
         browser.Writes[0].Path.Should().Be("proj/docs/readme.md");
         browser.Writes[0].Bytes.Should().Equal(1, 2, 3);
@@ -614,7 +825,13 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [Dir("up")];
         browser.Listings["up"] = [];
-        var result = await controller.Upload(ThreadId, "up", new FakeFormFile("a.txt", [7]), relativePath: "x/a.txt", CancellationToken.None);
+        var result = await controller.Upload(
+            ThreadId,
+            "up",
+            new FakeFormFile("a.txt", [7]),
+            relativePath: "x/a.txt",
+            CancellationToken.None
+        );
         result.Should().BeOfType<OkObjectResult>();
         browser.Commands.Should().ContainSingle();
         browser.Commands[0].Arguments.Should().Equal("mkdir", "--", "up/x");
@@ -627,7 +844,13 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [Dir("existing")];
         browser.Listings["existing"] = [];
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("n.txt", [1]), relativePath: "existing/n.txt", CancellationToken.None);
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile("n.txt", [1]),
+            relativePath: "existing/n.txt",
+            CancellationToken.None
+        );
         result.Should().BeOfType<OkObjectResult>();
         // An existing REAL directory parent is reused — no mkdir.
         browser.Commands.Should().BeEmpty();
@@ -641,7 +864,13 @@ public class FileBrowserControllerTests
         // THE security fix: a symlink in the parent chain (`linked/`) is rejected, not traversed — a relative
         // path can no longer escape the resolved directory THROUGH a symlink.
         browser.Listings[""] = [Symlink("linked")];
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("f.txt", [1]), relativePath: "linked/f.txt", CancellationToken.None);
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile("f.txt", [1]),
+            relativePath: "linked/f.txt",
+            CancellationToken.None
+        );
         result.Should().BeOfType<ConflictObjectResult>();
         browser.Commands.Should().BeEmpty();
         browser.Writes.Should().BeEmpty();
@@ -652,7 +881,13 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [File("data")];
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("f.txt", [1]), relativePath: "data/f.txt", CancellationToken.None);
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile("f.txt", [1]),
+            relativePath: "data/f.txt",
+            CancellationToken.None
+        );
         result.Should().BeOfType<ConflictObjectResult>();
         browser.Commands.Should().BeEmpty();
         browser.Writes.Should().BeEmpty();
@@ -664,7 +899,13 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         // A symlink at the write target itself must not be written THROUGH either.
         browser.Listings[""] = [Symlink("link.txt")];
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("link.txt", [1]), relativePath: "link.txt", CancellationToken.None);
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile("link.txt", [1]),
+            relativePath: "link.txt",
+            CancellationToken.None
+        );
         result.Should().BeOfType<ConflictObjectResult>();
         browser.Writes.Should().BeEmpty();
     }
@@ -674,7 +915,13 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [];
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("a.txt", [1]), relativePath: "a.txt", CancellationToken.None);
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile("a.txt", [1]),
+            relativePath: "a.txt",
+            CancellationToken.None
+        );
         result.Should().BeOfType<OkObjectResult>();
         browser.Commands.Should().BeEmpty();
         browser.Writes[0].Path.Should().Be("a.txt");
@@ -685,8 +932,20 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [];
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("a.txt", [1]), relativePath: "d/a.txt", CancellationToken.None);
-        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<UploadResultDto>().Which.Name.Should().Be("d/a.txt");
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile("a.txt", [1]),
+            relativePath: "d/a.txt",
+            CancellationToken.None
+        );
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<UploadResultDto>()
+            .Which.Name.Should()
+            .Be("d/a.txt");
     }
 
     [Theory]
@@ -704,7 +963,13 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [];
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("leaf.txt", [1, 2]), relativePath, CancellationToken.None);
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile("leaf.txt", [1, 2]),
+            relativePath,
+            CancellationToken.None
+        );
         result.Should().BeOfType<BadRequestObjectResult>();
         browser.Commands.Should().BeEmpty();
         browser.Writes.Should().BeEmpty();
@@ -716,8 +981,20 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [];
         // A failed `mkdir --` (non-zero exit) creating a missing parent surfaces as a structured failure, no write.
-        browser.ExecResult = new SandboxCommandResult { ExitCode = 1, StandardOutput = "", StandardError = "denied", OperationId = "op" };
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("a.txt", [1]), relativePath: "newdir/a.txt", CancellationToken.None);
+        browser.ExecResult = new SandboxCommandResult
+        {
+            ExitCode = 1,
+            StandardOutput = "",
+            StandardError = "denied",
+            OperationId = "op",
+        };
+        var result = await controller.Upload(
+            ThreadId,
+            "",
+            new FakeFormFile("a.txt", [1]),
+            relativePath: "newdir/a.txt",
+            CancellationToken.None
+        );
         result.Should().BeOfType<UnprocessableEntityObjectResult>();
         browser.Writes.Should().BeEmpty();
     }
@@ -731,7 +1008,11 @@ public class FileBrowserControllerTests
         browser.Listings[""] = [];
         // A LYING declared length (small) must not smuggle an over-cap body: the observed streaming count
         // trips independently. The stream yields MaxFileBytes+1 bytes lazily (no source allocation).
-        var file = new LazyLargeFormFile("sneaky.bin", streamLength: FileBrowserLimits.MaxFileBytes + 1, declaredLength: 10);
+        var file = new LazyLargeFormFile(
+            "sneaky.bin",
+            streamLength: FileBrowserLimits.MaxFileBytes + 1,
+            declaredLength: 10
+        );
         var result = await controller.Upload(ThreadId, "", file, relativePath: null, CancellationToken.None);
         result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status413PayloadTooLarge);
         browser.Writes.Should().BeEmpty();
@@ -746,7 +1027,13 @@ public class FileBrowserControllerTests
         browser.Listings[""] = [File("a.txt", size: null)];
         browser.FileBytes = new byte[FileBrowserLimits.PreviewByteCap + 1];
         var result = await controller.Preview(ThreadId, "a.txt", CancellationToken.None);
-        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<PreviewResultDto>().Which.Reason.Should().Be("too_large");
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which.Reason.Should()
+            .Be("too_large");
         browser.ReadCalls.Should().Be(1);
     }
 
@@ -757,7 +1044,10 @@ public class FileBrowserControllerTests
         // Listed size null so the deterministic pre-check passes; the SDK then refuses the over-cap body and
         // the typed IsDirectReadCapExceeded signal maps to 413 (not an opaque 502).
         browser.Listings[""] = [File("a.bin", size: null)];
-        browser.ReadThrows = new SandboxException(SandboxErrorKind.Protocol, "exceeded the direct-read cap") { IsDirectReadCapExceeded = true };
+        browser.ReadThrows = new SandboxException(SandboxErrorKind.Protocol, "exceeded the direct-read cap")
+        {
+            IsDirectReadCapExceeded = true,
+        };
         var result = await controller.Download(ThreadId, "a.bin", CancellationToken.None);
         result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status413PayloadTooLarge);
     }
@@ -771,7 +1061,13 @@ public class FileBrowserControllerTests
         browser.Listings[""] = [File("many.txt", size: bytes.Length)];
         browser.FileBytes = bytes;
         var result = await controller.Preview(ThreadId, "many.txt", CancellationToken.None);
-        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<PreviewResultDto>().Which.Reason.Should().Be("too_large");
+        result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<PreviewResultDto>()
+            .Which.Reason.Should()
+            .Be("too_large");
     }
 
     /// <summary>An IFormFile whose stream lazily yields <c>streamLength</c> zero bytes (no source allocation), with a caller-set declared <c>Length</c> — exercises the observed-vs-declared upload cap.</summary>
@@ -786,7 +1082,8 @@ public class FileBrowserControllerTests
 
         public void CopyTo(Stream target) => throw new NotSupportedException();
 
-        public Task CopyToAsync(Stream target, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task CopyToAsync(Stream target, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
 
         public Stream OpenReadStream() => new ZeroStream(streamLength);
 
@@ -798,7 +1095,11 @@ public class FileBrowserControllerTests
             public override bool CanSeek => false;
             public override bool CanWrite => false;
             public override long Length => throw new NotSupportedException();
-            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
 
             public override int Read(byte[] buffer, int offset, int count)
             {

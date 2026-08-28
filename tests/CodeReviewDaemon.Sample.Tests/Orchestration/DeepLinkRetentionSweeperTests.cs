@@ -45,8 +45,10 @@ public sealed class DeepLinkRetentionSweeperTests : IDisposable
     public async Task A_conversation_past_the_window_is_deleted_on_the_host_and_dropped_from_the_ledger()
     {
         _store.RecordDeepLinkConversation("thread-old", "Review PR #222", Now - TimeSpan.FromHours(25));
-        var handler = new FakeHttpMessageHandler()
-            .On(req => req.Method == HttpMethod.Delete, _ => new HttpResponseMessage(HttpStatusCode.NoContent));
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.Method == HttpMethod.Delete,
+            _ => new HttpResponseMessage(HttpStatusCode.NoContent)
+        );
 
         await NewSweeper(handler).SweepAsync(CancellationToken.None);
 
@@ -59,8 +61,10 @@ public sealed class DeepLinkRetentionSweeperTests : IDisposable
     {
         // The whole point of the S2S path: the link outlives the review that minted it. Only age discards it.
         _store.RecordDeepLinkConversation("thread-young", "Review PR #222", Now - TimeSpan.FromHours(23));
-        var handler = new FakeHttpMessageHandler()
-            .On(req => req.Method == HttpMethod.Delete, _ => new HttpResponseMessage(HttpStatusCode.NoContent));
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.Method == HttpMethod.Delete,
+            _ => new HttpResponseMessage(HttpStatusCode.NoContent)
+        );
 
         await NewSweeper(handler).SweepAsync(CancellationToken.None);
 
@@ -76,7 +80,8 @@ public sealed class DeepLinkRetentionSweeperTests : IDisposable
         var handler = new FakeHttpMessageHandler()
             .On(
                 req => req.RequestUri!.ToString().Contains("thread-unreachable", StringComparison.Ordinal),
-                _ => new HttpResponseMessage(HttpStatusCode.InternalServerError))
+                _ => new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            )
             .On(req => req.Method == HttpMethod.Delete, _ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
         await NewSweeper(handler).SweepAsync(CancellationToken.None);
@@ -91,8 +96,12 @@ public sealed class DeepLinkRetentionSweeperTests : IDisposable
     public async Task A_conversation_the_host_no_longer_has_is_dropped_from_the_ledger_anyway()
     {
         _store.RecordDeepLinkConversation("thread-gone", null, Now - TimeSpan.FromHours(48));
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Delete, "api/conversations", "{}", HttpStatusCode.NotFound);
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Delete,
+            "api/conversations",
+            "{}",
+            HttpStatusCode.NotFound
+        );
 
         await NewSweeper(handler).SweepAsync(CancellationToken.None);
 
@@ -118,11 +127,13 @@ public sealed class DeepLinkRetentionSweeperTests : IDisposable
     {
         // Zero would discard a conversation the instant it is recorded — the link would be dead before the
         // review that minted it answered. "Keep forever" is expressed by not registering the sweeper.
-        var act = () => new DeepLinkRetentionSweeper(
-            _store,
-            NewClient(new FakeHttpMessageHandler()),
-            TimeSpan.Zero,
-            NullLogger<DeepLinkRetentionSweeper>.Instance);
+        var act = () =>
+            new DeepLinkRetentionSweeper(
+                _store,
+                NewClient(new FakeHttpMessageHandler()),
+                TimeSpan.Zero,
+                NullLogger<DeepLinkRetentionSweeper>.Instance
+            );
 
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
@@ -133,7 +144,8 @@ public sealed class DeepLinkRetentionSweeperTests : IDisposable
             NewClient(handler),
             Retention,
             NullLogger<DeepLinkRetentionSweeper>.Instance,
-            new FrozenTimeProvider(Now));
+            new FrozenTimeProvider(Now)
+        );
 
     private LmStreamingS2SClient NewClient(FakeHttpMessageHandler handler)
     {

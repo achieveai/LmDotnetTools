@@ -45,7 +45,8 @@ public interface IMultiTurnAgent : IAsyncDisposable
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Non-blocking variant of <see cref="SendAsync"/> for callers (e.g. an HTTP request handler)
@@ -64,7 +65,8 @@ public interface IMultiTurnAgent : IAsyncDisposable
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Execute a single run synchronously (foreground-style).
@@ -74,9 +76,7 @@ public interface IMultiTurnAgent : IAsyncDisposable
     /// <param name="userInput">The user input containing messages to process</param>
     /// <param name="ct">Cancellation token</param>
     /// <returns>AsyncEnumerable of all messages produced during this run</returns>
-    IAsyncEnumerable<IMessage> ExecuteRunAsync(
-        UserInput userInput,
-        CancellationToken ct = default);
+    IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default);
 
     /// <summary>
     /// Subscribe to output messages from the agent.
@@ -84,8 +84,7 @@ public interface IMultiTurnAgent : IAsyncDisposable
     /// </summary>
     /// <param name="ct">Cancellation token</param>
     /// <returns>AsyncEnumerable of messages produced by the agent</returns>
-    IAsyncEnumerable<IMessage> SubscribeAsync(
-        CancellationToken ct = default);
+    IAsyncEnumerable<IMessage> SubscribeAsync(CancellationToken ct = default);
 
     /// <summary>
     /// Start the background loop. Runs until cancellation or disposal.

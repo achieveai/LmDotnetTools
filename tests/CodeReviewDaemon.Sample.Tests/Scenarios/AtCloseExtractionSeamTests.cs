@@ -60,7 +60,9 @@ public class AtCloseExtractionSeamTests
         knowledgeWroteFeedbackFailed.DroppedPass.Should().Be(AtCloseExtractionSeam.ReviewFeedbackPass);
 
         var feedbackWroteKnowledgeFailed = AtCloseExtractionSeam.Combine(
-            Failed(), Wrote("developers/octocat.reviewfeedbacks.md"));
+            Failed(),
+            Wrote("developers/octocat.reviewfeedbacks.md")
+        );
 
         feedbackWroteKnowledgeFailed.Result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         feedbackWroteKnowledgeFailed.Result.EntryFileName.Should().Be("developers/octocat.reviewfeedbacks.md");
@@ -71,7 +73,9 @@ public class AtCloseExtractionSeamTests
     public void Combine_reports_both_writes_as_one_write_without_dropping_anything()
     {
         var combined = AtCloseExtractionSeam.Combine(
-            Wrote("system/a-lesson.md"), Wrote("developers/octocat.reviewfeedbacks.md"));
+            Wrote("system/a-lesson.md"),
+            Wrote("developers/octocat.reviewfeedbacks.md")
+        );
 
         combined.Result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         combined.DroppedPass.Should().BeNull();
@@ -85,14 +89,12 @@ public class AtCloseExtractionSeamTests
     [InlineData(true, false)]
     [InlineData(false, true)]
     [InlineData(true, true)]
-    public void Combine_reports_failed_when_neither_wrote_and_either_failed(
-        bool knowledgeFailed,
-        bool feedbackFailed
-    )
+    public void Combine_reports_failed_when_neither_wrote_and_either_failed(bool knowledgeFailed, bool feedbackFailed)
     {
         var combined = AtCloseExtractionSeam.Combine(
             knowledgeFailed ? Failed() : Declined(),
-            feedbackFailed ? Failed() : Declined());
+            feedbackFailed ? Failed() : Declined()
+        );
 
         combined.Result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
         combined.DroppedPass.Should().BeNull();

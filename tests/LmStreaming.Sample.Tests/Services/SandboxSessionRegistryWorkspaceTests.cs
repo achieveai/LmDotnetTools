@@ -71,8 +71,10 @@ public class SandboxSessionRegistryWorkspaceTests
 
         session.WorkspaceRelPath.Should().Be("projFS");
         captured.LastWorkspace.Should().Be("projFS"); // leaf still forwarded to the gateway
-        Directory.Exists(System.IO.Path.Combine(baseDir.Path, "projFS"))
-            .Should().BeFalse("the client must not create the workspace directory — the gateway owns it");
+        Directory
+            .Exists(System.IO.Path.Combine(baseDir.Path, "projFS"))
+            .Should()
+            .BeFalse("the client must not create the workspace directory — the gateway owns it");
     }
 
     [Fact]
@@ -112,24 +114,30 @@ public class SandboxSessionRegistryWorkspaceTests
         var gateway = new SandboxGatewayLifetime(
             options,
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(Healthy)));
+            new HttpClient(new StubHandler(Healthy))
+        );
 
         // Registry client: capture the create request's `workspace` leaf and return a valid
         // CreateSandboxResponse so creation succeeds.
         HttpResponseMessage CreateSession(HttpRequestMessage request)
         {
-            if (request.Method == HttpMethod.Post
-                && request.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal))
+            if (
+                request.Method == HttpMethod.Post
+                && request.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal)
+            )
             {
                 var body = request.Content!.ReadFromJsonAsync<CreateSandboxRequestProbe>().GetAwaiter().GetResult();
                 capturedRequest.LastWorkspace = body?.Workspace;
 
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = JsonContent.Create(new CreateSandboxResponseProbe(
-                        SessionId: "sess-" + Guid.NewGuid().ToString("N"),
-                        ContainerId: "container-1",
-                        Volumes: new VolumesProbe(new WorkspaceVolumeProbe("/workspace", ReadOnly: false)))),
+                    Content = JsonContent.Create(
+                        new CreateSandboxResponseProbe(
+                            SessionId: "sess-" + Guid.NewGuid().ToString("N"),
+                            ContainerId: "container-1",
+                            Volumes: new VolumesProbe(new WorkspaceVolumeProbe("/workspace", ReadOnly: false))
+                        )
+                    ),
                 };
             }
 
@@ -144,7 +152,9 @@ public class SandboxSessionRegistryWorkspaceTests
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
     }
 
     private sealed class CapturedRequest
@@ -182,25 +192,30 @@ public class SandboxSessionRegistryWorkspaceTests
     // gateway's create response and to read back the `workspace` field the registry sent. The
     // property names are tagged explicitly so they bind regardless of default naming policy.
     private sealed record CreateSandboxRequestProbe(
-        [property: System.Text.Json.Serialization.JsonPropertyName("workspace")] string? Workspace);
+        [property: System.Text.Json.Serialization.JsonPropertyName("workspace")] string? Workspace
+    );
 
     private sealed record CreateSandboxResponseProbe(
         [property: System.Text.Json.Serialization.JsonPropertyName("session_id")] string SessionId,
         [property: System.Text.Json.Serialization.JsonPropertyName("container_id")] string? ContainerId,
-        [property: System.Text.Json.Serialization.JsonPropertyName("volumes")] VolumesProbe? Volumes);
+        [property: System.Text.Json.Serialization.JsonPropertyName("volumes")] VolumesProbe? Volumes
+    );
 
     private sealed record VolumesProbe(
-        [property: System.Text.Json.Serialization.JsonPropertyName("workspace")] WorkspaceVolumeProbe? Workspace);
+        [property: System.Text.Json.Serialization.JsonPropertyName("workspace")] WorkspaceVolumeProbe? Workspace
+    );
 
     private sealed record WorkspaceVolumeProbe(
         [property: System.Text.Json.Serialization.JsonPropertyName("container_path")] string? ContainerPath,
-        [property: System.Text.Json.Serialization.JsonPropertyName("read_only")] bool ReadOnly);
+        [property: System.Text.Json.Serialization.JsonPropertyName("read_only")] bool ReadOnly
+    );
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(respond(request));
         }

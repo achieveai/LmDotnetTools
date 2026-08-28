@@ -13,9 +13,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 public sealed class SandboxSessionRestartTimeoutException : Exception
 {
     public SandboxSessionRestartTimeoutException(string workspaceId, TimeSpan waited)
-        : base(
-            $"Workspace '{workspaceId}' still had an active run after waiting {waited} for it to go idle."
-        )
+        : base($"Workspace '{workspaceId}' still had an active run after waiting {waited} for it to go idle.")
     {
         WorkspaceId = workspaceId;
         Waited = waited;

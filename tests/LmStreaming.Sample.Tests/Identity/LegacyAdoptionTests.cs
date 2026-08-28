@@ -1,8 +1,8 @@
 using AchieveAi.LmDotnetTools.LmCore.Identity;
-using Microsoft.AspNetCore.Http;
 using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 
 namespace LmStreaming.Sample.Tests.Identity;
@@ -43,13 +43,7 @@ public sealed class LegacyAdoptionTests
     /// the route writes an audit record that reads the caller's address from one.
     /// </summary>
     private TenantsController CreateController() =>
-        new(
-            _tenants,
-            _audit,
-            TimeProvider.System,
-            _store,
-            IdentityConfig(),
-            NullLogger<TenantsController>.Instance)
+        new(_tenants, _audit, TimeProvider.System, _store, IdentityConfig(), NullLogger<TenantsController>.Instance)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };
@@ -60,21 +54,25 @@ public sealed class LegacyAdoptionTests
             _store,
             IdentityConfig(enforce),
             TimeProvider.System,
-            NullLogger<ConversationOwnershipRepairHostedService>.Instance);
+            NullLogger<ConversationOwnershipRepairHostedService>.Instance
+        );
 
     private void SeedTenant(
         string tenantId = Acme,
         string? entraTenantId = AcmeDirectory,
-        TenantStatus status = TenantStatus.Active) =>
-        _tenants.Provisioned.Add(new TenantRecord
-        {
-            TenantId = tenantId,
-            EntraTenantId = entraTenantId,
-            DisplayName = tenantId,
-            Status = status,
-            CreatedAt = DateTimeOffset.UnixEpoch,
-            CreatedBy = "operator",
-        });
+        TenantStatus status = TenantStatus.Active
+    ) =>
+        _tenants.Provisioned.Add(
+            new TenantRecord
+            {
+                TenantId = tenantId,
+                EntraTenantId = entraTenantId,
+                DisplayName = tenantId,
+                Status = status,
+                CreatedAt = DateTimeOffset.UnixEpoch,
+                CreatedBy = "operator",
+            }
+        );
 
     private Task SeedThreadAsync(string threadId, string? tenantId, string? subAgentOf = null) =>
         _store.UpdateMetadataAsync(
@@ -84,11 +82,10 @@ public sealed class LegacyAdoptionTests
                 ThreadId = threadId,
                 LastUpdated = 1_000,
                 TenantId = tenantId,
-                Properties = subAgentOf is null
-                    ? null
-                    : SubAgentProvenance.Build(subAgentOf, snapshot: null),
+                Properties = subAgentOf is null ? null : SubAgentProvenance.Build(subAgentOf, snapshot: null),
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
     private async Task<string?> TenantOfAsync(string threadId) =>
         (await _store.LoadMetadataAsync(threadId, CancellationToken.None))?.TenantId;
@@ -110,7 +107,8 @@ public sealed class LegacyAdoptionTests
         string? ownerUserId = null,
         bool dryRun = false,
         IList<string>? resourceIds = null,
-        string resourceType = AdoptLegacyResourceTypes.Thread) =>
+        string resourceType = AdoptLegacyResourceTypes.Thread
+    ) =>
         new()
         {
             OwnerUserId = ownerUserId,
@@ -132,7 +130,8 @@ public sealed class LegacyAdoptionTests
         await SeedThreadAsync("legacy-2", Quarantine);
 
         var ok = Assert.IsType<OkObjectResult>(
-            await CreateController().AdoptLegacyAsync(Acme, Request(dryRun: true), CancellationToken.None));
+            await CreateController().AdoptLegacyAsync(Acme, Request(dryRun: true), CancellationToken.None)
+        );
         var response = Assert.IsType<AdoptLegacyResponse>(ok.Value);
 
         _ = response.AffectedCount.Should().Be(2);
@@ -170,10 +169,10 @@ public sealed class LegacyAdoptionTests
         SeedTenant();
         await SeedThreadAsync("legacy-1", Quarantine);
 
-        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(ownerUserId: AcmeDirectory + ":ada"),
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController()
+                .AdoptLegacyAsync(Acme, Request(ownerUserId: AcmeDirectory + ":ada"), CancellationToken.None)
+        );
 
         _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(1);
 
@@ -196,7 +195,8 @@ public sealed class LegacyAdoptionTests
 
         _ = await controller.AdoptLegacyAsync(Acme, Request(), CancellationToken.None);
         var second = Assert.IsType<OkObjectResult>(
-            await controller.AdoptLegacyAsync(Acme, Request(), CancellationToken.None));
+            await controller.AdoptLegacyAsync(Acme, Request(), CancellationToken.None)
+        );
 
         _ = Assert.IsType<AdoptLegacyResponse>(second.Value).AffectedCount.Should().Be(0);
     }
@@ -212,18 +212,21 @@ public sealed class LegacyAdoptionTests
         SeedTenant();
         await SeedThreadAsync("legacy-1", Quarantine);
 
-        var refused = Assert.IsType<ObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(ownerUserId: "22222222-2222-2222-2222-222222222222:mallory"),
-            CancellationToken.None));
+        var refused = Assert.IsType<ObjectResult>(
+            await CreateController()
+                .AdoptLegacyAsync(
+                    Acme,
+                    Request(ownerUserId: "22222222-2222-2222-2222-222222222222:mallory"),
+                    CancellationToken.None
+                )
+        );
 
         _ = refused.StatusCode.Should().Be(400);
         _ = JsonSerializer.Serialize(refused.Value).Should().Contain("owner_tenant_mismatch");
 
         var untouched = await _store.LoadMetadataAsync("legacy-1", CancellationToken.None);
         _ = untouched!.TenantId.Should().Be(Quarantine);
-        _ = _audit.Administrations.Should().ContainSingle()
-            .Which.Outcome.Should().Be(AdministrationOutcome.Rejected);
+        _ = _audit.Administrations.Should().ContainSingle().Which.Outcome.Should().Be(AdministrationOutcome.Rejected);
     }
 
     /// <summary>
@@ -237,14 +240,15 @@ public sealed class LegacyAdoptionTests
         await SeedThreadAsync("legacy-1", Quarantine);
 
         var refused = Assert.IsType<ObjectResult>(
-            await CreateController().AdoptLegacyAsync(Acme, Request(), CancellationToken.None));
+            await CreateController().AdoptLegacyAsync(Acme, Request(), CancellationToken.None)
+        );
         var absent = Assert.IsType<ObjectResult>(
-            await CreateController().AdoptLegacyAsync("tnt_nope", Request(), CancellationToken.None));
+            await CreateController().AdoptLegacyAsync("tnt_nope", Request(), CancellationToken.None)
+        );
 
         _ = refused.StatusCode.Should().Be(404);
         _ = absent.StatusCode.Should().Be(404);
-        _ = JsonSerializer.Serialize(refused.Value)
-            .Should().Be(JsonSerializer.Serialize(absent.Value));
+        _ = JsonSerializer.Serialize(refused.Value).Should().Be(JsonSerializer.Serialize(absent.Value));
     }
 
     /// <summary>Adopting into the quarantine tenant is refused rather than reported as a no-op success.</summary>
@@ -255,7 +259,8 @@ public sealed class LegacyAdoptionTests
         await SeedThreadAsync("legacy-1", Quarantine);
 
         var refused = Assert.IsType<ObjectResult>(
-            await CreateController().AdoptLegacyAsync(Quarantine, Request(), CancellationToken.None));
+            await CreateController().AdoptLegacyAsync(Quarantine, Request(), CancellationToken.None)
+        );
 
         _ = refused.StatusCode.Should().Be(400);
         _ = JsonSerializer.Serialize(refused.Value).Should().Contain("target_is_quarantine_tenant");
@@ -271,14 +276,12 @@ public sealed class LegacyAdoptionTests
         SeedTenant();
         await SeedThreadAsync("legacy-1", Quarantine);
 
-        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(resourceIds: []),
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController().AdoptLegacyAsync(Acme, Request(resourceIds: []), CancellationToken.None)
+        );
 
         _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(0);
-        _ = (await _store.LoadMetadataAsync("legacy-1", CancellationToken.None))!.TenantId
-            .Should().Be(Quarantine);
+        _ = (await _store.LoadMetadataAsync("legacy-1", CancellationToken.None))!.TenantId.Should().Be(Quarantine);
     }
 
     /// <summary>
@@ -302,18 +305,20 @@ public sealed class LegacyAdoptionTests
     {
         await SeedQuarantinedTreeAsync();
 
-        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(resourceIds: [Root]),
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController().AdoptLegacyAsync(Acme, Request(resourceIds: [Root]), CancellationToken.None)
+        );
 
         _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(3);
         _ = (await TenantOfAsync(Root)).Should().Be(Acme);
         _ = (await TenantOfAsync(Child)).Should().Be(Acme, "a child left behind vanishes from the roster");
         _ = (await TenantOfAsync(GrandChild)).Should().Be(Acme, "the walk is transitive, not one hop");
-        _ = (await TenantOfAsync(Unrelated)).Should().Be(
-            Quarantine,
-            "a subset adoption must still be a subset - following parentage is not adopting everything");
+        _ = (await TenantOfAsync(Unrelated))
+            .Should()
+            .Be(
+                Quarantine,
+                "a subset adoption must still be a subset - following parentage is not adopting everything"
+            );
     }
 
     /// <summary>
@@ -331,15 +336,12 @@ public sealed class LegacyAdoptionTests
     {
         await SeedQuarantinedTreeAsync();
 
-        _ = await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(resourceIds: [Root]),
-            CancellationToken.None);
+        _ = await CreateController().AdoptLegacyAsync(Acme, Request(resourceIds: [Root]), CancellationToken.None);
 
         var roster = await new ConversationDescendantScanner(
-                _store,
-                NullLogger<ConversationDescendantScanner>.Instance)
-            .ScanAsync(Root, CancellationToken.None);
+            _store,
+            NullLogger<ConversationDescendantScanner>.Instance
+        ).ScanAsync(Root, CancellationToken.None);
 
         _ = roster.Select(r => r.ThreadId).Should().BeEquivalentTo([Child, GrandChild]);
     }
@@ -359,10 +361,9 @@ public sealed class LegacyAdoptionTests
     {
         await SeedQuarantinedTreeAsync();
 
-        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(resourceIds: [Child]),
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController().AdoptLegacyAsync(Acme, Request(resourceIds: [Child]), CancellationToken.None)
+        );
 
         _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(3);
         _ = (await TenantOfAsync(Root)).Should().Be(Acme);
@@ -383,10 +384,10 @@ public sealed class LegacyAdoptionTests
     {
         await SeedQuarantinedTreeAsync();
 
-        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(dryRun: true, resourceIds: [Root]),
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController()
+                .AdoptLegacyAsync(Acme, Request(dryRun: true, resourceIds: [Root]), CancellationToken.None)
+        );
 
         var response = Assert.IsType<AdoptLegacyResponse>(ok.Value);
         _ = response.AffectedCount.Should().Be(3);
@@ -414,10 +415,9 @@ public sealed class LegacyAdoptionTests
         await SeedThreadAsync(Root, Quarantine);
         await SeedThreadAsync(Child, "tnt_other", subAgentOf: Root);
 
-        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(resourceIds: [Root]),
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController().AdoptLegacyAsync(Acme, Request(resourceIds: [Root]), CancellationToken.None)
+        );
 
         _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(1);
         _ = (await TenantOfAsync(Root)).Should().Be(Acme);
@@ -444,10 +444,9 @@ public sealed class LegacyAdoptionTests
         await SeedThreadAsync(Child, Quarantine, subAgentOf: Root);
         await SeedThreadAsync("subagent-sibling", Quarantine, subAgentOf: Root);
 
-        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(resourceIds: [Child]),
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController().AdoptLegacyAsync(Acme, Request(resourceIds: [Child]), CancellationToken.None)
+        );
 
         _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(1);
         _ = (await TenantOfAsync(Child)).Should().Be(Acme);
@@ -481,16 +480,18 @@ public sealed class LegacyAdoptionTests
         await SeedThreadAsync(Child, Quarantine, subAgentOf: Root);
         await SeedThreadAsync(GrandChild, Quarantine, subAgentOf: Child);
 
-        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(resourceIds: [Root]),
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController().AdoptLegacyAsync(Acme, Request(resourceIds: [Root]), CancellationToken.None)
+        );
 
         _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(0);
         _ = (await TenantOfAsync(Root)).Should().Be("tnt_other");
-        _ = (await TenantOfAsync(Child)).Should().Be(
-            Quarantine,
-            "a child moved away from a parent that stayed put is the very split this walk exists to prevent");
+        _ = (await TenantOfAsync(Child))
+            .Should()
+            .Be(
+                Quarantine,
+                "a child moved away from a parent that stayed put is the very split this walk exists to prevent"
+            );
         _ = (await TenantOfAsync(GrandChild)).Should().Be(Quarantine);
     }
 
@@ -509,10 +510,9 @@ public sealed class LegacyAdoptionTests
     {
         await SeedQuarantinedTreeAsync();
 
-        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(resourceIds: [Root, null!]),
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController().AdoptLegacyAsync(Acme, Request(resourceIds: [Root, null!]), CancellationToken.None)
+        );
 
         _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(3);
         _ = (await TenantOfAsync(Unrelated)).Should().Be(Quarantine);
@@ -546,23 +546,23 @@ public sealed class LegacyAdoptionTests
             await SeedThreadAsync($"filler-{i}", Quarantine);
         }
 
-        var refused = Assert.IsType<ObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(resourceIds: [Root]),
-            CancellationToken.None));
+        var refused = Assert.IsType<ObjectResult>(
+            await CreateController().AdoptLegacyAsync(Acme, Request(resourceIds: [Root]), CancellationToken.None)
+        );
 
         _ = refused.StatusCode.Should().Be(503);
         _ = JsonSerializer.Serialize(refused.Value).Should().Contain("adoption_scan_truncated");
         _ = (await TenantOfAsync(Root)).Should().Be(Quarantine, "a refused adoption writes nothing");
 
         // Adopting the whole tenant needs no walk, so the cap does not block the operator's way out.
-        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(),
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController().AdoptLegacyAsync(Acme, Request(), CancellationToken.None)
+        );
 
-        _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount
-            .Should().Be(TenantsController.AdoptionScanMaxThreads + 2);
+        _ = Assert
+            .IsType<AdoptLegacyResponse>(ok.Value)
+            .AffectedCount.Should()
+            .Be(TenantsController.AdoptionScanMaxThreads + 2);
     }
 
     /// <summary>
@@ -585,15 +585,14 @@ public sealed class LegacyAdoptionTests
         await SeedThreadAsync(Cousin, Quarantine, subAgentOf: Root);
         await SeedThreadAsync(GrandChild, Quarantine, subAgentOf: Child);
 
-        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(resourceIds: [GrandChild]),
-            CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController().AdoptLegacyAsync(Acme, Request(resourceIds: [GrandChild]), CancellationToken.None)
+        );
 
         _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(4);
-        _ = (await TenantOfAsync(Cousin)).Should().Be(
-            Acme,
-            "the walk must re-enqueue the shared root to descend into a branch reached only by climbing");
+        _ = (await TenantOfAsync(Cousin))
+            .Should()
+            .Be(Acme, "the walk must re-enqueue the shared root to descend into a branch reached only by climbing");
     }
 
     /// <summary>A resource type the route does not implement is refused, never read as a thread.</summary>
@@ -602,10 +601,9 @@ public sealed class LegacyAdoptionTests
     {
         SeedTenant();
 
-        var refused = Assert.IsType<ObjectResult>(await CreateController().AdoptLegacyAsync(
-            Acme,
-            Request(resourceType: "workspace"),
-            CancellationToken.None));
+        var refused = Assert.IsType<ObjectResult>(
+            await CreateController().AdoptLegacyAsync(Acme, Request(resourceType: "workspace"), CancellationToken.None)
+        );
 
         _ = refused.StatusCode.Should().Be(400);
         _ = JsonSerializer.Serialize(refused.Value).Should().Contain("unsupported_resource_type");
@@ -620,10 +618,8 @@ public sealed class LegacyAdoptionTests
 
         await CreateRepair().StartAsync(CancellationToken.None);
 
-        _ = (await _store.LoadMetadataAsync("unclaimed", CancellationToken.None))!.TenantId
-            .Should().Be(Quarantine);
-        _ = (await _store.LoadMetadataAsync("claimed", CancellationToken.None))!.TenantId
-            .Should().Be(Acme);
+        _ = (await _store.LoadMetadataAsync("unclaimed", CancellationToken.None))!.TenantId.Should().Be(Quarantine);
+        _ = (await _store.LoadMetadataAsync("claimed", CancellationToken.None))!.TenantId.Should().Be(Acme);
     }
 
     /// <summary>
@@ -640,10 +636,8 @@ public sealed class LegacyAdoptionTests
 
         var act = async () => await CreateRepair().StartAsync(CancellationToken.None);
 
-        _ = (await act.Should().ThrowAsync<LegacyTenantIdCollisionException>())
-            .Which.TenantId.Should().Be(Quarantine);
-        _ = (await _store.LoadMetadataAsync("unclaimed", CancellationToken.None))!.TenantId
-            .Should().BeNull();
+        _ = (await act.Should().ThrowAsync<LegacyTenantIdCollisionException>()).Which.TenantId.Should().Be(Quarantine);
+        _ = (await _store.LoadMetadataAsync("unclaimed", CancellationToken.None))!.TenantId.Should().BeNull();
     }
 
     /// <summary>
@@ -658,7 +652,8 @@ public sealed class LegacyAdoptionTests
             new TouchingConversationStore(_store, "unused"),
             IdentityConfig(enforce: true),
             TimeProvider.System,
-            NullLogger<ConversationOwnershipRepairHostedService>.Instance);
+            NullLogger<ConversationOwnershipRepairHostedService>.Instance
+        );
 
         var act = async () => await repair.StartAsync(CancellationToken.None);
 
@@ -677,7 +672,8 @@ public sealed class LegacyAdoptionTests
             new TouchingConversationStore(_store, "unused"),
             IdentityConfig(enforce: false),
             TimeProvider.System,
-            NullLogger<ConversationOwnershipRepairHostedService>.Instance);
+            NullLogger<ConversationOwnershipRepairHostedService>.Instance
+        );
 
         var act = async () => await repair.StartAsync(CancellationToken.None);
 
@@ -693,7 +689,8 @@ public sealed class LegacyAdoptionTests
             _store,
             Options.Create(new IdentityOptions { LegacyTenantId = "  " }),
             TimeProvider.System,
-            NullLogger<ConversationOwnershipRepairHostedService>.Instance);
+            NullLogger<ConversationOwnershipRepairHostedService>.Instance
+        );
 
         var act = async () => await repair.StartAsync(CancellationToken.None);
 

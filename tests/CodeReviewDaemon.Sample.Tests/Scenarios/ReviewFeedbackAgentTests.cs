@@ -36,9 +36,7 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         + "- **How to avoid it:** grep the diff for `Async(` with no token argument before pushing.";
 
     public ReviewFeedbackAgentTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     // ---- Refusals: the record names a real person, in public ----------------------------------------
 
@@ -58,11 +56,12 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning(ValidRecord);
 
-        var result = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, author, "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, author, "notes", SourcePr, Today, CancellationToken.None);
 
-        result.Outcome.Should().Be(
-            KnowledgeExtractionOutcome.Declined, "there is nothing to retry — no identity was ever reported");
+        result
+            .Outcome.Should()
+            .Be(KnowledgeExtractionOutcome.Declined, "there is nothing to retry — no identity was ever reported");
         fs.Writes.Should().BeEmpty();
         agent.ReceivedInputs.Should().BeEmpty("the model is not worth invoking when nothing can be written");
     }
@@ -73,7 +72,9 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
     [InlineData("AchieveAI\\gautam", "achieveai-gautam")]
     [InlineData("../../.git/hooks/pre-commit", "git-hooks-pre-commit")]
     public async Task TryExtractAsync_writes_the_record_under_a_slugged_name_inside_developers(
-        string author, string expectedStem)
+        string author,
+        string expectedStem
+    )
     {
         // No component of this path comes from the model — it is derived here from the provider-reported
         // author — so the traversal class is removed rather than defended against. The stem is [a-z0-9-]
@@ -83,17 +84,19 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning(ValidRecord);
 
-        var result = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, author, "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, author, "notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         var slug = Slug(author);
         slug.Should().StartWith(expectedStem + "-").And.MatchRegex("^[a-z0-9-]+$");
         result.EntryFileName.Should().Be($"developers/{slug}.reviewfeedbacks.md");
         fs.Files.Should().ContainKey($"{DevDir}/{slug}.reviewfeedbacks.md");
-        fs.Files.Keys.Should().OnlyContain(
-            key => key.StartsWith(DevDir + "/", StringComparison.Ordinal),
-            "every write stays inside the reserved per-developer directory");
+        fs.Files.Keys.Should()
+            .OnlyContain(
+                key => key.StartsWith(DevDir + "/", StringComparison.Ordinal),
+                "every write stays inside the reserved per-developer directory"
+            );
     }
 
     /// <summary>
@@ -147,8 +150,8 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         fs.Files[path] = huge;
         var agent = AgentReturning(ValidRecord);
 
-        var result = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed, "this is retryable once the record shrinks");
         fs.Writes.Should().BeEmpty();
@@ -169,8 +172,8 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         fs.Files[path] = beyondSandbox;
         var agent = AgentReturning(ValidRecord);
 
-        var result = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed, "retryable once the record shrinks");
         fs.Writes.Should().BeEmpty("a refused read must never fall through to the first-time-author write path");
@@ -185,12 +188,13 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
     {
         var fs = new FakeSandboxFileSystem();
         var path = DevDir + $"/{Slug("octocat")}.reviewfeedbacks.md";
-        var seeded = "---\ndeveloper: octocat\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-07-01\n---\n\n## PATTERNS\n\n### Old\n";
+        var seeded =
+            "---\ndeveloper: octocat\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-07-01\n---\n\n## PATTERNS\n\n### Old\n";
         fs.Files[path] = seeded;
         var agent = AgentReturning("NO_FEEDBACK");
 
-        var result = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Declined);
         fs.Writes.Should().BeEmpty();
@@ -215,17 +219,16 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning("NO_FEEDBACK");
 
-        _ = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, "octocat", "distill these notes", SourcePr, Today, CancellationToken.None);
+        _ = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, "octocat", "distill these notes", SourcePr, Today, CancellationToken.None);
 
         var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
         sent.Should().Contain("distill these notes");
         sent.Should().Contain("NO_FEEDBACK");
         sent.Should().Contain("## PATTERNS");
-        sent.Should().Contain(
-            "Do not use tools", "the mode prompt mandates tool use for all operations; this turn must not");
-        sent.Should().Contain(
-            "Do not choose or name an output file", "the daemon owns the path, not the model");
+        sent.Should()
+            .Contain("Do not use tools", "the mode prompt mandates tool use for all operations; this turn must not");
+        sent.Should().Contain("Do not choose or name an output file", "the daemon owns the path, not the model");
     }
 
     [Fact]
@@ -234,8 +237,8 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning(WorkspaceAgentStyleReply).ThenReplies(Assistant(ValidRecord));
 
-        var result = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
 
         // A SAME-THREAD second turn, not a fresh run: the model keeps the notes and record it already read.
         agent.ReceivedInputs.Should().HaveCount(2);
@@ -251,8 +254,8 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning(WorkspaceAgentStyleReply).ThenReplies(Assistant("Still summarizing my actions."));
 
-        var result = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
         fs.Writes.Should().BeEmpty();
@@ -267,12 +270,13 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         // malformed reply, not an instruction to erase.
         var fs = new FakeSandboxFileSystem();
         var path = DevDir + $"/{Slug("octocat")}.reviewfeedbacks.md";
-        var seeded = "---\ndeveloper: octocat\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-07-01\n---\n\n## PATTERNS\n\n### Old\n";
+        var seeded =
+            "---\ndeveloper: octocat\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-07-01\n---\n\n## PATTERNS\n\n### Old\n";
         fs.Files[path] = seeded;
         var agent = AgentReturning("## PATTERNS\n\n   \n").ThenReplies(Assistant("## PATTERNS\n"));
 
-        var result = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
         fs.Writes.Should().BeEmpty();
@@ -290,8 +294,8 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
             "---\ndeveloper: octocat\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-07-01\n---\n\n## PATTERNS\n\n### Old pattern\n";
         var agent = AgentReturning(ValidRecord);
 
-        var result = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         var written = fs.Files[path];
@@ -320,8 +324,8 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
             + "## PATTERNS\n\n### Drops the CancellationToken on async calls\n- **Seen in:** github/o-r/1\n";
         var agent = AgentReturning("NO_FEEDBACK");
 
-        _ = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
+        _ = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
 
         var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
         sent.Should().Contain("### Drops the CancellationToken on async calls");
@@ -335,17 +339,23 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning("NO_FEEDBACK");
 
-        _ = await Feedback(agent, fs).TryExtractAsync(
-            RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
+        _ = await Feedback(agent, fs)
+            .TryExtractAsync(RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
 
         InputText(agent.ReceivedInputs.Should().ContainSingle().Subject)
-            .Should().Contain("this developer has no record yet");
+            .Should()
+            .Contain("this developer has no record yet");
     }
 
     private static FakeMultiTurnAgent AgentReturning(string text) => new(RunId, Assistant(text));
 
     private static TextMessage Assistant(string text) =>
-        new() { Text = text, Role = Role.Assistant, RunId = RunId };
+        new()
+        {
+            Text = text,
+            Role = Role.Assistant,
+            RunId = RunId,
+        };
 
     /// <summary>The prose the daemon actually sent on a turn (the agent's single user message).</summary>
     private static string InputText(UserInput input) =>

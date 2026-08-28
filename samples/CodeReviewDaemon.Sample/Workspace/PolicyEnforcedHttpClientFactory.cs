@@ -23,7 +23,8 @@ internal sealed class PolicyEnforcedHttpClientFactory
         CodeReviewDaemonOptions options,
         ILogger<OperationPolicyHandler> logger,
         ILogger<RetryHandler> retryLogger,
-        IPolicyRefusalRecorder? refusals = null)
+        IPolicyRefusalRecorder? refusals = null
+    )
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -70,10 +71,13 @@ internal sealed class PolicyEnforcedHttpClientFactory
         return
         [
             .. AllowedReposForProvider(provider)
-                .Select(repo => DaemonOperationPolicy.BuildForRun(
-                    repo,
-                    _options.ReviewBotRepoUrl,
-                    allowWriteOperations: _options.EnableCommentPosting)),
+                .Select(repo =>
+                    DaemonOperationPolicy.BuildForRun(
+                        repo,
+                        _options.ReviewBotRepoUrl,
+                        allowWriteOperations: _options.EnableCommentPosting
+                    )
+                ),
         ];
     }
 
@@ -86,8 +90,10 @@ internal sealed class PolicyEnforcedHttpClientFactory
     {
         foreach (var entry in _options.EnabledRepos)
         {
-            var segments = (entry ?? string.Empty)
-                .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var segments = (entry ?? string.Empty).Split(
+                '/',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+            );
 
             RepoIdentity? repo = segments.Length switch
             {

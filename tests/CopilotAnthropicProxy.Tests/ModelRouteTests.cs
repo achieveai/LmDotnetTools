@@ -6,7 +6,11 @@ namespace AchieveAi.LmDotnetTools.CopilotAnthropicProxy.Tests;
 public class ModelRouteTests
 {
     private static ProxyModelInfo Dual =>
-        new("claude-opus-4.8", "Anthropic", [CopilotModelsResponse.MessagesEndpoint, ProxyModelResolver.ChatCompletionsEndpoint]);
+        new(
+            "claude-opus-4.8",
+            "Anthropic",
+            [CopilotModelsResponse.MessagesEndpoint, ProxyModelResolver.ChatCompletionsEndpoint]
+        );
 
     private static ProxyModelInfo ResponsesOnly =>
         new("gpt-5.3-codex", "OpenAI", [CopilotModelsResponse.ResponsesEndpoint]);
@@ -40,8 +44,10 @@ public class ModelRouteTests
     public void Anthropic_dialect_prefers_passthrough_when_a_model_serves_both()
     {
         // gpt-5.4 advertises /responses AND /chat/completions but NOT /v1/messages, so it translates.
-        ModelRouter.Resolve(ProxyDialect.AnthropicMessages, ResponsesAndChat)!
-            .Kind.Should().Be(ProxyRouteKind.TranslateAnthropicToResponses);
+        ModelRouter
+            .Resolve(ProxyDialect.AnthropicMessages, ResponsesAndChat)!
+            .Kind.Should()
+            .Be(ProxyRouteKind.TranslateAnthropicToResponses);
     }
 
     [Fact]
@@ -89,7 +95,10 @@ public class ModelRouteTests
     {
         var catalog = new ProxyModelCatalog("claude-opus-4.8", [Dual, ResponsesOnly, ResponsesAndChat]);
 
-        ModelRouter.Servable(ProxyDialect.AnthropicMessages, catalog).Should().Equal("claude-opus-4.8", "gpt-5.3-codex", "gpt-5.4");
+        ModelRouter
+            .Servable(ProxyDialect.AnthropicMessages, catalog)
+            .Should()
+            .Equal("claude-opus-4.8", "gpt-5.3-codex", "gpt-5.4");
         ModelRouter.Servable(ProxyDialect.Responses, catalog).Should().Equal("gpt-5.3-codex", "gpt-5.4");
         ModelRouter.Servable(ProxyDialect.ChatCompletions, catalog).Should().Equal("claude-opus-4.8", "gpt-5.4");
     }

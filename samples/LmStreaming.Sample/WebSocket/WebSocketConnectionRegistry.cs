@@ -59,11 +59,7 @@ public sealed class RegisteredWebSocketConnection : IDisposable
             }
 
             var bytes = Encoding.UTF8.GetBytes(json);
-            await _socket.SendAsync(
-                new ArraySegment<byte>(bytes),
-                WebSocketMessageType.Text,
-                endOfMessage: true,
-                ct);
+            await _socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, endOfMessage: true, ct);
             return true;
         }
         catch (WebSocketException)
@@ -101,15 +97,9 @@ public sealed class RegisteredWebSocketConnection : IDisposable
         {
             await _socket.CloseAsync(status, description, ct);
         }
-        catch (WebSocketException)
-        {
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-        catch (InvalidOperationException)
-        {
-        }
+        catch (WebSocketException) { }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
     }
 
     /// <summary>

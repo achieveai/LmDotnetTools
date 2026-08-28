@@ -71,10 +71,12 @@ public class MultiTurnAgentPoolDisposalDrainTests
         // The write is provably in flight (UpdateEntered fired) and provably not finished (the gate is
         // still closed), so a disposal that completes here has returned over a live store write.
         var raced = await Task.WhenAny(dispose, Task.Delay(BlockedObservation));
-        _ = raced.Should().NotBeSameAs(
-            dispose,
-            "pool disposal must not return while a conversation-store metadata write it started is still in flight"
-        );
+        _ = raced
+            .Should()
+            .NotBeSameAs(
+                dispose,
+                "pool disposal must not return while a conversation-store metadata write it started is still in flight"
+            );
         _ = store.UpdateCompleted.Should().BeFalse();
 
         store.ReleaseUpdate();
@@ -105,19 +107,21 @@ public class MultiTurnAgentPoolDisposalDrainTests
         var dispose = pool.DisposeAsync().AsTask();
 
         var raced = await Task.WhenAny(dispose, Task.Delay(BlockedObservation));
-        _ = raced.Should().NotBeSameAs(
-            dispose,
-            "pool disposal must not return while an agent is still inside the pre-loop startup window, "
-                + "where StopAsync is a no-op because the run-loop task does not exist yet"
-        );
+        _ = raced
+            .Should()
+            .NotBeSameAs(
+                dispose,
+                "pool disposal must not return while an agent is still inside the pre-loop startup window, "
+                    + "where StopAsync is a no-op because the run-loop task does not exist yet"
+            );
         _ = agent.StartupWriteCompleted.Should().BeFalse();
 
         agent.ReleaseStartup();
 
         await dispose.WaitAsync(Generous);
-        _ = agent.StartupWriteCompleted.Should().BeTrue(
-            "the startup store write must have landed before disposal returned"
-        );
+        _ = agent
+            .StartupWriteCompleted.Should()
+            .BeTrue("the startup store write must have landed before disposal returned");
     }
 
     [Fact]
@@ -146,7 +150,8 @@ public class MultiTurnAgentPoolDisposalDrainTests
 
                 await store.UpdateMetadataAsync(
                     "thread-lingering",
-                    existing => existing
+                    existing =>
+                        existing
                         ?? new ThreadMetadata
                         {
                             ThreadId = "thread-lingering",
@@ -173,17 +178,19 @@ public class MultiTurnAgentPoolDisposalDrainTests
         var dispose = pool.DisposeAsync().AsTask();
 
         var raced = await Task.WhenAny(dispose, Task.Delay(BlockedObservation));
-        _ = raced.Should().NotBeSameAs(
-            dispose,
-            "the pool must drain the run task it started itself, rather than assume the agent's own StopAsync did"
-        );
+        _ = raced
+            .Should()
+            .NotBeSameAs(
+                dispose,
+                "the pool must drain the run task it started itself, rather than assume the agent's own StopAsync did"
+            );
 
         gate.TrySetResult();
 
         await dispose.WaitAsync(Generous);
-        _ = (Volatile.Read(ref written) != 0).Should().BeTrue(
-            "the run task's store write must have landed before disposal returned"
-        );
+        _ = (Volatile.Read(ref written) != 0)
+            .Should()
+            .BeTrue("the run task's store write must have landed before disposal returned");
     }
 
     [Fact]
@@ -210,7 +217,8 @@ public class MultiTurnAgentPoolDisposalDrainTests
 
                 await store.UpdateMetadataAsync(
                     "thread-throwing-dispose",
-                    existing => existing
+                    existing =>
+                        existing
                         ?? new ThreadMetadata
                         {
                             ThreadId = "thread-throwing-dispose",
@@ -243,23 +251,29 @@ public class MultiTurnAgentPoolDisposalDrainTests
         // them, which is why every assertion below is about what did or did not happen, never about
         // an exception.
         var raced = await Task.WhenAny(dispose, Task.Delay(BlockedObservation));
-        _ = raced.Should().NotBeSameAs(
-            dispose,
-            "a throw from the agent's own DisposeAsync must not carry disposal past the run-task drain"
-        );
+        _ = raced
+            .Should()
+            .NotBeSameAs(
+                dispose,
+                "a throw from the agent's own DisposeAsync must not carry disposal past the run-task drain"
+            );
 
         gate.TrySetResult();
 
         await dispose.WaitAsync(Generous);
 
-        _ = (Volatile.Read(ref written) != 0).Should().BeTrue(
-            "the run task's store write must have landed before disposal returned, even though the "
-                + "agent's own DisposeAsync threw on the way to the drain"
-        );
-        _ = owned.Disposed.Should().BeTrue(
-            "owned resources are torn down AFTER the agent, so a throw from the agent's dispose must "
-                + "not be what leaks them"
-        );
+        _ = (Volatile.Read(ref written) != 0)
+            .Should()
+            .BeTrue(
+                "the run task's store write must have landed before disposal returned, even though the "
+                    + "agent's own DisposeAsync threw on the way to the drain"
+            );
+        _ = owned
+            .Disposed.Should()
+            .BeTrue(
+                "owned resources are torn down AFTER the agent, so a throw from the agent's dispose must "
+                    + "not be what leaks them"
+            );
     }
 
     /// <summary>Records whether it was disposed. Stands in for a pooled agent's owned MCP clients.</summary>
@@ -297,7 +311,8 @@ public class MultiTurnAgentPoolDisposalDrainTests
         public async Task UpdateMetadataAsync(
             string threadId,
             Func<ThreadMetadata?, ThreadMetadata> update,
-            CancellationToken ct = default)
+            CancellationToken ct = default
+        )
         {
             _ = UpdateEntered.TrySetResult();
 
@@ -313,21 +328,22 @@ public class MultiTurnAgentPoolDisposalDrainTests
         public Task AppendMessagesAsync(
             string threadId,
             IReadOnlyList<PersistedMessage> messages,
-            CancellationToken ct = default) => _inner.AppendMessagesAsync(threadId, messages, ct);
+            CancellationToken ct = default
+        ) => _inner.AppendMessagesAsync(threadId, messages, ct);
 
         public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
             string threadId,
-            CancellationToken ct = default) => _inner.LoadMessagesAsync(threadId, ct);
+            CancellationToken ct = default
+        ) => _inner.LoadMessagesAsync(threadId, ct);
 
         public Task ReplaceMessageAsync(
             string threadId,
             PersistedMessage replacement,
-            CancellationToken ct = default) => _inner.ReplaceMessageAsync(threadId, replacement, ct);
+            CancellationToken ct = default
+        ) => _inner.ReplaceMessageAsync(threadId, replacement, ct);
 
-        public Task SaveMetadataAsync(
-            string threadId,
-            ThreadMetadata metadata,
-            CancellationToken ct = default) => _inner.SaveMetadataAsync(threadId, metadata, ct);
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            _inner.SaveMetadataAsync(threadId, metadata, ct);
 
         public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
             _inner.LoadMetadataAsync(threadId, ct);
@@ -339,14 +355,16 @@ public class MultiTurnAgentPoolDisposalDrainTests
             int limit = 50,
             int offset = 0,
             ConversationListOptions? options = null,
-            CancellationToken ct = default) => _inner.ListThreadsAsync(limit, offset, options, ct);
+            CancellationToken ct = default
+        ) => _inner.ListThreadsAsync(limit, offset, options, ct);
 
         public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
             ConversationListScope scope,
             int limit = 50,
             int offset = 0,
             ConversationListOptions? options = null,
-            CancellationToken ct = default) => _inner.ListThreadsAsync(scope, limit, offset, options, ct);
+            CancellationToken ct = default
+        ) => _inner.ListThreadsAsync(scope, limit, offset, options, ct);
     }
 
     /// <summary>
@@ -378,7 +396,8 @@ public class MultiTurnAgentPoolDisposalDrainTests
 
             await Store!.UpdateMetadataAsync(
                 ThreadId,
-                existing => existing
+                existing =>
+                    existing
                     ?? new ThreadMetadata
                     {
                         ThreadId = ThreadId,

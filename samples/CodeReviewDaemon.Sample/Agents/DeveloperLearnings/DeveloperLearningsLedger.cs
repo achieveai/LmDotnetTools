@@ -56,7 +56,8 @@ internal sealed record PatternStanding(
     string FirstSeenUtc,
     string LastSeenUtc,
     string? RegressedAtUtc,
-    int? StreakBrokenAt);
+    int? StreakBrokenAt
+);
 
 /// <summary>Thresholds in force for one rendering. Recorded alongside the numbers they produced.</summary>
 /// <param name="ResolutionConfidence">Confidence required to call a pattern resolved.</param>
@@ -67,7 +68,8 @@ internal sealed record LearningsThresholds(
     double ResolutionConfidence,
     int ActiveWindowPrs,
     int ExposureStalenessDays,
-    double CohortDropThreshold)
+    double CohortDropThreshold
+)
 {
     public static LearningsThresholds Defaults { get; } = new(0.95, 10, 90, 0.40);
 }
@@ -116,8 +118,7 @@ internal static class DeveloperLearningsLedger
     /// resolve common ones.
     /// </para>
     /// </summary>
-    public static double LuckProbability(double rate, int cleanStreak) =>
-        Math.Pow(1.0 - rate, cleanStreak);
+    public static double LuckProbability(double rate, int cleanStreak) => Math.Pow(1.0 - rate, cleanStreak);
 
     /// <summary>
     /// Computes standings for every pattern in <paramref name="observations"/>.
@@ -135,7 +136,8 @@ internal static class DeveloperLearningsLedger
         IReadOnlyDictionary<string, string> patternDimensions,
         LearningsThresholds thresholds,
         IReadOnlySet<string> suppressedDimensions,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc
+    )
     {
         ArgumentNullException.ThrowIfNull(observations);
         ArgumentNullException.ThrowIfNull(patternDimensions);
@@ -163,7 +165,8 @@ internal static class DeveloperLearningsLedger
         string dimension,
         LearningsThresholds thresholds,
         IReadOnlySet<string> suppressedDimensions,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc
+    )
     {
         // Indices of PRs that exercised this pattern's dimension. Everything positional below counts within
         // THIS list, which is what makes every streak an exposed-PR streak by construction rather than by a
@@ -239,7 +242,8 @@ internal static class DeveloperLearningsLedger
             ordered[firstHit].ObservedAtUtc,
             ordered[lastHit].ObservedAtUtc,
             regressedAtUtc,
-            streakBrokenAt);
+            streakBrokenAt
+        );
     }
 
     /// <summary>
@@ -263,7 +267,8 @@ internal static class DeveloperLearningsLedger
         int cleanStreak,
         double luck,
         LearningsThresholds thresholds,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc
+    )
     {
         // 1. Nobody has exercised this dimension in months. Silence from a dimension no reviewer read is not
         //    a clean streak, and treating it as one credits the developer for the reviewer's absence. This
@@ -310,7 +315,8 @@ internal static class DeveloperLearningsLedger
     /// <param name="threshold">Fractional fall below the trailing median that marks a dimension suppressed.</param>
     public static IReadOnlySet<string> SuppressedDimensions(
         IReadOnlyDictionary<string, IReadOnlyList<double>> windowRatesByDimension,
-        double threshold)
+        double threshold
+    )
     {
         ArgumentNullException.ThrowIfNull(windowRatesByDimension);
 
@@ -325,9 +331,10 @@ internal static class DeveloperLearningsLedger
             }
 
             var trailing = windows.Take(windows.Count - 1).OrderBy(v => v).ToArray();
-            var median = trailing.Length % 2 == 1
-                ? trailing[trailing.Length / 2]
-                : (trailing[(trailing.Length / 2) - 1] + trailing[trailing.Length / 2]) / 2.0;
+            var median =
+                trailing.Length % 2 == 1
+                    ? trailing[trailing.Length / 2]
+                    : (trailing[(trailing.Length / 2) - 1] + trailing[trailing.Length / 2]) / 2.0;
             if (median <= 0)
             {
                 continue;
@@ -343,8 +350,7 @@ internal static class DeveloperLearningsLedger
     }
 
     private static DateTimeOffset ParseObservedAt(string value) =>
-        DateTimeOffset.TryParse(
-            value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
+        DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
             ? parsed
             : DateTimeOffset.MinValue;
 
@@ -362,8 +368,7 @@ internal static class DeveloperLearningsLedger
     /// </para>
     /// </summary>
     /// <param name="observations">The developer's observation files, in any order.</param>
-    public static IReadOnlyList<DeveloperObservation> Chronological(
-        IReadOnlyList<DeveloperObservation> observations)
+    public static IReadOnlyList<DeveloperObservation> Chronological(IReadOnlyList<DeveloperObservation> observations)
     {
         ArgumentNullException.ThrowIfNull(observations);
         return

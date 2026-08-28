@@ -79,9 +79,7 @@ public class OutputSchemaValidationTests
         runtime.GetProjection(null)["tasks"]![unit]!.GetValue<string>();
 
     private static bool ReSurfaced(WorkflowRuntime runtime, string unit) =>
-        runtime
-            .GetProjection(null)["nextExpectedAction"]!.AsArray()
-            .Any(n => n!["name"]!.GetValue<string>() == unit);
+        runtime.GetProjection(null)["nextExpectedAction"]!.AsArray().Any(n => n!["name"]!.GetValue<string>() == unit);
 
     [Fact]
     public void ValidOutput_IsRecorded()
@@ -105,14 +103,14 @@ public class OutputSchemaValidationTests
 
         var projection = runtime.GetProjection(null);
         projection["tasks"]![Unit]!.GetValue<string>().Should().Be("pending");
-        projection["taskErrors"]![Unit]!
-            .GetValue<string>()
-            .Should()
-            .Contain("did not match the required schema");
+        projection["taskErrors"]![Unit]!.GetValue<string>().Should().Contain("did not match the required schema");
         ReSurfaced(runtime, Unit).Should().BeTrue();
 
         // No terminal error marker is recorded while the unit is still retryable.
-        runtime.Outputs["analyze"]!.AsObject().Should().NotContainKey("task");
+        runtime.Outputs["analyze"]!
+            .AsObject()
+            .Should()
+            .NotContainKey("task");
     }
 
     [Fact]
@@ -213,10 +211,7 @@ public class OutputSchemaValidationTests
 
         AssertReasonDeIdentified(
             runtime,
-            reason =>
-                reason
-                    .Should()
-                    .Match("task output did not match the required schema (* validation error(s))")
+            reason => reason.Should().Match("task output did not match the required schema (* validation error(s))")
         );
     }
 
@@ -240,8 +235,7 @@ public class OutputSchemaValidationTests
 
         AssertReasonDeIdentified(
             runtime,
-            reason =>
-                reason.Should().Be("task output could not be written to state (InvalidOperationException)")
+            reason => reason.Should().Be("task output could not be written to state (InvalidOperationException)")
         );
     }
 

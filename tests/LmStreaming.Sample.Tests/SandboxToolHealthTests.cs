@@ -16,10 +16,12 @@ public sealed class SandboxToolHealthTests
     [InlineData(
         "Error executing MCP tool Glob: Request failed (remote): Internal error: Failed to create "
             + "exec: Docker responded with status code 400: unable to find user sandbox: no matching "
-            + "entries in passwd file")]
+            + "entries in passwd file"
+    )]
     [InlineData(
         "Error executing MCP tool Glob: Request failed (remote): Internal error: Timed out waiting "
-            + "for 'sandbox' user in container 72f3f918517825fb7b380d0a7db67aed06635d02")]
+            + "for 'sandbox' user in container 72f3f918517825fb7b380d0a7db67aed06635d02"
+    )]
     [InlineData("Internal error: unable to find user sandbox: no matching entries in passwd file")]
     public void IsContainerUnhealthy_detects_known_gateway_signatures(string toolResult)
     {
@@ -44,7 +46,9 @@ public sealed class SandboxToolHealthTests
                 ToolHandlerResult.FromText(
                     "Error executing MCP tool Glob: Request failed (remote): Internal error: Failed "
                         + "to create exec: Docker responded with status code 400: unable to find user "
-                        + "sandbox: no matching entries in passwd file"));
+                        + "sandbox: no matching entries in passwd file"
+                )
+            );
 
         var wrapped = SandboxToolHealth.Wrap(inner);
         var result = await wrapped("{}", new ToolCallContext(), CancellationToken.None);

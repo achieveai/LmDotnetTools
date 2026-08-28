@@ -52,8 +52,7 @@ public sealed record LifecycleOwnerKey
     /// <see cref="SandboxCredential.AppId"/>. The credential's key material is not read and never
     /// becomes part of the owner key.
     /// </summary>
-    public static LifecycleOwnerKey ForCredential(SandboxCredential credential) =>
-        ForAppId(credential.AppId);
+    public static LifecycleOwnerKey ForCredential(SandboxCredential credential) => ForAppId(credential.AppId);
 
     /// <inheritdoc />
     public override string ToString() => Value;

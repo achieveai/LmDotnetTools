@@ -9,9 +9,7 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.Tests.Persistence;
 /// </summary>
 public sealed class DetachedStoreTeardownTests : IDisposable
 {
-    private readonly string _root = Path.Combine(
-        Path.GetTempPath(),
-        $"DetachedStoreTeardownTests_{Guid.NewGuid():N}");
+    private readonly string _root = Path.Combine(Path.GetTempPath(), $"DetachedStoreTeardownTests_{Guid.NewGuid():N}");
 
     /// <summary>
     /// The detach is what makes teardown safe, and a HELD HANDLE is the only reachable way it can fail: the
@@ -26,8 +24,7 @@ public sealed class DetachedStoreTeardownTests : IDisposable
     /// survival is what separates "refused" from "deleted anyway, quietly".
     /// </para>
     /// </summary>
-    [WindowsOnlyFact(
-        "only Windows refuses to rename a directory whose descendant file is open; POSIX rename succeeds")]
+    [WindowsOnlyFact("only Windows refuses to rename a directory whose descendant file is open; POSIX rename succeeds")]
     public void Purge_WhenTheRootCannotBeDetached_RefusesInsteadOfDeletingTheAttachedRootInPlace()
     {
         var survivor = Path.Combine(_root, "record-survivor");
@@ -41,11 +38,7 @@ public sealed class DetachedStoreTeardownTests : IDisposable
         File.WriteAllText(busyFile, "{}");
 
         // FileShare.None keeps the whole tree un-renameable on Windows for as long as this handle lives.
-        using var handle = new FileStream(
-            busyFile,
-            FileMode.Open,
-            FileAccess.ReadWrite,
-            FileShare.None);
+        using var handle = new FileStream(busyFile, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
         var thrown = Record.Exception(() => DetachedStoreTeardown.Purge(_root));
 
@@ -54,10 +47,12 @@ public sealed class DetachedStoreTeardownTests : IDisposable
         // survivor says "deleted around the writer" even when nothing was thrown.
         Assert.True(
             File.Exists(survivorFile),
-            "an in-place recursive delete frees sibling records first, so this file is the canary for one");
+            "an in-place recursive delete frees sibling records first, so this file is the canary for one"
+        );
         Assert.True(
             Directory.Exists(_root),
-            "the attached root must be left exactly as found when it could not be detached");
+            "the attached root must be left exactly as found when it could not be detached"
+        );
 
         // A teardown that cannot detach the root must surface the writer holding it, not delete around it.
         var refusal = Assert.IsType<IOException>(thrown);
@@ -86,9 +81,8 @@ public sealed class DetachedStoreTeardownTests : IDisposable
         Assert.False(Directory.Exists(_root));
         // The detached copy is deleted, not merely renamed out of the way.
         Assert.Empty(
-            Directory.EnumerateDirectories(
-                Path.GetDirectoryName(_root)!,
-                Path.GetFileName(_root) + "-detached*"));
+            Directory.EnumerateDirectories(Path.GetDirectoryName(_root)!, Path.GetFileName(_root) + "-detached*")
+        );
     }
 
     /// <summary>A root that was never created — or that a previous purge already took — is not a failure.</summary>
@@ -121,9 +115,7 @@ public sealed class DetachedStoreTeardownTests : IDisposable
             // enumerator over a changing directory may silently skip entries. The enumeration can also
             // throw on its own if another process removes a temp entry mid-walk, which must not fail
             // teardown either.
-            leftovers = Directory.GetDirectories(
-                Path.GetDirectoryName(_root)!,
-                Path.GetFileName(_root) + "*");
+            leftovers = Directory.GetDirectories(Path.GetDirectoryName(_root)!, Path.GetFileName(_root) + "*");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

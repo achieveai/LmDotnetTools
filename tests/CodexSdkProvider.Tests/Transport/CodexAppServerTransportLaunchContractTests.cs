@@ -15,7 +15,10 @@ public class CodexAppServerTransportLaunchContractTests
     {
         public ProcessLaunchRequest? LastRequest { get; private set; }
 
-        public Task<IProcessHandle> LaunchAsync(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
+        public Task<IProcessHandle> LaunchAsync(
+            ProcessLaunchRequest request,
+            CancellationToken cancellationToken = default
+        )
         {
             LastRequest = request;
             throw new ProcessLauncherException("recording launcher: never spawns");
@@ -26,11 +29,7 @@ public class CodexAppServerTransportLaunchContractTests
     public async Task StartAsync_PassesAppServerArgumentsAndHostPath()
     {
         var recorder = new RecordingLauncher();
-        var options = new CodexSdkOptions
-        {
-            CodexCliPath = "codex-cli-mock",
-            ProcessLauncher = recorder,
-        };
+        var options = new CodexSdkOptions { CodexCliPath = "codex-cli-mock", ProcessLauncher = recorder };
 
         await using var transport = new CodexAppServerTransport(options);
 
@@ -38,13 +37,15 @@ public class CodexAppServerTransportLaunchContractTests
         Directory.CreateDirectory(workingDir);
         try
         {
-            var act = async () => await transport.StartAsync(
-                workingDir,
-                apiKey: "sk-test-key",
-                baseUrl: "https://example.test",
-                requestHandler: (_, _, _) => Task.FromResult(default(JsonElement)),
-                notificationHandler: (_, _) => { },
-                ct: CancellationToken.None);
+            var act = async () =>
+                await transport.StartAsync(
+                    workingDir,
+                    apiKey: "sk-test-key",
+                    baseUrl: "https://example.test",
+                    requestHandler: (_, _, _) => Task.FromResult(default(JsonElement)),
+                    notificationHandler: (_, _) => { },
+                    ct: CancellationToken.None
+                );
 
             await act.Should().ThrowAsync<InvalidOperationException>();
         }
@@ -60,8 +61,15 @@ public class CodexAppServerTransportLaunchContractTests
         request.Arguments.Should().Equal("app-server", "--listen", "stdio://");
         request.WorkingDirectory.Should().Be(workingDir);
         request.EnvironmentOverrides.Should().ContainKey("OPENAI_API_KEY").WhoseValue.Should().Be("sk-test-key");
-        request.EnvironmentOverrides.Should().ContainKey("OPENAI_BASE_URL").WhoseValue.Should().Be("https://example.test");
-        request.HostPaths.Should().ContainSingle()
-            .Which.Should().BeEquivalentTo(new HostPathReference(workingDir, HostPathKind.WorkingDirectory));
+        request
+            .EnvironmentOverrides.Should()
+            .ContainKey("OPENAI_BASE_URL")
+            .WhoseValue.Should()
+            .Be("https://example.test");
+        request
+            .HostPaths.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeEquivalentTo(new HostPathReference(workingDir, HostPathKind.WorkingDirectory));
     }
 }

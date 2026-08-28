@@ -26,10 +26,7 @@ public sealed class ResourceAccessPolicyTests
     private ResourceAccessPolicy CreatePolicy(bool enforce = true) =>
         new(_grants, _audit, new StaticEnforcementGate(enforce), TimeProvider.System);
 
-    private static Principal User(
-        string tenantId = TenantA,
-        string userId = UserA,
-        params string[] roles) =>
+    private static Principal User(string tenantId = TenantA, string userId = UserA, params string[] roles) =>
         new()
         {
             TenantId = tenantId,
@@ -52,7 +49,8 @@ public sealed class ResourceAccessPolicyTests
         string? ownerUserId = UserA,
         string? ownerAppId = null,
         Visibility visibility = Visibility.Private,
-        string id = "thread-1") =>
+        string id = "thread-1"
+    ) =>
         new()
         {
             Ref = new ResourceRef(ResourceTypes.Conversation, id),
@@ -73,10 +71,8 @@ public sealed class ResourceAccessPolicyTests
     [InlineData(AccessAction.Share)]
     public async Task CrossTenant_IsRefusedForEveryAction_EvenForAnAdmin(AccessAction action)
     {
-        var decision = await CreatePolicy().EvaluateAsync(
-            User(TenantA, UserA, "admin"),
-            Conversation(TenantB, ownerUserId: UserA),
-            action);
+        var decision = await CreatePolicy()
+            .EvaluateAsync(User(TenantA, UserA, "admin"), Conversation(TenantB, ownerUserId: UserA), action);
 
         _ = decision.Allowed.Should().BeFalse();
         _ = decision.Reason.Should().Be("cross_tenant");
@@ -90,10 +86,8 @@ public sealed class ResourceAccessPolicyTests
     [Fact]
     public async Task AppOnlyPrincipal_DoesNotOwnAnUnclaimedResource()
     {
-        var decision = await CreatePolicy().EvaluateAsync(
-            App(),
-            Conversation(ownerUserId: null, ownerAppId: null),
-            AccessAction.Read);
+        var decision = await CreatePolicy()
+            .EvaluateAsync(App(), Conversation(ownerUserId: null, ownerAppId: null), AccessAction.Read);
 
         _ = decision.Allowed.Should().BeFalse();
         _ = decision.Reason.Should().Be("app_only_no_owner");
@@ -103,10 +97,7 @@ public sealed class ResourceAccessPolicyTests
     [Fact]
     public async Task User_DoesNotOwnAnUnclaimedResource()
     {
-        var decision = await CreatePolicy().EvaluateAsync(
-            User(),
-            Conversation(ownerUserId: null),
-            AccessAction.Read);
+        var decision = await CreatePolicy().EvaluateAsync(User(), Conversation(ownerUserId: null), AccessAction.Read);
 
         _ = decision.Allowed.Should().BeFalse();
         _ = decision.Reason.Should().Be("no_relationship");
@@ -116,10 +107,8 @@ public sealed class ResourceAccessPolicyTests
     [Fact]
     public async Task AppOnlyPrincipal_OwnsItsOwnResource()
     {
-        var decision = await CreatePolicy().EvaluateAsync(
-            App(),
-            Conversation(ownerUserId: null, ownerAppId: "app-1"),
-            AccessAction.Write);
+        var decision = await CreatePolicy()
+            .EvaluateAsync(App(), Conversation(ownerUserId: null, ownerAppId: "app-1"), AccessAction.Write);
 
         _ = decision.Allowed.Should().BeTrue();
         _ = decision.Reason.Should().Be("app_owner");
@@ -129,10 +118,8 @@ public sealed class ResourceAccessPolicyTests
     [Fact]
     public async Task TenantMate_WithoutAGrant_HasNoRelationship()
     {
-        var decision = await CreatePolicy().EvaluateAsync(
-            User(TenantA, UserA2),
-            Conversation(ownerUserId: UserA),
-            AccessAction.Read);
+        var decision = await CreatePolicy()
+            .EvaluateAsync(User(TenantA, UserA2), Conversation(ownerUserId: UserA), AccessAction.Read);
 
         _ = decision.Allowed.Should().BeFalse();
         _ = decision.Reason.Should().Be("no_relationship");
@@ -176,21 +163,20 @@ public sealed class ResourceAccessPolicyTests
     [Fact]
     public async Task ExpiredGrant_ConfersNothing()
     {
-        await _grants.GrantAsync(new ResourceGrant
-        {
-            TenantId = TenantA,
-            Resource = new ResourceRef(ResourceTypes.Conversation, "thread-1"),
-            SubjectId = UserA2,
-            Role = GrantRole.Editor,
-            GrantedBy = UserA,
-            GrantedAt = DateTimeOffset.UnixEpoch,
-            ExpiresAt = DateTimeOffset.UnixEpoch.AddMinutes(1),
-        });
+        await _grants.GrantAsync(
+            new ResourceGrant
+            {
+                TenantId = TenantA,
+                Resource = new ResourceRef(ResourceTypes.Conversation, "thread-1"),
+                SubjectId = UserA2,
+                Role = GrantRole.Editor,
+                GrantedBy = UserA,
+                GrantedAt = DateTimeOffset.UnixEpoch,
+                ExpiresAt = DateTimeOffset.UnixEpoch.AddMinutes(1),
+            }
+        );
 
-        var decision = await CreatePolicy().EvaluateAsync(
-            User(TenantA, UserA2),
-            Conversation(),
-            AccessAction.Read);
+        var decision = await CreatePolicy().EvaluateAsync(User(TenantA, UserA2), Conversation(), AccessAction.Read);
 
         _ = decision.Allowed.Should().BeFalse();
         _ = decision.Reason.Should().Be("no_relationship");
@@ -241,10 +227,8 @@ public sealed class ResourceAccessPolicyTests
     [Fact]
     public async Task UndefinedActionForType_ThrowsEvenWithEnforcementOff()
     {
-        var act = async () => await CreatePolicy(enforce: false).EvaluateAsync(
-            User(),
-            Conversation(),
-            AccessAction.Publish);
+        var act = async () =>
+            await CreatePolicy(enforce: false).EvaluateAsync(User(), Conversation(), AccessAction.Publish);
 
         _ = await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
     }
@@ -253,10 +237,8 @@ public sealed class ResourceAccessPolicyTests
     [Fact]
     public async Task EnforcementOff_AllowsWithoutConsultingOwnership()
     {
-        var decision = await CreatePolicy(enforce: false).EvaluateAsync(
-            User(TenantA),
-            Conversation(TenantB, ownerUserId: "somebody-else"),
-            AccessAction.Delete);
+        var decision = await CreatePolicy(enforce: false)
+            .EvaluateAsync(User(TenantA), Conversation(TenantB, ownerUserId: "somebody-else"), AccessAction.Delete);
 
         _ = decision.Allowed.Should().BeTrue();
         _ = decision.Reason.Should().Be("enforcement_disabled");
@@ -292,11 +274,13 @@ public sealed class ResourceAccessPolicyTests
     [Fact]
     public async Task EvaluateCapability_ReachesTheSameDenial_ButDoesNotAudit()
     {
-        var decision = await CreatePolicy().EvaluateCapabilityAsync(
-            User(TenantA, UserA2, "admin"),
-            Conversation(),
-            AccessAction.Share,
-            suppliedGrant: null);
+        var decision = await CreatePolicy()
+            .EvaluateCapabilityAsync(
+                User(TenantA, UserA2, "admin"),
+                Conversation(),
+                AccessAction.Share,
+                suppliedGrant: null
+            );
 
         _ = decision.Allowed.Should().BeFalse();
         _ = decision.Reason.Should().Be("admin_may_not_reshare");
@@ -312,14 +296,14 @@ public sealed class ResourceAccessPolicyTests
     public async Task EvaluateCapability_HonoursTheSuppliedGrant_WithoutTouchingTheStore()
     {
         var counting = new CountingResourceGrantStore(_grants);
-        var policy = new ResourceAccessPolicy(
-            counting, _audit, new StaticEnforcementGate(true), TimeProvider.System);
+        var policy = new ResourceAccessPolicy(counting, _audit, new StaticEnforcementGate(true), TimeProvider.System);
 
         var decision = await policy.EvaluateCapabilityAsync(
             User(TenantA, UserA2),
             Conversation(),
             AccessAction.Write,
-            GrantRole.Editor);
+            GrantRole.Editor
+        );
 
         _ = decision.Allowed.Should().BeTrue();
         _ = decision.Reason.Should().Be("grant");
@@ -337,14 +321,14 @@ public sealed class ResourceAccessPolicyTests
     {
         await GrantAsync(GrantRole.Editor);
         var counting = new CountingResourceGrantStore(_grants);
-        var policy = new ResourceAccessPolicy(
-            counting, _audit, new StaticEnforcementGate(true), TimeProvider.System);
+        var policy = new ResourceAccessPolicy(counting, _audit, new StaticEnforcementGate(true), TimeProvider.System);
 
         var decision = await policy.EvaluateCapabilityAsync(
             User(TenantA, UserA2),
             Conversation(),
             AccessAction.Read,
-            suppliedGrant: null);
+            suppliedGrant: null
+        );
 
         _ = decision.Allowed.Should().BeFalse();
         _ = decision.Reason.Should().Be("no_relationship");
@@ -352,13 +336,15 @@ public sealed class ResourceAccessPolicyTests
     }
 
     private Task GrantAsync(GrantRole role) =>
-        _grants.GrantAsync(new ResourceGrant
-        {
-            TenantId = TenantA,
-            Resource = new ResourceRef(ResourceTypes.Conversation, "thread-1"),
-            SubjectId = UserA2,
-            Role = role,
-            GrantedBy = UserA,
-            GrantedAt = DateTimeOffset.UnixEpoch,
-        });
+        _grants.GrantAsync(
+            new ResourceGrant
+            {
+                TenantId = TenantA,
+                Resource = new ResourceRef(ResourceTypes.Conversation, "thread-1"),
+                SubjectId = UserA2,
+                Role = role,
+                GrantedBy = UserA,
+                GrantedAt = DateTimeOffset.UnixEpoch,
+            }
+        );
 }

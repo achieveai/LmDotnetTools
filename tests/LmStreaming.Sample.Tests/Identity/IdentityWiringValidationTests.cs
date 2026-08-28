@@ -43,14 +43,10 @@ public sealed class IdentityWiringValidationTests : IDisposable
     private const string S2SSecretKey = "Auth:S2SInboundSecret";
     private const string AppTenantKey = "Identity:Apps:review-daemon:TenantId";
 
-    private readonly string _databasePath = Path.Combine(
-        Path.GetTempPath(),
-        $"identity_wiring_{Guid.NewGuid():N}.db");
+    private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"identity_wiring_{Guid.NewGuid():N}.db");
 
     /// <summary>Runs the real pipeline wiring over a real container, returning what it threw.</summary>
-    private Exception? WireWith(
-        Dictionary<string, string?> settings,
-        Action<IServiceCollection>? register = null)
+    private Exception? WireWith(Dictionary<string, string?> settings, Action<IServiceCollection>? register = null)
     {
         settings["Identity:DatabasePath"] = _databasePath;
 
@@ -85,12 +81,14 @@ public sealed class IdentityWiringValidationTests : IDisposable
         // The message has to name the settings, not just the fault. An operator reading a startup
         // failure needs the keys they can change; "identity is misconfigured" sends them back to the
         // source. All three escapes are named because any one of them fixes it.
-        _ = thrown.Should().BeOfType<InvalidOperationException>()
+        _ = thrown
+            .Should()
+            .BeOfType<InvalidOperationException>()
             .Which.Message.Should()
-                .Contain("Identity:Enforce").And
-                .Contain(ClientIdKey).And
-                .Contain(S2SSecretKey).And
-                .Contain("Identity:Apps");
+            .Contain("Identity:Enforce")
+            .And.Contain(ClientIdKey)
+            .And.Contain(S2SSecretKey)
+            .And.Contain("Identity:Apps");
     }
 
     [Fact]
@@ -137,9 +135,7 @@ public sealed class IdentityWiringValidationTests : IDisposable
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, true)]
-    public void AnEnforcingHostWithHalfAServiceCallerOnboarding_RefusesToBoot(
-        bool withSecret,
-        bool withApp)
+    public void AnEnforcingHostWithHalfAServiceCallerOnboarding_RefusesToBoot(bool withSecret, bool withApp)
     {
         // Half an onboarding is not an escape, and each half fails for its own reason:
         // ServiceCallerPrincipalSource returns null when the secret is unset (it refuses to admit a
@@ -160,8 +156,11 @@ public sealed class IdentityWiringValidationTests : IDisposable
         // Asserted on the message, not the type alone: UseAuthorization throws the same type from
         // the same Record.Exception scope, so a type-only assertion passes on an exception this test
         // is not about.
-        _ = WireWith(settings).Should().BeOfType<InvalidOperationException>()
-            .Which.Message.Should().Contain("no front door");
+        _ = WireWith(settings)
+            .Should()
+            .BeOfType<InvalidOperationException>()
+            .Which.Message.Should()
+            .Contain("no front door");
     }
 
     [Fact]
@@ -174,8 +173,11 @@ public sealed class IdentityWiringValidationTests : IDisposable
         settings[S2SSecretKey] = "inbound-secret-value";
         settings[AppTenantKey] = "   ";
 
-        _ = WireWith(settings).Should().BeOfType<InvalidOperationException>()
-            .Which.Message.Should().Contain("no front door");
+        _ = WireWith(settings)
+            .Should()
+            .BeOfType<InvalidOperationException>()
+            .Which.Message.Should()
+            .Contain("no front door");
     }
 
     [Fact]
@@ -191,8 +193,11 @@ public sealed class IdentityWiringValidationTests : IDisposable
         settings[S2SSecretKey] = "inbound-secret-value";
         settings[AppTenantKey] = "legacy";
 
-        _ = WireWith(settings).Should().BeOfType<InvalidOperationException>()
-            .Which.Message.Should().Contain("no front door");
+        _ = WireWith(settings)
+            .Should()
+            .BeOfType<InvalidOperationException>()
+            .Which.Message.Should()
+            .Contain("no front door");
     }
 
     [Fact]
@@ -219,7 +224,8 @@ public sealed class IdentityWiringValidationTests : IDisposable
         // apps, and a principal source of its own.
         var thrown = WireWith(
             Enforcing(),
-            services => services.AddSingleton<IRequestPrincipalSource, StubPrincipalSource>());
+            services => services.AddSingleton<IRequestPrincipalSource, StubPrincipalSource>()
+        );
 
         _ = thrown.Should().BeNull();
     }
@@ -236,15 +242,18 @@ public sealed class IdentityWiringValidationTests : IDisposable
         // refuse. A gate that counted AuthenticationOptions.SchemeMap would let it boot.
         var thrown = WireWith(
             Enforcing(),
-            services => services.AddAuthentication()
-                .AddScheme<AuthenticationSchemeOptions, StubAuthenticationHandler>(
-                    "UnrelatedScheme",
-                    configureOptions: null));
+            services =>
+                services
+                    .AddAuthentication()
+                    .AddScheme<AuthenticationSchemeOptions, StubAuthenticationHandler>(
+                        "UnrelatedScheme",
+                        configureOptions: null
+                    )
+        );
 
         // Message-asserted for the same reason the other refusals are: UseAuthorization throws the
         // same type from the same Record.Exception scope.
-        _ = thrown.Should().BeOfType<InvalidOperationException>()
-            .Which.Message.Should().Contain("no front door");
+        _ = thrown.Should().BeOfType<InvalidOperationException>().Which.Message.Should().Contain("no front door");
     }
 
     public void Dispose() => File.Delete(_databasePath);
@@ -262,7 +271,8 @@ public sealed class IdentityWiringValidationTests : IDisposable
     private sealed class StubAuthenticationHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
-        UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+        UrlEncoder encoder
+    ) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
     {
         protected override Task<AuthenticateResult> HandleAuthenticateAsync() =>
             Task.FromResult(AuthenticateResult.NoResult());

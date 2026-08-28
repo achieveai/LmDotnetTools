@@ -99,9 +99,7 @@ public sealed class LifecycleSubscriptionsControllerTests
         // subscription — every event within the caller's own scope, redacted.
         var harness = new Harness();
 
-        var result = await harness
-            .As(AppA)
-            .Register(new LifecycleSubscriptionRegistration { CallbackUri = Callback });
+        var result = await harness.As(AppA).Register(new LifecycleSubscriptionRegistration { CallbackUri = Callback });
 
         var body = ShouldRespond(result, StatusCodes.Status201Created);
         body.Capabilities.Should().BeEmpty();
@@ -182,17 +180,16 @@ public sealed class LifecycleSubscriptionsControllerTests
     public async Task Rotation_mints_a_different_secret_for_the_same_subscription()
     {
         var harness = new Harness();
-        var registered = ShouldRespond(
-            await harness.As(AppA).Register(Registration()),
-            StatusCodes.Status201Created
-        );
+        var registered = ShouldRespond(await harness.As(AppA).Register(Registration()), StatusCodes.Status201Created);
 
         var rotated = ShouldRespond(
             await harness.As(AppA).RotateSecret(registered.SubscriptionId!),
             StatusCodes.Status200OK
         );
 
-        rotated.SubscriptionId.Should().Be(registered.SubscriptionId, "rotation replaces the key, not the subscription");
+        rotated
+            .SubscriptionId.Should()
+            .Be(registered.SubscriptionId, "rotation replaces the key, not the subscription");
         rotated.SigningSecret.Should().NotBeNullOrWhiteSpace();
         rotated.SigningSecret.Should().NotBe(registered.SigningSecret);
     }
@@ -201,10 +198,7 @@ public sealed class LifecycleSubscriptionsControllerTests
     public async Task Revoking_the_previous_key_answers_without_a_body()
     {
         var harness = new Harness();
-        var registered = ShouldRespond(
-            await harness.As(AppA).Register(Registration()),
-            StatusCodes.Status201Created
-        );
+        var registered = ShouldRespond(await harness.As(AppA).Register(Registration()), StatusCodes.Status201Created);
         _ = await harness.As(AppA).RotateSecret(registered.SubscriptionId!);
 
         var result = await harness.As(AppA).RevokePreviousSecret(registered.SubscriptionId!);
@@ -220,10 +214,7 @@ public sealed class LifecycleSubscriptionsControllerTests
     public async Task Unregistering_removes_the_subscription_from_fan_out()
     {
         var harness = new Harness();
-        var registered = ShouldRespond(
-            await harness.As(AppA).Register(Registration()),
-            StatusCodes.Status201Created
-        );
+        var registered = ShouldRespond(await harness.As(AppA).Register(Registration()), StatusCodes.Status201Created);
 
         var result = await harness.As(AppA).Unregister(registered.SubscriptionId!);
 
@@ -237,10 +228,7 @@ public sealed class LifecycleSubscriptionsControllerTests
         // Holding the id is not authority. This is the property the whole control plane rests on, so
         // it is asserted against all three mutating routes rather than a representative one.
         var harness = new Harness();
-        var registered = ShouldRespond(
-            await harness.As(AppA).Register(Registration()),
-            StatusCodes.Status201Created
-        );
+        var registered = ShouldRespond(await harness.As(AppA).Register(Registration()), StatusCodes.Status201Created);
         var id = registered.SubscriptionId!;
 
         _ = ShouldRespond(await harness.As(AppB).RotateSecret(id), StatusCodes.Status404NotFound);
@@ -279,9 +267,7 @@ public sealed class LifecycleSubscriptionsControllerTests
         foreach (var (name, result) in answers)
         {
             _ = ShouldRespond(result, StatusCodes.Status404NotFound);
-            BodyHex(result)
-                .Should()
-                .Be(reference, "'{0}' must be indistinguishable from '{1}'", name, answers[0].Case);
+            BodyHex(result).Should().Be(reference, "'{0}' must be indistinguishable from '{1}'", name, answers[0].Case);
         }
     }
 
@@ -310,11 +296,13 @@ public sealed class LifecycleSubscriptionsControllerTests
         var result = await harness.AsAnonymous().Register(Registration());
 
         var body = ShouldRespond(result, StatusCodes.Status403Forbidden);
-        body.Error.Should().Contain(
-            "not authenticated",
-            "with no scheme wired there is no principal at all, and this is the one case where that "
-                + "is the accurate answer - it is the partner the not-an-app refusal is distinguished "
-                + "FROM");
+        body.Error.Should()
+            .Contain(
+                "not authenticated",
+                "with no scheme wired there is no principal at all, and this is the one case where that "
+                    + "is the accurate answer - it is the partner the not-an-app refusal is distinguished "
+                    + "FROM"
+            );
         harness.Resolver.Asked.Should().BeEmpty("an unauthenticated caller never reaches owner resolution");
         harness.Subscriptions.ForOwner(LifecycleOwnerKey.ForAppId(AppA)).Should().BeEmpty();
     }
@@ -365,21 +353,22 @@ public sealed class LifecycleSubscriptionsControllerTests
         // whoever reads it to inspect the one part of the pipeline that is demonstrably working, and
         // leaves the real cause unnamed - which for a host that populates HttpContext.User itself and
         // forgot to stamp the app-id claim is the difference between a five-minute fix and a hunt.
-        body.Error.Should().Contain(
-            "does not name an application",
-            "the message must name the reason that actually applied");
-        body.Error.Should().NotContain(
-            "not authenticated",
-            "authentication succeeded, so this is the one thing the refusal must not claim");
+        body.Error.Should()
+            .Contain("does not name an application", "the message must name the reason that actually applied");
+        body.Error.Should()
+            .NotContain(
+                "not authenticated",
+                "authentication succeeded, so this is the one thing the refusal must not claim"
+            );
         harness.Resolver.Asked.Should().BeEmpty("a human principal never reaches owner resolution");
-        harness.Subscriptions.ForOwner(LifecycleOwnerKey.ForAppId("dir-a:alice")).Should().BeEmpty(
-            "nothing may be filed under a human's subject id as though it were an app");
+        harness
+            .Subscriptions.ForOwner(LifecycleOwnerKey.ForAppId("dir-a:alice"))
+            .Should()
+            .BeEmpty("nothing may be filed under a human's subject id as though it were an app");
 
         // Non-vacuity: the same registration succeeds for a caller that really does name an app, so
         // the 403 above is about who asked rather than about the registration being unacceptable.
-        _ = ShouldRespond(
-            await harness.As(AppA).Register(Registration()),
-            StatusCodes.Status201Created);
+        _ = ShouldRespond(await harness.As(AppA).Register(Registration()), StatusCodes.Status201Created);
     }
 
     [Fact]
@@ -440,8 +429,14 @@ public sealed class LifecycleSubscriptionsControllerTests
         [
             ("registered", registered),
             ("rotated", await harness.As(AppA).RotateSecret(id)),
-            ("refused callback", await harness.As(AppA).Register(Registration(callback: "https://elsewhere.example.com/hook"))),
-            ("refused capability", await harness.As(AppA).Register(Registration(capabilities: ["lifecycle.everything"]))),
+            (
+                "refused callback",
+                await harness.As(AppA).Register(Registration(callback: "https://elsewhere.example.com/hook"))
+            ),
+            (
+                "refused capability",
+                await harness.As(AppA).Register(Registration(capabilities: ["lifecycle.everything"]))
+            ),
             ("refused event type", await harness.As(AppA).Register(Registration(eventTypes: ["run_exploded"]))),
             ("malformed body", await harness.As(AppA).Register(null!)),
             ("at capacity", await full.As(AppB).Register(Registration())),
@@ -498,11 +493,7 @@ public sealed class LifecycleSubscriptionsControllerTests
 
         public Harness(Action<LifecycleDeliveryOptions>? configure = null)
         {
-            _options = new LifecycleDeliveryOptions
-            {
-                Enabled = true,
-                AllowedCallbackHosts = [CallbackHost],
-            };
+            _options = new LifecycleDeliveryOptions { Enabled = true, AllowedCallbackHosts = [CallbackHost] };
             configure?.Invoke(_options);
 
             Subscriptions = new InMemoryLifecycleSubscriptionRegistry(
@@ -521,12 +512,7 @@ public sealed class LifecycleSubscriptionsControllerTests
         /// <summary>A controller reached by a caller the host authenticated as <paramref name="appId"/>.</summary>
         public LifecycleSubscriptionsController As(string appId) =>
             WithPrincipal(
-                new ClaimsPrincipal(
-                    new ClaimsIdentity(
-                        [new Claim(LifecycleAppIdentity.AppIdClaimType, appId)],
-                        "test"
-                    )
-                )
+                new ClaimsPrincipal(new ClaimsIdentity([new Claim(LifecycleAppIdentity.AppIdClaimType, appId)], "test"))
             );
 
         /// <summary>
@@ -538,10 +524,7 @@ public sealed class LifecycleSubscriptionsControllerTests
             WithPrincipal(
                 new ClaimsPrincipal(
                     new ClaimsIdentity(
-                        [
-                            new Claim(ClaimTypes.NameIdentifier, subject),
-                            new Claim(ClaimTypes.Name, subject),
-                        ],
+                        [new Claim(ClaimTypes.NameIdentifier, subject), new Claim(ClaimTypes.Name, subject)],
                         "Bearer"
                     )
                 )
@@ -554,9 +537,7 @@ public sealed class LifecycleSubscriptionsControllerTests
         /// <summary>A controller reached by an authenticated caller whose principal names no app.</summary>
         public LifecycleSubscriptionsController AsNamelessIdentity() =>
             WithPrincipal(
-                new ClaimsPrincipal(
-                    new ClaimsIdentity(authenticationType: "test", nameType: null, roleType: null)
-                )
+                new ClaimsPrincipal(new ClaimsIdentity(authenticationType: "test", nameType: null, roleType: null))
             );
 
         /// <summary>A controller with no request context at all, so the principal is null rather than empty.</summary>
@@ -573,12 +554,7 @@ public sealed class LifecycleSubscriptionsControllerTests
         }
 
         private LifecycleSubscriptionsController NewController() =>
-            new(
-                Subscriptions,
-                Resolver,
-                _options,
-                NullLogger<LifecycleSubscriptionsController>.Instance
-            );
+            new(Subscriptions, Resolver, _options, NullLogger<LifecycleSubscriptionsController>.Instance);
     }
 
     /// <summary>
@@ -599,9 +575,7 @@ public sealed class LifecycleSubscriptionsControllerTests
         )
         {
             Asked.Add(appId);
-            return ValueTask.FromResult(
-                _known.Contains(appId) ? LifecycleOwnerKey.ForAppId(appId) : null
-            );
+            return ValueTask.FromResult(_known.Contains(appId) ? LifecycleOwnerKey.ForAppId(appId) : null);
         }
 
         public ValueTask<LifecycleOwnerKey?> ResolveEventOwnerAsync(

@@ -14,11 +14,7 @@ public sealed class JudgePanelTests
     [Fact]
     public void Two_judges_of_the_same_family_are_a_configuration_error()
     {
-        var judges = new IJudge[]
-        {
-            new FakeJudge("a", "anthropic"),
-            new FakeJudge("b", "anthropic"),
-        };
+        var judges = new IJudge[] { new FakeJudge("a", "anthropic"), new FakeJudge("b", "anthropic") };
 
         var compose = () => JudgePanel.Compose(judges, HarnessFixtures.Candidate(), Options);
 
@@ -28,11 +24,7 @@ public sealed class JudgePanelTests
     [Fact]
     public void A_family_that_differs_only_in_case_is_not_a_second_family()
     {
-        var judges = new IJudge[]
-        {
-            new FakeJudge("a", "anthropic"),
-            new FakeJudge("b", "Anthropic"),
-        };
+        var judges = new IJudge[] { new FakeJudge("a", "anthropic"), new FakeJudge("b", "Anthropic") };
 
         var compose = () => JudgePanel.Compose(judges, HarnessFixtures.Candidate(), Options);
 
@@ -42,11 +34,7 @@ public sealed class JudgePanelTests
     [Fact]
     public void A_single_configured_judge_is_legal()
     {
-        var composition = JudgePanel.Compose(
-            [new FakeJudge("a", "anthropic")],
-            HarnessFixtures.Candidate(),
-            Options
-        );
+        var composition = JudgePanel.Compose([new FakeJudge("a", "anthropic")], HarnessFixtures.Candidate(), Options);
 
         composition.Should().BeOfType<PanelComposition.Degraded>();
     }
@@ -94,11 +82,7 @@ public sealed class JudgePanelTests
     {
         var judges = new IJudge[] { new FakeJudge("a", "anthropic"), new FakeJudge("b", "openai") };
 
-        var composition = JudgePanel.Compose(
-            judges,
-            HarnessFixtures.Candidate(generatorFamily: "anthropic"),
-            Options
-        );
+        var composition = JudgePanel.Compose(judges, HarnessFixtures.Candidate(generatorFamily: "anthropic"), Options);
 
         var degraded = composition.Should().BeOfType<PanelComposition.Degraded>().Subject;
         degraded.Only.JudgeId.Should().Be("b", "the anthropic judge shares the generator's family");
@@ -111,17 +95,9 @@ public sealed class JudgePanelTests
     {
         var judges = new IJudge[] { new FakeJudge("a", "anthropic"), new FakeJudge("b", "openai") };
 
-        var composition = JudgePanel.Compose(
-            judges,
-            HarnessFixtures.Candidate(generatorFamily: "ANTHROPIC"),
-            Options
-        );
+        var composition = JudgePanel.Compose(judges, HarnessFixtures.Candidate(generatorFamily: "ANTHROPIC"), Options);
 
-        composition
-            .Should()
-            .BeOfType<PanelComposition.Degraded>()
-            .Which.Only.JudgeId.Should()
-            .Be("b");
+        composition.Should().BeOfType<PanelComposition.Degraded>().Which.Only.JudgeId.Should().Be("b");
     }
 
     [Fact]
@@ -163,11 +139,7 @@ public sealed class JudgePanelTests
     {
         var judges = new IJudge[] { new FakeJudge("a", "anthropic"), new FakeJudge("b", "openai") };
 
-        var composition = JudgePanel.Compose(
-            judges,
-            HarnessFixtures.Candidate(generatorFamily: null),
-            Options
-        );
+        var composition = JudgePanel.Compose(judges, HarnessFixtures.Candidate(generatorFamily: null), Options);
 
         composition.Should().BeOfType<PanelComposition.Full>();
     }

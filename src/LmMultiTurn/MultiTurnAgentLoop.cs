@@ -25,7 +25,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using Microsoft.Extensions.Logging;
-
 // LmLifecycle carries its own copy of these constants because it is a wire contract that depends on
 // no other project here. The values the loop actually reads come from the approval gate, so bind to
 // LmCore's definition rather than letting the two collide on the bare name.
@@ -98,7 +97,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     public Task<SubAgentContextDeliveryResult> TryDeliverContextAsync(
         string agentId,
         IReadOnlyList<IMessage> messages,
-        CancellationToken cancellationToken = default) =>
+        CancellationToken cancellationToken = default
+    ) =>
         SubAgentManager?.TryDeliverToRunningAsync(agentId, messages, cancellationToken)
         ?? Task.FromResult(SubAgentContextDeliveryResult.NotOwned);
 
@@ -259,7 +259,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         IUsageSink? externalUsageSink = null,
         MultiTurnLifecycleServices? lifecycleServices = null,
         MultiTurnLifecycleServices? subAgentLifecycleServices = null,
-        AgentCollaborationSetup? collaboration = null)
+        AgentCollaborationSetup? collaboration = null
+    )
         : this(
             providerAgent,
             functionRegistry,
@@ -283,9 +284,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             lifecycleServices: lifecycleServices,
             subAgentLifecycleServices: subAgentLifecycleServices,
             collaboration: collaboration,
-            descendantQuestionSink: null)
-    {
-    }
+            descendantQuestionSink: null
+        ) { }
 
     /// <summary>
     /// Creates a new MultiTurnAgentLoop with FunctionRegistry for tool management, with explicit
@@ -372,7 +372,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         MultiTurnLifecycleServices? lifecycleServices = null,
         MultiTurnLifecycleServices? subAgentLifecycleServices = null,
         AgentCollaborationSetup? collaboration = null,
-        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null)
+        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null
+    )
         : base(
             threadId,
             systemPrompt,
@@ -386,7 +387,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             lifecycleServices: MultiTurnLifecycleServices.ForAgent(
                 lifecycleServices,
                 LifecycleAgentKinds.Raw,
-                defaultOptions?.ModelId))
+                defaultOptions?.ModelId
+            )
+        )
     {
         ArgumentNullException.ThrowIfNull(providerAgent);
         ArgumentNullException.ThrowIfNull(functionRegistry);
@@ -400,20 +403,21 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             threadId,
             pricingResolver,
             forwardTo: externalUsageSink,
-            onAggregateUpdated: PublishUsageAggregateFrame);
+            onAggregateUpdated: PublishUsageAggregateFrame
+        );
 
         Collaboration = collaboration;
 
         // Self-registration is idempotent by design: a spawned sub-agent was already registered by its
         // parent's manager, so only an unregistered root publishes itself here.
-        if (collaboration is not null
-            && collaboration.Directory.FindById(collaboration.AgentId) is null)
+        if (collaboration is not null && collaboration.Directory.FindById(collaboration.AgentId) is null)
         {
             _ = collaboration.Directory.TryRegister(
                 collaboration.Context,
                 collaboration.Name,
                 AgentCollaborationStatuses.Running,
-                new AgentLoopWriteEndpoint(this));
+                new AgentLoopWriteEndpoint(this)
+            );
         }
 
         _descendantQuestionSink = descendantQuestionSink ?? DeliverClientNotificationAsync;
@@ -446,9 +450,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // built, so they're already in the snapshot and would otherwise be inherited by a
             // sub-agent whose template sets EnabledTools = null. Filtering the snapshot copy does
             // not touch the parent's own tool set (built from the full registry below).
-            var inheritableContracts =
-                FilterInheritableContracts(contracts, subAgentOptions.NonInheritedToolNames)
-                    .ToList();
+            var inheritableContracts = FilterInheritableContracts(contracts, subAgentOptions.NonInheritedToolNames)
+                .ToList();
 
             // Transparency seam (WorkflowAgent): a nested-root loop — a workflow controller — runs on
             // its own isolated, workflow-only registry, yet its delegate sub-agents must inherit the
@@ -463,17 +466,17 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 var excluded = subAgentOptions.NonInheritedToolNames is { } names
                     ? new HashSet<string>(names, StringComparer.Ordinal)
                     : new HashSet<string>(StringComparer.Ordinal);
-                var present = new HashSet<string>(
-                    inheritableContracts.Select(c => c.Name),
-                    StringComparer.Ordinal);
+                var present = new HashSet<string>(inheritableContracts.Select(c => c.Name), StringComparer.Ordinal);
                 var mergedHandlers = new Dictionary<string, ToolHandler>(handlers);
                 var beforeMerge = inheritableContracts.Count;
 
                 foreach (var contract in externalTools.Contracts)
                 {
-                    if (excluded.Contains(contract.Name)
+                    if (
+                        excluded.Contains(contract.Name)
                         || present.Contains(contract.Name)
-                        || !externalTools.Handlers.TryGetValue(contract.Name, out var handler))
+                        || !externalTools.Handlers.TryGetValue(contract.Name, out var handler)
+                    )
                     {
                         continue;
                     }
@@ -497,15 +500,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     externalTools.Contracts.Count,
                     mergedCount,
                     externalTools.Contracts.Count - mergedCount,
-                    inheritableContracts.Count);
+                    inheritableContracts.Count
+                );
             }
 
             // Use the caller-supplied source when present (so an outer owner — typically
             // a sandbox session registry — can activate discovered subagents mid-session
             // by calling TryRegister on it). Otherwise wrap the static template dictionary
             // in a fresh source so behavior matches the previous immutable contract.
-            var source = subAgentTemplateSource
-                ?? new MutableSubAgentTemplateSource(subAgentOptions.Templates);
+            var source = subAgentTemplateSource ?? new MutableSubAgentTemplateSource(subAgentOptions.Templates);
 
             SubAgentManager = new SubAgentManager(
                 parentAgent: this,
@@ -535,12 +538,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // for delegates through subAgentLifecycleServices.
                 lifecycleServices: subAgentLifecycleServices ?? LifecycleServices,
                 // This loop's own collaboration handle, from which the manager derives each child's.
-                collaboration: collaboration);
+                collaboration: collaboration
+            );
 
-            SubAgentTools = new SubAgentToolProvider(
-                SubAgentManager,
-                source,
-                subAgentOptions.ExposedToolNames);
+            SubAgentTools = new SubAgentToolProvider(SubAgentManager, source, subAgentOptions.ExposedToolNames);
 
             _ = functionRegistry.AddProvider(SubAgentTools);
         }
@@ -557,7 +558,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     ResolveToolCallAsync(toolCallId, result, isError, contentBlocks: null, ct),
                 notify: (payload, isError, ct) => EnqueueTriggerNotifyAsync(payload, isError, ct),
                 tryNotify: TryEnqueueTriggerNotify,
-                logger: logger);
+                logger: logger
+            );
             _triggerRuntime.RegisterBuiltIns();
             foreach (var registration in triggerOptions.AdditionalRegistrations)
             {
@@ -578,10 +580,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // _toolHandlers (Build() applies the same collision-renaming BuildToolCallComponents does).
         var (registeredContracts, _) = functionRegistry.Build();
         _functionsRequiringArgs = new HashSet<string>(
-            registeredContracts
-                .Where(c => c.Parameters?.Any(p => p.IsRequired) == true)
-                .Select(c => c.Name),
-            StringComparer.Ordinal);
+            registeredContracts.Where(c => c.Parameters?.Any(p => p.IsRequired) == true).Select(c => c.Name),
+            StringComparer.Ordinal
+        );
 
         // Create publishing middleware that publishes to subscribers
         // Positioned BEFORE MessageUpdateJoinerMiddleware to capture streaming updates
@@ -593,9 +594,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             .WithMessageTransformation(loggerFactory?.CreateLogger<MessageTransformationMiddleware>())
             .WithMiddleware(new JsonFragmentUpdateMiddleware())
             .WithMiddleware(publishingMiddleware)
-            .WithMiddleware(new MessageUpdateJoinerMiddleware(
-                name: "MessageJoiner",
-                logger: loggerFactory?.CreateLogger<MessageUpdateJoinerMiddleware>()))
+            .WithMiddleware(
+                new MessageUpdateJoinerMiddleware(
+                    name: "MessageJoiner",
+                    logger: loggerFactory?.CreateLogger<MessageUpdateJoinerMiddleware>()
+                )
+            )
             .WithMiddleware(toolCallMiddleware);
     }
 
@@ -633,7 +637,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// </summary>
     internal static IReadOnlyList<FunctionContract> FilterInheritableContracts(
         IEnumerable<FunctionContract> contracts,
-        IReadOnlyCollection<string>? nonInheritedToolNames)
+        IReadOnlyCollection<string>? nonInheritedToolNames
+    )
     {
         if (nonInheritedToolNames is not { Count: > 0 })
         {
@@ -722,28 +727,24 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // at-continuation delivery. A regular user input while deferred deliberately keeps the
                 // existing fail-fast guard (the caller must resolve the deferral first), so this is
                 // restricted to batches that are entirely notifications.
-                if (!_delayed.IsEmpty
+                if (
+                    !_delayed.IsEmpty
                     && AllMessagesAreNotifications(realInputs)
-                    && await TryAppendParkedInputsAsync(realInputs, ct))
+                    && await TryAppendParkedInputsAsync(realInputs, ct)
+                )
                 {
                     continue;
                 }
 
                 var (batchParent, isExplicitFork) = ResolveBatchParent(realInputs);
-                var assignment = await StartRunAsync(
-                    realInputs, batchParent, ct, wasForked: isExplicitFork);
-                await PublishToAllAsync(new RunAssignmentMessage
-                {
-                    Assignment = assignment,
-                    ThreadId = ThreadId,
-                }, ct);
+                var assignment = await StartRunAsync(realInputs, batchParent, ct, wasForked: isExplicitFork);
+                await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
                 using var spawnSuppression = new RunSpawnSuppression(this);
                 _ = spawnSuppression.LatchIfRequested(realInputs);
                 if (spawnSuppression.IsLatched)
                 {
-                    Logger.LogInformation(
-                        "Run {RunId} starts with sub-agent spawning suppressed", assignment.RunId);
+                    Logger.LogInformation("Run {RunId} starts with sub-agent spawning suppressed", assignment.RunId);
                 }
 
                 foreach (var input in realInputs)
@@ -785,13 +786,13 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         RunAssignment assignment,
         bool isExplicitFork,
         RunSpawnSuppression spawnSuppression,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         try
         {
             // Execute turns - poll for new input between turns
-            await ExecuteRunTurnsAsync(
-                assignment.RunId, assignment.GenerationId, spawnSuppression, ct);
+            await ExecuteRunTurnsAsync(assignment.RunId, assignment.GenerationId, spawnSuppression, ct);
 
             // Complete run - simple loop has no pending messages
             await CompleteRunAsync(
@@ -800,7 +801,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 wasForked: isExplicitFork,
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
                 pendingMessageCount: PendingInputCount,
-                ct: ct);
+                ct: ct
+            );
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -817,15 +819,25 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 long chars = 0;
                 foreach (var m in snapshot)
                 {
-                    try { chars += JsonSerializer.Serialize(m).Length; }
-                    catch { /* a message that won't serialize contributes 0 to the estimate */ }
+                    try
+                    {
+                        chars += JsonSerializer.Serialize(m).Length;
+                    }
+                    catch
+                    { /* a message that won't serialize contributes 0 to the estimate */
+                    }
                 }
 
                 estTokens = chars / 4;
                 Logger.LogWarning(
                     "Run {RunId} failing ({ExType}): conversation = {Messages} messages, ~{Chars} serialized "
                         + "chars (~{Tokens} tokens est).",
-                    assignment.RunId, ex.GetType().Name, snapshot.Count, chars, estTokens);
+                    assignment.RunId,
+                    ex.GetType().Name,
+                    snapshot.Count,
+                    chars,
+                    estTokens
+                );
             }
             catch
             {
@@ -838,10 +850,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // aborts the stream (a transport error) rather than returning a clean 400. Classify it in the
             // error the caller sees so a dropped sub-agent reads as "context too large", not a network blip.
             const long largeConversationTokenEstimate = 100_000;
-            var errorMessage = estTokens >= largeConversationTokenEstimate
-                ? $"{ex.Message} (conversation ~{estTokens} tokens est — likely exceeded the model context "
-                    + "window; reduce scope or use a bigger-window model)"
-                : ex.Message;
+            var errorMessage =
+                estTokens >= largeConversationTokenEstimate
+                    ? $"{ex.Message} (conversation ~{estTokens} tokens est — likely exceeded the model context "
+                        + "window; reduce scope or use a bigger-window model)"
+                    : ex.Message;
 
             await CompleteRunAsync(
                 assignment.RunId,
@@ -851,7 +864,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 pendingMessageCount: PendingInputCount,
                 isError: true,
                 errorMessage: errorMessage,
-                ct: ct);
+                ct: ct
+            );
         }
     }
 
@@ -879,7 +893,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             new UserInput([cause.Result], InputId: null, ParentRunId: cause.RequestingRunId),
             ReceiptId: $"delayed:{cause.ToolCallId}",
             QueuedAt: DateTimeOffset.UtcNow,
-            Resume: null);
+            Resume: null
+        );
 
         var assignment = await StartRunAsync(
             [causeInput],
@@ -888,7 +903,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             wasForked: false,
             runId: cause.ChildRunId,
             causeKind: LifecycleRunCauseKinds.ToolResult,
-            causeToolCallId: cause.ToolCallId);
+            causeToolCallId: cause.ToolCallId
+        );
 
         // The run row is the only thing that tells the next process this continuation has begun —
         // recovery re-queues exactly those resolutions whose named child run has no row. Talking to
@@ -905,7 +921,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     + "un-recorded, and stays recoverable on restart",
                 assignment.RunId,
                 cause.ToolCallId,
-                cause.ToolName);
+                cause.ToolName
+            );
 
             await CompleteRunAsync(
                 assignment.RunId,
@@ -914,15 +931,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 isError: true,
                 errorMessage: "the child run carrying this delayed tool result could not be durably "
                     + "recorded as started; it was not run, and remains recoverable",
-                ct: ct);
+                ct: ct
+            );
             return;
         }
 
-        await PublishToAllAsync(new RunAssignmentMessage
-        {
-            Assignment = assignment,
-            ThreadId = ThreadId,
-        }, ct);
+        await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
         if (!cause.IsContinuationOwner)
         {
@@ -931,14 +945,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     + "turn: sibling tool calls from the same turn are still unresolved",
                 assignment.RunId,
                 cause.ToolCallId,
-                cause.ToolName);
+                cause.ToolName
+            );
 
             await CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
                 pendingMessageCount: 0,
                 outcome: LifecycleRunOutcomes.AwaitingSiblingResults,
-                ct: ct);
+                ct: ct
+            );
             return;
         }
 
@@ -948,7 +964,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             assignment.RunId,
             cause.ToolCallId,
             cause.ToolName,
-            cause.Ordinal);
+            cause.Ordinal
+        );
 
         using var spawnSuppression = new RunSpawnSuppression(this);
         _ = spawnSuppression.LatchIfContinuing(cause.RequestingRunId);
@@ -964,15 +981,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // rebuilt from history carries no requesting run id — and the slot is all that remembers.
         CarryRecoveryBudgetForward(
             assignment.RunId,
-            Math.Max(TakeCarriedRecoveryBudget(cause.RequestingRunId), TakeRestoredParkBudget()));
+            Math.Max(TakeCarriedRecoveryBudget(cause.RequestingRunId), TakeRestoredParkBudget())
+        );
 
         // The park is over, so the durable slot describing it must go: the child now carries the
         // budget in memory, and leaving the slot behind would re-arm a continuation that has already
         // resumed. The child's own park, if it parks again, writes the slot afresh.
         await PersistRecoveryBudgetMarkerAsync(spent: 0, ct);
 
-        await ExecuteAssignedRunAsync(
-            assignment, isExplicitFork: false, spawnSuppression, ct);
+        await ExecuteAssignedRunAsync(assignment, isExplicitFork: false, spawnSuppression, ct);
     }
 
     /// <summary>
@@ -1031,7 +1048,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         RunSpawnSuppression spawnSuppression,
         int unresolvedCount,
         int recoverySpent,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var suppressedRunId = spawnSuppression.IsLatched ? runId : null;
         lock (_spawnSuppressionLock)
@@ -1052,7 +1070,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         Logger.LogInformation(
             "Run {RunId} pausing on {Count} deferred tool call(s); awaiting external resolution",
             runId,
-            unresolvedCount);
+            unresolvedCount
+        );
     }
 
     /// <summary>
@@ -1064,7 +1083,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string runId,
         string generationId,
         RunSpawnSuppression spawnSuppression,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var turnCount = 0;
 
@@ -1114,7 +1134,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                         Logger.LogInformation(
                             "Input injected into run {RunId} requested sub-agent spawn suppression; "
                                 + "suppressed for the remainder of the run",
-                            runId);
+                            runId
+                        );
                     }
 
                     var injectionAssignment = new RunAssignment(
@@ -1125,11 +1146,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                         WasInjected: true
                     );
 
-                    await PublishToAllAsync(new RunAssignmentMessage
-                    {
-                        Assignment = injectionAssignment,
-                        ThreadId = ThreadId,
-                    }, ct);
+                    await PublishToAllAsync(
+                        new RunAssignmentMessage { Assignment = injectionAssignment, ThreadId = ThreadId },
+                        ct
+                    );
 
                     await RecordInjectedInputsAsync(runId, injectionAssignment.InputIds!, ct);
 
@@ -1145,7 +1165,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     Logger.LogInformation(
                         "Injected {Count} new inputs into run {RunId}, sent RunAssignment",
                         realNewInputs.Count,
-                        runId);
+                        runId
+                    );
                 }
             }
 
@@ -1167,15 +1188,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 "Executing turn {Turn} of run {RunId} (generation {GenerationId})",
                 turnCount,
                 runId,
-                turnGenerationId);
+                turnGenerationId
+            );
 
             BeginTurn(runId, turnGenerationId);
-            var turn = await ExecuteTurnAsync(
-                runId,
-                turnGenerationId,
-                turnCount,
-                pendingResume?.InterruptedTurn,
-                ct);
+            var turn = await ExecuteTurnAsync(runId, turnGenerationId, turnCount, pendingResume?.InterruptedTurn, ct);
             pendingResume = null;
 
             if (turn.RetryableInterruption is { } interruption)
@@ -1186,9 +1203,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // the retry decision so a client is never rendering a dead partial next to live output
                 // from its replacement.
                 await CompleteTurnAsync(runId, turnGenerationId, LifecycleTurnOutcomes.Interrupted, ct);
-                await PublishToAllAsync(
-                    new GenerationAbandonedMessage(ThreadId, runId, turnGenerationId),
-                    ct);
+                await PublishToAllAsync(new GenerationAbandonedMessage(ThreadId, runId, turnGenerationId), ct);
 
                 // A deferred tool call outlives the stream that requested it. If this turn left any
                 // unresolved — a question put to the user, a client-side effect still running — then
@@ -1207,10 +1222,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                             + "generation {GenerationId}; parking instead of continuing",
                         runId,
                         interruptedUnresolved,
-                        turnGenerationId);
+                        turnGenerationId
+                    );
 
-                    await ParkOnDeferralsAsync(
-                        runId, spawnSuppression, interruptedUnresolved, recoveryCount + 1, ct);
+                    await ParkOnDeferralsAsync(runId, spawnSuppression, interruptedUnresolved, recoveryCount + 1, ct);
                     brokeEarly = true;
                     break;
                 }
@@ -1224,16 +1239,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 }
 
                 recoveryCount++;
-                var interrupted = new InterruptedTurnResume(
-                    runId,
-                    turnGenerationId,
-                    turn.Attempt.HasCanonicalMessages);
+                var interrupted = new InterruptedTurnResume(runId, turnGenerationId, turn.Attempt.HasCanonicalMessages);
 
                 // Built FROM the resume record so the sentinel's ids cannot drift from the ones the
                 // continuation turn actually reads.
-                pendingResume = new ResumeSentinel(
-                    interrupted.InterruptedRunId,
-                    interrupted.InterruptedGenerationId)
+                pendingResume = new ResumeSentinel(interrupted.InterruptedRunId, interrupted.InterruptedGenerationId)
                 {
                     InterruptedTurn = interrupted,
                 };
@@ -1244,7 +1254,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     runId,
                     turnGenerationId,
                     interrupted.HadCanonicalOutput ? "continuing after completed output" : "retrying empty attempt",
-                    turn.Attempt.CompletedMessages.Count);
+                    turn.Attempt.CompletedMessages.Count
+                );
 
                 // Loop round: the next iteration mints a fresh generation id, so the replacement
                 // attempt can never collide with the abandoned one on the client's merge key.
@@ -1265,8 +1276,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // which is what makes a resolution landing at this exact moment safe either way.
             if (_delayed.TryPark(runId, turnGenerationId, out var unresolvedCount))
             {
-                await ParkOnDeferralsAsync(
-                    runId, spawnSuppression, unresolvedCount, recoveryCount, ct);
+                await ParkOnDeferralsAsync(runId, spawnSuppression, unresolvedCount, recoveryCount, ct);
                 brokeEarly = true;
                 break;
             }
@@ -1290,7 +1300,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             Logger.LogWarning(
                 "Max turns ({MaxTurns}) reached for run {RunId}; running a wrap-up turn to return a final status",
                 MaxTurnsPerRun,
-                runId);
+                runId
+            );
             await ExecuteWrapUpTurnAsync(runId, ct);
         }
     }
@@ -1321,12 +1332,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         var turnOutcome = LifecycleTurnOutcomes.Completed;
         try
         {
-            var options = DefaultOptions with
-            {
-                RunId = runId,
-                ThreadId = ThreadId,
-                GenerationId = wrapUpGenerationId,
-            };
+            var options = DefaultOptions with { RunId = runId, ThreadId = ThreadId, GenerationId = wrapUpGenerationId };
 
             // Ephemeral instruction, appended to the sent messages only (NOT AddToHistory). Anthropic
             // merges consecutive same-role messages, so a Role.User instruction after the final
@@ -1509,7 +1515,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         Logger.LogInformation(
             "Parked on unresolved deferral(s); folded {Count} input message(s) into history for delivery on resume.",
-            count);
+            count
+        );
 
         return true;
     }
@@ -1526,8 +1533,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             ThreadId,
             existing =>
             {
-                var properties = existing?.Properties?.ToBuilder()
-                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+                var properties =
+                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
                 if (suppressedRunId == null)
                 {
@@ -1544,7 +1551,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     Properties = properties.ToImmutable(),
                 };
             },
-            ct);
+            ct
+        );
     }
 
     private async Task<string?> LoadSuppressedRunMarkerAsync(CancellationToken ct)
@@ -1591,8 +1599,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             ThreadId,
             existing =>
             {
-                var properties = existing?.Properties?.ToBuilder()
-                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+                var properties =
+                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
                 if (spent <= 0)
                 {
@@ -1611,7 +1619,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     Properties = properties.ToImmutable(),
                 };
             },
-            ct);
+            ct
+        );
     }
 
     /// <summary>
@@ -1637,8 +1646,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         {
             // A marker we cannot read must not stop the restore — the conversation still has to come
             // back — so this reports and continues with a fresh budget.
-            Logger.LogWarning(
-                "Ignoring unreadable persisted recovery budget marker {Marker}", text ?? "(null)");
+            Logger.LogWarning("Ignoring unreadable persisted recovery budget marker {Marker}", text ?? "(null)");
             return;
         }
 
@@ -1649,7 +1657,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         Logger.LogInformation(
             "Restored parked recovery budget: {Spent} automatic recovery/recoveries already spent",
-            spent);
+            spent
+        );
     }
 
     /// <summary>
@@ -1691,7 +1700,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string generationId,
         int turnNumber,
         InterruptedTurnResume? continuation,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         // Use defaultOptions as template, override run-specific fields.
         // GenerationId carries the run's generation so providers stamp it (via WithIds) onto every
@@ -1725,8 +1735,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 if (m is ToolCallResultMessage tcr && tcr.IsDeferred)
                 {
                     throw new InvalidOperationException(
-                        $"Cannot send request: tool call '{tcr.ToolCallId}' is still deferred. " +
-                        "Resolve all deferred tool calls via ResolveToolCallAsync before resuming.");
+                        $"Cannot send request: tool call '{tcr.ToolCallId}' is still deferred. "
+                            + "Resolve all deferred tool calls via ResolveToolCallAsync before resuming."
+                    );
                 }
 
                 if (m is ToolsCallResultMessage agg)
@@ -1736,8 +1747,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                         if (r.IsDeferred)
                         {
                             throw new InvalidOperationException(
-                                $"Cannot send request: tool call '{r.ToolCallId}' is still deferred. " +
-                                "Resolve all deferred tool calls via ResolveToolCallAsync before resuming.");
+                                $"Cannot send request: tool call '{r.ToolCallId}' is still deferred. "
+                                    + "Resolve all deferred tool calls via ResolveToolCallAsync before resuming."
+                            );
                         }
                     }
                 }
@@ -1752,11 +1764,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // nothing survived, so the correct request is the original one, byte for byte.
         if (continuation is { HadCanonicalOutput: true })
         {
-            messagesToSend.Add(new TextMessage
-            {
-                Text = InterruptedTurnContinuationInstruction,
-                Role = Role.User,
-            });
+            messagesToSend.Add(new TextMessage { Text = InterruptedTurnContinuationInstruction, Role = Role.User });
         }
 
         // Report the discovered context this request carries, read back out of the snapshot that is
@@ -1813,14 +1821,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     if (string.IsNullOrEmpty(toolCall.ToolCallId))
                     {
                         throw new InvalidOperationException(
-                            $"ToolCallMessage.ToolCallId is required but was null or empty. " +
-                            $"FunctionName: {toolCall.FunctionName ?? "(null)"}");
+                            $"ToolCallMessage.ToolCallId is required but was null or empty. "
+                                + $"FunctionName: {toolCall.FunctionName ?? "(null)"}"
+                        );
                     }
 
                     Logger.LogDebug(
                         "Tool call received: {FunctionName} (id: {ToolCallId})",
                         toolCall.FunctionName,
-                        toolCall.ToolCallId);
+                        toolCall.ToolCallId
+                    );
 
                     // Start execution and publish result immediately when complete
                     // This runs in parallel with LLM streaming and other tool executions.
@@ -1849,7 +1859,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     toolFailure,
                     "Tool execution dispatched by interrupted generation {GenerationId} of run {RunId} failed while settling",
                     generationId,
-                    runId);
+                    runId
+                );
             }
 
             Logger.LogWarning(
@@ -1859,7 +1870,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 runId,
                 generationId,
                 attempt.CompletedMessages.Count,
-                attempt.PendingToolTasks.Count);
+                attempt.PendingToolTasks.Count
+            );
 
             return new TurnExecutionResult(attempt, ex);
         }
@@ -1894,8 +1906,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 return false;
             }
 
-            if (candidate is HttpIOException { HttpRequestError: HttpRequestError.ResponseEnded }
-                or HttpRequestException { HttpRequestError: HttpRequestError.ResponseEnded })
+            if (
+                candidate
+                is HttpIOException { HttpRequestError: HttpRequestError.ResponseEnded }
+                    or HttpRequestException { HttpRequestError: HttpRequestError.ResponseEnded }
+            )
             {
                 return true;
             }
@@ -1915,7 +1930,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         ToolCallMessage toolCall,
         string runId,
         string generationId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var startedAt = Stopwatch.GetTimestamp();
         var result = await ExecuteToolCallAsync(toolCall, runId, generationId, ct);
@@ -1947,7 +1963,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 toolCall.FunctionArgs ?? "{}",
                 deferredAtUnixMs,
                 toolCall.RunId ?? runId,
-                toolCall.GenerationId ?? generationId);
+                toolCall.GenerationId ?? generationId
+            );
             _ = _delayed.TryReserve(deferredEntry);
 
             // Persist synchronously so a webhook-triggered ReplaceMessageAsync cannot race
@@ -1975,7 +1992,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     GenerationId = deferredEntry.GenerationId,
                     DeferredAt = DateTimeOffset.FromUnixTimeMilliseconds(deferredAtUnixMs),
                 },
-                ct);
+                ct
+            );
 
             await PublishToAllAsync(result, ct);
 
@@ -1983,7 +2001,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 "Tool call {ToolCallId} ({FunctionName}) deferred with placeholder length {Length}",
                 toolCall.ToolCallId,
                 toolCall.FunctionName,
-                result.Result.Length);
+                result.Result.Length
+            );
 
             return result;
         }
@@ -1993,16 +2012,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // Non-deferred result. Add text-only version to LLM history (captions are in the
         // text for id:// referencing); publish full version with ContentBlocks to
         // subscribers (for image data resolution).
-        var historyResult = result.ContentBlocks != null
-            ? result with { ContentBlocks = null }
-            : result;
+        var historyResult = result.ContentBlocks != null ? result with { ContentBlocks = null } : result;
         AddToHistory(historyResult);
         await PublishToAllAsync(result, ct);
 
         Logger.LogDebug(
             "Tool result for {ToolCallId}: {ResultPreview}",
             toolCall.ToolCallId,
-            result.Result.Length > 100 ? result.Result[..100] + "..." : result.Result);
+            result.Result.Length > 100 ? result.Result[..100] + "..." : result.Result
+        );
 
         return result;
     }
@@ -2022,7 +2040,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string? generationId,
         TimeSpan? elapsed,
         bool wasDeferred,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (!Lifecycle.IsEnabled)
         {
@@ -2040,7 +2059,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             error: result.IsError
                 ? new LifecycleError { Code = result.ErrorCode ?? string.Empty, Message = result.Result }
                 : null,
-            ct: ct);
+            ct: ct
+        );
     }
 
     /// <summary>
@@ -2079,7 +2099,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         ToolCallMessage toolCall,
         string runId,
         string generationId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         // Fail-fast validation: these fields are required for proper tool execution
         ArgumentNullException.ThrowIfNull(toolCall);
@@ -2088,14 +2109,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         {
             throw new ArgumentException(
                 "ToolCallMessage.ToolCallId is required but was null or empty.",
-                nameof(toolCall));
+                nameof(toolCall)
+            );
         }
 
         if (string.IsNullOrEmpty(toolCall.FunctionName))
         {
             throw new ArgumentException(
                 $"ToolCallMessage.FunctionName is required but was null or empty. ToolCallId: {toolCall.ToolCallId}",
-                nameof(toolCall));
+                nameof(toolCall)
+            );
         }
 
         // FunctionArgs can be null for parameterless functions - treat as empty object
@@ -2107,21 +2130,24 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             {
                 // Unknown function - likely LLM hallucination, return error to allow self-correction
                 Logger.LogWarning(
-                    "No handler registered for function '{FunctionName}'. Returning error to LLM. " +
-                    "ToolCallId: {ToolCallId}. Available functions: [{AvailableFunctions}]",
+                    "No handler registered for function '{FunctionName}'. Returning error to LLM. "
+                        + "ToolCallId: {ToolCallId}. Available functions: [{AvailableFunctions}]",
                     toolCall.FunctionName,
                     toolCall.ToolCallId,
-                    string.Join(", ", _toolHandlers.Keys));
+                    string.Join(", ", _toolHandlers.Keys)
+                );
 
                 return new ToolCallResultMessage
                 {
                     ToolCallId = toolCall.ToolCallId,
                     ToolName = toolCall.FunctionName,
-                    Result = JsonSerializer.Serialize(new
-                    {
-                        error = $"Unknown function: {toolCall.FunctionName}",
-                        available_functions = _toolHandlers.Keys.ToArray(),
-                    }),
+                    Result = JsonSerializer.Serialize(
+                        new
+                        {
+                            error = $"Unknown function: {toolCall.FunctionName}",
+                            available_functions = _toolHandlers.Keys.ToArray(),
+                        }
+                    ),
                     IsError = true,
                     ExecutionTarget = ExecutionTarget.LocalFunction,
                     Role = Role.User,
@@ -2144,7 +2170,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     RunId = toolCall.RunId ?? runId,
                     GenerationId = toolCall.GenerationId ?? generationId,
                 },
-                ct);
+                ct
+            );
 
             if (!prepared.IsApproved)
             {
@@ -2156,20 +2183,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                         + "Outcome: {Outcome}",
                     toolCall.FunctionName,
                     toolCall.ToolCallId,
-                    prepared.Outcome);
+                    prepared.Outcome
+                );
 
                 return ToolCallResultMessage.FromToolCallResult(
                     prepared.ToBlockedResult(),
                     role: Role.User,
                     fromAgent: toolCall.FromAgent,
-                    generationId: toolCall.GenerationId);
+                    generationId: toolCall.GenerationId
+                );
             }
 
-            var ctx = new ToolCallContext
-            {
-                ToolCallId = toolCall.ToolCallId,
-            };
-
+            var ctx = new ToolCallContext { ToolCallId = toolCall.ToolCallId };
 
             // Truncation guard: when the provider hits its per-turn output ceiling it stops with
             // stop_reason=max_tokens and cuts the streaming tool_use argument JSON off mid-string (or
@@ -2178,28 +2203,29 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // parameter, refuse to dispatch when the payload is empty/whitespace or not well-formed JSON,
             // returning a recoverable, LLM-visible error so the run survives and the model can retry.
             // Parameterless tools are exempt (empty args are legitimate for them).
-            if (_functionsRequiringArgs.Contains(toolCall.FunctionName)
-                && !ArgumentsAreWellFormed(functionArgs))
+            if (_functionsRequiringArgs.Contains(toolCall.FunctionName) && !ArgumentsAreWellFormed(functionArgs))
             {
                 Logger.LogWarning(
-                    "Rejecting tool call '{FunctionName}' with malformed/empty arguments (likely truncated " +
-                    "at the provider max_tokens ceiling). Returning a recoverable error to the LLM. " +
-                    "ToolCallId: {ToolCallId}, ArgsLength: {ArgsLength}",
+                    "Rejecting tool call '{FunctionName}' with malformed/empty arguments (likely truncated "
+                        + "at the provider max_tokens ceiling). Returning a recoverable error to the LLM. "
+                        + "ToolCallId: {ToolCallId}, ArgsLength: {ArgsLength}",
                     toolCall.FunctionName,
                     toolCall.ToolCallId,
-                    toolCall.FunctionArgs?.Length ?? 0);
+                    toolCall.FunctionArgs?.Length ?? 0
+                );
 
                 return new ToolCallResultMessage
                 {
                     ToolCallId = toolCall.ToolCallId,
                     ToolName = toolCall.FunctionName,
-                    Result = JsonSerializer.Serialize(new
-                    {
-                        error =
-                            $"Malformed arguments for '{toolCall.FunctionName}': the tool-call argument JSON was "
-                            + "empty or not well-formed (it may have been truncated). Re-issue the tool call with "
-                            + "complete, valid JSON arguments.",
-                    }),
+                    Result = JsonSerializer.Serialize(
+                        new
+                        {
+                            error = $"Malformed arguments for '{toolCall.FunctionName}': the tool-call argument JSON was "
+                                + "empty or not well-formed (it may have been truncated). Re-issue the tool call with "
+                                + "complete, valid JSON arguments.",
+                        }
+                    ),
                     IsError = true,
                     ExecutionTarget = ExecutionTarget.LocalFunction,
                     Role = Role.User,
@@ -2264,16 +2290,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         }
     }
 
-    private static ToolCallResultMessage BuildResultMessage(
-        ToolCallMessage toolCall,
-        ToolHandlerResult result)
+    private static ToolCallResultMessage BuildResultMessage(ToolCallMessage toolCall, ToolHandlerResult result)
     {
         var tcr = ToolCallResultBuilder.FromHandlerResult(result, toolCall.ToolCallId, toolCall.FunctionName);
         return ToolCallResultMessage.FromToolCallResult(
             tcr,
             role: Role.User,
             fromAgent: toolCall.FromAgent,
-            generationId: toolCall.GenerationId);
+            generationId: toolCall.GenerationId
+        );
     }
 
     /// <summary>
@@ -2303,7 +2328,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string result,
         bool isError = false,
         IList<ToolResultContentBlock>? contentBlocks = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
@@ -2338,7 +2364,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string result,
         bool isError = false,
         IList<ToolResultContentBlock>? contentBlocks = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
@@ -2358,7 +2385,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string result,
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var fingerprint = ComputeResolutionFingerprint(result, isError);
 
@@ -2373,13 +2401,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 {
                     Logger.LogDebug(
                         "Resolution of tool call {ToolCallId} is a duplicate of one already being applied",
-                        toolCallId);
+                        toolCallId
+                    );
                     return (ResolveToolCallOutcome.Duplicate, null);
                 }
 
                 return (
                     ResolveToolCallOutcome.Conflict,
-                    new InvalidOperationException(ResolutionConflictMessage(toolCallId)));
+                    new InvalidOperationException(ResolutionConflictMessage(toolCallId))
+                );
             }
 
             return await ResolveUnclaimedAsync(toolCallId, result, isError, contentBlocks, ct);
@@ -2404,7 +2434,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string result,
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         DeferredResolutionOutcome durable;
         try
@@ -2413,7 +2444,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 toolCallId,
                 ComputeResolutionFingerprint(result, isError),
                 pending.ChildRunId,
-                ct);
+                ct
+            );
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
@@ -2431,7 +2463,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             Logger.LogWarning(
                 ex,
                 "Could not durably record the resolution of tool call {ToolCallId}; the call stays deferred and the result can be delivered again",
-                toolCallId);
+                toolCallId
+            );
             return (ResolveToolCallOutcome.StoreFailed, ex);
         }
 
@@ -2440,7 +2473,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             _delayed.AbortResolve(pending);
             return (
                 ResolveToolCallOutcome.Conflict,
-                new InvalidOperationException(ResolutionConflictMessage(toolCallId)));
+                new InvalidOperationException(ResolutionConflictMessage(toolCallId))
+            );
         }
 
         // Duplicate and NotFound both continue. Duplicate means a previous attempt committed the
@@ -2452,7 +2486,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         {
             Logger.LogDebug(
                 "Durable store had no deferral record for tool call {ToolCallId}; resolving from in-process state",
-                toolCallId);
+                toolCallId
+            );
         }
         else
         {
@@ -2462,7 +2497,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // free: history has not been touched and the claim is still live, so refusing the whole
             // resolution leaves the caller free to deliver it again. Afterwards neither is true.
             var (attached, refusal, attachFailure) = await AttachChildRunBeforeHistoryAsync(
-                pending, toolCallId, durable, ct);
+                pending,
+                toolCallId,
+                durable,
+                ct
+            );
             if (refusal != null)
             {
                 return (refusal.Value, attachFailure);
@@ -2480,21 +2519,24 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         ToolCallResultMessage newMessage;
         try
         {
-            (oldMessage, newMessage) = UpdateToolResultByCallId(toolCallId, existing =>
-            {
-                if (existing.IsDeferred)
+            (oldMessage, newMessage) = UpdateToolResultByCallId(
+                toolCallId,
+                existing =>
                 {
-                    return ApplyResolution(existing, result, isError);
-                }
+                    if (existing.IsDeferred)
+                    {
+                        return ApplyResolution(existing, result, isError);
+                    }
 
-                if (existing.Result == result && existing.IsError == isError)
-                {
-                    alreadyIdentical = true;
-                    return existing;
-                }
+                    if (existing.Result == result && existing.IsError == isError)
+                    {
+                        alreadyIdentical = true;
+                        return existing;
+                    }
 
-                throw new InvalidOperationException(ResolutionConflictMessage(toolCallId));
-            });
+                    throw new InvalidOperationException(ResolutionConflictMessage(toolCallId));
+                }
+            );
         }
         catch (Exception ex)
         {
@@ -2504,7 +2546,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             Logger.LogWarning(
                 ex,
                 "Tool call {ToolCallId} could not be resolved in history despite an outstanding deferral",
-                toolCallId);
+                toolCallId
+            );
             return (ResolveToolCallOutcome.Conflict, ex);
         }
 
@@ -2514,9 +2557,13 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
             // Publish the full message (including ContentBlocks) to subscribers so UIs can
             // render images. The history entry stays text-only.
-            var publishMessage = contentBlocks != null && contentBlocks.Count > 0
-                ? newMessage with { ContentBlocks = contentBlocks }
-                : newMessage;
+            var publishMessage =
+                contentBlocks != null && contentBlocks.Count > 0
+                    ? newMessage with
+                    {
+                        ContentBlocks = contentBlocks,
+                    }
+                    : newMessage;
             await PublishToAllAsync(publishMessage, ct);
         }
         else
@@ -2526,7 +2573,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // is, as far as the provider is concerned, long since answered.
             Logger.LogDebug(
                 "Tool call {ToolCallId} was already resolved in history with identical content; retiring the outstanding deferral",
-                toolCallId);
+                toolCallId
+            );
         }
 
         // Emitted before the cause is committed so a subscriber always sees the tool finish before
@@ -2545,7 +2593,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 error: isError
                     ? new LifecycleError { Code = newMessage.ErrorCode ?? string.Empty, Message = result }
                     : null,
-                ct: ct);
+                ct: ct
+            );
         }
 
         var cause = _delayed.CompleteResolve(pending, newMessage);
@@ -2553,7 +2602,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         Logger.LogInformation(
             "Tool call {ToolCallId} resolved (was deferred for {ElapsedMs}ms)",
             toolCallId,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - pending.Entry.DeferredAtUnixMs);
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - pending.Entry.DeferredAtUnixMs
+        );
 
         if (cause != null)
         {
@@ -2606,12 +2656,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// restart but not lost now.
     /// </para>
     /// </remarks>
-    private async Task<(ResolvingDeferral Pending, ResolveToolCallOutcome? Outcome, Exception? Failure)>
-        AttachChildRunBeforeHistoryAsync(
-            ResolvingDeferral pending,
-            string toolCallId,
-            DeferredResolutionOutcome durable,
-            CancellationToken ct)
+    private async Task<(
+        ResolvingDeferral Pending,
+        ResolveToolCallOutcome? Outcome,
+        Exception? Failure
+    )> AttachChildRunBeforeHistoryAsync(
+        ResolvingDeferral pending,
+        string toolCallId,
+        DeferredResolutionOutcome durable,
+        CancellationToken ct
+    )
     {
         var parked = _delayed.MintChildRunIfParked(pending);
         if (parked.ChildRunId == null)
@@ -2651,7 +2705,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 ex,
                 "The lifecycle store cannot name child runs, so the continuation of tool call "
                     + "{ToolCallId} runs in this process but could not be recovered after a restart",
-                toolCallId);
+                toolCallId
+            );
             return (parked, null, null);
         }
         catch (Exception ex)
@@ -2661,7 +2716,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 ex,
                 "Could not durably name the child run for the resolution of tool call {ToolCallId}; "
                     + "the call stays deferred and the result can be delivered again",
-                toolCallId);
+                toolCallId
+            );
             return (pending, ResolveToolCallOutcome.StoreFailed, ex);
         }
 
@@ -2670,7 +2726,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 + "{ChildRunId} could not be named; the continuation runs in this process but could "
                 + "not be recovered after a restart",
             toolCallId,
-            parked.ChildRunId);
+            parked.ChildRunId
+        );
         return (parked, null, null);
     }
 
@@ -2694,8 +2751,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string? standing;
         try
         {
-            standing = await Lifecycle.AttachDeferredChildRunAsync(
-                toolCallId, childRunId, CancellationToken.None);
+            standing = await Lifecycle.AttachDeferredChildRunAsync(toolCallId, childRunId, CancellationToken.None);
         }
         catch (NotSupportedException ex)
         {
@@ -2705,7 +2761,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 ex,
                 "The lifecycle store cannot name child runs, so the continuation of tool call "
                     + "{ToolCallId} runs in this process but could not be recovered after a restart",
-                toolCallId);
+                toolCallId
+            );
             return;
         }
         catch (Exception ex)
@@ -2716,7 +2773,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     + "{ToolCallId}; it still runs in this process, but a crash before it does would "
                     + "leave the result resolved with nothing recorded to carry it",
                 childRunId,
-                toolCallId);
+                toolCallId
+            );
             return;
         }
 
@@ -2735,7 +2793,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     + "{ChildRunId} could not be named; the result is carried in this process but the "
                     + "continuation would not survive a restart",
                 toolCallId,
-                childRunId);
+                childRunId
+            );
             return;
         }
 
@@ -2745,7 +2804,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 + "record cannot be relied on to recover it",
             toolCallId,
             standing,
-            childRunId);
+            childRunId
+        );
     }
 
     /// <summary>
@@ -2763,29 +2823,33 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string result,
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var noOp = false;
         ToolCallResultMessage? orphan = null;
 
         try
         {
-            _ = UpdateToolResultByCallId(toolCallId, existing =>
-            {
-                if (existing.IsDeferred)
+            _ = UpdateToolResultByCallId(
+                toolCallId,
+                existing =>
                 {
-                    orphan = existing;
-                    return existing;
-                }
+                    if (existing.IsDeferred)
+                    {
+                        orphan = existing;
+                        return existing;
+                    }
 
-                if (existing.Result == result && existing.IsError == isError)
-                {
-                    noOp = true;
-                    return existing;
-                }
+                    if (existing.Result == result && existing.IsError == isError)
+                    {
+                        noOp = true;
+                        return existing;
+                    }
 
-                throw new InvalidOperationException(ResolutionConflictMessage(toolCallId));
-            });
+                    throw new InvalidOperationException(ResolutionConflictMessage(toolCallId));
+                }
+            );
         }
         catch (InvalidOperationException ex)
         {
@@ -2799,7 +2863,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         {
             Logger.LogDebug(
                 "ResolveToolCallAsync no-op: '{ToolCallId}' was already resolved with identical content",
-                toolCallId);
+                toolCallId
+            );
             return (ResolveToolCallOutcome.Duplicate, null);
         }
 
@@ -2810,7 +2875,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         Logger.LogWarning(
             "Tool call {ToolCallId} is deferred in history but was not registered as outstanding; adopting it so the result is not lost",
-            toolCallId);
+            toolCallId
+        );
 
         var adopted = new DeferredEntry(
             orphan.ToolCallId!,
@@ -2818,7 +2884,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             "{}",
             orphan.DeferredAt ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             orphan.RunId,
-            orphan.GenerationId);
+            orphan.GenerationId
+        );
 
         // Pre-parked: whatever run requested this is not the one running now, so its result can
         // only come back as a child run.
@@ -2834,10 +2901,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         return await ResolveClaimedAsync(pending!, toolCallId, result, isError, contentBlocks, ct);
     }
 
-    private static ToolCallResultMessage ApplyResolution(
-        ToolCallResultMessage existing,
-        string result,
-        bool isError)
+    private static ToolCallResultMessage ApplyResolution(ToolCallResultMessage existing, string result, bool isError)
     {
         return existing with
         {
@@ -2851,8 +2915,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     }
 
     private static string ResolutionConflictMessage(string toolCallId) =>
-        $"Tool call '{toolCallId}' has already been resolved with different content. " +
-        "Cannot resolve again with a different value.";
+        $"Tool call '{toolCallId}' has already been resolved with different content. "
+        + "Cannot resolve again with a different value.";
 
     /// <summary>
     /// A stable digest of what a resolution carries, used to tell a redelivery of the same result
@@ -2872,7 +2936,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     public Task<IReadOnlyList<DeferredToolCallInfo>> GetDeferredToolCallsAsync(CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        var snapshot = _delayed.Snapshot()
+        var snapshot = _delayed
+            .Snapshot()
             .Select(e => new DeferredToolCallInfo
             {
                 ToolCallId = e.ToolCallId,
@@ -2928,7 +2993,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 sourceCall?.FunctionArgs ?? "{}",
                 tcr.DeferredAt ?? 0,
                 tcr.RunId ?? sourceCall?.RunId,
-                tcr.GenerationId ?? sourceCall?.GenerationId);
+                tcr.GenerationId ?? sourceCall?.GenerationId
+            );
 
             // Restored entries are parked on arrival. The run that requested them belonged to a
             // process that no longer exists, so its result cannot be folded back into it — it can
@@ -2965,7 +3031,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             Logger.LogInformation(
                 "Restored {Count} deferred tool call(s) from persisted history (suppressed run: {SuppressedRunId})",
                 restoredCount,
-                suppressedRunId ?? "(none)");
+                suppressedRunId ?? "(none)"
+            );
         }
 
         // Re-queue continuations a previous process committed durably but never ran. Runs after the
@@ -2977,14 +3044,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // (e.g. timer) re-arms for its remaining delay; a non-restorable one resolves as
         // trigger_lost_on_restart. Runs after the deferred set is rebuilt so it sees every entry.
         List<DeferredEntry> restoredWaitEntries =
-            [.. _delayed.Snapshot().Where(e => e.FunctionName == WaitToolProvider.WaitToolName)];
+        [
+            .. _delayed.Snapshot().Where(e => e.FunctionName == WaitToolProvider.WaitToolName),
+        ];
 
         if (_triggerRuntime != null)
         {
             if (restoredWaitEntries.Count > 0)
             {
                 List<RestoredWait> restoredList =
-                    [.. restoredWaitEntries.Select(e => new RestoredWait(e.ToolCallId, e.FunctionArgs, e.DeferredAtUnixMs))];
+                [
+                    .. restoredWaitEntries.Select(e => new RestoredWait(
+                        e.ToolCallId,
+                        e.FunctionArgs,
+                        e.DeferredAtUnixMs
+                    )),
+                ];
                 await _triggerRuntime.ReconcileRestoredAsync(restoredList, ct);
             }
         }
@@ -3003,10 +3078,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 {
                     await ResolveToolCallAsync(
                         entry.ToolCallId,
-                        JsonSerializer.Serialize(new { status = "failed", reason = "trigger_disabled", waitId = entry.ToolCallId }),
+                        JsonSerializer.Serialize(
+                            new
+                            {
+                                status = "failed",
+                                reason = "trigger_disabled",
+                                waitId = entry.ToolCallId,
+                            }
+                        ),
                         isError: false,
                         contentBlocks: null,
-                        ct);
+                        ct
+                    );
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -3017,7 +3100,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     Logger.LogWarning(
                         ex,
                         "Failed to resolve restored wait {ToolCallId} during trigger-disabled recovery; continuing",
-                        entry.ToolCallId);
+                        entry.ToolCallId
+                    );
                 }
             }
         }
@@ -3045,9 +3129,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// interrupted run, which is not this mechanism's job and would take a turn nobody asked for.
     /// </para>
     /// </remarks>
-    private async Task RecoverOwedContinuationsAsync(
-        IReadOnlyList<IMessage> messages,
-        CancellationToken ct)
+    private async Task RecoverOwedContinuationsAsync(IReadOnlyList<IMessage> messages, CancellationToken ct)
     {
         var runs = await Lifecycle.ListRunLifecycleAsync(ct);
         if (runs.Count == 0)
@@ -3069,12 +3151,13 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         }
 
         List<RecoveredContinuation> owed = [];
-        foreach (var (run, call) in runs
-            .SelectMany(r => r.DeferredToolCalls.Select(d => (Run: r, Call: d)))
-            .Where(x => x.Call.IsResolved && x.Call.ChildRunId != null)
-            .Where(x => !startedRunIds.Contains(x.Call.ChildRunId!))
-            .OrderBy(x => x.Call.ResolvedAt)
-            .ThenBy(x => x.Call.Ordinal))
+        foreach (
+            var (run, call) in runs.SelectMany(r => r.DeferredToolCalls.Select(d => (Run: r, Call: d)))
+                .Where(x => x.Call.IsResolved && x.Call.ChildRunId != null)
+                .Where(x => !startedRunIds.Contains(x.Call.ChildRunId!))
+                .OrderBy(x => x.Call.ResolvedAt)
+                .ThenBy(x => x.Call.Ordinal)
+        )
         {
             // History has the last word, as everywhere else in this file: without the resolved
             // result in it there is nothing for a child run to carry, and a placeholder still marked
@@ -3085,17 +3168,21 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     "Delayed result for tool call {ToolCallId} was recorded as resolved with child run "
                         + "{ChildRunId}, but restored history holds no resolved result for it; skipping",
                     call.ToolCallId,
-                    call.ChildRunId);
+                    call.ChildRunId
+                );
                 continue;
             }
 
-            owed.Add(new RecoveredContinuation(
-                ToolCallId: call.ToolCallId,
-                ToolName: call.ToolName,
-                RequestingRunId: run.RunId,
-                RequestingGenerationId: call.GenerationId ?? run.GenerationId,
-                ChildRunId: call.ChildRunId!,
-                Result: result));
+            owed.Add(
+                new RecoveredContinuation(
+                    ToolCallId: call.ToolCallId,
+                    ToolName: call.ToolName,
+                    RequestingRunId: run.RunId,
+                    RequestingGenerationId: call.GenerationId ?? run.GenerationId,
+                    ChildRunId: call.ChildRunId!,
+                    Result: result
+                )
+            );
         }
 
         if (owed.Count == 0)
@@ -3113,7 +3200,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             "Recovered {Count} delayed tool result continuation(s) that a previous process committed but "
                 + "never ran: {ToolCallIds}",
             recovered.Count,
-            string.Join(", ", recovered.Select(c => c.ToolCallId)));
+            string.Join(", ", recovered.Select(c => c.ToolCallId))
+        );
 
         ScheduleLoopWake();
     }
@@ -3183,7 +3271,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             new UserInput([], InputId: null, ParentRunId: null),
             ReceiptId: $"wake:{Guid.NewGuid():N}",
             QueuedAt: DateTimeOffset.UtcNow,
-            Resume: new ResumeSentinel(string.Empty, string.Empty));
+            Resume: new ResumeSentinel(string.Empty, string.Empty)
+        );
 
         try
         {
@@ -3197,7 +3286,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             ResetWakeScheduled();
             Logger.LogDebug(
                 "Loop wake-up for {Count} pending delayed tool result(s) was abandoned at shutdown",
-                _delayed.PendingCauseCount);
+                _delayed.PendingCauseCount
+            );
         }
         catch (Exception ex)
         {
@@ -3209,7 +3299,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             Logger.LogWarning(
                 ex,
                 "Failed to wake the loop for {Count} pending delayed tool result(s); they will run when the loop next stirs",
-                _delayed.PendingCauseCount);
+                _delayed.PendingCauseCount
+            );
         }
     }
 
@@ -3275,18 +3366,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
     private static QueuedInput BuildTriggerNotifyInput(string payload, bool isError)
     {
-        var envelope = new TextMessage
-        {
-            Role = Role.User,
-            Text = $"<trigger>\n{payload}\n</trigger>",
-        };
+        var envelope = new TextMessage { Role = Role.User, Text = $"<trigger>\n{payload}\n</trigger>" };
         var input = new UserInput([envelope], InputId: null, ParentRunId: null);
         return new QueuedInput(
             input,
             ReceiptId: $"notify:{Guid.NewGuid():N}",
             QueuedAt: DateTimeOffset.UtcNow,
             Resume: null,
-            Trigger: new TriggerEnvelope(isError));
+            Trigger: new TriggerEnvelope(isError)
+        );
     }
 
     private bool ContinuesSuppressedRun(string requestingRunId)

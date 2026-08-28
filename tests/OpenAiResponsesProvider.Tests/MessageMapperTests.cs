@@ -79,8 +79,18 @@ public sealed class MessageMapperTests
             {
                 ToolCalls =
                 [
-                    new ToolCall { FunctionName = "lookup", FunctionArgs = "{\"q\":\"x\"}", ToolCallId = "call-1" },
-                    new ToolCall { FunctionName = "fetch", FunctionArgs = "", ToolCallId = "call-2" },
+                    new ToolCall
+                    {
+                        FunctionName = "lookup",
+                        FunctionArgs = "{\"q\":\"x\"}",
+                        ToolCallId = "call-1",
+                    },
+                    new ToolCall
+                    {
+                        FunctionName = "fetch",
+                        FunctionArgs = "",
+                        ToolCallId = "call-2",
+                    },
                 ],
                 Role = Role.Assistant,
             },
@@ -177,7 +187,12 @@ public sealed class MessageMapperTests
                 ToolCallId = "call_abc",
                 Role = Role.Assistant,
             },
-            new ToolCallResultMessage { ToolCallId = "call_abc", Result = "42", Role = Role.Tool },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call_abc",
+                Result = "42",
+                Role = Role.Tool,
+            },
         };
 
         var request = MessageMapper.BuildRequest(messages, options: null);
@@ -200,7 +215,15 @@ public sealed class MessageMapperTests
         // The mapper must unwrap both, or the model never sees the result and loops forever.
         var toolCall = new ToolsCallMessage
         {
-            ToolCalls = [new ToolCall { FunctionName = "calculate", FunctionArgs = "{\"a\":17,\"b\":25}", ToolCallId = "call_xyz" }],
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    FunctionName = "calculate",
+                    FunctionArgs = "{\"a\":17,\"b\":25}",
+                    ToolCallId = "call_xyz",
+                },
+            ],
             Role = Role.Assistant,
         };
         var toolResult = new ToolsCallResultMessage
@@ -214,7 +237,11 @@ public sealed class MessageMapperTests
             Role = Role.Assistant,
         };
 
-        var messages = new IMessage[] { new TextMessage { Role = Role.User, Text = "add 17 and 25" }, composite };
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "add 17 and 25" },
+            composite,
+        };
 
         var request = MessageMapper.BuildRequest(messages, options: null);
 

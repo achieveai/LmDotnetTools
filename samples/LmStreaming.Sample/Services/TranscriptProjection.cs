@@ -41,9 +41,7 @@ public static class TranscriptProjection
     ///     the single place transcripts are shaped, rather than at each caller that might forget.
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="messages"/> is null.</exception>
-    public static List<PersistedMessage> Normalize(
-        IReadOnlyList<PersistedMessage> messages,
-        bool excludeReasoning)
+    public static List<PersistedMessage> Normalize(IReadOnlyList<PersistedMessage> messages, bool excludeReasoning)
     {
         ArgumentNullException.ThrowIfNull(messages);
 
@@ -110,8 +108,10 @@ public static class TranscriptProjection
     private static IMessage FixLegacyDoubledArgs(IMessage msg) =>
         msg switch
         {
-            ToolCallMessage tc when NeedsArgsFix(tc.FunctionArgs) =>
-                tc with { FunctionArgs = StripLeadingEmptyObject(tc.FunctionArgs!) },
+            ToolCallMessage tc when NeedsArgsFix(tc.FunctionArgs) => tc with
+            {
+                FunctionArgs = StripLeadingEmptyObject(tc.FunctionArgs!),
+            },
             _ => msg,
         };
 

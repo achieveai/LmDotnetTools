@@ -50,9 +50,7 @@ public sealed class LifecycleContentRedactorTests
 
         var payload = PayloadOf(_redactor.Redact(lifecycleEvent, Subscription(contentFull: false)));
 
-        PropertyNames(payload)
-            .Should()
-            .Equal("run_id", "rendered_hash", "rendered_byte_count");
+        PropertyNames(payload).Should().Equal("run_id", "rendered_hash", "rendered_byte_count");
     }
 
     [Fact]
@@ -122,9 +120,7 @@ public sealed class LifecycleContentRedactorTests
 
         PropertyNames(payload).Should().Equal("session_id", "inventory");
         PropertyNames(payload.GetProperty("inventory")).Should().Equal("status", "items");
-        PropertyNames(payload.GetProperty("inventory").GetProperty("items")[0])
-            .Should()
-            .Equal("kind");
+        PropertyNames(payload.GetProperty("inventory").GetProperty("items")[0]).Should().Equal("kind");
     }
 
     [Fact]
@@ -153,9 +149,9 @@ public sealed class LifecycleContentRedactorTests
 
         var visible = _redactor.Redact(lifecycleEvent, Subscription(contentFull: false));
 
-        visible.Payload.Should().NotBeNull(
-            "a known event type without an allow-list silently degrades to withholding everything"
-        );
+        visible
+            .Payload.Should()
+            .NotBeNull("a known event type without an allow-list silently degrades to withholding everything");
     }
 
     [Fact]

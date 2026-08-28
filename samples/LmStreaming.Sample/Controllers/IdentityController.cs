@@ -15,7 +15,8 @@ public sealed record IdentityConfigResponse(
     bool Enforce,
     string? ClientId,
     string? Authority,
-    IReadOnlyList<string> Scopes);
+    IReadOnlyList<string> Scopes
+);
 
 /// <summary>
 /// Serves the SPA's identity configuration. Anonymous by necessity: the client must read this
@@ -63,9 +64,7 @@ public sealed class IdentityController : ControllerBase
             : $"{(azureAd["Instance"] ?? "https://login.microsoftonline.com/").TrimEnd('/')}/"
                 + $"{(string.IsNullOrWhiteSpace(tenantId) ? "organizations" : tenantId)}";
 
-        var scopes = string.IsNullOrWhiteSpace(clientId)
-            ? []
-            : new[] { $"api://{clientId}/access_as_user" };
+        var scopes = string.IsNullOrWhiteSpace(clientId) ? [] : new[] { $"api://{clientId}/access_as_user" };
 
         return Ok(new IdentityConfigResponse(_options.Value.Enforce, clientId, authority, scopes));
     }

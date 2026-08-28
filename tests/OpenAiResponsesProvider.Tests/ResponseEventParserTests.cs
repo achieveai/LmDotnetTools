@@ -104,8 +104,7 @@ public sealed class ResponseEventParserTests
 
         var act = () => ResponseEventParser.Parse(json);
 
-        _ = act.Should().Throw<JsonException>()
-            .WithMessage("*type*");
+        _ = act.Should().Throw<JsonException>().WithMessage("*type*");
     }
 
     [Theory]
@@ -155,10 +154,7 @@ public sealed class ResponseEventParserTests
         {
             Type = "codex.rate_limits",
             SequenceNumber = 99,
-            ExtraProperties = new JsonObject
-            {
-                ["limits"] = JsonNode.Parse("""{"remaining":10}"""),
-            },
+            ExtraProperties = new JsonObject { ["limits"] = JsonNode.Parse("""{"remaining":10}""") },
         };
 
         var roundTripped = ResponseEventParser.Parse(ResponseEventParser.ToJsonObject(original));

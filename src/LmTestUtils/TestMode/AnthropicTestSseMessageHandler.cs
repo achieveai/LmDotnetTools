@@ -25,10 +25,7 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
     ///     Initializes a new instance for test mode with default services.
     /// </summary>
     public AnthropicTestSseMessageHandler()
-        : this(
-            LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<AnthropicTestSseMessageHandler>()
-        )
-    { }
+        : this(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<AnthropicTestSseMessageHandler>()) { }
 
     /// <summary>
     ///     Initializes a new instance with dependency injection.
@@ -44,17 +41,11 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
         var fallbackFactory = LoggerFactory.Create(builder => builder.AddConsole());
 
         _chainParser =
-            chainParser
-            ?? new InstructionChainParser(
-                fallbackFactory.CreateLogger<InstructionChainParser>()
-            );
+            chainParser ?? new InstructionChainParser(fallbackFactory.CreateLogger<InstructionChainParser>());
 
         _conversationAnalyzer =
             conversationAnalyzer
-            ?? new ConversationAnalyzer(
-                fallbackFactory.CreateLogger<ConversationAnalyzer>(),
-                _chainParser
-            );
+            ?? new ConversationAnalyzer(fallbackFactory.CreateLogger<ConversationAnalyzer>(), _chainParser);
 
         _logger.LogDebug(
             "AnthropicTestSseMessageHandler initialized with WordsPerChunk={WordsPerChunk}, ChunkDelayMs={ChunkDelayMs}",
@@ -94,10 +85,7 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
         // Check for Anthropic API endpoint (any path ending with /messages)
         if (!request.RequestUri.AbsolutePath.EndsWith("/messages", StringComparison.OrdinalIgnoreCase))
         {
-            _logger.LogTrace(
-                "Path doesn't match /messages: {Path}",
-                request.RequestUri.AbsolutePath
-            );
+            _logger.LogTrace("Path doesn't match /messages: {Path}", request.RequestUri.AbsolutePath);
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
 
@@ -144,7 +132,11 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                     ? modelProp.GetString()
                     : "claude-sonnet-4-5-20250929";
 
-            _logger.LogDebug("Processing {Mode} request for model: {Model}", stream ? "streaming" : "non-streaming", model);
+            _logger.LogDebug(
+                "Processing {Mode} request for model: {Model}",
+                stream ? "streaming" : "non-streaming",
+                model
+            );
 
             // Analyze conversation for instruction chains
             var (instruction, responseCount) = _conversationAnalyzer.AnalyzeConversation(root);
@@ -174,8 +166,10 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                 {
                     // No chain found - fall back to single instruction for backward compatibility
                     var latest = _conversationAnalyzer.ExtractLatestUserMessage(root) ?? string.Empty;
-                    _logger.LogDebug("No instruction chain found, attempting single instruction parse from: {MessagePreview}",
-                        latest.Length > 100 ? latest[..100] + "..." : latest);
+                    _logger.LogDebug(
+                        "No instruction chain found, attempting single instruction parse from: {MessagePreview}",
+                        latest.Length > 100 ? latest[..100] + "..." : latest
+                    );
 
                     var (plan, _) = TryParseInstructionPlan(latest);
 
@@ -190,7 +184,8 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                         planToExecute = new InstructionPlan(
                             "fallback",
                             latest.Contains("\nReason:", StringComparison.Ordinal) ? 20 : null,
-                            [InstructionMessage.ForText(20)]);
+                            [InstructionMessage.ForText(20)]
+                        );
                     }
                 }
             }
@@ -247,11 +242,7 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
     /// <summary>
     ///     Resolves any dynamic message placeholders in the instruction plan using request context.
     /// </summary>
-    private void ResolveDynamicMessages(
-        InstructionPlan plan,
-        JsonElement requestRoot,
-        HttpRequestMessage request
-    )
+    private void ResolveDynamicMessages(InstructionPlan plan, JsonElement requestRoot, HttpRequestMessage request)
     {
         for (var i = 0; i < plan.Messages.Count; i++)
         {
@@ -280,9 +271,7 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
             }
             else if (message.ExplicitText != null && message.ExplicitText.StartsWith("__TOOL_SCHEMA__"))
             {
-                var toolName = message.ExplicitText.Contains(':')
-                    ? message.ExplicitText.Split(':', 2)[1]
-                    : null;
+                var toolName = message.ExplicitText.Contains(':') ? message.ExplicitText.Split(':', 2)[1] : null;
                 message.ExplicitText = ExtractToolSchema(requestRoot, toolName);
                 _logger.LogDebug("Resolved __TOOL_SCHEMA__ placeholder for {ToolName}", toolName);
             }
@@ -370,9 +359,11 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
             {
                 foreach (var item in system.EnumerateArray())
                 {
-                    if (item.TryGetProperty("type", out var type)
+                    if (
+                        item.TryGetProperty("type", out var type)
                         && type.GetString() == "text"
-                        && item.TryGetProperty("text", out var text))
+                        && item.TryGetProperty("text", out var text)
+                    )
                     {
                         return text.GetString() ?? "No system prompt configured";
                     }
@@ -410,26 +401,30 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                         ? new { }
                         : JsonSerializer.Deserialize<object>(toolCall.ArgsJson);
 
-                    content.Add(new
-                    {
-                        type = "tool_use",
-                        id = $"toolu_{Guid.NewGuid():N}",
-                        name = toolCall.Name,
-                        input = inputObj,
-                    });
+                    content.Add(
+                        new
+                        {
+                            type = "tool_use",
+                            id = $"toolu_{Guid.NewGuid():N}",
+                            name = toolCall.Name,
+                            input = inputObj,
+                        }
+                    );
                 }
             }
             else if (message.ServerToolUse is { } stu)
             {
-                content.Add(new
-                {
-                    type = "server_tool_use",
-                    id = stu.Id ?? $"srvtoolu_{Guid.NewGuid():N}",
-                    name = stu.Name,
-                    input = stu.Input.HasValue
-                        ? JsonSerializer.Deserialize<object>(stu.Input.Value.GetRawText())
-                        : new object(),
-                });
+                content.Add(
+                    new
+                    {
+                        type = "server_tool_use",
+                        id = stu.Id ?? $"srvtoolu_{Guid.NewGuid():N}",
+                        name = stu.Name,
+                        input = stu.Input.HasValue
+                            ? JsonSerializer.Deserialize<object>(stu.Input.Value.GetRawText())
+                            : new object(),
+                    }
+                );
             }
             else if (message.ServerToolResult is { } str)
             {
@@ -443,38 +438,44 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                     _ => $"{str.Name}_tool_result",
                 };
 
-                var resultContent = str.ErrorCode != null
-                    ? (new { type = $"{resultType}_error", error_code = str.ErrorCode })
+                var resultContent =
+                    str.ErrorCode != null ? (new { type = $"{resultType}_error", error_code = str.ErrorCode })
                     : str.Result.HasValue
-                        ? JsonSerializer.Deserialize<object>(str.Result.Value.GetRawText())
-                        ?? new object()
-                        : new object();
-                content.Add(new
-                {
-                    type = resultType,
-                    tool_use_id = str.ToolUseId ?? $"srvtoolu_{Guid.NewGuid():N}",
-                    content = resultContent,
-                });
+                        ? JsonSerializer.Deserialize<object>(str.Result.Value.GetRawText()) ?? new object()
+                    : new object();
+                content.Add(
+                    new
+                    {
+                        type = resultType,
+                        tool_use_id = str.ToolUseId ?? $"srvtoolu_{Guid.NewGuid():N}",
+                        content = resultContent,
+                    }
+                );
             }
             else if (message.TextWithCitations is { } twc)
             {
                 var text = twc.Text ?? GenerateLoremIpsum(twc.Length ?? 20);
-                var citations = twc.Citations?.Select(c => new
-                {
-                    type = c.Type,
-                    url = c.Url,
-                    title = c.Title,
-                    cited_text = c.CitedText,
-                    start_char_index = 0,
-                    end_char_index = text.Length,
-                }).ToList<object>() ?? [];
+                var citations =
+                    twc.Citations?.Select(c => new
+                        {
+                            type = c.Type,
+                            url = c.Url,
+                            title = c.Title,
+                            cited_text = c.CitedText,
+                            start_char_index = 0,
+                            end_char_index = text.Length,
+                        })
+                        .ToList<object>()
+                    ?? [];
 
-                content.Add(new
-                {
-                    type = "text",
-                    text,
-                    citations,
-                });
+                content.Add(
+                    new
+                    {
+                        type = "text",
+                        text,
+                        citations,
+                    }
+                );
             }
         }
 
@@ -542,29 +543,33 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
         };
 
         // 2. Server tool result: mock search results
-        var searchResultJson = JsonSerializer.Serialize(new
-        {
-            type = "web_search_result",
-            search_results = new[]
+        var searchResultJson = JsonSerializer.Serialize(
+            new
             {
-                new
+                type = "web_search_result",
+                search_results = new[]
                 {
-                    title = "Understanding " + (query.Length > 40 ? query[..40] : query),
-                    url = "https://example.com/article-1",
-                    encrypted_content = Convert.ToBase64String(
-                        System.Text.Encoding.UTF8.GetBytes("mock-encrypted-content-1")),
-                    page_age = "2 days ago",
+                    new
+                    {
+                        title = "Understanding " + (query.Length > 40 ? query[..40] : query),
+                        url = "https://example.com/article-1",
+                        encrypted_content = Convert.ToBase64String(
+                            System.Text.Encoding.UTF8.GetBytes("mock-encrypted-content-1")
+                        ),
+                        page_age = "2 days ago",
+                    },
+                    new
+                    {
+                        title = "Research on " + (query.Length > 40 ? query[..40] : query),
+                        url = "https://example.org/research-2",
+                        encrypted_content = Convert.ToBase64String(
+                            System.Text.Encoding.UTF8.GetBytes("mock-encrypted-content-2")
+                        ),
+                        page_age = "1 week ago",
+                    },
                 },
-                new
-                {
-                    title = "Research on " + (query.Length > 40 ? query[..40] : query),
-                    url = "https://example.org/research-2",
-                    encrypted_content = Convert.ToBase64String(
-                        System.Text.Encoding.UTF8.GetBytes("mock-encrypted-content-2")),
-                    page_age = "1 week ago",
-                },
-            },
-        });
+            }
+        );
 
         var serverToolResult = new InstructionServerToolResult
         {
@@ -575,10 +580,10 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
 
         // 3. Text with citations referencing the search results
         var citedText =
-            $"Based on recent search results, here is information about your query. " +
-            $"The first source provides a comprehensive overview of the topic with detailed analysis. " +
-            $"Additional research from a second source confirms these findings and adds further context " +
-            $"with supporting evidence and examples.";
+            $"Based on recent search results, here is information about your query. "
+            + $"The first source provides a comprehensive overview of the topic with detailed analysis. "
+            + $"Additional research from a second source confirms these findings and adds further context "
+            + $"with supporting evidence and examples.";
 
         var textWithCitations = new InstructionTextWithCitations
         {
@@ -725,9 +730,11 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
         var lines = new List<string>();
         foreach (var tool in tools.EnumerateArray())
         {
-            if (tool.ValueKind != JsonValueKind.Object
+            if (
+                tool.ValueKind != JsonValueKind.Object
                 || !tool.TryGetProperty("name", out var name)
-                || name.ValueKind != JsonValueKind.String)
+                || name.ValueKind != JsonValueKind.String
+            )
             {
                 continue;
             }
@@ -738,9 +745,10 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                 continue;
             }
 
-            var description = tool.TryGetProperty("description", out var desc) && desc.ValueKind == JsonValueKind.String
-                ? desc.GetString() ?? string.Empty
-                : string.Empty;
+            var description =
+                tool.TryGetProperty("description", out var desc) && desc.ValueKind == JsonValueKind.String
+                    ? desc.GetString() ?? string.Empty
+                    : string.Empty;
             lines.Add($"{toolName}: {description}");
         }
 
@@ -780,8 +788,7 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                     tool.TryGetProperty("description", out var desc) && desc.ValueKind == JsonValueKind.String
                         ? desc.GetString()
                         : null;
-                JsonElement? schema =
-                    tool.TryGetProperty("input_schema", out var inputSchema) ? inputSchema : null;
+                JsonElement? schema = tool.TryGetProperty("input_schema", out var inputSchema) ? inputSchema : null;
                 return ToolSchemaFormatter.ToMarkdown(toolName, description, schema);
             }
         }

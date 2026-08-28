@@ -17,9 +17,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class FailFastDaemonAuthPolicyTests : LoggingTestBase
 {
     public FailFastDaemonAuthPolicyTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     [Fact]
     public async Task Resolve_denies_immediately_by_returning_null()
@@ -40,8 +38,11 @@ public sealed class FailFastDaemonAuthPolicyTests : LoggingTestBase
 
         _ = await policy.ResolveAsync(new StubProvider("ado"), scopes: null, CancellationToken.None);
 
-        notifier.Required.Should().ContainSingle()
-            .Which.ProviderId.Should().Be("ado", "the signal must name the provider that needs sign-in");
+        notifier
+            .Required.Should()
+            .ContainSingle()
+            .Which.ProviderId.Should()
+            .Be("ado", "the signal must name the provider that needs sign-in");
         notifier.Denied.Should().BeEmpty("deny is the return value, not a separate notification");
         notifier.Completed.Should().BeEmpty();
     }
@@ -51,11 +52,17 @@ public sealed class FailFastDaemonAuthPolicyTests : LoggingTestBase
     {
         public string ProviderId { get; } = providerId;
         public OAuthStatus Status => new(OAuthSignInState.NotStarted, null, [], null, null);
+
         public Task HydrateFromStoreAsync(CancellationToken ct = default) => Task.CompletedTask;
+
         public Task<SignInChallenge> BeginSignInAsync(CancellationToken ct = default) =>
             throw new NotSupportedException();
+
         public Task SignOutAsync(CancellationToken ct = default) => Task.CompletedTask;
-        public Task<OAuthAccessToken> GetAccessTokenAsync(IReadOnlyList<string>? scopes = null, CancellationToken ct = default) =>
-            throw new InvalidOperationException("not signed in");
+
+        public Task<OAuthAccessToken> GetAccessTokenAsync(
+            IReadOnlyList<string>? scopes = null,
+            CancellationToken ct = default
+        ) => throw new InvalidOperationException("not signed in");
     }
 }

@@ -1,4 +1,3 @@
-
 namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>
@@ -32,10 +31,8 @@ public class PendingAuthCoordinatorTests
 
         public Task<OAuthAccessToken> GetAccessTokenAsync(
             IReadOnlyList<string>? scopes = null,
-            CancellationToken ct = default) =>
-            _token is not null
-                ? Task.FromResult(_token)
-                : throw new InvalidOperationException("not signed in");
+            CancellationToken ct = default
+        ) => _token is not null ? Task.FromResult(_token) : throw new InvalidOperationException("not signed in");
     }
 
     private sealed class RecordingNotifier : IAuthEventNotifier
@@ -78,7 +75,8 @@ public class PendingAuthCoordinatorTests
     private static PendingAuthCoordinator CreateCoordinator(
         RecordingNotifier notifier,
         int holdTimeoutSeconds = 5,
-        double pollIntervalSeconds = 0.05) =>
+        double pollIntervalSeconds = 0.05
+    ) =>
         new(
             notifier,
             new AuthOptions
@@ -89,10 +87,10 @@ public class PendingAuthCoordinatorTests
                     PollIntervalSeconds = pollIntervalSeconds,
                 },
             },
-            NullLogger<PendingAuthCoordinator>.Instance);
+            NullLogger<PendingAuthCoordinator>.Instance
+        );
 
-    private static OAuthAccessToken NewToken() =>
-        new("tok-123", DateTimeOffset.UtcNow.AddHours(1));
+    private static OAuthAccessToken NewToken() => new("tok-123", DateTimeOffset.UtcNow.AddHours(1));
 
     [Fact]
     public async Task Token_appearing_mid_wait_resolves_with_token_and_notifies_required_and_completed_once()
@@ -109,8 +107,11 @@ public class PendingAuthCoordinatorTests
 
         token.Should().NotBeNull();
         token!.Value.Should().Be("tok-123");
-        notifier.Required.Should().ContainSingle()
-            .Which.Should().Be(("github", "/auth/github", "sandbox egress requires sign-in to 'github'"));
+        notifier
+            .Required.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(("github", "/auth/github", "sandbox egress requires sign-in to 'github'"));
         notifier.Completed.Should().ContainSingle().Which.Should().Be("github");
         notifier.Denied.Should().BeEmpty();
     }
@@ -127,8 +128,11 @@ public class PendingAuthCoordinatorTests
         token.Should().BeNull();
         notifier.Required.Should().ContainSingle();
         notifier.Completed.Should().BeEmpty();
-        notifier.Denied.Should().ContainSingle().Which.Should().Be("github",
-            "a timed-out hold must send the terminal auth_denied frame so the banner dismisses");
+        notifier
+            .Denied.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("github", "a timed-out hold must send the terminal auth_denied frame so the banner dismisses");
         coordinator.Snapshot().Should().BeEmpty("the entry must be cleaned up after the hold ends");
     }
 
@@ -204,7 +208,9 @@ public class PendingAuthCoordinatorTests
         token.Should().BeNull();
         notifier.Required.Should().BeEmpty();
         notifier.Completed.Should().BeEmpty();
-        notifier.Denied.Should().BeEmpty("disabled deferral returns before entering a hold, so no prompt and no terminal frame");
+        notifier
+            .Denied.Should()
+            .BeEmpty("disabled deferral returns before entering a hold, so no prompt and no terminal frame");
     }
 
     [Fact]

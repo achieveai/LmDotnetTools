@@ -15,7 +15,7 @@ public enum OAuthSignInState
     NotStarted,
     Pending,
     SignedIn,
-    Failed
+    Failed,
 }
 
 /// <summary>A short-lived access token with its absolute UTC expiry.</summary>
@@ -39,7 +39,8 @@ public sealed record OAuthStatus(
     string? Account,
     IReadOnlyList<string> Scopes,
     DateTimeOffset? ExpiresAtUtc,
-    string? Error);
+    string? Error
+);
 
 /// <summary>
 /// Owns the OAuth sign-in + token lifecycle for one provider (e.g. "github" or "ado").

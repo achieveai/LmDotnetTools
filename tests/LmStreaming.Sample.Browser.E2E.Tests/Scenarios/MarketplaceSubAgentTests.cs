@@ -34,28 +34,36 @@ public sealed class MarketplaceSubAgentTests
 
     // A representative marketplace catalog (one marketplace → one plugin → one agent), mirroring the
     // shape the gateway's /marketplaces/preview returns and the UI browser shows.
-    private static MarketplaceCatalog SampleCatalog() => new(
-        Selected: ["ClaudePlugins"],
-        Marketplaces:
-        [
-            new CatalogMarketplace(
-                Alias: "ClaudePlugins",
-                Error: null,
-                Plugins:
-                [
-                    new CatalogPlugin(
-                        Name: "orleans-dev",
-                        Version: "1.0.2",
-                        Description: "Orleans patterns, best practices, and code review.",
-                        Skills: [],
-                        Agents:
-                        [
-                            new CatalogAgent(
-                                "orleans-reviewer", "Senior Orleans code reviewer", "orleans-dev",
-                                "ClaudePlugins", "/marketplaces/ClaudePlugins/orleans-dev/agents/orleans-reviewer.md"),
-                        ]),
-                ]),
-        ]);
+    private static MarketplaceCatalog SampleCatalog() =>
+        new(
+            Selected: ["ClaudePlugins"],
+            Marketplaces:
+            [
+                new CatalogMarketplace(
+                    Alias: "ClaudePlugins",
+                    Error: null,
+                    Plugins:
+                    [
+                        new CatalogPlugin(
+                            Name: "orleans-dev",
+                            Version: "1.0.2",
+                            Description: "Orleans patterns, best practices, and code review.",
+                            Skills: [],
+                            Agents:
+                            [
+                                new CatalogAgent(
+                                    "orleans-reviewer",
+                                    "Senior Orleans code reviewer",
+                                    "orleans-dev",
+                                    "ClaudePlugins",
+                                    "/marketplaces/ClaudePlugins/orleans-dev/agents/orleans-reviewer.md"
+                                ),
+                            ]
+                        ),
+                    ]
+                ),
+            ]
+        );
 
     [Theory]
     [InlineData("test")]
@@ -72,9 +80,9 @@ public sealed class MarketplaceSubAgentTests
             // subagent_type "orleans-dev:orleans-reviewer" only resolves because the catalog agent was
             // mapped into a spawnable template — that is exactly the bug fix under test. The key is
             // qualified by contributing plugin, matching how workspace discovery keys the same agent.
-            .Turn(t => t.ToolCall(
-                "Agent",
-                new { subagent_type = "orleans-dev:orleans-reviewer", prompt = "Review my grain" }))
+            .Turn(t =>
+                t.ToolCall("Agent", new { subagent_type = "orleans-dev:orleans-reviewer", prompt = "Review my grain" })
+            )
             // Deliberately free of the reviewer's phrase — proof of execution must come from the sub-agent.
             .Turn(t => t.Text("Parent summary: review delegated."))
             .Build();
@@ -82,12 +90,14 @@ public sealed class MarketplaceSubAgentTests
         await using var session = await _fixture.OpenAsync(
             providerMode,
             responder.HandlerFor(providerMode),
-            subAgentFactory: (_, providerAgentFactory) => new SubAgentOptions
-            {
-                // Real production mapping: catalog → spawnable templates.
-                Templates = MarketplaceSubAgentLoader.MapCatalog(SampleCatalog(), providerAgentFactory),
-                MaxConcurrentSubAgents = 5,
-            });
+            subAgentFactory: (_, providerAgentFactory) =>
+                new SubAgentOptions
+                {
+                    // Real production mapping: catalog → spawnable templates.
+                    Templates = MarketplaceSubAgentLoader.MapCatalog(SampleCatalog(), providerAgentFactory),
+                    MaxConcurrentSubAgents = 5,
+                }
+        );
         var page = session.Page;
 
         await page.SendMessageAsync("ask the orleans reviewer to look at my grain");
@@ -112,8 +122,12 @@ public sealed class MarketplaceSubAgentTests
         var pillContent = page.Locator(".tool-call-result");
         await pillContent.First.WaitForAsync();
         var expanded = string.Join(" ", await pillContent.AllInnerTextsAsync());
-        expanded.Should().Contain("grain reentrancy looks correct",
-            "the Agent tool result is the marketplace catalog agent's own reply");
+        expanded
+            .Should()
+            .Contain(
+                "grain reentrancy looks correct",
+                "the Agent tool result is the marketplace catalog agent's own reply"
+            );
 
         responder.RemainingTurns["parent"].Should().Be(0);
         await session.SaveSuccessScreenshotAsync($"MarketplaceSubAgent.{providerMode}");

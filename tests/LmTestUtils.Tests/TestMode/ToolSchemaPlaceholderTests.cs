@@ -136,10 +136,7 @@ public class ToolSchemaPlaceholderTests
     {
         var instruction = new
         {
-            instruction_chain = new[]
-            {
-                new { messages = new[] { new { tool_schema = new { name = toolName } } } },
-            },
+            instruction_chain = new[] { new { messages = new[] { new { tool_schema = new { name = toolName } } } } },
         };
 
         var instructionJson = JsonSerializer.Serialize(instruction);
@@ -198,8 +195,8 @@ public class ToolSchemaPlaceholderTests
 
         var body = await response.Content.ReadAsStringAsync();
         using var json = JsonDocument.Parse(body);
-        var content = json.RootElement
-            .GetProperty("choices")[0]
+        var content = json
+            .RootElement.GetProperty("choices")[0]
             .GetProperty("message")
             .GetProperty("content")
             .GetString();

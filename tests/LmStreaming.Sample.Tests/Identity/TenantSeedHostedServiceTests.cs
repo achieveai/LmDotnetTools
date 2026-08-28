@@ -34,8 +34,8 @@ public sealed class TenantSeedHostedServiceTests
     /// that one discards the exception, so it cannot see the half of the log line this asserts.
     /// </para>
     /// </summary>
-    private readonly AchieveAi.LmDotnetTools.LmTestUtils.Logging.CapturingLogger<TenantSeedHostedService>
-        _logger = new();
+    private readonly AchieveAi.LmDotnetTools.LmTestUtils.Logging.CapturingLogger<TenantSeedHostedService> _logger =
+        new();
 
     private static IdentityOptions OptionsWith(bool enforce, params SeedTenantOptions[] seeds) =>
         new() { Enforce = enforce, SeedTenants = seeds };
@@ -97,17 +97,21 @@ public sealed class TenantSeedHostedServiceTests
     public async Task AnIncompleteSeedEntry_IsSkippedWithoutStoppingStartup(
         string? tenantId,
         string? entraTenantId,
-        string? firstAdminUpn)
+        string? firstAdminUpn
+    )
     {
-        var service = CreateService(OptionsWith(
-            enforce: false,
-            new SeedTenantOptions
-            {
-                TenantId = tenantId,
-                EntraTenantId = entraTenantId,
-                DisplayName = "Dev Tenant",
-                FirstAdminUpn = firstAdminUpn,
-            }));
+        var service = CreateService(
+            OptionsWith(
+                enforce: false,
+                new SeedTenantOptions
+                {
+                    TenantId = tenantId,
+                    EntraTenantId = entraTenantId,
+                    DisplayName = "Dev Tenant",
+                    FirstAdminUpn = firstAdminUpn,
+                }
+            )
+        );
 
         // Skipped, not thrown: a malformed entry must not stop the host from starting. A tenant
         // with no named admin has nobody who could ever administer it, so a partial row would be
@@ -164,11 +168,7 @@ public sealed class TenantSeedHostedServiceTests
         _store.ProvisionFailure = tenant =>
             tenant.TenantId == "tnt_first" ? new InvalidOperationException("database is locked") : null;
 
-        var service = CreateService(
-            OptionsWith(
-                enforce: false,
-                SeedFor("tnt_first"),
-                SeedFor("tnt_second")));
+        var service = CreateService(OptionsWith(enforce: false, SeedFor("tnt_first"), SeedFor("tnt_second")));
 
         await service.StartAsync(CancellationToken.None);
 
@@ -191,8 +191,7 @@ public sealed class TenantSeedHostedServiceTests
         _store.ProvisionFailure = _ => new OperationCanceledException(cts.Token);
         var service = CreateService(OptionsWith(enforce: false, ValidSeed()));
 
-        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => service.StartAsync(cts.Token));
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.StartAsync(cts.Token));
     }
 
     private static SeedTenantOptions SeedFor(string tenantId) =>

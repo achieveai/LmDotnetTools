@@ -23,10 +23,18 @@ public class GatewayAuthHandlerTests
 
         _ = await client.GetAsync("http://localhost:3000/api/v1/sandboxes");
 
-        inner.LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppIdHeader).Should().ContainSingle()
-            .Which.Should().Be("code-review-daemon");
-        inner.LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppKeyHeader).Should().ContainSingle()
-            .Which.Should().Be("c2VjcmV0");
+        inner
+            .LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppIdHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("code-review-daemon");
+        inner
+            .LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppKeyHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("c2VjcmV0");
     }
 
     [Theory]
@@ -52,17 +60,28 @@ public class GatewayAuthHandlerTests
 
         _ = await client.SendAsync(request);
 
-        inner.LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppIdHeader).Should().ContainSingle()
-            .Which.Should().Be("preset-app");
-        inner.LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppKeyHeader).Should().ContainSingle()
-            .Which.Should().Be("c2VjcmV0");
+        inner
+            .LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppIdHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("preset-app");
+        inner
+            .LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppKeyHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("c2VjcmV0");
     }
 
     private sealed class CapturingHandler : HttpMessageHandler
     {
         public HttpRequestMessage? LastRequest { get; private set; }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
         {
             LastRequest = request;
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));

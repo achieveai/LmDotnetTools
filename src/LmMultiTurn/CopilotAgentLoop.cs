@@ -66,7 +66,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
         ILoggerFactory? loggerFactory = null,
         Func<CopilotSdkOptions, ILogger?, ICopilotSdkClient>? clientFactory = null,
         bool persistRunLedger = false,
-        MultiTurnLifecycleServices? lifecycleServices = null)
+        MultiTurnLifecycleServices? lifecycleServices = null
+    )
         : this(
             options,
             functionRegistry: null,
@@ -81,9 +82,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             loggerFactory,
             clientFactory,
             persistRunLedger: persistRunLedger,
-            lifecycleServices: lifecycleServices)
-    {
-    }
+            lifecycleServices: lifecycleServices
+        ) { }
 
     /// <summary>
     /// Creates a new CopilotAgentLoop with optional dynamic tool bridging.
@@ -121,7 +121,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
         ILoggerFactory? loggerFactory = null,
         Func<CopilotSdkOptions, ILogger?, ICopilotSdkClient>? clientFactory = null,
         bool persistRunLedger = false,
-        MultiTurnLifecycleServices? lifecycleServices = null)
+        MultiTurnLifecycleServices? lifecycleServices = null
+    )
         : base(
             threadId,
             systemPrompt,
@@ -135,14 +136,19 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             lifecycleServices: MultiTurnLifecycleServices.ForAgent(
                 lifecycleServices,
                 LifecycleAgentKinds.Copilot,
-                options?.Model))
+                options?.Model
+            )
+        )
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _loggerFactory = loggerFactory;
         _clientFactory = clientFactory;
 
         IReadOnlyList<FunctionContract> dynamicContracts = [];
-        IDictionary<string, Func<string, Task<string>>> dynamicHandlers = new Dictionary<string, Func<string, Task<string>>>(StringComparer.OrdinalIgnoreCase);
+        IDictionary<string, Func<string, Task<string>>> dynamicHandlers = new Dictionary<
+            string,
+            Func<string, Task<string>>
+        >(StringComparer.OrdinalIgnoreCase);
         if (functionRegistry != null && _options.ToolBridgeMode == CopilotToolBridgeMode.Dynamic)
         {
             var (contracts, handlers) = functionRegistry.Build();
@@ -153,9 +159,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             dynamicHandlers = LegacyHandlerAdapter.WrapToLegacyHandlers(handlers, StringComparer.OrdinalIgnoreCase);
         }
 
-        _toolPolicy = new CopilotToolPolicyEngine(
-            dynamicContracts.Select(static c => c.Name),
-            enabledTools);
+        _toolPolicy = new CopilotToolPolicyEngine(dynamicContracts.Select(static c => c.Name), enabledTools);
 
         if (dynamicContracts.Count > 0 && _options.ToolBridgeMode == CopilotToolBridgeMode.Dynamic)
         {
@@ -163,13 +167,11 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 dynamicContracts,
                 dynamicHandlers,
                 _toolPolicy,
-                _loggerFactory?.CreateLogger<CopilotDynamicToolBridge>());
+                _loggerFactory?.CreateLogger<CopilotDynamicToolBridge>()
+            );
         }
 
-        _translator = new CopilotEventTranslator(_options, logger)
-        {
-            ThreadId = threadId,
-        };
+        _translator = new CopilotEventTranslator(_options, logger) { ThreadId = threadId };
     }
 
     protected override async Task OnBeforeRunAsync()
@@ -185,9 +187,10 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             _client = null;
         }
 
-        _client = _clientFactory != null
-            ? _clientFactory(_options, _loggerFactory?.CreateLogger<CopilotSdkClient>())
-            : new CopilotSdkClient(_options, _loggerFactory?.CreateLogger<CopilotSdkClient>());
+        _client =
+            _clientFactory != null
+                ? _clientFactory(_options, _loggerFactory?.CreateLogger<CopilotSdkClient>())
+                : new CopilotSdkClient(_options, _loggerFactory?.CreateLogger<CopilotSdkClient>());
 
         if (_dynamicToolBridge != null)
         {
@@ -219,7 +222,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 // the call site means future per-turn overrides have a single edit
                 // point and tests can stub the client without surprise behavior.
                 McpServers = _options.McpServers,
-            });
+            }
+        );
 
         Logger.LogInformation(
             "{event_type} {event_status} {provider} {provider_mode} {thread_id} {copilot_session_id}",
@@ -228,7 +232,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             _options.Provider,
             _options.ProviderMode,
             ThreadId,
-            _copilotSessionId);
+            _copilotSessionId
+        );
     }
 
     protected override async Task OnDisposeAsync()
@@ -270,11 +275,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
             var assignment = await StartRunAsync(batch, batchParent, ct, wasForked: isExplicitFork);
             var queueDepth = InputReader.CanCount ? InputReader.Count : -1;
-            await PublishToAllAsync(new RunAssignmentMessage
-            {
-                Assignment = assignment,
-                ThreadId = ThreadId,
-            }, ct);
+            await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
             Logger.LogInformation(
                 "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {input_id}",
@@ -285,7 +286,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 ThreadId,
                 assignment.RunId,
                 assignment.GenerationId,
-                string.Join(",", assignment.InputIds ?? []));
+                string.Join(",", assignment.InputIds ?? [])
+            );
 
             Logger.LogInformation(
                 "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {batch_input_count} {queued_input_count}",
@@ -297,7 +299,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 assignment.RunId,
                 assignment.GenerationId,
                 batch.Count,
-                queueDepth);
+                queueDepth
+            );
 
             foreach (var input in batch)
             {
@@ -327,7 +330,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                     forkedToRunId: isExplicitFork ? assignment.RunId : null,
                     pendingMessageCount: 0,
                     isError: false,
-                    ct: ct);
+                    ct: ct
+                );
 
                 Logger.LogInformation(
                     "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {bridge_event_count}",
@@ -338,7 +342,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                     ThreadId,
                     assignment.RunId,
                     assignment.GenerationId,
-                    streamMetrics.BridgeEventCount);
+                    streamMetrics.BridgeEventCount
+                );
 
                 Logger.LogInformation(
                     "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {run_age_ms}",
@@ -349,7 +354,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                     ThreadId,
                     assignment.RunId,
                     assignment.GenerationId,
-                    runTimer.ElapsedMilliseconds);
+                    runTimer.ElapsedMilliseconds
+                );
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -364,7 +370,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                     assignment.RunId,
                     assignment.GenerationId,
                     "turn_failed",
-                    ex.GetType().Name);
+                    ex.GetType().Name
+                );
 
                 try
                 {
@@ -375,7 +382,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                         forkedToRunId: isExplicitFork ? assignment.RunId : null,
                         isError: true,
                         errorMessage: ex.Message,
-                        ct: CancellationToken.None);
+                        ct: CancellationToken.None
+                    );
                 }
                 catch (Exception completeEx)
                 {
@@ -388,7 +396,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                         _options.ProviderMode,
                         ThreadId,
                         assignment.RunId,
-                        assignment.GenerationId);
+                        assignment.GenerationId
+                    );
                 }
             }
         }
@@ -399,7 +408,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
         string runId,
         string generationId,
         RunStreamMetrics streamMetrics,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (_client == null)
         {
@@ -439,7 +449,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                     envelope.SessionId ?? _copilotSessionId,
                     _options.Model,
                     runStopwatch.ElapsedMilliseconds,
-                    eventSequence);
+                    eventSequence
+                );
 
                 var messages = _translator.ConvertEventToMessages(envelope.Event, runId, generationId);
 
@@ -502,26 +513,36 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             ThreadId,
             mcpCount,
             skillCount,
-            subAgentCount);
+            subAgentCount
+        );
         _profileUnsupportedWarningLogged = true;
     }
 
-    private (string? BaseInstructions, string? DeveloperInstructions, string? ModelInstructionsFile) ResolveInstructions()
+    private (
+        string? BaseInstructions,
+        string? DeveloperInstructions,
+        string? ModelInstructionsFile
+    ) ResolveInstructions()
     {
         var baseInstructions = string.IsNullOrWhiteSpace(_options.BaseInstructions) ? null : _options.BaseInstructions;
         var developerInstructions = ProfileSystemPromptResolver.Resolve(
             _options.Profile,
             SystemPrompt,
-            _options.DeveloperInstructions);
+            _options.DeveloperInstructions
+        );
         var modelInstructionsFile = string.IsNullOrWhiteSpace(_options.ModelInstructionsFile)
             ? null
             : _options.ModelInstructionsFile;
 
-        if (string.IsNullOrWhiteSpace(modelInstructionsFile)
+        if (
+            string.IsNullOrWhiteSpace(modelInstructionsFile)
             && !string.IsNullOrWhiteSpace(developerInstructions)
-            && developerInstructions.Length > _options.UseModelInstructionsFileThresholdChars)
+            && developerInstructions.Length > _options.UseModelInstructionsFileThresholdChars
+        )
         {
-            _generatedModelInstructionsFile ??= CopilotEventTranslator.CreateModelInstructionsFile(developerInstructions);
+            _generatedModelInstructionsFile ??= CopilotEventTranslator.CreateModelInstructionsFile(
+                developerInstructions
+            );
             modelInstructionsFile = _generatedModelInstructionsFile;
             developerInstructions = null;
         }
@@ -546,8 +567,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 return;
             }
 
-            var properties = metadata.Properties?.ToBuilder()
-                ?? ImmutableDictionary.CreateBuilder<string, object>();
+            var properties = metadata.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
             if (!string.IsNullOrWhiteSpace(_copilotSessionId))
             {
@@ -569,7 +589,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 _options.Provider,
                 _options.ProviderMode,
                 ThreadId,
-                _copilotSessionId);
+                _copilotSessionId
+            );
         }
         catch (OperationCanceledException)
         {
@@ -586,7 +607,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 _options.ProviderMode,
                 ThreadId,
                 "metadata_save_failed",
-                ex.GetType().Name);
+                ex.GetType().Name
+            );
         }
     }
 

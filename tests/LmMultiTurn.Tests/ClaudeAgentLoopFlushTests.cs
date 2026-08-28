@@ -22,15 +22,13 @@ public class ClaudeAgentLoopFlushTests
         // We use the internal-visibility hooks to seed _pendingCliInputs and invoke
         // the flush method directly — this isolates the flush behavior from the
         // CLI process and dequeue heuristic.
-        var options = new ClaudeAgentSdkOptions
-        {
-            Mode = ClaudeAgentSdkMode.OneShot,
-        };
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot };
 
         await using var loop = new ClaudeAgentLoop(
             claudeOptions: options,
             mcpServers: null,
-            threadId: "flush-test-thread");
+            threadId: "flush-test-thread"
+        );
 
         var receiptId = "test-receipt-id";
         var runId = "test-run-id";
@@ -39,7 +37,8 @@ public class ClaudeAgentLoopFlushTests
         var queuedInput = new QueuedInput(
             new UserInput([new TextMessage { Text = "Hello", Role = Role.User }], InputId: receiptId),
             receiptId,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow
+        );
         var assignment = new RunAssignment(runId, generationId, [receiptId]);
 
         loop._pendingCliInputs.Enqueue((queuedInput, assignment));
@@ -65,15 +64,20 @@ public class ClaudeAgentLoopFlushTests
         // Allow time for the published message to propagate to the subscriber.
         await Task.Delay(50);
         await subscriberCts.CancelAsync();
-        try { await subscribeTask; } catch (OperationCanceledException) { }
+        try
+        {
+            await subscribeTask;
+        }
+        catch (OperationCanceledException) { }
 
         // Assert: a RunAssignmentMessage was published carrying our receipt id,
         // and the pending queue was drained.
         var assignmentMsg = receivedMessages.OfType<RunAssignmentMessage>().SingleOrDefault();
         assignmentMsg.Should().NotBeNull("flush should publish exactly one RunAssignmentMessage for the run");
         assignmentMsg!.Assignment.RunId.Should().Be(runId);
-        assignmentMsg.Assignment.InputIds.Should().Contain(receiptId,
-            "the published assignment must list the original receipt so consumers can correlate");
+        assignmentMsg
+            .Assignment.InputIds.Should()
+            .Contain(receiptId, "the published assignment must list the original receipt so consumers can correlate");
 
         loop._pendingCliInputs.Should().BeEmpty("pending entries for the flushed run must be drained");
     }
@@ -87,7 +91,8 @@ public class ClaudeAgentLoopFlushTests
         await using var loop = new ClaudeAgentLoop(
             claudeOptions: options,
             mcpServers: null,
-            threadId: "flush-isolation-test");
+            threadId: "flush-isolation-test"
+        );
 
         var runIdA = "run-a";
         var runIdB = "run-b";
@@ -95,11 +100,13 @@ public class ClaudeAgentLoopFlushTests
         var inputA = new QueuedInput(
             new UserInput([new TextMessage { Text = "A", Role = Role.User }], InputId: "rcpt-a"),
             "rcpt-a",
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow
+        );
         var inputB = new QueuedInput(
             new UserInput([new TextMessage { Text = "B", Role = Role.User }], InputId: "rcpt-b"),
             "rcpt-b",
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow
+        );
 
         loop._pendingCliInputs.Enqueue((inputA, new RunAssignment(runIdA, "gen-a", ["rcpt-a"])));
         loop._pendingCliInputs.Enqueue((inputB, new RunAssignment(runIdB, "gen-b", ["rcpt-b"])));

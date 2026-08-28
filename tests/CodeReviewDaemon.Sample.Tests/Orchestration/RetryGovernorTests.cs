@@ -12,12 +12,14 @@ public class RetryGovernorTests
 {
     private DateTimeOffset _now = new(2026, 7, 12, 0, 0, 0, TimeSpan.Zero);
 
-    private RetryGovernor Create(int maxAttempts = 5) => new(
-        maxAttempts,
-        TimeSpan.FromSeconds(30),
-        TimeSpan.FromSeconds(900),
-        () => _now,
-        NullLogger<RetryGovernor>.Instance);
+    private RetryGovernor Create(int maxAttempts = 5) =>
+        new(
+            maxAttempts,
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromSeconds(900),
+            () => _now,
+            NullLogger<RetryGovernor>.Instance
+        );
 
     [Fact]
     public void ShouldAttempt_is_true_for_an_unseen_run() => Create().ShouldAttempt(1).Should().BeTrue();
@@ -84,24 +86,42 @@ public class RetryGovernorTests
     [InlineData(-1)]
     public void Constructor_rejects_a_nonpositive_maxAttempts(int maxAttempts)
     {
-        var act = () => new RetryGovernor(
-            maxAttempts, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(900), () => _now, NullLogger<RetryGovernor>.Instance);
+        var act = () =>
+            new RetryGovernor(
+                maxAttempts,
+                TimeSpan.FromSeconds(30),
+                TimeSpan.FromSeconds(900),
+                () => _now,
+                NullLogger<RetryGovernor>.Instance
+            );
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
 
     [Fact]
     public void Constructor_rejects_a_negative_base_delay()
     {
-        var act = () => new RetryGovernor(
-            5, TimeSpan.FromSeconds(-1), TimeSpan.FromSeconds(900), () => _now, NullLogger<RetryGovernor>.Instance);
+        var act = () =>
+            new RetryGovernor(
+                5,
+                TimeSpan.FromSeconds(-1),
+                TimeSpan.FromSeconds(900),
+                () => _now,
+                NullLogger<RetryGovernor>.Instance
+            );
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
 
     [Fact]
     public void Constructor_rejects_a_cap_below_the_base()
     {
-        var act = () => new RetryGovernor(
-            5, TimeSpan.FromSeconds(900), TimeSpan.FromSeconds(30), () => _now, NullLogger<RetryGovernor>.Instance);
+        var act = () =>
+            new RetryGovernor(
+                5,
+                TimeSpan.FromSeconds(900),
+                TimeSpan.FromSeconds(30),
+                () => _now,
+                NullLogger<RetryGovernor>.Instance
+            );
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
 
@@ -111,7 +131,12 @@ public class RetryGovernorTests
         // A large base at a high attempt count would overflow base * 2^shift; the clamp must fall back to the
         // cap instead of computing (and storing) an overflowed/negative delay.
         var g = new RetryGovernor(
-            maxAttempts: 40, TimeSpan.FromDays(1000), TimeSpan.FromDays(2000), () => _now, NullLogger<RetryGovernor>.Instance);
+            maxAttempts: 40,
+            TimeSpan.FromDays(1000),
+            TimeSpan.FromDays(2000),
+            () => _now,
+            NullLogger<RetryGovernor>.Instance
+        );
 
         for (var i = 0; i < 35; i++)
         {

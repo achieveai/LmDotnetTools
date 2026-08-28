@@ -21,15 +21,10 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
     [Fact]
     public async Task EvaluateAsync_EmptyAndSupportedSelectionsAreCompatible()
     {
-        var service = new WorkspaceCatalogCompatibilityService(
-            new StubCatalogClient(Catalog("one", "two")),
-            Options()
-        );
+        var service = new WorkspaceCatalogCompatibilityService(new StubCatalogClient(Catalog("one", "two")), Options());
 
-        (await service.EvaluateAsync(Workspace([]))).Compatibility
-            .Should().Be(WorkspaceCompatibility.Compatible);
-        (await service.EvaluateAsync(Workspace(["two"]))).Compatibility
-            .Should().Be(WorkspaceCompatibility.Compatible);
+        (await service.EvaluateAsync(Workspace([]))).Compatibility.Should().Be(WorkspaceCompatibility.Compatible);
+        (await service.EvaluateAsync(Workspace(["two"]))).Compatibility.Should().Be(WorkspaceCompatibility.Compatible);
     }
 
     /// <summary>
@@ -72,10 +67,7 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
     [Fact]
     public async Task EvaluateAsync_ReadableCatalogMissingTheAliasIsIncompatibleNotUnavailable()
     {
-        var service = new WorkspaceCatalogCompatibilityService(
-            new StubCatalogClient(Catalog("other")),
-            Options()
-        );
+        var service = new WorkspaceCatalogCompatibilityService(new StubCatalogClient(Catalog("other")), Options());
 
         var result = await service.EvaluateAsync(Workspace(["one"]));
 
@@ -100,19 +92,20 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
     [Fact]
     public async Task ValidateForMutationThrowsTypedErrors()
     {
-        var unsupported = new WorkspaceCatalogCompatibilityService(
-            new StubCatalogClient(Catalog("one")),
-            Options()
-        );
+        var unsupported = new WorkspaceCatalogCompatibilityService(new StubCatalogClient(Catalog("one")), Options());
         var unavailable = new WorkspaceCatalogCompatibilityService(
             new StubCatalogClient(new MarketplaceCatalogUnavailableException("offline")),
             Options()
         );
 
-        await FluentActions.Invoking(() => unsupported.ValidateForMutationAsync(["two"]))
-            .Should().ThrowAsync<UnsupportedWorkspaceMarketplacesException>();
-        await FluentActions.Invoking(() => unavailable.ValidateForMutationAsync(["one"]))
-            .Should().ThrowAsync<WorkspaceGatewayCatalogUnavailableException>();
+        await FluentActions
+            .Invoking(() => unsupported.ValidateForMutationAsync(["two"]))
+            .Should()
+            .ThrowAsync<UnsupportedWorkspaceMarketplacesException>();
+        await FluentActions
+            .Invoking(() => unavailable.ValidateForMutationAsync(["one"]))
+            .Should()
+            .ThrowAsync<WorkspaceGatewayCatalogUnavailableException>();
     }
 
     [Fact]
@@ -139,10 +132,7 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
         // dereferences it, turning invalid input into a 500 instead of a controlled 400.
         var (service, stub) = CreateServiceWithStub(catalogAvailable: false);
 
-        var act = async () => await service.ValidatePluginsForMutationAsync(
-            ["official"],
-            [null!]
-        );
+        var act = async () => await service.ValidatePluginsForMutationAsync(["official"], [null!]);
 
         var thrown = await act.Should().ThrowAsync<MalformedWorkspacePluginSelectionException>();
         thrown.Which.Indexes.Should().Equal([0]);
@@ -158,19 +148,15 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
     [InlineData("   ", "code-review")]
     [InlineData("official", "")]
     [InlineData("official", "   ")]
-    public async Task ValidatePluginsForMutationAsync_BlankFields_ThrowMalformed(
-        string marketplace,
-        string plugin)
+    public async Task ValidatePluginsForMutationAsync_BlankFields_ThrowMalformed(string marketplace, string plugin)
     {
         // A blank field is unreadable for the same reason a null element is: there is no reference to
         // compare against a catalog. Rejecting it here keeps "" out of the persisted selection, where
         // it would otherwise be sent to the gateway as a real plugin name.
         var (service, stub) = CreateServiceWithStub(catalogAvailable: false);
 
-        var act = async () => await service.ValidatePluginsForMutationAsync(
-            ["official"],
-            [new PluginRef(marketplace, plugin)]
-        );
+        var act = async () =>
+            await service.ValidatePluginsForMutationAsync(["official"], [new PluginRef(marketplace, plugin)]);
 
         await act.Should().ThrowAsync<MalformedWorkspacePluginSelectionException>();
         stub.CallCount.Should().Be(0);
@@ -181,10 +167,8 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
     {
         var service = CreateService(pluginFilteringSupported: false);
 
-        var act = async () => await service.ValidatePluginsForMutationAsync(
-            ["official"],
-            [new PluginRef("official", "code-review")]
-        );
+        var act = async () =>
+            await service.ValidatePluginsForMutationAsync(["official"], [new PluginRef("official", "code-review")]);
 
         await act.Should().ThrowAsync<GatewayPluginFilteringUnsupportedException>();
     }
@@ -195,10 +179,8 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
         // null capability is treated the same as false: fail closed.
         var service = CreateService(pluginFilteringSupported: null);
 
-        var act = async () => await service.ValidatePluginsForMutationAsync(
-            ["official"],
-            [new PluginRef("official", "code-review")]
-        );
+        var act = async () =>
+            await service.ValidatePluginsForMutationAsync(["official"], [new PluginRef("official", "code-review")]);
 
         await act.Should().ThrowAsync<GatewayPluginFilteringUnsupportedException>();
     }
@@ -211,10 +193,8 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
             availablePlugins: [new PluginRef("official", "code-review")]
         );
 
-        var act = async () => await service.ValidatePluginsForMutationAsync(
-            ["official"],
-            [new PluginRef("official", "unknown-plugin")]
-        );
+        var act = async () =>
+            await service.ValidatePluginsForMutationAsync(["official"], [new PluginRef("official", "unknown-plugin")]);
 
         await act.Should().ThrowAsync<UnsupportedWorkspacePluginsException>();
     }
@@ -227,10 +207,8 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
             availablePlugins: [new PluginRef("official", "code-review")]
         );
 
-        var act = async () => await service.ValidatePluginsForMutationAsync(
-            ["official"],
-            [new PluginRef("official", "code-review")]
-        );
+        var act = async () =>
+            await service.ValidatePluginsForMutationAsync(["official"], [new PluginRef("official", "code-review")]);
 
         await act.Should().NotThrowAsync();
     }
@@ -256,10 +234,8 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
             availablePlugins: [new PluginRef("official", "code-review"), new PluginRef("beta", "deploy")]
         );
 
-        var act = async () => await service.ValidatePluginsForMutationAsync(
-            ["official"],
-            [new PluginRef("beta", "deploy")]
-        );
+        var act = async () =>
+            await service.ValidatePluginsForMutationAsync(["official"], [new PluginRef("beta", "deploy")]);
 
         var thrown = await act.Should().ThrowAsync<UnsupportedWorkspacePluginsException>();
         thrown.Which.UnsupportedPlugins.Should().Equal(new PluginRef("beta", "deploy"));
@@ -279,10 +255,8 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
             availablePlugins: [new PluginRef("official", "code-review"), new PluginRef("beta", "deploy")]
         );
 
-        var act = async () => await service.ValidatePluginsForMutationAsync(
-            ["official", "beta"],
-            [new PluginRef("beta", "deploy")]
-        );
+        var act = async () =>
+            await service.ValidatePluginsForMutationAsync(["official", "beta"], [new PluginRef("beta", "deploy")]);
 
         await act.Should().NotThrowAsync();
     }
@@ -299,10 +273,8 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
             configuredMarketplaces: "official"
         );
 
-        var act = async () => await service.ValidatePluginsForMutationAsync(
-            [],
-            [new PluginRef("official", "code-review")]
-        );
+        var act = async () =>
+            await service.ValidatePluginsForMutationAsync([], [new PluginRef("official", "code-review")]);
 
         await act.Should().NotThrowAsync();
     }
@@ -319,10 +291,7 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
             configuredMarketplaces: "official"
         );
 
-        var act = async () => await service.ValidatePluginsForMutationAsync(
-            [],
-            [new PluginRef("beta", "deploy")]
-        );
+        var act = async () => await service.ValidatePluginsForMutationAsync([], [new PluginRef("beta", "deploy")]);
 
         var thrown = await act.Should().ThrowAsync<UnsupportedWorkspacePluginsException>();
         thrown.Which.UnsupportedPlugins.Should().Equal(new PluginRef("beta", "deploy"));
@@ -342,21 +311,19 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
             configuredMarketplaces: null
         );
 
-        var act = async () => await service.ValidatePluginsForMutationAsync(
-            [],
-            [new PluginRef("beta", "deploy")]
-        );
+        var act = async () => await service.ValidatePluginsForMutationAsync([], [new PluginRef("beta", "deploy")]);
 
         await act.Should().NotThrowAsync();
     }
 
-    private static Workspace Workspace(IReadOnlyList<string> aliases) => new()
-    {
-        Id = "id",
-        Name = "name",
-        DirectoryRelPath = "leaf",
-        Marketplaces = aliases,
-    };
+    private static Workspace Workspace(IReadOnlyList<string> aliases) =>
+        new()
+        {
+            Id = "id",
+            Name = "name",
+            DirectoryRelPath = "leaf",
+            Marketplaces = aliases,
+        };
 
     /// <summary>
     /// The gateway options the service reads the configured DEFAULT marketplace list from — the set an
@@ -376,7 +343,8 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
         bool catalogAvailable = true,
         bool? pluginFilteringSupported = true,
         IReadOnlyList<PluginRef>? availablePlugins = null,
-        string? configuredMarketplaces = null) =>
+        string? configuredMarketplaces = null
+    ) =>
         CreateServiceWithStub(
             catalogAvailable,
             pluginFilteringSupported,
@@ -392,7 +360,8 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
         bool catalogAvailable = true,
         bool? pluginFilteringSupported = true,
         IReadOnlyList<PluginRef>? availablePlugins = null,
-        string? configuredMarketplaces = null)
+        string? configuredMarketplaces = null
+    )
     {
         var options = Options(configuredMarketplaces);
         if (!catalogAvailable)
@@ -402,21 +371,20 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
         }
 
         var plugins = availablePlugins ?? [];
-        string[] aliases = plugins.Count > 0
-            ? [.. plugins.Select(p => p.Marketplace).Distinct(StringComparer.Ordinal)]
-            : ["official"];
+        string[] aliases =
+            plugins.Count > 0 ? [.. plugins.Select(p => p.Marketplace).Distinct(StringComparer.Ordinal)] : ["official"];
 
         var stub = new StubCatalogClient(Catalog(aliases, plugins, pluginFilteringSupported));
         return (new WorkspaceCatalogCompatibilityService(stub, options), stub);
     }
 
-    private static MarketplaceCatalog Catalog(params string[] aliases) =>
-        Catalog(aliases, [], pluginFiltering: null);
+    private static MarketplaceCatalog Catalog(params string[] aliases) => Catalog(aliases, [], pluginFiltering: null);
 
     private static MarketplaceCatalog Catalog(
         IReadOnlyList<string> aliases,
         IReadOnlyList<PluginRef> plugins,
-        bool? pluginFiltering)
+        bool? pluginFiltering
+    )
     {
         var marketplaces = aliases.Select(alias => new CatalogMarketplace(
             alias,
@@ -441,17 +409,18 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
         private int _calls;
 
         public StubCatalogClient(MarketplaceCatalog catalog) => _catalog = catalog;
+
         public StubCatalogClient(Exception error) => _error = error;
+
         public int CallCount => _calls;
 
         public Task<MarketplaceCatalog> GetCatalogAsync(
             IReadOnlyList<string>? marketplaces = null,
-            CancellationToken ct = default)
+            CancellationToken ct = default
+        )
         {
             _ = Interlocked.Increment(ref _calls);
-            return _error is not null
-                ? Task.FromException<MarketplaceCatalog>(_error)
-                : Task.FromResult(_catalog!);
+            return _error is not null ? Task.FromException<MarketplaceCatalog>(_error) : Task.FromResult(_catalog!);
         }
     }
 }

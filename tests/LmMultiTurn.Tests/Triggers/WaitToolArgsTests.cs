@@ -24,7 +24,9 @@ public class WaitToolArgsTests
     public void TryParse_ReadsNotifyModeAndMaxFires()
     {
         var ok = WaitToolArgs.TryParse(
-            """{"kind":"timer","timeout":"1h","mode":"notify","maxFires":3}""", out var args);
+            """{"kind":"timer","timeout":"1h","mode":"notify","maxFires":3}""",
+            out var args
+        );
         ok.Should().BeTrue();
         args.Mode.Should().Be(WaitMode.Notify);
         args.MaxFires.Should().Be(3);
@@ -33,15 +35,16 @@ public class WaitToolArgsTests
     [Fact]
     public void TryParse_RejectsUnknownMode()
     {
-        WaitToolArgs.TryParse("""{"kind":"timer","timeout":"1h","mode":"bogus"}""", out _)
-            .Should().BeFalse();
+        WaitToolArgs.TryParse("""{"kind":"timer","timeout":"1h","mode":"bogus"}""", out _).Should().BeFalse();
     }
 
     [Fact]
     public void TryParse_RejectsNonPositiveMaxFires()
     {
-        WaitToolArgs.TryParse("""{"kind":"timer","timeout":"1h","mode":"notify","maxFires":0}""", out _)
-            .Should().BeFalse();
+        WaitToolArgs
+            .TryParse("""{"kind":"timer","timeout":"1h","mode":"notify","maxFires":0}""", out _)
+            .Should()
+            .BeFalse();
     }
 
     [Theory]

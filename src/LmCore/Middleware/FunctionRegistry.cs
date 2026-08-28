@@ -206,10 +206,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         // Debug rather than Information because Build() is now re-run per turn via
         // BuildContracts() to surface mutable upstream catalogs (e.g. MutableSubAgentTemplateSource);
         // emitting an Information record every turn would spam logs.
-        logger.LogDebug(
-            "Function registry built: {ContractCount} functions registered",
-            finalContracts.Count
-        );
+        logger.LogDebug("Function registry built: {ContractCount} functions registered", finalContracts.Count);
 
         return (finalContracts, finalHandlers);
     }
@@ -224,12 +221,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     )
     {
         var (contracts, handlers) = Build();
-        return new FunctionCallMiddleware(
-            contracts,
-            handlers,
-            name,
-            logger: logger,
-            resultCallback: resultCallback);
+        return new FunctionCallMiddleware(contracts, handlers, name, logger: logger, resultCallback: resultCallback);
     }
 
     /// <summary>
@@ -240,19 +232,13 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     /// <param name="name">Optional name for the middleware instance</param>
     /// <param name="logger">Optional logger for the middleware</param>
     /// <returns>A tuple containing the middleware and the handler dictionary</returns>
-    public (
-        ToolCallInjectionMiddleware Middleware,
-        IDictionary<string, ToolHandler> Handlers
-    ) BuildToolCallComponents(
+    public (ToolCallInjectionMiddleware Middleware, IDictionary<string, ToolHandler> Handlers) BuildToolCallComponents(
         string? name = null,
         ILogger<ToolCallInjectionMiddleware>? logger = null
     )
     {
         var (_, handlers) = Build();
-        var middleware = new ToolCallInjectionMiddleware(
-            BuildContracts,
-            name,
-            logger);
+        var middleware = new ToolCallInjectionMiddleware(BuildContracts, name, logger);
         return (middleware, handlers);
     }
 
@@ -387,11 +373,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     ///     <see cref="ToolHandlerResult"/>; multi-modal payloads are carried by
     ///     <see cref="ToolHandlerResult.FromMultiModal(string, IList{ToolResultContentBlock})"/>.
     /// </summary>
-    public FunctionRegistry AddFunction(
-        FunctionContract contract,
-        ToolHandler handler,
-        string? providerName = null
-    )
+    public FunctionRegistry AddFunction(FunctionContract contract, ToolHandler handler, string? providerName = null)
     {
         var descriptor = new FunctionDescriptor
         {

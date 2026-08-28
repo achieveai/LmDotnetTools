@@ -1,4 +1,3 @@
-
 namespace LmStreaming.Sample.E2E.Tests.Infrastructure;
 
 /// <summary>
@@ -37,7 +36,8 @@ public sealed class SandboxGatewayPrerequisites
         bool spawnMode,
         string? gatewayExePath,
         string? agentCliPath,
-        string baseUrl)
+        string baseUrl
+    )
     {
         Available = available;
         SkipReason = skipReason;
@@ -75,8 +75,7 @@ public sealed class SandboxGatewayPrerequisites
         {
             if (!File.Exists(exe))
             {
-                return Unavailable(
-                    $"SANDBOX_GATEWAY_EXE is set to '{exe}' but no file exists there.");
+                return Unavailable($"SANDBOX_GATEWAY_EXE is set to '{exe}' but no file exists there.");
             }
 
             var agentCli =
@@ -86,7 +85,8 @@ public sealed class SandboxGatewayPrerequisites
             {
                 return Unavailable(
                     $"agent-cli.exe was not found at '{agentCli}'. Place it beside the gateway exe "
-                        + "or set SANDBOX_AGENT_CLI.");
+                        + "or set SANDBOX_AGENT_CLI."
+                );
             }
 
             return new SandboxGatewayPrerequisites(
@@ -95,7 +95,8 @@ public sealed class SandboxGatewayPrerequisites
                 spawnMode: true,
                 gatewayExePath: exe,
                 agentCliPath: agentCli,
-                baseUrl: baseUrl);
+                baseUrl: baseUrl
+            );
         }
 
         // No exe configured — adopt a gateway only if one is already healthy.
@@ -107,13 +108,15 @@ public sealed class SandboxGatewayPrerequisites
                 spawnMode: false,
                 gatewayExePath: null,
                 agentCliPath: null,
-                baseUrl: baseUrl);
+                baseUrl: baseUrl
+            );
         }
 
         return Unavailable(
             "No sandbox gateway is configured. Set SANDBOX_GATEWAY_EXE to mcp-gateway.exe "
                 + "(with agent-cli.exe beside it) or run a gateway reachable at "
-                + $"{baseUrl}/health to enable this test.");
+                + $"{baseUrl}/health to enable this test."
+        );
     }
 
     /// <summary>
@@ -125,7 +128,9 @@ public sealed class SandboxGatewayPrerequisites
     {
         if (!Available)
         {
-            throw new InvalidOperationException("CreateConfigScope must not be called when the gateway is unavailable.");
+            throw new InvalidOperationException(
+                "CreateConfigScope must not be called when the gateway is unavailable."
+            );
         }
 
         var workspaceBase = Path.Combine(Path.GetTempPath(), "lmstreaming-sandbox-e2e");

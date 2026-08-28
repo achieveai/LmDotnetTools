@@ -24,10 +24,7 @@ public abstract class GateBase : IGate
     public IReadOnlySet<string> AppliesTo { get; }
 
     /// <inheritdoc />
-    public ValueTask<GateDecision> EvaluateAsync(
-        Candidate candidate,
-        CancellationToken cancellationToken
-    )
+    public ValueTask<GateDecision> EvaluateAsync(Candidate candidate, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(candidate);
         cancellationToken.ThrowIfCancellationRequested();

@@ -2,6 +2,9 @@ using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmAgentInfra;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -11,9 +14,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
-using AchieveAi.LmDotnetTools.LmAgentInfra;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
@@ -152,8 +152,7 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter, IOr
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        return request.Headers.ContainsKey(HeaderName)
-            || request.Headers.ContainsKey(SandboxCredential.AppIdHeader);
+        return request.Headers.ContainsKey(HeaderName) || request.Headers.ContainsKey(SandboxCredential.AppIdHeader);
     }
 
     private static void WarnGuardDisabledOnce(HttpContext httpContext)
@@ -168,7 +167,8 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter, IOr
             "{ConfigKey} is not configured; the S2S inbound-auth guard is DISABLED for headless "
                 + "conversation endpoints (keyless dev path). Set {EnvVar} to enforce it.",
             SecretConfigKey,
-            "LMSTREAMING_S2S_INBOUND_SECRET");
+            "LMSTREAMING_S2S_INBOUND_SECRET"
+        );
     }
 
     /// <summary>
@@ -212,7 +212,8 @@ public class ConversationsController(
     ILogger<ConversationsController> logger,
     ILogger<AgentHierarchyService> hierarchyLogger,
     SubAgentScanCoverageCache scanCoverageCache,
-    ConversationDescendantScanner descendantScanner) : ControllerBase
+    ConversationDescendantScanner descendantScanner
+) : ControllerBase
 {
     /// <summary>
     /// Warning returned from a mode/provider switch that recreated the agent while a <c>Wait</c> was
@@ -236,8 +237,13 @@ public class ConversationsController(
     /// one thing that lets a repeated poll remember a persisted child roster this same code already
     /// scanned for on an earlier request instead of rescanning it every time.
     /// </summary>
-    private readonly AgentHierarchyService _hierarchy =
-        new(agentPool, workflowRunRegistry, store, hierarchyLogger, scanCoverageCache);
+    private readonly AgentHierarchyService _hierarchy = new(
+        agentPool,
+        workflowRunRegistry,
+        store,
+        hierarchyLogger,
+        scanCoverageCache
+    );
 
     /// <summary>
     /// Error surfaced when a mode/provider switch is HARD-blocked (issue #246) because the
@@ -258,7 +264,8 @@ public class ConversationsController(
     [HttpPost]
     public async Task<IActionResult> Provision(
         [FromBody] ProvisionConversationRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -282,7 +289,8 @@ public class ConversationsController(
             logger.LogWarning(
                 "Provision rejected: provider {ProviderId} unavailable ({Reason})",
                 request.ProviderId,
-                reason);
+                reason
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
                 new
@@ -291,7 +299,8 @@ public class ConversationsController(
                     code = "provider_unavailable",
                     providerId = request.ProviderId,
                     detail = reason,
-                });
+                }
+            );
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -309,8 +318,8 @@ public class ConversationsController(
             threadId,
             existing =>
             {
-                var propertiesBuilder = existing?.Properties?.ToBuilder()
-                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+                var propertiesBuilder =
+                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
                 propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId;
                 propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
@@ -318,8 +327,7 @@ public class ConversationsController(
 
                 if (!string.IsNullOrWhiteSpace(request.SystemPromptAppendix))
                 {
-                    propertiesBuilder[SystemPromptAugmenter.AppendixPropertyKey] =
-                        request.SystemPromptAppendix;
+                    propertiesBuilder[SystemPromptAugmenter.AppendixPropertyKey] = request.SystemPromptAppendix;
                 }
 
                 if (!string.IsNullOrWhiteSpace(request.SubAgentModelId))
@@ -337,21 +345,24 @@ public class ConversationsController(
                 // Ownership is stamped HERE, at creation, not by a later repair (spec 8.3, and
                 // this is what closes #162). The startup repair exists for rows written before
                 // identity did; a row this build creates must never need it.
-                return authorizer.StampOwnership(new ThreadMetadata
-                {
-                    ThreadId = threadId,
-                    CurrentRunId = existing?.CurrentRunId,
-                    LatestRunId = existing?.LatestRunId,
-                    LastUpdated = now.ToUnixTimeMilliseconds(),
-                    SessionMappings = existing?.SessionMappings,
-                    Properties = propertiesBuilder.ToImmutable(),
-                    TenantId = existing?.TenantId,
-                    OwnerUserId = existing?.OwnerUserId,
-                    OwnerAppId = existing?.OwnerAppId,
-                    Visibility = existing?.Visibility,
-                });
+                return authorizer.StampOwnership(
+                    new ThreadMetadata
+                    {
+                        ThreadId = threadId,
+                        CurrentRunId = existing?.CurrentRunId,
+                        LatestRunId = existing?.LatestRunId,
+                        LastUpdated = now.ToUnixTimeMilliseconds(),
+                        SessionMappings = existing?.SessionMappings,
+                        Properties = propertiesBuilder.ToImmutable(),
+                        TenantId = existing?.TenantId,
+                        OwnerUserId = existing?.OwnerUserId,
+                        OwnerAppId = existing?.OwnerAppId,
+                        Visibility = existing?.Visibility,
+                    }
+                );
             },
-            ct);
+            ct
+        );
 
         return Ok(new ProvisionConversationResponse { ThreadId = threadId });
     }
@@ -393,15 +404,14 @@ public class ConversationsController(
         int limit = 30,
         int offset = 0,
         string? sort = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (limit is < MinListLimit or > MaxListLimit)
         {
-            return BadRequest(new
-            {
-                error = $"limit must be between {MinListLimit} and {MaxListLimit}.",
-                code = "invalid_limit",
-            });
+            return BadRequest(
+                new { error = $"limit must be between {MinListLimit} and {MaxListLimit}.", code = "invalid_limit" }
+            );
         }
 
         if (offset < 0)
@@ -411,11 +421,9 @@ public class ConversationsController(
 
         if (!TryParseSortOrder(sort, out var sortOrder))
         {
-            return BadRequest(new
-            {
-                error = $"Unknown sort '{sort}'. Expected 'lastUsed' or 'created'.",
-                code = "invalid_sort",
-            });
+            return BadRequest(
+                new { error = $"Unknown sort '{sort}'. Expected 'lastUsed' or 'created'.", code = "invalid_sort" }
+            );
         }
 
         // Sub-agent and workflow-controller conversations use the sample's reserved agent-owned
@@ -469,30 +477,37 @@ public class ConversationsController(
             // already resolved rather than re-querying grants once per row.
             var canShare = await authorizer.MayShareForListingAsync(t, scope?.GrantedThreadIds, ct);
 
-            result.Add(new ConversationSummary
-            {
-                ThreadId = t.ThreadId,
-                Title = t.Properties?.TryGetValue("title", out var titleObj) == true
-                    ? titleObj?.ToString() ?? "New Conversation"
-                    : "New Conversation",
-                Preview = t.Properties?.TryGetValue("preview", out var previewObj) == true
-                    ? previewObj?.ToString()
-                    : null,
-                LastUpdated = t.LastUpdated,
-                Provider = t.Properties?.TryGetValue(MultiTurnAgentPool.ProviderPropertyKey, out var providerObj) == true
-                    ? providerObj?.ToString()
-                    : null,
-                Workspace = t.Properties?.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var workspaceObj) == true
-                    ? workspaceObj?.ToString()
-                    : null,
-                Mode = t.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
-                    ? modeObj?.ToString()
-                    : null,
-                // Read straight off the row rather than out of Properties: visibility is a
-                // first-class stamped field (spec 8.3), and it is what the share control reflects.
-                Visibility = ConversationSummary.ToWireVisibility(t.Visibility),
-                CanShare = canShare,
-            });
+            result.Add(
+                new ConversationSummary
+                {
+                    ThreadId = t.ThreadId,
+                    Title =
+                        t.Properties?.TryGetValue("title", out var titleObj) == true
+                            ? titleObj?.ToString() ?? "New Conversation"
+                            : "New Conversation",
+                    Preview =
+                        t.Properties?.TryGetValue("preview", out var previewObj) == true
+                            ? previewObj?.ToString()
+                            : null,
+                    LastUpdated = t.LastUpdated,
+                    Provider =
+                        t.Properties?.TryGetValue(MultiTurnAgentPool.ProviderPropertyKey, out var providerObj) == true
+                            ? providerObj?.ToString()
+                            : null,
+                    Workspace =
+                        t.Properties?.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var workspaceObj) == true
+                            ? workspaceObj?.ToString()
+                            : null,
+                    Mode =
+                        t.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
+                            ? modeObj?.ToString()
+                            : null,
+                    // Read straight off the row rather than out of Properties: visibility is a
+                    // first-class stamped field (spec 8.3), and it is what the share control reflects.
+                    Visibility = ConversationSummary.ToWireVisibility(t.Visibility),
+                    CanShare = canShare,
+                }
+            );
         }
 
         return Ok(result);
@@ -572,10 +587,7 @@ public class ConversationsController(
     /// </para>
     /// </remarks>
     [HttpGet("{threadId}/messages")]
-    public async Task<IActionResult> GetMessages(
-        string threadId,
-        string? viewer = null,
-        CancellationToken ct = default)
+    public async Task<IActionResult> GetMessages(string threadId, string? viewer = null, CancellationToken ct = default)
     {
         if (RefuseMachineCaller(threadId, AgentOwnedThreadReadCode, viewer) is { } refusal)
         {
@@ -695,12 +707,14 @@ public class ConversationsController(
         }
 
         var runState = agentPool.GetRunStateInfo(threadId);
-        return Ok(new ConversationRunState
-        {
-            ThreadId = threadId,
-            IsInProgress = runState.IsInProgress,
-            CurrentRunId = runState.CurrentRunId,
-        });
+        return Ok(
+            new ConversationRunState
+            {
+                ThreadId = threadId,
+                IsInProgress = runState.IsInProgress,
+                CurrentRunId = runState.CurrentRunId,
+            }
+        );
     }
 
     /// <summary>
@@ -733,7 +747,8 @@ public class ConversationsController(
         string threadId,
         bool recursive = false,
         string? viewer = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
         {
@@ -746,9 +761,7 @@ public class ConversationsController(
         }
 
         var (rows, isKnown, _) = await _hierarchy.BuildAsync(threadId, viewer, ct);
-        return isKnown
-            ? Ok(rows.ToArray())
-            : UnknownThread(threadId);
+        return isKnown ? Ok(rows.ToArray()) : UnknownThread(threadId);
     }
 
     /// <summary>
@@ -770,7 +783,8 @@ public class ConversationsController(
         string threadId,
         string agentId,
         string? viewer = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         // The root conversation is checked FIRST, before the #244 transcript policy: that policy
         // decides which agent inside a hierarchy may read a sibling's words, and answering it at all
@@ -785,14 +799,17 @@ public class ConversationsController(
         return result.Outcome switch
         {
             AgentTranscriptOutcome.UnknownThread => UnknownThread(threadId),
-            AgentTranscriptOutcome.CollaborationUnavailable =>
-                NotFound(new
+            AgentTranscriptOutcome.CollaborationUnavailable => NotFound(
+                new
                 {
                     error = "Agent collaboration is not enabled.",
                     code = AgentTranscriptReasons.CollaborationUnavailable,
-                }),
-            AgentTranscriptOutcome.Denied =>
-                StatusCode(StatusCodes.Status403Forbidden, new { error = "forbidden", code = result.DenialCode }),
+                }
+            ),
+            AgentTranscriptOutcome.Denied => StatusCode(
+                StatusCodes.Status403Forbidden,
+                new { error = "forbidden", code = result.DenialCode }
+            ),
             _ => Ok(result.Messages),
         };
     }
@@ -840,12 +857,14 @@ public class ConversationsController(
 
     [HttpGet("capabilities")]
     public IActionResult GetCapabilities() =>
-        Ok(new ConversationCapabilitiesResponse
-        {
-            SchemaVersion = 1,
-            MessageIdempotency = store is IInputAcceptanceStore,
-            SpawnSuppression = true,
-        });
+        Ok(
+            new ConversationCapabilitiesResponse
+            {
+                SchemaVersion = 1,
+                MessageIdempotency = store is IInputAcceptanceStore,
+                SpawnSuppression = true,
+            }
+        );
 
     /// <summary>
     /// Queues a message onto a previously-provisioned thread. Non-blocking: returns as soon as the
@@ -863,7 +882,8 @@ public class ConversationsController(
     public async Task<IActionResult> SendMessage(
         string threadId,
         [FromBody] SendMessageRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -871,7 +891,8 @@ public class ConversationsController(
         {
             return StatusCode(
                 StatusCodes.Status403Forbidden,
-                new { error = "forbidden", code = AgentOwnedThreadWriteCode });
+                new { error = "forbidden", code = AgentOwnedThreadWriteCode }
+            );
         }
 
         // A key that cannot be turned into a durable, unambiguous id is refused rather than read as
@@ -880,15 +901,16 @@ public class ConversationsController(
         // send — the one outcome the acknowledgement exists to rule out.
         if (request.IdempotencyKey is not null && !IsUsableIdempotencyKey(request.IdempotencyKey))
         {
-            return BadRequest(new
-            {
-                error = "invalid_idempotency_key",
-                code = "invalid_idempotency_key",
-                detail =
-                    "IdempotencyKey, when supplied, must be a non-blank identifier of at most "
-                    + $"{MaxIdempotencyKeyLength} characters and must not contain control characters.",
-                threadId,
-            });
+            return BadRequest(
+                new
+                {
+                    error = "invalid_idempotency_key",
+                    code = "invalid_idempotency_key",
+                    detail = "IdempotencyKey, when supplied, must be a non-blank identifier of at most "
+                        + $"{MaxIdempotencyKeyLength} characters and must not contain control characters.",
+                    threadId,
+                }
+            );
         }
 
         var metadata = await store.LoadMetadataAsync(threadId, ct);
@@ -897,8 +919,7 @@ public class ConversationsController(
         // never-minted thread exactly as for a forbidden cross-tenant one, so short-circuiting the missing
         // case here would make a missing thread cost zero look-ups and a forbidden one cost one - a
         // work-shape existence oracle (#389) even with byte-identical 404 bodies.
-        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Write, ct))
-            is { } denied)
+        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Write, ct)) is { } denied)
         {
             return denied;
         }
@@ -920,7 +941,8 @@ public class ConversationsController(
         {
             return StatusCode(
                 StatusCodes.Status500InternalServerError,
-                new { error = "Could not resolve the conversation's mode.", threadId });
+                new { error = "Could not resolve the conversation's mode.", threadId }
+            );
         }
 
         // HttpContext is null when an action is invoked directly (outside the MVC pipeline, e.g. a
@@ -942,7 +964,8 @@ public class ConversationsController(
                 requestedProviderId: null,
                 requestResponseDumpFileName: null,
                 callerCredential: callerCredential,
-                ownerUserId: CallerUserId);
+                ownerUserId: CallerUserId
+            );
 
             // A pooled agent can outlive the sandbox session it was bound to — a workspace
             // plugin-selection change replaces the session underneath it. GetOrCreateAgent returns
@@ -961,7 +984,8 @@ public class ConversationsController(
                 threadId,
                 callerCredential,
                 ct,
-                ownerUserId: CallerUserId);
+                ownerUserId: CallerUserId
+            );
             if (refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred)
             {
                 // RefreshDeferred means the pooled entry has an ACTIVE run, so the refresh could not
@@ -974,7 +998,8 @@ public class ConversationsController(
                 // takes the normal refresh path.
                 logger.LogWarning(
                     "SendMessage for thread {ThreadId} deferred: sandbox session refresh is blocked by an active run",
-                    threadId);
+                    threadId
+                );
                 return StatusCode(
                     StatusCodes.Status503ServiceUnavailable,
                     new
@@ -982,25 +1007,51 @@ public class ConversationsController(
                         error = "sandbox_session_refresh_deferred",
                         code = "sandbox_session_refresh_deferred",
                         detail = "The conversation's sandbox session is being replaced and its current run must finish first. Retry shortly.",
-                        threadId
-                    });
+                        threadId,
+                    }
+                );
             }
 
             agent = refresh.Agent;
         }
         catch (ProviderUnavailableException ex)
         {
-            logger.LogWarning(ex, "SendMessage for thread {ThreadId} failed: provider {ProviderId} unavailable", threadId, ex.ProviderId);
+            logger.LogWarning(
+                ex,
+                "SendMessage for thread {ThreadId} failed: provider {ProviderId} unavailable",
+                threadId,
+                ex.ProviderId
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "provider_unavailable", code = "provider_unavailable", providerId = ex.ProviderId, detail = ex.Message, threadId });
+                new
+                {
+                    error = "provider_unavailable",
+                    code = "provider_unavailable",
+                    providerId = ex.ProviderId,
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
         catch (SandboxSessionUnavailableException ex)
         {
-            logger.LogWarning(ex, "SendMessage for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})", threadId, ex.StatusCode);
+            logger.LogWarning(
+                ex,
+                "SendMessage for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})",
+                threadId,
+                ex.StatusCode
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "sandbox_unavailable", code = "sandbox_unavailable", detail = ex.Message, threadId });
+                new
+                {
+                    error = "sandbox_unavailable",
+                    code = "sandbox_unavailable",
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
         catch (SandboxCredentialConflictException ex)
         {
@@ -1023,16 +1074,18 @@ public class ConversationsController(
             logger.LogWarning(
                 "SendMessage for thread {ThreadId} rejected: agent {AgentType} cannot enforce per-turn sub-agent spawn suppression",
                 threadId,
-                agent.GetType().Name);
-            return BadRequest(new
-            {
-                error = "spawn_suppression_unsupported",
-                code = "spawn_suppression_unsupported",
-                detail =
-                    "This conversation's agent cannot suppress sub-agent spawning for a single turn, so the "
-                    + "requested guarantee cannot be made.",
-                threadId,
-            });
+                agent.GetType().Name
+            );
+            return BadRequest(
+                new
+                {
+                    error = "spawn_suppression_unsupported",
+                    code = "spawn_suppression_unsupported",
+                    detail = "This conversation's agent cannot suppress sub-agent spawning for a single turn, so the "
+                        + "requested guarantee cannot be made.",
+                    threadId,
+                }
+            );
         }
 
         // An idempotent send is identified by the caller's key TOGETHER WITH the options that change what the
@@ -1052,16 +1105,18 @@ public class ConversationsController(
                 "SendMessage for thread {ThreadId} rejected: store {StoreType} cannot durably admit an "
                     + "input id, so an idempotency key cannot be honored",
                 threadId,
-                store.GetType().Name);
-            return BadRequest(new
-            {
-                error = "idempotency_unsupported",
-                code = "idempotency_unsupported",
-                detail =
-                    "This host cannot durably record accepted inputs, so it cannot promise that a repeated "
-                    + "IdempotencyKey will not queue a second turn.",
-                threadId,
-            });
+                store.GetType().Name
+            );
+            return BadRequest(
+                new
+                {
+                    error = "idempotency_unsupported",
+                    code = "idempotency_unsupported",
+                    detail = "This host cannot durably record accepted inputs, so it cannot promise that a repeated "
+                        + "IdempotencyKey will not queue a second turn.",
+                    threadId,
+                }
+            );
         }
 
         var idempotent = request.IdempotencyKey is not null;
@@ -1078,10 +1133,10 @@ public class ConversationsController(
             InputAcceptanceState.Pending,
             SpawningSuppressed: request.SuppressSubAgentSpawning,
             IdempotencyHonored: idempotent,
-            ReservationId: Guid.NewGuid());
+            ReservationId: Guid.NewGuid()
+        );
 
-        if (idempotent
-            && await TryReconcileAdmissionAsync(acceptances!, admission, ct) is { } reconciled)
+        if (idempotent && await TryReconcileAdmissionAsync(acceptances!, admission, ct) is { } reconciled)
         {
             return reconciled;
         }
@@ -1106,8 +1161,10 @@ public class ConversationsController(
                         [userMessage],
                         admission.InputId,
                         ParentRunId: null,
-                        SuppressSubAgentSpawning: request.SuppressSubAgentSpawning),
-                    ct)
+                        SuppressSubAgentSpawning: request.SuppressSubAgentSpawning
+                    ),
+                    ct
+                )
                 : await agent.TrySendAsync([userMessage], inputId: admission.InputId, parentRunId: null, ct);
         }
         catch (InputAcceptanceRefusedException ex)
@@ -1120,7 +1177,8 @@ public class ConversationsController(
             logger.LogWarning(
                 ex,
                 "SendMessage for thread {ThreadId} raced an agent replacement; nothing was queued",
-                threadId);
+                threadId
+            );
             if (idempotent)
             {
                 await ReleaseAdmissionAsync(acceptances!, admission);
@@ -1128,7 +1186,13 @@ public class ConversationsController(
 
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "agent_replaced", code = "agent_replaced", threadId });
+                new
+                {
+                    error = "agent_replaced",
+                    code = "agent_replaced",
+                    threadId,
+                }
+            );
         }
         catch
         {
@@ -1154,7 +1218,13 @@ public class ConversationsController(
 
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "queue_full", code = "queue_full", threadId });
+                new
+                {
+                    error = "queue_full",
+                    code = "queue_full",
+                    threadId,
+                }
+            );
         }
 
         // The capability check got the request this far; the RECEIPT is what says this particular input will
@@ -1169,7 +1239,8 @@ public class ConversationsController(
                 "SendMessage for thread {ThreadId}: agent {AgentType} accepted the input but did not confirm "
                     + "sub-agent spawn suppression; the response will not claim the guarantee",
                 threadId,
-                agent.GetType().Name);
+                agent.GetType().Name
+            );
         }
 
         var granted = admission with
@@ -1184,7 +1255,8 @@ public class ConversationsController(
                 "Could not record the outcome of input {InputId} on thread {ThreadId}; the turn is queued but "
                     + "a repeat of this idempotency key may not reconcile to it",
                 granted.InputId,
-                threadId);
+                threadId
+            );
         }
 
         return AcceptedAdmission(granted, queued: true);
@@ -1223,7 +1295,8 @@ public class ConversationsController(
     private async Task<IActionResult?> TryReconcileAdmissionAsync(
         IInputAcceptanceStore acceptances,
         InputAcceptance admission,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         for (var attempt = 1; ; attempt++)
         {
@@ -1239,7 +1312,8 @@ public class ConversationsController(
                         + "({State}); nothing was queued",
                     admission.ThreadId,
                     admission.InputId,
-                    granted.State);
+                    granted.State
+                );
 
                 return AcceptedAdmission(granted, queued: false);
             }
@@ -1252,7 +1326,8 @@ public class ConversationsController(
                     "SendMessage for thread {ThreadId} reconciled to in-flight input {InputId} whose "
                         + "admission is still unsettled; nothing was queued",
                     admission.ThreadId,
-                    admission.InputId);
+                    admission.InputId
+                );
 
                 return AcceptedAdmission(granted, queued: false);
             }
@@ -1265,7 +1340,8 @@ public class ConversationsController(
                     "SendMessage for thread {ThreadId} reconciled to just-admitted input {InputId} that has "
                         + "not reached the queue yet; nothing was queued",
                     admission.ThreadId,
-                    admission.InputId);
+                    admission.InputId
+                );
 
                 return AcceptedAdmission(granted, queued: false);
             }
@@ -1274,18 +1350,22 @@ public class ConversationsController(
             // record, so of several retries deciding this at once exactly one can succeed — the rest find
             // the id already gone or already re-taken and reconcile to whatever now holds it, which is how
             // recovery avoids becoming the duplicate it exists to prevent.
-            if (attempt > UnsettledAdmissionRecoveryAttempts
+            if (
+                attempt > UnsettledAdmissionRecoveryAttempts
                 || !await acceptances.TryReleaseAcceptanceAsync(
                     admission.ThreadId,
                     admission.InputId,
                     granted.ReservationId,
-                    ct))
+                    ct
+                )
+            )
             {
                 logger.LogInformation(
                     "SendMessage for thread {ThreadId} left the unsettled admission for input {InputId} to "
                         + "the caller that is already recovering it; nothing was queued",
                     admission.ThreadId,
-                    admission.InputId);
+                    admission.InputId
+                );
 
                 return AcceptedAdmission(granted, queued: false);
             }
@@ -1295,7 +1375,8 @@ public class ConversationsController(
                     + "settled, so this send re-took it rather than leaving the key wedged",
                 admission.InputId,
                 admission.ThreadId,
-                granted.AcceptedAt);
+                granted.AcceptedAt
+            );
         }
     }
 
@@ -1307,7 +1388,8 @@ public class ConversationsController(
     private async Task<IActionResult?> ConfirmAdmissionAgainstLiveStateAsync(
         IInputAcceptanceStore acceptances,
         InputAcceptance admission,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (await statusResolver.ResolveByInputIdAsync(admission.ThreadId, admission.InputId, ct) is null)
         {
@@ -1319,11 +1401,17 @@ public class ConversationsController(
             "SendMessage for thread {ThreadId} reconciled to in-flight input {InputId} that carries no "
                 + "admission record; nothing was queued and no suppression is claimed",
             admission.ThreadId,
-            admission.InputId);
+            admission.InputId
+        );
 
         return AcceptedAdmission(
-            admission with { State = InputAcceptanceState.Unenforced, SpawningSuppressed = false },
-            queued: false);
+            admission with
+            {
+                State = InputAcceptanceState.Unenforced,
+                SpawningSuppressed = false,
+            },
+            queued: false
+        );
     }
 
     /// <summary>
@@ -1347,19 +1435,20 @@ public class ConversationsController(
     /// key can only ever answer with the same projection of the same record.
     /// </summary>
     private IActionResult AcceptedAdmission(InputAcceptance acceptance, bool queued) =>
-        Accepted(new SendMessageResponse
-        {
-            InputId = acceptance.InputId,
-            Queued = queued,
+        Accepted(
+            new SendMessageResponse
+            {
+                InputId = acceptance.InputId,
+                Queued = queued,
 
-            // Only an ENFORCED record proves the guarantee: it is the state an agent's receipt put the
-            // record into. Pending carries what a host undertook when it admitted the input, and relaying
-            // that would confirm a guarantee out of the request that asked for it; Unenforced is a refusal
-            // and already carries false.
-            SpawningSuppressed =
-                acceptance.State is InputAcceptanceState.Enforced && acceptance.SpawningSuppressed,
-            IdempotencyKeyHonored = acceptance.IdempotencyHonored,
-        });
+                // Only an ENFORCED record proves the guarantee: it is the state an agent's receipt put the
+                // record into. Pending carries what a host undertook when it admitted the input, and relaying
+                // that would confirm a guarantee out of the request that asked for it; Unenforced is a refusal
+                // and already carries false.
+                SpawningSuppressed = acceptance.State is InputAcceptanceState.Enforced && acceptance.SpawningSuppressed,
+                IdempotencyKeyHonored = acceptance.IdempotencyHonored,
+            }
+        );
 
     /// <summary>
     /// Gives back an admission whose send did not survive to become queued work. Best-effort and never
@@ -1371,17 +1460,21 @@ public class ConversationsController(
     {
         try
         {
-            if (!await acceptances.TryReleaseAcceptanceAsync(
+            if (
+                !await acceptances.TryReleaseAcceptanceAsync(
                     admission.ThreadId,
                     admission.InputId,
                     admission.ReservationId,
-                    CancellationToken.None))
+                    CancellationToken.None
+                )
+            )
             {
                 logger.LogWarning(
                     "Admission for input {InputId} on thread {ThreadId} was not retracted because it is no "
                         + "longer this request's to retract",
                     admission.InputId,
-                    admission.ThreadId);
+                    admission.ThreadId
+                );
             }
         }
         catch (Exception ex)
@@ -1391,7 +1484,8 @@ public class ConversationsController(
                 "Could not retract the admission for input {InputId} on thread {ThreadId}; a repeat of this "
                     + "idempotency key will reconcile to a turn that was never queued",
                 admission.InputId,
-                admission.ThreadId);
+                admission.ThreadId
+            );
         }
     }
 
@@ -1446,7 +1540,8 @@ public class ConversationsController(
         string threadId,
         string? runId = null,
         string? inputId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (RefuseMachineCaller(threadId, AgentOwnedThreadReadCode) is { } refusal)
         {
@@ -1464,8 +1559,7 @@ public class ConversationsController(
         // never-minted thread exactly as for a forbidden cross-tenant one, so short-circuiting the missing
         // case here would make a missing thread cost zero look-ups and a forbidden one cost one - a
         // work-shape existence oracle (#389) even with byte-identical 404 bodies.
-        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Read, ct))
-            is { } denied)
+        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Read, ct)) is { } denied)
         {
             return denied;
         }
@@ -1476,24 +1570,29 @@ public class ConversationsController(
             return UnknownThread(threadId);
         }
 
-        var result = runId != null
-            ? await statusResolver.ResolveByRunIdAsync(threadId, runId, ct)
-            : await statusResolver.ResolveByInputIdAsync(threadId, inputId!, ct);
+        var result =
+            runId != null
+                ? await statusResolver.ResolveByRunIdAsync(threadId, runId, ct)
+                : await statusResolver.ResolveByInputIdAsync(threadId, inputId!, ct);
 
         if (result == null)
         {
             var idKind = runId != null ? "runId" : "inputId";
             var idValue = runId ?? inputId;
-            return NotFound(new { error = $"Unknown {idKind} '{idValue}' for thread '{threadId}'.", code = $"unknown_{idKind}" });
+            return NotFound(
+                new { error = $"Unknown {idKind} '{idValue}' for thread '{threadId}'.", code = $"unknown_{idKind}" }
+            );
         }
 
-        return Ok(new ConversationStatusResponse
-        {
-            ThreadId = result.ThreadId,
-            RunId = result.RunId,
-            Status = result.Status.ToString(),
-            Response = result.Response,
-        });
+        return Ok(
+            new ConversationStatusResponse
+            {
+                ThreadId = result.ThreadId,
+                RunId = result.RunId,
+                Status = result.Status.ToString(),
+                Response = result.Response,
+            }
+        );
     }
 
     /// <summary>
@@ -1504,7 +1603,8 @@ public class ConversationsController(
     public async Task<IActionResult> UpdateMetadata(
         string threadId,
         [FromBody] ConversationMetadataUpdate update,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(update);
 
@@ -1527,8 +1627,8 @@ public class ConversationsController(
             threadId,
             existing =>
             {
-                var propertiesBuilder = existing?.Properties?.ToBuilder()
-                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+                var propertiesBuilder =
+                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
                 if (update.Title != null)
                 {
@@ -1557,7 +1657,8 @@ public class ConversationsController(
                     Visibility = existing?.Visibility,
                 };
             },
-            ct);
+            ct
+        );
 
         return Ok();
     }
@@ -1568,9 +1669,7 @@ public class ConversationsController(
     /// controller can be asked to do by id alone.
     /// </summary>
     [HttpDelete("{threadId}")]
-    public async Task<IActionResult> Delete(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task<IActionResult> Delete(string threadId, CancellationToken ct = default)
     {
         if (RefuseMachineCaller(threadId, AgentOwnedThreadWriteCode) is { } refusal)
         {
@@ -1600,7 +1699,8 @@ public class ConversationsController(
     public async Task<IActionResult> SwitchMode(
         string threadId,
         [FromBody] SwitchModeRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -1630,14 +1730,16 @@ public class ConversationsController(
                 runState.CurrentRunId,
                 runState.AgentIsRunning,
                 runState.RunTaskCompleted,
-                runState.IsStale);
+                runState.IsStale
+            );
             return Conflict(
                 new
                 {
                     error = "Cannot switch mode while response is streaming.",
                     code = "mode_switch_while_streaming",
                     threadId,
-                });
+                }
+            );
         }
 
         // HARD block (issue #246): an unanswered AskUserQuestion must not be silently orphaned by a
@@ -1648,14 +1750,16 @@ public class ConversationsController(
             logger.LogWarning(
                 "Blocked mode switch for thread {ThreadId} to mode {ModeId} because an AskUserQuestion is awaiting an answer.",
                 threadId,
-                request.ModeId);
+                request.ModeId
+            );
             return Conflict(
                 new
                 {
                     error = PendingAskUserQuestionBlockedMessage,
                     code = "mode_switch_blocked_by_pending_ask_user_question",
                     threadId,
-                });
+                }
+            );
         }
 
         // A mode switch recreates the agent, which tears down its trigger runtime. If a Wait is armed
@@ -1675,11 +1779,7 @@ public class ConversationsController(
             // so its cross-app refusal lands on the same caller_credential_conflict catch below.
             await ReleaseAgentBoundToAnotherUserAsync(threadId, "Mode switch", callerCredential);
 
-            _ = await agentPool.RecreateAgentWithModeAsync(
-                threadId,
-                mode,
-                callerCredential,
-                CallerUserId);
+            _ = await agentPool.RecreateAgentWithModeAsync(threadId, mode, callerCredential, CallerUserId);
         }
         catch (SandboxCredentialConflictException ex)
         {
@@ -1696,10 +1796,18 @@ public class ConversationsController(
                 "Mode switch to {ModeId} for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})",
                 request.ModeId,
                 threadId,
-                ex.StatusCode);
+                ex.StatusCode
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "sandbox_unavailable", code = "sandbox_unavailable", detail = ex.Message, threadId });
+                new
+                {
+                    error = "sandbox_unavailable",
+                    code = "sandbox_unavailable",
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
         catch (ProviderUnavailableException ex)
         {
@@ -1708,18 +1816,29 @@ public class ConversationsController(
                 "Mode switch to {ModeId} for thread {ThreadId} failed: provider {ProviderId} unavailable",
                 request.ModeId,
                 threadId,
-                ex.ProviderId);
+                ex.ProviderId
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "provider_unavailable", code = "provider_unavailable", providerId = ex.ProviderId, detail = ex.Message, threadId });
+                new
+                {
+                    error = "provider_unavailable",
+                    code = "provider_unavailable",
+                    providerId = ex.ProviderId,
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
 
-        return Ok(new SwitchModeResponse
-        {
-            ModeId = mode.Id,
-            ModeName = mode.Name,
-            Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
-        });
+        return Ok(
+            new SwitchModeResponse
+            {
+                ModeId = mode.Id,
+                ModeName = mode.Name,
+                Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
+            }
+        );
     }
 
     /// <summary>
@@ -1732,7 +1851,8 @@ public class ConversationsController(
     public async Task<IActionResult> SwitchProvider(
         string threadId,
         [FromBody] SwitchProviderRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -1756,14 +1876,16 @@ public class ConversationsController(
                 runState.CurrentRunId,
                 runState.AgentIsRunning,
                 runState.RunTaskCompleted,
-                runState.IsStale);
+                runState.IsStale
+            );
             return Conflict(
                 new
                 {
                     error = "Cannot switch provider while response is streaming.",
                     code = "provider_switch_while_streaming",
                     threadId,
-                });
+                }
+            );
         }
 
         // Preserve the thread's current mode across the provider swap. Prefer the live agent's mode;
@@ -1789,7 +1911,8 @@ public class ConversationsController(
         {
             return StatusCode(
                 StatusCodes.Status500InternalServerError,
-                new { error = "Could not resolve the conversation's current mode.", threadId });
+                new { error = "Could not resolve the conversation's current mode.", threadId }
+            );
         }
 
         // HARD block (issue #246): mirrors SwitchMode — an unanswered AskUserQuestion must not be
@@ -1799,14 +1922,16 @@ public class ConversationsController(
             logger.LogWarning(
                 "Blocked provider switch for thread {ThreadId} to provider {ProviderId} because an AskUserQuestion is awaiting an answer.",
                 threadId,
-                request.ProviderId);
+                request.ProviderId
+            );
             return Conflict(
                 new
                 {
                     error = PendingAskUserQuestionBlockedMessage,
                     code = "provider_switch_blocked_by_pending_ask_user_question",
                     threadId,
-                });
+                }
+            );
         }
 
         // See SwitchMode: a provider swap recreates the agent and discards any armed Wait. Capture it
@@ -1828,7 +1953,8 @@ public class ConversationsController(
                 request.ProviderId,
                 currentMode,
                 callerCredential,
-                CallerUserId);
+                CallerUserId
+            );
         }
         catch (SandboxCredentialConflictException ex)
         {
@@ -1844,10 +1970,19 @@ public class ConversationsController(
                 ex,
                 "Provider switch to {ProviderId} for thread {ThreadId} failed: provider unavailable",
                 request.ProviderId,
-                threadId);
+                threadId
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "provider_unavailable", code = "provider_unavailable", providerId = ex.ProviderId, detail = ex.Message, threadId });
+                new
+                {
+                    error = "provider_unavailable",
+                    code = "provider_unavailable",
+                    providerId = ex.ProviderId,
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
         catch (SandboxSessionUnavailableException ex)
         {
@@ -1856,19 +1991,28 @@ public class ConversationsController(
                 "Provider switch to {ProviderId} for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})",
                 request.ProviderId,
                 threadId,
-                ex.StatusCode);
+                ex.StatusCode
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "sandbox_unavailable", code = "sandbox_unavailable", detail = ex.Message, threadId });
+                new
+                {
+                    error = "sandbox_unavailable",
+                    code = "sandbox_unavailable",
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
 
-        return Ok(new SwitchProviderResponse
-        {
-            ProviderId = request.ProviderId,
-            Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
-        });
+        return Ok(
+            new SwitchProviderResponse
+            {
+                ProviderId = request.ProviderId,
+                Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
+            }
+        );
     }
-
 
     /// <summary>
     /// The end user this request is attributed to, or null for an app-only or unauthenticated
@@ -1888,10 +2032,7 @@ public class ConversationsController(
     /// <param name="threadId">The conversation being addressed.</param>
     /// <param name="action">The action being attempted.</param>
     /// <param name="ct">Cancellation token.</param>
-    private async Task<IActionResult?> AuthorizeAsync(
-        string threadId,
-        AccessAction action,
-        CancellationToken ct)
+    private async Task<IActionResult?> AuthorizeAsync(string threadId, AccessAction action, CancellationToken ct)
     {
         if (!authorizer.IsEnforced)
         {
@@ -1911,8 +2052,7 @@ public class ConversationsController(
     /// Do not vary the body per call site.
     /// </summary>
     /// <param name="threadId">The conversation id to report as not found.</param>
-    private ObjectResult UnknownThread(string threadId) =>
-        NotFound(UnknownThreadRefusal.Body(threadId));
+    private ObjectResult UnknownThread(string threadId) => NotFound(UnknownThreadRefusal.Body(threadId));
 
     /// <summary>
     /// Turns one access decision into the response that carries it, or null when it allowed.
@@ -1937,25 +2077,27 @@ public class ConversationsController(
             logger.LogWarning(
                 "Conversation {ThreadId} refused as unknown for the current principal: {Reason}",
                 threadId,
-                result.Reason);
+                result.Reason
+            );
             return UnknownThread(threadId);
         }
 
         if (string.Equals(result.Reason, ConversationAuthorizer.UnauthenticatedReason, StringComparison.Ordinal))
         {
-            return StatusCode(
-                StatusCodes.Status401Unauthorized,
-                new { error = "unauthorized", code = result.Reason });
+            return StatusCode(StatusCodes.Status401Unauthorized, new { error = "unauthorized", code = result.Reason });
         }
 
-        logger.LogWarning(
-            "Conversation {ThreadId} refused: {Reason}",
-            threadId,
-            result.Reason);
+        logger.LogWarning("Conversation {ThreadId} refused: {Reason}", threadId, result.Reason);
 
         return StatusCode(
             StatusCodes.Status403Forbidden,
-            new { error = "forbidden", code = result.Reason, threadId });
+            new
+            {
+                error = "forbidden",
+                code = result.Reason,
+                threadId,
+            }
+        );
     }
 
     /// <summary>
@@ -1976,22 +2118,26 @@ public class ConversationsController(
     private ConflictObjectResult CallerCredentialConflict(
         string threadId,
         string operation,
-        SandboxCredentialConflictException ex)
+        SandboxCredentialConflictException ex
+    )
     {
         logger.LogWarning(
             "{Operation} for thread {ThreadId} rejected: caller credential conflict (existing app id {ExistingAppId}, requested app id {RequestedAppId})",
             operation,
             threadId,
             ex.ExistingAppId ?? "(none)",
-            ex.RequestedAppId ?? "(none)");
+            ex.RequestedAppId ?? "(none)"
+        );
 
-        return Conflict(new
-        {
-            error = "caller_credential_conflict",
-            code = "caller_credential_conflict",
-            detail = "This conversation belongs to a different caller identity and cannot be continued here.",
-            threadId,
-        });
+        return Conflict(
+            new
+            {
+                error = "caller_credential_conflict",
+                code = "caller_credential_conflict",
+                detail = "This conversation belongs to a different caller identity and cannot be continued here.",
+                threadId,
+            }
+        );
     }
 
     /// <summary>
@@ -2002,32 +2148,32 @@ public class ConversationsController(
     /// <param name="threadId">The conversation being addressed.</param>
     /// <param name="operation">Which route hit the conflict, for the log line.</param>
     /// <param name="ex">The conflict.</param>
-    private ConflictObjectResult PrincipalConflict(
-        string threadId,
-        string operation,
-        PrincipalConflictException ex)
+    private ConflictObjectResult PrincipalConflict(string threadId, string operation, PrincipalConflictException ex)
     {
         logger.LogWarning(
             "{Operation} for thread {ThreadId} rejected: principal conflict (existing user {ExistingUserId}, requested user {RequestedUserId})",
             operation,
             threadId,
             ex.ExistingUserId ?? "(none)",
-            ex.RequestedUserId ?? "(none)");
+            ex.RequestedUserId ?? "(none)"
+        );
 
-        return Conflict(new
-        {
-            error = "principal_conflict",
-            code = "principal_conflict",
+        return Conflict(
+            new
+            {
+                error = "principal_conflict",
+                code = "principal_conflict",
 
-            // Word for word what the WebSocket sibling sends, and for the same reason: ex.Message
-            // interpolates BOTH stable user ids, and this caller has not been authorized to learn who
-            // else uses the conversation. The ids stay in the structured log line above, where the
-            // operator reading them already has the tenant. Two transports answering one condition
-            // must not disagree about that - suppressing on one and disclosing on the other only
-            // tells an attacker which door to use.
-            detail = "This conversation's agent is in use by a different user and cannot be continued here.",
-            threadId,
-        });
+                // Word for word what the WebSocket sibling sends, and for the same reason: ex.Message
+                // interpolates BOTH stable user ids, and this caller has not been authorized to learn who
+                // else uses the conversation. The ids stay in the structured log line above, where the
+                // operator reading them already has the tenant. Two transports answering one condition
+                // must not disagree about that - suppressing on one and disclosing on the other only
+                // tells an attacker which door to use.
+                detail = "This conversation's agent is in use by a different user and cannot be continued here.",
+                threadId,
+            }
+        );
     }
 
     /// <summary>
@@ -2106,7 +2252,8 @@ public class ConversationsController(
     private async Task ReleaseAgentBoundToAnotherUserAsync(
         string threadId,
         string operation,
-        SandboxCredential? callerCredential)
+        SandboxCredential? callerCredential
+    )
     {
         var callerUserId = CallerUserId;
         if (callerUserId is null)
@@ -2141,7 +2288,8 @@ public class ConversationsController(
                 operation,
                 threadId,
                 frozenAppId ?? "(none)",
-                requestedAppId ?? "(none)");
+                requestedAppId ?? "(none)"
+            );
             throw new SandboxCredentialConflictException(threadId, frozenAppId, requestedAppId);
         }
 
@@ -2155,14 +2303,16 @@ public class ConversationsController(
                 logger.LogInformation(
                     "{Operation} for thread {ThreadId} released the agent bound to another user so an authorized caller gets their own",
                     operation,
-                    threadId);
+                    threadId
+                );
                 break;
 
             case MultiTurnAgentPool.AgentReleaseOutcome.Busy:
                 logger.LogInformation(
                     "{Operation} for thread {ThreadId} left the agent bound to another user in place: it has work in hand",
                     operation,
-                    threadId);
+                    threadId
+                );
                 break;
 
             case MultiTurnAgentPool.AgentReleaseOutcome.NotPooled:
@@ -2174,7 +2324,8 @@ public class ConversationsController(
                     "{Operation} for thread {ThreadId} released nothing: the entry it read was {Outcome}",
                     operation,
                     threadId,
-                    outcome);
+                    outcome
+                );
                 break;
         }
     }
@@ -2196,18 +2347,25 @@ public class ConversationsController(
             return Ok(Array.Empty<ConversationShareResponse>());
         }
 
-        var grants = await authorizer.Grants
-            .ListGrantsForResourceAsync(tenantId, ConversationAuthorizer.ConversationRef(threadId), ct);
+        var grants = await authorizer.Grants.ListGrantsForResourceAsync(
+            tenantId,
+            ConversationAuthorizer.ConversationRef(threadId),
+            ct
+        );
 
-        return Ok(grants.Select(g => new ConversationShareResponse
-        {
-            ThreadId = threadId,
-            SubjectId = g.SubjectId,
-            Role = g.Role == GrantRole.Editor ? "editor" : "viewer",
-            GrantedBy = g.GrantedBy,
-            GrantedAtUnixMs = g.GrantedAt.ToUnixTimeMilliseconds(),
-            ExpiresAtUnixMs = g.ExpiresAt?.ToUnixTimeMilliseconds(),
-        }).ToArray());
+        return Ok(
+            grants
+                .Select(g => new ConversationShareResponse
+                {
+                    ThreadId = threadId,
+                    SubjectId = g.SubjectId,
+                    Role = g.Role == GrantRole.Editor ? "editor" : "viewer",
+                    GrantedBy = g.GrantedBy,
+                    GrantedAtUnixMs = g.GrantedAt.ToUnixTimeMilliseconds(),
+                    ExpiresAtUnixMs = g.ExpiresAt?.ToUnixTimeMilliseconds(),
+                })
+                .ToArray()
+        );
     }
 
     /// <summary>
@@ -2226,35 +2384,39 @@ public class ConversationsController(
     public async Task<IActionResult> AddShare(
         string threadId,
         [FromBody] ConversationShareRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
         if (ParseGrantRole(request.Role) is not { } role)
         {
-            return BadRequest(new
-            {
-                error = "invalid_role",
-                code = "invalid_role",
-                detail = "Role must be 'viewer' or 'editor'.",
-                threadId,
-            });
+            return BadRequest(
+                new
+                {
+                    error = "invalid_role",
+                    code = "invalid_role",
+                    detail = "Role must be 'viewer' or 'editor'.",
+                    threadId,
+                }
+            );
         }
 
         if (string.IsNullOrWhiteSpace(request.SubjectId))
         {
-            return BadRequest(new
-            {
-                error = "invalid_subject",
-                code = "invalid_subject",
-                detail = "SubjectId must be the '{tid}:{oid}' pair of the person to share with.",
-                threadId,
-            });
+            return BadRequest(
+                new
+                {
+                    error = "invalid_subject",
+                    code = "invalid_subject",
+                    detail = "SubjectId must be the '{tid}:{oid}' pair of the person to share with.",
+                    threadId,
+                }
+            );
         }
 
         var metadata = await store.LoadMetadataAsync(threadId, ct);
-        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Share, ct))
-            is { } denied)
+        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Share, ct)) is { } denied)
         {
             return denied;
         }
@@ -2271,7 +2433,8 @@ public class ConversationsController(
                     code = "sharing_unavailable",
                     detail = "Sharing requires Identity:Enforce and an authenticated principal.",
                     threadId,
-                });
+                }
+            );
         }
 
         var now = authorizer.Clock.GetUtcNow();
@@ -2289,7 +2452,8 @@ public class ConversationsController(
                     ? DateTimeOffset.FromUnixTimeMilliseconds(expires)
                     : null,
             },
-            ct);
+            ct
+        );
 
         await SetVisibilityAsync(threadId, Visibility.Shared, ct);
 
@@ -2297,17 +2461,20 @@ public class ConversationsController(
             "Conversation {ThreadId} shared with {SubjectId} as {Role}.",
             threadId,
             request.SubjectId,
-            role);
+            role
+        );
 
-        return Ok(new ConversationShareResponse
-        {
-            ThreadId = threadId,
-            SubjectId = request.SubjectId,
-            Role = role == GrantRole.Editor ? "editor" : "viewer",
-            GrantedBy = principal.EffectiveUserId ?? principal.Actor.Id,
-            GrantedAtUnixMs = now.ToUnixTimeMilliseconds(),
-            ExpiresAtUnixMs = request.ExpiresAtUnixMs,
-        });
+        return Ok(
+            new ConversationShareResponse
+            {
+                ThreadId = threadId,
+                SubjectId = request.SubjectId,
+                Role = role == GrantRole.Editor ? "editor" : "viewer",
+                GrantedBy = principal.EffectiveUserId ?? principal.Actor.Id,
+                GrantedAtUnixMs = now.ToUnixTimeMilliseconds(),
+                ExpiresAtUnixMs = request.ExpiresAtUnixMs,
+            }
+        );
     }
 
     /// <summary>Revokes one person's grant on a conversation.</summary>
@@ -2320,10 +2487,7 @@ public class ConversationsController(
     /// <param name="subjectId">The person whose grant is removed.</param>
     /// <param name="ct">Cancellation token.</param>
     [HttpDelete("{threadId}/shares/{subjectId}")]
-    public async Task<IActionResult> RemoveShare(
-        string threadId,
-        string subjectId,
-        CancellationToken ct = default)
+    public async Task<IActionResult> RemoveShare(string threadId, string subjectId, CancellationToken ct = default)
     {
         if (await AuthorizeAsync(threadId, AccessAction.Share, ct) is { } denied)
         {
@@ -2341,11 +2505,7 @@ public class ConversationsController(
         // Visibility is STORED, not derived (spec 8.3), so the transition back to Private has to be
         // made by whoever removed the last grant - otherwise `Shared` outlives the sharing, and a
         // conversation reads as shared with nobody forever.
-        if (!await authorizer.Grants.HasAnyGrantAsync(
-                principal.TenantId,
-                resource,
-                authorizer.Clock.GetUtcNow(),
-                ct))
+        if (!await authorizer.Grants.HasAnyGrantAsync(principal.TenantId, resource, authorizer.Clock.GetUtcNow(), ct))
         {
             await SetVisibilityAsync(threadId, Visibility.Private, ct);
         }
@@ -2354,12 +2514,13 @@ public class ConversationsController(
     }
 
     /// <summary>Parses the wire role. An unrecognised value is refused, never defaulted.</summary>
-    private static GrantRole? ParseGrantRole(string? role) => role switch
-    {
-        "viewer" => GrantRole.Viewer,
-        "editor" => GrantRole.Editor,
-        _ => null,
-    };
+    private static GrantRole? ParseGrantRole(string? role) =>
+        role switch
+        {
+            "viewer" => GrantRole.Viewer,
+            "editor" => GrantRole.Editor,
+            _ => null,
+        };
 
     /// <summary>
     /// Moves a conversation between <see cref="Visibility.Private"/> and
@@ -2382,7 +2543,8 @@ public class ConversationsController(
                 OwnerAppId = existing?.OwnerAppId,
                 Visibility = visibility,
             },
-            ct);
+            ct
+        );
 
     /// <summary>
     /// Reads the caller-forwarded <c>X-Sbx-App-Id</c> / <c>X-Sbx-App-Key</c> headers (the same names
@@ -2430,8 +2592,10 @@ public class ConversationsController(
     {
         return msg switch
         {
-            ToolCallMessage tc when NeedsArgsFix(tc.FunctionArgs) =>
-                tc with { FunctionArgs = StripLeadingEmptyObject(tc.FunctionArgs!) },
+            ToolCallMessage tc when NeedsArgsFix(tc.FunctionArgs) => tc with
+            {
+                FunctionArgs = StripLeadingEmptyObject(tc.FunctionArgs!),
+            },
             _ => msg,
         };
     }

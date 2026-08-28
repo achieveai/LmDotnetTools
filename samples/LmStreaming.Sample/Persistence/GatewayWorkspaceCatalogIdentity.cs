@@ -37,11 +37,7 @@ public class GatewayWorkspaceCatalogIdentity
     /// <summary>
     /// Private constructor. Use <see cref="Create"/> to create instances.
     /// </summary>
-    private GatewayWorkspaceCatalogIdentity(
-        string canonicalBaseUrl,
-        string appId,
-        string catalogKey
-    )
+    private GatewayWorkspaceCatalogIdentity(string canonicalBaseUrl, string appId, string catalogKey)
     {
         CanonicalBaseUrl = canonicalBaseUrl;
         AppId = appId;
@@ -71,33 +67,25 @@ public class GatewayWorkspaceCatalogIdentity
         // Parse and validate the URL
         if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
         {
-            throw new InvalidOperationException(
-                $"Base URL must be an absolute URL. Received: {baseUrl}"
-            );
+            throw new InvalidOperationException($"Base URL must be an absolute URL. Received: {baseUrl}");
         }
 
         // Validate scheme
         if (uri.Scheme != "http" && uri.Scheme != "https")
         {
-            throw new InvalidOperationException(
-                $"Base URL must use HTTP or HTTPS scheme. Received: {uri.Scheme}"
-            );
+            throw new InvalidOperationException($"Base URL must use HTTP or HTTPS scheme. Received: {uri.Scheme}");
         }
 
         // Validate no fragment
         if (!string.IsNullOrEmpty(uri.Fragment))
         {
-            throw new InvalidOperationException(
-                $"Base URL must not contain a fragment. Received: {baseUrl}"
-            );
+            throw new InvalidOperationException($"Base URL must not contain a fragment. Received: {baseUrl}");
         }
 
         // Validate no user info
         if (!string.IsNullOrEmpty(uri.UserInfo))
         {
-            throw new InvalidOperationException(
-                $"Base URL must not contain user information. Received: {baseUrl}"
-            );
+            throw new InvalidOperationException($"Base URL must not contain user information. Received: {baseUrl}");
         }
 
         // Canonicalize the URL
@@ -128,9 +116,7 @@ public class GatewayWorkspaceCatalogIdentity
 
         if (manifest.AppId != AppId)
         {
-            throw new InvalidOperationException(
-                $"Manifest AppId mismatch. Expected: {AppId}, Got: {manifest.AppId}"
-            );
+            throw new InvalidOperationException($"Manifest AppId mismatch. Expected: {AppId}, Got: {manifest.AppId}");
         }
 
         if (manifest.SchemaVersion != SchemaVersion)
@@ -196,8 +182,7 @@ public class GatewayWorkspaceCatalogIdentity
     /// </summary>
     private static bool IsDefaultPort(Uri uri)
     {
-        return (uri.Scheme == "http" && uri.Port == 80)
-            || (uri.Scheme == "https" && uri.Port == 443);
+        return (uri.Scheme == "http" && uri.Port == 80) || (uri.Scheme == "https" && uri.Port == 443);
     }
 
     /// <summary>

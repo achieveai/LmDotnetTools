@@ -64,10 +64,7 @@ public static class SystemPromptAugmenter
         }
 
         var metadata = await store.LoadMetadataAsync(threadId, ct).ConfigureAwait(false);
-        if (
-            metadata?.Properties is not { } properties
-            || !properties.TryGetValue(AppendixPropertyKey, out var raw)
-        )
+        if (metadata?.Properties is not { } properties || !properties.TryGetValue(AppendixPropertyKey, out var raw))
         {
             return null;
         }

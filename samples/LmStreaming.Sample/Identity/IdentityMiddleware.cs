@@ -104,11 +104,7 @@ public sealed class IdentityMiddleware
     /// there anonymous, silently, with no edit to this list to review. Add the endpoint first if one
     /// is wanted, then the exemption.
     /// </remarks>
-    private static readonly string[] AnonymousApiPaths =
-    [
-        "/api/identity/config",
-        "/api/admin/tenants",
-    ];
+    private static readonly string[] AnonymousApiPaths = ["/api/identity/config", "/api/admin/tenants"];
 
     /// <summary>
     /// Endpoints under <see cref="ApiPathPrefix"/> that sit OUTSIDE the identity boundary
@@ -180,17 +176,13 @@ public sealed class IdentityMiddleware
     /// named here. Adding a route cannot silently land it outside the boundary.
     /// </para>
     /// </remarks>
-    private static readonly string[] InfrastructureApiPaths =
-    [
-        "/api/auth/webhook",
-    ];
+    private static readonly string[] InfrastructureApiPaths = ["/api/auth/webhook"];
 
     /// <summary>
     /// Every <c>/api</c> prefix this middleware lets past without establishing a principal. Public
     /// so a route-coverage test can assert the partition rather than restate it.
     /// </summary>
-    public static IReadOnlyList<string> UnguardedApiPaths { get; } =
-        [.. AnonymousApiPaths, .. InfrastructureApiPaths];
+    public static IReadOnlyList<string> UnguardedApiPaths { get; } = [.. AnonymousApiPaths, .. InfrastructureApiPaths];
 
     private readonly RequestDelegate _next;
     private readonly IOptions<IdentityOptions> _options;
@@ -211,7 +203,8 @@ public sealed class IdentityMiddleware
         IOptions<IdentityOptions> options,
         PrincipalFactory principalFactory,
         IEnumerable<IRequestPrincipalSource> principalSources,
-        ILogger<IdentityMiddleware> logger)
+        ILogger<IdentityMiddleware> logger
+    )
     {
         ArgumentNullException.ThrowIfNull(next);
         ArgumentNullException.ThrowIfNull(options);
@@ -275,7 +268,8 @@ public sealed class IdentityMiddleware
                 // principal at all.
                 _logger.LogError(
                     "No principal could be established for {Path} even though Identity:Enforce is false.",
-                    context.Request.Path.Value);
+                    context.Request.Path.Value
+                );
             }
 
             // A WebSocket handshake is refused with 403, not 401 (#342). 401 is the one status a
@@ -285,9 +279,11 @@ public sealed class IdentityMiddleware
             var isWebSocket = IsGuardedWebSocketPath(context.Request.Path);
 
             await WriteRefusalAsync(
-                context,
-                isWebSocket ? StatusCodes.Status403Forbidden : StatusCodes.Status401Unauthorized,
-                isWebSocket ? WebSocketRefusalCode : "authentication_required").ConfigureAwait(false);
+                    context,
+                    isWebSocket ? StatusCodes.Status403Forbidden : StatusCodes.Status401Unauthorized,
+                    isWebSocket ? WebSocketRefusalCode : "authentication_required"
+                )
+                .ConfigureAwait(false);
             return;
         }
 
@@ -364,17 +360,17 @@ public sealed class IdentityMiddleware
     /// </remarks>
     private async ValueTask<PrincipalResolution?> ResolveAsync(HttpContext context)
     {
-        if (context.Items.TryGetValue(IdentityHttpItems.ResolutionKey, out var stashed)
-            && stashed is PrincipalResolution interactive)
+        if (
+            context.Items.TryGetValue(IdentityHttpItems.ResolutionKey, out var stashed)
+            && stashed is PrincipalResolution interactive
+        )
         {
             return interactive;
         }
 
         foreach (var source in _principalSources)
         {
-            var resolved = await source
-                .ResolveAsync(context, context.RequestAborted)
-                .ConfigureAwait(false);
+            var resolved = await source.ResolveAsync(context, context.RequestAborted).ConfigureAwait(false);
 
             if (resolved is not null)
             {
@@ -440,9 +436,7 @@ public sealed class IdentityMiddleware
 
         var body = new { error, code };
 
-        await context.Response
-            .WriteAsync(JsonSerializer.Serialize(body))
-            .ConfigureAwait(false);
+        await context.Response.WriteAsync(JsonSerializer.Serialize(body)).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -490,8 +484,7 @@ public sealed class IdentityMiddleware
     /// surface, or the WebSocket transports beside it.
     /// </summary>
     /// <param name="path">Request path.</param>
-    public static bool IsGuardedPath(PathString path) =>
-        IsGuardedApiPath(path) || IsGuardedWebSocketPath(path);
+    public static bool IsGuardedPath(PathString path) => IsGuardedApiPath(path) || IsGuardedWebSocketPath(path);
 
     /// <summary>
     /// Lifts a handshake credential out of <c>Sec-WebSocket-Protocol</c> into <c>Authorization</c>
@@ -636,6 +629,5 @@ public sealed class IdentityMiddleware
     /// the browser attaches it on every preflight by specification.
     /// </remarks>
     private static bool IsCorsPreflight(HttpRequest request) =>
-        HttpMethods.IsOptions(request.Method)
-        && request.Headers.ContainsKey(HeaderNames.AccessControlRequestMethod);
+        HttpMethods.IsOptions(request.Method) && request.Headers.ContainsKey(HeaderNames.AccessControlRequestMethod);
 }

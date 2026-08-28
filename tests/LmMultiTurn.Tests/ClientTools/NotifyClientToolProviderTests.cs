@@ -29,11 +29,13 @@ public class NotifyClientToolProviderTests
 
     public NotifyClientToolProviderTests()
     {
-        var provider = new NotifyClientToolProvider((notify, _) =>
-        {
-            _delivered.Add(notify);
-            return ValueTask.CompletedTask;
-        });
+        var provider = new NotifyClientToolProvider(
+            (notify, _) =>
+            {
+                _delivered.Add(notify);
+                return ValueTask.CompletedTask;
+            }
+        );
         _tool = provider.GetFunctions().Single(f => f.Contract.Name == NotifyClientToolProvider.ToolName);
     }
 
@@ -132,16 +134,21 @@ public class NotifyClientToolProviderTests
         var callCount = 0;
         var mockAgent = new Mock<IStreamingAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                IMessage msg = callCount == 1 ? notifyCall : finalText;
-                return Task.FromResult(ToAsyncEnumerable([msg]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                {
+                    callCount++;
+                    IMessage msg = callCount == 1 ? notifyCall : finalText;
+                    return Task.FromResult(ToAsyncEnumerable([msg]));
+                }
+            );
 
         var publisher = new RecordingLifecyclePublisher();
         var registry = new FunctionRegistry();
@@ -149,16 +156,19 @@ public class NotifyClientToolProviderTests
             mockAgent.Object,
             registry,
             "notify-lifecycle-thread",
-            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher });
+            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher }
+        );
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        await foreach (var _ in loop.ExecuteRunAsync(
-            new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)) { }
+        await foreach (
+            var _ in loop.ExecuteRunAsync(new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)
+        ) { }
 
-        publisher.EventTypes.Count(t => t == LifecycleEventTypes.RunStarted).Should().Be(
-            1,
-            "NotifyClient must deliver inline without starting a run of its own");
+        publisher
+            .EventTypes.Count(t => t == LifecycleEventTypes.RunStarted)
+            .Should()
+            .Be(1, "NotifyClient must deliver inline without starting a run of its own");
         publisher.Payloads<RunCompletedPayload>(LifecycleEventTypes.RunCompleted).Should().ContainSingle();
         callCount.Should().Be(2);
 
@@ -167,7 +177,8 @@ public class NotifyClientToolProviderTests
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         List<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

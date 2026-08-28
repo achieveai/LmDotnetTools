@@ -105,22 +105,17 @@ internal sealed class WorkflowControllerEndpoint : IAgentWriteEndpoint, IAgentRe
     }
 
     /// <inheritdoc />
-    public ValueTask<string> GetStatusAsync(CancellationToken cancellationToken = default) =>
-        new(_status());
+    public ValueTask<string> GetStatusAsync(CancellationToken cancellationToken = default) => new(_status());
 
     /// <inheritdoc />
-    public async ValueTask<IReadOnlyList<IMessage>> GetTranscriptAsync(
-        CancellationToken cancellationToken = default
-    )
+    public async ValueTask<IReadOnlyList<IMessage>> GetTranscriptAsync(CancellationToken cancellationToken = default)
     {
         if (_conversationStore is null)
         {
             return [];
         }
 
-        var persisted = await _conversationStore
-            .LoadMessagesAsync(_threadId, cancellationToken)
-            .ConfigureAwait(false);
+        var persisted = await _conversationStore.LoadMessagesAsync(_threadId, cancellationToken).ConfigureAwait(false);
 
         // Read PER-RECORD, not all-or-nothing (#498). The bulk converter throws on the first row that
         // will not deserialize, which made one bit-rotted row enough to render an entire conversation
@@ -145,9 +140,11 @@ internal sealed class WorkflowControllerEndpoint : IAgentWriteEndpoint, IAgentRe
                     "Skipping unreadable persisted record {RecordId} while reading the workflow "
                         + "controller transcript for thread {ThreadId}",
                     row.Id,
-                    _threadId);
+                    _threadId
+                );
             },
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken
+        );
 
         // Report the DROPS, not only the survivors, and mirror the partition RecoverAsync already
         // reports (MultiTurnAgentBase.cs): restored + unreadable + unpaired == attempted, so nothing can
@@ -167,7 +164,8 @@ internal sealed class WorkflowControllerEndpoint : IAgentWriteEndpoint, IAgentRe
                 persisted.Count,
                 _threadId,
                 unreadableCount,
-                unpairedCount);
+                unpairedCount
+            );
         }
 
         return transcript;

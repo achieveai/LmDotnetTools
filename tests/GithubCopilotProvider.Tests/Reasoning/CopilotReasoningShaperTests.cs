@@ -39,7 +39,13 @@ public sealed class CopilotReasoningShaperTests
         // to ReasoningVisibility.Encrypted (GetDisplayText() == null) — so workflow-controller and
         // sub-agent thinking never renders even though the main chat's does. The Anthropic branch has no
         // summary concept; it carries effort via OutputConfig only.
-        var model = CreateModel(CopilotModelTransport.Responses, supportsAdaptiveThinking: false, "low", "medium", "high");
+        var model = CreateModel(
+            CopilotModelTransport.Responses,
+            supportsAdaptiveThinking: false,
+            "low",
+            "medium",
+            "high"
+        );
 
         var result = CopilotReasoningShaper.Shape(model, ReasoningEffort.High);
 
@@ -66,7 +72,9 @@ public sealed class CopilotReasoningShaperTests
 
         var result = CopilotReasoningShaper.Shape(model, requested);
 
-        result["Reasoning"].Should().BeEquivalentTo(new ResponseReasoningOptions { Effort = expected, Summary = "auto" });
+        result["Reasoning"]
+            .Should()
+            .BeEquivalentTo(new ResponseReasoningOptions { Effort = expected, Summary = "auto" });
     }
 
     [Theory]
@@ -114,11 +122,7 @@ public sealed class CopilotReasoningShaperTests
     [Fact]
     public void SelectEffort_UnknownEnumValueFallsBackWithoutThrowing()
     {
-        var model = CreateModel(
-            CopilotModelTransport.Responses,
-            supportsAdaptiveThinking: true,
-            "low",
-            "medium");
+        var model = CreateModel(CopilotModelTransport.Responses, supportsAdaptiveThinking: true, "low", "medium");
 
         var selected = CopilotReasoningShaper.SelectEffort(model, (ReasoningEffort)999);
 

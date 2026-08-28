@@ -11,7 +11,8 @@ public record ClientLogEntry(
     int? Line,
     string? Function,
     string? Component,
-    object? Data);
+    object? Data
+);
 
 /// <summary>
 /// A batch of client log entries.

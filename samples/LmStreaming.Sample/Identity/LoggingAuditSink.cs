@@ -63,7 +63,8 @@ public sealed class LoggingAuditSink : IAuditSink
             record.ResolvedTenantId,
             record.Jti,
             record.CorrelationId,
-            record.EventClass);
+            record.EventClass
+        );
     }
 
     /// <inheritdoc />
@@ -92,7 +93,8 @@ public sealed class LoggingAuditSink : IAuditSink
             record.Outcome,
             record.Reason,
             record.CorrelationId,
-            record.EventClass);
+            record.EventClass
+        );
     }
 
     /// <inheritdoc />
@@ -118,7 +120,8 @@ public sealed class LoggingAuditSink : IAuditSink
             record.Outcome,
             record.Reason,
             record.CorrelationId,
-            record.EventClass);
+            record.EventClass
+        );
     }
 
     /// <summary>

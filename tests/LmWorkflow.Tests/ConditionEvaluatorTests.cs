@@ -48,9 +48,7 @@ public class ConditionEvaluatorTests
 
         Evaluate(Leaf(ConditionOp.Eq, "state.count", JsonValue.Create(5)), ctx).Should().BeTrue();
         // Numeric equality ignores the integer/decimal token shape.
-        Evaluate(Leaf(ConditionOp.Eq, "state.count", JsonNode.Parse("5.0")), ctx)
-            .Should()
-            .BeTrue();
+        Evaluate(Leaf(ConditionOp.Eq, "state.count", JsonNode.Parse("5.0")), ctx).Should().BeTrue();
         Evaluate(Leaf(ConditionOp.Eq, "state.count", JsonValue.Create(6)), ctx).Should().BeFalse();
         Evaluate(Leaf(ConditionOp.Ne, "state.count", JsonValue.Create(6)), ctx).Should().BeTrue();
     }
@@ -60,12 +58,8 @@ public class ConditionEvaluatorTests
     {
         var ctx = CreateContext();
 
-        Evaluate(Leaf(ConditionOp.Eq, "state.name", JsonValue.Create("alice")), ctx)
-            .Should()
-            .BeTrue();
-        Evaluate(Leaf(ConditionOp.Eq, "state.name", JsonValue.Create("bob")), ctx)
-            .Should()
-            .BeFalse();
+        Evaluate(Leaf(ConditionOp.Eq, "state.name", JsonValue.Create("alice")), ctx).Should().BeTrue();
+        Evaluate(Leaf(ConditionOp.Eq, "state.name", JsonValue.Create("bob")), ctx).Should().BeFalse();
     }
 
     [Fact]
@@ -85,9 +79,7 @@ public class ConditionEvaluatorTests
         var ctx = CreateContext();
 
         // state.numStr is the string "5"; it parses as a number so the compare is numeric, not ordinal.
-        Evaluate(Leaf(ConditionOp.Lt, "state.numStr", JsonValue.Create(10)), ctx)
-            .Should()
-            .BeTrue();
+        Evaluate(Leaf(ConditionOp.Lt, "state.numStr", JsonValue.Create(10)), ctx).Should().BeTrue();
     }
 
     [Fact]
@@ -95,12 +87,8 @@ public class ConditionEvaluatorTests
     {
         var ctx = CreateContext();
 
-        Evaluate(Leaf(ConditionOp.Lt, "state.name", JsonValue.Create("bob")), ctx)
-            .Should()
-            .BeTrue();
-        Evaluate(Leaf(ConditionOp.Gt, "state.name", JsonValue.Create("bob")), ctx)
-            .Should()
-            .BeFalse();
+        Evaluate(Leaf(ConditionOp.Lt, "state.name", JsonValue.Create("bob")), ctx).Should().BeTrue();
+        Evaluate(Leaf(ConditionOp.Gt, "state.name", JsonValue.Create("bob")), ctx).Should().BeFalse();
     }
 
     [Fact]
@@ -108,9 +96,7 @@ public class ConditionEvaluatorTests
     {
         var ctx = CreateContext();
 
-        Evaluate(Leaf(ConditionOp.Lt, "state.missing", JsonValue.Create(10)), ctx)
-            .Should()
-            .BeFalse();
+        Evaluate(Leaf(ConditionOp.Lt, "state.missing", JsonValue.Create(10)), ctx).Should().BeFalse();
     }
 
     [Fact]
@@ -119,12 +105,8 @@ public class ConditionEvaluatorTests
         var ctx = CreateContext();
 
         // Value is an array: left path value must be one of its elements.
-        Evaluate(Leaf(ConditionOp.In, "state.count", JsonNode.Parse("[1, 5, 9]")), ctx)
-            .Should()
-            .BeTrue();
-        Evaluate(Leaf(ConditionOp.In, "state.count", JsonNode.Parse("[1, 2, 3]")), ctx)
-            .Should()
-            .BeFalse();
+        Evaluate(Leaf(ConditionOp.In, "state.count", JsonNode.Parse("[1, 5, 9]")), ctx).Should().BeTrue();
+        Evaluate(Leaf(ConditionOp.In, "state.count", JsonNode.Parse("[1, 2, 3]")), ctx).Should().BeFalse();
 
         // Symmetric: left path is an array, value is a scalar member.
         Evaluate(Leaf(ConditionOp.In, "state.list", JsonValue.Create(2)), ctx).Should().BeTrue();
@@ -151,15 +133,9 @@ public class ConditionEvaluatorTests
         var ctx = CreateContext();
 
         // state.a == state.b, resolved by treating the value string as a binding.
-        Evaluate(Leaf(ConditionOp.Eq, "state.a", JsonValue.Create("{{state.b}}")), ctx)
-            .Should()
-            .BeTrue();
-        Evaluate(Leaf(ConditionOp.Eq, "state.a", JsonValue.Create("{{state.count}}")), ctx)
-            .Should()
-            .BeTrue();
-        Evaluate(Leaf(ConditionOp.Eq, "state.a", JsonValue.Create("{{state.missing}}")), ctx)
-            .Should()
-            .BeFalse();
+        Evaluate(Leaf(ConditionOp.Eq, "state.a", JsonValue.Create("{{state.b}}")), ctx).Should().BeTrue();
+        Evaluate(Leaf(ConditionOp.Eq, "state.a", JsonValue.Create("{{state.count}}")), ctx).Should().BeTrue();
+        Evaluate(Leaf(ConditionOp.Eq, "state.a", JsonValue.Create("{{state.missing}}")), ctx).Should().BeFalse();
     }
 
     [Fact]
@@ -169,11 +145,7 @@ public class ConditionEvaluatorTests
 
         var allTrue = new Condition
         {
-            All =
-            [
-                Leaf(ConditionOp.Eq, "state.count", JsonValue.Create(5)),
-                Leaf(ConditionOp.NonEmpty, "state.name"),
-            ],
+            All = [Leaf(ConditionOp.Eq, "state.count", JsonValue.Create(5)), Leaf(ConditionOp.NonEmpty, "state.name")],
         };
         var oneFalse = new Condition
         {
@@ -235,10 +207,7 @@ public class ConditionEvaluatorTests
                         Leaf(ConditionOp.Gt, "state.count", JsonValue.Create(1)),
                     ],
                 },
-                new Condition
-                {
-                    Not = Leaf(ConditionOp.Empty, "state.name"),
-                },
+                new Condition { Not = Leaf(ConditionOp.Empty, "state.name") },
             ],
         };
         Evaluate(nested, ctx).Should().BeTrue();

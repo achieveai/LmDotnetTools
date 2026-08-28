@@ -13,10 +13,7 @@ namespace AchieveAi.LmDotnetTools.LmEval.Running;
 /// </summary>
 /// <param name="candidate">The item to price.</param>
 /// <param name="cancellationToken">Cancellation.</param>
-public delegate ValueTask<long?> EvalCostSource(
-    Candidate candidate,
-    CancellationToken cancellationToken
-);
+public delegate ValueTask<long?> EvalCostSource(Candidate candidate, CancellationToken cancellationToken);
 
 /// <summary>
 /// Replays a frozen corpus through the judge harness and emits one <see cref="EvalRun"/>.
@@ -119,8 +116,7 @@ public sealed class EvalRunner
         {
             cancellationToken.ThrowIfCancellationRequested();
             items.Add(
-                await EvaluateAsync(candidate, rubric, reliability, costSource, cancellationToken)
-                    .ConfigureAwait(false)
+                await EvaluateAsync(candidate, rubric, reliability, costSource, cancellationToken).ConfigureAwait(false)
             );
         }
 
@@ -142,9 +138,7 @@ public sealed class EvalRunner
         IReadOnlyDictionary<string, double> declared
     ) =>
         run.Count == declared.Count
-        && run.All(w =>
-            declared.TryGetValue(w.Key, out var weight) && weight.Equals(w.Value)
-        );
+        && run.All(w => declared.TryGetValue(w.Key, out var weight) && weight.Equals(w.Value));
 
     private async Task<EvalItemResult> EvaluateAsync(
         Candidate candidate,
@@ -157,9 +151,7 @@ public sealed class EvalRunner
         Verdict verdict;
         try
         {
-            verdict = await _gauntlet
-                .RunAsync(candidate, rubric, reliability, cancellationToken)
-                .ConfigureAwait(false);
+            verdict = await _gauntlet.RunAsync(candidate, rubric, reliability, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -185,8 +177,7 @@ public sealed class EvalRunner
                 Verdict = null,
                 FaultReason = ex.GetType().Name,
                 Exclusion = ScoreExclusion.Faulted,
-                CostMicros = await PriceAsync(candidate, costSource, cancellationToken)
-                    .ConfigureAwait(false),
+                CostMicros = await PriceAsync(candidate, costSource, cancellationToken).ConfigureAwait(false),
             };
         }
 
@@ -195,8 +186,7 @@ public sealed class EvalRunner
             CandidateId = candidate.CandidateId,
             Verdict = verdict,
             Exclusion = Classify(verdict, candidate),
-            CostMicros = await PriceAsync(candidate, costSource, cancellationToken)
-                .ConfigureAwait(false),
+            CostMicros = await PriceAsync(candidate, costSource, cancellationToken).ConfigureAwait(false),
         };
     }
 
@@ -204,10 +194,7 @@ public sealed class EvalRunner
         Candidate candidate,
         EvalCostSource? costSource,
         CancellationToken cancellationToken
-    ) =>
-        costSource is null
-            ? null
-            : await costSource(candidate, cancellationToken).ConfigureAwait(false);
+    ) => costSource is null ? null : await costSource(candidate, cancellationToken).ConfigureAwait(false);
 
     /// <summary>
     /// Why this item contributes no score, or <see cref="ScoreExclusion.None"/> when it does.

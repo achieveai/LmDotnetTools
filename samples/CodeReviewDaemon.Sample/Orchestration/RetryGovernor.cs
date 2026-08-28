@@ -34,7 +34,8 @@ internal sealed class RetryGovernor
         TimeSpan backoffBase,
         TimeSpan backoffCap,
         Func<DateTimeOffset> clock,
-        ILogger<RetryGovernor> logger)
+        ILogger<RetryGovernor> logger
+    )
     {
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(logger);
@@ -107,7 +108,10 @@ internal sealed class RetryGovernor
                 state.Parked = true;
                 _logger.LogError(
                     "review_run PARKED run {RunId} after {Attempts} attempts: {Error}",
-                    runId, state.Attempts, lastError);
+                    runId,
+                    state.Attempts,
+                    lastError
+                );
                 decision = RetryDecision.Parked;
             }
             else
@@ -117,9 +121,10 @@ internal sealed class RetryGovernor
                 // cap/2^shift the product would exceed the cap anyway, so use the cap directly.
                 var shift = Math.Min(state.Attempts - 1, 30);
                 var multiplier = 1L << shift;
-                var delayTicks = _backoffBase.Ticks > _backoffCap.Ticks / multiplier
-                    ? _backoffCap.Ticks
-                    : _backoffBase.Ticks * multiplier;
+                var delayTicks =
+                    _backoffBase.Ticks > _backoffCap.Ticks / multiplier
+                        ? _backoffCap.Ticks
+                        : _backoffBase.Ticks * multiplier;
                 state.NextEligibleAt = _clock() + TimeSpan.FromTicks(delayTicks);
                 decision = RetryDecision.Retry;
             }

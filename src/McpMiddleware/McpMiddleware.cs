@@ -53,7 +53,8 @@ public partial class McpMiddleware : IStreamingMiddleware
             functions,
             LegacyHandlerAdapter.WrapToNewHandlers(functionMap),
             name: Name,
-            logger: functionCallLogger);
+            logger: functionCallLogger
+        );
     }
 
     /// <summary>
@@ -374,7 +375,8 @@ public partial class McpMiddleware : IStreamingMiddleware
     private static IDictionary<string, Func<string, Task<string>>> CreateFunctionMapFromCache(
         Dictionary<string, McpClient> mcpClients,
         Dictionary<string, IList<McpClientTool>> toolsByClient,
-        ILogger<McpMiddleware> logger)
+        ILogger<McpMiddleware> logger
+    )
     {
         var functionMap = new Dictionary<string, Func<string, Task<string>>>();
 
@@ -390,7 +392,10 @@ public partial class McpMiddleware : IStreamingMiddleware
 
             logger.LogInformation(
                 "MCP tool discovery completed: ClientId={ClientId}, ToolCount={ToolCount}, ToolNames={ToolNames}",
-                clientId, tools.Count, string.Join(", ", tools.Select(t => t.Name)));
+                clientId,
+                tools.Count,
+                string.Join(", ", tools.Select(t => t.Name))
+            );
 
             foreach (var tool in tools)
             {
@@ -410,9 +415,12 @@ public partial class McpMiddleware : IStreamingMiddleware
                         }
                         catch (JsonException jsonEx)
                         {
-                            logger.LogError(jsonEx,
+                            logger.LogError(
+                                jsonEx,
                                 "JSON parsing failed for tool arguments: ToolName={ToolName}, ClientId={ClientId}",
-                                tool.Name, clientId);
+                                tool.Name,
+                                clientId
+                            );
                             throw;
                         }
 
@@ -421,23 +429,33 @@ public partial class McpMiddleware : IStreamingMiddleware
                         var result = string.Join(
                             Environment.NewLine,
                             response.Content != null
-                                ? response.Content.Where(c => c?.Type == "text")
+                                ? response
+                                    .Content.Where(c => c?.Type == "text")
                                     .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
-                                : []);
+                                : []
+                        );
 
                         stopwatch.Stop();
                         logger.LogInformation(
                             "MCP tool execution completed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, ResultLength={ResultLength}",
-                            tool.Name, clientId, stopwatch.ElapsedMilliseconds, result.Length);
+                            tool.Name,
+                            clientId,
+                            stopwatch.ElapsedMilliseconds,
+                            result.Length
+                        );
 
                         return result;
                     }
                     catch (Exception ex)
                     {
                         stopwatch.Stop();
-                        logger.LogError(ex,
+                        logger.LogError(
+                            ex,
                             "MCP tool execution failed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms",
-                            tool.Name, clientId, stopwatch.ElapsedMilliseconds);
+                            tool.Name,
+                            clientId,
+                            stopwatch.ElapsedMilliseconds
+                        );
                         return $"Error executing MCP tool {tool.Name}: {ex.Message}";
                     }
                 };
@@ -453,7 +471,8 @@ public partial class McpMiddleware : IStreamingMiddleware
     private static IEnumerable<FunctionContract> ExtractFunctionContractsFromCache(
         Dictionary<string, McpClient> mcpClients,
         Dictionary<string, IList<McpClientTool>> toolsByClient,
-        ILogger<McpMiddleware> logger)
+        ILogger<McpMiddleware> logger
+    )
     {
         var functionContracts = new List<FunctionContract>();
 
@@ -473,9 +492,12 @@ public partial class McpMiddleware : IStreamingMiddleware
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex,
+                    logger.LogError(
+                        ex,
                         "Function contract extraction failed for tool: ClientId={ClientId}, ToolName={ToolName}",
-                        kvp.Key, tool.Name);
+                        kvp.Key,
+                        tool.Name
+                    );
                 }
             }
         }

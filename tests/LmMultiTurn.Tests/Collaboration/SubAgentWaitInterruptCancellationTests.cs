@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -9,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -86,10 +86,7 @@ public class SubAgentWaitInterruptCancellationTests : IAsyncLifetime
     {
         var root = CreateRegisteredRoot();
         var (_, provider) = CreateManager(root);
-        var handler = provider
-            .GetFunctions()
-            .First(f => f.Contract.Name == "WaitForAgents")
-            .Handler;
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "WaitForAgents").Handler;
         var agentId = await SpawnAndResolveIdAsync(provider);
         var (_, asker) = RegisterPeer(root, "asker");
 
@@ -103,11 +100,7 @@ public class SubAgentWaitInterruptCancellationTests : IAsyncLifetime
         SynchronizationContext.SetSynchronizationContext(pump);
         try
         {
-            wait = handler(
-                JsonSerializer.Serialize(new { agent_ids = agentId }),
-                new ToolCallContext(),
-                cts.Token
-            );
+            wait = handler(JsonSerializer.Serialize(new { agent_ids = agentId }), new ToolCallContext(), cts.Token);
         }
         finally
         {
@@ -118,9 +111,7 @@ public class SubAgentWaitInterruptCancellationTests : IAsyncLifetime
 
         // Admission raises the ledger notice on this thread, so the handler's watcher claims the
         // interrupt here and now; only its resumption is deferred to the pump.
-        var question = root
-            .Bundle.TrySend(asker.AgentId, root.AgentId, AgentMessageType.Question)
-            .MessageId!;
+        var question = root.Bundle.TrySend(asker.AgentId, root.AgentId, AgentMessageType.Question).MessageId!;
         root.Bundle.Ledger.Find(question)!
             .WaitInterruptClaimed.Should()
             .BeTrue("the parked wait claimed the question it is about to report");
@@ -140,19 +131,11 @@ public class SubAgentWaitInterruptCancellationTests : IAsyncLifetime
         entry.WaitInterruptClaimed.Should().BeFalse("an unreported claim has to be given back");
 
         // The claim is only worth anything if it can still be spent, so prove it behaviourally too.
-        var second = await InvokeAsync(
-            provider,
-            "WaitForAgents",
-            new { agent_ids = agentId, timeout_seconds = 5 }
-        );
+        var second = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = agentId, timeout_seconds = 5 });
 
         using var doc = JsonDocument.Parse(second.Text);
         doc.RootElement.GetProperty("status").GetString().Should().Be("question_received");
-        doc.RootElement.GetProperty("question")
-            .GetProperty("message_id")
-            .GetString()
-            .Should()
-            .Be(question);
+        doc.RootElement.GetProperty("question").GetProperty("message_id").GetString().Should().Be(question);
     }
 
     /// <summary>
@@ -255,8 +238,7 @@ public class SubAgentWaitInterruptCancellationTests : IAsyncLifetime
                     AgentFactory = () =>
                     {
                         var mock = new Mock<IStreamingAgent>();
-                        _ = mock
-                            .Setup(a =>
+                        _ = mock.Setup(a =>
                                 a.GenerateReplyStreamingAsync(
                                     It.IsAny<IEnumerable<IMessage>>(),
                                     It.IsAny<GenerateReplyOptions>(),
@@ -315,18 +297,12 @@ public class SubAgentWaitInterruptCancellationTests : IAsyncLifetime
     )
     {
         var handler = provider.GetFunctions().First(f => f.Contract.Name == toolName).Handler;
-        var result = await handler(
-            JsonSerializer.Serialize(args),
-            new ToolCallContext(),
-            CancellationToken.None
-        );
+        var result = await handler(JsonSerializer.Serialize(args), new ToolCallContext(), CancellationToken.None);
 
         return result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload;
     }
 
-    private static async IAsyncEnumerable<IMessage> BlockingStream(
-        [EnumeratorCancellation] CancellationToken ct
-    )
+    private static async IAsyncEnumerable<IMessage> BlockingStream([EnumeratorCancellation] CancellationToken ct)
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         yield break;

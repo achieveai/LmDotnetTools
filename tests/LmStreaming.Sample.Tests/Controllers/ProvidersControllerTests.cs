@@ -26,8 +26,10 @@ public class ProvidersControllerTests
             var response = ok.Value.Should().BeOfType<ProvidersResponse>().Subject;
 
             response.Default.Should().Be("openai");
-            response.Providers.Select(p => p.Id).Should().Contain(
-                ["openai", "anthropic", "claude", "codex", "copilot", "test", "test-anthropic"]);
+            response
+                .Providers.Select(p => p.Id)
+                .Should()
+                .Contain(["openai", "anthropic", "claude", "codex", "copilot", "test", "test-anthropic"]);
 
             var openai = response.Providers.Single(p => p.Id == "openai");
             openai.Available.Should().BeTrue();

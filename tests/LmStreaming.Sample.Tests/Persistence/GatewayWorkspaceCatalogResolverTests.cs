@@ -65,7 +65,8 @@ public sealed class GatewayWorkspaceCatalogResolverTests : IDisposable
         File.Exists(result.LegacyArchivePath!).Should().BeTrue();
         File.Exists(Path.Combine(_root, "legacy", "migration.json")).Should().BeTrue();
         (await new FileWorkspaceStore(result.CatalogDirectory).GetAllAsync())
-            .Should().ContainSingle(x => x.IsSystemDefined);
+            .Should()
+            .ContainSingle(x => x.IsSystemDefined);
     }
 
     [Fact]
@@ -80,8 +81,7 @@ public sealed class GatewayWorkspaceCatalogResolverTests : IDisposable
         var second = await resolver.ResolveAsync(_root, identity);
 
         second.CatalogDirectory.Should().Be(first.CatalogDirectory);
-        Directory.GetFiles(Path.Combine(_root, "legacy"), "workspaces.*.json")
-            .Should().ContainSingle();
+        Directory.GetFiles(Path.Combine(_root, "legacy"), "workspaces.*.json").Should().ContainSingle();
     }
 
     [Fact]
@@ -106,14 +106,14 @@ public sealed class GatewayWorkspaceCatalogResolverTests : IDisposable
         Directory.CreateDirectory(_root);
         await File.WriteAllTextAsync(Path.Combine(_root, "workspaces.json"), "not-json");
 
-        var act = () => new GatewayWorkspaceCatalogResolver().ResolveAsync(
-            _root,
-            GatewayWorkspaceCatalogIdentity.Create("http://remote:3000", "sample")
-        );
+        var act = () =>
+            new GatewayWorkspaceCatalogResolver().ResolveAsync(
+                _root,
+                GatewayWorkspaceCatalogIdentity.Create("http://remote:3000", "sample")
+            );
 
         await act.Should().ThrowAsync<WorkspaceCatalogCorruptException>();
-        Directory.GetFiles(Path.Combine(_root, "legacy"), "workspaces.*.json")
-            .Should().ContainSingle();
+        Directory.GetFiles(Path.Combine(_root, "legacy"), "workspaces.*.json").Should().ContainSingle();
     }
 
     [Fact]
@@ -128,7 +128,6 @@ public sealed class GatewayWorkspaceCatalogResolverTests : IDisposable
             new GatewayWorkspaceCatalogResolver().ResolveAsync(_root, identity)
         );
 
-        Directory.GetFiles(Path.Combine(_root, "legacy"), "workspaces.*.json")
-            .Should().ContainSingle();
+        Directory.GetFiles(Path.Combine(_root, "legacy"), "workspaces.*.json").Should().ContainSingle();
     }
 }

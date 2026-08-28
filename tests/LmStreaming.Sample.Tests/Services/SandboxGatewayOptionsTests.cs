@@ -1,4 +1,3 @@
-
 namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>
@@ -43,11 +42,7 @@ public class SandboxGatewayOptionsTests
     {
         // Base alone can't form a mountable workspace path — FullPath must be null so callers skip
         // directory creation rather than calling Path.Combine with a null leaf.
-        var options = new SandboxGatewayOptions
-        {
-            WorkspaceBasePath = Path.GetTempPath(),
-            Workspace = null,
-        };
+        var options = new SandboxGatewayOptions { WorkspaceBasePath = Path.GetTempPath(), Workspace = null };
 
         var (resolvedBase, leaf, full) = options.ResolveWorkspace();
 
@@ -183,7 +178,6 @@ public class SandboxGatewayOptionsTests
         var options = new SandboxGatewayOptions();
 
         var act = () => options.ResolveWorkspace(Path.Combine("..", "evil"));
-
 
         act.Should().Throw<InvalidOperationException>();
     }

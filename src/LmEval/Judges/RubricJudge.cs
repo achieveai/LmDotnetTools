@@ -27,8 +27,7 @@ public sealed record RubricJudgeOptions
     /// <see cref="RubricPromptRenderer"/>; a host that already owns a rendered prompt — the Revobot
     /// adapter does — supplies its own so the bytes it sends do not change.
     /// </summary>
-    public Func<Candidate, Rubric, JudgeContext, string> PromptRenderer { get; init; } =
-        RubricPromptRenderer.Render;
+    public Func<Candidate, Rubric, JudgeContext, string> PromptRenderer { get; init; } = RubricPromptRenderer.Render;
 
     /// <summary>
     /// Stable identity of the prompt template <see cref="PromptRenderer"/> renders, for the
@@ -60,11 +59,9 @@ public sealed record RubricJudgeOptions
 
     /// <summary>True when <see cref="PromptRenderer"/> is still the built-in one.</summary>
     internal bool UsesDefaultRenderer =>
-        PromptRenderer.Method == DefaultRenderer.Method
-        && PromptRenderer.Target == DefaultRenderer.Target;
+        PromptRenderer.Method == DefaultRenderer.Method && PromptRenderer.Target == DefaultRenderer.Target;
 
-    private static readonly Func<Candidate, Rubric, JudgeContext, string> DefaultRenderer =
-        RubricPromptRenderer.Render;
+    private static readonly Func<Candidate, Rubric, JudgeContext, string> DefaultRenderer = RubricPromptRenderer.Render;
 }
 
 /// <summary>
@@ -84,11 +81,7 @@ public sealed class RubricJudge : IJudge, Running.IConfigurationFingerprint
     /// <param name="options">Identity and prompt rendering.</param>
     /// <param name="transport">Drives one judging turn.</param>
     /// <param name="logger">Optional diagnostics.</param>
-    public RubricJudge(
-        RubricJudgeOptions options,
-        JudgeReplyTransport transport,
-        ILogger<RubricJudge>? logger = null
-    )
+    public RubricJudge(RubricJudgeOptions options, JudgeReplyTransport transport, ILogger<RubricJudge>? logger = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
@@ -111,8 +104,7 @@ public sealed class RubricJudge : IJudge, Running.IConfigurationFingerprint
         ArgumentNullException.ThrowIfNull(agent);
         return new RubricJudge(
             options,
-            async (prompt, ct) =>
-                (await AgentTextCollector.CollectAsync(agent, prompt, ct).ConfigureAwait(false)).Text,
+            async (prompt, ct) => (await AgentTextCollector.CollectAsync(agent, prompt, ct).ConfigureAwait(false)).Text,
             logger
         );
     }
@@ -162,13 +154,7 @@ public sealed class RubricJudge : IJudge, Running.IConfigurationFingerprint
 
         var prompt = _options.PromptRenderer(candidate, rubric, context);
         var reply = await _transport(prompt, cancellationToken).ConfigureAwait(false);
-        var ballot = JudgeReplyParser.Parse(
-            reply,
-            rubric,
-            _options.JudgeId,
-            _options.ModelId,
-            _options.ModelFamily
-        );
+        var ballot = JudgeReplyParser.Parse(reply, rubric, _options.JudgeId, _options.ModelId, _options.ModelFamily);
 
         if (ballot.Abstained)
         {

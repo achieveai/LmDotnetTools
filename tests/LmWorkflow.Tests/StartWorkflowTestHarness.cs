@@ -26,8 +26,7 @@ internal static class StartWorkflowTestHarness
         }
         """;
 
-    public static WorkflowDefinition MinimalDefinition() =>
-        WorkflowJson.Deserialize(WorkflowFixtures.MinimalValid);
+    public static WorkflowDefinition MinimalDefinition() => WorkflowJson.Deserialize(WorkflowFixtures.MinimalValid);
 
     public static WorkflowDefinition InvalidDefinition() => WorkflowJson.Deserialize(InvalidNoTerminal);
 
@@ -43,8 +42,7 @@ internal static class StartWorkflowTestHarness
         };
 
     /// <summary>Never advances the workflow — keeps calling GetWorkflow so the loop runs until its turn cap.</summary>
-    public static IMessage NeverComplete(int turn) =>
-        ToolCall("GetWorkflow", [], $"tc_get_{turn}");
+    public static IMessage NeverComplete(int turn) => ToolCall("GetWorkflow", [], $"tc_get_{turn}");
 
     /// <summary>A controller that returns one scripted message per turn.</summary>
     public static Mock<IStreamingAgent> ScriptedController(Func<int, IMessage> script)

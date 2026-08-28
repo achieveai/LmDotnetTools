@@ -239,7 +239,11 @@ public class IMessageJsonConverterTests
         {
             // Act
             var json = JsonSerializer.Serialize(originalMessage, options);
-            TestContextLogger.LogDebug("Serialized message. MessageType: {MessageType}, Json: {Json}", originalMessage.GetType().Name, json);
+            TestContextLogger.LogDebug(
+                "Serialized message. MessageType: {MessageType}, Json: {Json}",
+                originalMessage.GetType().Name,
+                json
+            );
 
             var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
 
@@ -407,8 +411,7 @@ public class IMessageJsonConverterTests
     [Fact]
     public void Deserialize_LegacyServerToolUse_WithDiscriminator_ReturnsUnifiedToolCallMessage()
     {
-        var json =
-            """
+        var json = """
             {
               "$type": "server_tool_use",
               "tool_use_id": "srvtoolu_1",
@@ -433,8 +436,7 @@ public class IMessageJsonConverterTests
     [Fact]
     public void Deserialize_LegacyServerToolResult_WithoutDiscriminator_ReturnsUnifiedToolCallResultMessage()
     {
-        var json =
-            """
+        var json = """
             {
               "tool_use_id": "srvtoolu_1",
               "tool_name": "web_search",
@@ -672,11 +674,7 @@ public class IMessageJsonConverterTests
         var imageBytes = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 }; // JPEG header
         var binaryData = BinaryData.FromBytes(imageBytes, "image/jpeg");
 
-        IMessage message = new ImageMessage
-        {
-            ImageData = binaryData,
-            Role = Role.User,
-        };
+        IMessage message = new ImageMessage { ImageData = binaryData, Role = Role.User };
 
         var options = GetOptionsWithConverter();
 

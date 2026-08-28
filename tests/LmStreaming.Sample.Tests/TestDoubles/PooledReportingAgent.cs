@@ -24,9 +24,7 @@ namespace LmStreaming.Sample.Tests.TestDoubles;
 internal sealed class PooledReportingAgent : MultiTurnAgentBase
 {
     public PooledReportingAgent(string threadId, int inputChannelCapacity = 100)
-        : base(threadId, inputChannelCapacity: inputChannelCapacity)
-    {
-    }
+        : base(threadId, inputChannelCapacity: inputChannelCapacity) { }
 
     /// <summary>
     /// When true the run loop drains queued inputs and starts a run naming them. Default false parks
@@ -84,11 +82,7 @@ internal sealed class PooledReportingAgent : MultiTurnAgentBase
             // product loop publishes it itself (MultiTurnAgentLoop, CopilotAgentLoop), so a stand-in
             // that skipped this would leave ids stranded until the grace expired - and would pin the
             // grace rather than the evidence.
-            await PublishToAllAsync(new RunAssignmentMessage
-            {
-                Assignment = assignment,
-                ThreadId = ThreadId,
-            }, ct);
+            await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
             _ = RunStarted.TrySetResult();
             await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, 0, ct: ct);

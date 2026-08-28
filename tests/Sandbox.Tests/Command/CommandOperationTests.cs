@@ -40,7 +40,10 @@ public class CommandOperationTests
     public void ValidateAndCanonicalize_AcceptsBoundedGrammarId()
     {
         var act = () =>
-            CommandOperation.ValidateAndCanonicalizeOperationId(new string('a', CommandOperation.MaxOperationIdLength), "operationId");
+            CommandOperation.ValidateAndCanonicalizeOperationId(
+                new string('a', CommandOperation.MaxOperationIdLength),
+                "operationId"
+            );
 
         act.Should().NotThrow();
     }

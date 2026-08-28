@@ -10,17 +10,21 @@ public sealed class DaemonProfileConfigurationTests
     [Fact]
     public void Mcqdb_listener_and_auth_webhook_use_the_same_origin()
     {
-        using var document = JsonDocument.Parse(
-            File.ReadAllText(LocateProfile("appsettings.mcqdb.json")));
+        using var document = JsonDocument.Parse(File.ReadAllText(LocateProfile("appsettings.mcqdb.json")));
         var root = document.RootElement;
 
         var listener = new Uri(root.GetProperty("Urls").GetString()!);
         var webhook = new Uri(
-            root.GetProperty("Auth").GetProperty("Webhook").GetProperty("PublicBaseUrl").GetString()!);
+            root.GetProperty("Auth").GetProperty("Webhook").GetProperty("PublicBaseUrl").GetString()!
+        );
 
-        listener.GetLeftPart(UriPartial.Authority).Should().Be(
-            webhook.GetLeftPart(UriPartial.Authority),
-            "sandbox auth callbacks must return to the same daemon that minted each per-session secret");
+        listener
+            .GetLeftPart(UriPartial.Authority)
+            .Should()
+            .Be(
+                webhook.GetLeftPart(UriPartial.Authority),
+                "sandbox auth callbacks must return to the same daemon that minted each per-session secret"
+            );
         listener.Port.Should().Be(5082, "the GitHub daemon owns 5081 and cannot validate MCQdb session secrets");
     }
 
@@ -34,12 +38,26 @@ public sealed class DaemonProfileConfigurationTests
         // never been visible: no shipped settings file named these keys, so every deploy ran on class
         // defaults an operator had to read the source to discover. Stating them changes no behaviour and
         // makes the resume policy an operator can actually tune.
-        daemon.GetProperty("StrandedRunGraceHours").GetDouble().Should().Be(new CodeReviewDaemonOptions().StrandedRunGraceHours);
-        daemon.GetProperty("StrandedRunScanLimit").GetInt32().Should().Be(new CodeReviewDaemonOptions().StrandedRunScanLimit);
-        daemon.GetProperty("StrandedRunMaxResumesPerSweep").GetInt32().Should().Be(
-            new CodeReviewDaemonOptions().StrandedRunMaxResumesPerSweep);
-        daemon.GetProperty("StrandedRunRetryPendingGraceMinutes").GetDouble().Should().Be(
-            new CodeReviewDaemonOptions().StrandedRunRetryPendingGraceMinutes);
+        daemon
+            .GetProperty("StrandedRunGraceHours")
+            .GetDouble()
+            .Should()
+            .Be(new CodeReviewDaemonOptions().StrandedRunGraceHours);
+        daemon
+            .GetProperty("StrandedRunScanLimit")
+            .GetInt32()
+            .Should()
+            .Be(new CodeReviewDaemonOptions().StrandedRunScanLimit);
+        daemon
+            .GetProperty("StrandedRunMaxResumesPerSweep")
+            .GetInt32()
+            .Should()
+            .Be(new CodeReviewDaemonOptions().StrandedRunMaxResumesPerSweep);
+        daemon
+            .GetProperty("StrandedRunRetryPendingGraceMinutes")
+            .GetDouble()
+            .Should()
+            .Be(new CodeReviewDaemonOptions().StrandedRunRetryPendingGraceMinutes);
     }
 
     [Fact]
@@ -54,7 +72,8 @@ public sealed class DaemonProfileConfigurationTests
             .Replace(
                 "\"StrandedRunMaxResumesPerSweep\": 2",
                 "\"StrandedRunMaxResumesPerSweep\": 9",
-                StringComparison.Ordinal)
+                StringComparison.Ordinal
+            )
             // The rewrite matches "\"Key\": value", not the bare key name, because the same name also appears
             // in the neighbouring "_comment_StrandedRunRetryPendingGraceMinutes" documentation key — a
             // name-only replace would rewrite the comment key and leave the real one untouched, which is the
@@ -62,11 +81,15 @@ public sealed class DaemonProfileConfigurationTests
             .Replace(
                 "\"StrandedRunRetryPendingGraceMinutes\": 45",
                 "\"StrandedRunRetryPendingGraceMinutes\": 23",
-                StringComparison.Ordinal);
+                StringComparison.Ordinal
+            );
         using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
 
-        var options = new ConfigurationBuilder().AddJsonStream(stream).Build()
-            .GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
+        var options = new ConfigurationBuilder()
+            .AddJsonStream(stream)
+            .Build()
+            .GetSection(CodeReviewDaemonOptions.SectionName)
+            .Get<CodeReviewDaemonOptions>();
 
         options.Should().NotBeNull();
         options!.StrandedRunGraceHours.Should().Be(11);
@@ -96,6 +119,8 @@ public sealed class DaemonProfileConfigurationTests
         }
 
         throw new FileNotFoundException(
-            $"Could not find {relative} in any ancestor of {AppContext.BaseDirectory}.", relative);
+            $"Could not find {relative} in any ancestor of {AppContext.BaseDirectory}.",
+            relative
+        );
     }
 }

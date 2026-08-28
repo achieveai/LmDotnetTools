@@ -40,10 +40,7 @@ public class LifecycleFieldSemanticsTests
 
         decoded.Correlation.Should().BeNull();
         decoded.Payload.Should().BeNull();
-        LifecycleSerializer
-            .Serialize(decoded)
-            .Should()
-            .Be(LifecycleSerializer.Serialize(LifecycleTestData.Minimal()));
+        LifecycleSerializer.Serialize(decoded).Should().Be(LifecycleSerializer.Serialize(LifecycleTestData.Minimal()));
     }
 
     /// <summary>Encodes a payload exactly as an envelope would carry it.</summary>
@@ -130,9 +127,7 @@ public class LifecycleFieldSemanticsTests
         var original = LifecycleTestData.RunStarted();
         var envelope = LifecycleTestData.Maximal();
 
-        LifecycleSerializer.TryReadPayload<RunStartedPayload>(envelope, out var roundTripped)
-            .Should()
-            .BeTrue();
+        LifecycleSerializer.TryReadPayload<RunStartedPayload>(envelope, out var roundTripped).Should().BeTrue();
         roundTripped.Should().Be(original);
     }
 
@@ -154,9 +149,7 @@ public class LifecycleFieldSemanticsTests
             Payload = JsonDocument.Parse("\"not-an-object\"").RootElement.Clone(),
         };
 
-        LifecycleSerializer.TryReadPayload<RunStartedPayload>(envelope, out var payload)
-            .Should()
-            .BeFalse();
+        LifecycleSerializer.TryReadPayload<RunStartedPayload>(envelope, out var payload).Should().BeFalse();
         payload.Should().BeNull();
     }
 
@@ -169,9 +162,7 @@ public class LifecycleFieldSemanticsTests
             Payload = JsonDocument.Parse("{}").RootElement.Clone(),
         };
 
-        LifecycleSerializer.TryReadPayload<ContextLoadedPayload>(envelope, out var payload)
-            .Should()
-            .BeTrue();
+        LifecycleSerializer.TryReadPayload<ContextLoadedPayload>(envelope, out var payload).Should().BeTrue();
         payload!.RunId.Should().BeEmpty();
         payload.RenderedHash.Should().BeEmpty();
         payload.Sources.Should().NotBeNull().And.BeEmpty();
@@ -205,11 +196,7 @@ public class LifecycleFieldSemanticsTests
         {
             // A member the contract marks required can never be absent, so the body carries exactly
             // those and nothing else. Everything left is optional, and that is what is under test.
-            var decoded = JsonSerializer.Deserialize(
-                OnlyRequiredMembers(type!),
-                type!,
-                LifecycleSerializer.Options
-            );
+            var decoded = JsonSerializer.Deserialize(OnlyRequiredMembers(type!), type!, LifecycleSerializer.Options);
             decoded.Should().NotBeNull();
 
             foreach (var property in type!.GetProperties())
@@ -271,9 +258,7 @@ public class LifecycleFieldSemanticsTests
             return "0";
         }
 
-        throw new NotSupportedException(
-            $"A newly required member of type {target.Name} needs a placeholder here."
-        );
+        throw new NotSupportedException($"A newly required member of type {target.Name} needs a placeholder here.");
     }
 
     [Fact]
@@ -306,7 +291,11 @@ public class LifecycleFieldSemanticsTests
                             Id = "development",
                             Version = "1.4.0",
                         },
-                        new SandboxInventoryEntry { Kind = LifecycleInventoryKinds.Skill, Id = "development:implement" },
+                        new SandboxInventoryEntry
+                        {
+                            Kind = LifecycleInventoryKinds.Skill,
+                            Id = "development:implement",
+                        },
                     ],
                 },
             }
@@ -355,7 +344,10 @@ public class LifecycleFieldSemanticsTests
             Inventory = new SandboxInventorySummary
             {
                 Status = LifecycleInventoryStatuses.Confirmed,
-                Items = [new SandboxInventoryEntry { Kind = LifecycleInventoryKinds.Agent, Id = "code-reviewer:pr-review" }],
+                Items =
+                [
+                    new SandboxInventoryEntry { Kind = LifecycleInventoryKinds.Agent, Id = "code-reviewer:pr-review" },
+                ],
             },
         };
 

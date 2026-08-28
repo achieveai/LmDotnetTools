@@ -23,10 +23,7 @@ public class MockHttpHandlerBuilderBenchmarks
         using var bareHandler = new ConstantOkHandler();
         var bare = await FastestRunMillisecondsAsync(bareHandler);
 
-        using var builtHandler = MockHttpHandlerBuilder
-            .Create()
-            .RespondWithAnthropicMessage("OK")
-            .Build();
+        using var builtHandler = MockHttpHandlerBuilder.Create().RespondWithAnthropicMessage("OK").Build();
         var built = await FastestRunMillisecondsAsync(builtHandler);
 
         // The floor stops a near-zero baseline from producing a razor-thin budget, and it
@@ -124,10 +121,7 @@ public class MockHttpHandlerBuilderBenchmarks
             for (var i = 0; i < RequestsPerRun; i++)
             {
                 // Create a new request for each iteration to avoid HttpRequestMessage reuse issues
-                using var request = new HttpRequestMessage(
-                    HttpMethod.Post,
-                    "https://api.anthropic.com/v1/messages"
-                )
+                using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
                 {
                     Content = new StringContent("{}"),
                 };
@@ -152,9 +146,6 @@ public class MockHttpHandlerBuilderBenchmarks
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken
-        ) =>
-            Task.FromResult(
-                new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("OK") }
-            );
+        ) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("OK") });
     }
 }

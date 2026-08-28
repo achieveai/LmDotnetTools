@@ -51,8 +51,7 @@ public sealed class WorkflowRunRegistry
     private readonly ConcurrentDictionary<string, object> _fileLocks = new(StringComparer.Ordinal);
     private readonly string? _indexDirectory;
 
-    private static readonly JsonSerializerOptions IndexJson =
-        new(JsonSerializerDefaults.Web) { WriteIndented = false };
+    private static readonly JsonSerializerOptions IndexJson = new(JsonSerializerDefaults.Web) { WriteIndented = false };
 
     /// <summary>
     ///     Creates the registry. When <paramref name="indexDirectory"/> is supplied, the workflow-tab index is
@@ -69,7 +68,8 @@ public sealed class WorkflowRunRegistry
     /// </exception>
     public WorkflowRunRegistry(
         string? indexDirectory = null,
-        int maxPersistedEntriesPerConversation = DefaultMaxPersistedEntriesPerConversation)
+        int maxPersistedEntriesPerConversation = DefaultMaxPersistedEntriesPerConversation
+    )
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxPersistedEntriesPerConversation, 1);
 
@@ -96,8 +96,7 @@ public sealed class WorkflowRunRegistry
     public void Remove(string threadId) => _byThread.TryRemove(threadId, out _);
 
     /// <summary>Resolves the WorkflowManager for <paramref name="threadId"/>, or false if the thread has none.</summary>
-    public bool TryGet(string threadId, out WorkflowManager? manager) =>
-        _byThread.TryGetValue(threadId, out manager);
+    public bool TryGet(string threadId, out WorkflowManager? manager) => _byThread.TryGetValue(threadId, out manager);
 
     /// <summary>
     ///     Merges the given workflow + delegate tabs into the conversation's persisted index (upsert by
@@ -131,7 +130,11 @@ public sealed class WorkflowRunRegistry
                 // tab that the live snapshot has dropped (that's exactly the run that has left memory).
                 // The viewer-scoped flags are dropped on the way in: they answer "for the reader of this
                 // poll", and the file is read by every later reader.
-                merged[(tab.Kind, tab.AgentId)] = tab with { IsCurrent = false, IsReadable = false };
+                merged[(tab.Kind, tab.AgentId)] = tab with
+                {
+                    IsCurrent = false,
+                    IsReadable = false,
+                };
             }
 
             try
@@ -166,7 +169,8 @@ public sealed class WorkflowRunRegistry
     /// </summary>
     private IReadOnlyCollection<SubAgentSummary> Bound(
         Dictionary<(string Kind, string AgentId), SubAgentSummary> merged,
-        IReadOnlyList<SubAgentSummary> live)
+        IReadOnlyList<SubAgentSummary> live
+    )
     {
         if (merged.Count <= MaxPersistedEntriesPerConversation)
         {
@@ -201,9 +205,9 @@ public sealed class WorkflowRunRegistry
 
         return
         [
-            .. (
-                JsonSerializer.Deserialize<List<SubAgentSummary>>(File.ReadAllText(path), IndexJson) ?? []
-            ).Select(static tab => tab.AsRetained()),
+            .. (JsonSerializer.Deserialize<List<SubAgentSummary>>(File.ReadAllText(path), IndexJson) ?? []).Select(
+                static tab => tab.AsRetained()
+            ),
         ];
     }
 

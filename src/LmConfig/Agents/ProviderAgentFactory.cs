@@ -281,9 +281,9 @@ public class ProviderAgentFactory : IProviderAgentFactory
         // ClaudeAgentSDK is not compatible with the IAgent interface.
         // It requires using ClaudeAgentLoop (MultiTurnAgentBase) directly for multi-turn agentic workflows.
         throw new NotSupportedException(
-            $"ClaudeAgentSDK provider '{resolution.EffectiveProviderName}' cannot be used via ProviderAgentFactory. " +
-            "ClaudeAgentSDK is designed for multi-turn agentic workflows and requires using ClaudeAgentLoop directly. " +
-            "See LmMultiTurn.ClaudeAgentLoop for the correct usage pattern."
+            $"ClaudeAgentSDK provider '{resolution.EffectiveProviderName}' cannot be used via ProviderAgentFactory. "
+                + "ClaudeAgentSDK is designed for multi-turn agentic workflows and requires using ClaudeAgentLoop directly. "
+                + "See LmMultiTurn.ClaudeAgentLoop for the correct usage pattern."
         );
     }
 
@@ -292,9 +292,9 @@ public class ProviderAgentFactory : IProviderAgentFactory
         // CopilotSDK is not compatible with the IAgent interface.
         // It requires using CopilotAgentLoop (MultiTurnAgentBase) directly for multi-turn agentic workflows.
         throw new NotSupportedException(
-            $"CopilotSDK provider '{resolution.EffectiveProviderName}' cannot be used via ProviderAgentFactory. " +
-            "CopilotSDK is designed for multi-turn agentic workflows and requires using CopilotAgentLoop directly. " +
-            "See LmMultiTurn.CopilotAgentLoop for the correct usage pattern."
+            $"CopilotSDK provider '{resolution.EffectiveProviderName}' cannot be used via ProviderAgentFactory. "
+                + "CopilotSDK is designed for multi-turn agentic workflows and requires using CopilotAgentLoop directly. "
+                + "See LmMultiTurn.CopilotAgentLoop for the correct usage pattern."
         );
     }
 

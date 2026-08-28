@@ -60,11 +60,10 @@ public static class SystemChatModes
     {
         var filePath = ResolvePromptsPath();
         var yaml = File.ReadAllText(filePath);
-        var deserializer = new DeserializerBuilder()
-            .WithNamingConvention(CamelCaseNamingConvention.Instance)
-            .Build();
+        var deserializer = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
 
-        var document = deserializer.Deserialize<SystemChatModeDocument>(yaml)
+        var document =
+            deserializer.Deserialize<SystemChatModeDocument>(yaml)
             ?? throw new InvalidOperationException($"{PromptsFileName} did not contain any chat mode definitions.");
 
         if (document.ChatModes is null || document.ChatModes.Count == 0)
@@ -73,19 +72,21 @@ public static class SystemChatModes
         }
 
         var now = 0L;
-        var modes = document.ChatModes.Select(m => new ChatMode
-        {
-            Id = Require(m.Id, "id"),
-            Name = Require(m.Name, "name"),
-            Description = m.Description,
-            SystemPrompt = Require(m.SystemPrompt, "systemPrompt"),
-            EnabledTools = m.EnabledTools,
-            EnabledBuiltInTools = m.EnabledBuiltInTools,
-            EnabledCapabilityTools = m.EnabledCapabilityTools,
-            IsSystemDefined = true,
-            CreatedAt = now,
-            UpdatedAt = now,
-        }).ToList();
+        var modes = document
+            .ChatModes.Select(m => new ChatMode
+            {
+                Id = Require(m.Id, "id"),
+                Name = Require(m.Name, "name"),
+                Description = m.Description,
+                SystemPrompt = Require(m.SystemPrompt, "systemPrompt"),
+                EnabledTools = m.EnabledTools,
+                EnabledBuiltInTools = m.EnabledBuiltInTools,
+                EnabledCapabilityTools = m.EnabledCapabilityTools,
+                IsSystemDefined = true,
+                CreatedAt = now,
+                UpdatedAt = now,
+            })
+            .ToList();
 
         ValidateRequiredMode(modes, DefaultModeId);
         ValidateRequiredMode(modes, MedicalKnowledgeModeId);
@@ -99,7 +100,8 @@ public static class SystemChatModes
         if (duplicateIds.Count > 0)
         {
             throw new InvalidOperationException(
-                $"{PromptsFileName} contains duplicate chat mode ids: {string.Join(", ", duplicateIds)}.");
+                $"{PromptsFileName} contains duplicate chat mode ids: {string.Join(", ", duplicateIds)}."
+            );
         }
 
         return modes;
@@ -124,7 +126,8 @@ public static class SystemChatModes
 
         throw new FileNotFoundException(
             $"Could not find {PromptsFileName}. Expected it beside the LmStreaming.Sample binaries "
-            + "or at samples/LmStreaming.Sample/Prompts.yaml under the repository root.");
+                + "or at samples/LmStreaming.Sample/Prompts.yaml under the repository root."
+        );
     }
 
     private static IEnumerable<string> EnumerateSearchRoots()

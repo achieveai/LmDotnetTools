@@ -14,8 +14,11 @@ namespace LmMultiTurn.Tests.Triggers;
 /// </summary>
 public class TriggerRuntimeNotifyTests
 {
-    private static (TriggerRuntime rt, ManualTriggerSource src, List<(string payload, bool isError)> notified)
-        BuildRuntime()
+    private static (
+        TriggerRuntime rt,
+        ManualTriggerSource src,
+        List<(string payload, bool isError)> notified
+    ) BuildRuntime()
     {
         var notified = new List<(string, bool)>();
         var src = new ManualTriggerSource();
@@ -25,22 +28,32 @@ public class TriggerRuntimeNotifyTests
             resolve: (_, _, _, _) => Task.CompletedTask,
             notify: (payload, isError, _) =>
             {
-                lock (notified) { notified.Add((payload, isError)); }
+                lock (notified)
+                {
+                    notified.Add((payload, isError));
+                }
                 return Task.CompletedTask;
-            });
-        rt.Register(new TriggerSourceRegistration
-        {
-            Kind = "manual",
-            Description = "test",
-            ArgsSchema = "{}",
-            Capabilities = ManualTriggerSource.Caps,
-            Source = src,
-        });
+            }
+        );
+        rt.Register(
+            new TriggerSourceRegistration
+            {
+                Kind = "manual",
+                Description = "test",
+                ArgsSchema = "{}",
+                Capabilities = ManualTriggerSource.Caps,
+                Source = src,
+            }
+        );
         return (rt, src, notified);
     }
 
-    private static (TriggerRuntime rt, ManualTriggerSource src, List<(string payload, bool isError)> notified, InMemoryNotifyWaitStore store)
-        BuildRuntimeWithStore()
+    private static (
+        TriggerRuntime rt,
+        ManualTriggerSource src,
+        List<(string payload, bool isError)> notified,
+        InMemoryNotifyWaitStore store
+    ) BuildRuntimeWithStore()
     {
         var notified = new List<(string, bool)>();
         var src = new ManualTriggerSource();
@@ -51,17 +64,23 @@ public class TriggerRuntimeNotifyTests
             resolve: (_, _, _, _) => Task.CompletedTask,
             notify: (payload, isError, _) =>
             {
-                lock (notified) { notified.Add((payload, isError)); }
+                lock (notified)
+                {
+                    notified.Add((payload, isError));
+                }
                 return Task.CompletedTask;
-            });
-        rt.Register(new TriggerSourceRegistration
-        {
-            Kind = "manual",
-            Description = "test",
-            ArgsSchema = "{}",
-            Capabilities = ManualTriggerSource.Caps,
-            Source = src,
-        });
+            }
+        );
+        rt.Register(
+            new TriggerSourceRegistration
+            {
+                Kind = "manual",
+                Description = "test",
+                ArgsSchema = "{}",
+                Capabilities = ManualTriggerSource.Caps,
+                Source = src,
+            }
+        );
         return (rt, src, notified, store);
     }
 
@@ -69,7 +88,16 @@ public class TriggerRuntimeNotifyTests
     public async Task NotifyWait_StaysArmed_AcrossMultipleFires()
     {
         var (rt, src, notified) = BuildRuntime();
-        var armed = await rt.ArmAsync("w1", "manual", "{}", "1h", null, WaitMode.Notify, maxFires: null, CancellationToken.None);
+        var armed = await rt.ArmAsync(
+            "w1",
+            "manual",
+            "{}",
+            "1h",
+            null,
+            WaitMode.Notify,
+            maxFires: null,
+            CancellationToken.None
+        );
         armed.IsArmed.Should().BeTrue();
 
         var sink = src.Sinks["w1"];
@@ -164,27 +192,35 @@ public class TriggerRuntimeNotifyTests
         await using var rt = new TriggerRuntime(
             options,
             resolve: (_, _, _, _) => Task.CompletedTask,
-            notify: (_, _, _) => Task.CompletedTask);
-        rt.Register(new TriggerSourceRegistration
-        {
-            Kind = "manual",
-            Description = "test",
-            ArgsSchema = "{}",
-            Capabilities = ManualTriggerSource.Caps,
-            Source = src,
-        });
+            notify: (_, _, _) => Task.CompletedTask
+        );
+        rt.Register(
+            new TriggerSourceRegistration
+            {
+                Kind = "manual",
+                Description = "test",
+                ArgsSchema = "{}",
+                Capabilities = ManualTriggerSource.Caps,
+                Source = src,
+            }
+        );
 
         Func<Task> act = () =>
             rt.ArmAsync("w8", "manual", "{}", "1h", null, WaitMode.Notify, maxFires: null, cts.Token);
 
-        await act.Should().ThrowAsync<OperationCanceledException>(
-            "the caller's own token was cancelled mid-persist, so ArmAsync must surface that " +
-            "instead of reporting the wait as armed");
+        await act.Should()
+            .ThrowAsync<OperationCanceledException>(
+                "the caller's own token was cancelled mid-persist, so ArmAsync must surface that "
+                    + "instead of reporting the wait as armed"
+            );
 
-        rt.ListWaits().Should().NotContain(
-            w => w.WaitId == "w8",
-            "the aborted arm must be fully torn down (source disposed, gate released), not left " +
-            "dangling as a live-armed wait");
+        rt.ListWaits()
+            .Should()
+            .NotContain(
+                w => w.WaitId == "w8",
+                "the aborted arm must be fully torn down (source disposed, gate released), not left "
+                    + "dangling as a live-armed wait"
+            );
     }
 
     /// <summary>
@@ -228,7 +264,9 @@ public class TriggerRuntimeNotifyTests
         public Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(string threadId, CancellationToken ct = default)
         {
             IReadOnlyList<NotifyWaitRecord> result =
-                [.. _rows.Values.Where(r => r.ThreadId == threadId && r.Status == "active")];
+            [
+                .. _rows.Values.Where(r => r.ThreadId == threadId && r.Status == "active"),
+            ];
             return Task.FromResult(result);
         }
     }

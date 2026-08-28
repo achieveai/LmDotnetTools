@@ -14,7 +14,8 @@ public class CodexRpcTraceWriterTests
             await writer.WriteAsync(
                 "outbound",
                 """{"jsonrpc":"2.0","id":1,"method":"thread/start","params":{"apiKey":"secret","threadId":"t1","turnId":"u1"}}""",
-                CancellationToken.None);
+                CancellationToken.None
+            );
         }
 
         var lines = await File.ReadAllLinesAsync(path);
@@ -44,7 +45,8 @@ public class CodexRpcTraceWriterTests
             await writer.WriteAsync(
                 "inbound",
                 """{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}""",
-                CancellationToken.None);
+                CancellationToken.None
+            );
         }
 
         var lines = await File.ReadAllLinesAsync(path);

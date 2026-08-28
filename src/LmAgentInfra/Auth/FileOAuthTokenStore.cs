@@ -105,7 +105,8 @@ public sealed class FileOAuthTokenStore : IOAuthTokenStore
         _logger.LogInformation(
             "Saved OAuth token for provider {Provider} (expires {ExpiresAt})",
             record.Provider,
-            record.AccessTokenExpiresAtUtc);
+            record.AccessTokenExpiresAtUtc
+        );
     }
 
     /// <inheritdoc />
@@ -169,7 +170,8 @@ public sealed class FileOAuthTokenStore : IOAuthTokenStore
         {
             throw new ArgumentException(
                 $"Provider '{provider}' did not yield a valid file name after sanitization.",
-                nameof(provider));
+                nameof(provider)
+            );
         }
 
         return builder.ToString();

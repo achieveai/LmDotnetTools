@@ -43,8 +43,7 @@ internal sealed class CharacteristicsAgentFactory
         _modelAgentFactory = modelAgentFactory;
         _logger = logger;
         _parentCopilotModel = parentCopilotModel;
-        _parentReasoningExtraProperties =
-            parentReasoningExtraProperties ?? ImmutableDictionary<string, object?>.Empty;
+        _parentReasoningExtraProperties = parentReasoningExtraProperties ?? ImmutableDictionary<string, object?>.Empty;
     }
 
     /// <summary>

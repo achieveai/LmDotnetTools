@@ -16,8 +16,7 @@ namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Tests.Agents;
 /// </summary>
 public sealed class CopilotSdkClientMcpServerShapeTests
 {
-    private static CopilotSdkOptions NewOptions(
-        IReadOnlyDictionary<string, McpServerConfig>? mcpServers = null)
+    private static CopilotSdkOptions NewOptions(IReadOnlyDictionary<string, McpServerConfig>? mcpServers = null)
     {
         return new CopilotSdkOptions
         {
@@ -28,11 +27,13 @@ public sealed class CopilotSdkClientMcpServerShapeTests
 
     private static IDictionary<string, object?> InvokeBuildSessionNewParams(
         CopilotSdkClient client,
-        CopilotBridgeInitOptions options)
+        CopilotBridgeInitOptions options
+    )
     {
         var method = typeof(CopilotSdkClient).GetMethod(
             "BuildSessionNewParams",
-            BindingFlags.Instance | BindingFlags.NonPublic);
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
         Assert.NotNull(method);
         var result = method.Invoke(client, [options]);
         Assert.NotNull(result);
@@ -77,7 +78,8 @@ public sealed class CopilotSdkClientMcpServerShapeTests
             ["github"] = McpServerConfig.CreateStdio(
                 command: "npx",
                 args: ["-y", "@github/mcp"],
-                env: new Dictionary<string, string> { ["TOKEN"] = "abc" }),
+                env: new Dictionary<string, string> { ["TOKEN"] = "abc" }
+            ),
         };
         var client = new CopilotSdkClient(NewOptions(mcp));
         var options = new CopilotBridgeInitOptions
@@ -102,7 +104,8 @@ public sealed class CopilotSdkClientMcpServerShapeTests
         {
             ["remote"] = McpServerConfig.CreateHttp(
                 url: "https://example.com/mcp",
-                headers: new Dictionary<string, string> { ["X-Auth"] = "bearer" }),
+                headers: new Dictionary<string, string> { ["X-Auth"] = "bearer" }
+            ),
         };
         var client = new CopilotSdkClient(NewOptions(mcp));
         var options = new CopilotBridgeInitOptions
@@ -145,7 +148,8 @@ public sealed class CopilotSdkClientMcpServerShapeTests
 
         var resolveMethod = typeof(CopilotSdkClient).GetMethod(
             "ResolveEffectiveOptions",
-            BindingFlags.Instance | BindingFlags.NonPublic);
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
         Assert.NotNull(resolveMethod);
         var resolved = (CopilotBridgeInitOptions)resolveMethod.Invoke(client, [options])!;
 

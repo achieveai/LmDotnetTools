@@ -105,9 +105,11 @@ public static class ResponsesInputReader
     private static bool TryGetPartText(JsonElement part, out string text)
     {
         text = string.Empty;
-        if (part.ValueKind != JsonValueKind.Object
+        if (
+            part.ValueKind != JsonValueKind.Object
             || !part.TryGetProperty("type", out var typeEl)
-            || typeEl.ValueKind != JsonValueKind.String)
+            || typeEl.ValueKind != JsonValueKind.String
+        )
         {
             return false;
         }

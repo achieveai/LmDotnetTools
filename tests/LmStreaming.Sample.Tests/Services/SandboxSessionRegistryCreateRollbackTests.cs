@@ -50,7 +50,8 @@ public class SandboxSessionRegistryCreateRollbackTests
         var gateway = new SandboxGatewayLifetime(
             options,
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK))));
+            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)))
+        );
 
         // Sabotage the secret store so SaveAsync — which runs AFTER the create succeeds and the maps are
         // published — fails deterministically: replace its base directory with a FILE, so SaveAsync's
@@ -67,7 +68,8 @@ public class SandboxSessionRegistryCreateRollbackTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(registryHandler),
             new AuthOptions(),
-            secretStore);
+            secretStore
+        );
 
         var act = async () => await registry.GetOrCreateSessionAsync();
 
@@ -76,7 +78,9 @@ public class SandboxSessionRegistryCreateRollbackTests
 
         calls.PostCount.Should().Be(1, "the gateway session was created exactly once");
         calls.Deletes.Should().Contain("sess-1", "the just-created remote session must be best-effort destroyed");
-        registry.TryGetSessionById("sess-1", out _).Should()
+        registry
+            .TryGetSessionById("sess-1", out _)
+            .Should()
             .BeFalse("the reverse session-id map entry this attempt added must be rolled back");
     }
 
@@ -113,7 +117,8 @@ public class SandboxSessionRegistryCreateRollbackTests
         var gateway = new SandboxGatewayLifetime(
             options,
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK))));
+            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)))
+        );
 
         var secretDir = Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N"));
         var secretStore = new SessionSecretStore(secretDir, NullLogger<SessionSecretStore>.Instance);
@@ -128,7 +133,8 @@ public class SandboxSessionRegistryCreateRollbackTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(registryHandler),
             new AuthOptions(),
-            secretStore);
+            secretStore
+        );
 
         var first = async () => await registry.GetOrCreateSessionAsync();
         await first.Should().ThrowAsync<Exception>();
@@ -153,22 +159,40 @@ public class SandboxSessionRegistryCreateRollbackTests
 
         public int PostCount
         {
-            get { lock (_gate) { return _postCount; } }
+            get
+            {
+                lock (_gate)
+                {
+                    return _postCount;
+                }
+            }
         }
 
         public IReadOnlyList<string> Deletes
         {
-            get { lock (_gate) { return [.. _deletes]; } }
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _deletes];
+                }
+            }
         }
 
         public int RecordPost()
         {
-            lock (_gate) { return ++_postCount; }
+            lock (_gate)
+            {
+                return ++_postCount;
+            }
         }
 
         public void RecordDelete(string sessionId)
         {
-            lock (_gate) { _deletes.Add(sessionId); }
+            lock (_gate)
+            {
+                _deletes.Add(sessionId);
+            }
         }
     }
 
@@ -176,7 +200,7 @@ public class SandboxSessionRegistryCreateRollbackTests
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(respond(request));
+            CancellationToken cancellationToken
+        ) => Task.FromResult(respond(request));
     }
 }

@@ -21,16 +21,11 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 public sealed class AuthControllersHostBuildTests : LoggingTestBase
 {
     public AuthControllersHostBuildTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private static E2EWebAppFactory NewFactory()
     {
-        var responder = ScriptedSseResponder.New()
-            .ForRole("noop", _ => true)
-                .Turn(t => t.Text("ok"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("noop", _ => true).Turn(t => t.Text("ok")).Build();
         return new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()));
     }
 
@@ -70,7 +65,8 @@ public sealed class AuthControllersHostBuildTests : LoggingTestBase
 
         Logger.LogInformation(
             "Enumerable IOAuthTokenProvider resolved {Count} providers; verifying singleton-aliased identity.",
-            allProviders.Count);
+            allProviders.Count
+        );
 
         allProviders.Should().Contain(p => ReferenceEquals(p, githubConcrete));
         allProviders.Should().Contain(p => ReferenceEquals(p, adoConcrete));
@@ -95,7 +91,8 @@ public sealed class AuthControllersHostBuildTests : LoggingTestBase
             "github/status -> {GhStatus}, ado/status -> {AdoStatus}, m365/status -> {M365Status}",
             (int)githubResp.StatusCode,
             (int)adoResp.StatusCode,
-            (int)m365Resp.StatusCode);
+            (int)m365Resp.StatusCode
+        );
 
         githubResp.IsSuccessStatusCode.Should().BeTrue();
         adoResp.IsSuccessStatusCode.Should().BeTrue();

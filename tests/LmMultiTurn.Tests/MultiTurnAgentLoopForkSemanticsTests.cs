@@ -24,26 +24,22 @@ public class MultiTurnAgentLoopForkSemanticsTests
     {
         var agent = new Mock<IStreamingAgent>();
         agent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.FromResult(ToAsync([
-                new TextMessage { Text = "ok", Role = Role.Assistant },
-            ])));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(Task.FromResult(ToAsync([new TextMessage { Text = "ok", Role = Role.Assistant }])));
 
         var registry = new FunctionRegistry();
-        await using var loop = new MultiTurnAgentLoop(
-            agent.Object,
-            registry,
-            threadId: "raw-fork-test");
+        await using var loop = new MultiTurnAgentLoop(agent.Object, registry, threadId: "raw-fork-test");
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var input = new UserInput(
-            [new TextMessage { Text = "hi", Role = Role.User }],
-            ParentRunId: "raw-parent-1");
+        var input = new UserInput([new TextMessage { Text = "hi", Role = Role.User }], ParentRunId: "raw-parent-1");
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
@@ -66,19 +62,17 @@ public class MultiTurnAgentLoopForkSemanticsTests
     {
         var agent = new Mock<IStreamingAgent>();
         agent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.FromResult(ToAsync([
-                new TextMessage { Text = "ok", Role = Role.Assistant },
-            ])));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(Task.FromResult(ToAsync([new TextMessage { Text = "ok", Role = Role.Assistant }])));
 
         var registry = new FunctionRegistry();
-        await using var loop = new MultiTurnAgentLoop(
-            agent.Object,
-            registry,
-            threadId: "raw-no-fork-test");
+        await using var loop = new MultiTurnAgentLoop(agent.Object, registry, threadId: "raw-no-fork-test");
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -103,24 +97,22 @@ public class MultiTurnAgentLoopForkSemanticsTests
     {
         var agent = new Mock<IStreamingAgent>();
         agent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ThrowingAsync<IMessage>(new InvalidOperationException("boom"))));
 
         var registry = new FunctionRegistry();
-        await using var loop = new MultiTurnAgentLoop(
-            agent.Object,
-            registry,
-            threadId: "raw-fork-error-test");
+        await using var loop = new MultiTurnAgentLoop(agent.Object, registry, threadId: "raw-fork-error-test");
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var input = new UserInput(
-            [new TextMessage { Text = "hi", Role = Role.User }],
-            ParentRunId: "raw-parent-err");
+        var input = new UserInput([new TextMessage { Text = "hi", Role = Role.User }], ParentRunId: "raw-parent-err");
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
@@ -138,7 +130,8 @@ public class MultiTurnAgentLoopForkSemanticsTests
 
     private static async IAsyncEnumerable<T> ThrowingAsync<T>(
         Exception ex,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         await Task.Yield();
         throw ex;
@@ -149,7 +142,8 @@ public class MultiTurnAgentLoopForkSemanticsTests
 
     private static async IAsyncEnumerable<IMessage> ToAsync(
         IReadOnlyList<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

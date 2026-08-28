@@ -202,7 +202,9 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             };
 
             // 5. Hand off to the (possibly user-supplied) launcher.
-            _process = await _options.ProcessLauncher.LaunchAsync(launchRequest, cancellationToken).ConfigureAwait(false);
+            _process = await _options
+                .ProcessLauncher.LaunchAsync(launchRequest, cancellationToken)
+                .ConfigureAwait(false);
 
             // Use UTF-8 WITHOUT BOM for writing to Node.js process
             // BOM would corrupt the first JSON line and cause parsing failures
@@ -605,11 +607,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 }
 
                 return emitSystemInit
-                    ? [new SystemInitMessage
-                    {
-                        SessionId = systemInitEvent.SessionId,
-                        Model = systemInitEvent.Model,
-                    }]
+                    ? [new SystemInitMessage { SessionId = systemInitEvent.SessionId, Model = systemInitEvent.Model }]
                     : [];
 
             case StreamEvent streamEvent:
@@ -664,19 +662,21 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 ev.SessionId,
                 info.RateLimitType,
                 resetsAtIso,
-                info.IsUsingOverage);
+                info.IsUsingOverage
+            );
         }
         else
         {
             _logger?.LogWarning(
-                "[Agent:{SessionId}] Rate-limit NOT allowed: status={Status}, window={Window}, " +
-                "resetsAt={ResetsAt}, overageStatus={OverageStatus}, overageDisabledReason={OverageReason}",
+                "[Agent:{SessionId}] Rate-limit NOT allowed: status={Status}, window={Window}, "
+                    + "resetsAt={ResetsAt}, overageStatus={OverageStatus}, overageDisabledReason={OverageReason}",
                 ev.SessionId,
                 info.Status,
                 info.RateLimitType,
                 resetsAtIso,
                 info.OverageStatus,
-                info.OverageDisabledReason);
+                info.OverageDisabledReason
+            );
         }
     }
 
@@ -759,7 +759,10 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // Force kill if still running
             if (_process != null && !_process.HasExited)
             {
-                _logger?.LogWarning("Force killing claude-agent-sdk process (PID: {ProcessId})", _process.ProcessId ?? -1);
+                _logger?.LogWarning(
+                    "Force killing claude-agent-sdk process (PID: {ProcessId})",
+                    _process.ProcessId ?? -1
+                );
                 _process.Kill(true);
             }
 
@@ -901,7 +904,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 await Task.Delay(100, CancellationToken.None); // Brief wait for kill
             }
 
-        cleanup:
+            cleanup:
             // Step 5: Wait for stderr monitor task
             if (_stderrMonitorTask != null)
             {
@@ -1082,8 +1085,10 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     {
         var tokens = new List<string>
         {
-            "--output-format", request.OutputFormat,
-            "--input-format", request.InputFormat,
+            "--output-format",
+            request.OutputFormat,
+            "--input-format",
+            request.InputFormat,
         };
 
         if (!string.IsNullOrWhiteSpace(request.ModelId))
@@ -1568,9 +1573,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         return (first, last);
     }
 
-    internal static void ApplyStagingDirectoryEnv(
-        IDictionary<string, string?> environment,
-        string? stagingDirectory)
+    internal static void ApplyStagingDirectoryEnv(IDictionary<string, string?> environment, string? stagingDirectory)
     {
         ArgumentNullException.ThrowIfNull(environment);
         if (string.IsNullOrEmpty(stagingDirectory))

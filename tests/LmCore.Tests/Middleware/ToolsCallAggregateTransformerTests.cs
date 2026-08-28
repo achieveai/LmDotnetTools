@@ -44,9 +44,7 @@ public class ToolsCallAggregateTransformerTests
 
         // Normalize line endings — raw string literals inherit the source file's endings (\r\n)
         // but JsonSerializer.Serialize with WriteIndented uses \n on Unix platforms.
-        Assert.Equal(
-            expectedContent.ReplaceLineEndings("\n"),
-            result.Text.ReplaceLineEndings("\n"));
+        Assert.Equal(expectedContent.ReplaceLineEndings("\n"), result.Text.ReplaceLineEndings("\n"));
     }
 
     [Fact]
@@ -200,9 +198,7 @@ public class ToolsCallAggregateTransformerTests
             </tool_response>
             """;
 
-        Assert.Equal(
-            expected.ReplaceLineEndings("\n"),
-            result.ReplaceLineEndings("\n"));
+        Assert.Equal(expected.ReplaceLineEndings("\n"), result.ReplaceLineEndings("\n"));
     }
 
     [Fact]

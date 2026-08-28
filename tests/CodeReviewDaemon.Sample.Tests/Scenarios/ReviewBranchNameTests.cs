@@ -33,7 +33,12 @@ public sealed class ReviewBranchNameTests
     [Fact]
     public void RepoSlug_and_BuildReviewBranchName_agree()
     {
-        var repo = new RepoIdentity { Provider = "github", OrgOrOwner = "achieveai", RepoName = "LmDotnetTools" };
+        var repo = new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "achieveai",
+            RepoName = "LmDotnetTools",
+        };
         ReviewBranchManager.RepoSlug(repo).Should().Be("lmdotnettools");
         ReviewBranchManager.BuildReviewBranchName(repo, 156).Should().Be("review/lmdotnettools-156");
     }
@@ -41,7 +46,11 @@ public sealed class ReviewBranchNameTests
     [Theory]
     [InlineData("review/github/acme-widgets/42", "acme-widgets", 42)]
     [InlineData("review/ado/acme-platform-widgets/7", "acme-platform-widgets", 7)]
-    public void TryParseLegacyReviewBranch_round_trips_a_legacy_branch(string branch, string expectedSlug, int expectedPr)
+    public void TryParseLegacyReviewBranch_round_trips_a_legacy_branch(
+        string branch,
+        string expectedSlug,
+        int expectedPr
+    )
     {
         ReviewBranchManager.TryParseLegacyReviewBranch(branch, out var slug, out var pr).Should().BeTrue();
         slug.Should().Be(expectedSlug);
@@ -61,7 +70,12 @@ public sealed class ReviewBranchNameTests
     [Fact]
     public void LegacyRepoSlug_matches_the_legacy_branch_slug()
     {
-        var repo = new RepoIdentity { Provider = "github", OrgOrOwner = "achieveai", RepoName = "LmDotnetTools" };
+        var repo = new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "achieveai",
+            RepoName = "LmDotnetTools",
+        };
         ReviewBranchManager.LegacyRepoSlug(repo).Should().Be("achieveai-lmdotnettools");
     }
 }

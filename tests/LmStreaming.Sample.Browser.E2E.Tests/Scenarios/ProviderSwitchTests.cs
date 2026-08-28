@@ -32,7 +32,8 @@ public sealed class ProviderSwitchTests
     public async Task Provider_dropdown_switches_between_scripted_mocks_and_next_turn_streams(
         string bootProvider,
         string targetProvider,
-        string targetLabel)
+        string targetLabel
+    )
     {
         // ONE responder, two turns. The role matches on the system prompt, which both the OpenAI and
         // Anthropic extractors surface, so either wire pops the next plan.
@@ -51,8 +52,7 @@ public sealed class ProviderSwitchTests
         // Turn 1 on the boot provider — establishes the (started) conversation.
         await page.SendMessageAsync("first");
         await page.WaitForStreamIdleAsync();
-        string.Join(" ", await page.AssistantText().AllInnerTextsAsync())
-            .Should().Contain("First turn answer");
+        string.Join(" ", await page.AssistantText().AllInnerTextsAsync()).Should().Contain("First turn answer");
 
         // Switch the provider while idle: header dropdown → target option. This fires the backend
         // switch (recreate on the other wire). Wait for the button label to reflect the new provider.
@@ -65,11 +65,9 @@ public sealed class ProviderSwitchTests
         // this would never render / go idle.
         await page.SendMessageAsync("second");
         await page.WaitForStreamIdleAsync();
-        string.Join(" ", await page.AssistantText().AllInnerTextsAsync())
-            .Should().Contain("Second turn answer");
+        string.Join(" ", await page.AssistantText().AllInnerTextsAsync()).Should().Contain("Second turn answer");
 
         responder.RemainingTurns["parent"].Should().Be(0, "both turns ran to completion across the switch");
-        await session.SaveSuccessScreenshotAsync(
-            $"ProviderSwitch.{bootProvider}_to_{targetProvider}");
+        await session.SaveSuccessScreenshotAsync($"ProviderSwitch.{bootProvider}_to_{targetProvider}");
     }
 }

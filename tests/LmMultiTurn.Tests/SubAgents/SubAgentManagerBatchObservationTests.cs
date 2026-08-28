@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -8,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -29,11 +29,14 @@ public class SubAgentManagerBatchObservationTests : IAsyncLifetime
     {
         // Default parent mock: accept any SendAsync call
         _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         return Task.CompletedTask;
@@ -57,10 +60,8 @@ public class SubAgentManagerBatchObservationTests : IAsyncLifetime
 
         var batch = manager.CheckAgents([second, "first-reviewer", "missing", second]);
 
-        batch.Entries.Select(x => x.Target)
-            .Should().Equal(second, "first-reviewer", "missing", second);
-        batch.Entries.Select(x => x.AgentId)
-            .Should().Equal(second, first, null, second);
+        batch.Entries.Select(x => x.Target).Should().Equal(second, "first-reviewer", "missing", second);
+        batch.Entries.Select(x => x.AgentId).Should().Equal(second, first, null, second);
         batch.Entries[2].Status.Should().Be("not_found");
         batch.Requested.Should().Be(4);
         batch.NotFound.Should().Be(1);
@@ -144,12 +145,9 @@ public class SubAgentManagerBatchObservationTests : IAsyncLifetime
     /// </summary>
     private async Task<string> SpawnBackgroundAsync(SubAgentManager manager, string name)
     {
-        SetupSubAgentResponse([
-            new TextMessage { Text = "working...", Role = Role.Assistant },
-        ]);
+        SetupSubAgentResponse([new TextMessage { Text = "working...", Role = Role.Assistant }]);
 
-        var spawnJson = await manager.SpawnAsync(
-            "test-agent", "Do some work", name: name, runInBackground: true);
+        var spawnJson = await manager.SpawnAsync("test-agent", "Do some work", name: name, runInBackground: true);
 
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
@@ -168,7 +166,8 @@ public class SubAgentManagerBatchObservationTests : IAsyncLifetime
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: new MutableSubAgentTemplateSource(options.Templates));
+            source: new MutableSubAgentTemplateSource(options.Templates)
+        );
         return _manager;
     }
 
@@ -186,10 +185,7 @@ public class SubAgentManagerBatchObservationTests : IAsyncLifetime
 
         return new SubAgentOptions
         {
-            Templates = new Dictionary<string, SubAgentTemplate>
-            {
-                ["test-agent"] = template,
-            },
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
             MaxConcurrentSubAgents = maxConcurrent,
         };
     }
@@ -201,10 +197,13 @@ public class SubAgentManagerBatchObservationTests : IAsyncLifetime
     private void SetupSubAgentResponse(List<IMessage> messages)
     {
         _subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable(messages)));
     }
 
@@ -213,7 +212,8 @@ public class SubAgentManagerBatchObservationTests : IAsyncLifetime
     /// </summary>
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         List<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

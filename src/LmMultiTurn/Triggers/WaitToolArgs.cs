@@ -13,7 +13,8 @@ internal sealed record WaitToolArgs(
     string Timeout,
     string? Label,
     WaitMode Mode = WaitMode.Block,
-    int? MaxFires = null)
+    int? MaxFires = null
+)
 {
     /// <summary>
     /// Parses <c>{ kind, args?, timeout, label?, mode?, maxFires? }</c>. Returns false when
@@ -45,9 +46,10 @@ internal sealed record WaitToolArgs(
                 return false;
             }
 
-            var argsJson = root.TryGetProperty("args", out var argsEl) && argsEl.ValueKind == JsonValueKind.Object
-                ? argsEl.GetRawText()
-                : "{}";
+            var argsJson =
+                root.TryGetProperty("args", out var argsEl) && argsEl.ValueKind == JsonValueKind.Object
+                    ? argsEl.GetRawText()
+                    : "{}";
             var label = GetString(root, "label");
 
             var mode = WaitMode.Block;
@@ -85,7 +87,8 @@ internal sealed record WaitToolArgs(
                 timeout,
                 string.IsNullOrWhiteSpace(label) ? null : label,
                 mode,
-                maxFires);
+                maxFires
+            );
             return true;
         }
         catch (JsonException)
@@ -95,7 +98,5 @@ internal sealed record WaitToolArgs(
     }
 
     private static string? GetString(JsonElement root, string name) =>
-        root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String
-            ? el.GetString()
-            : null;
+        root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String ? el.GetString() : null;
 }

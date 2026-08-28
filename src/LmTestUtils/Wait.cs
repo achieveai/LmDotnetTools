@@ -331,12 +331,7 @@ public static class Wait
     )
     {
         ArgumentNullException.ThrowIfNull(condition);
-        return TryUntilAsync(
-            () => Task.FromResult(condition()),
-            timeout,
-            pollInterval,
-            cancellationToken
-        );
+        return TryUntilAsync(() => Task.FromResult(condition()), timeout, pollInterval, cancellationToken);
     }
 
     /// <inheritdoc cref="TryUntilAsync(Func{bool}, TimeSpan?, TimeSpan?, CancellationToken)" />

@@ -61,13 +61,13 @@ public sealed class ConversationAuthorizerWorkShapeTests
 
     private static async Task<(int Lookups, ConversationAccessResult Result)> ProbeAsync(
         Principal principal,
-        ThreadMetadata? metadata)
+        ThreadMetadata? metadata
+    )
     {
         var grants = new CountingResourceGrantStore(new InMemoryResourceGrantStore());
         var authorizer = TestAuthorizers.Enforcing(principal, grants);
 
-        var result = await authorizer.AuthorizeAsync(
-            ThreadId, metadata, AccessAction.Read, CancellationToken.None);
+        var result = await authorizer.AuthorizeAsync(ThreadId, metadata, AccessAction.Read, CancellationToken.None);
 
         return (grants.FindGrantCallCount, result);
     }
@@ -93,18 +93,22 @@ public sealed class ConversationAuthorizerWorkShapeTests
             _ = result.HidesExistence.Should().BeTrue();
         }
 
-        _ = sameTenantNoRelationship.Lookups.Should().Be(
-            1, "the policy consults the grant registry for any same-tenant non-owner");
+        _ = sameTenantNoRelationship
+            .Lookups.Should()
+            .Be(1, "the policy consults the grant registry for any same-tenant non-owner");
         _ = absent.Lookups.Should().Be(sameTenantNoRelationship.Lookups);
         _ = unstamped.Lookups.Should().Be(sameTenantNoRelationship.Lookups);
 
         // The cross-tenant case is called out separately because the obvious narrow fix - pad only
         // the absent-row path - leaves exactly this one at zero, converting an intra-tenant oracle
         // into a cross-tenant one.
-        _ = otherTenant.Lookups.Should().Be(
-            sameTenantNoRelationship.Lookups,
-            "a caller must not be able to tell 'this id exists in some other tenant' from 'this id "
-                + "does not exist' either");
+        _ = otherTenant
+            .Lookups.Should()
+            .Be(
+                sameTenantNoRelationship.Lookups,
+                "a caller must not be able to tell 'this id exists in some other tenant' from 'this id "
+                    + "does not exist' either"
+            );
     }
 
     /// <summary>
@@ -158,21 +162,33 @@ public sealed class ConversationAuthorizerWorkShapeTests
                 GrantedAt = DateTimeOffset.UnixEpoch,
                 ExpiresAt = null,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var authorizer = TestAuthorizers.Enforcing(User(), new CountingResourceGrantStore(grants));
 
         var granted = await authorizer.AuthorizeAsync(
-            ThreadId, Row(TenantA), AccessAction.Read, CancellationToken.None);
+            ThreadId,
+            Row(TenantA),
+            AccessAction.Read,
+            CancellationToken.None
+        );
         var owned = await authorizer.AuthorizeAsync(
-            ThreadId, Row(TenantA, ownerUserId: UserA), AccessAction.Read, CancellationToken.None);
+            ThreadId,
+            Row(TenantA, ownerUserId: UserA),
+            AccessAction.Read,
+            CancellationToken.None
+        );
         var crossTenant = await authorizer.AuthorizeAsync(
-            ThreadId, Row(TenantB), AccessAction.Read, CancellationToken.None);
+            ThreadId,
+            Row(TenantB),
+            AccessAction.Read,
+            CancellationToken.None
+        );
 
         _ = granted.Allowed.Should().BeTrue("a viewer grant still reads");
         _ = owned.Allowed.Should().BeTrue();
         _ = crossTenant.Allowed.Should().BeFalse();
-        _ = crossTenant.Reason.Should().Be(
-            "cross_tenant", "the reason code is the policy's, and it is contract");
+        _ = crossTenant.Reason.Should().Be("cross_tenant", "the reason code is the policy's, and it is contract");
     }
 }

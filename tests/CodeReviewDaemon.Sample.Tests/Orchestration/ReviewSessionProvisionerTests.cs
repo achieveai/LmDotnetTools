@@ -20,8 +20,10 @@ public class ReviewSessionProvisionerTests : IDisposable
     /// Temp root for the tests that exercise the REAL host filesystem — the per-run host workspace teardown
     /// in <c>DestroyAsync</c>. Everything else here runs entirely against the fake session source.
     /// </summary>
-    private readonly string _tempRoot =
-        Path.Combine(Path.GetTempPath(), "crd-provisioner-" + Guid.NewGuid().ToString("N"));
+    private readonly string _tempRoot = Path.Combine(
+        Path.GetTempPath(),
+        "crd-provisioner-" + Guid.NewGuid().ToString("N")
+    );
 
     public void Dispose()
     {
@@ -74,7 +76,13 @@ public class ReviewSessionProvisionerTests : IDisposable
     public async Task GetOrCreateAsync_SameRun_ReusesOneSession()
     {
         var fake = new FakeSessionSource();
-        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: SufficientDisk);
+        var provisioner = new ReviewSessionProvisioner(
+            fake,
+            new CodeReviewDaemonOptions(),
+            NullLoggerFactory.Instance,
+            workspaceBasePath: "/ws",
+            diskSpaceProbe: SufficientDisk
+        );
 
         var a = await provisioner.GetOrCreateAsync(Run(), default);
         var b = await provisioner.GetOrCreateAsync(Run(), default);
@@ -90,7 +98,12 @@ public class ReviewSessionProvisionerTests : IDisposable
     {
         var fake = new FakeSessionSource();
         var provisioner = new ReviewSessionProvisioner(
-            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: _ => false);
+            fake,
+            new CodeReviewDaemonOptions(),
+            NullLoggerFactory.Instance,
+            workspaceBasePath: "/ws",
+            diskSpaceProbe: _ => false
+        );
 
         var session = await provisioner.GetOrCreateAsync(Run(), default);
 
@@ -102,7 +115,13 @@ public class ReviewSessionProvisionerTests : IDisposable
     public async Task DestroyAsync_TearsDownTheRunSession()
     {
         var fake = new FakeSessionSource();
-        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: SufficientDisk);
+        var provisioner = new ReviewSessionProvisioner(
+            fake,
+            new CodeReviewDaemonOptions(),
+            NullLoggerFactory.Instance,
+            workspaceBasePath: "/ws",
+            diskSpaceProbe: SufficientDisk
+        );
 
         _ = await provisioner.GetOrCreateAsync(Run(), default);
         await provisioner.DestroyAsync(Run(), default);
@@ -115,9 +134,18 @@ public class ReviewSessionProvisionerTests : IDisposable
     {
         var fake = new FakeSessionSource();
         var provisioner = new ReviewSessionProvisioner(
-            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: SufficientDisk);
+            fake,
+            new CodeReviewDaemonOptions(),
+            NullLoggerFactory.Instance,
+            workspaceBasePath: "/ws",
+            diskSpaceProbe: SufficientDisk
+        );
         var slot = new ReviewSlot(
-            0, "/ws/review-pool/slot-0", "/ws/review-pool/slot-0/store", "/ws/review-pool/slot-0/scratch");
+            0,
+            "/ws/review-pool/slot-0",
+            "/ws/review-pool/slot-0/store",
+            "/ws/review-pool/slot-0/scratch"
+        );
 
         var session = await provisioner.GetOrCreateForSlotAsync(Run(), slot, default);
 
@@ -134,9 +162,18 @@ public class ReviewSessionProvisionerTests : IDisposable
     {
         var fake = new FakeSessionSource();
         var provisioner = new ReviewSessionProvisioner(
-            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: SufficientDisk);
+            fake,
+            new CodeReviewDaemonOptions(),
+            NullLoggerFactory.Instance,
+            workspaceBasePath: "/ws",
+            diskSpaceProbe: SufficientDisk
+        );
         var slot = new ReviewSlot(
-            0, "/ws/review-pool/slot-0", "/ws/review-pool/slot-0/store", "/ws/review-pool/slot-0/scratch");
+            0,
+            "/ws/review-pool/slot-0",
+            "/ws/review-pool/slot-0/store",
+            "/ws/review-pool/slot-0/scratch"
+        );
 
         var session = await provisioner.GetOrCreateRequiredForSlotAsync(Run(), slot, default);
 
@@ -149,17 +186,22 @@ public class ReviewSessionProvisionerTests : IDisposable
     [InlineData("/ws", "/other/slot-0")]
     public async Task GetOrCreateRequiredForSlotAsync_RejectsAnUnrepresentableSlot(
         string? workspaceBase,
-        string slotPath)
+        string slotPath
+    )
     {
         var fake = new FakeSessionSource();
         var provisioner = new ReviewSessionProvisioner(
-            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: workspaceBase, diskSpaceProbe: SufficientDisk);
+            fake,
+            new CodeReviewDaemonOptions(),
+            NullLoggerFactory.Instance,
+            workspaceBasePath: workspaceBase,
+            diskSpaceProbe: SufficientDisk
+        );
         var slot = new ReviewSlot(0, slotPath, $"{slotPath}/store", $"{slotPath}/scratch");
 
         Func<Task> act = () => provisioner.GetOrCreateRequiredForSlotAsync(Run(), slot, default);
 
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*pooled slot*workspace base*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*pooled slot*workspace base*");
         fake.CreateCount.Should().Be(0);
     }
 
@@ -168,9 +210,18 @@ public class ReviewSessionProvisionerTests : IDisposable
     {
         var fake = new FakeSessionSource();
         var provisioner = new ReviewSessionProvisioner(
-            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: null, diskSpaceProbe: SufficientDisk);
+            fake,
+            new CodeReviewDaemonOptions(),
+            NullLoggerFactory.Instance,
+            workspaceBasePath: null,
+            diskSpaceProbe: SufficientDisk
+        );
         var slot = new ReviewSlot(
-            0, "/ws/review-pool/slot-0", "/ws/review-pool/slot-0/store", "/ws/review-pool/slot-0/scratch");
+            0,
+            "/ws/review-pool/slot-0",
+            "/ws/review-pool/slot-0/store",
+            "/ws/review-pool/slot-0/scratch"
+        );
 
         var session = await provisioner.GetOrCreateForSlotAsync(Run(), slot, default);
 
@@ -185,7 +236,12 @@ public class ReviewSessionProvisionerTests : IDisposable
     {
         var fake = new FakeSessionSource();
         var provisioner = new ReviewSessionProvisioner(
-            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: SufficientDisk);
+            fake,
+            new CodeReviewDaemonOptions(),
+            NullLoggerFactory.Instance,
+            workspaceBasePath: "/ws",
+            diskSpaceProbe: SufficientDisk
+        );
         // The slot lives OUTSIDE the configured base, so mounting it at /workspace would escape the base —
         // the provisioner refuses and degrades to the per-run mount rather than throwing.
         var slot = new ReviewSlot(0, "/other/slot-0", "/other/slot-0/store", "/other/slot-0/scratch");
@@ -228,15 +284,21 @@ public class ReviewSessionProvisionerTests : IDisposable
             new CodeReviewDaemonOptions { WorkspaceHostRoot = hostRoot },
             NullLoggerFactory.Instance,
             workspaceBasePath: "/ws",
-            diskSpaceProbe: SufficientDisk);
+            diskSpaceProbe: SufficientDisk
+        );
 
         await provisioner.DestroyAsync(Run(), default);
 
-        File.Exists(protectedFile).Should().BeTrue(
-            "the wipe unlinks the NAME inside the workspace and never touches what it points at");
-        File.GetAttributes(protectedFile).HasFlag(FileAttributes.ReadOnly).Should().BeTrue(
-            "clearing read-only through a planted link removes a write brake from a file outside the "
-                + "workspace, on the daemon host, under the daemon's own account");
+        File.Exists(protectedFile)
+            .Should()
+            .BeTrue("the wipe unlinks the NAME inside the workspace and never touches what it points at");
+        File.GetAttributes(protectedFile)
+            .HasFlag(FileAttributes.ReadOnly)
+            .Should()
+            .BeTrue(
+                "clearing read-only through a planted link removes a write brake from a file outside the "
+                    + "workspace, on the daemon host, under the daemon's own account"
+            );
     }
 
     /// <summary>
@@ -263,13 +325,18 @@ public class ReviewSessionProvisionerTests : IDisposable
             new CodeReviewDaemonOptions { WorkspaceHostRoot = hostRoot },
             NullLoggerFactory.Instance,
             workspaceBasePath: "/ws",
-            diskSpaceProbe: SufficientDisk);
+            diskSpaceProbe: SufficientDisk
+        );
 
         await provisioner.DestroyAsync(Run(), default);
 
-        Directory.Exists(hostDir).Should().BeFalse(
-            "a read-only pack file is the ordinary case the clear exists for, and the teardown must still "
-                + "complete over it");
+        Directory
+            .Exists(hostDir)
+            .Should()
+            .BeFalse(
+                "a read-only pack file is the ordinary case the clear exists for, and the teardown must still "
+                    + "complete over it"
+            );
     }
 
     /// <summary>
@@ -304,18 +371,23 @@ public class ReviewSessionProvisionerTests : IDisposable
             new CodeReviewDaemonOptions { WorkspaceHostRoot = hostRoot },
             loggerFactory,
             workspaceBasePath: "/ws",
-            diskSpaceProbe: SufficientDisk);
+            diskSpaceProbe: SufficientDisk
+        );
 
         await provisioner.DestroyAsync(Run(), default);
 
         loggerFactory.Capturing.CountAtLevel(LogLevel.Error, "REFUSED").Should().Be(1);
-        loggerFactory.Capturing.CountAtLevel(LogLevel.Warning, "Best-effort host-dir cleanup failed")
-            .Should().Be(0, "a security refusal reported as a transient nuisance is how this stays hidden");
+        loggerFactory
+            .Capturing.CountAtLevel(LogLevel.Warning, "Best-effort host-dir cleanup failed")
+            .Should()
+            .Be(0, "a security refusal reported as a transient nuisance is how this stays hidden");
         File.Exists(protectedFile).Should().BeTrue("a refused root is not followed AND not removed");
-        Directory.Exists(Path.Combine(hostRoot, "review-run-7")).Should().BeTrue(
-            "the link is not repaired either — unlinking is a write chosen by whoever planted it");
-        fake.DestroyedWorkspaceIds.Should().Contain(
-            "review-run-7", "the refusal is logged, not thrown, so the rest of the teardown still ran");
+        Directory
+            .Exists(Path.Combine(hostRoot, "review-run-7"))
+            .Should()
+            .BeTrue("the link is not repaired either — unlinking is a write chosen by whoever planted it");
+        fake.DestroyedWorkspaceIds.Should()
+            .Contain("review-run-7", "the refusal is logged, not thrown, so the rest of the teardown still ran");
     }
 
     /// <summary>
@@ -369,29 +441,43 @@ public class ReviewSessionProvisionerTests : IDisposable
             new CodeReviewDaemonOptions { WorkspaceHostRoot = hostRoot },
             loggerFactory,
             workspaceBasePath: "/ws",
-            diskSpaceProbe: SufficientDisk);
+            diskSpaceProbe: SufficientDisk
+        );
 
         await provisioner.DestroyAsync(Run(), default);
 
-        loggerFactory.Capturing.CountAtLevel(LogLevel.Error, "REFUSED").Should().Be(
-            1,
-            "an operator who is never told the teardown hit an entry it may not remove has no reason to go "
-                + "looking for the one that is still sitting there");
-        loggerFactory.Capturing.CountAtLevel(LogLevel.Warning, "Best-effort host-dir cleanup failed")
-            .Should().Be(
+        loggerFactory
+            .Capturing.CountAtLevel(LogLevel.Error, "REFUSED")
+            .Should()
+            .Be(
+                1,
+                "an operator who is never told the teardown hit an entry it may not remove has no reason to go "
+                    + "looking for the one that is still sitting there"
+            );
+        loggerFactory
+            .Capturing.CountAtLevel(LogLevel.Warning, "Best-effort host-dir cleanup failed")
+            .Should()
+            .Be(
                 0,
                 "this is the sentence the catch comment calls out by name — reported as a transient nuisance, "
-                    + "a planted link stays hidden for as long as anyone cares to skim");
-        loggerFactory.Capturing.CountAtLevelWithExceptionText(LogLevel.Error, planted).Should().Be(
-            1,
-            "the Error template renders the slot directory, not the entry, so the only address the operator "
-                + "can act on rides in on the exception — an error that says something here was refused, "
-                + "without saying what, sends them to a tree to search by hand");
-        Directory.Exists(planted).Should().BeTrue(
-            "the entry that stopped the wipe is left exactly as found — it was refused, not raced");
+                    + "a planted link stays hidden for as long as anyone cares to skim"
+            );
+        loggerFactory
+            .Capturing.CountAtLevelWithExceptionText(LogLevel.Error, planted)
+            .Should()
+            .Be(
+                1,
+                "the Error template renders the slot directory, not the entry, so the only address the operator "
+                    + "can act on rides in on the exception — an error that says something here was refused, "
+                    + "without saying what, sends them to a tree to search by hand"
+            );
+        Directory
+            .Exists(planted)
+            .Should()
+            .BeTrue("the entry that stopped the wipe is left exactly as found — it was refused, not raced");
         (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
-        fake.DestroyedWorkspaceIds.Should().Contain(
-            "review-run-7", "the refusal is logged, not thrown, so the rest of the teardown still ran");
+        fake.DestroyedWorkspaceIds.Should()
+            .Contain("review-run-7", "the refusal is logged, not thrown, so the rest of the teardown still ran");
     }
 
     /// <summary>
@@ -421,14 +507,19 @@ public class ReviewSessionProvisionerTests : IDisposable
             new CodeReviewDaemonOptions { WorkspaceHostRoot = hostRoot },
             NullLoggerFactory.Instance,
             workspaceBasePath: "/ws",
-            diskSpaceProbe: SufficientDisk);
+            diskSpaceProbe: SufficientDisk
+        );
 
         await provisioner.DestroyAsync(Run(), default);
 
         (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
-        Directory.Exists(hostDir).Should().BeFalse(
-            "removing the link by name is what lets the teardown finish; a recursive directory delete would "
-                + "fail on a file symlink and leave the workspace behind");
+        Directory
+            .Exists(hostDir)
+            .Should()
+            .BeFalse(
+                "removing the link by name is what lets the teardown finish; a recursive directory delete would "
+                    + "fail on a file symlink and leave the workspace behind"
+            );
     }
 
     /// <summary>
@@ -459,7 +550,8 @@ public class ReviewSessionProvisionerTests : IDisposable
                     workspaceRef.Id,
                     $"session-{workspaceRef.Id}",
                     workspaceRef.Id,
-                    $"/workspace/{workspaceRef.Id}");
+                    $"/workspace/{workspaceRef.Id}"
+                );
                 _sessions[workspaceRef.Id] = session;
             }
 

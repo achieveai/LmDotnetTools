@@ -28,9 +28,7 @@ public sealed record MarketplaceCatalog(
 /// capability block at all ("unknown") and must stay distinguishable from an explicit
 /// <see langword="false"/>, even though both fail closed.
 /// </summary>
-public sealed record MarketplaceCapabilities(
-    [property: JsonPropertyName("pluginFiltering")] bool? PluginFiltering
-);
+public sealed record MarketplaceCapabilities([property: JsonPropertyName("pluginFiltering")] bool? PluginFiltering);
 
 /// <summary>One marketplace alias and the plugins it exposes (or an <see cref="Error"/> if it
 /// failed to load, in which case <see cref="Plugins"/> is empty).</summary>

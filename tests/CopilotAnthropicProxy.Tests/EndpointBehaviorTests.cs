@@ -15,8 +15,9 @@ public sealed class EndpointBehaviorTests
     [Fact]
     public async Task CountTokens_unsupported_upstream_404_returns_anthropic_not_found_error()
     {
-        await using var factory = new ProxyWebAppFactory((req, ct) =>
-            Task.FromResult(TestUpstream.Json("nope", HttpStatusCode.NotFound)));
+        await using var factory = new ProxyWebAppFactory(
+            (req, ct) => Task.FromResult(TestUpstream.Json("nope", HttpStatusCode.NotFound))
+        );
         using var client = factory.CreateClient();
 
         using var response = await client.PostAsync("/v1/messages/count_tokens", ValidBody());
@@ -31,8 +32,9 @@ public sealed class EndpointBehaviorTests
     [Fact]
     public async Task CountTokens_supported_upstream_response_passes_through()
     {
-        await using var factory = new ProxyWebAppFactory((req, ct) =>
-            Task.FromResult(TestUpstream.Json("{\"input_tokens\":123}")));
+        await using var factory = new ProxyWebAppFactory(
+            (req, ct) => Task.FromResult(TestUpstream.Json("{\"input_tokens\":123}"))
+        );
         using var client = factory.CreateClient();
 
         using var response = await client.PostAsync("/v1/messages/count_tokens", ValidBody());
@@ -45,11 +47,13 @@ public sealed class EndpointBehaviorTests
     public async Task CountTokens_rewrites_model_in_the_forwarded_body()
     {
         string? forwardedBody = null;
-        await using var factory = new ProxyWebAppFactory(async (req, ct) =>
-        {
-            forwardedBody = await req.Content!.ReadAsStringAsync(ct);
-            return TestUpstream.Json("{\"input_tokens\":7}");
-        });
+        await using var factory = new ProxyWebAppFactory(
+            async (req, ct) =>
+            {
+                forwardedBody = await req.Content!.ReadAsStringAsync(ct);
+                return TestUpstream.Json("{\"input_tokens\":7}");
+            }
+        );
         using var client = factory.CreateClient();
 
         using var response = await client.PostAsync("/v1/messages/count_tokens", ValidBody());
@@ -62,19 +66,25 @@ public sealed class EndpointBehaviorTests
     public async Task Malformed_request_body_returns_400_without_calling_upstream()
     {
         var upstreamCalled = false;
-        await using var factory = new ProxyWebAppFactory((req, ct) =>
-        {
-            upstreamCalled = true;
-            return Task.FromResult(TestUpstream.Json("{}"));
-        });
+        await using var factory = new ProxyWebAppFactory(
+            (req, ct) =>
+            {
+                upstreamCalled = true;
+                return Task.FromResult(TestUpstream.Json("{}"));
+            }
+        );
         using var client = factory.CreateClient();
 
         using var response = await client.PostAsync(
-            "/v1/messages", new StringContent("this is not json", Encoding.UTF8, "application/json"));
+            "/v1/messages",
+            new StringContent("this is not json", Encoding.UTF8, "application/json")
+        );
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["type"]!
-            .GetValue<string>().Should().Be("invalid_request_error");
+            .GetValue<string>()
+            .Should()
+            .Be("invalid_request_error");
         upstreamCalled.Should().BeFalse("a malformed body must never be forwarded upstream");
     }
 
@@ -82,15 +92,19 @@ public sealed class EndpointBehaviorTests
     public async Task Missing_model_is_injected_into_the_forwarded_body()
     {
         string? forwardedBody = null;
-        await using var factory = new ProxyWebAppFactory(async (req, ct) =>
-        {
-            forwardedBody = await req.Content!.ReadAsStringAsync(ct);
-            return TestUpstream.Json("{\"type\":\"message\"}");
-        });
+        await using var factory = new ProxyWebAppFactory(
+            async (req, ct) =>
+            {
+                forwardedBody = await req.Content!.ReadAsStringAsync(ct);
+                return TestUpstream.Json("{\"type\":\"message\"}");
+            }
+        );
         using var client = factory.CreateClient();
 
         using var response = await client.PostAsync(
-            "/v1/messages", new StringContent("{\"max_tokens\":5}", Encoding.UTF8, "application/json"));
+            "/v1/messages",
+            new StringContent("{\"max_tokens\":5}", Encoding.UTF8, "application/json")
+        );
 
         response.IsSuccessStatusCode.Should().BeTrue();
         JsonNode.Parse(forwardedBody!)!["model"]!.GetValue<string>().Should().Be(ProxyWebAppFactory.ConfiguredModel);
@@ -127,7 +141,9 @@ public sealed class EndpointBehaviorTests
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
         JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["type"]!
-            .GetValue<string>().Should().Be("not_found_error");
+            .GetValue<string>()
+            .Should()
+            .Be("not_found_error");
     }
 
     [Fact]
@@ -137,14 +153,17 @@ public sealed class EndpointBehaviorTests
         // simulating a credential revoked after startup.
         await using var factory = new ProxyWebAppFactory(
             (req, ct) => Task.FromResult(TestUpstream.Json("{\"type\":\"message\"}")),
-            tokenProvider: new FlakyCopilotTokenProvider("fake-token"));
+            tokenProvider: new FlakyCopilotTokenProvider("fake-token")
+        );
         using var client = factory.CreateClient();
 
         using var response = await client.PostAsync("/v1/messages", ValidBody());
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         JsonNode.Parse(await response.Content.ReadAsStringAsync())!["error"]!["type"]!
-            .GetValue<string>().Should().Be("authentication_error");
+            .GetValue<string>()
+            .Should()
+            .Be("authentication_error");
     }
 }
 

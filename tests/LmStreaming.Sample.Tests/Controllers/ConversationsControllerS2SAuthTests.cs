@@ -35,7 +35,8 @@ public class ConversationsControllerS2SAuthTests
         IChatModeStore modeStore,
         IWorkspaceStore? workspaceStore = null,
         ProviderRegistry? providerRegistry = null,
-        ConversationStatusResolver? statusResolver = null)
+        ConversationStatusResolver? statusResolver = null
+    )
     {
         return new ConversationsController(
             store,
@@ -43,14 +44,16 @@ public class ConversationsControllerS2SAuthTests
             modeStore,
             workspaceStore ?? Mock.Of<IWorkspaceStore>(),
             providerRegistry ?? new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
-            statusResolver ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
+            statusResolver
+                ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
             TimeProvider.System,
             new WorkflowRunRegistry(),
             TestAuthorizers.Disabled(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
-            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance));
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance)
+        );
     }
 
     private static IChatModeStore ModeStoreResolvingSystemModes()
@@ -67,7 +70,8 @@ public class ConversationsControllerS2SAuthTests
     /// <c>CallerCredential</c>) for each creation, without needing a real provider registry or
     /// conversation store (both optional/nullable on this constructor).</summary>
     private static MultiTurnAgentPool CreatePoolCapturingCredential(
-        Action<MultiTurnAgentPool.AgentCreationContext> onCreate)
+        Action<MultiTurnAgentPool.AgentCreationContext> onCreate
+    )
     {
         return new MultiTurnAgentPool(
             context =>
@@ -77,7 +81,8 @@ public class ConversationsControllerS2SAuthTests
             },
             providerRegistry: null,
             conversationStore: null,
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
     }
 
     private static Task SeedThreadMetadataForDefaultModeAsync(InMemoryConversationStore store, string threadId)
@@ -88,9 +93,12 @@ public class ConversationsControllerS2SAuthTests
             {
                 ThreadId = threadId,
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
-            });
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    SystemChatModes.DefaultModeId
+                ),
+            }
+        );
     }
 
     /// <summary>Wires a <see cref="DefaultHttpContext"/> carrying the given request headers onto
@@ -114,7 +122,8 @@ public class ConversationsControllerS2SAuthTests
     private static DefaultHttpContext CreateHttpContextWithConfig(
         string? configuredSecret,
         string? presentedHeader,
-        string? appIdMarker = null)
+        string? appIdMarker = null
+    )
     {
         var configData = new Dictionary<string, string?>();
         if (configuredSecret != null)
@@ -150,7 +159,8 @@ public class ConversationsControllerS2SAuthTests
             actionContext,
             [],
             new Dictionary<string, object?>(),
-            controller: new object());
+            controller: new object()
+        );
     }
 
     private static ActionExecutionDelegate CreateNextDelegate(ActionContext actionContext, Action onCalled)
@@ -185,7 +195,8 @@ public class ConversationsControllerS2SAuthTests
         var httpContext = CreateHttpContextWithConfig(
             configuredSecret: "s3cr3t-inbound-value",
             presentedHeader: null,
-            appIdMarker: null);
+            appIdMarker: null
+        );
         var executingContext = CreateActionExecutingContext(httpContext);
         var nextCalled = false;
         var next = CreateNextDelegate(executingContext, () => nextCalled = true);
@@ -204,7 +215,8 @@ public class ConversationsControllerS2SAuthTests
         var httpContext = CreateHttpContextWithConfig(
             configuredSecret: "s3cr3t-inbound-value",
             presentedHeader: null,
-            appIdMarker: "app-a");
+            appIdMarker: "app-a"
+        );
         var executingContext = CreateActionExecutingContext(httpContext);
         var nextCalled = false;
         var next = CreateNextDelegate(executingContext, () => nextCalled = true);
@@ -225,7 +237,8 @@ public class ConversationsControllerS2SAuthTests
         var httpContext = CreateHttpContextWithConfig(
             configuredSecret: "s3cr3t-inbound-value",
             presentedHeader: null,
-            appIdMarker: "app-a");
+            appIdMarker: "app-a"
+        );
         var executingContext = CreateActionExecutingContext(httpContext);
         var nextCalled = false;
         var next = CreateNextDelegate(executingContext, () => nextCalled = true);
@@ -242,7 +255,8 @@ public class ConversationsControllerS2SAuthTests
     {
         var httpContext = CreateHttpContextWithConfig(
             configuredSecret: "s3cr3t-inbound-value",
-            presentedHeader: "totally-wrong-value");
+            presentedHeader: "totally-wrong-value"
+        );
         var executingContext = CreateActionExecutingContext(httpContext);
         var nextCalled = false;
         var next = CreateNextDelegate(executingContext, () => nextCalled = true);
@@ -303,13 +317,14 @@ public class ConversationsControllerS2SAuthTests
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
         SetRequestHeaders(
             controller,
-            new Dictionary<string, string>
-            {
-                ["X-Sbx-App-Id"] = "app-a",
-                ["X-Sbx-App-Key"] = "a-key-value",
-            });
+            new Dictionary<string, string> { ["X-Sbx-App-Id"] = "app-a", ["X-Sbx-App-Key"] = "a-key-value" }
+        );
 
-        var result = await controller.SendMessage(threadId, new SendMessageRequest { Text = "hello" }, CancellationToken.None);
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "hello" },
+            CancellationToken.None
+        );
 
         Assert.IsType<AcceptedResult>(result);
         capturedContext.Should().NotBeNull();
@@ -336,7 +351,11 @@ public class ConversationsControllerS2SAuthTests
         // than throwing a NullReferenceException.
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
-        var result = await controller.SendMessage(threadId, new SendMessageRequest { Text = "hello" }, CancellationToken.None);
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "hello" },
+            CancellationToken.None
+        );
 
         Assert.IsType<AcceptedResult>(result);
         capturedContext.Should().NotBeNull();
@@ -374,18 +393,20 @@ public class ConversationsControllerS2SAuthTests
             requestedProviderId: null,
             requestResponseDumpFileName: null,
             requestedWorkspaceId: null,
-            callerCredential: new SandboxCredential("app-a", "a-secret-key-value"));
+            callerCredential: new SandboxCredential("app-a", "a-secret-key-value")
+        );
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
         SetRequestHeaders(
             controller,
-            new Dictionary<string, string>
-            {
-                ["X-Sbx-App-Id"] = "app-b",
-                ["X-Sbx-App-Key"] = "b-secret-key-value",
-            });
+            new Dictionary<string, string> { ["X-Sbx-App-Id"] = "app-b", ["X-Sbx-App-Key"] = "b-secret-key-value" }
+        );
 
-        var result = await controller.SendMessage(threadId, new SendMessageRequest { Text = "hello" }, CancellationToken.None);
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "hello" },
+            CancellationToken.None
+        );
 
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         conflict.StatusCode.Should().Be(409);

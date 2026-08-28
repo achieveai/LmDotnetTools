@@ -296,18 +296,14 @@ public class SqliteRunLedgerStoreTests : IAsyncLifetime
         string runId,
         RunStatus status = RunStatus.Queued,
         IReadOnlyList<string>? inputIds = null,
-        DateTimeOffset? createdAt = null)
+        DateTimeOffset? createdAt = null
+    )
     {
         // Truncate to millisecond precision - the store round-trips via Unix milliseconds.
         var created = DateTimeOffset.FromUnixTimeMilliseconds(
-            (createdAt ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds());
-        return new RunLedgerEntry(
-            threadId,
-            runId,
-            status,
-            inputIds ?? ["input-1"],
-            created,
-            created);
+            (createdAt ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds()
+        );
+        return new RunLedgerEntry(threadId, runId, status, inputIds ?? ["input-1"], created, created);
     }
 
     #endregion

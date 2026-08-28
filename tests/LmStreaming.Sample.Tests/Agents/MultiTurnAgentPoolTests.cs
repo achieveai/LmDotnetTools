@@ -207,7 +207,12 @@ public class MultiTurnAgentPoolTests
         );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
-        _ = pool.GetOrCreateAgent("thread-override", mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+        _ = pool.GetOrCreateAgent(
+            "thread-override",
+            mode,
+            requestedProviderId: "test",
+            requestResponseDumpFileName: null
+        );
 
         var warning = logger
             .Entries.Where(e => e.Level == LogLevel.Warning)
@@ -244,7 +249,12 @@ public class MultiTurnAgentPoolTests
         );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
-        _ = pool.GetOrCreateAgent("thread-match", mode, requestedProviderId: "anthropic", requestResponseDumpFileName: null);
+        _ = pool.GetOrCreateAgent(
+            "thread-match",
+            mode,
+            requestedProviderId: "anthropic",
+            requestResponseDumpFileName: null
+        );
 
         logger.Entries.Where(e => e.Level == LogLevel.Warning).Should().BeEmpty();
     }
@@ -462,7 +472,9 @@ public class MultiTurnAgentPoolTests
         await using var pool = CreatePool();
 
         // Nothing pooled for this threadId → no armed Wait to lose on a switch.
-        (await pool.HasArmedWaitAsync("never-created")).Should().BeFalse();
+        (await pool.HasArmedWaitAsync("never-created"))
+            .Should()
+            .BeFalse();
     }
 
     [Fact]
@@ -498,10 +510,13 @@ public class MultiTurnAgentPoolTests
 
         var mockAgent = new Mock<IStreamingAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(() => Task.FromResult(ToAsyncEnumerable(waitCall)));
 
         var registry = new FunctionRegistry();
@@ -512,16 +527,21 @@ public class MultiTurnAgentPoolTests
                 Description = "Parks the run on a timer.",
                 Parameters = [],
             },
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred())
+        );
 
         await using var pool = new MultiTurnAgentPool(
-            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(
-                new MultiTurnAgentLoop(
-                    mockAgent.Object,
-                    registry,
-                    threadId,
-                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            (threadId, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(
+                    new MultiTurnAgentLoop(
+                        mockAgent.Object,
+                        registry,
+                        threadId,
+                        logger: NullLogger<MultiTurnAgentLoop>.Instance
+                    )
+                ),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-armed-wait", mode);
@@ -549,18 +569,20 @@ public class MultiTurnAgentPoolTests
         var askCall = new ToolCallMessage
         {
             FunctionName = AskUserQuestionToolProvider.ToolName,
-            FunctionArgs = JsonSerializer.Serialize(new
-            {
-                context = "Need to know which color to use.",
-                questions = new[]
+            FunctionArgs = JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    context = "Need to know which color to use.",
+                    questions = new[]
                     {
-                        prompt = "Which color?",
-                        options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                        new
+                        {
+                            prompt = "Which color?",
+                            options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                        },
                     },
-                },
-            }),
+                }
+            ),
             ToolCallId = toolCallId,
             Role = Role.Assistant,
         };
@@ -573,24 +595,36 @@ public class MultiTurnAgentPoolTests
         var callCount = 0;
         var mockAgent = new Mock<IStreamingAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                IMessage msg = Interlocked.Increment(ref callCount) == 1
-                    ? askCall
-                    : new TextMessage { Text = "Using blue.", Role = Role.Assistant };
-                return Task.FromResult(ToAsyncEnumerable(msg));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                {
+                    IMessage msg =
+                        Interlocked.Increment(ref callCount) == 1
+                            ? askCall
+                            : new TextMessage { Text = "Using blue.", Role = Role.Assistant };
+                    return Task.FromResult(ToAsyncEnumerable(msg));
+                }
+            );
 
         await using var pool = new MultiTurnAgentPool(
-            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(
-                new MultiTurnAgentLoop(
-                    mockAgent.Object,
-                    new FunctionRegistry(),
-                    threadId,
-                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            (threadId, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(
+                    new MultiTurnAgentLoop(
+                        mockAgent.Object,
+                        new FunctionRegistry(),
+                        threadId,
+                        logger: NullLogger<MultiTurnAgentLoop>.Instance
+                    )
+                ),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-pending-question", mode);
@@ -606,8 +640,9 @@ public class MultiTurnAgentPoolTests
         var outcome = await loop.TryResolveToolCallAsync(toolCallId, "blue", isError: false);
         outcome.Should().Be(ResolveToolCallOutcome.Resolved);
 
-        (await pool.HasPendingAskUserQuestionAsync("thread-pending-question")).Should().BeFalse(
-            "once resolved the call is no longer deferred, so the pending lookup must clear too");
+        (await pool.HasPendingAskUserQuestionAsync("thread-pending-question"))
+            .Should()
+            .BeFalse("once resolved the call is no longer deferred, so the pending lookup must clear too");
     }
 
     [Fact]
@@ -633,7 +668,8 @@ public class MultiTurnAgentPoolTests
         {
             ToolCallId = toolCallId,
             FunctionName = AskUserQuestionToolProvider.ToolName,
-            FunctionArgs = "{\"context\":\"ctx\",\"questions\":[{\"prompt\":\"Which?\",\"options\":[{\"label\":\"A\"}]}]}",
+            FunctionArgs =
+                "{\"context\":\"ctx\",\"questions\":[{\"prompt\":\"Which?\",\"options\":[{\"label\":\"A\"}]}]}",
             Role = Role.Assistant,
             FromAgent = "test",
             GenerationId = generationId,
@@ -656,7 +692,8 @@ public class MultiTurnAgentPoolTests
             [
                 MessagePersistenceConverter.ToPersistedMessage(toolCall, threadId, runId),
                 MessagePersistenceConverter.ToPersistedMessage(deferredResult, threadId, runId),
-            ]);
+            ]
+        );
         await store.SaveMetadataAsync(
             threadId,
             new ThreadMetadata
@@ -664,31 +701,43 @@ public class MultiTurnAgentPoolTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         // Nothing before resolution should ever reach the provider — the original call belonged to a
         // process that no longer exists, so this mock's very first invocation IS the continuation.
         var callCount = 0;
         var mockAgent = new Mock<IStreamingAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                Interlocked.Increment(ref callCount);
-                IMessage msg = new TextMessage { Text = "Using A.", Role = Role.Assistant };
-                return Task.FromResult(ToAsyncEnumerable(msg));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                {
+                    Interlocked.Increment(ref callCount);
+                    IMessage msg = new TextMessage { Text = "Using A.", Role = Role.Assistant };
+                    return Task.FromResult(ToAsyncEnumerable(msg));
+                }
+            );
 
         await using var pool = new MultiTurnAgentPool(
-            (tid, _, _) => new MultiTurnAgentPool.AgentCreationResult(
-                new MultiTurnAgentLoop(
-                    mockAgent.Object,
-                    new FunctionRegistry(),
-                    tid,
-                    store: store,
-                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            (tid, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(
+                    new MultiTurnAgentLoop(
+                        mockAgent.Object,
+                        new FunctionRegistry(),
+                        tid,
+                        store: store,
+                        logger: NullLogger<MultiTurnAgentLoop>.Instance
+                    )
+                ),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent(threadId, mode);
@@ -705,16 +754,22 @@ public class MultiTurnAgentPoolTests
         await Wait.UntilAsync(
             () => Volatile.Read(ref callCount) >= 1,
             "resolving the recovered pending question drove the continuation as far as the provider",
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(5)
+        );
 
-        (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeFalse(
-            "once the recovered call is resolved and its continuation has run, nothing is deferred any more");
+        (await pool.HasPendingAskUserQuestionAsync(threadId))
+            .Should()
+            .BeFalse("once the recovered call is resolved and its continuation has run, nothing is deferred any more");
 
         // Give any spurious second wake-up time to land before asserting the count is exact.
         await Task.Delay(200);
-        Volatile.Read(ref callCount).Should().Be(
-            1,
-            "resolving the recovered pending question must drive exactly one continuation run, not zero and not more than one");
+        Volatile
+            .Read(ref callCount)
+            .Should()
+            .Be(
+                1,
+                "resolving the recovered pending question must drive exactly one continuation run, not zero and not more than one"
+            );
     }
 
     [Fact]
@@ -736,32 +791,44 @@ public class MultiTurnAgentPoolTests
         var childAskCall = new ToolCallMessage
         {
             FunctionName = AskUserQuestionToolProvider.ToolName,
-            FunctionArgs = JsonSerializer.Serialize(new
-            {
-                context = "Need to know which color to use.",
-                questions = new[]
+            FunctionArgs = JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    context = "Need to know which color to use.",
+                    questions = new[]
                     {
-                        prompt = "Which color?",
-                        options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                        new
+                        {
+                            prompt = "Which color?",
+                            options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                        },
                     },
-                },
-            }),
+                }
+            ),
             ToolCallId = toolCallId,
             Role = Role.Assistant,
         };
 
         var childAgent = new Mock<IStreamingAgent>();
         childAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable(childAskCall)));
 
         var parentAgent = new Mock<IStreamingAgent>();
         parentAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable()));
 
         var subAgentOptions = new SubAgentOptions
@@ -779,31 +846,43 @@ public class MultiTurnAgentPoolTests
         };
 
         await using var pool = new MultiTurnAgentPool(
-            (tid, _, _) => new MultiTurnAgentPool.AgentCreationResult(
-                new MultiTurnAgentLoop(
-                    parentAgent.Object,
-                    new FunctionRegistry(),
-                    tid,
-                    subAgentOptions: subAgentOptions,
-                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            (tid, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(
+                    new MultiTurnAgentLoop(
+                        parentAgent.Object,
+                        new FunctionRegistry(),
+                        tid,
+                        subAgentOptions: subAgentOptions,
+                        logger: NullLogger<MultiTurnAgentLoop>.Instance
+                    )
+                ),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent(threadId, mode);
 
         using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-            templateName, "ask the user", name: "asker", runInBackground: true);
+            templateName,
+            "ask the user",
+            name: "asker",
+            runInBackground: true
+        );
         using var doc = JsonDocument.Parse(spawnJson);
         var agentId = doc.RootElement.GetProperty("agent_id").GetString()!;
 
         await WaitUntilChildAwaitingQuestionAsync(loop.SubAgentManager!, agentId, ct.Token);
 
         // The primary itself has nothing deferred...
-        (await loop.GetDeferredToolCallsAsync()).Should().BeEmpty();
+        (await loop.GetDeferredToolCallsAsync())
+            .Should()
+            .BeEmpty();
 
         // ...but the pool must still see the child's pending question and hard-block a switch on it.
-        (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeTrue();
+        (await pool.HasPendingAskUserQuestionAsync(threadId))
+            .Should()
+            .BeTrue();
     }
 
     [Fact]
@@ -892,7 +971,9 @@ public class MultiTurnAgentPoolTests
         created[1].Mode.Should().Be(mode.Id);
 
         // The switch is persisted (overwrite) so a later refresh restores it.
-        (await WaitForPersistedProviderAsync(store, "thread-prov-swap")).Should().Be("openai");
+        (await WaitForPersistedProviderAsync(store, "thread-prov-swap"))
+            .Should()
+            .Be("openai");
         pool.GetEffectiveProviderId("thread-prov-swap", null).Should().Be("openai");
     }
 
@@ -912,7 +993,12 @@ public class MultiTurnAgentPoolTests
         );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
-        var original = pool.GetOrCreateAgent("thread-prov-bad", mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+        var original = pool.GetOrCreateAgent(
+            "thread-prov-bad",
+            mode,
+            requestedProviderId: "test",
+            requestResponseDumpFileName: null
+        );
         (await WaitForPersistedProviderAsync(store, "thread-prov-bad")).Should().Be("test");
 
         var act = async () => await pool.RecreateAgentWithProviderAsync("thread-prov-bad", "openai", mode);
@@ -957,8 +1043,13 @@ public class MultiTurnAgentPoolTests
         );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
-        var old = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
-            "thread-dispose-throw", mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+        var old = (FakeMultiTurnAgent)
+            pool.GetOrCreateAgent(
+                "thread-dispose-throw",
+                mode,
+                requestedProviderId: "test",
+                requestResponseDumpFileName: null
+            );
         old.ThrowOnDispose = true; // tearing down the old agent will throw
 
         var newAgent = await pool.RecreateAgentWithProviderAsync("thread-dispose-throw", "openai", mode);
@@ -998,17 +1089,22 @@ public class MultiTurnAgentPoolTests
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var original = pool.GetOrCreateAgent(
-            "thread-prov-construct-throws", mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+            "thread-prov-construct-throws",
+            mode,
+            requestedProviderId: "test",
+            requestResponseDumpFileName: null
+        );
         (await WaitForPersistedProviderAsync(store, "thread-prov-construct-throws")).Should().Be("test");
 
-        var act = async () =>
-            await pool.RecreateAgentWithProviderAsync("thread-prov-construct-throws", "openai", mode);
+        var act = async () => await pool.RecreateAgentWithProviderAsync("thread-prov-construct-throws", "openai", mode);
         await act.Should().ThrowAsync<InvalidOperationException>();
 
         // Untouched: the SAME original agent is still pooled (a re-fetch does NOT hit the factory again —
         // proving it was never evicted), and the persisted provider is still the original "test".
         ReferenceEquals(pool.GetOrCreateAgent("thread-prov-construct-throws", mode), original).Should().BeTrue();
-        creations.Should().Be(2, "the failed recreate is the only extra factory call; the re-fetch reused the pooled agent");
+        creations
+            .Should()
+            .Be(2, "the failed recreate is the only extra factory call; the re-fetch reused the pooled agent");
         pool.GetEffectiveProviderId("thread-prov-construct-throws", null).Should().Be("test");
     }
 
@@ -1201,9 +1297,7 @@ public class MultiTurnAgentPoolTests
                         name: "conversation"
                     )
                 );
-                return new MultiTurnAgentPool.AgentCreationResult(
-                    new FakeMultiTurnAgent(context.ThreadId)
-                );
+                return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId));
             },
             providerRegistry: null,
             conversationStore: null,
@@ -1240,10 +1334,7 @@ public class MultiTurnAgentPoolTests
     // No timeout of its own: the workspace write is the same fire-and-forget metadata write as every
     // other property, so it inherits WaitForPersistedPropertyAsync's budget. Restating one here is how
     // this call site kept its 1s while the shared default was raised to 5s for #343 starvation.
-    private static async Task<string> WaitForPersistedWorkspaceAsync(
-        IConversationStore store,
-        string threadId
-    )
+    private static async Task<string> WaitForPersistedWorkspaceAsync(IConversationStore store, string threadId)
     {
         return await WaitForPersistedPropertyAsync(store, threadId, MultiTurnAgentPool.WorkspacePropertyKey);
     }
@@ -1287,7 +1378,10 @@ public class MultiTurnAgentPoolTests
     /// waiting on a completion that will never come.
     /// </summary>
     private static Task WaitUntilChildAwaitingQuestionAsync(
-        SubAgentManager subAgentManager, string agentId, CancellationToken ct)
+        SubAgentManager subAgentManager,
+        string agentId,
+        CancellationToken ct
+    )
     {
         return Wait.UntilAsync(
             async () =>
@@ -1297,7 +1391,8 @@ public class MultiTurnAgentPoolTests
             $"the spawned child '{agentId}' parked on its own AskUserQuestion, i.e. registered a deferred tool call",
             TimeSpan.FromSeconds(30),
             TimeSpan.FromMilliseconds(20),
-            cancellationToken: ct);
+            cancellationToken: ct
+        );
     }
 
     private static MultiTurnAgentPool CreatePool()
@@ -1308,8 +1403,7 @@ public class MultiTurnAgentPoolTests
         );
     }
 
-    private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
-        params IMessage[] messages)
+    private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(params IMessage[] messages)
     {
         foreach (var msg in messages)
         {
@@ -1322,10 +1416,7 @@ public class MultiTurnAgentPoolTests
     // the shared budget here is what let the workspace helper keep 1s while WaitForPersistedPropertyAsync
     // was raised to 5s for #343 starvation. All 7 call sites took the default, so there is nothing to
     // preserve — and the next raise now reaches them.
-    private static async Task<string> WaitForPersistedProviderAsync(
-        IConversationStore store,
-        string threadId
-    )
+    private static async Task<string> WaitForPersistedProviderAsync(IConversationStore store, string threadId)
     {
         return await WaitForPersistedPropertyAsync(store, threadId, MultiTurnAgentPool.ProviderPropertyKey);
     }

@@ -46,9 +46,7 @@ public static class BaseUrlNormalizer
         }
 
         var trimmed = baseUrl.TrimEnd('/');
-        return trimmed.EndsWith(V1Segment, StringComparison.Ordinal)
-            ? trimmed
-            : trimmed + V1Segment;
+        return trimmed.EndsWith(V1Segment, StringComparison.Ordinal) ? trimmed : trimmed + V1Segment;
     }
 
     /// <summary>
@@ -67,8 +65,6 @@ public static class BaseUrlNormalizer
         }
 
         var trimmed = baseUrl.TrimEnd('/');
-        return trimmed.EndsWith(V1Segment, StringComparison.Ordinal)
-            ? trimmed[..^V1Segment.Length]
-            : trimmed;
+        return trimmed.EndsWith(V1Segment, StringComparison.Ordinal) ? trimmed[..^V1Segment.Length] : trimmed;
     }
 }

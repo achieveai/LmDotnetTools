@@ -34,8 +34,7 @@ public sealed class BindingContext
     public JsonObject Notes { get; init; } = [];
 
     /// <summary>Per-node visit counts, addressed as <c>visits.&lt;nodeId&gt;</c> (0 when absent).</summary>
-    public IReadOnlyDictionary<string, int> Visits { get; init; } =
-        new Dictionary<string, int>();
+    public IReadOnlyDictionary<string, int> Visits { get; init; } = new Dictionary<string, int>();
 
     /// <summary>The current global step counter, addressed as <c>step</c>.</summary>
     public int Step { get; init; }

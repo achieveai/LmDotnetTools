@@ -10,13 +10,15 @@ public class SandboxSessionRegistryDestroyTests
         var deletes = 0;
         var handler = new CountingHandler(req =>
         {
-            if (req.Method == HttpMethod.Delete) deletes++;
+            if (req.Method == HttpMethod.Delete)
+                deletes++;
             return new HttpResponseMessage(HttpStatusCode.OK);
         });
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new CountingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK))));
+            new HttpClient(new CountingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)))
+        );
         var registry = new SandboxSessionRegistry(
             gateway,
             new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
@@ -25,7 +27,9 @@ public class SandboxSessionRegistryDestroyTests
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
 
         await registry.DestroyWorkspaceSessionAsync("never-created");
 
@@ -34,7 +38,7 @@ public class SandboxSessionRegistryDestroyTests
 
     private sealed class CountingHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-            => Task.FromResult(respond(request));
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(respond(request));
     }
 }

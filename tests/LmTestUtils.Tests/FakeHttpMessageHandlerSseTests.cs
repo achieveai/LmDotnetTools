@@ -11,9 +11,8 @@ namespace LmTestUtils.Tests;
 
 public class FakeHttpMessageHandlerSseTests : LoggingTestBase
 {
-    public FakeHttpMessageHandlerSseTests(ITestOutputHelper output) : base(output)
-    {
-    }
+    public FakeHttpMessageHandlerSseTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Fact]
     public async Task CreateSseStreamHandler_ShouldReturnProperSseFormat()
@@ -185,16 +184,9 @@ public class FakeHttpMessageHandlerSseTests : LoggingTestBase
 
         // Arrange - Using TestSseMessageHandler with instruction chain
         var handlerLogger = LoggerFactory.CreateLogger<TestSseMessageHandler>();
-        var testHandler = new TestSseMessageHandler(handlerLogger)
-        {
-            WordsPerChunk = 5,
-            ChunkDelayMs = 10,
-        };
+        var testHandler = new TestSseMessageHandler(handlerLogger) { WordsPerChunk = 5, ChunkDelayMs = 10 };
 
-        var httpClient = new HttpClient(testHandler)
-        {
-            BaseAddress = new Uri("http://test-mode/v1"),
-        };
+        var httpClient = new HttpClient(testHandler) { BaseAddress = new Uri("http://test-mode/v1") };
 
         Logger.LogDebug("Created HttpClient with TestSseMessageHandler");
 
@@ -213,10 +205,7 @@ public class FakeHttpMessageHandlerSseTests : LoggingTestBase
         {
             model = "test-model",
             stream = true,
-            messages = new[]
-            {
-                new { role = "user", content = userMessage }
-            }
+            messages = new[] { new { role = "user", content = userMessage } },
         };
 
         var jsonContent = new StringContent(
@@ -276,6 +265,8 @@ public class FakeHttpMessageHandlerSseTests : LoggingTestBase
             }
         }
 
-        Logger.LogInformation("TestSseMessageHandler_WithInstructionChain_ShouldReturnProperSseFormat completed successfully");
+        Logger.LogInformation(
+            "TestSseMessageHandler_WithInstructionChain_ShouldReturnProperSseFormat completed successfully"
+        );
     }
 }

@@ -26,9 +26,7 @@ public sealed class SandboxLifecycleOwnerResolverTests
         await using var registry = NewRegistry();
         Bind(registry, "thread-1", Caller);
 
-        var owner = await new SandboxLifecycleOwnerResolver(registry).ResolveThreadOwnerAsync(
-            "thread-1"
-        );
+        var owner = await new SandboxLifecycleOwnerResolver(registry).ResolveThreadOwnerAsync("thread-1");
 
         owner.Should().Be(LifecycleOwnerKey.ForCredential(Caller));
     }
@@ -44,9 +42,7 @@ public sealed class SandboxLifecycleOwnerResolverTests
         // an ordinary configuration, would start receiving interactive users' events.
         Bind(registry, "thread-1", caller: null);
 
-        var owner = await new SandboxLifecycleOwnerResolver(registry).ResolveThreadOwnerAsync(
-            "thread-1"
-        );
+        var owner = await new SandboxLifecycleOwnerResolver(registry).ResolveThreadOwnerAsync("thread-1");
 
         owner.Should().BeNull();
     }
@@ -89,7 +85,9 @@ public sealed class SandboxLifecycleOwnerResolverTests
         // Deliberately asymmetric with the test above, on identical state. Observation can afford to
         // widen to the spawning thread; authorization cannot — inheriting upward would let a parent
         // conversation's subscriber approve a tool call it was never shown.
-        (await resolver.ResolveEventOwnerAsync(Event("child", "parent"))).Should().NotBeNull();
+        (await resolver.ResolveEventOwnerAsync(Event("child", "parent")))
+            .Should()
+            .NotBeNull();
         (await resolver.ResolveThreadOwnerAsync("child")).Should().BeNull();
     }
 
@@ -103,9 +101,7 @@ public sealed class SandboxLifecycleOwnerResolverTests
 
         var uncorrelated = new LifecycleEventEnvelope { Correlation = null };
         (await resolver.ResolveEventOwnerAsync(uncorrelated)).Should().BeNull();
-        (await resolver.ResolveEventOwnerAsync(Event(threadId: null, parentThreadId: null)))
-            .Should()
-            .BeNull();
+        (await resolver.ResolveEventOwnerAsync(Event(threadId: null, parentThreadId: null))).Should().BeNull();
     }
 
     [Fact]
@@ -124,28 +120,16 @@ public sealed class SandboxLifecycleOwnerResolverTests
         (await resolver.ResolveCallerAsync(" ")).Should().BeNull();
     }
 
-    private static void Bind(
-        SandboxSessionRegistry registry,
-        string threadId,
-        SandboxCredential? caller
-    ) =>
+    private static void Bind(SandboxSessionRegistry registry, string threadId, SandboxCredential? caller) =>
         registry.PublishEstablishedBinding(
             threadId,
-            new SandboxEstablishedBinding(
-                new WorkspaceRef("default"),
-                registry.DefaultCredential,
-                caller
-            )
+            new SandboxEstablishedBinding(new WorkspaceRef("default"), registry.DefaultCredential, caller)
         );
 
     private static LifecycleEventEnvelope Event(string? threadId, string? parentThreadId) =>
         new()
         {
-            Correlation = new LifecycleCorrelation
-            {
-                ThreadId = threadId,
-                ParentThreadId = parentThreadId,
-            },
+            Correlation = new LifecycleCorrelation { ThreadId = threadId, ParentThreadId = parentThreadId },
         };
 
     /// <summary>
@@ -174,11 +158,7 @@ public sealed class SandboxLifecycleOwnerResolverTests
             new HttpClient(new UnreachableHandler()),
             new AuthOptions(),
             new SessionSecretStore(
-                Path.Combine(
-                    Path.GetTempPath(),
-                    "lmagentinfra-owner-tests",
-                    Guid.NewGuid().ToString("N")
-                ),
+                Path.Combine(Path.GetTempPath(), "lmagentinfra-owner-tests", Guid.NewGuid().ToString("N")),
                 NullLogger<SessionSecretStore>.Instance
             )
         );

@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -8,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -31,11 +31,14 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
     public Task InitializeAsync()
     {
         _ = _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         return Task.CompletedTask;
@@ -77,7 +80,9 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         // Workspace Agent surface; naming the source of the id is what stops a workflowId being waited on.
         var (_, provider) = CreateManager(CompletingAgent("done"));
 
-        provider.GetFunctions().Single(f => f.Contract.Name == "WaitAgent")
+        provider
+            .GetFunctions()
+            .Single(f => f.Contract.Name == "WaitAgent")
             .Contract.Description.Should()
             .Contain("Use an `agent_id` returned by `Agent`; do not pass workflow IDs.");
     }
@@ -96,8 +101,14 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
 
         var agent = doc.RootElement.GetProperty("agent");
         agent.GetProperty("status").GetString().Should().Be("completed");
-        agent.GetProperty("last_result").GetString().Should().Contain("all done",
-            "the result is the whole reason to wait — a wait that ends without it costs another turn");
+        agent
+            .GetProperty("last_result")
+            .GetString()
+            .Should()
+            .Contain(
+                "all done",
+                "the result is the whole reason to wait — a wait that ends without it costs another turn"
+            );
     }
 
     [Fact]
@@ -127,8 +138,11 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         payload.IsError.Should().BeFalse(payload.Text);
         using var doc = JsonDocument.Parse(payload.Text);
         doc.RootElement.GetProperty("status").GetString().Should().Be("timeout");
-        doc.RootElement.GetProperty("agent").GetProperty("status").GetString().Should().Be("running",
-            "the timeout abandons the observation only — nothing about the agent is cancelled");
+        doc.RootElement.GetProperty("agent")
+            .GetProperty("status")
+            .GetString()
+            .Should()
+            .Be("running", "the timeout abandons the observation only — nothing about the agent is cancelled");
     }
 
     [Fact]
@@ -141,8 +155,9 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be("unknown_agent");
-        payload.Text.Should().Contain(agentId,
-            "a mistyped id is a model mistake, and the fix is to show it the ids it could have used");
+        payload
+            .Text.Should()
+            .Contain(agentId, "a mistyped id is a model mistake, and the fix is to show it the ids it could have used");
     }
 
     [Fact]
@@ -168,8 +183,10 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         await cts.CancelAsync();
 
         var act = () => waiting;
-        await act.Should().ThrowAsync<OperationCanceledException>(
-            "an abandoned turn must not leave a tool call blocked on a child that never finishes");
+        await act.Should()
+            .ThrowAsync<OperationCanceledException>(
+                "an abandoned turn must not leave a tool call blocked on a child that never finishes"
+            );
     }
 
     #region The wait ended, but the agent never reached a terminal state
@@ -228,12 +245,25 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         payload.IsError.Should().BeFalse(payload.Text);
         using var doc = JsonDocument.Parse(payload.Text);
 
-        doc.RootElement.GetProperty("status").GetString().Should().Be("unavailable",
-            "the wait ended without the agent reaching a terminal state, which is neither completion nor timeout");
-        doc.RootElement.GetProperty("agent").ValueKind.Should().Be(JsonValueKind.Null,
-            "there is no snapshot to report, and an empty peek result must never reach the parser");
-        doc.RootElement.GetProperty("detail").GetString().Should().NotBeNullOrWhiteSpace(
-            "a status the model has never seen before is only actionable if it says what happened");
+        doc.RootElement.GetProperty("status")
+            .GetString()
+            .Should()
+            .Be(
+                "unavailable",
+                "the wait ended without the agent reaching a terminal state, which is neither completion nor timeout"
+            );
+        doc.RootElement.GetProperty("agent")
+            .ValueKind.Should()
+            .Be(
+                JsonValueKind.Null,
+                "there is no snapshot to report, and an empty peek result must never reach the parser"
+            );
+        doc.RootElement.GetProperty("detail")
+            .GetString()
+            .Should()
+            .NotBeNullOrWhiteSpace(
+                "a status the model has never seen before is only actionable if it says what happened"
+            );
     }
 
     #endregion
@@ -243,8 +273,7 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task WaitAgent_WithNoTimeoutRequested_WaitsWithoutACapRatherThanBeingRejected(
-        bool asExplicitNull)
+    public async Task WaitAgent_WithNoTimeoutRequested_WaitsWithoutACapRatherThanBeingRejected(bool asExplicitNull)
     {
         // The contract for an omitted optional cap is "no cap", and validating the argument must not
         // cost that. An explicit null is the same statement — models routinely emit one for a
@@ -280,7 +309,8 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
     [InlineData("\"-5\"", "a negative sent as a string")]
     public async Task WaitAgent_UnusableTimeout_IsRejectedInsteadOfSilentlyWaitingForever(
         string rawTimeout,
-        string because)
+        string because
+    )
     {
         // Every one of these used to parse to null — indistinguishable from omitted — and the
         // `is > 0` gate then turned it into the UNBOUNDED wait the model passed timeout_seconds
@@ -293,12 +323,16 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         // Raw JSON rather than an anonymous object, so the wrong-type and empty-string shapes a real
         // model emits are exercised exactly as they arrive on the wire.
         var payload = await InvokeRawAsync(
-            provider, $$"""{"agent_id":"{{agentId}}","timeout_seconds":{{rawTimeout}}}""").WaitAsync(Bound);
+                provider,
+                $$"""{"agent_id":"{{agentId}}","timeout_seconds":{{rawTimeout}}}"""
+            )
+            .WaitAsync(Bound);
 
         payload.IsError.Should().BeTrue($"{because} cannot be honoured as a cap");
         payload.ErrorCode.Should().Be("invalid_args");
-        payload.Text.Should().Contain("positive whole number",
-            "the rejection has to tell the model what would have worked");
+        payload
+            .Text.Should()
+            .Contain("positive whole number", "the rejection has to tell the model what would have worked");
     }
 
     [Fact]
@@ -311,8 +345,8 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         var (manager, provider) = CreateManager(CompletingAgent("done"));
         var agentId = await SpawnBackgroundAsync(manager);
 
-        var payload = await InvokeRawAsync(
-            provider, $$"""{"agent_id":"{{agentId}}","timeout_seconds":"600"}""").WaitAsync(Bound);
+        var payload = await InvokeRawAsync(provider, $$"""{"agent_id":"{{agentId}}","timeout_seconds":"600"}""")
+            .WaitAsync(Bound);
 
         payload.IsError.Should().BeFalse(payload.Text);
         using var doc = JsonDocument.Parse(payload.Text);
@@ -323,18 +357,13 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
 
     #region Helpers
 
-    private (SubAgentManager Manager, SubAgentToolProvider Provider) CreateManager(
-        Func<IStreamingAgent> agentFactory)
+    private (SubAgentManager Manager, SubAgentToolProvider Provider) CreateManager(Func<IStreamingAgent> agentFactory)
     {
         var options = new SubAgentOptions
         {
             Templates = new Dictionary<string, SubAgentTemplate>
             {
-                ["test-agent"] = new()
-                {
-                    SystemPrompt = "You are a test agent.",
-                    AgentFactory = agentFactory,
-                },
+                ["test-agent"] = new() { SystemPrompt = "You are a test agent.", AgentFactory = agentFactory },
             },
             MaxConcurrentSubAgents = 5,
         };
@@ -345,7 +374,8 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: source);
+            source: source
+        );
 
         _managers.Add(manager);
         return (manager, new SubAgentToolProvider(manager, source));
@@ -356,8 +386,11 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
     /// background spawn is deferred to the queue instead of started. Returns the gate that ends the
     /// blocker — completing it frees the permit, which is what lets the pump dequeue.
     /// </summary>
-    private (SubAgentManager Manager, SubAgentToolProvider Provider, TaskCompletionSource Release)
-        CreateManagerWithFullPool(Func<IStreamingAgent> queuedAgentFactory)
+    private (
+        SubAgentManager Manager,
+        SubAgentToolProvider Provider,
+        TaskCompletionSource Release
+    ) CreateManagerWithFullPool(Func<IStreamingAgent> queuedAgentFactory)
     {
         // RunContinuationsAsynchronously: the test thread completes this, and it must not inline-run
         // the sub-agent's stream continuation on its way to the next assertion.
@@ -372,11 +405,7 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
                     SystemPrompt = "You hold the only permit.",
                     AgentFactory = GatedAgent(release.Task),
                 },
-                ["test-agent"] = new()
-                {
-                    SystemPrompt = "You are a test agent.",
-                    AgentFactory = queuedAgentFactory,
-                },
+                ["test-agent"] = new() { SystemPrompt = "You are a test agent.", AgentFactory = queuedAgentFactory },
             },
             MaxConcurrentSubAgents = 1,
         };
@@ -387,7 +416,8 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: source);
+            source: source
+        );
 
         _managers.Add(manager);
         return (manager, new SubAgentToolProvider(manager, source), release);
@@ -396,9 +426,7 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
     /// <summary>Bound on every wait here, so a regression fails one test instead of hanging the suite.</summary>
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
 
-    private static async Task<string> SpawnBackgroundAsync(
-        SubAgentManager manager,
-        string template = "test-agent")
+    private static async Task<string> SpawnBackgroundAsync(SubAgentManager manager, string template = "test-agent")
     {
         var spawnJson = await manager.SpawnAsync(template, "Do some work", runInBackground: true);
         using var doc = JsonDocument.Parse(spawnJson);
@@ -408,8 +436,8 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
     private static async Task<ToolHandlerResultPayload> InvokeAsync(
         SubAgentToolProvider provider,
         object args,
-        CancellationToken ct = default)
-        => await InvokeRawAsync(provider, JsonSerializer.Serialize(args), ct);
+        CancellationToken ct = default
+    ) => await InvokeRawAsync(provider, JsonSerializer.Serialize(args), ct);
 
     /// <summary>
     /// Invokes <c>WaitAgent</c> with a literal argument string, for the malformed shapes a real model
@@ -418,7 +446,8 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
     private static async Task<ToolHandlerResultPayload> InvokeRawAsync(
         SubAgentToolProvider provider,
         string argsJson,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var handler = provider.GetFunctions().Single(f => f.Contract.Name == "WaitAgent").Handler;
         var result = await handler(argsJson, new ToolCallContext(), ct);
@@ -426,49 +455,59 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         return result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload;
     }
 
-    private static Func<IStreamingAgent> CompletingAgent(string text) => () =>
-    {
-        var mock = new Mock<IStreamingAgent>();
-        _ = mock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.FromResult(ToAsyncEnumerable(
-                [new TextMessage { Text = text, Role = Role.Assistant }])));
-        return mock.Object;
-    };
+    private static Func<IStreamingAgent> CompletingAgent(string text) =>
+        () =>
+        {
+            var mock = new Mock<IStreamingAgent>();
+            _ = mock.Setup(a =>
+                    a.GenerateReplyStreamingAsync(
+                        It.IsAny<IEnumerable<IMessage>>(),
+                        It.IsAny<GenerateReplyOptions>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .Returns(Task.FromResult(ToAsyncEnumerable([new TextMessage { Text = text, Role = Role.Assistant }])));
+            return mock.Object;
+        };
 
     /// <summary>A sub-agent whose provider call throws, so its run ends in <c>error</c>.</summary>
-    private static Func<IStreamingAgent> FailingAgent() => () =>
-    {
-        var mock = new Mock<IStreamingAgent>();
-        _ = mock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("API call failed"));
-        return mock.Object;
-    };
+    private static Func<IStreamingAgent> FailingAgent() =>
+        () =>
+        {
+            var mock = new Mock<IStreamingAgent>();
+            _ = mock.Setup(a =>
+                    a.GenerateReplyStreamingAsync(
+                        It.IsAny<IEnumerable<IMessage>>(),
+                        It.IsAny<GenerateReplyOptions>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .ThrowsAsync(new InvalidOperationException("API call failed"));
+            return mock.Object;
+        };
 
     /// <summary>A sub-agent that never finishes, so only a timeout or a cancellation can end the wait.</summary>
-    private static Func<IStreamingAgent> BlockingAgent() => () =>
-    {
-        var mock = new Mock<IStreamingAgent>();
-        _ = mock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
-                (_, _, ct) => Task.FromResult(BlockingStream(ct)));
-        return mock.Object;
-    };
+    private static Func<IStreamingAgent> BlockingAgent() =>
+        () =>
+        {
+            var mock = new Mock<IStreamingAgent>();
+            _ = mock.Setup(a =>
+                    a.GenerateReplyStreamingAsync(
+                        It.IsAny<IEnumerable<IMessage>>(),
+                        It.IsAny<GenerateReplyOptions>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                    (_, _, ct) => Task.FromResult(BlockingStream(ct))
+                );
+            return mock.Object;
+        };
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         List<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var message in messages)
         {
@@ -478,30 +517,34 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         }
     }
 
-    private static async IAsyncEnumerable<IMessage> BlockingStream(
-        [EnumeratorCancellation] CancellationToken ct)
+    private static async IAsyncEnumerable<IMessage> BlockingStream([EnumeratorCancellation] CancellationToken ct)
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         yield break;
     }
 
     /// <summary>A sub-agent that runs until the test releases <paramref name="gate"/>.</summary>
-    private static Func<IStreamingAgent> GatedAgent(Task gate) => () =>
-    {
-        var mock = new Mock<IStreamingAgent>();
-        _ = mock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
-                (_, _, ct) => Task.FromResult(GatedStream(gate, ct)));
-        return mock.Object;
-    };
+    private static Func<IStreamingAgent> GatedAgent(Task gate) =>
+        () =>
+        {
+            var mock = new Mock<IStreamingAgent>();
+            _ = mock.Setup(a =>
+                    a.GenerateReplyStreamingAsync(
+                        It.IsAny<IEnumerable<IMessage>>(),
+                        It.IsAny<GenerateReplyOptions>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                    (_, _, ct) => Task.FromResult(GatedStream(gate, ct))
+                );
+            return mock.Object;
+        };
 
     private static async IAsyncEnumerable<IMessage> GatedStream(
         Task gate,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         await gate.WaitAsync(ct);
         yield return new TextMessage { Text = "blocker done", Role = Role.Assistant };

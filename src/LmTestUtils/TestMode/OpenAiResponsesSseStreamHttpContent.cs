@@ -31,7 +31,8 @@ public sealed class OpenAiResponsesSseStreamHttpContent : HttpContent
 
         _events = events;
         _chunkDelayMs = Math.Max(0, chunkDelayMs);
-        _logger = logger
+        _logger =
+            logger
             ?? LoggerFactory
                 .Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning))
                 .CreateLogger<OpenAiResponsesSseStreamHttpContent>();

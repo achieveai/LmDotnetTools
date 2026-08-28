@@ -24,13 +24,11 @@ namespace AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
 /// </param>
 internal sealed class PollFaultStreak(int warnAfter, int repeatEvery)
 {
-    private readonly int _warnAfter = warnAfter > 0
-        ? warnAfter
-        : throw new ArgumentOutOfRangeException(nameof(warnAfter));
+    private readonly int _warnAfter =
+        warnAfter > 0 ? warnAfter : throw new ArgumentOutOfRangeException(nameof(warnAfter));
 
-    private readonly int _repeatEvery = repeatEvery > 0
-        ? repeatEvery
-        : throw new ArgumentOutOfRangeException(nameof(repeatEvery));
+    private readonly int _repeatEvery =
+        repeatEvery > 0 ? repeatEvery : throw new ArgumentOutOfRangeException(nameof(repeatEvery));
 
     private int _consecutive;
     private bool _warned;

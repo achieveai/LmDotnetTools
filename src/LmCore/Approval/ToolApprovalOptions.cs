@@ -64,7 +64,8 @@ public sealed record ToolApprovalOptions
                     nameof(value),
                     value,
                     "MaxApprovalWait must be finite and positive — an unbounded approval wait would "
-                        + "let a pending decision outlive the run that requested it.");
+                        + "let a pending decision outlive the run that requested it."
+                );
             }
 
             _maxApprovalWait = value;
@@ -87,7 +88,8 @@ public sealed record ToolApprovalOptions
                 throw new ArgumentOutOfRangeException(
                     nameof(value),
                     value,
-                    "MaxPendingApprovals must be positive — zero would block every call as overloaded.");
+                    "MaxPendingApprovals must be positive — zero would block every call as overloaded."
+                );
             }
 
             _maxPendingApprovals = value;

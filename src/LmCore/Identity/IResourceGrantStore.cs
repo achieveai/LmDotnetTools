@@ -59,7 +59,8 @@ public interface IResourceGrantStore
         ResourceRef resource,
         string subjectId,
         DateTimeOffset now,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// The ids of every resource of one type on which the subject holds an unexpired grant. This is
@@ -75,7 +76,8 @@ public interface IResourceGrantStore
         string subjectId,
         string resourceType,
         DateTimeOffset now,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>Every grant currently recorded against one resource, expired ones included.</summary>
     /// <param name="tenantId">Our internal tenant id.</param>
@@ -84,7 +86,8 @@ public interface IResourceGrantStore
     Task<IReadOnlyList<ResourceGrant>> ListGrantsForResourceAsync(
         string tenantId,
         ResourceRef resource,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>Creates or replaces one grant.</summary>
     /// <param name="grant">The grant to write.</param>
@@ -96,11 +99,7 @@ public interface IResourceGrantStore
     /// <param name="resource">The resource being addressed.</param>
     /// <param name="subjectId">The grantee's durable <c>{tid}:{oid}</c> id.</param>
     /// <param name="ct">Cancellation token.</param>
-    Task<bool> RevokeAsync(
-        string tenantId,
-        ResourceRef resource,
-        string subjectId,
-        CancellationToken ct = default);
+    Task<bool> RevokeAsync(string tenantId, ResourceRef resource, string subjectId, CancellationToken ct = default);
 
     /// <summary>Whether any unexpired grant still names the resource.</summary>
     /// <remarks>
@@ -117,5 +116,6 @@ public interface IResourceGrantStore
         string tenantId,
         ResourceRef resource,
         DateTimeOffset now,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 }

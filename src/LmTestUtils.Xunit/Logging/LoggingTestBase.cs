@@ -102,9 +102,7 @@ public abstract class LoggingTestBase : IDisposable
     /// </summary>
     /// <param name="additionalContext">Optional additional context to log.</param>
     /// <param name="methodName">The test method name (auto-detected via CallerMemberName).</param>
-    protected void LogTestStart(
-        object? additionalContext = null,
-        [CallerMemberName] string? methodName = null)
+    protected void LogTestStart(object? additionalContext = null, [CallerMemberName] string? methodName = null)
     {
         if (methodName != null && methodName != TestMethodName)
         {
@@ -117,7 +115,8 @@ public abstract class LoggingTestBase : IDisposable
                 "▶ Test starting: {testClassName}.{testCaseName} with context {@Context}",
                 TestClassName,
                 methodName,
-                additionalContext);
+                additionalContext
+            );
         }
         else
         {
@@ -166,7 +165,10 @@ public abstract class LoggingTestBase : IDisposable
         {
             // xUnit 2.x: TestOutputHelper has a private field "test" of type ITest
             var type = output.GetType();
-            var testField = type.GetField("test", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var testField = type.GetField(
+                "test",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+            );
             if (testField == null)
             {
                 return null;

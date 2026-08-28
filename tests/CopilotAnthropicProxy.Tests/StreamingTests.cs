@@ -31,8 +31,9 @@ public sealed class StreamingTests
     public async Task Client_disconnect_cancels_the_upstream_read()
     {
         var upstreamStream = new CancellationObservingStream("event: ping\ndata: {}\n\n");
-        await using var factory = new ProxyWebAppFactory((req, ct) =>
-            Task.FromResult(TestUpstream.SseStream(upstreamStream)));
+        await using var factory = new ProxyWebAppFactory(
+            (req, ct) => Task.FromResult(TestUpstream.SseStream(upstreamStream))
+        );
         using var client = factory.CreateClient();
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages") { Content = RequestBody() };
@@ -61,9 +62,9 @@ public sealed class StreamingTests
         // and time out. Observing frame "a" before releasing proves incremental flush.
         var gated = new GatedStream(
             "event: a\ndata: {\"type\":\"content_block_delta\",\"i\":0}\n\n",
-            "event: b\ndata: {\"type\":\"content_block_delta\",\"i\":1}\n\n");
-        await using var factory = new ProxyWebAppFactory((req, ct) =>
-            Task.FromResult(TestUpstream.SseStream(gated)));
+            "event: b\ndata: {\"type\":\"content_block_delta\",\"i\":1}\n\n"
+        );
+        await using var factory = new ProxyWebAppFactory((req, ct) => Task.FromResult(TestUpstream.SseStream(gated)));
         using var client = factory.CreateClient();
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages") { Content = RequestBody() };
@@ -72,8 +73,10 @@ public sealed class StreamingTests
 
         var buffer = new byte[256];
         var read = await body.ReadAsync(buffer).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
-        Encoding.UTF8.GetString(buffer, 0, read).Should().Contain("event: a",
-            "the first frame must reach the client before the upstream produces the rest");
+        Encoding
+            .UTF8.GetString(buffer, 0, read)
+            .Should()
+            .Contain("event: a", "the first frame must reach the client before the upstream produces the rest");
 
         gated.Release();
         var rest = await new StreamReader(body).ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
@@ -85,9 +88,12 @@ public sealed class StreamingTests
     {
         // Raw passthrough: a mid-stream upstream failure (after some frames were relayed) must NOT
         // synthesize an SSE error or a (misleading) message_stop — the stream is simply truncated.
-        var upstreamStream = new ThrowingStream("event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n");
-        await using var factory = new ProxyWebAppFactory((req, ct) =>
-            Task.FromResult(TestUpstream.SseStream(upstreamStream)));
+        var upstreamStream = new ThrowingStream(
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n"
+        );
+        await using var factory = new ProxyWebAppFactory(
+            (req, ct) => Task.FromResult(TestUpstream.SseStream(upstreamStream))
+        );
         using var client = factory.CreateClient();
 
         using var response = await client.PostAsync("/v1/messages", RequestBody());
@@ -106,10 +112,12 @@ public sealed class StreamingTests
         // receiving bytes and its own read timeout never fires. The comment is not an event/data frame.
         var gated = new GatedStream(
             "event: a\ndata: {\"type\":\"content_block_delta\",\"i\":0}\n\n",
-            "event: b\ndata: {\"type\":\"content_block_delta\",\"i\":1}\n\n");
+            "event: b\ndata: {\"type\":\"content_block_delta\",\"i\":1}\n\n"
+        );
         await using var factory = new ProxyWebAppFactory(
             (req, ct) => Task.FromResult(TestUpstream.SseStream(gated)),
-            keepAliveSeconds: 1);
+            keepAliveSeconds: 1
+        );
         using var client = factory.CreateClient();
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages") { Content = RequestBody() };
@@ -117,15 +125,20 @@ public sealed class StreamingTests
         await using var body = await response.Content.ReadAsStreamAsync();
 
         // Frame "a" arrives immediately; the keep-alive comment(s) follow while the gate is held closed.
-        var seen = await TestUpstream.ReadUntilAsync(body, s => s.Contains(": copilot-anthropic-proxy keep-alive"),
-            TimeSpan.FromSeconds(15));
+        var seen = await TestUpstream.ReadUntilAsync(
+            body,
+            s => s.Contains(": copilot-anthropic-proxy keep-alive"),
+            TimeSpan.FromSeconds(15)
+        );
         seen.Should().Contain("event: a");
-        seen.Should().Contain(": copilot-anthropic-proxy keep-alive",
-            "a silent upstream must be covered by downstream SSE keep-alive comments");
+        seen.Should()
+            .Contain(
+                ": copilot-anthropic-proxy keep-alive",
+                "a silent upstream must be covered by downstream SSE keep-alive comments"
+            );
 
         gated.Release();
         var rest = await new StreamReader(body).ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
         rest.Should().Contain("event: b", "real frames still flow after the keep-alives");
     }
-
 }

@@ -10,11 +10,17 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 /// </summary>
 public sealed class DaemonWebAppFactory : WebApplicationFactory<Program>
 {
-    private readonly string _tokenStoreDir =
-        Path.Combine(Path.GetTempPath(), "codereviewdaemon-tests", Guid.NewGuid().ToString("N"));
+    private readonly string _tokenStoreDir = Path.Combine(
+        Path.GetTempPath(),
+        "codereviewdaemon-tests",
+        Guid.NewGuid().ToString("N")
+    );
 
-    private readonly string _databasePath =
-        Path.Combine(Path.GetTempPath(), "codereviewdaemon-tests", Guid.NewGuid().ToString("N") + ".db");
+    private readonly string _databasePath = Path.Combine(
+        Path.GetTempPath(),
+        "codereviewdaemon-tests",
+        Guid.NewGuid().ToString("N") + ".db"
+    );
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {

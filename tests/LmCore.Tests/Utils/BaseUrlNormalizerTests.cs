@@ -43,15 +43,19 @@ public sealed class BaseUrlNormalizerTests
     public void StripV1Suffix_only_strips_a_trailing_v1_segment_not_substrings()
     {
         // A path like /api/v1service must not be confused with the literal /v1 segment.
-        Assert.Equal("https://example.com/api/v1service",
-            BaseUrlNormalizer.StripV1Suffix("https://example.com/api/v1service"));
+        Assert.Equal(
+            "https://example.com/api/v1service",
+            BaseUrlNormalizer.StripV1Suffix("https://example.com/api/v1service")
+        );
     }
 
     [Fact]
     public void EnsureV1Suffix_only_treats_a_trailing_v1_segment_not_substrings_as_already_present()
     {
         // /api/v1service is NOT a literal /v1 segment, so EnsureV1Suffix must still append /v1.
-        Assert.Equal("https://example.com/api/v1service/v1",
-            BaseUrlNormalizer.EnsureV1Suffix("https://example.com/api/v1service"));
+        Assert.Equal(
+            "https://example.com/api/v1service/v1",
+            BaseUrlNormalizer.EnsureV1Suffix("https://example.com/api/v1service")
+        );
     }
 }

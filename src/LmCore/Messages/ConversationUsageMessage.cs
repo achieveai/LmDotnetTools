@@ -106,7 +106,11 @@ public sealed record ConversationUsageMessage : IMessage, ITransientMessage
     {
         ArgumentNullException.ThrowIfNull(aggregate);
 
-        long prompt = 0, uncached = 0, completion = 0, cached = 0, cacheCreation = 0;
+        long prompt = 0,
+            uncached = 0,
+            completion = 0,
+            cached = 0,
+            cacheCreation = 0;
         foreach (var row in aggregate.PerModel)
         {
             prompt += row.InputTokens;
@@ -118,9 +122,8 @@ public sealed record ConversationUsageMessage : IMessage, ITransientMessage
             // input (OpenAI family), so uncached = input - cacheRead; when a provider reports cache reads
             // additively (cacheRead > input, Anthropic family) fall back to the full input and never go
             // negative. Done per row before summing so a mixed set is handled correctly.
-            uncached += row.CacheReadTokens <= row.InputTokens
-                ? row.InputTokens - row.CacheReadTokens
-                : row.InputTokens;
+            uncached +=
+                row.CacheReadTokens <= row.InputTokens ? row.InputTokens - row.CacheReadTokens : row.InputTokens;
         }
 
         return new ConversationUsageMessage

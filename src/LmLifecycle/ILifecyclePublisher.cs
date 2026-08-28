@@ -28,8 +28,5 @@ public interface ILifecyclePublisher
     /// Completion means the producer is free to continue — never that any subscriber received the
     /// event. Delivery, retries, and drops happen behind this call.
     /// </remarks>
-    ValueTask PublishAsync(
-        LifecycleEventEnvelope envelope,
-        CancellationToken cancellationToken = default
-    );
+    ValueTask PublishAsync(LifecycleEventEnvelope envelope, CancellationToken cancellationToken = default);
 }

@@ -24,11 +24,10 @@ public sealed class SandboxAuthWebhookForwarderTests
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
-            var body = request.Content is null
-                ? "{}"
-                : await request.Content.ReadAsStringAsync(cancellationToken);
+            var body = request.Content is null ? "{}" : await request.Content.ReadAsStringAsync(cancellationToken);
             Posts.Add(new CapturedPost(request.RequestUri!.ToString(), JsonDocument.Parse(body)));
             return new HttpResponseMessage(HttpStatusCode.OK);
         }
@@ -38,7 +37,8 @@ public sealed class SandboxAuthWebhookForwarderTests
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken) => Task.FromResult(respond(request));
+            CancellationToken cancellationToken
+        ) => Task.FromResult(respond(request));
     }
 
     private static SandboxSessionRegistry CreateRegistry()
@@ -48,7 +48,8 @@ public sealed class SandboxAuthWebhookForwarderTests
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(Unused)));
+            new HttpClient(new StubHandler(Unused))
+        );
 
         return new SandboxSessionRegistry(
             gateway,
@@ -58,14 +59,16 @@ public sealed class SandboxAuthWebhookForwarderTests
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
     }
 
     private static SandboxAuthWebhookForwarder CreateForwarder(
         SandboxSessionRegistry registry,
         IConversationStore store,
-        HttpMessageHandler handler) =>
-        new(registry, store, new HttpClient(handler), NullLogger<SandboxAuthWebhookForwarder>.Instance);
+        HttpMessageHandler handler
+    ) => new(registry, store, new HttpClient(handler), NullLogger<SandboxAuthWebhookForwarder>.Instance);
 
     private static async Task RegisterEligibleThreadAsync(
         IConversationStore store,
@@ -75,7 +78,8 @@ public sealed class SandboxAuthWebhookForwarderTests
         string webhookUrl,
         string providerId,
         long registeredAt,
-        string? currentRunId = null)
+        string? currentRunId = null
+    )
     {
         registry.RegisterThread(sessionId, threadId);
         await store.SaveMetadataAsync(
@@ -85,11 +89,12 @@ public sealed class SandboxAuthWebhookForwarderTests
                 ThreadId = threadId,
                 CurrentRunId = currentRunId,
                 LastUpdated = registeredAt,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .Add("sample.authWebhookUrl", webhookUrl)
+                Properties = ImmutableDictionary<string, object>
+                    .Empty.Add("sample.authWebhookUrl", webhookUrl)
                     .Add("sample.authWebhookProviderId", providerId)
                     .Add("sample.authWebhookRegisteredAt", registeredAt),
-            });
+            }
+        );
     }
 
     [Fact]
@@ -100,9 +105,24 @@ public sealed class SandboxAuthWebhookForwarderTests
         var handler = new CapturingHandler();
         var forwarder = CreateForwarder(registry, store, handler);
 
-        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-a", "https://a.test/hook", "github", 100, "run-a");
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionA,
+            "thread-a",
+            "https://a.test/hook",
+            "github",
+            100,
+            "run-a"
+        );
 
-        await forwarder.NotifyAuthRequiredAsync(SessionA, "github", "http://host/auth/github", "expired", CancellationToken.None);
+        await forwarder.NotifyAuthRequiredAsync(
+            SessionA,
+            "github",
+            "http://host/auth/github",
+            "expired",
+            CancellationToken.None
+        );
 
         var root = handler.Posts.Should().ContainSingle().Which.Body.RootElement;
         root.GetProperty("type").GetString().Should().Be("auth_required");
@@ -113,10 +133,13 @@ public sealed class SandboxAuthWebhookForwarderTests
         root.GetProperty("signinUrl").GetString().Should().Be("http://host/auth/github");
         root.GetProperty("reason").GetString().Should().Be("expired");
 
-        foreach (var pascalName in new[] { "Type", "SessionId", "ThreadId", "RunId", "ProviderId", "SigninUrl", "Reason" })
+        foreach (
+            var pascalName in new[] { "Type", "SessionId", "ThreadId", "RunId", "ProviderId", "SigninUrl", "Reason" }
+        )
         {
-            root.TryGetProperty(pascalName, out _).Should().BeFalse(
-                $"the wire contract is documented in camelCase; '{pascalName}' must not also appear");
+            root.TryGetProperty(pascalName, out _)
+                .Should()
+                .BeFalse($"the wire contract is documented in camelCase; '{pascalName}' must not also appear");
         }
     }
 
@@ -128,20 +151,62 @@ public sealed class SandboxAuthWebhookForwarderTests
         var handler = new CapturingHandler();
         var forwarder = CreateForwarder(registry, store, handler);
 
-        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-a", "https://a.test/hook", "github", 100, "run-a");
-        await RegisterEligibleThreadAsync(store, registry, SessionB, "thread-b", "https://b.test/hook", "github", 100, "run-b");
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionA,
+            "thread-a",
+            "https://a.test/hook",
+            "github",
+            100,
+            "run-a"
+        );
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionB,
+            "thread-b",
+            "https://b.test/hook",
+            "github",
+            100,
+            "run-b"
+        );
 
-        var targetA = await forwarder.NotifyAuthRequiredAsync(SessionA, "github", "https://signin/github", "expired", CancellationToken.None);
-        var targetB = await forwarder.NotifyAuthRequiredAsync(SessionB, "github", "https://signin/github", "expired", CancellationToken.None);
+        var targetA = await forwarder.NotifyAuthRequiredAsync(
+            SessionA,
+            "github",
+            "https://signin/github",
+            "expired",
+            CancellationToken.None
+        );
+        var targetB = await forwarder.NotifyAuthRequiredAsync(
+            SessionB,
+            "github",
+            "https://signin/github",
+            "expired",
+            CancellationToken.None
+        );
 
         targetA.Should().Be(new AuthWebhookTarget("thread-a", "run-a", "https://a.test/hook"));
         targetB.Should().Be(new AuthWebhookTarget("thread-b", "run-b", "https://b.test/hook"));
 
-        handler.Posts.Should().HaveCount(2, "each session's auth_required must forward exactly once, to its own thread's webhook");
-        handler.Posts.Should().ContainSingle(p => p.Url == "https://a.test/hook")
-            .Which.Body.RootElement.GetProperty("threadId").GetString().Should().Be("thread-a");
-        handler.Posts.Should().ContainSingle(p => p.Url == "https://b.test/hook")
-            .Which.Body.RootElement.GetProperty("threadId").GetString().Should().Be("thread-b");
+        handler
+            .Posts.Should()
+            .HaveCount(2, "each session's auth_required must forward exactly once, to its own thread's webhook");
+        handler
+            .Posts.Should()
+            .ContainSingle(p => p.Url == "https://a.test/hook")
+            .Which.Body.RootElement.GetProperty("threadId")
+            .GetString()
+            .Should()
+            .Be("thread-a");
+        handler
+            .Posts.Should()
+            .ContainSingle(p => p.Url == "https://b.test/hook")
+            .Which.Body.RootElement.GetProperty("threadId")
+            .GetString()
+            .Should()
+            .Be("thread-b");
     }
 
     [Fact]
@@ -152,22 +217,51 @@ public sealed class SandboxAuthWebhookForwarderTests
         var handler = new CapturingHandler();
         var forwarder = CreateForwarder(registry, store, handler);
 
-        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-old", "https://old.test/hook", "github", 100, "run-old");
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionA,
+            "thread-old",
+            "https://old.test/hook",
+            "github",
+            100,
+            "run-old"
+        );
 
-        var target = await forwarder.NotifyAuthRequiredAsync(SessionA, "github", "https://signin/github", "expired", CancellationToken.None);
+        var target = await forwarder.NotifyAuthRequiredAsync(
+            SessionA,
+            "github",
+            "https://signin/github",
+            "expired",
+            CancellationToken.None
+        );
         target.Should().Be(new AuthWebhookTarget("thread-old", "run-old", "https://old.test/hook"));
 
         // Drift: the originally-eligible thread is deleted, and a newer eligible thread registers,
         // before the terminal call arrives.
         registry.UnregisterThread(SessionA, "thread-old");
-        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-new", "https://new.test/hook", "github", 200, "run-new");
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionA,
+            "thread-new",
+            "https://new.test/hook",
+            "github",
+            200,
+            "run-new"
+        );
 
         handler.Posts.Clear();
         await forwarder.NotifyAuthCompletedAsync(target, SessionA, "github", CancellationToken.None);
 
-        handler.Posts.Should().ContainSingle().Which.Url.Should().Be(
-            "https://old.test/hook",
-            "the terminal call must reuse the captured target, not re-resolve eligibility against current registry/store state");
+        handler
+            .Posts.Should()
+            .ContainSingle()
+            .Which.Url.Should()
+            .Be(
+                "https://old.test/hook",
+                "the terminal call must reuse the captured target, not re-resolve eligibility against current registry/store state"
+            );
     }
 
     [Fact]
@@ -178,13 +272,37 @@ public sealed class SandboxAuthWebhookForwarderTests
         var handler = new CapturingHandler();
         var forwarder = CreateForwarder(registry, store, handler);
 
-        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-original", "https://original.test/hook", "github", 100, "run-1");
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionA,
+            "thread-original",
+            "https://original.test/hook",
+            "github",
+            100,
+            "run-1"
+        );
 
-        var target = await forwarder.NotifyAuthRequiredAsync(SessionA, "github", "https://signin/github", "expired", CancellationToken.None);
+        var target = await forwarder.NotifyAuthRequiredAsync(
+            SessionA,
+            "github",
+            "https://signin/github",
+            "expired",
+            CancellationToken.None
+        );
 
         // A second thread registers for the same session+provider while the original request is
         // still pending (e.g. the user opened a second tab).
-        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-second", "https://second.test/hook", "github", 50, "run-2");
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionA,
+            "thread-second",
+            "https://second.test/hook",
+            "github",
+            50,
+            "run-2"
+        );
 
         handler.Posts.Clear();
         await forwarder.NotifyAuthDeniedAsync(target, SessionA, "github", "denied_by_user", CancellationToken.None);
@@ -200,10 +318,34 @@ public sealed class SandboxAuthWebhookForwarderTests
         var handler = new CapturingHandler();
         var forwarder = CreateForwarder(registry, store, handler);
 
-        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-z", "https://z.test/hook", "github", 100, "run-z");
-        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-a", "https://a.test/hook", "github", 200, "run-a");
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionA,
+            "thread-z",
+            "https://z.test/hook",
+            "github",
+            100,
+            "run-z"
+        );
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionA,
+            "thread-a",
+            "https://a.test/hook",
+            "github",
+            200,
+            "run-a"
+        );
 
-        var target = await forwarder.NotifyAuthRequiredAsync(SessionA, "github", "https://signin/github", "expired", CancellationToken.None);
+        var target = await forwarder.NotifyAuthRequiredAsync(
+            SessionA,
+            "github",
+            "https://signin/github",
+            "expired",
+            CancellationToken.None
+        );
 
         target.Should().Be(new AuthWebhookTarget("thread-z", "run-z", "https://z.test/hook"));
     }
@@ -216,10 +358,34 @@ public sealed class SandboxAuthWebhookForwarderTests
         var handler = new CapturingHandler();
         var forwarder = CreateForwarder(registry, store, handler);
 
-        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-b", "https://b.test/hook", "github", 100, "run-b");
-        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-a", "https://a.test/hook", "github", 100, "run-a");
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionA,
+            "thread-b",
+            "https://b.test/hook",
+            "github",
+            100,
+            "run-b"
+        );
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionA,
+            "thread-a",
+            "https://a.test/hook",
+            "github",
+            100,
+            "run-a"
+        );
 
-        var target = await forwarder.NotifyAuthRequiredAsync(SessionA, "github", "https://signin/github", "expired", CancellationToken.None);
+        var target = await forwarder.NotifyAuthRequiredAsync(
+            SessionA,
+            "github",
+            "https://signin/github",
+            "expired",
+            CancellationToken.None
+        );
 
         target.Should().Be(new AuthWebhookTarget("thread-a", "run-a", "https://a.test/hook"));
     }
@@ -232,9 +398,24 @@ public sealed class SandboxAuthWebhookForwarderTests
         var handler = new CapturingHandler();
         var forwarder = CreateForwarder(registry, store, handler);
 
-        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-ado", "https://ado.test/hook", "ado", 100, "run-ado");
+        await RegisterEligibleThreadAsync(
+            store,
+            registry,
+            SessionA,
+            "thread-ado",
+            "https://ado.test/hook",
+            "ado",
+            100,
+            "run-ado"
+        );
 
-        var target = await forwarder.NotifyAuthRequiredAsync(SessionA, "github", "https://signin/github", "expired", CancellationToken.None);
+        var target = await forwarder.NotifyAuthRequiredAsync(
+            SessionA,
+            "github",
+            "https://signin/github",
+            "expired",
+            CancellationToken.None
+        );
 
         target.Should().BeNull();
         handler.Posts.Should().BeEmpty();
@@ -248,7 +429,13 @@ public sealed class SandboxAuthWebhookForwarderTests
         var handler = new CapturingHandler();
         var forwarder = CreateForwarder(registry, store, handler);
 
-        var target = await forwarder.NotifyAuthRequiredAsync("unknown-session", "github", "https://signin/github", "expired", CancellationToken.None);
+        var target = await forwarder.NotifyAuthRequiredAsync(
+            "unknown-session",
+            "github",
+            "https://signin/github",
+            "expired",
+            CancellationToken.None
+        );
 
         target.Should().BeNull();
         handler.Posts.Should().BeEmpty();
@@ -284,13 +471,20 @@ public sealed class SandboxAuthWebhookForwarderTests
                 ThreadId = "thread-a",
                 CurrentRunId = "run-a",
                 LastUpdated = 100,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .Add("sample.authWebhookUrl", JsonSerializer.SerializeToElement("https://a.test/hook"))
+                Properties = ImmutableDictionary<string, object>
+                    .Empty.Add("sample.authWebhookUrl", JsonSerializer.SerializeToElement("https://a.test/hook"))
                     .Add("sample.authWebhookProviderId", JsonSerializer.SerializeToElement("github"))
                     .Add("sample.authWebhookRegisteredAt", JsonSerializer.SerializeToElement(100L)),
-            });
+            }
+        );
 
-        var target = await forwarder.NotifyAuthRequiredAsync(SessionA, "github", "https://signin/github", "expired", CancellationToken.None);
+        var target = await forwarder.NotifyAuthRequiredAsync(
+            SessionA,
+            "github",
+            "https://signin/github",
+            "expired",
+            CancellationToken.None
+        );
 
         target.Should().Be(new AuthWebhookTarget("thread-a", "run-a", "https://a.test/hook"));
     }

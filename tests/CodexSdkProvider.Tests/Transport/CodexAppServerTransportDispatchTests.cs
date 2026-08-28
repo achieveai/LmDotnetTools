@@ -23,11 +23,8 @@ public class CodexAppServerTransportDispatchTests
     {
         using var fake = new FakeCliProcess();
         await using var transport = new CodexAppServerTransport(
-            new CodexSdkOptions
-            {
-                CodexCliPath = "codex-cli-mock",
-                ProcessLauncher = fake.Launcher,
-            });
+            new CodexSdkOptions { CodexCliPath = "codex-cli-mock", ProcessLauncher = fake.Launcher }
+        );
 
         // Stands in for an approval nobody has answered yet.
         var parked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -54,7 +51,8 @@ public class CodexAppServerTransportDispatchTests
                     return JsonDocument.Parse($$"""{"answered":"{{method}}"}""").RootElement.Clone();
                 },
                 notificationHandler: (method, _) => notified.TrySetResult(method),
-                ct: CancellationToken.None);
+                ct: CancellationToken.None
+            );
 
             await fake.WriteStdoutLineAsync("""{"jsonrpc":"2.0","id":1,"method":"tool/parked"}""");
             await parkedEntered.Task.WaitAsync(Generous);
@@ -71,7 +69,8 @@ public class CodexAppServerTransportDispatchTests
             Assert.Equal("tool/prompt", second.Result.GetProperty("answered").GetString());
             Assert.False(
                 parkedFinished.Task.IsCompleted,
-                "the first handler had already returned, so nothing was proven");
+                "the first handler had already returned, so nothing was proven"
+            );
 
             // Releasing the approval answers the first request, out of arrival order.
             _ = parked.TrySetResult();
@@ -95,11 +94,8 @@ public class CodexAppServerTransportDispatchTests
     {
         using var fake = new FakeCliProcess();
         await using var transport = new CodexAppServerTransport(
-            new CodexSdkOptions
-            {
-                CodexCliPath = "codex-cli-mock",
-                ProcessLauncher = fake.Launcher,
-            });
+            new CodexSdkOptions { CodexCliPath = "codex-cli-mock", ProcessLauncher = fake.Launcher }
+        );
 
         var parkedEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handlerCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -128,7 +124,8 @@ public class CodexAppServerTransportDispatchTests
                     return default;
                 },
                 notificationHandler: (_, _) => { },
-                ct: CancellationToken.None);
+                ct: CancellationToken.None
+            );
 
             await fake.WriteStdoutLineAsync("""{"jsonrpc":"2.0","id":1,"method":"tool/never"}""");
             await parkedEntered.Task.WaitAsync(Generous);

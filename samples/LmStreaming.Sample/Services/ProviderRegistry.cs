@@ -30,23 +30,20 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     private const string AnthropicCompatGroupSuffix = " (Anthropic-compatible)";
 
     private static readonly ImmutableArray<CatalogEntry> CatalogEntries =
-        [
-            new("openai", "OpenAI"),
-            new("anthropic", "Anthropic"),
-            new("test", "Test (Mock)"),
-            new("test-anthropic", "Test (Anthropic)"),
-            new("claude", "Claude (CLI)"),
-            new("codex", "Codex"),
-            new("copilot", "Copilot (CLI)"),
-            new("claude-mock", "Claude (CLI, Mock)"),
-            new("codex-mock", "Codex (Mock)"),
-            new("copilot-mock", "Copilot (CLI, Mock)"),
-        ];
+    [
+        new("openai", "OpenAI"),
+        new("anthropic", "Anthropic"),
+        new("test", "Test (Mock)"),
+        new("test-anthropic", "Test (Anthropic)"),
+        new("claude", "Claude (CLI)"),
+        new("codex", "Codex"),
+        new("copilot", "Copilot (CLI)"),
+        new("claude-mock", "Claude (CLI, Mock)"),
+        new("codex-mock", "Codex (Mock)"),
+        new("copilot-mock", "Copilot (CLI, Mock)"),
+    ];
 
-    private readonly record struct CatalogEntry(
-        string Id,
-        string DisplayName,
-        string? KnownLimitation = null);
+    private readonly record struct CatalogEntry(string Id, string DisplayName, string? KnownLimitation = null);
 
     private readonly ImmutableDictionary<string, ProviderDescriptor> _byId;
     private readonly ImmutableDictionary<string, CopilotModelInfo> _copilotModelsById;
@@ -55,9 +52,7 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     private readonly Func<string, bool> _dynamicAvailability;
 
     public ProviderRegistry(IFileSystemProbe? probe = null, MockProviderHostLifetime? mockHost = null)
-        : this(probe, mockHost is null ? () => false : () => mockHost.IsRunning)
-    {
-    }
+        : this(probe, mockHost is null ? () => false : () => mockHost.IsRunning) { }
 
     /// <summary>
     ///     Production constructor that injects the Copilot models discovered at startup and the
@@ -68,10 +63,14 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
         IReadOnlyList<CopilotModelInfo> copilotModels,
         IFileSystemProbe? probe = null,
         MockProviderHostLifetime? mockHost = null,
-        IReadOnlyList<AnthropicCompatModel>? anthropicCompatModels = null)
-        : this(probe, mockHost is null ? () => false : () => mockHost.IsRunning, copilotModels, anthropicCompatModels: anthropicCompatModels)
-    {
-    }
+        IReadOnlyList<AnthropicCompatModel>? anthropicCompatModels = null
+    )
+        : this(
+            probe,
+            mockHost is null ? () => false : () => mockHost.IsRunning,
+            copilotModels,
+            anthropicCompatModels: anthropicCompatModels
+        ) { }
 
     // Test-only constructor: lets tests inject a stub IsRunning probe without standing up a
     // real Kestrel host, and inject the Copilot token gate (copilotTokenAvailable) so discovered
@@ -82,7 +81,8 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
         Func<bool> mockHostIsRunning,
         IReadOnlyList<CopilotModelInfo>? copilotModels = null,
         Func<bool>? copilotTokenAvailable = null,
-        IReadOnlyList<AnthropicCompatModel>? anthropicCompatModels = null)
+        IReadOnlyList<AnthropicCompatModel>? anthropicCompatModels = null
+    )
     {
         ArgumentNullException.ThrowIfNull(mockHostIsRunning);
 
@@ -92,8 +92,12 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
 
         var builder = ImmutableDictionary.CreateBuilder<string, ProviderDescriptor>(StringComparer.OrdinalIgnoreCase);
         var staticBuilder = ImmutableHashSet.CreateBuilder<string>(StringComparer.OrdinalIgnoreCase);
-        var copilotBuilder = ImmutableDictionary.CreateBuilder<string, CopilotModelInfo>(StringComparer.OrdinalIgnoreCase);
-        var anthropicCompatBuilder = ImmutableDictionary.CreateBuilder<string, AnthropicCompatModel>(StringComparer.OrdinalIgnoreCase);
+        var copilotBuilder = ImmutableDictionary.CreateBuilder<string, CopilotModelInfo>(
+            StringComparer.OrdinalIgnoreCase
+        );
+        var anthropicCompatBuilder = ImmutableDictionary.CreateBuilder<string, AnthropicCompatModel>(
+            StringComparer.OrdinalIgnoreCase
+        );
 
         // Pre-compute the static availability of CLI gates and env-var gates once.
         // *-mock providers AND-on the runtime mock-host signal in the dynamic delegate below.
@@ -169,15 +173,19 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
 
             anthropicCompatBuilder[model.Id] = model;
             _ = staticBuilder.Add(model.Id);
-            builder[model.Id] = new ProviderDescriptor(model.Id, model.DisplayName, true, Group: model.FamilyKey + AnthropicCompatGroupSuffix);
+            builder[model.Id] = new ProviderDescriptor(
+                model.Id,
+                model.DisplayName,
+                true,
+                Group: model.FamilyKey + AnthropicCompatGroupSuffix
+            );
         }
 
         _byId = builder.ToImmutable();
         _copilotModelsById = copilotBuilder.ToImmutable();
         _anthropicCompatModelsById = anthropicCompatBuilder.ToImmutable();
         _staticAvailability = staticBuilder.ToImmutable();
-        _dynamicAvailability = id => _staticAvailability.Contains(id)
-            && (!IsMockProvider(id) || mockHostIsRunning());
+        _dynamicAvailability = id => _staticAvailability.Contains(id) && (!IsMockProvider(id) || mockHostIsRunning());
     }
 
     /// <summary>
@@ -189,9 +197,7 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     public bool IsAvailable(string providerId)
     {
         var normalized = NormalizeId(providerId);
-        return normalized != null
-            && _byId.ContainsKey(normalized)
-            && _dynamicAvailability(normalized);
+        return normalized != null && _byId.ContainsKey(normalized) && _dynamicAvailability(normalized);
     }
 
     public bool IsKnown(string providerId)
@@ -215,7 +221,10 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
 
         // Re-evaluate availability so callers see the live mock-host status. The static
         // descriptor stored in the dictionary is only used as a name/display source.
-        return descriptor with { Available = _dynamicAvailability(normalized) };
+        return descriptor with
+        {
+            Available = _dynamicAvailability(normalized),
+        };
     }
 
     /// <summary>
@@ -273,9 +282,12 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     /// </summary>
     public IReadOnlyList<ProviderDescriptor> ListAll()
     {
-        return [.. _byId.Values
-            .Select(d => d with { Available = _dynamicAvailability(d.Id) })
-            .OrderBy(p => p.Id, StringComparer.OrdinalIgnoreCase)];
+        return
+        [
+            .. _byId
+                .Values.Select(d => d with { Available = _dynamicAvailability(d.Id) })
+                .OrderBy(p => p.Id, StringComparer.OrdinalIgnoreCase),
+        ];
     }
 
     private static string? NormalizeId(string? providerId)
@@ -304,6 +316,8 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     private static bool HasCliPath(string envVar, string cliName, IFileSystemProbe probe)
     {
         var explicitPath = Environment.GetEnvironmentVariable(envVar);
-        return !string.IsNullOrWhiteSpace(explicitPath) ? probe.FileExists(explicitPath) : probe.IsExecutableOnPath(cliName);
+        return !string.IsNullOrWhiteSpace(explicitPath)
+            ? probe.FileExists(explicitPath)
+            : probe.IsExecutableOnPath(cliName);
     }
 }

@@ -157,11 +157,7 @@ public class AgentCollaborationBundleConcurrencyTests
         }
     }
 
-    private static AgentDispatch SendQuestion(
-        AgentCollaborationBundle bundle,
-        string senderAgentId,
-        string target
-    ) =>
+    private static AgentDispatch SendQuestion(AgentCollaborationBundle bundle, string senderAgentId, string target) =>
         bundle.TrySendAndDeliver(
             senderAgentId,
             target,

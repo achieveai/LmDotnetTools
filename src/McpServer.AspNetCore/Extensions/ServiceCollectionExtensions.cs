@@ -22,7 +22,8 @@ public static class ServiceCollectionExtensions
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection AddMcpServerFromFunctionProviders(
         this IServiceCollection services,
-        int? port = null)
+        int? port = null
+    )
     {
         // First, configure the MCP server options with handlers from function providers
         _ = services.AddMcpServerHandlers();
@@ -33,8 +34,9 @@ public static class ServiceCollectionExtensions
         // Configure port if specified
         if (port.HasValue)
         {
-            _ = services.Configure<Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions>(
-                options => options.Listen(IPAddress.Loopback, port.Value));
+            _ = services.Configure<Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions>(options =>
+                options.Listen(IPAddress.Loopback, port.Value)
+            );
         }
 
         return services;
@@ -59,9 +61,7 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection</param>
     /// <param name="provider">The function provider instance</param>
     /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddFunctionProvider(
-        this IServiceCollection services,
-        IFunctionProvider provider)
+    public static IServiceCollection AddFunctionProvider(this IServiceCollection services, IFunctionProvider provider)
     {
         _ = services.AddSingleton(provider);
         return services;
@@ -77,7 +77,8 @@ public static class ServiceCollectionExtensions
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection AddMcpFunctionProviderServer(
         this IServiceCollection services,
-        Action<McpFunctionProviderServerOptions>? configure = null)
+        Action<McpFunctionProviderServerOptions>? configure = null
+    )
     {
         AddMcpFunctionProviderServerCore(services, configure);
 
@@ -97,7 +98,8 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddMcpFunctionProviderServerLazy(
         this IServiceCollection services,
-        Action<McpFunctionProviderServerOptions>? configure = null)
+        Action<McpFunctionProviderServerOptions>? configure = null
+    )
     {
         AddMcpFunctionProviderServerCore(services, configure);
         return services;
@@ -105,7 +107,8 @@ public static class ServiceCollectionExtensions
 
     private static void AddMcpFunctionProviderServerCore(
         IServiceCollection services,
-        Action<McpFunctionProviderServerOptions>? configure)
+        Action<McpFunctionProviderServerOptions>? configure
+    )
     {
         // Register options
         _ = services.Configure(configure ?? (_ => { }));
@@ -133,8 +136,9 @@ public static class ServiceCollectionExtensions
             }
 
             _ = builder.Services.AddMcpServerFromFunctionProviders();
-            _ = builder.Services.AddCors(c => c.AddDefaultPolicy(p =>
-                p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
+            _ = builder.Services.AddCors(c =>
+                c.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader())
+            );
 
             var app = builder.Build();
             _ = app.UseCors();

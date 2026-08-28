@@ -56,7 +56,8 @@ public sealed class SubAgentScanCoverageCacheCompositionTests
             // below would fail to trigger and the test would catch it.
             builder.UseSetting(
                 $"{AgentCollaborationHostOptions.SectionName}:{nameof(AgentCollaborationHostOptions.MaxPersistedHierarchyEntries)}",
-                ConfiguredCapacity.ToString());
+                ConfiguredCapacity.ToString()
+            );
 
             builder.ConfigureTestServices(services =>
             {
@@ -81,7 +82,10 @@ public sealed class SubAgentScanCoverageCacheCompositionTests
     public async Task Host_BindsConfiguredMaxPersistedHierarchyEntries_IntoTheRegisteredScanCoverageCacheSingleton()
     {
         var root = Path.Combine(
-            Path.GetTempPath(), "lmstreaming-collab-cache-composition-test", Guid.NewGuid().ToString("N"));
+            Path.GetTempPath(),
+            "lmstreaming-collab-cache-composition-test",
+            Guid.NewGuid().ToString("N")
+        );
         Directory.CreateDirectory(root);
         // An explicit `await using` BLOCK, not a method-scoped `await using var`: the host must be
         // disposed before the purge below, and method scope would dispose it at the method's closing
@@ -92,9 +96,12 @@ public sealed class SubAgentScanCoverageCacheCompositionTests
         await using (var host = new CollaborationCacheWebAppFactory(Path.Combine(root, "conversations")))
         {
             var options = host.Services.GetRequiredService<AgentCollaborationHostOptions>();
-            options.MaxPersistedHierarchyEntries.Should().Be(
-                ConfiguredCapacity,
-                "the test-supplied AgentCollaboration:MaxPersistedHierarchyEntries setting must bind onto the host options");
+            options
+                .MaxPersistedHierarchyEntries.Should()
+                .Be(
+                    ConfiguredCapacity,
+                    "the test-supplied AgentCollaboration:MaxPersistedHierarchyEntries setting must bind onto the host options"
+                );
 
             var cache = host.Services.GetRequiredService<SubAgentScanCoverageCache>();
 
@@ -110,25 +117,32 @@ public sealed class SubAgentScanCoverageCacheCompositionTests
                 cache.RecordRecovered(
                     $"thread-{i}",
                     owners[i],
-                    [new SubAgentSummary
-                    {
-                        AgentId = $"child-{i}",
-                        Template = "worker",
-                        Task = "task",
-                        Status = "completed",
-                        ThreadId = $"subagent-child-{i}",
-                    }]);
+                    [
+                        new SubAgentSummary
+                        {
+                            AgentId = $"child-{i}",
+                            Template = "worker",
+                            Task = "task",
+                            Status = "completed",
+                            ThreadId = $"subagent-child-{i}",
+                        },
+                    ]
+                );
             }
 
-            var survivorCount = Enumerable.Range(0, distinctThreads)
+            var survivorCount = Enumerable
+                .Range(0, distinctThreads)
                 .Count(i => cache.TryGetRecovered($"thread-{i}", owners[i], out _));
 
-            survivorCount.Should().Be(
-                ConfiguredCapacity,
-                "the singleton resolved from DI must evict down to the CONFIGURED capacity "
-                    + $"({ConfiguredCapacity}), not {SubAgentScanCoverageCache.DefaultCapacity} (the "
-                    + "library default) — proving Program.cs actually threads "
-                    + "AgentCollaboration:MaxPersistedHierarchyEntries into this singleton");
+            survivorCount
+                .Should()
+                .Be(
+                    ConfiguredCapacity,
+                    "the singleton resolved from DI must evict down to the CONFIGURED capacity "
+                        + $"({ConfiguredCapacity}), not {SubAgentScanCoverageCache.DefaultCapacity} (the "
+                        + "library default) — proving Program.cs actually threads "
+                        + "AgentCollaboration:MaxPersistedHierarchyEntries into this singleton"
+                );
         }
 
         // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.

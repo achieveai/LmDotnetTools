@@ -35,9 +35,7 @@ public sealed class RubricValidatorTests
     [Fact]
     public void A_criterion_rewarding_volume_with_no_capping_anchor_is_refused()
     {
-        var rubric = HarnessFixtures.Rubric(
-            Criterion("The review is comprehensive and thorough.", WellAnchored)
-        );
+        var rubric = HarnessFixtures.Rubric(Criterion("The review is comprehensive and thorough.", WellAnchored));
 
         var result = RubricValidator.Validate(rubric);
 
@@ -53,10 +51,7 @@ public sealed class RubricValidatorTests
                 "The review is comprehensive.",
                 (0, "no finding cites a file and line that resolves"),
                 (5, "some findings cite a file and line that resolves"),
-                (
-                    10,
-                    "every finding cites a file and line that resolves, without restating the diff"
-                )
+                (10, "every finding cites a file and line that resolves, without restating the diff")
             )
         );
 
@@ -90,9 +85,7 @@ public sealed class RubricValidatorTests
     [Fact]
     public void A_criterion_missing_its_floor_midpoint_or_ceiling_anchor_is_refused()
     {
-        var rubric = HarnessFixtures.Rubric(
-            Criterion("Findings cite lines that resolve.", (0, "none"), (10, "all"))
-        );
+        var rubric = HarnessFixtures.Rubric(Criterion("Findings cite lines that resolve.", (0, "none"), (10, "all")));
 
         var result = RubricValidator.Validate(rubric);
 
@@ -103,28 +96,15 @@ public sealed class RubricValidatorTests
     [Fact]
     public void A_non_positive_criterion_weight_is_refused()
     {
-        var rubric = HarnessFixtures.Rubric(
-            HarnessFixtures.Criterion("quality") with
-            {
-                Weight = 0.0,
-            }
-        );
+        var rubric = HarnessFixtures.Rubric(HarnessFixtures.Criterion("quality") with { Weight = 0.0 });
 
-        RubricValidator
-            .Validate(rubric)
-            .Errors.Should()
-            .ContainSingle()
-            .Which.Should()
-            .Contain("non-positive weight");
+        RubricValidator.Validate(rubric).Errors.Should().ContainSingle().Which.Should().Contain("non-positive weight");
     }
 
     [Fact]
     public void A_duplicate_criterion_id_is_refused()
     {
-        var rubric = HarnessFixtures.Rubric(
-            HarnessFixtures.Criterion("quality"),
-            HarnessFixtures.Criterion("quality")
-        );
+        var rubric = HarnessFixtures.Rubric(HarnessFixtures.Criterion("quality"), HarnessFixtures.Criterion("quality"));
 
         RubricValidator
             .Validate(rubric)
@@ -148,10 +128,7 @@ public sealed class RubricValidatorTests
     {
         var rubric = HarnessFixtures.Rubric() with { MinScore = 10, MaxScore = 10 };
 
-        RubricValidator
-            .Validate(rubric)
-            .Errors.Should()
-            .Contain(e => e.Contains("scale", StringComparison.Ordinal));
+        RubricValidator.Validate(rubric).Errors.Should().Contain(e => e.Contains("scale", StringComparison.Ordinal));
     }
 
     [Fact]

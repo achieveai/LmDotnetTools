@@ -14,9 +14,7 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 public sealed class AdoOAuthProviderTests : LoggingTestBase
 {
     public AdoOAuthProviderTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private AdoOAuthProvider NewProvider(string? clientId, string cacheDir) =>
         new(
@@ -27,7 +25,8 @@ public sealed class AdoOAuthProviderTests : LoggingTestBase
                 Scopes = ["499b84ac-1321-427f-aa17-267ca6975798/.default", "offline_access"],
             },
             Path.Combine(cacheDir, "msal-ado.bin"),
-            LoggerFactory.CreateLogger<AdoOAuthProvider>());
+            LoggerFactory.CreateLogger<AdoOAuthProvider>()
+        );
 
     [Fact]
     public async Task Unconfigured_provider_is_disabled_not_crashing()
@@ -75,8 +74,12 @@ public sealed class AdoOAuthProviderTests : LoggingTestBase
     public void StripReservedScopes_removes_offline_access_keeps_resource_scope()
     {
         LogTestStart();
-        var result = OAuthProviderBase.StripReservedScopes(
-            ["499b84ac-1321-427f-aa17-267ca6975798/.default", "offline_access", "openid", "profile"]);
+        var result = OAuthProviderBase.StripReservedScopes([
+            "499b84ac-1321-427f-aa17-267ca6975798/.default",
+            "offline_access",
+            "openid",
+            "profile",
+        ]);
         Logger.LogInformation("Stripped scopes: [{Scopes}]", string.Join(", ", result));
 
         result.Should().ContainSingle().Which.Should().Be("499b84ac-1321-427f-aa17-267ca6975798/.default");
@@ -86,7 +89,10 @@ public sealed class AdoOAuthProviderTests : LoggingTestBase
     private sealed class TempDir : IDisposable
     {
         public TempDir() =>
-            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ado-oauth-test-" + Guid.NewGuid().ToString("N"));
+            Path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                "ado-oauth-test-" + Guid.NewGuid().ToString("N")
+            );
 
         public string Path { get; }
 

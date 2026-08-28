@@ -615,13 +615,13 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         return nested switch
         {
             Dictionary<string, object?> nestedDict => GetIntValue(nestedDict, innerKey),
-            JsonElement { ValueKind: JsonValueKind.Object } element when element.TryGetProperty(innerKey, out var inner) =>
-                inner.ValueKind switch
-                {
-                    JsonValueKind.Number => inner.GetInt32(),
-                    JsonValueKind.String when int.TryParse(inner.GetString(), out var parsed) => parsed,
-                    _ => 0,
-                },
+            JsonElement { ValueKind: JsonValueKind.Object } element
+                when element.TryGetProperty(innerKey, out var inner) => inner.ValueKind switch
+            {
+                JsonValueKind.Number => inner.GetInt32(),
+                JsonValueKind.String when int.TryParse(inner.GetString(), out var parsed) => parsed,
+                _ => 0,
+            },
             _ => 0,
         };
     }

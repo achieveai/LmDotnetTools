@@ -15,9 +15,10 @@ public sealed class AnthropicProviderConsumptionTests
     [Fact]
     public async Task AnthropicClient_streams_scripted_text_through_the_host()
     {
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.Text("hello from the anthropic mock"))
+            .Turn(t => t.Text("hello from the anthropic mock"))
             .Build();
 
         await using var fixture = await EphemeralHostFixture.StartAsync(responder);

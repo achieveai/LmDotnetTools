@@ -20,4 +20,5 @@ public record UserInput(
     List<IMessage> Messages,
     string? InputId = null,
     string? ParentRunId = null,
-    bool SuppressSubAgentSpawning = false);
+    bool SuppressSubAgentSpawning = false
+);

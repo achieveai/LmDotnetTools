@@ -150,7 +150,10 @@ internal sealed class MergeBaseResolver
     /// </para>
     /// </remarks>
     public async Task<MergeBaseOutcome> ResolveAsync(
-        string repoRoot, ReviewRun run, CancellationToken cancellationToken)
+        string repoRoot,
+        ReviewRun run,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
         ArgumentNullException.ThrowIfNull(run);
@@ -191,7 +194,8 @@ internal sealed class MergeBaseResolver
                 run.Id,
                 repoRoot,
                 run.BaseSha,
-                run.HeadSha);
+                run.HeadSha
+            );
             return MergeBaseOutcome.UnrelatedHistories;
         }
 
@@ -209,9 +213,7 @@ internal sealed class MergeBaseResolver
         var lastReach = new Dictionary<string, int>(StringComparer.Ordinal);
         var everFetched = false;
 
-        for (var depth = MergeBaseFirstDepth;
-            depth <= MergeBaseDepthCeiling;
-            depth *= MergeBaseDepthMultiplier)
+        for (var depth = MergeBaseFirstDepth; depth <= MergeBaseDepthCeiling; depth *= MergeBaseDepthMultiplier)
         {
             var targets = new List<string>();
             var grew = false;
@@ -270,7 +272,8 @@ internal sealed class MergeBaseResolver
                         run.Id,
                         repoRoot,
                         run.BaseSha,
-                        run.HeadSha);
+                        run.HeadSha
+                    );
                     return MergeBaseOutcome.Indeterminate;
                 }
 
@@ -282,7 +285,8 @@ internal sealed class MergeBaseResolver
                     run.Id,
                     repoRoot,
                     run.BaseSha,
-                    run.HeadSha);
+                    run.HeadSha
+                );
                 return MergeBaseOutcome.UnrelatedHistories;
             }
 
@@ -294,11 +298,11 @@ internal sealed class MergeBaseResolver
                 continue;
             }
 
-            var deepen = await _git
-                .RunAsync(
+            var deepen = await _git.RunAsync(
                     ["-C", repoRoot, "fetch", $"--depth={depth}", "origin", .. targets],
                     repoRoot,
-                    cancellationToken)
+                    cancellationToken
+                )
                 .ConfigureAwait(false);
             if (!deepen.Succeeded)
             {
@@ -308,7 +312,8 @@ internal sealed class MergeBaseResolver
                     repoRoot,
                     depth,
                     deepen.ExitCode,
-                    deepen.Stderr);
+                    deepen.Stderr
+                );
                 return MergeBaseOutcome.DeepenFailed;
             }
 
@@ -336,7 +341,8 @@ internal sealed class MergeBaseResolver
                     repoRoot,
                     depth,
                     run.BaseSha,
-                    run.HeadSha);
+                    run.HeadSha
+                );
                 return MergeBaseOutcome.Resolved;
             }
         }
@@ -350,7 +356,8 @@ internal sealed class MergeBaseResolver
             repoRoot,
             run.BaseSha,
             run.HeadSha,
-            MergeBaseDepthCeiling);
+            MergeBaseDepthCeiling
+        );
 
         return MergeBaseOutcome.DepthCeilingReached;
     }
@@ -381,7 +388,11 @@ internal sealed class MergeBaseResolver
     /// </para>
     /// </remarks>
     private async Task CompactObjectStoreAsync(
-        string repoRoot, ReviewRun run, int depth, CancellationToken cancellationToken)
+        string repoRoot,
+        ReviewRun run,
+        int depth,
+        CancellationToken cancellationToken
+    )
     {
         if (!_enableObjectStoreMaintenance)
         {
@@ -390,9 +401,11 @@ internal sealed class MergeBaseResolver
             return;
         }
 
-        var repack = await _git
-            .RunAsync(
-                ["-C", repoRoot, "repack", "-a", "-d", "--keep-unreachable"], repoRoot, cancellationToken)
+        var repack = await _git.RunAsync(
+                ["-C", repoRoot, "repack", "-a", "-d", "--keep-unreachable"],
+                repoRoot,
+                cancellationToken
+            )
             .ConfigureAwait(false);
         if (!repack.Succeeded)
         {
@@ -403,7 +416,8 @@ internal sealed class MergeBaseResolver
                 repoRoot,
                 depth,
                 repack.ExitCode,
-                repack.Stderr);
+                repack.Stderr
+            );
             return;
         }
 
@@ -412,7 +426,8 @@ internal sealed class MergeBaseResolver
                 + "duplicated.",
             run.Id,
             repoRoot,
-            depth);
+            depth
+        );
     }
 
     /// <summary>
@@ -426,11 +441,9 @@ internal sealed class MergeBaseResolver
     /// precisely the fix — but reading it as "this round bought no history" is how a killed <c>rev-list</c>
     /// turns into a pull-request comment telling the author to rebase.
     /// </remarks>
-    private async Task<int?> ReachableCountAsync(
-        string repoRoot, string sha, CancellationToken cancellationToken)
+    private async Task<int?> ReachableCountAsync(string repoRoot, string sha, CancellationToken cancellationToken)
     {
-        var result = await _git
-            .RunAsync(["-C", repoRoot, "rev-list", "--count", sha], repoRoot, cancellationToken)
+        var result = await _git.RunAsync(["-C", repoRoot, "rev-list", "--count", sha], repoRoot, cancellationToken)
             .ConfigureAwait(false);
         return result.Succeeded && int.TryParse(result.Stdout.Trim(), out var count) ? count : null;
     }
@@ -450,11 +463,16 @@ internal sealed class MergeBaseResolver
     /// </para>
     /// </remarks>
     private async Task<GitAnswer> MergeBaseAnswerAsync(
-        string repoRoot, ReviewRun run, CancellationToken cancellationToken)
+        string repoRoot,
+        ReviewRun run,
+        CancellationToken cancellationToken
+    )
     {
-        var result = await _git
-            .RunAsync(
-                ["-C", repoRoot, "merge-base", run.BaseSha, run.HeadSha], repoRoot, cancellationToken)
+        var result = await _git.RunAsync(
+                ["-C", repoRoot, "merge-base", run.BaseSha, run.HeadSha],
+                repoRoot,
+                cancellationToken
+            )
             .ConfigureAwait(false);
         if (result.Succeeded && !string.IsNullOrWhiteSpace(result.Stdout))
         {
@@ -476,7 +494,8 @@ internal sealed class MergeBaseResolver
             run.HeadSha,
             repoRoot,
             result.ExitCode,
-            result.Stderr);
+            result.Stderr
+        );
         return GitAnswer.Unknown;
     }
 
@@ -490,10 +509,16 @@ internal sealed class MergeBaseResolver
     /// must be reachable only by git actually saying <c>false</c>.
     /// </remarks>
     private async Task<GitAnswer> IsShallowAnswerAsync(
-        string repoRoot, ReviewRun run, CancellationToken cancellationToken)
+        string repoRoot,
+        ReviewRun run,
+        CancellationToken cancellationToken
+    )
     {
-        var result = await _git
-            .RunAsync(["-C", repoRoot, "rev-parse", "--is-shallow-repository"], repoRoot, cancellationToken)
+        var result = await _git.RunAsync(
+                ["-C", repoRoot, "rev-parse", "--is-shallow-repository"],
+                repoRoot,
+                cancellationToken
+            )
             .ConfigureAwait(false);
         if (result.Succeeded)
         {
@@ -517,7 +542,8 @@ internal sealed class MergeBaseResolver
             run.Id,
             repoRoot,
             result.ExitCode,
-            result.Stderr);
+            result.Stderr
+        );
         return GitAnswer.Unknown;
     }
 }

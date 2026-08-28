@@ -35,7 +35,8 @@ internal sealed class FakeOAuthTokenProvider : IOAuthTokenProvider
 
     public Task<OAuthAccessToken> GetAccessTokenAsync(
         IReadOnlyList<string>? scopes = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         IssuedTokens.Add(_token);
         return Task.FromResult(new OAuthAccessToken(_token, DateTimeOffset.UtcNow.AddHours(1)));

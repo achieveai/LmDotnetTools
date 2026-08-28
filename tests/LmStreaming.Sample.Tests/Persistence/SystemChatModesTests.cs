@@ -76,8 +76,7 @@ public class SystemChatModesTests
         // defaults, or this change would quietly strip sub-agents from them.
         var ordinary = SystemChatModes
             .All.Where(m =>
-                m.Id != SystemChatModes.WorkspaceAgentModeId
-                && m.Id != SystemChatModes.WorkflowAuthorModeId
+                m.Id != SystemChatModes.WorkspaceAgentModeId && m.Id != SystemChatModes.WorkflowAuthorModeId
             )
             .ToList();
 

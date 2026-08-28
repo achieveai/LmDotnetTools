@@ -250,7 +250,8 @@ internal sealed class DelayedResultCoordinator
         string toolCallId,
         string fingerprint,
         out ResolvingDeferral? pending,
-        out string? inFlightFingerprint)
+        out string? inFlightFingerprint
+    )
     {
         lock (_lock)
         {
@@ -270,9 +271,7 @@ internal sealed class DelayedResultCoordinator
 
             entry.Resolving = true;
             entry.ResolvingFingerprint = fingerprint;
-            pending = new ResolvingDeferral(
-                entry,
-                ChildRunId: entry.Parked ? Guid.NewGuid().ToString("N") : null);
+            pending = new ResolvingDeferral(entry, ChildRunId: entry.Parked ? Guid.NewGuid().ToString("N") : null);
             inFlightFingerprint = null;
             return true;
         }
@@ -352,8 +351,7 @@ internal sealed class DelayedResultCoordinator
             // The claim's id when it already had one — that is the id the durable resolution record
             // names, and it has to stand — otherwise a fresh one if the run parked while this
             // resolution was in flight. Null only when the requesting run is still going.
-            var childRunId = pending.ChildRunId
-                ?? (pending.Entry.Parked ? Guid.NewGuid().ToString("N") : null);
+            var childRunId = pending.ChildRunId ?? (pending.Entry.Parked ? Guid.NewGuid().ToString("N") : null);
 
             if (childRunId == null)
             {
@@ -368,7 +366,8 @@ internal sealed class DelayedResultCoordinator
                 ChildRunId: childRunId,
                 Ordinal: ordinal,
                 IsContinuationOwner: _entries.Count == 0,
-                Result: resolved);
+                Result: resolved
+            );
 
             _causes.Enqueue(cause);
             return cause;
@@ -399,7 +398,10 @@ internal sealed class DelayedResultCoordinator
         lock (_lock)
         {
             return pending.ChildRunId == null && pending.Entry.Parked
-                ? pending with { ChildRunId = Guid.NewGuid().ToString("N") }
+                ? pending with
+                {
+                    ChildRunId = Guid.NewGuid().ToString("N"),
+                }
                 : pending;
         }
     }
@@ -452,22 +454,27 @@ internal sealed class DelayedResultCoordinator
             List<DelayedCause> recovered = [];
             foreach (var item in owed)
             {
-                if (_entries.ContainsKey(item.ToolCallId)
+                if (
+                    _entries.ContainsKey(item.ToolCallId)
                     || _causes.Any(c => string.Equals(c.ToolCallId, item.ToolCallId, StringComparison.Ordinal))
-                    || recovered.Any(c => string.Equals(c.ToolCallId, item.ToolCallId, StringComparison.Ordinal)))
+                    || recovered.Any(c => string.Equals(c.ToolCallId, item.ToolCallId, StringComparison.Ordinal))
+                )
                 {
                     continue;
                 }
 
-                recovered.Add(new DelayedCause(
-                    ToolCallId: item.ToolCallId,
-                    ToolName: item.ToolName,
-                    RequestingRunId: item.RequestingRunId,
-                    RequestingGenerationId: item.RequestingGenerationId,
-                    ChildRunId: item.ChildRunId,
-                    Ordinal: ++_ordinal,
-                    IsContinuationOwner: false,
-                    Result: item.Result));
+                recovered.Add(
+                    new DelayedCause(
+                        ToolCallId: item.ToolCallId,
+                        ToolName: item.ToolName,
+                        RequestingRunId: item.RequestingRunId,
+                        RequestingGenerationId: item.RequestingGenerationId,
+                        ChildRunId: item.ChildRunId,
+                        Ordinal: ++_ordinal,
+                        IsContinuationOwner: false,
+                        Result: item.Result
+                    )
+                );
             }
 
             if (recovered.Count > 0 && _entries.Count == 0)
@@ -503,7 +510,8 @@ internal sealed record RecoveredContinuation(
     string? RequestingRunId,
     string? RequestingGenerationId,
     string ChildRunId,
-    ToolCallResultMessage Result);
+    ToolCallResultMessage Result
+);
 
 /// <summary>
 /// One tool call awaiting external resolution. Public surface is <see cref="DeferredToolCallInfo"/>.
@@ -518,7 +526,8 @@ internal sealed class DeferredEntry(
     string functionArgs,
     long deferredAtUnixMs,
     string? runId,
-    string? generationId)
+    string? generationId
+)
 {
     /// <summary>The deferred call.</summary>
     public string ToolCallId { get; } = toolCallId;
@@ -570,9 +579,7 @@ internal sealed class DeferredEntry(
 /// was still going; <see cref="DelayedResultCoordinator.CompleteResolve"/> mints one late in the
 /// narrow case where the run parked while this claim was in flight.
 /// </param>
-internal sealed record ResolvingDeferral(
-    DeferredEntry Entry,
-    string? ChildRunId);
+internal sealed record ResolvingDeferral(DeferredEntry Entry, string? ChildRunId);
 
 /// <summary>
 /// A committed delayed result and the child run it causes.
@@ -600,4 +607,5 @@ internal sealed record DelayedCause(
     string ChildRunId,
     long Ordinal,
     bool IsContinuationOwner,
-    ToolCallResultMessage Result);
+    ToolCallResultMessage Result
+);

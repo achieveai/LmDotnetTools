@@ -20,4 +20,5 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// </remarks>
 public sealed record InheritableToolSnapshot(
     IReadOnlyList<FunctionContract> Contracts,
-    IReadOnlyDictionary<string, ToolHandler> Handlers);
+    IReadOnlyDictionary<string, ToolHandler> Handlers
+);

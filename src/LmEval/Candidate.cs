@@ -39,6 +39,5 @@ public sealed record Candidate
     public string? GeneratorFamily { get; init; }
 
     /// <summary>Host-supplied side data. Never rendered into a judge prompt by the harness.</summary>
-    public IReadOnlyDictionary<string, string> Metadata { get; init; } =
-        new Dictionary<string, string>();
+    public IReadOnlyDictionary<string, string> Metadata { get; init; } = new Dictionary<string, string>();
 }

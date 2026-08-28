@@ -13,10 +13,7 @@ internal sealed class MockPrProvider : IPrProvider
     private readonly IReadOnlyList<PullRequestDescriptor> _pullRequests;
     private readonly OpaqueCursor _nextCursor;
 
-    public MockPrProvider(
-        string provider,
-        IReadOnlyList<PullRequestDescriptor> pullRequests,
-        OpaqueCursor nextCursor)
+    public MockPrProvider(string provider, IReadOnlyList<PullRequestDescriptor> pullRequests, OpaqueCursor nextCursor)
     {
         Provider = provider;
         _pullRequests = pullRequests;
@@ -63,11 +60,7 @@ internal sealed class MockPrProvider : IPrProvider
         CallCount++;
         LastRequestedCursor = request.Cursor;
         LastRecencyCutoff = request.RecencyCutoff;
-        return Task.FromResult(new PullRequestPage
-        {
-            PullRequests = _pullRequests,
-            NextCursor = _nextCursor,
-        });
+        return Task.FromResult(new PullRequestPage { PullRequests = _pullRequests, NextCursor = _nextCursor });
     }
 
     public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)

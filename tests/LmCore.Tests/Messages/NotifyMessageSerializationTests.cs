@@ -143,7 +143,9 @@ public class NotifyMessageSerializationTests
                 ""role"": ""user""
             }";
 
-        var notify = Assert.IsType<NotifyMessage>(JsonSerializer.Deserialize<IMessage>(json, GetOptionsWithConverter()));
+        var notify = Assert.IsType<NotifyMessage>(
+            JsonSerializer.Deserialize<IMessage>(json, GetOptionsWithConverter())
+        );
 
         Assert.DoesNotContain("STALE", notify.Text);
         Assert.Contains("subagent-completion", notify.Text);

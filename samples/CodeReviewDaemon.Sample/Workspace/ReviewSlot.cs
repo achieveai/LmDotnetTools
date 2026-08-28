@@ -48,7 +48,8 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
         string? hostRoot,
         string scratchDirName,
         ILogger<ReviewSlotPool> logger,
-        string slotDirPrefix = "slot-")
+        string slotDirPrefix = "slot-"
+    )
     {
         if (maxSlots < 1)
         {
@@ -126,7 +127,8 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
                 + "The address is not returned to the pool; concurrency is unaffected and the next lease allocates a "
                 + "fresh one.",
             slot.Index,
-            slot.HostPath);
+            slot.HostPath
+        );
         _gate.Release();
     }
 
@@ -169,7 +171,8 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
             {
                 throw new SlotAddressUnusableException(
                     $"Refusing to lease slot {slot.Index}: '{refusal.Path}' — {refusal.Reason}. Not following it, "
-                        + "and not removing it either.");
+                        + "and not removing it either."
+                );
             }
         }
     }
@@ -185,6 +188,11 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
     private ReviewSlot BuildSlot(int index)
     {
         var hostPath = Path.Combine(_hostRoot, SlotDirectoryName(index));
-        return new ReviewSlot(index, hostPath, Path.Combine(hostPath, "store"), Path.Combine(hostPath, _scratchDirName));
+        return new ReviewSlot(
+            index,
+            hostPath,
+            Path.Combine(hostPath, "store"),
+            Path.Combine(hostPath, _scratchDirName)
+        );
     }
 }

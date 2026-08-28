@@ -26,8 +26,8 @@ internal static class CopilotCliPathResolver
         }
 
         // Bare names (no directory separator) resolve through PATH+PATHEXT — leave alone.
-        var hasPathSeparator = cliPath.Contains('/', StringComparison.Ordinal)
-            || cliPath.Contains('\\', StringComparison.Ordinal);
+        var hasPathSeparator =
+            cliPath.Contains('/', StringComparison.Ordinal) || cliPath.Contains('\\', StringComparison.Ordinal);
         if (!hasPathSeparator)
         {
             return cliPath;

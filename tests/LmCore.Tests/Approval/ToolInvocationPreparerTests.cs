@@ -43,9 +43,7 @@ public class ToolInvocationPreparerTests
     {
         var first = RecordingGate.Allowing();
         var second = RecordingGate.Allowing();
-        var preparer = new ToolInvocationPreparer(
-            new ToolApprovalOptions { Gates = [first, second] }
-        );
+        var preparer = new ToolInvocationPreparer(new ToolApprovalOptions { Gates = [first, second] });
 
         var prepared = await preparer.PrepareAsync(Request());
 
@@ -58,10 +56,7 @@ public class ToolInvocationPreparerTests
     public async Task PrepareAsync_WhenAnyGateDenies_Blocks()
     {
         var preparer = new ToolInvocationPreparer(
-            new ToolApprovalOptions
-            {
-                Gates = [RecordingGate.Allowing(), RecordingGate.Denying("not on my watch")],
-            }
+            new ToolApprovalOptions { Gates = [RecordingGate.Allowing(), RecordingGate.Denying("not on my watch")] }
         );
 
         var prepared = await preparer.PrepareAsync(Request());
@@ -144,12 +139,7 @@ public class ToolInvocationPreparerTests
         var preparer = new ToolInvocationPreparer(
             new ToolApprovalOptions
             {
-                Gates =
-                [
-                    new RecordingGate(
-                        (_, _) => Task.FromResult(ToolApprovalVerdict.Blocked(outcome))
-                    ),
-                ],
+                Gates = [new RecordingGate((_, _) => Task.FromResult(ToolApprovalVerdict.Blocked(outcome)))],
             }
         );
 
@@ -305,9 +295,7 @@ public class ToolInvocationPreparerTests
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
 
-        var preparer = new ToolInvocationPreparer(
-            new ToolApprovalOptions { Gates = [RecordingGate.Allowing()] }
-        );
+        var preparer = new ToolInvocationPreparer(new ToolApprovalOptions { Gates = [RecordingGate.Allowing()] });
 
         var prepared = await preparer.PrepareAsync(Request(), cts.Token);
 
@@ -393,9 +381,7 @@ public class ToolInvocationPreparerTests
     [Fact]
     public async Task PrepareAsync_WhenTooManyApprovalsArePending_BlocksAsOverload()
     {
-        var release = new TaskCompletionSource<ToolApprovalVerdict>(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
+        var release = new TaskCompletionSource<ToolApprovalVerdict>(TaskCreationOptions.RunContinuationsAsynchronously);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var preparer = new ToolInvocationPreparer(
             new ToolApprovalOptions
@@ -516,9 +502,7 @@ public class ToolInvocationPreparerTests
     public async Task InvokeAsync_WhenBlocked_NeverCallsTheHandler()
     {
         var invocations = 0;
-        var preparer = new ToolInvocationPreparer(
-            new ToolApprovalOptions { Gates = [RecordingGate.Denying("nope")] }
-        );
+        var preparer = new ToolInvocationPreparer(new ToolApprovalOptions { Gates = [RecordingGate.Denying("nope")] });
 
         var prepared = await preparer.PrepareAsync(Request());
         var result = await preparer.InvokeAsync(
@@ -542,9 +526,7 @@ public class ToolInvocationPreparerTests
     public async Task InvokeAsync_WhenApproved_CallsTheHandlerExactlyOnce()
     {
         var invocations = 0;
-        var preparer = new ToolInvocationPreparer(
-            new ToolApprovalOptions { Gates = [RecordingGate.Allowing()] }
-        );
+        var preparer = new ToolInvocationPreparer(new ToolApprovalOptions { Gates = [RecordingGate.Allowing()] });
 
         var prepared = await preparer.PrepareAsync(Request());
         var result = await preparer.InvokeAsync(
@@ -607,19 +589,17 @@ public class ToolInvocationPreparerTests
     [InlineData(0)]
     [InlineData(-1)]
     public void Options_RejectNonPositiveApprovalWaits(int seconds) =>
-        Assert.Throws<ArgumentOutOfRangeException>(
-            () => new ToolApprovalOptions { MaxApprovalWait = TimeSpan.FromSeconds(seconds) }
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new ToolApprovalOptions { MaxApprovalWait = TimeSpan.FromSeconds(seconds) }
         );
 
     [Fact]
     public void Options_RejectAnInfiniteApprovalWait() =>
-        Assert.Throws<ArgumentOutOfRangeException>(
-            () => new ToolApprovalOptions { MaxApprovalWait = Timeout.InfiniteTimeSpan }
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new ToolApprovalOptions { MaxApprovalWait = Timeout.InfiniteTimeSpan }
         );
 
     [Fact]
     public void Options_RejectANonPositivePendingLimit() =>
-        Assert.Throws<ArgumentOutOfRangeException>(
-            () => new ToolApprovalOptions { MaxPendingApprovals = 0 }
-        );
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ToolApprovalOptions { MaxPendingApprovals = 0 });
 }

@@ -11,17 +11,21 @@ public sealed class CodexToolPolicyEngine
     public CodexToolPolicyEngine(
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers = null,
         IEnumerable<string>? dynamicToolNames = null,
-        IEnumerable<string>? enabledTools = null)
+        IEnumerable<string>? enabledTools = null
+    )
     {
         _mcpServers = mcpServers ?? new Dictionary<string, CodexMcpServerConfig>(StringComparer.OrdinalIgnoreCase);
         _dynamicToolNames = new HashSet<string>(
             (dynamicToolNames ?? []).Where(static x => !string.IsNullOrWhiteSpace(x)),
-            StringComparer.OrdinalIgnoreCase);
-        _enabledTools = enabledTools == null
-            ? null
-            : new HashSet<string>(
-                enabledTools.Where(static x => !string.IsNullOrWhiteSpace(x)),
-                StringComparer.OrdinalIgnoreCase);
+            StringComparer.OrdinalIgnoreCase
+        );
+        _enabledTools =
+            enabledTools == null
+                ? null
+                : new HashSet<string>(
+                    enabledTools.Where(static x => !string.IsNullOrWhiteSpace(x)),
+                    StringComparer.OrdinalIgnoreCase
+                );
     }
 
     public bool IsBuiltInAllowed(string toolName)
@@ -51,8 +55,10 @@ public sealed class CodexToolPolicyEngine
             return false;
         }
 
-        if (server.EnabledTools is { Count: > 0 }
-            && !server.EnabledTools.Contains(toolName, StringComparer.OrdinalIgnoreCase))
+        if (
+            server.EnabledTools is { Count: > 0 }
+            && !server.EnabledTools.Contains(toolName, StringComparer.OrdinalIgnoreCase)
+        )
         {
             return false;
         }
@@ -68,7 +74,6 @@ public sealed class CodexToolPolicyEngine
             return false;
         }
 
-        return _dynamicToolNames.Contains(toolName)
-            && (_enabledTools == null || _enabledTools.Contains(toolName));
+        return _dynamicToolNames.Contains(toolName) && (_enabledTools == null || _enabledTools.Contains(toolName));
     }
 }

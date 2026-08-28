@@ -19,14 +19,9 @@ public sealed class ReviewBotInitializerTests : LoggingTestBase
     private const string DefaultBranch = "main";
 
     public ReviewBotInitializerTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
-    private ReviewBotInitializer CreateInitializer(
-        ISandboxCommandRunner runner,
-        ISandboxFileSystem fileSystem
-    ) =>
+    private ReviewBotInitializer CreateInitializer(ISandboxCommandRunner runner, ISandboxFileSystem fileSystem) =>
         new(new GitRunner(runner), fileSystem, LoggerFactory.CreateLogger<ReviewBotInitializer>());
 
     [Fact]
@@ -42,8 +37,7 @@ public sealed class ReviewBotInitializerTests : LoggingTestBase
         result.MissingPaths.Should().BeEmpty();
 
         fs.Files.Keys.Should()
-            .Contain(
-            [
+            .Contain([
                 $"{RepoRoot}/README.md",
                 $"{RepoRoot}/KnowledgeBase/_toc.md",
                 $"{RepoRoot}/KnowledgeBase/.gitkeep",
@@ -99,8 +93,7 @@ public sealed class ReviewBotInitializerTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         var fs = new FakeSandboxFileSystem();
         SeedAll(fs);
-        fs.Files[$"{RepoRoot}/KnowledgeBase/_toc.md"] =
-            new string('x', (int)SandboxReadLimits.RepositoryFileBytes + 1);
+        fs.Files[$"{RepoRoot}/KnowledgeBase/_toc.md"] = new string('x', (int)SandboxReadLimits.RepositoryFileBytes + 1);
 
         var result = await CreateInitializer(runner, fs)
             .InitializeAsync(RepoRoot, DefaultBranch, CancellationToken.None);
@@ -112,7 +105,6 @@ public sealed class ReviewBotInitializerTests : LoggingTestBase
     }
 
     private static void SeedAll(FakeSandboxFileSystem fs)
-
     {
         fs.Files[$"{RepoRoot}/README.md"] = "# ReviewBot";
         fs.Files[$"{RepoRoot}/PRs/.gitkeep"] = string.Empty;

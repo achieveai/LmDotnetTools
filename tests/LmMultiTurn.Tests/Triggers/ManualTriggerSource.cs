@@ -17,7 +17,10 @@ internal sealed class ManualTriggerSource : ITriggerSource
     public readonly ConcurrentDictionary<string, ITriggerEventSink> Sinks = new();
 
     public ValueTask<IArmedTrigger> ArmAsync(
-        TriggerArmRequest request, ITriggerEventSink eventSink, CancellationToken ct)
+        TriggerArmRequest request,
+        ITriggerEventSink eventSink,
+        CancellationToken ct
+    )
     {
         Sinks[request.WaitId] = eventSink;
         return ValueTask.FromResult<IArmedTrigger>(new Handle(request.WaitId, this));

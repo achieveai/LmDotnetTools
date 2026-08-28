@@ -1,4 +1,3 @@
-
 using System.Net;
 using System.Text;
 using LmStreaming.Sample.Services;
@@ -21,7 +20,8 @@ public class WorkspacesControllerTests
     private static (WorkspacesController Controller, FileWorkspaceStore Store) Build(
         string? defaultLeaf = null,
         IWorkspacePluginSelectionService? pluginSelection = null,
-        IMarketplaceCatalogClient? catalog = null)
+        IMarketplaceCatalogClient? catalog = null
+    )
     {
         var dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
         var store = new FileWorkspaceStore(dir, defaultLeaf);
@@ -174,7 +174,9 @@ public class WorkspacesControllerTests
         ErrorField(bad.Value, "code").Should().Be("unsupported_plugins");
 
         // Rejected BEFORE persistence: the workspace must not exist at all.
-        (await store.GetAllAsync()).Should().ContainSingle(w => w.IsSystemDefined);
+        (await store.GetAllAsync())
+            .Should()
+            .ContainSingle(w => w.IsSystemDefined);
     }
 
     [Fact]
@@ -279,7 +281,8 @@ public class WorkspacesControllerTests
     public async Task Update_MigrationFailure_MapsToSpecCodeAndStatus(
         Exception failure,
         int expectedStatus,
-        string expectedCode)
+        string expectedCode
+    )
     {
         var (controller, _) = Build(pluginSelection: new StubPluginSelection(failure));
 
@@ -425,8 +428,14 @@ public class WorkspacesControllerTests
     /// </summary>
     [Theory]
     [InlineData("{}", HttpStatusCode.OK)]
-    [InlineData(/*lang=json,strict*/ "{\"marketplaces\":[]}", HttpStatusCode.OK)]
-    [InlineData(/*lang=json,strict*/ "{\"marketplaces\":null}", HttpStatusCode.BadRequest)]
+    [InlineData( /*lang=json,strict*/
+        "{\"marketplaces\":[]}",
+        HttpStatusCode.OK
+    )]
+    [InlineData( /*lang=json,strict*/
+        "{\"marketplaces\":null}",
+        HttpStatusCode.BadRequest
+    )]
     public async Task Put_MarketplacesOmittedEmptyOrExplicitNull(string body, HttpStatusCode expected)
     {
         await using var app = await HttpApp.StartAsync();
@@ -454,7 +463,8 @@ public class WorkspacesControllerTests
 
         var response = await app.PutAsync(
             $"/api/workspaces/{created.Id}",
-            /*lang=json,strict*/ "{\"marketplaces\":[\"not-a-real-alias\"]}");
+            /*lang=json,strict*/"{\"marketplaces\":[\"not-a-real-alias\"]}"
+        );
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await response.Content.ReadAsStringAsync()).Should().Contain("unsupported_marketplaces");
@@ -474,7 +484,8 @@ public class WorkspacesControllerTests
 
         var response = await app.PutAsync(
             $"/api/workspaces/{created.Id}",
-            /*lang=json,strict*/ "{\"marketplaces\":[null]}");
+            /*lang=json,strict*/"{\"marketplaces\":[null]}"
+        );
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
@@ -492,7 +503,8 @@ public class WorkspacesControllerTests
 
         var response = await app.PostAsync(
             "/api/workspaces",
-            /*lang=json,strict*/ "{\"name\":\"Fresh\",\"marketplaces\":null}");
+            /*lang=json,strict*/"{\"name\":\"Fresh\",\"marketplaces\":null}"
+        );
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
         (await ReadViewAsync(response)).Marketplaces.Should().BeEmpty();
@@ -510,15 +522,20 @@ public class WorkspacesControllerTests
     {
         await using var app = await HttpApp.StartAsync();
         var created = await app.Store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
-        await app.CorruptCatalogAsync(json => json.Replace(
-            "\"marketplaces\": []", "\"marketplaces\": null", StringComparison.Ordinal));
+        await app.CorruptCatalogAsync(json =>
+            json.Replace("\"marketplaces\": []", "\"marketplaces\": null", StringComparison.Ordinal)
+        );
 
         var response = await app.Client.GetAsync("/api/workspaces");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        var entry = doc.RootElement.GetProperty("workspaces").EnumerateArray()
-            .Should().ContainSingle(w => w.GetProperty("id").GetString() == created.Id).Subject;
+        var entry = doc
+            .RootElement.GetProperty("workspaces")
+            .EnumerateArray()
+            .Should()
+            .ContainSingle(w => w.GetProperty("id").GetString() == created.Id)
+            .Subject;
         entry.GetProperty("marketplaces").EnumerateArray().Should().BeEmpty();
     }
 
@@ -532,8 +549,9 @@ public class WorkspacesControllerTests
     {
         await using var app = await HttpApp.StartAsync();
         var created = await app.Store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
-        await app.CorruptCatalogAsync(json => json.Replace(
-            "\"marketplaces\": []", "\"marketplaces\": null", StringComparison.Ordinal));
+        await app.CorruptCatalogAsync(json =>
+            json.Replace("\"marketplaces\": []", "\"marketplaces\": null", StringComparison.Ordinal)
+        );
 
         var response = await app.Client.GetAsync($"/api/workspaces/{created.Id}");
 
@@ -620,8 +638,7 @@ public class WorkspacesControllerTests
                     webBuilder.UseTestServer();
                     webBuilder.ConfigureServices(services =>
                     {
-                        _ = services.AddControllers()
-                            .AddApplicationPart(typeof(WorkspacesController).Assembly);
+                        _ = services.AddControllers().AddApplicationPart(typeof(WorkspacesController).Assembly);
                         _ = services.AddSingleton<IWorkspaceStore>(store);
                         _ = services.AddSingleton(compatibility);
                         _ = services.AddSingleton(identity);
@@ -670,10 +687,8 @@ public class WorkspacesControllerTests
     {
         public Task<MarketplaceCatalog> GetCatalogAsync(
             IReadOnlyList<string>? marketplaces = null,
-            CancellationToken ct = default) =>
-            Task.FromException<MarketplaceCatalog>(
-                new MarketplaceCatalogUnavailableException("gateway offline")
-            );
+            CancellationToken ct = default
+        ) => Task.FromException<MarketplaceCatalog>(new MarketplaceCatalogUnavailableException("gateway offline"));
     }
 
     private sealed class SupportedCatalogClient(bool? pluginFiltering = null, params string[] pluginsUnderX)
@@ -681,7 +696,8 @@ public class WorkspacesControllerTests
     {
         public Task<MarketplaceCatalog> GetCatalogAsync(
             IReadOnlyList<string>? marketplaces = null,
-            CancellationToken ct = default) =>
+            CancellationToken ct = default
+        ) =>
             Task.FromResult(
                 new MarketplaceCatalog(
                     ["x", "y"],
@@ -713,7 +729,8 @@ public class WorkspacesControllerTests
         public Task<Workspace> ApplyPluginSelectionUpdateAsync(
             string workspaceId,
             WorkspaceUpdate dto,
-            CancellationToken ct = default)
+            CancellationToken ct = default
+        )
         {
             Calls++;
             return failure is not null

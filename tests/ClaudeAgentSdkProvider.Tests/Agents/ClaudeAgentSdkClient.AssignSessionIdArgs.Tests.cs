@@ -14,18 +14,13 @@ public class ClaudeAgentSdkClientAssignSessionIdArgsTests
     private const string AssignedId = "00000000-0000-4000-8000-000000000abc";
     private const string ResumeId = "11111111-1111-4111-8111-111111111111";
 
-    private static ClaudeAgentSdkClient NewClient() =>
-        new(new ClaudeAgentSdkOptions());
+    private static ClaudeAgentSdkClient NewClient() => new(new ClaudeAgentSdkOptions());
 
     [Fact]
     public void BuildCliArguments_EmitsSessionIdFlag_WhenAssignedSessionIdSetAndSessionIdEmpty()
     {
         var client = NewClient();
-        var request = new ClaudeAgentSdkRequest
-        {
-            ModelId = "claude-sonnet-4-6",
-            AssignedSessionId = AssignedId,
-        };
+        var request = new ClaudeAgentSdkRequest { ModelId = "claude-sonnet-4-6", AssignedSessionId = AssignedId };
 
         var args = client.BuildCliArguments(request);
 
@@ -68,11 +63,7 @@ public class ClaudeAgentSdkClientAssignSessionIdArgsTests
     public void BuildCliArgumentTokens_EmitsTokenPair_WhenAssignedSessionIdSet()
     {
         var client = NewClient();
-        var request = new ClaudeAgentSdkRequest
-        {
-            ModelId = "claude-sonnet-4-6",
-            AssignedSessionId = AssignedId,
-        };
+        var request = new ClaudeAgentSdkRequest { ModelId = "claude-sonnet-4-6", AssignedSessionId = AssignedId };
 
         var tokens = client.BuildCliArgumentTokens(request);
 

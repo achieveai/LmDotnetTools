@@ -44,14 +44,17 @@ public class SubAgentSpawnSuppressionTests
         advertisedPerCall.Should().HaveCount(3, "each run should have produced exactly one model call");
 
         advertisedPerCall[0].Should().Contain("Agent", "a normal turn may spawn sub-agents");
-        advertisedPerCall[1].Should().NotContain(
-            "Agent", "the suppressed input must not advertise a way to start new sub-agents");
-        advertisedPerCall[2].Should().Contain(
-            "Agent", "suppression is scoped to its own run and released afterwards");
+        advertisedPerCall[1]
+            .Should()
+            .NotContain("Agent", "the suppressed input must not advertise a way to start new sub-agents");
+        advertisedPerCall[2].Should().Contain("Agent", "suppression is scoped to its own run and released afterwards");
 
-        advertisedPerCall.Should().AllSatisfy(
-            names => names.Should().Contain(["SendMessage", "CheckAgent"]),
-            "reading from and following up with EXISTING sub-agents is never suppressed");
+        advertisedPerCall
+            .Should()
+            .AllSatisfy(
+                names => names.Should().Contain(["SendMessage", "CheckAgent"]),
+                "reading from and following up with EXISTING sub-agents is never suppressed"
+            );
 
         await cts.CancelAsync();
     }
@@ -73,9 +76,12 @@ public class SubAgentSpawnSuppressionTests
         var messages = await DrainAsync(loop, NewInput("go", suppressSpawning: true), cts.Token);
 
         var results = messages.OfType<ToolCallResultMessage>().ToList();
-        results.Should().Contain(
-            r => r.ToolName == "Agent" && r.IsError && r.Result.Contains("not available for this turn"),
-            "the Agent handler must refuse a replayed spawn on a suppressed run");
+        results
+            .Should()
+            .Contain(
+                r => r.ToolName == "Agent" && r.IsError && r.Result.Contains("not available for this turn"),
+                "the Agent handler must refuse a replayed spawn on a suppressed run"
+            );
         spawnAttempts.Should().Be(0, "no sub-agent should have been started");
 
         await cts.CancelAsync();
@@ -97,7 +103,8 @@ public class SubAgentSpawnSuppressionTests
         var registry = new FunctionRegistry();
         _ = registry.AddFunction(
             Contract("ping"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("pong")));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("pong"))
+        );
 
         // Turn 1 calls a tool (so the run continues to turn 2) and, while that turn is still executing,
         // the suppressed input is queued — exactly the race. Turn 2 then drains and injects it.
@@ -126,7 +133,8 @@ public class SubAgentSpawnSuppressionTests
                         Role = Role.Assistant,
                     },
                 ];
-            });
+            }
+        );
 
         await using var created = CreateLoop(parent, registry: registry);
         loop = created;
@@ -137,15 +145,15 @@ public class SubAgentSpawnSuppressionTests
 
         advertisedPerCall.Should().HaveCount(2, "the tool call should have driven a second turn");
         advertisedPerCall[0].Should().Contain("Agent", "the run started unsuppressed");
-        advertisedPerCall[1].Should().NotContain(
-            "Agent",
-            "the turn that first sees the injected input must already have lost the spawn tool");
-        advertisedPerCall[1].Should().Contain(
-            ["SendMessage", "CheckAgent"], "only spawning is suppressed");
+        advertisedPerCall[1]
+            .Should()
+            .NotContain("Agent", "the turn that first sees the injected input must already have lost the spawn tool");
+        advertisedPerCall[1].Should().Contain(["SendMessage", "CheckAgent"], "only spawning is suppressed");
 
         injectedReceipt.Should().NotBeNull();
-        injectedReceipt!.SpawningSuppressed.Should().BeTrue(
-            "this loop enforces the flag, so its receipt may promise the guarantee");
+        injectedReceipt!
+            .SpawningSuppressed.Should()
+            .BeTrue("this loop enforces the flag, so its receipt may promise the guarantee");
 
         // The latch is released with the run, but disposal happens on the producer's continuation
         // AFTER DrainAsync observes the terminal message — so a later turn getting the tool back is
@@ -154,7 +162,8 @@ public class SubAgentSpawnSuppressionTests
         await WaitForConditionAsync(
             () => created.SubAgentTools!.GetFunctions().Select(f => f.Contract.Name).Contains("Agent"),
             "the run-scoped suppression was disposed once the run ended, putting the Agent tool back",
-            cts.Token);
+            cts.Token
+        );
 
         await cts.CancelAsync();
     }
@@ -169,17 +178,17 @@ public class SubAgentSpawnSuppressionTests
     public async Task Suppression_survives_a_deferral_pause_into_the_resumed_run()
     {
         var advertisedPerCall = new List<IReadOnlyList<string>>();
-        var resumedTurnStarted = new TaskCompletionSource<bool>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumedTurnStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var parent = RecordingParent(
             advertisedPerCall,
-            turn => turn == 1
-                ? [DeferringToolCall()]
-
-                // Signalled AFTER the resumed turn's contracts were recorded, so the assertion below
-                // never races the model call it is about.
-                : Answer(resumedTurnStarted));
+            turn =>
+                turn == 1
+                    ? [DeferringToolCall()]
+                    // Signalled AFTER the resumed turn's contracts were recorded, so the assertion below
+                    // never races the model call it is about.
+                    : Answer(resumedTurnStarted)
+        );
 
         await using var loop = CreateLoop(parent, registry: DeferringRegistry());
         using var cts = new CancellationTokenSource();
@@ -193,9 +202,12 @@ public class SubAgentSpawnSuppressionTests
         await resumedTurnStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), cts.Token);
 
         advertisedPerCall.Should().HaveCount(2);
-        advertisedPerCall.Should().AllSatisfy(
-            names => names.Should().NotContain("Agent"),
-            "the resumed run continues the suppressed run and must not regain the spawn tool");
+        advertisedPerCall
+            .Should()
+            .AllSatisfy(
+                names => names.Should().NotContain("Agent"),
+                "the resumed run continues the suppressed run and must not regain the spawn tool"
+            );
 
         await cts.CancelAsync();
     }
@@ -209,11 +221,13 @@ public class SubAgentSpawnSuppressionTests
     public async Task Suppression_is_released_when_the_run_fails()
     {
         var mock = new Mock<IStreamingAgent>();
-        _ = mock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+        _ = mock.Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ThrowsAsync(new InvalidOperationException("provider rejected the request"));
 
         await using var loop = CreateLoop(mock.Object);
@@ -231,7 +245,8 @@ public class SubAgentSpawnSuppressionTests
         await WaitForConditionAsync(
             () => loop.SubAgentTools!.GetFunctions().Select(f => f.Contract.Name).Contains("Agent"),
             "the failed run released its suppression scope, putting the Agent tool back",
-            cts.Token);
+            cts.Token
+        );
 
         await cts.CancelAsync();
     }
@@ -250,11 +265,14 @@ public class SubAgentSpawnSuppressionTests
         using var cts = new CancellationTokenSource();
 
         var beforeRestart = new List<IReadOnlyList<string>>();
-        await using (var first = CreateLoop(
-            RecordingParent(beforeRestart, _ => [DeferringToolCall()]),
-            registry: DeferringRegistry(),
-            store: store,
-            threadId: threadId))
+        await using (
+            var first = CreateLoop(
+                RecordingParent(beforeRestart, _ => [DeferringToolCall()]),
+                registry: DeferringRegistry(),
+                store: store,
+                threadId: threadId
+            )
+        )
         {
             _ = first.RunAsync(cts.Token);
             _ = await DrainAsync(first, NewInput("synthesize", suppressSpawning: true), cts.Token);
@@ -266,22 +284,26 @@ public class SubAgentSpawnSuppressionTests
                 threadId,
                 history => history.OfType<ToolCallResultMessage>().Any(r => r.IsDeferred),
                 "the deferral was persisted, so a restart has something to restore",
-                cts.Token);
+                cts.Token
+            );
         }
 
-        beforeRestart.Should().ContainSingle().Which.Should().NotContain(
-            "Agent", "the run that took the input was suppressed before the restart");
+        beforeRestart
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .NotContain("Agent", "the run that took the input was suppressed before the restart");
 
         // Restart: a brand-new loop over the same store, with nothing carried in memory.
         var afterRestart = new List<IReadOnlyList<string>>();
-        var resumedTurnStarted = new TaskCompletionSource<bool>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumedTurnStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         await using var second = CreateLoop(
             RecordingParent(afterRestart, _ => Answer(resumedTurnStarted)),
             registry: DeferringRegistry(),
             store: store,
-            threadId: threadId);
+            threadId: threadId
+        );
 
         _ = await second.RecoverAsync(cts.Token);
         _ = second.RunAsync(cts.Token);
@@ -289,14 +311,16 @@ public class SubAgentSpawnSuppressionTests
         // Precondition, not the subject: without the restored deferral there is no resumed run for the
         // suppression marker to apply to, and the assertion below would fail for the wrong reason.
         var restored = await second.GetDeferredToolCallsAsync(cts.Token);
-        _ = restored.Should().ContainSingle(
-            "the restart must restore the deferral the resume continues from");
+        _ = restored.Should().ContainSingle("the restart must restore the deferral the resume continues from");
 
         await second.ResolveToolCallAsync(DeferredToolCallId, "children settled");
         await resumedTurnStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), cts.Token);
 
-        afterRestart.Should().ContainSingle().Which.Should().NotContain(
-            "Agent", "the acknowledged guarantee must outlive the process that made it");
+        afterRestart
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .NotContain("Agent", "the acknowledged guarantee must outlive the process that made it");
 
         await cts.CancelAsync();
     }
@@ -308,11 +332,14 @@ public class SubAgentSpawnSuppressionTests
         var store = new InMemoryConversationStore();
         using var cts = new CancellationTokenSource();
 
-        await using (var first = CreateLoop(
-            RecordingParent([], _ => [DeferringToolCall()]),
-            registry: DeferringRegistry(),
-            store: store,
-            threadId: threadId))
+        await using (
+            var first = CreateLoop(
+                RecordingParent([], _ => [DeferringToolCall()]),
+                registry: DeferringRegistry(),
+                store: store,
+                threadId: threadId
+            )
+        )
         {
             _ = first.RunAsync(cts.Token);
             _ = await DrainAsync(first, NewInput("review"), cts.Token);
@@ -321,27 +348,33 @@ public class SubAgentSpawnSuppressionTests
                 threadId,
                 history => history.OfType<ToolCallResultMessage>().Any(r => r.IsDeferred),
                 "the deferral was persisted",
-                cts.Token);
+                cts.Token
+            );
         }
 
         await using var second = CreateLoop(
             RecordingParent([], _ => [new TextMessage { Text = "unused", Role = Role.Assistant }]),
             registry: DeferringRegistry(),
             store: store,
-            threadId: threadId);
+            threadId: threadId
+        );
         _ = await second.RecoverAsync(cts.Token);
         _ = second.RunAsync(cts.Token);
 
         var receipt = await second.TrySendAsync(
             new UserInput(
-                [new NotifyMessage
-                {
-                    NotifyKind = NotifyKinds.SubAgentCompletion,
-                    Label = "researcher",
-                    Detail = "child settled",
-                }],
-                SuppressSubAgentSpawning: true),
-            cts.Token);
+                [
+                    new NotifyMessage
+                    {
+                        NotifyKind = NotifyKinds.SubAgentCompletion,
+                        Label = "researcher",
+                        Detail = "child settled",
+                    },
+                ],
+                SuppressSubAgentSpawning: true
+            ),
+            cts.Token
+        );
         receipt!.SpawningSuppressed.Should().BeTrue();
 
         await WaitForPersistedAsync(
@@ -349,7 +382,8 @@ public class SubAgentSpawnSuppressionTests
             threadId,
             history => history.OfType<NotifyMessage>().Any(),
             "the notification was persisted under the restored parked run",
-            cts.Token);
+            cts.Token
+        );
 
         await cts.CancelAsync();
     }
@@ -366,22 +400,24 @@ public class SubAgentSpawnSuppressionTests
         const string threadId = "spawn-suppression-parked";
         var store = new InMemoryConversationStore();
         var advertisedPerCall = new List<IReadOnlyList<string>>();
-        var resumedTurnStarted = new TaskCompletionSource<bool>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumedTurnStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var parent = RecordingParent(
             advertisedPerCall,
-            turn => turn == 1 ? [DeferringToolCall()] : Answer(resumedTurnStarted));
+            turn => turn == 1 ? [DeferringToolCall()] : Answer(resumedTurnStarted)
+        );
 
-        await using var loop = CreateLoop(
-            parent, registry: DeferringRegistry(), store: store, threadId: threadId);
+        await using var loop = CreateLoop(parent, registry: DeferringRegistry(), store: store, threadId: threadId);
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
         // Run 1 is NOT suppressed and parks on the deferral.
         _ = await DrainAsync(loop, NewInput("review"), cts.Token);
-        advertisedPerCall.Should().ContainSingle().Which.Should().Contain(
-            "Agent", "the parked run started unsuppressed");
+        advertisedPerCall
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Contain("Agent", "the parked run started unsuppressed");
 
         var receipt = await loop.TrySendAsync(
             new UserInput(
@@ -393,11 +429,14 @@ public class SubAgentSpawnSuppressionTests
                         Detail = "child settled",
                     },
                 ],
-                SuppressSubAgentSpawning: true),
-            cts.Token);
+                SuppressSubAgentSpawning: true
+            ),
+            cts.Token
+        );
 
-        receipt!.SpawningSuppressed.Should().BeTrue(
-            "this loop enforces the flag, so accepting the input acknowledged the guarantee");
+        receipt!
+            .SpawningSuppressed.Should()
+            .BeTrue("this loop enforces the flag, so accepting the input acknowledged the guarantee");
 
         // The fold is observable through the store: it persists the notification under the parked run.
         await WaitForPersistedAsync(
@@ -405,15 +444,19 @@ public class SubAgentSpawnSuppressionTests
             threadId,
             history => history.OfType<NotifyMessage>().Any(),
             "the parked notification was folded into persisted history",
-            cts.Token);
+            cts.Token
+        );
 
         await loop.ResolveToolCallAsync(DeferredToolCallId, "children settled");
         await resumedTurnStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), cts.Token);
 
         advertisedPerCall.Should().HaveCount(2);
-        advertisedPerCall[1].Should().NotContain(
-            "Agent",
-            "the run that finally delivers the parked notification is the run its receipt was about");
+        advertisedPerCall[1]
+            .Should()
+            .NotContain(
+                "Agent",
+                "the run that finally delivers the parked notification is the run its receipt was about"
+            );
 
         await cts.CancelAsync();
     }
@@ -459,9 +502,7 @@ public class SubAgentSpawnSuppressionTests
     private const string DeferredToolCallId = "call_wait_1";
 
     private static UserInput NewInput(string text, bool suppressSpawning = false) =>
-        new(
-            [new TextMessage { Text = text, Role = Role.User }],
-            SuppressSubAgentSpawning: suppressSpawning);
+        new([new TextMessage { Text = text, Role = Role.User }], SuppressSubAgentSpawning: suppressSpawning);
 
     /// <summary>A registry whose single tool always defers, so a turn calling it parks the run.</summary>
     private static FunctionRegistry DeferringRegistry()
@@ -469,18 +510,20 @@ public class SubAgentSpawnSuppressionTests
         var registry = new FunctionRegistry();
         _ = registry.AddFunction(
             Contract("wait_for_children"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred())
+        );
         return registry;
     }
 
     /// <summary>The model turn that calls <see cref="DeferringRegistry"/>'s deferring tool.</summary>
-    private static ToolCallMessage DeferringToolCall() => new()
-    {
-        FunctionName = "wait_for_children",
-        FunctionArgs = "{}",
-        ToolCallId = DeferredToolCallId,
-        Role = Role.Assistant,
-    };
+    private static ToolCallMessage DeferringToolCall() =>
+        new()
+        {
+            FunctionName = "wait_for_children",
+            FunctionArgs = "{}",
+            ToolCallId = DeferredToolCallId,
+            Role = Role.Assistant,
+        };
 
     /// <summary>
     /// A plain-text answer that signals <paramref name="turnStarted"/> as it is produced — i.e. after the
@@ -509,16 +552,19 @@ public class SubAgentSpawnSuppressionTests
         string threadId,
         Func<IReadOnlyList<IMessage>, bool> condition,
         string because,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         return Wait.UntilAsync(
-            async () => condition(
-                MessagePersistenceConverter.FromPersistedMessages(
-                    await store.LoadMessagesAsync(threadId, ct))),
+            async () =>
+                condition(
+                    MessagePersistenceConverter.FromPersistedMessages(await store.LoadMessagesAsync(threadId, ct))
+                ),
             because,
             TimeSpan.FromSeconds(10),
             TimeSpan.FromMilliseconds(20),
-            cancellationToken: ct);
+            cancellationToken: ct
+        );
     }
 
     /// <summary>
@@ -528,17 +574,15 @@ public class SubAgentSpawnSuppressionTests
     /// unsynchronized events, so anything asserting on the disposal that continuation performs has to
     /// poll for it rather than check once immediately after the terminal message is observed.
     /// </summary>
-    private static Task WaitForConditionAsync(
-        Func<bool> condition,
-        string because,
-        CancellationToken ct)
+    private static Task WaitForConditionAsync(Func<bool> condition, string because, CancellationToken ct)
     {
         return Wait.UntilAsync(
             condition,
             because,
             TimeSpan.FromSeconds(10),
             TimeSpan.FromMilliseconds(20),
-            cancellationToken: ct);
+            cancellationToken: ct
+        );
     }
 
     private static MultiTurnAgentLoop CreateLoop(
@@ -546,17 +590,21 @@ public class SubAgentSpawnSuppressionTests
         Action? onSpawn = null,
         FunctionRegistry? registry = null,
         IConversationStore? store = null,
-        string threadId = "spawn-suppression-thread")
+        string threadId = "spawn-suppression-thread"
+    )
     {
         var subAgent = new Mock<IStreamingAgent>();
         _ = subAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.FromResult(ToAsyncEnumerable([
-                new TextMessage { Text = "child done", Role = Role.Assistant },
-            ])));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                Task.FromResult(ToAsyncEnumerable([new TextMessage { Text = "child done", Role = Role.Assistant }]))
+            );
 
         var options = new SubAgentOptions
         {
@@ -581,14 +629,13 @@ public class SubAgentSpawnSuppressionTests
             registry ?? new FunctionRegistry(),
             threadId: threadId,
             store: store,
-            subAgentOptions: options);
+            subAgentOptions: options
+        );
     }
 
     /// <summary>A parent that answers with plain text, recording the tool names it was offered each call.</summary>
     private static IStreamingAgent TextOnlyParent(List<IReadOnlyList<string>> advertisedPerCall) =>
-        RecordingParent(
-            advertisedPerCall,
-            _ => [new TextMessage { Text = "answer", Role = Role.Assistant }]);
+        RecordingParent(advertisedPerCall, _ => [new TextMessage { Text = "answer", Role = Role.Assistant }]);
 
     /// <summary>
     /// A parent that records the tool names it was offered on every call and replies with whatever
@@ -604,14 +651,17 @@ public class SubAgentSpawnSuppressionTests
     /// </summary>
     private static IStreamingAgent RecordingParent(
         List<IReadOnlyList<string>> advertisedPerCall,
-        Func<int, List<IMessage>> reply)
+        Func<int, List<IMessage>> reply
+    )
     {
         var mock = new Mock<IStreamingAgent>();
-        _ = mock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+        _ = mock.Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 (_, options, _) =>
                 {
@@ -622,54 +672,54 @@ public class SubAgentSpawnSuppressionTests
                         turn = advertisedPerCall.Count;
                     }
 
-                    return Task.FromResult(ToAsyncEnumerable(
-                        [.. reply(turn).Select(m => m.WithIds(options))]));
-                });
+                    return Task.FromResult(ToAsyncEnumerable([.. reply(turn).Select(m => m.WithIds(options))]));
+                }
+            );
         return mock.Object;
     }
 
-    private static FunctionContract Contract(string name) => new()
-    {
-        Name = name,
-        Description = $"Test contract for {name}",
-        Parameters = [],
-    };
+    private static FunctionContract Contract(string name) =>
+        new()
+        {
+            Name = name,
+            Description = $"Test contract for {name}",
+            Parameters = [],
+        };
 
     /// <summary>A parent that calls <c>Agent</c> on its first turn (as if replaying history) then answers.</summary>
     private static IStreamingAgent SpawnThenTextParent()
     {
         var calls = 0;
         var mock = new Mock<IStreamingAgent>();
-        _ = mock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+        _ = mock.Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (_, _, _) => Task.FromResult(Interlocked.Increment(ref calls) == 1
-                        ? ToAsyncEnumerable([
-                            new ToolCallMessage
-                            {
-                                FunctionName = "Agent",
-                                FunctionArgs = JsonSerializer.Serialize(new
+                (_, _, _) =>
+                    Task.FromResult(
+                        Interlocked.Increment(ref calls) == 1
+                            ? ToAsyncEnumerable([
+                                new ToolCallMessage
                                 {
-                                    subagent_type = "researcher",
-                                    prompt = "Research the topic",
-                                }),
-                                ToolCallId = "call_agent_1",
-                                Role = Role.Assistant,
-                            },
-                        ])
-                        : ToAsyncEnumerable([
-                            new TextMessage { Text = "answer", Role = Role.Assistant },
-                        ])));
+                                    FunctionName = "Agent",
+                                    FunctionArgs = JsonSerializer.Serialize(
+                                        new { subagent_type = "researcher", prompt = "Research the topic" }
+                                    ),
+                                    ToolCallId = "call_agent_1",
+                                    Role = Role.Assistant,
+                                },
+                            ])
+                            : ToAsyncEnumerable([new TextMessage { Text = "answer", Role = Role.Assistant }])
+                    )
+            );
         return mock.Object;
     }
 
-    private static async Task<List<IMessage>> DrainAsync(
-        MultiTurnAgentLoop loop,
-        UserInput input,
-        CancellationToken ct)
+    private static async Task<List<IMessage>> DrainAsync(MultiTurnAgentLoop loop, UserInput input, CancellationToken ct)
     {
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(input, ct))
@@ -682,7 +732,8 @@ public class SubAgentSpawnSuppressionTests
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         List<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

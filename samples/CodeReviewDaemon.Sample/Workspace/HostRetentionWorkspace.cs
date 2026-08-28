@@ -10,4 +10,5 @@ namespace CodeReviewDaemon.Sample.Workspace;
 internal sealed record HostRetentionWorkspace(
     ISandboxCommandRunner Git,
     ISandboxFileSystem FileSystem,
-    string RepoRoot);
+    string RepoRoot
+);

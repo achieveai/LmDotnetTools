@@ -125,25 +125,24 @@ public static class ControllerSystemPrompt
     // reads the shape rather than guessing it. SetWorkflow rejects unknown/misspelled fields by name.
     private static readonly string AuthoringGuide =
         """
-        AUTHORING A WORKFLOW (the SetWorkflow definition shape)
-        A definition is an object with an "objective" (string) and a "nodes" array. Each node has an
-        "id", a "type" (start | procedural | conditional | terminal), and a "title". Use these EXACT
-        field names — SetWorkflow rejects unknown or misspelled fields by name, so do not invent
-        synonyms:
-        - A node's onward edges go in "next" (an array of node ids). start has exactly one; procedural
-          has at least one.
-        - A procedural node's tasks go in "taskList" (NOT "tasks", "task", or "units").
-        - Each task needs "id", "subagent_type" (snake_case — NOT "agentType"/"agent_type"), and
-          "promptTemplate". Optionally "writes": { "to": "state.<path>", "mode": "set|append|merge" } and
-          "modelIntelligence" (an integer tier, ascending capability, 0 = cheapest) to size the delegate's
-          model — omit it to let the delegate keep its own default model.
-        - A conditional node needs "branches" (each { "when": <cond>, "to": <nodeId> }) and a non-empty
-          "else". A terminal node may carry a "resultTemplate".
+            AUTHORING A WORKFLOW (the SetWorkflow definition shape)
+            A definition is an object with an "objective" (string) and a "nodes" array. Each node has an
+            "id", a "type" (start | procedural | conditional | terminal), and a "title". Use these EXACT
+            field names — SetWorkflow rejects unknown or misspelled fields by name, so do not invent
+            synonyms:
+            - A node's onward edges go in "next" (an array of node ids). start has exactly one; procedural
+              has at least one.
+            - A procedural node's tasks go in "taskList" (NOT "tasks", "task", or "units").
+            - Each task needs "id", "subagent_type" (snake_case — NOT "agentType"/"agent_type"), and
+              "promptTemplate". Optionally "writes": { "to": "state.<path>", "mode": "set|append|merge" } and
+              "modelIntelligence" (an integer tier, ascending capability, 0 = cheapest) to size the delegate's
+              model — omit it to let the delegate keep its own default model.
+            - A conditional node needs "branches" (each { "when": <cond>, "to": <nodeId> }) and a non-empty
+              "else". A terminal node may carry a "resultTemplate".
 
-        Worked example — a start → procedural (one agent task) → terminal workflow. Copy this shape:
+            Worked example — a start → procedural (one agent task) → terminal workflow. Copy this shape:
 
-        """
-        + WorkflowExamples.MinimalProcedural;
+            """ + WorkflowExamples.MinimalProcedural;
 
     /// <summary>The default controller system prompt. See the type remarks for what it covers.</summary>
     // Declared last: static field initializers run in textual order, so both Body and AuthoringGuide

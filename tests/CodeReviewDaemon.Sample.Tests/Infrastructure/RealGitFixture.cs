@@ -54,9 +54,12 @@ internal sealed class RealGitFixture : IDisposable
             root,
             new HostGitCommandRunner(
                 _ => Task.FromResult<IReadOnlyList<GitProviderToken>>([]),
-                NullLogger<HostGitCommandRunner>.Instance));
+                NullLogger<HostGitCommandRunner>.Instance
+            )
+        );
 
-        await fixture.GitAsync(root, cancellationToken, "init", "--bare", "--initial-branch=main", "origin.git")
+        await fixture
+            .GitAsync(root, cancellationToken, "init", "--bare", "--initial-branch=main", "origin.git")
             .ConfigureAwait(false);
         return fixture;
     }
@@ -83,24 +86,31 @@ internal sealed class RealGitFixture : IDisposable
     public async Task<string> GitAsync(
         string workingDirectory,
         CancellationToken cancellationToken,
-        params string[] args)
+        params string[] args
+    )
     {
         string[] argv =
         [
             "git",
-            "-c", "protocol.file.allow=always",
-            "-c", "core.longpaths=true",
-            "-c", "user.name=Fixture",
-            "-c", "user.email=fixture@achieveai.local",
+            "-c",
+            "protocol.file.allow=always",
+            "-c",
+            "core.longpaths=true",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@achieveai.local",
             .. args,
         ];
-        var result = await _hostGit.RunAsync(new SandboxCommand(argv, workingDirectory), cancellationToken)
+        var result = await _hostGit
+            .RunAsync(new SandboxCommand(argv, workingDirectory), cancellationToken)
             .ConfigureAwait(false);
         return result.Succeeded
             ? result.Stdout
             : throw new InvalidOperationException(
                 $"fixture git '{string.Join(' ', args)}' in '{workingDirectory}' exited {result.ExitCode}: "
-                    + $"{result.Stderr}{result.Stdout}");
+                    + $"{result.Stderr}{result.Stdout}"
+            );
     }
 
     /// <summary>Writes a file under <paramref name="repoPath"/>, creating parent directories.</summary>
@@ -159,7 +169,8 @@ internal sealed class RealGitFixture : IDisposable
                 {
                     Console.WriteLine(
                         $"RealGitFixture: could not delete temp tree '{path}' after {LastAttempt + 1} attempts "
-                            + $"({ex.GetType().Name}: {ex.Message}). Leaking it rather than throwing out of Dispose.");
+                            + $"({ex.GetType().Name}: {ex.Message}). Leaking it rather than throwing out of Dispose."
+                    );
                     return;
                 }
 
@@ -205,7 +216,8 @@ internal sealed class RealGitFixture : IDisposable
                 .. command.Argv.Select(a =>
                     string.Equals(a, "protocol.file.allow=never", StringComparison.Ordinal)
                         ? "protocol.file.allow=always"
-                        : a),
+                        : a
+                ),
             ];
             return inner.RunAsync(new SandboxCommand(argv, command.WorkingDirectory), cancellationToken);
         }

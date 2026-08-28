@@ -324,10 +324,7 @@ public sealed class CharacteristicsAgentFactoryTests
     {
         var model = Model("owned-model", CopilotModelTransport.Responses, []);
         var ownedAgent = CreateRespondingDisposableAgent();
-        var factory = CreateFactory(
-            [model],
-            new Mock<IStreamingAgent>().Object,
-            _ => ownedAgent.Object);
+        var factory = CreateFactory([model], new Mock<IStreamingAgent>().Object, _ => ownedAgent.Object);
         var template = new SubAgentTemplate
         {
             SystemPrompt = "Test",
@@ -345,7 +342,8 @@ public sealed class CharacteristicsAgentFactoryTests
             [],
             new Dictionary<string, ToolHandler>(),
             options,
-            new MutableSubAgentTemplateSource(options.Templates));
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
 
         _ = await manager.SpawnAsync("test-agent", "test task");
         ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
@@ -362,11 +360,7 @@ public sealed class CharacteristicsAgentFactoryTests
         var firstOwnedAgent = CreateRespondingDisposableAgent();
         var secondOwnedAgent = CreateRespondingDisposableAgent();
         var createdAgents = new Queue<IStreamingAgent>([firstOwnedAgent.Object, secondOwnedAgent.Object]);
-        var factory = CreateFactory(
-            [model],
-            new Mock<IStreamingAgent>().Object,
-            _ => createdAgents.Dequeue()
-        );
+        var factory = CreateFactory([model], new Mock<IStreamingAgent>().Object, _ => createdAgents.Dequeue());
         var template = new SubAgentTemplate
         {
             SystemPrompt = "Test",
@@ -400,11 +394,7 @@ public sealed class CharacteristicsAgentFactoryTests
     {
         var model = Model("owned-model", CopilotModelTransport.Responses, []);
         var ownedAgent = CreateRespondingDisposableAgent();
-        var factory = CreateFactory(
-            [model],
-            new Mock<IStreamingAgent>().Object,
-            _ => ownedAgent.Object
-        );
+        var factory = CreateFactory([model], new Mock<IStreamingAgent>().Object, _ => ownedAgent.Object);
         var template = new SubAgentTemplate
         {
             SystemPrompt = "Test",
@@ -414,16 +404,17 @@ public sealed class CharacteristicsAgentFactoryTests
             CharacteristicsAgentFactory = factory.Create,
         };
         var relayStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var completeRelay = new TaskCompletionSource<SendReceipt>(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
+        var completeRelay = new TaskCompletionSource<SendReceipt>(TaskCreationOptions.RunContinuationsAsynchronously);
         var parent = new Mock<IMultiTurnAgent>();
         parent
-            .Setup(agent => agent.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(agent =>
+                agent.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Callback(() => relayStarted.TrySetResult())
             .Returns(new ValueTask<SendReceipt>(completeRelay.Task));
         var options = new SubAgentOptions
@@ -456,11 +447,7 @@ public sealed class CharacteristicsAgentFactoryTests
     {
         var model = Model("owned-model", CopilotModelTransport.Responses, []);
         var ownedAgent = CreateRespondingDisposableAgent();
-        var factory = CreateFactory(
-            [model],
-            new Mock<IStreamingAgent>().Object,
-            _ => ownedAgent.Object
-        );
+        var factory = CreateFactory([model], new Mock<IStreamingAgent>().Object, _ => ownedAgent.Object);
         var template = new SubAgentTemplate
         {
             SystemPrompt = "Test",
@@ -508,7 +495,8 @@ public sealed class CharacteristicsAgentFactoryTests
             [],
             new Dictionary<string, ToolHandler>(),
             options,
-            new MutableSubAgentTemplateSource(options.Templates));
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
 
         _ = await manager.SpawnAsync("test-agent", "test task");
         await manager.DisposeAsync();
@@ -521,10 +509,7 @@ public sealed class CharacteristicsAgentFactoryTests
     {
         var model = Model("owned-model", CopilotModelTransport.Responses, []);
         var ownedAgent = CreateRespondingSyncDisposableAgent();
-        var factory = CreateFactory(
-            [model],
-            new Mock<IStreamingAgent>().Object,
-            _ => ownedAgent.Object);
+        var factory = CreateFactory([model], new Mock<IStreamingAgent>().Object, _ => ownedAgent.Object);
         var template = new SubAgentTemplate
         {
             SystemPrompt = "Test",
@@ -542,7 +527,8 @@ public sealed class CharacteristicsAgentFactoryTests
             [],
             new Dictionary<string, ToolHandler>(),
             options,
-            new MutableSubAgentTemplateSource(options.Templates));
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
 
         _ = await manager.SpawnAsync("test-agent", "test task");
         ownedAgent.As<IDisposable>().Verify(agent => agent.Dispose(), Times.Once);
@@ -568,10 +554,7 @@ public sealed class CharacteristicsAgentFactoryTests
                     ? throw new InvalidOperationException("owned provider dispose boom")
                     : ValueTask.CompletedTask;
             });
-        var factory = CreateFactory(
-            [model],
-            new Mock<IStreamingAgent>().Object,
-            _ => ownedAgent.Object);
+        var factory = CreateFactory([model], new Mock<IStreamingAgent>().Object, _ => ownedAgent.Object);
         var template = new SubAgentTemplate
         {
             SystemPrompt = "Test",
@@ -589,7 +572,8 @@ public sealed class CharacteristicsAgentFactoryTests
             [],
             new Dictionary<string, ToolHandler>(),
             options,
-            new MutableSubAgentTemplateSource(options.Templates));
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
 
         // The completion-time disposal throws, but must not permanently latch the guard: a later
         // cleanup (manager dispose) retries and succeeds, so the provider is not leaked.
@@ -616,10 +600,7 @@ public sealed class CharacteristicsAgentFactoryTests
                     throw new InvalidOperationException("owned provider sync dispose boom");
                 }
             });
-        var factory = CreateFactory(
-            [model],
-            new Mock<IStreamingAgent>().Object,
-            _ => ownedAgent.Object);
+        var factory = CreateFactory([model], new Mock<IStreamingAgent>().Object, _ => ownedAgent.Object);
         var template = new SubAgentTemplate
         {
             SystemPrompt = "Test",
@@ -637,7 +618,8 @@ public sealed class CharacteristicsAgentFactoryTests
             [],
             new Dictionary<string, ToolHandler>(),
             options,
-            new MutableSubAgentTemplateSource(options.Templates));
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
 
         // The completion-time SYNCHRONOUS (IDisposable) disposal throws, but must not permanently latch
         // the guard: a later cleanup (manager dispose) retries the IDisposable branch and succeeds, so
@@ -658,10 +640,7 @@ public sealed class CharacteristicsAgentFactoryTests
             .As<IAsyncDisposable>()
             .Setup(disposable => disposable.DisposeAsync())
             .Throws(new InvalidOperationException("store dispose boom"));
-        var factory = CreateFactory(
-            [model],
-            new Mock<IStreamingAgent>().Object,
-            _ => ownedAgent.Object);
+        var factory = CreateFactory([model], new Mock<IStreamingAgent>().Object, _ => ownedAgent.Object);
         var template = new SubAgentTemplate
         {
             SystemPrompt = "Test",

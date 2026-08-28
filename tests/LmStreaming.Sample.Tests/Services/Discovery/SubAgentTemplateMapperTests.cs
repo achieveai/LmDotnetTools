@@ -30,8 +30,9 @@ public class SubAgentTemplateMapperTests
     {
         var template = SubAgentTemplateMapper.Map(Parsed(model), AgentFactory, maxTurnsPerRun: 25);
 
-        template.DefaultOptions.Should().BeNull(
-            "'inherit'/blank means inherit the parent model, not send a literal unsupported model id");
+        template
+            .DefaultOptions.Should()
+            .BeNull("'inherit'/blank means inherit the parent model, not send a literal unsupported model id");
         template.IsModelExplicitlySelected.Should().BeFalse();
     }
 

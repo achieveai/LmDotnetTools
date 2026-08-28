@@ -44,8 +44,7 @@ public readonly record struct ToolApprovalVerdict
     /// (<see cref="ToolApprovalOutcomes.Denied"/>).
     /// </summary>
     /// <param name="reason">Optional detail explaining the refusal.</param>
-    public static ToolApprovalVerdict Deny(string? reason = null) =>
-        new(ToolApprovalOutcomes.Denied, reason);
+    public static ToolApprovalVerdict Deny(string? reason = null) => new(ToolApprovalOutcomes.Denied, reason);
 
     /// <summary>
     /// Refuses the call with a specific code — used by hosts whose policies distinguish
@@ -55,6 +54,5 @@ public readonly record struct ToolApprovalVerdict
     /// </summary>
     /// <param name="outcome">A blocking code from <see cref="ToolApprovalOutcomes"/>.</param>
     /// <param name="reason">Optional detail explaining the refusal.</param>
-    public static ToolApprovalVerdict Blocked(string outcome, string? reason = null) =>
-        new(outcome, reason);
+    public static ToolApprovalVerdict Blocked(string outcome, string? reason = null) => new(outcome, reason);
 }

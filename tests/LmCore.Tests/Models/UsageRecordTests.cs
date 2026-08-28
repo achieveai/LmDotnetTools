@@ -75,7 +75,8 @@ public class UsageRecordTests
         // before OccurredAtUtc existed simply lack the property. A non-nullable DateTimeOffset would
         // deserialize those to 0001-01-01 and silently drop them into a rollup bucket; null keeps
         // "unknown" honest and forces the rollup to handle it.
-        const string legacyJson = @"{
+        const string legacyJson =
+            @"{
               ""LogicalCallId"": ""call-1"",
               ""ProviderAttemptId"": ""attempt-1"",
               ""Revision"": 7,

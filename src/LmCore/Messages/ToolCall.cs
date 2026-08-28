@@ -48,7 +48,8 @@ public readonly record struct ToolCallResult
     public ToolCallResult(
         string? toolCallId,
         string result,
-        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction)
+        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction
+    )
     {
         ToolCallId = toolCallId;
         Result = result;
@@ -66,7 +67,8 @@ public readonly record struct ToolCallResult
         string? toolCallId,
         string result,
         IList<ToolResultContentBlock>? contentBlocks,
-        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction)
+        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction
+    )
     {
         ToolCallId = toolCallId;
         Result = result;
@@ -272,7 +274,8 @@ public record ToolCallResultMessage : IMessage
         string? threadId = null,
         string? runId = null,
         string? parentRunId = null,
-        int? messageOrderIdx = null)
+        int? messageOrderIdx = null
+    )
     {
         return new ToolCallResultMessage
         {

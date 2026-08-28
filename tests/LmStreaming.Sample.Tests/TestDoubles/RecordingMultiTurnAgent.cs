@@ -50,7 +50,8 @@ internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent, IAcceptanceRepo
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         // Before the report, standing in for every way a real send fails ahead of minting an
         // acceptance (a disposed agent, a failed durable accepted-input write): nothing is announced,
@@ -81,7 +82,8 @@ internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent, IAcceptanceRepo
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         return await SendAsync(messages, inputId, parentRunId, ct);
     }
@@ -89,15 +91,15 @@ internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent, IAcceptanceRepo
 #pragma warning disable CS1998, IDE0391
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         _ = userInput;
         _ = ct;
         yield break;
     }
 
-    public async IAsyncEnumerable<IMessage> SubscribeAsync(
-        [EnumeratorCancellation] CancellationToken ct = default)
+    public async IAsyncEnumerable<IMessage> SubscribeAsync([EnumeratorCancellation] CancellationToken ct = default)
     {
         _ = ct;
         yield break;

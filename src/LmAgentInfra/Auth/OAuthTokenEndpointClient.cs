@@ -8,7 +8,12 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 /// <param name="RefreshToken">A rotated <c>refresh_token</c>, or null when the endpoint did not return one.</param>
 /// <param name="ExpiresIn">The <c>expires_in</c> lifetime in seconds, or 0 when absent.</param>
 /// <param name="Error">The OAuth <c>error</c> code (or a synthetic transport error), or null on success.</param>
-internal sealed record OAuthTokenEndpointResponse(string? AccessToken, string? RefreshToken, int ExpiresIn, string? Error);
+internal sealed record OAuthTokenEndpointResponse(
+    string? AccessToken,
+    string? RefreshToken,
+    int ExpiresIn,
+    string? Error
+);
 
 /// <summary>
 /// Minimal OAuth2 token-endpoint client: form-POSTs a grant to a configurable token endpoint
@@ -31,7 +36,8 @@ internal sealed class OAuthTokenEndpointClient(HttpClient http)
     public async Task<OAuthTokenEndpointResponse> PostAsync(
         string tokenEndpoint,
         IReadOnlyDictionary<string, string> form,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tokenEndpoint);
         ArgumentNullException.ThrowIfNull(form);
@@ -63,7 +69,8 @@ internal sealed class OAuthTokenEndpointClient(HttpClient http)
                 var root = doc.RootElement;
                 accessToken = root.TryGetProperty("access_token", out var at) ? at.GetString() : null;
                 refreshToken = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null;
-                expiresIn = root.TryGetProperty("expires_in", out var ei) && ei.TryGetInt32(out var seconds) ? seconds : 0;
+                expiresIn =
+                    root.TryGetProperty("expires_in", out var ei) && ei.TryGetInt32(out var seconds) ? seconds : 0;
                 error = root.TryGetProperty("error", out var er) ? er.GetString() : null;
             }
             catch (Exception ex) when (ex is JsonException or InvalidOperationException)

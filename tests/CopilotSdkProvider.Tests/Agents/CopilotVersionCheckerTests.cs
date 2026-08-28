@@ -59,8 +59,7 @@ public class CopilotVersionCheckerTests
     [InlineData("0.0.409", "0.0.410", -1)]
     [InlineData("1.2.0", "1.1.0", 1)]
     [InlineData("1.1.0", "1.2.0", -1)]
-    public void CompareVersion_ReturnsCorrectOrdering(
-        string left, string right, int expectedSign)
+    public void CompareVersion_ReturnsCorrectOrdering(string left, string right, int expectedSign)
     {
         var result = CopilotVersionChecker.CompareVersion(left, right);
         result.Should().Be(expectedSign);

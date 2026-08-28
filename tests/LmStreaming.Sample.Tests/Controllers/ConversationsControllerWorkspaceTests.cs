@@ -18,7 +18,8 @@ public class ConversationsControllerWorkspaceTests
     {
         var thread = ThreadWithProperties(
             "thread-ws",
-            ImmutableDictionary<string, object>.Empty.SetItem(MultiTurnAgentPool.WorkspacePropertyKey, "ws-7"));
+            ImmutableDictionary<string, object>.Empty.SetItem(MultiTurnAgentPool.WorkspacePropertyKey, "ws-7")
+        );
 
         await using var pool = CreatePool();
         var controller = CreateController(pool, thread);
@@ -34,7 +35,8 @@ public class ConversationsControllerWorkspaceTests
     {
         var thread = ThreadWithProperties(
             "thread-legacy",
-            ImmutableDictionary<string, object>.Empty.SetItem("title", "Legacy chat"));
+            ImmutableDictionary<string, object>.Empty.SetItem("title", "Legacy chat")
+        );
 
         await using var pool = CreatePool();
         var controller = CreateController(pool, thread);
@@ -52,7 +54,10 @@ public class ConversationsControllerWorkspaceTests
         return [.. Assert.IsAssignableFrom<IEnumerable<ConversationSummary>>(ok.Value)];
     }
 
-    private static ThreadMetadata ThreadWithProperties(string threadId, ImmutableDictionary<string, object> properties) =>
+    private static ThreadMetadata ThreadWithProperties(
+        string threadId,
+        ImmutableDictionary<string, object> properties
+    ) =>
         new()
         {
             ThreadId = threadId,
@@ -64,11 +69,14 @@ public class ConversationsControllerWorkspaceTests
     {
         var store = new Mock<IConversationStore>();
         store
-            .Setup(s => s.ListThreadsAsync(
-                It.IsAny<int>(),
-                It.IsAny<int>(),
-                It.IsAny<ConversationListOptions?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(s =>
+                s.ListThreadsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<ConversationListOptions?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(threads);
 
         return new ConversationsController(
@@ -84,15 +92,16 @@ public class ConversationsControllerWorkspaceTests
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
-            new ConversationDescendantScanner(
-                store.Object,
-                NullLogger<ConversationDescendantScanner>.Instance));
+            new ConversationDescendantScanner(store.Object, NullLogger<ConversationDescendantScanner>.Instance)
+        );
     }
 
     private static MultiTurnAgentPool CreatePool()
     {
         return new MultiTurnAgentPool(
-            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new TestDoubles.FakeMultiTurnAgent(threadId)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            (threadId, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(new TestDoubles.FakeMultiTurnAgent(threadId)),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
     }
 }

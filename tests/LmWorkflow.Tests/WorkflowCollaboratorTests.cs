@@ -52,7 +52,12 @@ public class WorkflowCollaboratorTests
     [Fact]
     public void Build_ProceduralAllJoin_AllValidated_IsSatisfiedAndOmitsOnFailure()
     {
-        var node = new ProceduralNode { Id = "work", Title = "Work", Next = [] };
+        var node = new ProceduralNode
+        {
+            Id = "work",
+            Title = "Work",
+            Next = [],
+        };
         var result = WorkflowProjectionBuilder.Build(
             Inputs(
                 currentNodeId: "work",
@@ -92,10 +97,7 @@ public class WorkflowCollaboratorTests
             Inputs(
                 currentNodeId: "work",
                 activeNode: node,
-                statuses: new Dictionary<string, WorkflowTaskStatus>
-                {
-                    ["work:1:a"] = WorkflowTaskStatus.Failed,
-                },
+                statuses: new Dictionary<string, WorkflowTaskStatus> { ["work:1:a"] = WorkflowTaskStatus.Failed },
                 activeUnits: [new ProjectionActiveUnit { Name = "work:1:a", OnFailure = "unit-route" }]
             )
         );
@@ -128,7 +130,12 @@ public class WorkflowCollaboratorTests
     [Fact]
     public void Build_VisitCeiling_SurfacesWhenEnteredCountReachesMax()
     {
-        var node = new ProceduralNode { Id = "work", Title = "Work", Next = [] };
+        var node = new ProceduralNode
+        {
+            Id = "work",
+            Title = "Work",
+            Next = [],
+        };
         var result = WorkflowProjectionBuilder.Build(
             Inputs(
                 currentNodeId: "work",
@@ -153,9 +160,7 @@ public class WorkflowCollaboratorTests
             MaxStepBudget = 1,
             OnBudgetExhausted = "esc",
         };
-        var result = WorkflowProjectionBuilder.Build(
-            Inputs(currentNodeId: "start", step: 1, definition: definition)
-        );
+        var result = WorkflowProjectionBuilder.Build(Inputs(currentNodeId: "start", step: 1, definition: definition));
 
         result["budgetExhausted"]!.GetValue<bool>().Should().BeTrue();
         result["onBudgetExhausted"]!.GetValue<string>().Should().Be("esc");
@@ -203,8 +208,7 @@ public class WorkflowCollaboratorTests
 
     // --- helpers ----------------------------------------------------------------------------------------
 
-    private static WorkflowInstanceSnapshot Snapshot(string instanceId) =>
-        new() { InstanceId = instanceId };
+    private static WorkflowInstanceSnapshot Snapshot(string instanceId) => new() { InstanceId = instanceId };
 
     private static ProjectionInputs Inputs(
         string? currentNodeId = null,
@@ -282,13 +286,10 @@ public class WorkflowCollaboratorTests
             }
         }
 
-        public Task<WorkflowInstanceSnapshot?> LoadAsync(
-            string instanceId,
-            CancellationToken ct = default
-        ) => throw new NotSupportedException();
-
-        public Task DeleteAsync(string instanceId, CancellationToken ct = default) =>
+        public Task<WorkflowInstanceSnapshot?> LoadAsync(string instanceId, CancellationToken ct = default) =>
             throw new NotSupportedException();
+
+        public Task DeleteAsync(string instanceId, CancellationToken ct = default) => throw new NotSupportedException();
 
         public Task<IReadOnlyList<string>> ListAsync(CancellationToken ct = default) =>
             throw new NotSupportedException();

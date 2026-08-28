@@ -30,7 +30,8 @@ public static class ToolCallResultBuilder
         ToolHandlerResult result,
         string? toolCallId,
         string? toolName = null,
-        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction)
+        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction
+    )
     {
         return result switch
         {
@@ -38,23 +39,20 @@ public static class ToolCallResultBuilder
                 toolCallId,
                 r.Payload.Text,
                 r.Payload.ContentBlocks,
-                executionTarget)
+                executionTarget
+            )
             {
                 ToolName = toolName,
                 IsError = r.Payload.IsError,
                 ErrorCode = r.Payload.ErrorCode,
             },
-            ToolHandlerResult.Deferred => new ToolCallResult(
-                toolCallId,
-                string.Empty,
-                executionTarget)
+            ToolHandlerResult.Deferred => new ToolCallResult(toolCallId, string.Empty, executionTarget)
             {
                 ToolName = toolName,
                 IsDeferred = true,
                 DeferredAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             },
-            _ => throw new InvalidOperationException(
-                $"Unknown ToolHandlerResult variant '{result.GetType().Name}'."),
+            _ => throw new InvalidOperationException($"Unknown ToolHandlerResult variant '{result.GetType().Name}'."),
         };
     }
 }

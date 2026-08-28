@@ -56,7 +56,8 @@ public class SpawnNameGateTests
     {
         var json = Phase3Fixtures.LinearBlockingAgent.Replace(
             "\"subagent_type\": \"general-purpose\",",
-            "\"subagent_type\": \"general-purpose\", \"modelIntelligence\": 5,");
+            "\"subagent_type\": \"general-purpose\", \"modelIntelligence\": 5,"
+        );
         var runtime = new WorkflowRuntime();
         runtime.LoadDefinition(WorkflowJson.Deserialize(json));
         runtime.AdvanceTo("start", "analyze", null);
@@ -80,7 +81,9 @@ public class SpawnNameGateTests
         rejection
             .Should()
             .NotBeNull(because: "the bare node id is not a unit name and its result would be silently discarded");
-        rejection!.Should().Contain(unit, because: "the correction must hand the controller the exact name to re-issue");
+        rejection!
+            .Should()
+            .Contain(unit, because: "the correction must hand the controller the exact name to re-issue");
     }
 
     [Fact]
@@ -126,7 +129,9 @@ public class SpawnNameGateTests
         runtime
             .DescribeSpawnNameRejection(unit)
             .Should()
-            .BeNull(because: "an in-flight unit still correlates by name, so re-issuing its exact name must be allowed");
+            .BeNull(
+                because: "an in-flight unit still correlates by name, so re-issuing its exact name must be allowed"
+            );
     }
 
     [Fact]

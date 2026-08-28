@@ -69,10 +69,7 @@ internal sealed class FakeJudge : IJudge
                 JudgeId = JudgeId,
                 ModelId = ModelId,
                 ModelFamily = ModelFamily,
-                CriterionScores = rubric.Criteria.ToDictionary(
-                    c => c.CriterionId,
-                    _ => (int)Math.Round(_score)
-                ),
+                CriterionScores = rubric.Criteria.ToDictionary(c => c.CriterionId, _ => (int)Math.Round(_score)),
                 WeightedScore = _score,
                 Reasoning = $"{JudgeId} scored {_score}.",
                 Confidence = Confidence,

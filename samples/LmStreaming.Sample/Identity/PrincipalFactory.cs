@@ -63,12 +63,7 @@ public sealed class PrincipalFactory
     /// most needs a human-readable identifier for, and this value authorizes nothing. It must
     /// never be passed to <see cref="ITenantStore.TryBindFirstAdminAsync"/>.
     /// </summary>
-    private static readonly string[] DisplayUpnClaimTypes =
-    [
-        "preferred_username",
-        ClaimTypes.Upn,
-        ClaimTypes.Email,
-    ];
+    private static readonly string[] DisplayUpnClaimTypes = ["preferred_username", ClaimTypes.Upn, ClaimTypes.Email];
 
     private readonly ILogger<PrincipalFactory> _logger;
     private readonly ITenantStore _tenantStore;
@@ -88,7 +83,8 @@ public sealed class PrincipalFactory
         IAuditSink auditSink,
         IOptions<IdentityOptions> options,
         TimeProvider timeProvider,
-        ILogger<PrincipalFactory> logger)
+        ILogger<PrincipalFactory> logger
+    )
     {
         ArgumentNullException.ThrowIfNull(tenantStore);
         ArgumentNullException.ThrowIfNull(auditSink);
@@ -101,9 +97,7 @@ public sealed class PrincipalFactory
         _auditSink = auditSink;
         _options = options;
         _timeProvider = timeProvider;
-        _rejectionThrottle = new AuditThrottle(
-            timeProvider,
-            options.Value.Audit.RejectionDeduplicationWindow);
+        _rejectionThrottle = new AuditThrottle(timeProvider, options.Value.Audit.RejectionDeduplicationWindow);
     }
 
     /// <summary>
@@ -213,7 +207,8 @@ public sealed class PrincipalFactory
                 new Claim(ClaimTypes.Name, principal.AppId),
                 new Claim(TenantIdClaimType, principal.TenantId),
             ],
-            BridgedAuthenticationType);
+            BridgedAuthenticationType
+        );
 
         return new ClaimsPrincipal(identity);
     }
@@ -228,7 +223,8 @@ public sealed class PrincipalFactory
     public async Task<PrincipalResolution> ResolveInteractiveAsync(
         ClaimsPrincipal user,
         string? correlationId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(user);
 
@@ -254,7 +250,8 @@ public sealed class PrincipalFactory
                 displayUpn,
                 jti,
                 resolvedTenantId: null,
-                correlationId);
+                correlationId
+            );
         }
 
         try
@@ -266,7 +263,8 @@ public sealed class PrincipalFactory
                     displayUpn,
                     jti,
                     correlationId,
-                    ct)
+                    ct
+                )
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -281,7 +279,8 @@ public sealed class PrincipalFactory
                 "Tenant directory unreadable while resolving a sign-in for {ClaimedEntraTenantId}; "
                     + "answering {StatusCode}.",
                 entraTenantId,
-                StatusCodes.Status503ServiceUnavailable);
+                StatusCodes.Status503ServiceUnavailable
+            );
 
             return Reject(
                 PrincipalResolution.IdentityUnavailable,
@@ -291,7 +290,8 @@ public sealed class PrincipalFactory
                 displayUpn,
                 jti,
                 resolvedTenantId: null,
-                correlationId);
+                correlationId
+            );
         }
     }
 
@@ -307,7 +307,8 @@ public sealed class PrincipalFactory
         string? displayUpn,
         string? jti,
         string? correlationId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var tenant = await _tenantStore.FindByEntraTenantIdAsync(entraTenantId, ct).ConfigureAwait(false);
 
@@ -324,7 +325,8 @@ public sealed class PrincipalFactory
                 displayUpn,
                 jti,
                 resolvedTenantId: null,
-                correlationId);
+                correlationId
+            );
         }
 
         if (tenant.Status != TenantStatus.Active)
@@ -338,7 +340,8 @@ public sealed class PrincipalFactory
                 displayUpn,
                 jti,
                 resolvedTenantId: tenant.TenantId,
-                correlationId);
+                correlationId
+            );
         }
 
         // The namespaced pair, not oid alone: an oid is unique only within a tenant, so a guest
@@ -352,8 +355,7 @@ public sealed class PrincipalFactory
             // store's own predicate is what makes this happen at most once. `bindingUpn`, never
             // `displayUpn`: the wide claim set is for the audit trail and authorizes nothing.
             _ = await _tenantStore
-                .TryBindFirstAdminAsync(
-                    tenant.TenantId, bindingUpn, userId, _timeProvider.GetUtcNow(), ct)
+                .TryBindFirstAdminAsync(tenant.TenantId, bindingUpn, userId, _timeProvider.GetUtcNow(), ct)
                 .ConfigureAwait(false);
         }
         else if (!string.IsNullOrWhiteSpace(displayUpn))
@@ -375,12 +377,11 @@ public sealed class PrincipalFactory
                     + "(which emit preferred_username); see the first-admin recovery note in "
                     + "AUTH_ENFORCE.md.",
                 tenant.TenantId,
-                displayUpn);
+                displayUpn
+            );
         }
 
-        var isAdmin = await _tenantStore
-            .IsTenantAdminAsync(tenant.TenantId, userId, ct)
-            .ConfigureAwait(false);
+        var isAdmin = await _tenantStore.IsTenantAdminAsync(tenant.TenantId, userId, ct).ConfigureAwait(false);
 
         var roles = new HashSet<string>(StringComparer.Ordinal) { "member" };
         if (isAdmin)
@@ -388,30 +389,34 @@ public sealed class PrincipalFactory
             _ = roles.Add("admin");
         }
 
-        _auditSink.Write(new AuthenticationAuditRecord
-        {
-            FrontDoor = AuditFrontDoor.Interactive,
-            ClaimedEntraTenantId = entraTenantId,
-            ClaimedObjectId = objectId,
-            ClaimedUpn = _options.Value.Audit.IncludeUpn ? displayUpn : null,
-            AppId = null,
-            ResolvedTenantId = tenant.TenantId,
-            Jti = jti,
-            Outcome = AuthenticationOutcome.Accepted,
-            Reason = null,
-            CorrelationId = correlationId,
-            EventClass = AuditEventClass.Routine,
-        });
+        _auditSink.Write(
+            new AuthenticationAuditRecord
+            {
+                FrontDoor = AuditFrontDoor.Interactive,
+                ClaimedEntraTenantId = entraTenantId,
+                ClaimedObjectId = objectId,
+                ClaimedUpn = _options.Value.Audit.IncludeUpn ? displayUpn : null,
+                AppId = null,
+                ResolvedTenantId = tenant.TenantId,
+                Jti = jti,
+                Outcome = AuthenticationOutcome.Accepted,
+                Reason = null,
+                CorrelationId = correlationId,
+                EventClass = AuditEventClass.Routine,
+            }
+        );
 
-        return PrincipalResolution.Success(new Principal
-        {
-            TenantId = tenant.TenantId,
-            Actor = new PrincipalRef(PrincipalKind.EndUser, userId),
-            OnBehalfOf = null,
-            AppId = null,
-            Roles = roles,
-            Source = PrincipalSource.Interactive,
-        });
+        return PrincipalResolution.Success(
+            new Principal
+            {
+                TenantId = tenant.TenantId,
+                Actor = new PrincipalRef(PrincipalKind.EndUser, userId),
+                OnBehalfOf = null,
+                AppId = null,
+                Roles = roles,
+                Source = PrincipalSource.Interactive,
+            }
+        );
     }
 
     private PrincipalResolution Reject(
@@ -422,7 +427,8 @@ public sealed class PrincipalFactory
         string? displayUpn,
         string? jti,
         string? resolvedTenantId,
-        string? correlationId)
+        string? correlationId
+    )
     {
         // Deduplicated per (claimed tenant, reason) so a client retry loop cannot flood the log.
         // The FIRST of each burst is always written - that record is the signal an operator uses
@@ -434,20 +440,22 @@ public sealed class PrincipalFactory
         // of a refusal that was actually about something else.
         if (_rejectionThrottle.ShouldRecord($"{entraTenantId ?? "<none>"}|{code}"))
         {
-            _auditSink.Write(new AuthenticationAuditRecord
-            {
-                FrontDoor = AuditFrontDoor.Interactive,
-                ClaimedEntraTenantId = entraTenantId,
-                ClaimedObjectId = objectId,
-                ClaimedUpn = _options.Value.Audit.IncludeUpn ? displayUpn : null,
-                AppId = null,
-                ResolvedTenantId = resolvedTenantId,
-                Jti = jti,
-                Outcome = AuthenticationOutcome.Rejected,
-                Reason = code,
-                CorrelationId = correlationId,
-                EventClass = AuditEventClass.Security,
-            });
+            _auditSink.Write(
+                new AuthenticationAuditRecord
+                {
+                    FrontDoor = AuditFrontDoor.Interactive,
+                    ClaimedEntraTenantId = entraTenantId,
+                    ClaimedObjectId = objectId,
+                    ClaimedUpn = _options.Value.Audit.IncludeUpn ? displayUpn : null,
+                    AppId = null,
+                    ResolvedTenantId = resolvedTenantId,
+                    Jti = jti,
+                    Outcome = AuthenticationOutcome.Rejected,
+                    Reason = code,
+                    CorrelationId = correlationId,
+                    EventClass = AuditEventClass.Security,
+                }
+            );
         }
 
         return PrincipalResolution.Reject(code, statusCode);

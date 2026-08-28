@@ -13,18 +13,20 @@ public class ServerToolStreamParserTests
         // Send message_start first
         parser.ProcessEvent("event", BuildMessageStart());
 
-        var startData = JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new
+        var startData = JsonSerializer.Serialize(
+            new
             {
-                type = "server_tool_use",
-                id = "srvtoolu_01ABC",
-                name = "web_search",
-                input = new { query = "current weather" },
-            },
-        });
+                type = "content_block_start",
+                index = 0,
+                content_block = new
+                {
+                    type = "server_tool_use",
+                    id = "srvtoolu_01ABC",
+                    name = "web_search",
+                    input = new { query = "current weather" },
+                },
+            }
+        );
 
         // content_block_start emits a ToolCallUpdateMessage (preview), not a full ToolCallMessage.
         // The final ToolCallMessage is emitted at content_block_stop.
@@ -46,26 +48,28 @@ public class ServerToolStreamParserTests
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
-        var data = JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 1,
-            content_block = new
+        var data = JsonSerializer.Serialize(
+            new
             {
-                type = "web_search_tool_result",
-                tool_use_id = "srvtoolu_01ABC",
-                content = new[]
+                type = "content_block_start",
+                index = 1,
+                content_block = new
                 {
-                    new
+                    type = "web_search_tool_result",
+                    tool_use_id = "srvtoolu_01ABC",
+                    content = new[]
                     {
-                        type = "web_search_result",
-                        url = "https://example.com",
-                        title = "Example Result",
-                        encrypted_content = "enc123",
+                        new
+                        {
+                            type = "web_search_result",
+                            url = "https://example.com",
+                            title = "Example Result",
+                            encrypted_content = "enc123",
+                        },
                     },
                 },
-            },
-        });
+            }
+        );
 
         var messages = parser.ProcessEvent("event", data);
 
@@ -90,26 +94,28 @@ public class ServerToolStreamParserTests
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
-        var data = JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 1,
-            content_block = new
+        var data = JsonSerializer.Serialize(
+            new
             {
-                type = "web_search_tool_result",
-                tool_use_id = "toolu_test",
-                content = new[]
+                type = "content_block_start",
+                index = 1,
+                content_block = new
                 {
-                    new
+                    type = "web_search_tool_result",
+                    tool_use_id = "toolu_test",
+                    content = new[]
                     {
-                        type = "web_search_result",
-                        url = "https://example.com",
-                        title = "Test",
-                        encrypted_content = "abc",
+                        new
+                        {
+                            type = "web_search_result",
+                            url = "https://example.com",
+                            title = "Test",
+                            encrypted_content = "abc",
+                        },
                     },
                 },
-            },
-        });
+            }
+        );
 
         List<IMessage>? messages = null;
         var exception = Record.Exception(() => messages = parser.ProcessEvent("event", data));
@@ -131,21 +137,19 @@ public class ServerToolStreamParserTests
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
-        var data = JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 1,
-            content_block = new
+        var data = JsonSerializer.Serialize(
+            new
             {
-                type = "web_search_tool_result",
-                tool_use_id = "srvtoolu_err_01",
-                content = new
+                type = "content_block_start",
+                index = 1,
+                content_block = new
                 {
-                    type = "web_search_tool_result_error",
-                    error_code = "max_uses_exceeded",
+                    type = "web_search_tool_result",
+                    tool_use_id = "srvtoolu_err_01",
+                    content = new { type = "web_search_tool_result_error", error_code = "max_uses_exceeded" },
                 },
-            },
-        });
+            }
+        );
 
         var messages = parser.ProcessEvent("event", data);
 
@@ -163,45 +167,45 @@ public class ServerToolStreamParserTests
         parser.ProcessEvent("event", BuildMessageStart());
 
         // Start text block with citations
-        var startData = JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new
+        var startData = JsonSerializer.Serialize(
+            new
             {
-                type = "text",
-                text = "",
-                citations = new[]
+                type = "content_block_start",
+                index = 0,
+                content_block = new
                 {
-                    new
+                    type = "text",
+                    text = "",
+                    citations = new[]
                     {
-                        type = "web_search_result_location",
-                        url = "https://example.com",
-                        title = "Example",
-                        cited_text = "The answer is 42.",
-                        start_char_index = 0,
-                        end_char_index = 17,
+                        new
+                        {
+                            type = "web_search_result_location",
+                            url = "https://example.com",
+                            title = "Example",
+                            cited_text = "The answer is 42.",
+                            start_char_index = 0,
+                            end_char_index = 17,
+                        },
                     },
                 },
-            },
-        });
+            }
+        );
         parser.ProcessEvent("event", startData);
 
         // Send text delta
-        var deltaData = JsonSerializer.Serialize(new
-        {
-            type = "content_block_delta",
-            index = 0,
-            delta = new { type = "text_delta", text = "The answer is 42." },
-        });
+        var deltaData = JsonSerializer.Serialize(
+            new
+            {
+                type = "content_block_delta",
+                index = 0,
+                delta = new { type = "text_delta", text = "The answer is 42." },
+            }
+        );
         parser.ProcessEvent("event", deltaData);
 
         // Send content_block_stop
-        var stopData = JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        });
+        var stopData = JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 });
         var stopMessages = parser.ProcessEvent("event", stopData);
 
         // The final block stop should produce a TextWithCitationsMessage
@@ -223,84 +227,108 @@ public class ServerToolStreamParserTests
         allMessages.AddRange(parser.ProcessEvent("event", BuildMessageStart()));
 
         // 2. server_tool_use content_block_start
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new
-            {
-                type = "server_tool_use",
-                id = "srvtoolu_01",
-                name = "web_search",
-                input = new { query = "test query" },
-            },
-        })));
-
-        // 3. content_block_stop for server_tool_use
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        })));
-
-        // 4. web_search_tool_result content_block_start
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 1,
-            content_block = new
-            {
-                type = "web_search_tool_result",
-                tool_use_id = "srvtoolu_01",
-                content = new[]
-                {
+        allMessages.AddRange(
+            parser.ProcessEvent(
+                "event",
+                JsonSerializer.Serialize(
                     new
                     {
-                        type = "web_search_result",
-                        url = "https://example.com",
-                        title = "Example",
-                        encrypted_content = "enc...",
-                    },
-                },
-            },
-        })));
+                        type = "content_block_start",
+                        index = 0,
+                        content_block = new
+                        {
+                            type = "server_tool_use",
+                            id = "srvtoolu_01",
+                            name = "web_search",
+                            input = new { query = "test query" },
+                        },
+                    }
+                )
+            )
+        );
+
+        // 3. content_block_stop for server_tool_use
+        allMessages.AddRange(
+            parser.ProcessEvent("event", JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 }))
+        );
+
+        // 4. web_search_tool_result content_block_start
+        allMessages.AddRange(
+            parser.ProcessEvent(
+                "event",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_start",
+                        index = 1,
+                        content_block = new
+                        {
+                            type = "web_search_tool_result",
+                            tool_use_id = "srvtoolu_01",
+                            content = new[]
+                            {
+                                new
+                                {
+                                    type = "web_search_result",
+                                    url = "https://example.com",
+                                    title = "Example",
+                                    encrypted_content = "enc...",
+                                },
+                            },
+                        },
+                    }
+                )
+            )
+        );
 
         // 5. content_block_stop for result
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 1,
-        })));
+        allMessages.AddRange(
+            parser.ProcessEvent("event", JsonSerializer.Serialize(new { type = "content_block_stop", index = 1 }))
+        );
 
         // 6. text content_block_start
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 2,
-            content_block = new { type = "text", text = "" },
-        })));
+        allMessages.AddRange(
+            parser.ProcessEvent(
+                "event",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_start",
+                        index = 2,
+                        content_block = new { type = "text", text = "" },
+                    }
+                )
+            )
+        );
 
         // 7. text_delta
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_delta",
-            index = 2,
-            delta = new { type = "text_delta", text = "Here are the results." },
-        })));
+        allMessages.AddRange(
+            parser.ProcessEvent(
+                "event",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_delta",
+                        index = 2,
+                        delta = new { type = "text_delta", text = "Here are the results." },
+                    }
+                )
+            )
+        );
 
         // 8. content_block_stop for text
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 2,
-        })));
+        allMessages.AddRange(
+            parser.ProcessEvent("event", JsonSerializer.Serialize(new { type = "content_block_stop", index = 2 }))
+        );
 
         // Verify message types in sequence
         // content_block_start emits ToolCallUpdateMessage (preview),
         // content_block_stop emits ToolCallUpdateMessage (final update with accumulated args).
         // No ToolCallMessage in streamed output — joiner middleware builds it from updates.
-        var serverToolUpdates = allMessages.OfType<ToolCallUpdateMessage>()
-            .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
+        var serverToolUpdates = allMessages
+            .OfType<ToolCallUpdateMessage>()
+            .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
+            .ToList();
         var serverToolResult = allMessages.OfType<ToolCallResultMessage>().ToList();
         var textMessages = allMessages.OfType<TextMessage>().ToList();
 
@@ -321,7 +349,8 @@ public class ServerToolStreamParserTests
         // GetAllMessages (joined) must have exactly ONE server tool call — no duplicates.
         // Duplicates in history cause "tool call id is duplicated" errors on subsequent turns.
         var accumulated = parser.GetAllMessages();
-        var joinedServerToolCalls = accumulated.OfType<ToolCallMessage>()
+        var joinedServerToolCalls = accumulated
+            .OfType<ToolCallMessage>()
             .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
             .ToList();
         Assert.Single(joinedServerToolCalls);
@@ -335,40 +364,43 @@ public class ServerToolStreamParserTests
     public void ProcessStreamEvent_TypedPath_LocalToolUse_DoesNotPrefixEmptyObjectToJsonDelta()
     {
         var parser = new AnthropicStreamParser();
-        _ = parser.ProcessStreamEvent(new AnthropicMessageStartEvent
-        {
-            Message = new AnthropicResponse
+        _ = parser.ProcessStreamEvent(
+            new AnthropicMessageStartEvent
             {
-                Id = "msg_typed_local_01",
-                Role = "assistant",
-                Model = "claude-sonnet-4-20250514",
-            },
-        });
+                Message = new AnthropicResponse
+                {
+                    Id = "msg_typed_local_01",
+                    Role = "assistant",
+                    Model = "claude-sonnet-4-20250514",
+                },
+            }
+        );
 
-        var startMessages = parser.ProcessStreamEvent(new AnthropicContentBlockStartEvent
-        {
-            Index = 0,
-            ContentBlock = new AnthropicResponseToolUseContent
+        var startMessages = parser.ProcessStreamEvent(
+            new AnthropicContentBlockStartEvent
             {
-                Id = "toolu_local_01",
-                Name = "get_weather",
-                Input = JsonSerializer.Deserialize<JsonElement>("{}"),
-            },
-        });
+                Index = 0,
+                ContentBlock = new AnthropicResponseToolUseContent
+                {
+                    Id = "toolu_local_01",
+                    Name = "get_weather",
+                    Input = JsonSerializer.Deserialize<JsonElement>("{}"),
+                },
+            }
+        );
 
         var startUpdate = Assert.IsType<ToolsCallUpdateMessage>(Assert.Single(startMessages));
         var startToolCall = Assert.Single(startUpdate.ToolCallUpdates);
         Assert.Equal("get_weather", startToolCall.FunctionName);
         Assert.Null(startToolCall.FunctionArgs);
 
-        var deltaMessages = parser.ProcessStreamEvent(new AnthropicContentBlockDeltaEvent
-        {
-            Index = 0,
-            Delta = new AnthropicInputJsonDelta
+        var deltaMessages = parser.ProcessStreamEvent(
+            new AnthropicContentBlockDeltaEvent
             {
-                PartialJson = """{"location":"Seattle"}""",
-            },
-        });
+                Index = 0,
+                Delta = new AnthropicInputJsonDelta { PartialJson = """{"location":"Seattle"}""" },
+            }
+        );
 
         var deltaUpdate = Assert.IsType<ToolsCallUpdateMessage>(Assert.Single(deltaMessages));
         var deltaToolCall = Assert.Single(deltaUpdate.ToolCallUpdates);
@@ -379,15 +411,17 @@ public class ServerToolStreamParserTests
     public void ProcessStreamEvent_TypedPath_ServerToolUse_Works()
     {
         var parser = new AnthropicStreamParser();
-        parser.ProcessStreamEvent(new AnthropicMessageStartEvent
-        {
-            Message = new AnthropicResponse
+        parser.ProcessStreamEvent(
+            new AnthropicMessageStartEvent
             {
-                Id = "msg_typed_01",
-                Role = "assistant",
-                Model = "claude-sonnet-4-20250514",
-            },
-        });
+                Message = new AnthropicResponse
+                {
+                    Id = "msg_typed_01",
+                    Role = "assistant",
+                    Model = "claude-sonnet-4-20250514",
+                },
+            }
+        );
 
         var serverToolUseContent = new AnthropicResponseServerToolUseContent
         {
@@ -397,11 +431,9 @@ public class ServerToolStreamParserTests
         };
 
         // content_block_start emits ToolCallUpdateMessage (preview), not ToolCallMessage
-        var startMessages = parser.ProcessStreamEvent(new AnthropicContentBlockStartEvent
-        {
-            Index = 0,
-            ContentBlock = serverToolUseContent,
-        });
+        var startMessages = parser.ProcessStreamEvent(
+            new AnthropicContentBlockStartEvent { Index = 0, ContentBlock = serverToolUseContent }
+        );
 
         Assert.Single(startMessages);
         var msg = Assert.IsType<ToolCallUpdateMessage>(startMessages[0]);
@@ -415,27 +447,29 @@ public class ServerToolStreamParserTests
     public void ProcessStreamEvent_TypedPath_WebSearchResult_Works()
     {
         var parser = new AnthropicStreamParser();
-        parser.ProcessStreamEvent(new AnthropicMessageStartEvent
-        {
-            Message = new AnthropicResponse
+        parser.ProcessStreamEvent(
+            new AnthropicMessageStartEvent
             {
-                Id = "msg_typed_02",
-                Role = "assistant",
-                Model = "claude-sonnet-4-20250514",
-            },
-        });
+                Message = new AnthropicResponse
+                {
+                    Id = "msg_typed_02",
+                    Role = "assistant",
+                    Model = "claude-sonnet-4-20250514",
+                },
+            }
+        );
 
         var resultContent = new AnthropicWebSearchToolResultContent
         {
             ToolUseId = "srvtoolu_typed_01",
-            Content = JsonSerializer.Deserialize<JsonElement>("""[{"type":"web_search_result","url":"https://example.com","title":"Test"}]"""),
+            Content = JsonSerializer.Deserialize<JsonElement>(
+                """[{"type":"web_search_result","url":"https://example.com","title":"Test"}]"""
+            ),
         };
 
-        var messages = parser.ProcessStreamEvent(new AnthropicContentBlockStartEvent
-        {
-            Index = 1,
-            ContentBlock = resultContent,
-        });
+        var messages = parser.ProcessStreamEvent(
+            new AnthropicContentBlockStartEvent { Index = 1, ContentBlock = resultContent }
+        );
 
         Assert.Single(messages);
         var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
@@ -449,27 +483,29 @@ public class ServerToolStreamParserTests
     public void ProcessStreamEvent_TypedPath_WebFetchResult_Works()
     {
         var parser = new AnthropicStreamParser();
-        parser.ProcessStreamEvent(new AnthropicMessageStartEvent
-        {
-            Message = new AnthropicResponse
+        parser.ProcessStreamEvent(
+            new AnthropicMessageStartEvent
             {
-                Id = "msg_typed_03",
-                Role = "assistant",
-                Model = "claude-sonnet-4-20250514",
-            },
-        });
+                Message = new AnthropicResponse
+                {
+                    Id = "msg_typed_03",
+                    Role = "assistant",
+                    Model = "claude-sonnet-4-20250514",
+                },
+            }
+        );
 
         var resultContent = new AnthropicWebFetchToolResultContent
         {
             ToolUseId = "srvtoolu_wf_01",
-            Content = JsonSerializer.Deserialize<JsonElement>("""{"url":"https://example.com","content":"fetched content"}"""),
+            Content = JsonSerializer.Deserialize<JsonElement>(
+                """{"url":"https://example.com","content":"fetched content"}"""
+            ),
         };
 
-        var messages = parser.ProcessStreamEvent(new AnthropicContentBlockStartEvent
-        {
-            Index = 0,
-            ContentBlock = resultContent,
-        });
+        var messages = parser.ProcessStreamEvent(
+            new AnthropicContentBlockStartEvent { Index = 0, ContentBlock = resultContent }
+        );
 
         Assert.Single(messages);
         var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
@@ -481,15 +517,17 @@ public class ServerToolStreamParserTests
     public void ProcessStreamEvent_TypedPath_BashCodeExecution_Works()
     {
         var parser = new AnthropicStreamParser();
-        parser.ProcessStreamEvent(new AnthropicMessageStartEvent
-        {
-            Message = new AnthropicResponse
+        parser.ProcessStreamEvent(
+            new AnthropicMessageStartEvent
             {
-                Id = "msg_typed_04",
-                Role = "assistant",
-                Model = "claude-sonnet-4-20250514",
-            },
-        });
+                Message = new AnthropicResponse
+                {
+                    Id = "msg_typed_04",
+                    Role = "assistant",
+                    Model = "claude-sonnet-4-20250514",
+                },
+            }
+        );
 
         var resultContent = new AnthropicBashCodeExecutionToolResultContent
         {
@@ -497,11 +535,9 @@ public class ServerToolStreamParserTests
             Content = JsonSerializer.Deserialize<JsonElement>("""{"stdout":"hello","stderr":"","return_code":0}"""),
         };
 
-        var messages = parser.ProcessStreamEvent(new AnthropicContentBlockStartEvent
-        {
-            Index = 0,
-            ContentBlock = resultContent,
-        });
+        var messages = parser.ProcessStreamEvent(
+            new AnthropicContentBlockStartEvent { Index = 0, ContentBlock = resultContent }
+        );
 
         Assert.Single(messages);
         var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
@@ -513,15 +549,17 @@ public class ServerToolStreamParserTests
     public void ProcessStreamEvent_TypedPath_TextEditorCodeExecution_Works()
     {
         var parser = new AnthropicStreamParser();
-        parser.ProcessStreamEvent(new AnthropicMessageStartEvent
-        {
-            Message = new AnthropicResponse
+        parser.ProcessStreamEvent(
+            new AnthropicMessageStartEvent
             {
-                Id = "msg_typed_05",
-                Role = "assistant",
-                Model = "claude-sonnet-4-20250514",
-            },
-        });
+                Message = new AnthropicResponse
+                {
+                    Id = "msg_typed_05",
+                    Role = "assistant",
+                    Model = "claude-sonnet-4-20250514",
+                },
+            }
+        );
 
         var resultContent = new AnthropicTextEditorCodeExecutionToolResultContent
         {
@@ -529,11 +567,9 @@ public class ServerToolStreamParserTests
             Content = JsonSerializer.Deserialize<JsonElement>("""{"result":"edit applied"}"""),
         };
 
-        var messages = parser.ProcessStreamEvent(new AnthropicContentBlockStartEvent
-        {
-            Index = 0,
-            ContentBlock = resultContent,
-        });
+        var messages = parser.ProcessStreamEvent(
+            new AnthropicContentBlockStartEvent { Index = 0, ContentBlock = resultContent }
+        );
 
         Assert.Single(messages);
         var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
@@ -547,17 +583,24 @@ public class ServerToolStreamParserTests
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
-        var data = JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new
+        var data = JsonSerializer.Serialize(
+            new
             {
-                type = "bash_code_execution_tool_result",
-                tool_use_id = "srvtoolu_bash_02",
-                content = new { stdout = "output", stderr = "", return_code = 0 },
-            },
-        });
+                type = "content_block_start",
+                index = 0,
+                content_block = new
+                {
+                    type = "bash_code_execution_tool_result",
+                    tool_use_id = "srvtoolu_bash_02",
+                    content = new
+                    {
+                        stdout = "output",
+                        stderr = "",
+                        return_code = 0,
+                    },
+                },
+            }
+        );
 
         var messages = parser.ProcessEvent("event", data);
 
@@ -574,42 +617,52 @@ public class ServerToolStreamParserTests
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
-        _ = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new
-            {
-                type = "thinking",
-                thinking = "",
-            },
-        }));
+        _ = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(
+                new
+                {
+                    type = "content_block_start",
+                    index = 0,
+                    content_block = new { type = "thinking", thinking = "" },
+                }
+            )
+        );
 
-        var thinkingUpdate = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_delta",
-            index = 0,
-            delta = new { type = "thinking_delta", thinking = "first-thought " },
-        }));
+        var thinkingUpdate = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(
+                new
+                {
+                    type = "content_block_delta",
+                    index = 0,
+                    delta = new { type = "thinking_delta", thinking = "first-thought " },
+                }
+            )
+        );
         var reasoningUpdate = Assert.IsType<ReasoningUpdateMessage>(Assert.Single(thinkingUpdate));
         Assert.Equal("first-thought ", reasoningUpdate.Reasoning);
         Assert.Equal(ReasoningVisibility.Plain, reasoningUpdate.Visibility);
 
-        var signatureUpdate = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_delta",
-            index = 0,
-            delta = new { type = "signature_delta", signature = "enc-signature-123" },
-        }));
+        var signatureUpdate = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(
+                new
+                {
+                    type = "content_block_delta",
+                    index = 0,
+                    delta = new { type = "signature_delta", signature = "enc-signature-123" },
+                }
+            )
+        );
         var encryptedReasoning = Assert.IsType<ReasoningMessage>(Assert.Single(signatureUpdate));
         Assert.Equal("enc-signature-123", encryptedReasoning.Reasoning);
         Assert.Equal(ReasoningVisibility.Encrypted, encryptedReasoning.Visibility);
 
-        var stopMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        }));
+        var stopMessages = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 })
+        );
         var finalReasoning = Assert.IsType<ReasoningMessage>(Assert.Single(stopMessages));
         Assert.Equal("first-thought ", finalReasoning.Reasoning);
         Assert.Equal(ReasoningVisibility.Plain, finalReasoning.Visibility);
@@ -619,45 +672,44 @@ public class ServerToolStreamParserTests
     public void ProcessStreamEvent_TypedPath_ThinkingAndSignatureDeltas_ProduceReasoningMessages()
     {
         var parser = new AnthropicStreamParser();
-        _ = parser.ProcessStreamEvent(new AnthropicMessageStartEvent
-        {
-            Message = new AnthropicResponse
+        _ = parser.ProcessStreamEvent(
+            new AnthropicMessageStartEvent
             {
-                Id = "msg_typed_reasoning_01",
-                Role = "assistant",
-                Model = "claude-sonnet-4-20250514",
-            },
-        });
+                Message = new AnthropicResponse
+                {
+                    Id = "msg_typed_reasoning_01",
+                    Role = "assistant",
+                    Model = "claude-sonnet-4-20250514",
+                },
+            }
+        );
 
-        _ = parser.ProcessStreamEvent(new AnthropicContentBlockStartEvent
-        {
-            Index = 0,
-            ContentBlock = new AnthropicResponseThinkingContent
+        _ = parser.ProcessStreamEvent(
+            new AnthropicContentBlockStartEvent
             {
-                Thinking = "",
-            },
-        });
+                Index = 0,
+                ContentBlock = new AnthropicResponseThinkingContent { Thinking = "" },
+            }
+        );
 
-        var thinkingUpdate = parser.ProcessStreamEvent(new AnthropicContentBlockDeltaEvent
-        {
-            Index = 0,
-            Delta = new AnthropicThinkingDelta
+        var thinkingUpdate = parser.ProcessStreamEvent(
+            new AnthropicContentBlockDeltaEvent
             {
-                Thinking = "typed-thought ",
-            },
-        });
+                Index = 0,
+                Delta = new AnthropicThinkingDelta { Thinking = "typed-thought " },
+            }
+        );
         var reasoningUpdate = Assert.IsType<ReasoningUpdateMessage>(Assert.Single(thinkingUpdate));
         Assert.Equal("typed-thought ", reasoningUpdate.Reasoning);
         Assert.Equal(ReasoningVisibility.Plain, reasoningUpdate.Visibility);
 
-        var signatureUpdate = parser.ProcessStreamEvent(new AnthropicContentBlockDeltaEvent
-        {
-            Index = 0,
-            Delta = new AnthropicSignatureDelta
+        var signatureUpdate = parser.ProcessStreamEvent(
+            new AnthropicContentBlockDeltaEvent
             {
-                Signature = "typed-signature",
-            },
-        });
+                Index = 0,
+                Delta = new AnthropicSignatureDelta { Signature = "typed-signature" },
+            }
+        );
         var encryptedReasoning = Assert.IsType<ReasoningMessage>(Assert.Single(signatureUpdate));
         Assert.Equal(ReasoningVisibility.Encrypted, encryptedReasoning.Visibility);
         Assert.Equal("typed-signature", encryptedReasoning.Reasoning);
@@ -678,17 +730,22 @@ public class ServerToolStreamParserTests
         parser.ProcessEvent("event", BuildMessageStart());
 
         // 1. content_block_start with NO input (typical streaming pattern)
-        var startMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new
-            {
-                type = "server_tool_use",
-                id = "srvtoolu_delta_01",
-                name = "web_search",
-            },
-        }));
+        var startMessages = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(
+                new
+                {
+                    type = "content_block_start",
+                    index = 0,
+                    content_block = new
+                    {
+                        type = "server_tool_use",
+                        id = "srvtoolu_delta_01",
+                        name = "web_search",
+                    },
+                }
+            )
+        );
         allMessages.AddRange(startMessages);
 
         // Preview ToolCallUpdateMessage has null args — empty "{}" must not leak into the stream
@@ -699,28 +756,37 @@ public class ServerToolStreamParserTests
         Assert.Equal(0, preview.Index);
 
         // 2. input_json_delta events — should NOT emit any messages
-        var delta1 = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_delta",
-            index = 0,
-            delta = new { type = "input_json_delta", partial_json = "{\"query\"" },
-        }));
+        var delta1 = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(
+                new
+                {
+                    type = "content_block_delta",
+                    index = 0,
+                    delta = new { type = "input_json_delta", partial_json = "{\"query\"" },
+                }
+            )
+        );
         Assert.Empty(delta1);
 
-        var delta2 = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_delta",
-            index = 0,
-            delta = new { type = "input_json_delta", partial_json = ": \"test search\"}" },
-        }));
+        var delta2 = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(
+                new
+                {
+                    type = "content_block_delta",
+                    index = 0,
+                    delta = new { type = "input_json_delta", partial_json = ": \"test search\"}" },
+                }
+            )
+        );
         Assert.Empty(delta2);
 
         // 3. content_block_stop — emits final ToolCallUpdateMessage with accumulated args
-        var stopMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        }));
+        var stopMessages = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 })
+        );
         allMessages.AddRange(stopMessages);
 
         var finalMsg = Assert.IsType<ToolCallUpdateMessage>(Assert.Single(stopMessages));
@@ -729,7 +795,9 @@ public class ServerToolStreamParserTests
         Assert.Contains("test search", finalMsg.FunctionArgs);
 
         // GetAllMessages (joined) must have exactly ONE — the final one with accumulated args
-        var joined = parser.GetAllMessages().OfType<ToolCallMessage>()
+        var joined = parser
+            .GetAllMessages()
+            .OfType<ToolCallMessage>()
             .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
             .ToList();
         Assert.Single(joined);
@@ -746,18 +814,23 @@ public class ServerToolStreamParserTests
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
-        var startMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new
-            {
-                type = "server_tool_use",
-                id = "srvtoolu_id_check",
-                name = "web_search",
-                input = new { query = "test" },
-            },
-        }));
+        var startMessages = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(
+                new
+                {
+                    type = "content_block_start",
+                    index = 0,
+                    content_block = new
+                    {
+                        type = "server_tool_use",
+                        id = "srvtoolu_id_check",
+                        name = "web_search",
+                        input = new { query = "test" },
+                    },
+                }
+            )
+        );
 
         var msg = Assert.IsType<ToolCallUpdateMessage>(Assert.Single(startMessages));
         Assert.False(string.IsNullOrEmpty(msg.ToolCallId), "ToolCallId must not be empty");
@@ -777,39 +850,53 @@ public class ServerToolStreamParserTests
         allMessages.AddRange(parser.ProcessEvent("event", BuildMessageStart()));
 
         // 2. server_tool_use content_block_start WITHOUT input (emits ToolCallMessage with "{}")
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new
-            {
-                type = "server_tool_use",
-                id = "srvtoolu_flow_01",
-                name = "web_search",
-            },
-        })));
-
-        // 3. web_search_tool_result
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 1,
-            content_block = new
-            {
-                type = "web_search_tool_result",
-                tool_use_id = "srvtoolu_flow_01",
-                content = new[]
-                {
+        allMessages.AddRange(
+            parser.ProcessEvent(
+                "event",
+                JsonSerializer.Serialize(
                     new
                     {
-                        type = "web_search_result",
-                        url = "https://example.com",
-                        title = "Example",
-                        encrypted_content = "enc...",
-                    },
-                },
-            },
-        })));
+                        type = "content_block_start",
+                        index = 0,
+                        content_block = new
+                        {
+                            type = "server_tool_use",
+                            id = "srvtoolu_flow_01",
+                            name = "web_search",
+                        },
+                    }
+                )
+            )
+        );
+
+        // 3. web_search_tool_result
+        allMessages.AddRange(
+            parser.ProcessEvent(
+                "event",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_start",
+                        index = 1,
+                        content_block = new
+                        {
+                            type = "web_search_tool_result",
+                            tool_use_id = "srvtoolu_flow_01",
+                            content = new[]
+                            {
+                                new
+                                {
+                                    type = "web_search_result",
+                                    url = "https://example.com",
+                                    title = "Example",
+                                    encrypted_content = "enc...",
+                                },
+                            },
+                        },
+                    }
+                )
+            )
+        );
 
         // Verify ToolCallUpdateMessage was emitted at content_block_start
         var serverToolUpdate = allMessages.OfType<ToolCallUpdateMessage>().Single();
@@ -833,17 +920,19 @@ public class ServerToolStreamParserTests
         parser.ProcessEvent("event", BuildMessageStart());
 
         // server_tool_use WITHOUT id field (Kimi behavior)
-        var startData = JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new
+        var startData = JsonSerializer.Serialize(
+            new
             {
-                type = "server_tool_use",
-                name = "web_search",
-                input = new { query = "hello" },
-            },
-        });
+                type = "content_block_start",
+                index = 0,
+                content_block = new
+                {
+                    type = "server_tool_use",
+                    name = "web_search",
+                    input = new { query = "hello" },
+                },
+            }
+        );
 
         var startMessages = parser.ProcessEvent("event", startData);
 
@@ -867,33 +956,40 @@ public class ServerToolStreamParserTests
         parser.ProcessEvent("event", BuildMessageStart());
 
         // server_tool_use WITHOUT id
-        var startMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new
-            {
-                type = "server_tool_use",
-                name = "web_search",
-                input = new { query = "test" },
-            },
-        }));
+        var startMessages = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(
+                new
+                {
+                    type = "content_block_start",
+                    index = 0,
+                    content_block = new
+                    {
+                        type = "server_tool_use",
+                        name = "web_search",
+                        input = new { query = "test" },
+                    },
+                }
+            )
+        );
 
         var toolCall = Assert.IsType<ToolCallUpdateMessage>(Assert.Single(startMessages));
         Assert.False(string.IsNullOrEmpty(toolCall.ToolCallId), "streaming update id must not be empty");
 
         // Now send the result with empty tool_use_id — it should resolve to the call's synthetic id
-        var resultData = JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 1,
-            content_block = new
+        var resultData = JsonSerializer.Serialize(
+            new
             {
-                type = "web_search_tool_result",
-                tool_use_id = "",
-                content = new { type = "web_search_result", results = Array.Empty<object>() },
-            },
-        });
+                type = "content_block_start",
+                index = 1,
+                content_block = new
+                {
+                    type = "web_search_tool_result",
+                    tool_use_id = "",
+                    content = new { type = "web_search_result", results = Array.Empty<object>() },
+                },
+            }
+        );
         var resultMessages = parser.ProcessEvent("event", resultData);
 
         Assert.Single(resultMessages);
@@ -914,50 +1010,77 @@ public class ServerToolStreamParserTests
         all.AddRange(parser.ProcessEvent("event", BuildMessageStart()));
 
         // server_tool_use content_block_start WITHOUT an id
-        all.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new { type = "server_tool_use", name = "web_search" },
-        })));
+        all.AddRange(
+            parser.ProcessEvent(
+                "event",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_start",
+                        index = 0,
+                        content_block = new { type = "server_tool_use", name = "web_search" },
+                    }
+                )
+            )
+        );
         // input streamed as a delta, then the block stops (finalize)
-        all.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_delta",
-            index = 0,
-            delta = new { type = "input_json_delta", partial_json = "{\"query\":\"x\"}" },
-        })));
-        all.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        })));
+        all.AddRange(
+            parser.ProcessEvent(
+                "event",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_delta",
+                        index = 0,
+                        delta = new { type = "input_json_delta", partial_json = "{\"query\":\"x\"}" },
+                    }
+                )
+            )
+        );
+        all.AddRange(
+            parser.ProcessEvent("event", JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 }))
+        );
         // web_search_tool_result with an empty tool_use_id (Kimi behavior)
-        all.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 1,
-            content_block = new
-            {
-                type = "web_search_tool_result",
-                tool_use_id = "",
-                content = new { type = "web_search_result", results = Array.Empty<object>() },
-            },
-        })));
+        all.AddRange(
+            parser.ProcessEvent(
+                "event",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_start",
+                        index = 1,
+                        content_block = new
+                        {
+                            type = "web_search_tool_result",
+                            tool_use_id = "",
+                            content = new { type = "web_search_result", results = Array.Empty<object>() },
+                        },
+                    }
+                )
+            )
+        );
 
-        var serverToolCallIds = all
-            .Where(m => m is ToolCallUpdateMessage u && u.ExecutionTarget == ExecutionTarget.ProviderServer)
+        var serverToolCallIds = all.Where(m =>
+                m is ToolCallUpdateMessage u && u.ExecutionTarget == ExecutionTarget.ProviderServer
+            )
             .Select(m => ((ToolCallUpdateMessage)m).ToolCallId)
-            .Concat(all.OfType<ToolCallMessage>()
-                .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
-                .Select(m => m.ToolCallId))
-            .Concat(all.OfType<ToolCallResultMessage>()
-                .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
-                .Select(m => m.ToolCallId))
+            .Concat(
+                all.OfType<ToolCallMessage>()
+                    .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
+                    .Select(m => m.ToolCallId)
+            )
+            .Concat(
+                all.OfType<ToolCallResultMessage>()
+                    .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
+                    .Select(m => m.ToolCallId)
+            )
             .ToList();
 
         Assert.NotEmpty(serverToolCallIds);
-        Assert.All(serverToolCallIds, id => Assert.False(string.IsNullOrEmpty(id), "no server tool message may have an empty id"));
+        Assert.All(
+            serverToolCallIds,
+            id => Assert.False(string.IsNullOrEmpty(id), "no server tool message may have an empty id")
+        );
         Assert.Single(serverToolCallIds.Distinct());
     }
 
@@ -974,39 +1097,53 @@ public class ServerToolStreamParserTests
         parser.ProcessEvent("event", BuildMessageStart());
 
         // 1. content_block_start with empty input (typical streaming pattern)
-        var startMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_start",
-            index = 0,
-            content_block = new
-            {
-                type = "server_tool_use",
-                id = "srvtoolu_joiner_01",
-                name = "web_search",
-            },
-        }));
+        var startMessages = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(
+                new
+                {
+                    type = "content_block_start",
+                    index = 0,
+                    content_block = new
+                    {
+                        type = "server_tool_use",
+                        id = "srvtoolu_joiner_01",
+                        name = "web_search",
+                    },
+                }
+            )
+        );
         var preview = Assert.IsType<ToolCallUpdateMessage>(Assert.Single(startMessages));
 
         // 2. input_json_delta events
-        parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_delta",
-            index = 0,
-            delta = new { type = "input_json_delta", partial_json = "{\"query\"" },
-        }));
-        parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_delta",
-            index = 0,
-            delta = new { type = "input_json_delta", partial_json = ": \"test search\"}" },
-        }));
+        parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(
+                new
+                {
+                    type = "content_block_delta",
+                    index = 0,
+                    delta = new { type = "input_json_delta", partial_json = "{\"query\"" },
+                }
+            )
+        );
+        parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(
+                new
+                {
+                    type = "content_block_delta",
+                    index = 0,
+                    delta = new { type = "input_json_delta", partial_json = ": \"test search\"}" },
+                }
+            )
+        );
 
         // 3. content_block_stop
-        var stopMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        }));
+        var stopMessages = parser.ProcessEvent(
+            "event",
+            JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 })
+        );
         var finalUpdate = Assert.IsType<ToolCallUpdateMessage>(Assert.Single(stopMessages));
 
         // 4. Feed both through ToolCallMessageBuilder (simulating joiner middleware)
@@ -1025,18 +1162,20 @@ public class ServerToolStreamParserTests
 
     private static string BuildMessageStart()
     {
-        return JsonSerializer.Serialize(new
-        {
-            type = "message_start",
-            message = new
+        return JsonSerializer.Serialize(
+            new
             {
-                id = "msg_stream_01",
-                type = "message",
-                role = "assistant",
-                model = "claude-sonnet-4-20250514",
-                content = Array.Empty<object>(),
-                usage = new { input_tokens = 100, output_tokens = 0 },
-            },
-        });
+                type = "message_start",
+                message = new
+                {
+                    id = "msg_stream_01",
+                    type = "message",
+                    role = "assistant",
+                    model = "claude-sonnet-4-20250514",
+                    content = Array.Empty<object>(),
+                    usage = new { input_tokens = 100, output_tokens = 0 },
+                },
+            }
+        );
     }
 }

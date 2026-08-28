@@ -68,8 +68,5 @@ public interface ILifecycleOwnerResolver
     /// <param name="appId">The authenticated app identity.</param>
     /// <param name="cancellationToken">Cancels the resolution.</param>
     /// <returns>The caller's owner key, or <c>null</c> to refuse the call.</returns>
-    ValueTask<LifecycleOwnerKey?> ResolveCallerAsync(
-        string appId,
-        CancellationToken cancellationToken = default
-    );
+    ValueTask<LifecycleOwnerKey?> ResolveCallerAsync(string appId, CancellationToken cancellationToken = default);
 }

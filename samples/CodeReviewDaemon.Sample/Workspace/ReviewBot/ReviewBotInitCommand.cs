@@ -28,7 +28,8 @@ internal static class ReviewBotInitCommand
         ArgumentNullException.ThrowIfNull(args);
 
         using var loggerFactory = LoggerFactory.Create(builder =>
-            builder.AddSimpleConsole(options => options.SingleLine = true));
+            builder.AddSimpleConsole(options => options.SingleLine = true)
+        );
         var logger = loggerFactory.CreateLogger("reviewbot-init");
 
         var url = GetOption(args, "--url");
@@ -38,12 +39,10 @@ internal static class ReviewBotInitCommand
             return 64; // EX_USAGE
         }
 
-        var gateway =
-            GetOption(args, "--gateway") ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY");
+        var gateway = GetOption(args, "--gateway") ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY");
         if (string.IsNullOrWhiteSpace(gateway))
         {
-            logger.LogError(
-                "reviewbot init requires a sandbox gateway (--gateway <baseUrl> or CRD_SANDBOX_GATEWAY).");
+            logger.LogError("reviewbot init requires a sandbox gateway (--gateway <baseUrl> or CRD_SANDBOX_GATEWAY).");
             return 64;
         }
 
@@ -62,7 +61,8 @@ internal static class ReviewBotInitCommand
             logger.LogWarning(
                 "CRD_SANDBOX_APP_KEY is not set; connecting to the sandbox gateway as app '{AppId}' with "
                     + "no key (keyless AUTH_ENFORCE=off dev path).",
-                appId);
+                appId
+            );
         }
         else
         {
@@ -83,7 +83,8 @@ internal static class ReviewBotInitCommand
             gateway,
             sessionId,
             loggerFactory.CreateLogger<SandboxSessionAdapter>(),
-            credential);
+            credential
+        );
         var git = new GitRunner(sandbox);
         ISandboxFileSystem fileSystem = sandbox;
 
@@ -96,13 +97,8 @@ internal static class ReviewBotInitCommand
             return cloneFailure.ExitCode;
         }
 
-        var initializer = new ReviewBotInitializer(
-            git,
-            fileSystem,
-            loggerFactory.CreateLogger<ReviewBotInitializer>());
-        var result = await initializer
-            .InitializeAsync(workdir, branch, cancellationToken)
-            .ConfigureAwait(false);
+        var initializer = new ReviewBotInitializer(git, fileSystem, loggerFactory.CreateLogger<ReviewBotInitializer>());
+        var result = await initializer.InitializeAsync(workdir, branch, cancellationToken).ConfigureAwait(false);
 
         if (result.Outcome == ReviewBotInitOutcome.Created)
         {
@@ -118,7 +114,8 @@ internal static class ReviewBotInitCommand
 
         logger.LogError(
             "ReviewBot repository is malformed. Missing: {Missing}",
-            string.Join(", ", result.MissingPaths));
+            string.Join(", ", result.MissingPaths)
+        );
         return 65; // EX_DATAERR
     }
 

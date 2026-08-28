@@ -31,7 +31,8 @@ public sealed class MultiTurnAgentReplayTests
             int outputChannelCapacity = 1000,
             int maxReplayBufferSize = 10_000,
             long maxReplayBufferBytes = 8L * 1024 * 1024,
-            ILogger? logger = null)
+            ILogger? logger = null
+        )
             : base(
                 threadId,
                 systemPrompt: null,
@@ -39,9 +40,8 @@ public sealed class MultiTurnAgentReplayTests
                 logger: logger,
                 outputChannelCapacity: outputChannelCapacity,
                 maxReplayBufferSize: maxReplayBufferSize,
-                maxReplayBufferBytes: maxReplayBufferBytes)
-        {
-        }
+                maxReplayBufferBytes: maxReplayBufferBytes
+            ) { }
 
         // The loop is driven manually in these tests via PublishForTest; never started.
         protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
@@ -56,12 +56,25 @@ public sealed class MultiTurnAgentReplayTests
         new() { Assignment = new RunAssignment(runId, genId, WasInjected: true), ThreadId = threadId };
 
     private static TextUpdateMessage TextDelta(string runId, string genId, string text) =>
-        new() { Text = text, Role = Role.Assistant, RunId = runId, GenerationId = genId, MessageOrderIdx = 0 };
+        new()
+        {
+            Text = text,
+            Role = Role.Assistant,
+            RunId = runId,
+            GenerationId = genId,
+            MessageOrderIdx = 0,
+        };
 
     // Canonical (complete) text message — the counterpart CompleteText emits to replace TextDelta as a
     // bridge filler in tests below, since streaming deltas no longer enter the replay bridge at all.
     private static TextMessage CompleteText(string runId, string genId, string text) =>
-        new() { Text = text, Role = Role.Assistant, RunId = runId, GenerationId = genId };
+        new()
+        {
+            Text = text,
+            Role = Role.Assistant,
+            RunId = runId,
+            GenerationId = genId,
+        };
 
     // runId/genId are nullable because that is the wire reality: finalized tool_call messages reach a
     // subscriber WITHOUT a runId (0 of 267 across recordings/*.ws.jsonl), which is exactly the shape
@@ -114,7 +127,9 @@ public sealed class MultiTurnAgentReplayTests
 
         // The reconnecting subscriber replays ONLY the canonical/control messages — the assignment and
         // the complete text — never the 10,001 streaming deltas that preceded it.
-        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync())
+            .Should()
+            .BeTrue();
         e.Current.Should().BeOfType<RunAssignmentMessage>();
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<TextMessage>().Which.Text.Should().Be("Hello!");
@@ -148,16 +163,16 @@ public sealed class MultiTurnAgentReplayTests
         await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
 
         // The reconnecting subscriber must replay the run assignment, the tool call, and its result.
-        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync())
+            .Should()
+            .BeTrue();
         e.Current.Should().BeOfType<RunAssignmentMessage>();
 
         (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<ToolCallMessage>()
-            .Which.ToolCallId.Should().Be(toolCallId);
+        e.Current.Should().BeOfType<ToolCallMessage>().Which.ToolCallId.Should().Be(toolCallId);
 
         (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<ToolCallResultMessage>()
-            .Which.ToolCallId.Should().Be(toolCallId);
+        e.Current.Should().BeOfType<ToolCallResultMessage>().Which.ToolCallId.Should().Be(toolCallId);
 
         // The run then completes live and the same subscriber receives it.
         await agent.PublishForTest(new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" });
@@ -241,15 +256,18 @@ public sealed class MultiTurnAgentReplayTests
 
         await agent.PublishForTest(Assignment("thread-1", runId, genId));
 
-        var publisher = Task.Run(async () =>
-        {
-            for (var i = 0; i < total; i++)
+        var publisher = Task.Run(
+            async () =>
             {
-                await agent.PublishForTest(TextDelta(runId, genId, i.ToString()));
-            }
+                for (var i = 0; i < total; i++)
+                {
+                    await agent.PublishForTest(TextDelta(runId, genId, i.ToString()));
+                }
 
-            await agent.PublishForTest(new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" });
-        }, cts.Token);
+                await agent.PublishForTest(new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" });
+            },
+            cts.Token
+        );
 
         var received = new List<int>();
         await foreach (var m in agent.SubscribeAsync(cts.Token))
@@ -337,7 +355,8 @@ public sealed class MultiTurnAgentReplayTests
             "thread-1",
             outputChannelCapacity: 100_000,
             maxReplayBufferSize: 100_000,
-            maxReplayBufferBytes: 64L * 1024 * 1024);
+            maxReplayBufferBytes: 64L * 1024 * 1024
+        );
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         await agent.PublishForTest(Assignment("thread-1", runId, genId));
@@ -358,7 +377,8 @@ public sealed class MultiTurnAgentReplayTests
         for (var s = 0; s < subscriberCount; s++)
         {
             var slot = s;
-            collectors[s] = Task.Factory.StartNew(
+            collectors[s] = Task
+                .Factory.StartNew(
                     () =>
                     {
                         subscribersReady.Signal();
@@ -367,12 +387,14 @@ public sealed class MultiTurnAgentReplayTests
                     },
                     cts.Token,
                     TaskCreationOptions.LongRunning,
-                    TaskScheduler.Default)
+                    TaskScheduler.Default
+                )
                 .Unwrap();
         }
 
         var registeredDuringBurst = 0;
-        var publisher = Task.Factory.StartNew(
+        var publisher = Task
+            .Factory.StartNew(
                 async () =>
                 {
                     // Release the subscribers and start publishing in the same breath. Everything the
@@ -402,37 +424,45 @@ public sealed class MultiTurnAgentReplayTests
                     // so the failure mode would be a hung run rather than a reported one.
                     await Task.WhenAll(registered.Select(r => r.Task)).WaitAsync(cts.Token);
                     await agent.PublishForTest(
-                        new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" });
+                        new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" }
+                    );
                 },
                 cts.Token,
                 TaskCreationOptions.LongRunning,
-                TaskScheduler.Default)
+                TaskScheduler.Default
+            )
             .Unwrap();
 
         await publisher.WaitAsync(cts.Token);
         var results = await Task.WhenAll(collectors);
 
-        registeredDuringBurst.Should()
+        registeredDuringBurst
+            .Should()
             .BeGreaterThan(
                 0,
                 "the invariant below is only about the lock if at least one subscriber registered while the "
                     + "publisher was mid-burst; every subscriber arriving after the last publish means the "
-                    + "window was never entered and the run proved nothing");
+                    + "window was never entered and the run proved nothing"
+            );
 
         for (var s = 0; s < results.Length; s++)
         {
             var received = results[s];
-            received.Should()
+            received
+                .Should()
                 .OnlyHaveUniqueItems(
                     $"subscriber {s} must never be handed the same message twice — a message buffered AND sent "
-                        + "live is what registering outside the lock produces");
+                        + "live is what registering outside the lock produces"
+                );
             received.Should().BeInAscendingOrder($"subscriber {s} saw a single serial publisher");
-            received.Should()
+            received
+                .Should()
                 .HaveCount(
                     total,
                     $"subscriber {s} must end up with the WHOLE run: replay covers it from the assignment "
                         + "onwards, so a short count is a message that fell between the snapshot and the "
-                        + "registration rather than a late join");
+                        + "registration rather than a late join"
+                );
         }
     }
 
@@ -441,7 +471,8 @@ public sealed class MultiTurnAgentReplayTests
     private static async Task<List<int>> CollectRunAsync(
         ReplayTestAgent agent,
         TaskCompletionSource registered,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var seen = new List<int>();
         await foreach (var m in agent.SubscribeAsync(ct))
@@ -487,7 +518,8 @@ public sealed class MultiTurnAgentReplayTests
         for (var i = 0; i < cap; i++)
         {
             (await e.MoveNextAsync()).Should().BeTrue();
-            e.Current.Should().NotBeOfType<StreamRecoveryMessage>("an un-truncated buffer replays without a resync control");
+            e.Current.Should()
+                .NotBeOfType<StreamRecoveryMessage>("an un-truncated buffer replays without a resync control");
         }
 
         // Prove the buffer held EXACTLY `cap` messages: the next one must be a sentinel published
@@ -540,7 +572,8 @@ public sealed class MultiTurnAgentReplayTests
         // stalled A would await forever inside Task.WhenAll, so the per-publish timeout would fire.
         for (var i = 0; i < burst; i++)
         {
-            await agent.PublishForTest(TextDelta(runId, genId, i.ToString()))
+            await agent
+                .PublishForTest(TextDelta(runId, genId, i.ToString()))
                 .AsTask()
                 .WaitAsync(TimeSpan.FromSeconds(3), cts.Token);
 
@@ -548,13 +581,16 @@ public sealed class MultiTurnAgentReplayTests
             bEnum.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be(i.ToString());
         }
 
-        await agent.PublishForTest(new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" })
+        await agent
+            .PublishForTest(new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" })
             .AsTask()
             .WaitAsync(TimeSpan.FromSeconds(3), cts.Token);
 
         // B (which kept pace) received every delta in order plus RunCompleted, even though A stalled
         // on the same publisher and was dropped.
-        (await bEnum.MoveNextAsync()).Should().BeTrue();
+        (await bEnum.MoveNextAsync())
+            .Should()
+            .BeTrue();
         bEnum.Current.Should().BeOfType<RunCompletedMessage>();
 
         // Before A was dropped, its bounded channel had already buffered `slowSubscriberCapacity`
@@ -563,7 +599,9 @@ public sealed class MultiTurnAgentReplayTests
         // backlog.
         for (var i = 0; i < slowSubscriberCapacity; i++)
         {
-            (await aEnum.MoveNextAsync()).Should().BeTrue("A's buffered backlog must be delivered before the terminal control");
+            (await aEnum.MoveNextAsync())
+                .Should()
+                .BeTrue("A's buffered backlog must be delivered before the terminal control");
             aEnum.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be(i.ToString());
         }
 
@@ -571,7 +609,8 @@ public sealed class MultiTurnAgentReplayTests
         // StreamRecoveryMessage stamped with the run/generation it was last caught up on (the
         // assignment), so the client can tell "you were disconnected, resync" apart from a normal
         // run completion or unsubscribe.
-        (await aEnum.MoveNextAsync()).Should()
+        (await aEnum.MoveNextAsync())
+            .Should()
             .BeTrue("a dropped subscriber must surface an explicit resync control, not a silent end");
         var recovery = aEnum.Current.Should().BeOfType<StreamRecoveryMessage>().Subject;
         recovery.Reason.Should().Be(StreamRecoveryReason.SlowConsumer);
@@ -580,7 +619,8 @@ public sealed class MultiTurnAgentReplayTests
         recovery.GenerationId.Should().Be(genId);
 
         // The recovery control is yielded exactly once; the enumerable then ends cleanly.
-        (await aEnum.MoveNextAsync()).Should()
+        (await aEnum.MoveNextAsync())
+            .Should()
             .BeFalse("the recovery control is terminal and must not repeat or be followed by more messages");
 
         await aEnum.DisposeAsync();
@@ -599,7 +639,8 @@ public sealed class MultiTurnAgentReplayTests
         await using var agent = new ReplayTestAgent(
             "thread-1",
             maxReplayBufferSize: 1_000_000,
-            maxReplayBufferBytes: 1_000);
+            maxReplayBufferBytes: 1_000
+        );
         const string runId = "run-1";
         const string genId = "gen-1";
         var big = new string('x', 200);
@@ -614,7 +655,9 @@ public sealed class MultiTurnAgentReplayTests
         await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
 
         // The budget has not tripped yet, so all three buffered messages replay in full.
-        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync())
+            .Should()
+            .BeTrue();
         e.Current.Should().BeOfType<RunAssignmentMessage>();
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<TextMessage>();
@@ -649,7 +692,8 @@ public sealed class MultiTurnAgentReplayTests
         await using var agent = new ReplayTestAgent(
             "thread-1",
             maxReplayBufferSize: 1_000_000,
-            maxReplayBufferBytes: 1_000);
+            maxReplayBufferBytes: 1_000
+        );
         const string runId = "run-1";
         const string genId = "gen-1";
         // Each delta would be ≈128 + 5,000*2 = 10,128 bytes if buffered — 10x the entire byte budget on
@@ -669,7 +713,9 @@ public sealed class MultiTurnAgentReplayTests
 
         // Replay contains ONLY the assignment and the canonical complete text — none of the 50 huge
         // deltas ever occupied a byte of the bridge's budget.
-        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync())
+            .Should()
+            .BeTrue();
         e.Current.Should().BeOfType<RunAssignmentMessage>();
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<TextMessage>().Which.Text.Should().Be("final");
@@ -704,14 +750,18 @@ public sealed class MultiTurnAgentReplayTests
             await agent.PublishForTest(TextDelta(runId, genId, i.ToString()));
         }
 
-        capturingLogger.WarningCount("replay buffer hit its cap").Should().Be(
-            0, "500 raw deltas alone must never trip the canonical/control bridge's truncation warning");
+        capturingLogger
+            .WarningCount("replay buffer hit its cap")
+            .Should()
+            .Be(0, "500 raw deltas alone must never trip the canonical/control bridge's truncation warning");
 
         // A canonical message now overflows the single-slot cap.
         await agent.PublishForTest(CompleteText(runId, genId, "overflow"));
 
-        capturingLogger.WarningCount("replay buffer hit its cap").Should().BeGreaterThan(
-            0, "a canonical/control entry exceeding the cap must trip the truncation warning");
+        capturingLogger
+            .WarningCount("replay buffer hit its cap")
+            .Should()
+            .BeGreaterThan(0, "a canonical/control entry exceeding the cap must trip the truncation warning");
     }
 
     [Fact]
@@ -736,17 +786,22 @@ public sealed class MultiTurnAgentReplayTests
 
         // A reconnecting subscriber still replays the run's earlier assignment + canonical messages
         // (not cleared).
-        (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<RunAssignmentMessage>()
-            .Which.Assignment.WasInjected.Should().BeFalse("the original run assignment is replayed first");
+        (await e.MoveNextAsync())
+            .Should()
+            .BeTrue();
+        e.Current.Should()
+            .BeOfType<RunAssignmentMessage>()
+            .Which.Assignment.WasInjected.Should()
+            .BeFalse("the original run assignment is replayed first");
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<TextMessage>().Which.Text.Should().Be("Hel");
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<TextMessage>().Which.Text.Should().Be("lo");
         // Followed by the injection assignment itself (also buffered within the same run).
-        (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<RunAssignmentMessage>()
-            .Which.Assignment.WasInjected.Should().BeTrue();
+        (await e.MoveNextAsync())
+            .Should()
+            .BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>().Which.Assignment.WasInjected.Should().BeTrue();
     }
 
     [Fact]
@@ -764,9 +819,10 @@ public sealed class MultiTurnAgentReplayTests
         await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
 
         // Only run-2's assignment is replayed — run-1's assignment + "old" delta were cleared.
-        (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<RunAssignmentMessage>()
-            .Which.Assignment.RunId.Should().Be("run-2");
+        (await e.MoveNextAsync())
+            .Should()
+            .BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>().Which.Assignment.RunId.Should().Be("run-2");
 
         // Nothing else is buffered: the next read blocks until a genuinely live message arrives.
         var next = e.MoveNextAsync();
@@ -782,42 +838,64 @@ public sealed class MultiTurnAgentReplayTests
     ///     carries from the canonical complete message), while complete content, control and accounting
     ///     messages ARE.
     /// </summary>
-    public static TheoryData<IMessage, bool> ReplayClassificationCases() => new()
-    {
-        // Fragments — never canonical.
-        { TextDelta("run-1", "gen-1", "Hel"), false },
-        { new ReasoningUpdateMessage { Reasoning = "thin", Role = Role.Assistant }, false },
-        { new ToolCallUpdateMessage { Role = Role.Assistant, FunctionName = "get_weather" }, false },
-        { new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = [] }, false },
-        // A JSON fragment arrives as an argument-fragment-bearing tool-call update, not a distinct
-        // message type — pinned explicitly so the fragment path is covered by the policy.
+    public static TheoryData<IMessage, bool> ReplayClassificationCases() =>
+        new()
         {
-            new ToolCallUpdateMessage
+            // Fragments — never canonical.
+            { TextDelta("run-1", "gen-1", "Hel"), false },
             {
-                Role = Role.Assistant,
-                FunctionName = "get_weather",
-                FunctionArgs = "{\"loc",
-                JsonFragmentUpdates = [],
+                new ReasoningUpdateMessage { Reasoning = "thin", Role = Role.Assistant },
+                false
             },
-            false
-        },
-
-        // Canonical content and control — always replayed.
-        { Assignment("thread-1", "run-1", "gen-1"), true },
-        { new TextMessage { Text = "Hello", Role = Role.Assistant }, true },
-        { new ReasoningMessage { Reasoning = "thought", Role = Role.Assistant }, true },
-        { ToolCall("run-1", "gen-1", "call_1", 1), true },
-        { ToolResult("run-1", "gen-1", "call_1", 2), true },
-        { new NotifyMessage { NotifyKind = NotifyKinds.ClientNotification, Label = "done" }, true },
-        { new UsageMessage { Usage = new Usage() }, true },
-        { new RunCompletedMessage { CompletedRunId = "run-1", ThreadId = "thread-1" }, true },
-    };
+            {
+                new ToolCallUpdateMessage { Role = Role.Assistant, FunctionName = "get_weather" },
+                false
+            },
+            {
+                new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = [] },
+                false
+            },
+            // A JSON fragment arrives as an argument-fragment-bearing tool-call update, not a distinct
+            // message type — pinned explicitly so the fragment path is covered by the policy.
+            {
+                new ToolCallUpdateMessage
+                {
+                    Role = Role.Assistant,
+                    FunctionName = "get_weather",
+                    FunctionArgs = "{\"loc",
+                    JsonFragmentUpdates = [],
+                },
+                false
+            },
+            // Canonical content and control — always replayed.
+            { Assignment("thread-1", "run-1", "gen-1"), true },
+            {
+                new TextMessage { Text = "Hello", Role = Role.Assistant },
+                true
+            },
+            {
+                new ReasoningMessage { Reasoning = "thought", Role = Role.Assistant },
+                true
+            },
+            { ToolCall("run-1", "gen-1", "call_1", 1), true },
+            { ToolResult("run-1", "gen-1", "call_1", 2), true },
+            {
+                new NotifyMessage { NotifyKind = NotifyKinds.ClientNotification, Label = "done" },
+                true
+            },
+            {
+                new UsageMessage { Usage = new Usage() },
+                true
+            },
+            {
+                new RunCompletedMessage { CompletedRunId = "run-1", ThreadId = "thread-1" },
+                true
+            },
+        };
 
     [Theory]
     [MemberData(nameof(ReplayClassificationCases))]
-    public void Replay_policy_classifies_only_canonical_and_control_messages(
-        IMessage message,
-        bool expected)
+    public void Replay_policy_classifies_only_canonical_and_control_messages(IMessage message, bool expected)
     {
         ReplayMessagePolicy.IsCanonicalOrControl(message).Should().Be(expected);
     }
@@ -835,9 +913,7 @@ public sealed class MultiTurnAgentReplayTests
     private sealed class DisposeRaceTestAgent : MultiTurnAgentBase
     {
         public DisposeRaceTestAgent()
-            : base("thread-1", systemPrompt: null, store: null)
-        {
-        }
+            : base("thread-1", systemPrompt: null, store: null) { }
 
         protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
 
@@ -846,7 +922,8 @@ public sealed class MultiTurnAgentReplayTests
         internal override ValueTask OnSubscriberChannelCompletedDuringDisposeAsync(string subscriberId) =>
             PublishToAllAsync(
                 new RunCompletedMessage { CompletedRunId = "race-run", ThreadId = "thread-1" },
-                CancellationToken.None);
+                CancellationToken.None
+            );
     }
 
     [Fact]
@@ -874,7 +951,9 @@ public sealed class MultiTurnAgentReplayTests
         // Ordinary disposal - even with a publish simulated to race the exact teardown instant - must
         // end the subscriber's stream cleanly. It must never surface a StreamRecoveryMessage; that is
         // reserved for PublishToSubscriber's slow-consumer eviction path.
-        (await e.MoveNextAsync()).Should().BeFalse();
+        (await e.MoveNextAsync())
+            .Should()
+            .BeFalse();
     }
 
     #region Dropped-subscriber identity (run/generation stamped on the recovery control)
@@ -929,18 +1008,40 @@ public sealed class MultiTurnAgentReplayTests
         (await first).Should().BeTrue();
 
         // Delivered: moves the subscriber onto run-2, which carries no generation of its own.
-        await agent.PublishForTest(new TextMessage { Text = "a", Role = Role.Assistant, RunId = "run-2" });
-        await agent.PublishForTest(new TextMessage { Text = "b", Role = Role.Assistant, RunId = "run-2" });
+        await agent.PublishForTest(
+            new TextMessage
+            {
+                Text = "a",
+                Role = Role.Assistant,
+                RunId = "run-2",
+            }
+        );
+        await agent.PublishForTest(
+            new TextMessage
+            {
+                Text = "b",
+                Role = Role.Assistant,
+                RunId = "run-2",
+            }
+        );
 
         // Overflows and is dropped, triggering the recovery control.
-        await agent.PublishForTest(new TextMessage { Text = "c", Role = Role.Assistant, RunId = "run-2" });
+        await agent.PublishForTest(
+            new TextMessage
+            {
+                Text = "c",
+                Role = Role.Assistant,
+                RunId = "run-2",
+            }
+        );
 
         (await e.MoveNextAsync()).Should().BeTrue();
         (await e.MoveNextAsync()).Should().BeTrue();
         (await e.MoveNextAsync()).Should().BeTrue();
         var recovery = e.Current.Should().BeOfType<StreamRecoveryMessage>().Subject;
         recovery.RunId.Should().Be("run-2");
-        recovery.GenerationId.Should()
+        recovery
+            .GenerationId.Should()
             .BeNull("run-2 carried no generation, so run-1's generation must not be paired with it");
 
         await e.DisposeAsync();
@@ -956,9 +1057,7 @@ public sealed class MultiTurnAgentReplayTests
         await using var agent = new ReplayTestAgent("thread-1", outputChannelCapacity: 2);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
-        var input = new UserInput(
-            [new TextMessage { Text = "hello", Role = Role.User }],
-            InputId: "input-1");
+        var input = new UserInput([new TextMessage { Text = "hello", Role = Role.User }], InputId: "input-1");
         var e = agent.ExecuteRunAsync(input, cts.Token).GetAsyncEnumerator(cts.Token);
         var first = e.MoveNextAsync();
         await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
@@ -972,7 +1071,8 @@ public sealed class MultiTurnAgentReplayTests
 
         (await e.MoveNextAsync()).Should().BeTrue();
         (await e.MoveNextAsync()).Should().BeTrue();
-        (await e.MoveNextAsync()).Should()
+        (await e.MoveNextAsync())
+            .Should()
             .BeTrue("a dropped ExecuteRun subscriber must surface an explicit resync control, not end silently");
         var recovery = e.Current.Should().BeOfType<StreamRecoveryMessage>().Subject;
         recovery.Reason.Should().Be(StreamRecoveryReason.SlowConsumer);
@@ -1119,7 +1219,8 @@ public sealed class MultiTurnAgentReplayTests
         // Ending here would force the consumer to reconnect to keep following the run, and the
         // reconnection lands on the same still-truncated buffer — advised again, for the rest of the run.
         await agent.PublishForTest(TextDelta("run-1", "gen-1", "LIVE"));
-        (await e.MoveNextAsync()).Should()
+        (await e.MoveNextAsync())
+            .Should()
             .BeTrue("the advisory precedes the live tail instead of terminating the stream");
         e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("LIVE");
     }
@@ -1143,14 +1244,16 @@ public sealed class MultiTurnAgentReplayTests
         // First subscriber CONSUMES its advisory — the exact act that used to spend the latch.
         await using var first = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
         (await first.MoveNextAsync()).Should().BeTrue();
-        first.Current.Should()
+        first
+            .Current.Should()
             .BeOfType<StreamRecoveryMessage>()
             .Which.Reason.Should()
             .Be(StreamRecoveryReason.ReplayTruncated);
 
         await using var second = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
         (await second.MoveNextAsync()).Should().BeTrue();
-        second.Current.Should()
+        second
+            .Current.Should()
             .BeOfType<StreamRecoveryMessage>("a second consumer's replay is just as truncated as the first's")
             .Which.Reason.Should()
             .Be(StreamRecoveryReason.ReplayTruncated);
@@ -1200,9 +1303,7 @@ public sealed class MultiTurnAgentReplayTests
         private int _onDisposeCount;
 
         public GatedDisposeAgent()
-            : base("thread-1", systemPrompt: null, store: null)
-        {
-        }
+            : base("thread-1", systemPrompt: null, store: null) { }
 
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1232,8 +1333,11 @@ public sealed class MultiTurnAgentReplayTests
         await agent.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         var secondDispose = agent.DisposeAsync().AsTask();
-        secondDispose.IsCompleted.Should()
-            .BeFalse("a concurrent DisposeAsync must await the running teardown, not report success while it is unfinished");
+        secondDispose
+            .IsCompleted.Should()
+            .BeFalse(
+                "a concurrent DisposeAsync must await the running teardown, not report success while it is unfinished"
+            );
 
         _ = agent.Release.TrySetResult();
         await Task.WhenAll(firstDispose, secondDispose).WaitAsync(TimeSpan.FromSeconds(10));
@@ -1245,7 +1349,8 @@ public sealed class MultiTurnAgentReplayTests
     /// REFERENCE — the only way to tell our fault apart from any other test's on the process-wide
     /// <see cref="TaskScheduler.UnobservedTaskException"/> event.
     /// </summary>
-    private sealed class ThrowingDisposeAgent(Exception failure) : MultiTurnAgentBase("thread-1", systemPrompt: null, store: null)
+    private sealed class ThrowingDisposeAgent(Exception failure)
+        : MultiTurnAgentBase("thread-1", systemPrompt: null, store: null)
     {
         protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
 
@@ -1315,8 +1420,11 @@ public sealed class MultiTurnAgentReplayTests
 
             lock (gate)
             {
-                leaked.Should()
-                    .BeEmpty("a teardown fault the disposing caller already observed must not be left on a second, abandoned task");
+                leaked
+                    .Should()
+                    .BeEmpty(
+                        "a teardown fault the disposing caller already observed must not be left on a second, abandoned task"
+                    );
             }
         }
         finally
@@ -1419,9 +1527,7 @@ public sealed class MultiTurnAgentReplayTests
         private int _hookRan;
 
         public SubscribeDuringDisposeAgent()
-            : base("thread-1", systemPrompt: null, store: null)
-        {
-        }
+            : base("thread-1", systemPrompt: null, store: null) { }
 
         public Exception? SubscribeFailure { get; private set; }
 
@@ -1469,10 +1575,12 @@ public sealed class MultiTurnAgentReplayTests
         await agent.DisposeAsync();
 
         agent.SubscribeCompletedNormally.Should().BeFalse();
-        agent.SubscribeFailure.Should()
+        agent
+            .SubscribeFailure.Should()
             .BeOfType<ObjectDisposedException>(
                 "a subscription arriving mid-teardown must be refused outright, not left waiting on a channel "
-                    + "no one will complete");
+                    + "no one will complete"
+            );
 
         await e.DisposeAsync();
     }
@@ -1581,11 +1689,9 @@ public sealed class MultiTurnAgentReplayTests
         // MOST likely to be connected — and used to abandon their channels unfinished.
         var failure = new InvalidOperationException("lifecycle terminalization failed");
         var clock = new ArmedFailingClock(failure);
-        var agent = new OutstandingLifecycleRunAgent(new MultiTurnLifecycleServices
-        {
-            Publisher = new RecordingLifecyclePublisher(),
-            TimeProvider = clock,
-        });
+        var agent = new OutstandingLifecycleRunAgent(
+            new MultiTurnLifecycleServices { Publisher = new RecordingLifecyclePublisher(), TimeProvider = clock }
+        );
 
         // Start the run while the clock still works (RunStartedAsync reads it too), so only the
         // terminal timestamp taken during disposal can fail.
@@ -1677,7 +1783,8 @@ public sealed class MultiTurnAgentReplayTests
 
         await Task.WhenAll(drains).WaitAsync(TimeSpan.FromSeconds(30));
 
-        agent.HookedSubscribers.Should()
+        agent
+            .HookedSubscribers.Should()
             .HaveCount(3, "every subscriber's hook runs independently; one failure must not skip the rest");
 
         var second = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());

@@ -68,8 +68,7 @@ public sealed class InfraNarrationFilterTests
     {
         // "has not started" is not among the covered auxiliary forms (could not/did not/were not/was
         // not/no...were|was run/not installed|found|available/unavailable).
-        const string Body =
-            "The supplied pipeline record states that the build is queued and has not started.";
+        const string Body = "The supplied pipeline record states that the build is queued and has not started.";
 
         var (filtered, moved) = InfraNarrationFilter.Filter(Body);
 
@@ -194,8 +193,7 @@ public sealed class InfraNarrationFilterTests
         // "#### Finding 1 — CRITICAL" heading it is untouched and nothing is recorded to the operator
         // channel.
         const string Body =
-            "#### Finding 1 — CRITICAL\n\n"
-            + "No provider comments were posted, per the collect-only instruction.";
+            "#### Finding 1 — CRITICAL\n\n" + "No provider comments were posted, per the collect-only instruction.";
 
         var (filtered, moved) = InfraNarrationFilter.Filter(Body);
 
@@ -208,17 +206,19 @@ public sealed class InfraNarrationFilterTests
     [Fact]
     public void Filter_Run41_CouldNotBeRun_IsRewrittenGenerically()
     {
-        const string Sentence =
-            "Focused tests could not be run because the sandbox does not have `dotnet` installed.";
+        const string Sentence = "Focused tests could not be run because the sandbox does not have `dotnet` installed.";
         const string Body = "### Verification\n\n" + Sentence;
 
         var (filtered, moved) = InfraNarrationFilter.Filter(Body);
 
         filtered.Should().NotContain("dotnet");
         filtered.Should().NotContain(Sentence);
-        filtered.Should().Contain(
-            "Local build/test execution was not possible for this review; no results from running the "
-                + "code are reflected in this assessment.");
+        filtered
+            .Should()
+            .Contain(
+                "Local build/test execution was not possible for this review; no results from running the "
+                    + "code are reflected in this assessment."
+            );
         moved.Should().BeEmpty();
     }
 
@@ -233,9 +233,12 @@ public sealed class InfraNarrationFilterTests
         var (filtered, moved) = InfraNarrationFilter.Filter(Body);
 
         filtered.Should().NotContain("jest: not found");
-        filtered.Should().Contain(
-            "Local build/test execution was not possible for this review; no results from running the "
-                + "code are reflected in this assessment.");
+        filtered
+            .Should()
+            .Contain(
+                "Local build/test execution was not possible for this review; no results from running the "
+                    + "code are reflected in this assessment."
+            );
         moved.Should().BeEmpty();
     }
 
@@ -251,9 +254,12 @@ public sealed class InfraNarrationFilterTests
         var (filtered, moved) = InfraNarrationFilter.Filter(Body);
 
         filtered.Should().NotContain("exit 127");
-        filtered.Should().Contain(
-            "Local build/test execution was not possible for this review; no results from running the "
-                + "code are reflected in this assessment.");
+        filtered
+            .Should()
+            .Contain(
+                "Local build/test execution was not possible for this review; no results from running the "
+                    + "code are reflected in this assessment."
+            );
         moved.Should().BeEmpty();
     }
 
@@ -279,9 +285,12 @@ public sealed class InfraNarrationFilterTests
         filtered.Should().NotContain("Azure Artifacts");
         filtered.Should().NotContain("policy_evaluation_failed");
         filtered.Should().NotContain("```");
-        filtered.Should().Contain(
-            "Local build/test execution was not possible for this review; no results from running the "
-                + "code are reflected in this assessment.");
+        filtered
+            .Should()
+            .Contain(
+                "Local build/test execution was not possible for this review; no results from running the "
+                    + "code are reflected in this assessment."
+            );
         filtered.Should().Contain("Approve with the existing non-blocking localization comment.");
         moved.Should().BeEmpty("the sentence matched both categories' vocabulary, but SandboxTooling takes precedence");
     }
@@ -290,8 +299,7 @@ public sealed class InfraNarrationFilterTests
     public void Filter_Run181_FenceDirectlyAfterRewrittenSentence_IsSweptAway()
     {
         const string Sentence =
-            "Targeted tests could not be run because the review environment does not have `dotnet` "
-            + "installed:";
+            "Targeted tests could not be run because the review environment does not have `dotnet` " + "installed:";
         const string Body =
             "### Verification\n\n"
             + Sentence
@@ -339,9 +347,12 @@ public sealed class InfraNarrationFilterTests
         filtered.Should().Contain("- Build `39200087`: **completed / succeeded**");
         filtered.Should().Contain("- Tests: **3,136 total; 2,929 passed; 0 failed**");
         filtered.Should().NotContain("toolchain");
-        filtered.Should().Contain(
-            "Local build/test execution was not possible for this review; no results from running the "
-                + "code are reflected in this assessment.");
+        filtered
+            .Should()
+            .Contain(
+                "Local build/test execution was not possible for this review; no results from running the "
+                    + "code are reflected in this assessment."
+            );
         moved.Should().BeEmpty();
     }
 
@@ -380,9 +391,12 @@ public sealed class InfraNarrationFilterTests
         filtered.Should().Contain("- Build **39161710**: **completed / succeeded**");
         filtered.Should().Contain("- Tests: **8,503 total; 8,502 passed; 0 failed**");
         filtered.Should().NotContain("sandbox constraint");
-        filtered.Should().Contain(
-            "Local build/test execution was not possible for this review; no results from running the "
-                + "code are reflected in this assessment.");
+        filtered
+            .Should()
+            .Contain(
+                "Local build/test execution was not possible for this review; no results from running the "
+                    + "code are reflected in this assessment."
+            );
         moved.Should().BeEmpty();
     }
 
@@ -414,8 +428,11 @@ public sealed class InfraNarrationFilterTests
 
         filtered.Should().NotContain(Sentence);
         filtered.Should().NotContain("provider");
-        moved.Should().ContainSingle().Which.Should().BeEquivalentTo(
-            new MovedNote(InfraCategory.ProviderOrPosting, "posting_state", "Review", Sentence));
+        moved
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeEquivalentTo(new MovedNote(InfraCategory.ProviderOrPosting, "posting_state", "Review", Sentence));
     }
 
     [Fact]
@@ -451,9 +468,8 @@ public sealed class InfraNarrationFilterTests
             + "thread because the ADO request failed with HTTP 502 (`policy_evaluation_failed`); no "
             + "provider comment was posted.";
         var (filtered, moved) = InfraNarrationFilter.Filter(
-            "### Review Coverage\n\n"
-                + "The local PR diff and relevant surrounding code were reviewed.\n\n"
-                + Sentence);
+            "### Review Coverage\n\n" + "The local PR diff and relevant surrounding code were reviewed.\n\n" + Sentence
+        );
 
         filtered.Should().Contain("The local PR diff and relevant surrounding code were reviewed.");
         filtered.Should().NotContain("policy_evaluation_failed");
@@ -526,9 +542,12 @@ public sealed class InfraNarrationFilterTests
         var (filtered, moved) = InfraNarrationFilter.Filter(Body);
 
         filtered.Should().NotContain("No new comment should be posted");
-        filtered.Should().Contain(
-            "The PR still requires resolution or explicit disposition of the existing active findings "
-                + "listed above before approval.");
+        filtered
+            .Should()
+            .Contain(
+                "The PR still requires resolution or explicit disposition of the existing active findings "
+                    + "listed above before approval."
+            );
         moved.Should().ContainSingle().Which.SubTag.Should().Be("posting_state");
     }
 
@@ -537,7 +556,8 @@ public sealed class InfraNarrationFilterTests
     {
         const string Sentence = "No additional review comment should be posted.";
         var (filtered, moved) = InfraNarrationFilter.Filter(
-            "No sub-agent retractions or unsubstantiated findings were present.\n\n" + Sentence);
+            "No sub-agent retractions or unsubstantiated findings were present.\n\n" + Sentence
+        );
 
         // The negative-control sentence right before it (Filter_Run240_..._Survives above) is untouched.
         filtered.Should().Contain("No sub-agent retractions or unsubstantiated findings were present.");
@@ -578,20 +598,29 @@ public sealed class InfraNarrationFilterTests
 
         var (filtered, moved) = InfraNarrationFilter.Filter(Body);
 
-        filtered.Should().Contain(
-            "`selectCategoryFilter` converts every `visibleTab.click()` failure into `false`",
-            "the genuine finding bullet sits under the very same heading as the sandbox bullet and must "
-                + "survive untouched — this is the property section/heading-level filtering could not give");
-        filtered.Should().Contain(
-            "Only a confirmed overflow condition should use the fallback; unexpected click errors should "
-                + "propagate.",
-            "the finding's remedy sentence is not truncated or otherwise disturbed");
+        filtered
+            .Should()
+            .Contain(
+                "`selectCategoryFilter` converts every `visibleTab.click()` failure into `false`",
+                "the genuine finding bullet sits under the very same heading as the sandbox bullet and must "
+                    + "survive untouched — this is the property section/heading-level filtering could not give"
+            );
+        filtered
+            .Should()
+            .Contain(
+                "Only a confirmed overflow condition should use the fallback; unexpected click errors should "
+                    + "propagate.",
+                "the finding's remedy sentence is not truncated or otherwise disturbed"
+            );
         filtered.Should().NotContain("dotnet");
-        filtered.Should().Contain(
-            "Local build/test execution was not possible for this review; no results from running the "
-                + "code are reflected in this assessment.",
-            "the adjacent sandbox bullet is still rewritten (never deleted) even though it directly follows "
-                + "a real finding bullet with no blank line between them");
+        filtered
+            .Should()
+            .Contain(
+                "Local build/test execution was not possible for this review; no results from running the "
+                    + "code are reflected in this assessment.",
+                "the adjacent sandbox bullet is still rewritten (never deleted) even though it directly follows "
+                    + "a real finding bullet with no blank line between them"
+            );
         moved.Should().BeEmpty();
     }
 
@@ -614,10 +643,13 @@ public sealed class InfraNarrationFilterTests
 
         var (filtered, moved) = InfraNarrationFilter.Filter(Body);
 
-        filtered.Should().Be(
-            Body,
-            "a HIGH finding about the author's own build script is not infra narration, however much "
-                + "vocabulary it shares with it");
+        filtered
+            .Should()
+            .Be(
+                Body,
+                "a HIGH finding about the author's own build script is not infra narration, however much "
+                    + "vocabulary it shares with it"
+            );
         moved.Should().BeEmpty();
     }
 
@@ -667,14 +699,20 @@ public sealed class InfraNarrationFilterTests
 
         var (filtered, moved) = InfraNarrationFilter.Filter(Body);
 
-        filtered.Should().Contain(
-            "- **[HIGH]** `build/pack.ps1:12` The packaging step could not be run on Linux agents because "
-                + "`msbuild` is not available there.",
-            "the tag in the bullet's own text is the only thing protecting it — the heading is not exempt");
-        filtered.Should().Contain(
-            "Local build/test execution was not possible",
-            "the untagged sandbox bullet beside it is still rewritten, which is what proves the heading "
-                + "really is unprotected here");
+        filtered
+            .Should()
+            .Contain(
+                "- **[HIGH]** `build/pack.ps1:12` The packaging step could not be run on Linux agents because "
+                    + "`msbuild` is not available there.",
+                "the tag in the bullet's own text is the only thing protecting it — the heading is not exempt"
+            );
+        filtered
+            .Should()
+            .Contain(
+                "Local build/test execution was not possible",
+                "the untagged sandbox bullet beside it is still rewritten, which is what proves the heading "
+                    + "really is unprotected here"
+            );
         moved.Should().BeEmpty();
     }
 
@@ -692,9 +730,12 @@ public sealed class InfraNarrationFilterTests
         var (filtered, moved) = InfraNarrationFilter.Filter(Body);
 
         filtered.Should().Be(Body);
-        moved.Should().BeEmpty(
-            "a MEDIUM finding about posting state is a finding about the AUTHOR's code, not our delivery "
-                + "narration, and MOVE would have deleted it outright");
+        moved
+            .Should()
+            .BeEmpty(
+                "a MEDIUM finding about posting state is a finding about the AUTHOR's code, not our delivery "
+                    + "narration, and MOVE would have deleted it outright"
+            );
     }
 
     [Fact]
@@ -727,12 +768,12 @@ public sealed class InfraNarrationFilterTests
     // One real sentence anywhere is content, however much scaffolding surrounds it.
     [InlineData("### Verification\n\nThe migration needs a default backfill.\n", true)]
     [InlineData("- [BLOCKER] `AddTenantId` has no default.\n", true)]
-    public void HasAuthorFacingContent_ignores_scaffolding_and_reports_only_readable_content(
-        string body, bool expected)
+    public void HasAuthorFacingContent_ignores_scaffolding_and_reports_only_readable_content(string body, bool expected)
     {
-        InfraNarrationFilter.HasAuthorFacingContent(body).Should().Be(
-            expected,
-            "a bot-name prefix over a bare heading is not a review, and IsNullOrWhiteSpace calls it one");
+        InfraNarrationFilter
+            .HasAuthorFacingContent(body)
+            .Should()
+            .Be(expected, "a bot-name prefix over a bare heading is not a review, and IsNullOrWhiteSpace calls it one");
     }
 
     // ---- Line structure survives filtering ----------------------------------------------------------------
@@ -751,15 +792,20 @@ public sealed class InfraNarrationFilterTests
         var (filtered, _) = InfraNarrationFilter.Filter(Body);
 
         var lines = filtered.Split('\n');
-        lines.Should().ContainSingle(
-            l => l.StartsWith("2. ", StringComparison.Ordinal),
-            "the list marker and the rewritten text stay on ONE line — '2.' reads as a sentence end, and "
-                + "splitting there left a bare '2.' on its own line and orphaned the item text below it");
-        lines.Should().Contain(
-            "1. CI ran the full suite on the merge commit.", "the untouched item is byte-identical");
-        filtered.Should().Contain(
-            "2. Local build/test execution was not possible for this review; no results from running the code "
-                + "are reflected in this assessment.");
+        lines
+            .Should()
+            .ContainSingle(
+                l => l.StartsWith("2. ", StringComparison.Ordinal),
+                "the list marker and the rewritten text stay on ONE line — '2.' reads as a sentence end, and "
+                    + "splitting there left a bare '2.' on its own line and orphaned the item text below it"
+            );
+        lines.Should().Contain("1. CI ran the full suite on the merge commit.", "the untouched item is byte-identical");
+        filtered
+            .Should()
+            .Contain(
+                "2. Local build/test execution was not possible for this review; no results from running the code "
+                    + "are reflected in this assessment."
+            );
     }
 
     [Fact]
@@ -775,11 +821,17 @@ public sealed class InfraNarrationFilterTests
         var (filtered, _) = InfraNarrationFilter.Filter(Body);
 
         var rowLines = filtered.Split('\n').Where(l => l.Contains("1204", StringComparison.Ordinal)).ToList();
-        rowLines.Should().ContainSingle(
-            "the surviving cell text stays on its original row rather than being torn onto a line of its own");
-        rowLines[0].Should().Contain(
-            "Local build/test execution was not possible",
-            "the rewritten sentence stays in the same row as the text it sat beside");
+        rowLines
+            .Should()
+            .ContainSingle(
+                "the surviving cell text stays on its original row rather than being torn onto a line of its own"
+            );
+        rowLines[0]
+            .Should()
+            .Contain(
+                "Local build/test execution was not possible",
+                "the rewritten sentence stays in the same row as the text it sat beside"
+            );
         filtered.Should().Contain("| --- | --- |", "the table's separator row is untouched");
     }
 
@@ -794,9 +846,12 @@ public sealed class InfraNarrationFilterTests
         var (filtered, _) = InfraNarrationFilter.Filter(Body);
 
         var bulletLines = filtered.Split('\n').Where(l => l.StartsWith("- ", StringComparison.Ordinal)).ToList();
-        bulletLines.Should().ContainSingle(
-            "one input bullet stays one output bullet — the surviving sentence must not be orphaned onto a "
-                + "second line without a marker");
+        bulletLines
+            .Should()
+            .ContainSingle(
+                "one input bullet stays one output bullet — the surviving sentence must not be orphaned onto a "
+                    + "second line without a marker"
+            );
         bulletLines[0].Should().Contain("The migration still needs a default backfill before it is safe.");
         bulletLines[0].Should().Contain("Local build/test execution was not possible");
         bulletLines[0].Should().NotContain("dotnet");

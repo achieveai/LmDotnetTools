@@ -37,13 +37,13 @@ public sealed class S2SReviewSubAgentCompletionSourceTests
     [Fact]
     public async Task GetSnapshotAsync_PollsTheGivenParentThreadId_AndReturnsTheClientsSnapshot()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "api/conversations/thread-root/subagents?recursive=true",
-                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
-                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
-                    + "\"status\":\"running\"}]}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "api/conversations/thread-root/subagents?recursive=true",
+            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                + "\"status\":\"running\"}]}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
         var source = new S2SReviewSubAgentCompletionSource(client);
@@ -62,8 +62,11 @@ public sealed class S2SReviewSubAgentCompletionSourceTests
     {
         // An incompatible/unavailable host response must never surface as an empty-success snapshot — the
         // adapter must let the client's InvalidOperationException propagate unchanged.
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Get, "subagents", "{\"schemaVersion\":2,\"nodes\":[]}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "{\"schemaVersion\":2,\"nodes\":[]}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
         var source = new S2SReviewSubAgentCompletionSource(client);

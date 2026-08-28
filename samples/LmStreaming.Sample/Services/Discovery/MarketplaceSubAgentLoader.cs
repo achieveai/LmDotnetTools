@@ -39,9 +39,7 @@ public sealed class MarketplaceSubAgentLoader
     private readonly IMarketplaceCatalogClient _catalogClient;
     private readonly ILogger<MarketplaceSubAgentLoader> _logger;
 
-    public MarketplaceSubAgentLoader(
-        IMarketplaceCatalogClient catalogClient,
-        ILogger<MarketplaceSubAgentLoader> logger)
+    public MarketplaceSubAgentLoader(IMarketplaceCatalogClient catalogClient, ILogger<MarketplaceSubAgentLoader> logger)
     {
         _catalogClient = catalogClient ?? throw new ArgumentNullException(nameof(catalogClient));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -59,7 +57,8 @@ public sealed class MarketplaceSubAgentLoader
     public async Task<IReadOnlyDictionary<string, SubAgentTemplate>> LoadAsync(
         IReadOnlyList<string>? marketplaces,
         Func<IStreamingAgent> agentFactory,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(agentFactory);
 
@@ -74,9 +73,7 @@ public sealed class MarketplaceSubAgentLoader
         }
         catch (MarketplaceCatalogUnavailableException ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Marketplace catalog unavailable; continuing without marketplace sub-agents.");
+            _logger.LogWarning(ex, "Marketplace catalog unavailable; continuing without marketplace sub-agents.");
             return new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal);
         }
         catch (Exception ex)
@@ -87,7 +84,8 @@ public sealed class MarketplaceSubAgentLoader
             // must NOT abort agent creation — enrichment is best-effort.
             _logger.LogWarning(
                 ex,
-                "Unexpected error fetching marketplace catalog; continuing without marketplace sub-agents.");
+                "Unexpected error fetching marketplace catalog; continuing without marketplace sub-agents."
+            );
             return new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal);
         }
 
@@ -104,7 +102,8 @@ public sealed class MarketplaceSubAgentLoader
     internal static IReadOnlyDictionary<string, SubAgentTemplate> MapCatalog(
         MarketplaceCatalog catalog,
         Func<IStreamingAgent> agentFactory,
-        ILogger? logger = null)
+        ILogger? logger = null
+    )
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(agentFactory);
@@ -123,17 +122,14 @@ public sealed class MarketplaceSubAgentLoader
                     }
 
                     var bareName = agent.Name.Trim();
-                    var pluginName = string.IsNullOrWhiteSpace(plugin.Name)
-                        ? agent.Plugin?.Trim()
-                        : plugin.Name.Trim();
-                    var key = string.IsNullOrWhiteSpace(pluginName)
-                        ? bareName
-                        : $"{pluginName}:{bareName}";
+                    var pluginName = string.IsNullOrWhiteSpace(plugin.Name) ? agent.Plugin?.Trim() : plugin.Name.Trim();
+                    var key = string.IsNullOrWhiteSpace(pluginName) ? bareName : $"{pluginName}:{bareName}";
                     if (!result.TryAdd(key, MapToTemplate(agent, agentFactory)))
                     {
                         logger?.LogInformation(
                             "Marketplace sub-agent {Name} appears in more than one plugin/marketplace; keeping the first occurrence.",
-                            key);
+                            key
+                        );
                     }
                 }
             }
@@ -149,9 +145,7 @@ public sealed class MarketplaceSubAgentLoader
     /// <see cref="AchieveAi.LmDotnetTools.LmSampleShared.Discovery.SubAgentTemplateMapper.Map"/>. The
     /// system prompt is best-effort because the preview never returns the agent's instruction body.
     /// </summary>
-    internal static SubAgentTemplate MapToTemplate(
-        CatalogAgent agent,
-        Func<IStreamingAgent> agentFactory)
+    internal static SubAgentTemplate MapToTemplate(CatalogAgent agent, Func<IStreamingAgent> agentFactory)
     {
         var name = agent.Name.Trim();
         var description = string.IsNullOrWhiteSpace(agent.Description) ? null : agent.Description.Trim();
@@ -181,9 +175,7 @@ public sealed class MarketplaceSubAgentLoader
                 : $" contributed by the {plugin.Trim()} plugin"
             : string.Empty;
 
-        var role = string.IsNullOrWhiteSpace(description)
-            ? string.Empty
-            : $" {description}";
+        var role = string.IsNullOrWhiteSpace(description) ? string.Empty : $" {description}";
 
         return $"You are the \"{name}\" sub-agent{origin}.{role} "
             + "Complete the delegated task end to end using the tools available to you, then return a "
@@ -200,7 +192,8 @@ public sealed class MarketplaceSubAgentLoader
     internal static void MergeFillGaps(
         IDictionary<string, SubAgentTemplate> existing,
         IReadOnlyDictionary<string, SubAgentTemplate> catalog,
-        ILogger logger)
+        ILogger logger
+    )
     {
         ArgumentNullException.ThrowIfNull(existing);
         ArgumentNullException.ThrowIfNull(catalog);
@@ -212,7 +205,8 @@ public sealed class MarketplaceSubAgentLoader
             {
                 logger.LogInformation(
                     "Marketplace sub-agent {Name} is already provided by a built-in or workspace file; keeping the existing template.",
-                    key);
+                    key
+                );
             }
         }
     }

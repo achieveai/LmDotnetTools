@@ -121,7 +121,8 @@ public record AnthropicContent
     public JsonNode? ContentRaw =>
         ToolResultContentBlocks is { Count: > 0 }
             ? JsonSerializer.SerializeToNode(ToolResultContentBlocks, s_contentBlockOptions)
-            : Content != null ? JsonValue.Create(Content) : null;
+        : Content != null ? JsonValue.Create(Content)
+        : null;
 
     /// <summary>
     ///     Serialization options for content blocks — omits null fields to keep the JSON clean.

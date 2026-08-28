@@ -32,15 +32,18 @@ public sealed class ChatWebSocketManagerSubAgentTests
         // handler's subscription replays + streams them; releasing the gate completes the run and
         // must produce the {"$type":"done"} sentinel.
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var provider = new ScriptedSubAgentProvider((messages, ct) =>
-          TwoMessagesThenBlock(gate.Task, ct));
+        var provider = new ScriptedSubAgentProvider((messages, ct) => TwoMessagesThenBlock(gate.Task, ct));
 
         await using var loop = CreateParentLoop(() => provider);
         await using var pool = CreatePoolReturning(loop);
         RegisterParent(pool);
 
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "do work", name: "alpha", runInBackground: true);
+            TemplateName,
+            "do work",
+            name: "alpha",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
 
         var manager = CreateManager(pool);
@@ -48,12 +51,18 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
 
         // The two live child messages must reach the client (via replay of the in-flight run).
         await socket.WaitUntilAsync(
-          () => socket.SentContains("chunk-one") && socket.SentContains("chunk-two"),
-          testCts.Token);
+            () => socket.SentContains("chunk-one") && socket.SentContains("chunk-two"),
+            testCts.Token
+        );
 
         // Complete the child run; the handler must emit the done sentinel after RunCompletedMessage.
         gate.SetResult();
@@ -84,7 +93,11 @@ public sealed class ChatWebSocketManagerSubAgentTests
         RegisterParent(pool);
 
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "seed-task", name: "alpha", runInBackground: true);
+            TemplateName,
+            "seed-task",
+            name: "alpha",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
 
         // The spawn run must be in flight (blocked) before we relay.
@@ -97,7 +110,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
 
         // Non-blocking proof: both frames are read even though the child's first run is still blocked.
         await socket.WaitUntilAsync(() => socket.ReceivedFrameCount >= 2, testCts.Token);
@@ -106,8 +124,9 @@ public sealed class ChatWebSocketManagerSubAgentTests
         // Now let the child drain: the relayed prompts must reach the provider (child received input).
         firstRunGate.SetResult();
         await provider.WaitUntilAsync(
-          () => provider.ReceivedContains("relayed-one") && provider.ReceivedContains("relayed-two"),
-          TimeSpan.FromSeconds(30));
+            () => provider.ReceivedContains("relayed-one") && provider.ReceivedContains("relayed-two"),
+            TimeSpan.FromSeconds(30)
+        );
 
         await testCts.CancelAsync();
         await handlerTask;
@@ -143,7 +162,11 @@ public sealed class ChatWebSocketManagerSubAgentTests
 
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "do work", name: "alpha", runInBackground: true);
+            TemplateName,
+            "do work",
+            name: "alpha",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
 
         // Ensure the first run has finished so the relay takes the (throwing) restart path.
@@ -155,7 +178,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
         socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("relayed-two")));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
 
         // Both frames are read: the first relay throws (restart recreation fails) but is isolated, so
         // the loop stays alive and reads the second frame instead of faulting the connection.
@@ -179,7 +207,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, "does-not-exist", mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            "does-not-exist",
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
 
         socket.SentFrames.Should().ContainSingle();
         var frame = socket.SentFrames[0];
@@ -200,11 +233,16 @@ public sealed class ChatWebSocketManagerSubAgentTests
         const string agentId = "completed-child";
         var threadId = $"subagent-{agentId}";
         var store = new InMemoryConversationStore();
-        await store.AppendMessagesAsync(threadId,
-        [
-            MessagePersistenceConverter.ToPersistedMessage(
-              new TextMessage { Role = Role.Assistant, Text = "persisted-answer" }, threadId, runId: "run-1"),
-        ]);
+        await store.AppendMessagesAsync(
+            threadId,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(
+                    new TextMessage { Role = Role.Assistant, Text = "persisted-answer" },
+                    threadId,
+                    runId: "run-1"
+                ),
+            ]
+        );
 
         // A parent loop IS registered (so the first resolution branch runs), but agentId was never spawned,
         // so no live stream resolves and the handler falls through to the persisted-history branch.
@@ -218,16 +256,21 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
 
         // The handler settles the client with the done sentinel and does NOT surface an unavailable error.
         await socket.WaitUntilAsync(() => socket.SentContains("\"$type\":\"done\""), testCts.Token);
-        socket.SentContains("subagent_unavailable").Should()
-          .BeFalse("a persisted transcript must replay read-only, not surface an error");
-        handlerTask.IsCompleted.Should()
-          .BeFalse("the read-only replay socket stays open until the client disconnects");
-        socket.CloseAsyncCalled.Should()
-          .BeFalse("the server must not close a read-only replay socket");
+        socket
+            .SentContains("subagent_unavailable")
+            .Should()
+            .BeFalse("a persisted transcript must replay read-only, not surface an error");
+        handlerTask.IsCompleted.Should().BeFalse("the read-only replay socket stays open until the client disconnects");
+        socket.CloseAsyncCalled.Should().BeFalse("the server must not close a read-only replay socket");
 
         // Client disconnect (here: shutdown) tears the read-only socket down cleanly.
         await testCts.CancelAsync();
@@ -248,7 +291,11 @@ public sealed class ChatWebSocketManagerSubAgentTests
         RegisterParent(pool);
 
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "seed-task", name: "alpha", runInBackground: true);
+            TemplateName,
+            "seed-task",
+            name: "alpha",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
         await provider.WaitUntilAsync(() => provider.ReceivedContains("seed-task"), TimeSpan.FromSeconds(30));
 
@@ -261,7 +308,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
         firstRunGate.SetResult();
         await provider.WaitUntilAsync(() => provider.ReceivedContains("split-message"), TimeSpan.FromSeconds(30));
 
@@ -284,7 +336,11 @@ public sealed class ChatWebSocketManagerSubAgentTests
         RegisterParent(pool);
 
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "seed-task", name: "alpha", runInBackground: true);
+            TemplateName,
+            "seed-task",
+            name: "alpha",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
         await provider.WaitUntilAsync(() => provider.ReceivedContains("seed-task"), TimeSpan.FromSeconds(30));
 
@@ -299,7 +355,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
         firstRunGate.SetResult();
         await provider.WaitUntilAsync(() => provider.ReceivedContains(payload), TimeSpan.FromSeconds(30));
 
@@ -320,18 +381,28 @@ public sealed class ChatWebSocketManagerSubAgentTests
         RegisterParent(pool);
 
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "do work", name: "alpha", runInBackground: true);
+            TemplateName,
+            "do work",
+            name: "alpha",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
 
         var manager = CreateManager(pool);
         manager.MaxInboundMessageBytes = 16;
         var socket = new FakeWebSocket();
         socket.EnqueueTextFrame(
-          JsonSerializer.Serialize(new ChatRequest("this-message-is-far-larger-than-the-configured-limit")));
+            JsonSerializer.Serialize(new ChatRequest("this-message-is-far-larger-than-the-configured-limit"))
+        );
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
         await handlerTask;
 
         socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.MessageTooBig);
@@ -349,7 +420,11 @@ public sealed class ChatWebSocketManagerSubAgentTests
         RegisterParent(pool);
 
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "do work", name: "alpha", runInBackground: true);
+            TemplateName,
+            "do work",
+            name: "alpha",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
 
         var manager = CreateManager(pool);
@@ -358,7 +433,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
         await handlerTask;
 
         socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.InvalidMessageType);
@@ -376,7 +456,11 @@ public sealed class ChatWebSocketManagerSubAgentTests
         RegisterParent(pool);
 
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "do work", name: "alpha", runInBackground: true);
+            TemplateName,
+            "do work",
+            name: "alpha",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
 
         var manager = CreateManager(pool);
@@ -387,7 +471,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
         await handlerTask;
 
         socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.PolicyViolation);
@@ -407,7 +496,11 @@ public sealed class ChatWebSocketManagerSubAgentTests
         RegisterParent(pool);
 
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "do work", name: "alpha", runInBackground: true);
+            TemplateName,
+            "do work",
+            name: "alpha",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
 
         var manager = CreateManager(pool);
@@ -416,7 +509,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
 
         // Wait well past the assembly deadline; an idle wait must NOT close the socket.
         await Task.Delay(TimeSpan.FromMilliseconds(700), testCts.Token);
@@ -441,7 +539,11 @@ public sealed class ChatWebSocketManagerSubAgentTests
         RegisterParent(pool);
 
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "seed-task", name: "alpha", runInBackground: true);
+            TemplateName,
+            "seed-task",
+            name: "alpha",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
         await provider.WaitUntilAsync(() => provider.ReceivedContains("seed-task"), TimeSpan.FromSeconds(30));
 
@@ -452,15 +554,24 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
         firstRunGate.SetResult();
         await provider.WaitUntilAsync(() => provider.ReceivedContains(sentinel), TimeSpan.FromSeconds(30));
 
         await testCts.CancelAsync();
         await handlerTask;
 
-        capture.Entries.Should().NotContain(e => e.Contains(sentinel, StringComparison.Ordinal),
-          "the relay path must never log the prompt body");
+        capture
+            .Entries.Should()
+            .NotContain(
+                e => e.Contains(sentinel, StringComparison.Ordinal),
+                "the relay path must never log the prompt body"
+            );
     }
 
     [Fact]
@@ -477,8 +588,8 @@ public sealed class ChatWebSocketManagerSubAgentTests
         {
             var call = Interlocked.Increment(ref creation);
             return call == 1
-              ? new ScriptedSubAgentProvider((messages, ct) => OneMessageThenComplete())
-              : new ScriptedSubAgentProvider((messages, ct) => TwoMessagesThenBlock(betaGate.Task, ct));
+                ? new ScriptedSubAgentProvider((messages, ct) => OneMessageThenComplete())
+                : new ScriptedSubAgentProvider((messages, ct) => TwoMessagesThenBlock(betaGate.Task, ct));
         };
 
         await using var loop = CreateParentLoop(factory, maxConcurrent: 1);
@@ -487,20 +598,28 @@ public sealed class ChatWebSocketManagerSubAgentTests
 
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var spawnJson = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "do work", name: "alpha", runInBackground: true);
+            TemplateName,
+            "do work",
+            name: "alpha",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
         _ = await loop.SubAgentManager!.ObserveCompletionAsync(agentId, testCts.Token);
 
         // A second child holds the single concurrency slot so alpha's restart cannot acquire one.
-        _ = await loop.SubAgentManager!.SpawnAsync(
-          TemplateName, "hold-slot", name: "beta", runInBackground: true);
+        _ = await loop.SubAgentManager!.SpawnAsync(TemplateName, "hold-slot", name: "beta", runInBackground: true);
 
         var manager = CreateManager(pool);
         var socket = new FakeWebSocket();
         socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("relayed-one")));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            testCts.Token
+        );
 
         // A structured relay_failed error frame must reach the client (not silent) ...
         await socket.WaitUntilAsync(() => socket.SentContains("\"code\":\"relay_failed\""), testCts.Token);
@@ -530,20 +649,26 @@ public sealed class ChatWebSocketManagerSubAgentTests
         var manager = CreateManager(EmptyPool());
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        await manager.PumpSubAgentStreamAsync(
-          connection, OneMessageThenThrow(secret), agentId, testCts.Token);
+        await manager.PumpSubAgentStreamAsync(connection, OneMessageThenThrow(secret), agentId, testCts.Token);
 
-        socket.SentContains("\"code\":\"subagent_stream_failed\"").Should()
-          .BeTrue("a hard sub-agent stream failure must surface a structured error frame");
+        socket
+            .SentContains("\"code\":\"subagent_stream_failed\"")
+            .Should()
+            .BeTrue("a hard sub-agent stream failure must surface a structured error frame");
 
-        var frame = socket.SentFrames.First(
-          f => f.Contains("\"code\":\"subagent_stream_failed\"", StringComparison.Ordinal));
+        var frame = socket.SentFrames.First(f =>
+            f.Contains("\"code\":\"subagent_stream_failed\"", StringComparison.Ordinal)
+        );
         frame.Should().Contain("\"$type\":\"error\"");
         frame.Should().Contain(agentId);
         frame.Should().NotContain(secret, "the error frame must be content-free (no exception detail)");
 
-        socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.InternalServerError,
-          "a hard failure must close abnormally, not with NormalClosure");
+        socket
+            .LastCloseStatus.Should()
+            .Be(
+                WebSocketCloseStatus.InternalServerError,
+                "a hard failure must close abnormally, not with NormalClosure"
+            );
         socket.LastCloseStatus.Should().NotBe(WebSocketCloseStatus.NormalClosure);
     }
 
@@ -560,14 +685,15 @@ public sealed class ChatWebSocketManagerSubAgentTests
         var manager = CreateManager(EmptyPool());
         using var cts = new CancellationTokenSource();
 
-        var pumpTask = manager.PumpSubAgentStreamAsync(
-          connection, BlockUntilCancelled(cts.Token), agentId, cts.Token);
+        var pumpTask = manager.PumpSubAgentStreamAsync(connection, BlockUntilCancelled(cts.Token), agentId, cts.Token);
 
         await cts.CancelAsync();
         await pumpTask;
 
-        socket.SentContains("subagent_stream_failed").Should()
-          .BeFalse("cancellation is normal teardown, not a stream failure");
+        socket
+            .SentContains("subagent_stream_failed")
+            .Should()
+            .BeFalse("cancellation is normal teardown, not a stream failure");
         socket.CloseAsyncCalled.Should().BeFalse("the pump wrapper must not close on cancellation");
         socket.LastCloseStatus.Should().NotBe(WebSocketCloseStatus.InternalServerError);
     }
@@ -594,16 +720,21 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await manager.PumpSubAgentStreamAsync(
-          connection,
-          TextThenRecovery(
-            secretPromptText,
-            new StreamRecoveryMessage("thread-1", "run-1", "gen-1", StreamRecoveryReason.SlowConsumer)),
-          agentId,
-          testCts.Token);
+            connection,
+            TextThenRecovery(
+                secretPromptText,
+                new StreamRecoveryMessage("thread-1", "run-1", "gen-1", StreamRecoveryReason.SlowConsumer)
+            ),
+            agentId,
+            testCts.Token
+        );
 
         // Exactly the preceding content frame plus the recovery frame - no done sentinel.
         socket.SentFrames.Should().HaveCount(2, "the ordinary delta plus the recovery frame, and nothing else");
-        socket.SentContains("\"$type\":\"done\"").Should().BeFalse("a dropped subscriber must never see the done sentinel");
+        socket
+            .SentContains("\"$type\":\"done\"")
+            .Should()
+            .BeFalse("a dropped subscriber must never see the done sentinel");
 
         var recoveryFrame = socket.SentFrames[1];
         recoveryFrame.Should().NotContain(secretPromptText, "the recovery control must carry no conversation content");
@@ -617,9 +748,13 @@ public sealed class ChatWebSocketManagerSubAgentTests
 
         // Exact wire contract: content-free means ONLY these five properties - not merely "these are
         // present", but nothing else (e.g. IMessage.role/fromAgent/metadata) leaks alongside them.
-        doc.RootElement.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(
-          ["$type", "reason", "threadId", "runId", "generationId"],
-          "a dropped subscriber's recovery control must carry identifiers and reason only");
+        doc.RootElement.EnumerateObject()
+            .Select(p => p.Name)
+            .Should()
+            .BeEquivalentTo(
+                ["$type", "reason", "threadId", "runId", "generationId"],
+                "a dropped subscriber's recovery control must carry identifiers and reason only"
+            );
 
         socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
         socket.LastCloseStatusDescription.Should().Be("resync_required");
@@ -641,14 +776,17 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await manager.PumpSubAgentStreamAsync(
-          connection,
-          RecoveryThenMoreMessages(laterSecret),
-          agentId,
-          testCts.Token);
+            connection,
+            RecoveryThenMoreMessages(laterSecret),
+            agentId,
+            testCts.Token
+        );
 
         socket.SentFrames.Should().ContainSingle("the recovery frame is terminal; nothing after it is ever pumped");
-        socket.SentContains(laterSecret).Should()
-          .BeFalse("a message enumerated after the recovery control must never reach the client");
+        socket
+            .SentContains(laterSecret)
+            .Should()
+            .BeFalse("a message enumerated after the recovery control must never reach the client");
         socket.CloseAsyncCalled.Should().BeTrue();
         socket.LastCloseStatusDescription.Should().Be("resync_required");
     }
@@ -681,13 +819,17 @@ public sealed class ChatWebSocketManagerSubAgentTests
         };
 
         await manager.PumpSubAgentStreamAsync(
-          connection,
-          RecoveryThenMoreMessages("irrelevant"),
-          agentId,
-          testCts.Token);
+            connection,
+            RecoveryThenMoreMessages("irrelevant"),
+            agentId,
+            testCts.Token
+        );
 
-        socket.CloseAsyncCalled.Should().BeTrue(
-          "a cancellation racing right after the recovery frame's send must not suppress the deliberate close");
+        socket
+            .CloseAsyncCalled.Should()
+            .BeTrue(
+                "a cancellation racing right after the recovery frame's send must not suppress the deliberate close"
+            );
         socket.LastCloseStatusDescription.Should().Be("resync_required");
     }
 
@@ -709,10 +851,11 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await manager.PumpSubAgentStreamAsync(
-          connection,
-          TruncationAdvisoryThenLiveTail(liveTailText),
-          agentId,
-          testCts.Token);
+            connection,
+            TruncationAdvisoryThenLiveTail(liveTailText),
+            agentId,
+            testCts.Token
+        );
 
         socket.SentFrames.Should().HaveCount(2, "the advisory frame plus the live tail that follows it");
 
@@ -720,10 +863,13 @@ public sealed class ChatWebSocketManagerSubAgentTests
         doc.RootElement.GetProperty("$type").GetString().Should().Be("stream_recovery");
         doc.RootElement.GetProperty("reason").GetString().Should().Be("replay_truncated");
 
-        socket.SentContains(liveTailText).Should()
-          .BeTrue("the live tail after a truncated-replay advisory must still reach the client");
-        socket.CloseAsyncCalled.Should().BeFalse(
-          "a non-terminal advisory must not tear the socket down - that is what causes the reconnect storm");
+        socket
+            .SentContains(liveTailText)
+            .Should()
+            .BeTrue("the live tail after a truncated-replay advisory must still reach the client");
+        socket
+            .CloseAsyncCalled.Should()
+            .BeFalse("a non-terminal advisory must not tear the socket down - that is what causes the reconnect storm");
         socket.LastCloseStatusDescription.Should().NotBe("resync_required");
     }
 
@@ -742,25 +888,36 @@ public sealed class ChatWebSocketManagerSubAgentTests
         manager.LogSubAgentRelayFailure("alpha", byteCount: 42, new InvalidOperationException(sentinel));
 
         capture.Entries.Should().NotBeEmpty("the relay failure must still be logged (category only)");
-        capture.Entries.Should().Contain(e => e.Contains("relay_failed", StringComparison.Ordinal),
-          "the stable category must be logged");
-        capture.Entries.Should().NotContain(e => e.Contains(sentinel, StringComparison.Ordinal),
-          "no captured entry (state OR exception text) may contain the secret");
+        capture
+            .Entries.Should()
+            .Contain(e => e.Contains("relay_failed", StringComparison.Ordinal), "the stable category must be logged");
+        capture
+            .Entries.Should()
+            .NotContain(
+                e => e.Contains(sentinel, StringComparison.Ordinal),
+                "no captured entry (state OR exception text) may contain the secret"
+            );
     }
 
     // ----- helpers -----
 
     private static ChatWebSocketManager CreateManager(
-      MultiTurnAgentPool pool,
-      ILogger<ChatWebSocketManager>? logger = null,
-      IConversationStore? store = null) =>
-      new(
-        pool,
-        new WebSocketConnectionRegistry(),
-        new LmStreaming.Sample.Services.WorkflowRunRegistry(),
-        new PendingAuthCoordinator(Mock.Of<IAuthEventNotifier>(), new AuthOptions(), NullLogger<PendingAuthCoordinator>.Instance),
-        store ?? new InMemoryConversationStore(),
-        logger ?? NullLogger<ChatWebSocketManager>.Instance);
+        MultiTurnAgentPool pool,
+        ILogger<ChatWebSocketManager>? logger = null,
+        IConversationStore? store = null
+    ) =>
+        new(
+            pool,
+            new WebSocketConnectionRegistry(),
+            new LmStreaming.Sample.Services.WorkflowRunRegistry(),
+            new PendingAuthCoordinator(
+                Mock.Of<IAuthEventNotifier>(),
+                new AuthOptions(),
+                NullLogger<PendingAuthCoordinator>.Instance
+            ),
+            store ?? new InMemoryConversationStore(),
+            logger ?? NullLogger<ChatWebSocketManager>.Instance
+        );
 
     /// <summary>
     /// Captures every formatted log message AND the exception text (<c>exception?.ToString()</c>) so
@@ -775,19 +932,27 @@ public sealed class ChatWebSocketManagerSubAgentTests
 
         public IReadOnlyList<string> Entries
         {
-            get { lock (_lock) { return [.. _entries]; } }
+            get
+            {
+                lock (_lock)
+                {
+                    return [.. _entries];
+                }
+            }
         }
 
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
 
         public bool IsEnabled(LogLevel logLevel) => true;
 
         public void Log<TState>(
-          LogLevel logLevel,
-          EventId eventId,
-          TState state,
-          Exception? exception,
-          Func<TState, Exception?, string> formatter)
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
         {
             var message = formatter(state, exception);
             lock (_lock)
@@ -818,23 +983,26 @@ public sealed class ChatWebSocketManagerSubAgentTests
         };
 
         return new MultiTurnAgentLoop(
-          new ScriptedSubAgentProvider((messages, ct) => EmptyStream()),
-          new FunctionRegistry(),
-          threadId: ParentThreadId,
-          subAgentOptions: options);
+            new ScriptedSubAgentProvider((messages, ct) => EmptyStream()),
+            new FunctionRegistry(),
+            threadId: ParentThreadId,
+            subAgentOptions: options
+        );
     }
 
     private static MultiTurnAgentPool CreatePoolReturning(IMultiTurnAgent agent) =>
-      new((_, _, _) => new MultiTurnAgentPool.AgentCreationResult(agent), NullLogger<MultiTurnAgentPool>.Instance);
+        new((_, _, _) => new MultiTurnAgentPool.AgentCreationResult(agent), NullLogger<MultiTurnAgentPool>.Instance);
 
     /// <summary>A pool whose creation factory is never invoked — for tests exercising only the seam
     /// methods (pump/relay logging) that do not resolve an agent.</summary>
     private static MultiTurnAgentPool EmptyPool() =>
-      new((_, _, _) => throw new InvalidOperationException("agent creation is unused in this test"),
-        NullLogger<MultiTurnAgentPool>.Instance);
+        new(
+            (_, _, _) => throw new InvalidOperationException("agent creation is unused in this test"),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
     private static void RegisterParent(MultiTurnAgentPool pool) =>
-      _ = pool.GetOrCreateAgent(ParentThreadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+        _ = pool.GetOrCreateAgent(ParentThreadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
     private static string ParseAgentId(string spawnJson)
     {
@@ -843,7 +1011,9 @@ public sealed class ChatWebSocketManagerSubAgentTests
     }
 
     private static async IAsyncEnumerable<IMessage> TwoMessagesThenBlock(
-      Task gate, [EnumeratorCancellation] CancellationToken ct)
+        Task gate,
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         yield return new TextMessage { Role = Role.Assistant, Text = "chunk-one" };
         yield return new TextMessage { Role = Role.Assistant, Text = "chunk-two" };
@@ -873,7 +1043,10 @@ public sealed class ChatWebSocketManagerSubAgentTests
 
     /// <summary>Yields one ordinary content frame, then the terminal recovery control (Task 3) - models a
     /// dropped subscriber whose already-buffered backlog is delivered before the resync signal.</summary>
-    private static async IAsyncEnumerable<IMessage> TextThenRecovery(string precedingText, StreamRecoveryMessage recovery)
+    private static async IAsyncEnumerable<IMessage> TextThenRecovery(
+        string precedingText,
+        StreamRecoveryMessage recovery
+    )
     {
         await Task.CompletedTask;
         yield return new TextMessage { Role = Role.Assistant, Text = precedingText };
@@ -900,8 +1073,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
     }
 
     /// <summary>Blocks until the enumeration is cancelled (the normal-teardown path).</summary>
-    private static async IAsyncEnumerable<IMessage> BlockUntilCancelled(
-      [EnumeratorCancellation] CancellationToken ct)
+    private static async IAsyncEnumerable<IMessage> BlockUntilCancelled([EnumeratorCancellation] CancellationToken ct)
     {
         await Task.Delay(Timeout.Infinite, ct);
         yield break;
@@ -915,20 +1087,21 @@ public sealed class ChatWebSocketManagerSubAgentTests
     {
         private readonly Func<IEnumerable<IMessage>, CancellationToken, IAsyncEnumerable<IMessage>> _script;
 
-        public ScriptedSubAgentProvider(Func<IEnumerable<IMessage>, CancellationToken, IAsyncEnumerable<IMessage>> script)
-          => _script = script;
+        public ScriptedSubAgentProvider(
+            Func<IEnumerable<IMessage>, CancellationToken, IAsyncEnumerable<IMessage>> script
+        ) => _script = script;
 
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
-          IEnumerable<IMessage> messages,
-          GenerateReplyOptions? options = null,
-          CancellationToken cancellationToken = default)
-          => Task.FromResult<IEnumerable<IMessage>>([]);
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        ) => Task.FromResult<IEnumerable<IMessage>>([]);
 
         public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
-          IEnumerable<IMessage> messages,
-          GenerateReplyOptions? options = null,
-          CancellationToken cancellationToken = default)
-          => Task.FromResult(_script(messages, cancellationToken));
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        ) => Task.FromResult(_script(messages, cancellationToken));
     }
 
     /// <summary>
@@ -952,12 +1125,21 @@ public sealed class ChatWebSocketManagerSubAgentTests
 
         public IReadOnlyList<string> ReceivedPrompts
         {
-            get { lock (_lock) { return [.. _received]; } }
+            get
+            {
+                lock (_lock)
+                {
+                    return [.. _received];
+                }
+            }
         }
 
         public bool ReceivedContains(string text)
         {
-            lock (_lock) { return _received.Contains(text); }
+            lock (_lock)
+            {
+                return _received.Contains(text);
+            }
         }
 
         public async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
@@ -970,21 +1152,22 @@ public sealed class ChatWebSocketManagerSubAgentTests
         }
 
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
-          IEnumerable<IMessage> messages,
-          GenerateReplyOptions? options = null,
-          CancellationToken cancellationToken = default)
-          => Task.FromResult<IEnumerable<IMessage>>([]);
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        ) => Task.FromResult<IEnumerable<IMessage>>([]);
 
         public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
-          IEnumerable<IMessage> messages,
-          GenerateReplyOptions? options = null,
-          CancellationToken cancellationToken = default)
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        )
         {
             var userTexts = messages
-              .OfType<TextMessage>()
-              .Where(m => m.Role == Role.User && !string.IsNullOrEmpty(m.Text))
-              .Select(m => m.Text)
-              .ToList();
+                .OfType<TextMessage>()
+                .Where(m => m.Role == Role.User && !string.IsNullOrEmpty(m.Text))
+                .Select(m => m.Text)
+                .ToList();
 
             lock (_lock)
             {
@@ -999,8 +1182,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             return Task.FromResult(Stream(shouldBlock, cancellationToken));
         }
 
-        private async IAsyncEnumerable<IMessage> Stream(
-          bool shouldBlock, [EnumeratorCancellation] CancellationToken ct)
+        private async IAsyncEnumerable<IMessage> Stream(bool shouldBlock, [EnumeratorCancellation] CancellationToken ct)
         {
             yield return new TextMessage { Role = Role.Assistant, Text = "ack" };
             if (shouldBlock)
@@ -1017,8 +1199,9 @@ public sealed class ChatWebSocketManagerSubAgentTests
     /// </summary>
     private sealed class FakeWebSocket : System.Net.WebSockets.WebSocket
     {
-        private readonly Channel<InboundFrame> _inbound =
-          Channel.CreateUnbounded<InboundFrame>(new UnboundedChannelOptions { SingleReader = true });
+        private readonly Channel<InboundFrame> _inbound = Channel.CreateUnbounded<InboundFrame>(
+            new UnboundedChannelOptions { SingleReader = true }
+        );
 
         private readonly List<string> _sent = [];
         private readonly Lock _lock = new();
@@ -1042,7 +1225,13 @@ public sealed class ChatWebSocketManagerSubAgentTests
 
         public IReadOnlyList<string> SentFrames
         {
-            get { lock (_lock) { return [.. _sent]; } }
+            get
+            {
+                lock (_lock)
+                {
+                    return [.. _sent];
+                }
+            }
         }
 
         /// <summary>
@@ -1056,20 +1245,24 @@ public sealed class ChatWebSocketManagerSubAgentTests
 
         public bool SentContains(string fragment)
         {
-            lock (_lock) { return _sent.Any(f => f.Contains(fragment, StringComparison.Ordinal)); }
+            lock (_lock)
+            {
+                return _sent.Any(f => f.Contains(fragment, StringComparison.Ordinal));
+            }
         }
 
         public void EnqueueTextFrame(string text) =>
-          _inbound.Writer.TryWrite(
-            new InboundFrame(Encoding.UTF8.GetBytes(text), WebSocketMessageType.Text, EndOfMessage: true));
+            _inbound.Writer.TryWrite(
+                new InboundFrame(Encoding.UTF8.GetBytes(text), WebSocketMessageType.Text, EndOfMessage: true)
+            );
 
         /// <summary>Enqueues a text fragment; set <paramref name="endOfMessage"/> false to split a message.</summary>
         public void EnqueueTextFragment(byte[] payload, bool endOfMessage) =>
-          _inbound.Writer.TryWrite(new InboundFrame(payload, WebSocketMessageType.Text, endOfMessage));
+            _inbound.Writer.TryWrite(new InboundFrame(payload, WebSocketMessageType.Text, endOfMessage));
 
         /// <summary>Enqueues a single binary frame (rejected by the text-only receive pump).</summary>
         public void EnqueueBinaryFrame(byte[] payload) =>
-          _inbound.Writer.TryWrite(new InboundFrame(payload, WebSocketMessageType.Binary, EndOfMessage: true));
+            _inbound.Writer.TryWrite(new InboundFrame(payload, WebSocketMessageType.Binary, EndOfMessage: true));
 
         public async Task WaitUntilAsync(Func<bool> condition, CancellationToken ct)
         {
@@ -1085,20 +1278,26 @@ public sealed class ChatWebSocketManagerSubAgentTests
         public override string? SubProtocol => null;
 
         public override Task SendAsync(
-          ArraySegment<byte> buffer,
-          WebSocketMessageType messageType,
-          bool endOfMessage,
-          CancellationToken cancellationToken)
+            ArraySegment<byte> buffer,
+            WebSocketMessageType messageType,
+            bool endOfMessage,
+            CancellationToken cancellationToken
+        )
         {
             var text = Encoding.UTF8.GetString(buffer.Array!, buffer.Offset, buffer.Count);
-            lock (_lock) { _sent.Add(text); }
+            lock (_lock)
+            {
+                _sent.Add(text);
+            }
             _ = _activity.Release();
             OnSend?.Invoke(text);
             return Task.CompletedTask;
         }
 
         public override async Task<WebSocketReceiveResult> ReceiveAsync(
-          ArraySegment<byte> buffer, CancellationToken cancellationToken)
+            ArraySegment<byte> buffer,
+            CancellationToken cancellationToken
+        )
         {
             if (_current is null)
             {
@@ -1141,7 +1340,10 @@ public sealed class ChatWebSocketManagerSubAgentTests
         }
 
         public override Task CloseAsync(
-            WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
+            WebSocketCloseStatus closeStatus,
+            string? statusDescription,
+            CancellationToken cancellationToken
+        )
         {
             // A real WebSocket implementation throws OperationCanceledException for an
             // already-cancelled token (Task 3, Finding #2's close-seam test relies on this).
@@ -1154,7 +1356,10 @@ public sealed class ChatWebSocketManagerSubAgentTests
         }
 
         public override Task CloseOutputAsync(
-          WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
+            WebSocketCloseStatus closeStatus,
+            string? statusDescription,
+            CancellationToken cancellationToken
+        )
         {
             _state = WebSocketState.Closed;
             return Task.CompletedTask;

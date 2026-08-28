@@ -80,7 +80,8 @@ public static class TestLoggingConfiguration
                     LogFilePath,
                     rollingInterval: RollingInterval.Infinite, // We handle archiving manually
                     shared: true,
-                    flushToDiskInterval: TimeSpan.FromSeconds(1))
+                    flushToDiskInterval: TimeSpan.FromSeconds(1)
+                )
                 .CreateLogger();
 
             // Set as the global static logger
@@ -91,7 +92,8 @@ public static class TestLoggingConfiguration
             Log.Information(
                 "Test logging initialized. RunId={TestRunId}, LogFile={LogFilePath}",
                 CurrentRunId,
-                LogFilePath);
+                LogFilePath
+            );
         }
     }
 
@@ -106,7 +108,8 @@ public static class TestLoggingConfiguration
     public static ILoggerFactory CreateLoggerFactory(
         string testClass,
         string testMethod,
-        ITestOutputHelper? testOutput = null)
+        ITestOutputHelper? testOutput = null
+    )
     {
         // Ensure global logging is initialized
         InitializeOnce();
@@ -127,8 +130,8 @@ public static class TestLoggingConfiguration
         {
             _ = loggerConfig.WriteTo.TestOutput(
                 testOutput,
-                outputTemplate:
-                "[{Timestamp:HH:mm:ss} {Level:u3}] [{testClassName}.{testCaseName}] {SourceContext}{NewLine}    {Message:lj}{NewLine}{Exception}");
+                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [{testClassName}.{testCaseName}] {SourceContext}{NewLine}    {Message:lj}{NewLine}{Exception}"
+            );
         }
 
         var logger = loggerConfig.CreateLogger();
@@ -150,7 +153,8 @@ public static class TestLoggingConfiguration
         // Push properties that will be included in all logs within this scope
         return new CompositeDisposable(
             LogContext.PushProperty("testClassName", testClass),
-            LogContext.PushProperty("testCaseName", testMethod));
+            LogContext.PushProperty("testCaseName", testMethod)
+        );
     }
 
     /// <summary>
@@ -228,9 +232,7 @@ public static class TestLoggingConfiguration
         {
             var fileInfo = new FileInfo(logFilePath);
             var timestamp = fileInfo.LastWriteTimeUtc.ToString("yyyy-MM-dd_HH-mm-ss");
-            var archivePath = Path.Combine(
-                Path.GetDirectoryName(logFilePath)!,
-                $"tests-{timestamp}.jsonl.gz");
+            var archivePath = Path.Combine(Path.GetDirectoryName(logFilePath)!, $"tests-{timestamp}.jsonl.gz");
 
             // Compress the log file
             using (var originalStream = File.OpenRead(logFilePath))

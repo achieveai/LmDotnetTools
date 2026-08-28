@@ -20,17 +20,11 @@ public class ToolResultImageConversionTests
             "Here is the search result",
             [
                 new TextToolResultBlock { Text = "Some text result" },
-                new ImageToolResultBlock
-                {
-                    Data = "iVBORw0KGgo=",
-                    MimeType = "image/png",
-                },
-            ]);
+                new ImageToolResultBlock { Data = "iVBORw0KGgo=", MimeType = "image/png" },
+            ]
+        );
 
-        var message = new ToolsCallResultMessage
-        {
-            ToolCallResults = [toolResult],
-        };
+        var message = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
 
         // Act
         var chatMessages = ChatCompletionRequest.FromMessage(message).ToList();
@@ -41,9 +35,7 @@ public class ToolResultImageConversionTests
         // First message is the tool result (text only)
         Assert.Equal(RoleEnum.Tool, chatMessages[0].Role);
         Assert.Equal("call_123", chatMessages[0].ToolCallId);
-        Assert.Equal(
-            "Here is the search result",
-            chatMessages[0].Content!.Get<string>());
+        Assert.Equal("Here is the search result", chatMessages[0].Content!.Get<string>());
 
         // Second message is a user message with the image
         Assert.Equal(RoleEnum.User, chatMessages[1].Role);
@@ -60,10 +52,7 @@ public class ToolResultImageConversionTests
         // Arrange: a tool result with only text (no image ContentBlocks)
         var toolResult = new ToolCallResult("call_456", "Plain text result");
 
-        var message = new ToolsCallResultMessage
-        {
-            ToolCallResults = [toolResult],
-        };
+        var message = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
 
         // Act
         var chatMessages = ChatCompletionRequest.FromMessage(message).ToList();
@@ -81,12 +70,10 @@ public class ToolResultImageConversionTests
         var toolResult = new ToolCallResult(
             "call_789",
             "Text result",
-            [new TextToolResultBlock { Text = "Just text, no images" }]);
+            [new TextToolResultBlock { Text = "Just text, no images" }]
+        );
 
-        var message = new ToolsCallResultMessage
-        {
-            ToolCallResults = [toolResult],
-        };
+        var message = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
 
         // Act
         var chatMessages = ChatCompletionRequest.FromMessage(message).ToList();
@@ -103,29 +90,16 @@ public class ToolResultImageConversionTests
         var toolResult1 = new ToolCallResult(
             "call_a",
             "Result A",
-            [
-                new ImageToolResultBlock
-                {
-                    Data = "AAAA",
-                    MimeType = "image/jpeg",
-                },
-            ]);
+            [new ImageToolResultBlock { Data = "AAAA", MimeType = "image/jpeg" }]
+        );
 
         var toolResult2 = new ToolCallResult(
             "call_b",
             "Result B",
-            [
-                new ImageToolResultBlock
-                {
-                    Data = "BBBB",
-                    MimeType = "image/png",
-                },
-            ]);
+            [new ImageToolResultBlock { Data = "BBBB", MimeType = "image/png" }]
+        );
 
-        var message = new ToolsCallResultMessage
-        {
-            ToolCallResults = [toolResult1, toolResult2],
-        };
+        var message = new ToolsCallResultMessage { ToolCallResults = [toolResult1, toolResult2] };
 
         // Act
         var chatMessages = ChatCompletionRequest.FromMessage(message).ToList();
@@ -154,20 +128,12 @@ public class ToolResultImageConversionTests
         var toolResultWithImage = new ToolCallResult(
             "call_img",
             "Image result",
-            [
-                new ImageToolResultBlock
-                {
-                    Data = "CCCC",
-                    MimeType = "image/webp",
-                },
-            ]);
+            [new ImageToolResultBlock { Data = "CCCC", MimeType = "image/webp" }]
+        );
 
         var toolResultTextOnly = new ToolCallResult("call_txt", "Text only result");
 
-        var message = new ToolsCallResultMessage
-        {
-            ToolCallResults = [toolResultWithImage, toolResultTextOnly],
-        };
+        var message = new ToolsCallResultMessage { ToolCallResults = [toolResultWithImage, toolResultTextOnly] };
 
         // Act
         var chatMessages = ChatCompletionRequest.FromMessage(message).ToList();
@@ -197,27 +163,15 @@ public class ToolResultImageConversionTests
             ToolCallId = "call_agg",
         };
 
-        var toolsCallMessage = new ToolsCallMessage
-        {
-            Role = Role.Assistant,
-            ToolCalls = [toolCall],
-        };
+        var toolsCallMessage = new ToolsCallMessage { Role = Role.Assistant, ToolCalls = [toolCall] };
 
         var toolResult = new ToolCallResult(
             "call_agg",
             "Search result",
-            [
-                new ImageToolResultBlock
-                {
-                    Data = "DDDD",
-                    MimeType = "image/png",
-                },
-            ]);
+            [new ImageToolResultBlock { Data = "DDDD", MimeType = "image/png" }]
+        );
 
-        var toolsCallResult = new ToolsCallResultMessage
-        {
-            ToolCallResults = [toolResult],
-        };
+        var toolsCallResult = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
 
         var aggregate = new ToolsCallAggregateMessage(toolsCallMessage, toolsCallResult);
 
@@ -232,24 +186,16 @@ public class ToolResultImageConversionTests
 
         var contentArray = chatMessages[2].Content!.Get<Union<TextContent, ImageContent>[]>();
         Assert.Single(contentArray);
-        Assert.Equal(
-            "data:image/png;base64,DDDD",
-            contentArray[0].Get<ImageContent>().Url.Url);
+        Assert.Equal("data:image/png;base64,DDDD", contentArray[0].Get<ImageContent>().Url.Url);
     }
 
     [Fact]
     public void FromMessage_NullContentBlocks_NoExtraMessage()
     {
         // Arrange: ContentBlocks explicitly null
-        var toolResult = new ToolCallResult("call_null", "Result")
-        {
-            ContentBlocks = null,
-        };
+        var toolResult = new ToolCallResult("call_null", "Result") { ContentBlocks = null };
 
-        var message = new ToolsCallResultMessage
-        {
-            ToolCallResults = [toolResult],
-        };
+        var message = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
 
         // Act
         var chatMessages = ChatCompletionRequest.FromMessage(message).ToList();
@@ -267,15 +213,9 @@ public class ToolResultImageConversionTests
     public void FromMessage_EmptyContentBlocksList_NoExtraMessage()
     {
         // Arrange: ContentBlocks is an empty list (distinct from null)
-        var toolResult = new ToolCallResult("call_empty", "Empty blocks result")
-        {
-            ContentBlocks = [],
-        };
+        var toolResult = new ToolCallResult("call_empty", "Empty blocks result") { ContentBlocks = [] };
 
-        var message = new ToolsCallResultMessage
-        {
-            ToolCallResults = [toolResult],
-        };
+        var message = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
 
         // Act
         var chatMessages = ChatCompletionRequest.FromMessage(message).ToList();
@@ -318,12 +258,9 @@ public class ToolResultImageConversionTests
                     "Screenshot captured",
                     [
                         new TextToolResultBlock { Text = "Screenshot of the page" },
-                        new ImageToolResultBlock
-                        {
-                            Data = "AAAA",
-                            MimeType = "image/png",
-                        },
-                    ]),
+                        new ImageToolResultBlock { Data = "AAAA", MimeType = "image/png" },
+                    ]
+                ),
             ],
         };
 

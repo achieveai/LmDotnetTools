@@ -31,8 +31,8 @@ public class WaitTests
     [Fact]
     public async Task A_condition_that_never_holds_throws_naming_what_it_waited_for()
     {
-        var thrown = await Assert.ThrowsAsync<TimeoutException>(
-            () => Wait.UntilAsync(() => false, "the widget was flushed", Brief, Tick)
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.UntilAsync(() => false, "the widget was flushed", Brief, Tick)
         );
 
         // The description and the call site are the whole point: the failure has to say which wait
@@ -104,8 +104,8 @@ public class WaitTests
 
         Assert.True(remaining <= 0);
 
-        var thrown = await Assert.ThrowsAsync<TimeoutException>(
-            () => Wait.UntilAsync(() => Task.FromResult(false), "the async widget flushed", Brief, Tick)
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.UntilAsync(() => Task.FromResult(false), "the async widget flushed", Brief, Tick)
         );
         Assert.Contains("the async widget flushed", thrown.Message, StringComparison.Ordinal);
     }
@@ -140,8 +140,8 @@ public class WaitTests
         // condition overloads, so it needs to say which one it means.
         Func<bool> throws = () => throw new InvalidOperationException("boom");
 
-        _ = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => Wait.UntilAsync(throws, "a condition that throws", Brief, Tick)
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Wait.UntilAsync(throws, "a condition that throws", Brief, Tick)
         );
     }
 
@@ -151,15 +151,8 @@ public class WaitTests
         // #358: without a way to report what the wait actually saw, a timeout only proves the
         // condition never held -- it says nothing about how close it got, so the next reader has
         // to reproduce the failure just to find out what the state looked like when it gave up.
-        var thrown = await Assert.ThrowsAsync<TimeoutException>(
-            () =>
-                Wait.UntilAsync(
-                    () => false,
-                    "the widget was flushed",
-                    Brief,
-                    Tick,
-                    observed: () => "status=pending"
-                )
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.UntilAsync(() => false, "the widget was flushed", Brief, Tick, observed: () => "status=pending")
         );
 
         Assert.Contains("Last observed: status=pending.", thrown.Message, StringComparison.Ordinal);
@@ -171,8 +164,8 @@ public class WaitTests
         // The existing callers that do not pass observed must see byte-for-byte the same message as
         // before -- a dangling "Last observed:" clause with nothing after it would be worse than
         // saying nothing.
-        var thrown = await Assert.ThrowsAsync<TimeoutException>(
-            () => Wait.UntilAsync(() => false, "the widget was flushed", Brief, Tick)
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.UntilAsync(() => false, "the widget was flushed", Brief, Tick)
         );
 
         Assert.DoesNotContain("Last observed", thrown.Message, StringComparison.Ordinal);
@@ -205,22 +198,17 @@ public class WaitTests
         // TimeoutException's message interpolation, so a throwing supplier replaced the timeout
         // entirely: the caller saw the supplier's own exception, with no TimeoutException, no
         // mention of the wait's name, and no file/line pointing at the stalled condition.
-        var thrown = await Assert.ThrowsAsync<TimeoutException>(
-            () =>
-                Wait.UntilAsync(
-                    () => false,
-                    "the widget was flushed",
-                    Brief,
-                    Tick,
-                    observed: () => throw new InvalidOperationException("boom")
-                )
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.UntilAsync(
+                () => false,
+                "the widget was flushed",
+                Brief,
+                Tick,
+                observed: () => throw new InvalidOperationException("boom")
+            )
         );
 
-        Assert.Contains(
-            "Last observed: <observed supplier threw: boom>.",
-            thrown.Message,
-            StringComparison.Ordinal
-        );
+        Assert.Contains("Last observed: <observed supplier threw: boom>.", thrown.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -229,22 +217,17 @@ public class WaitTests
         // The async (Func<Task<bool>>) overload has its own, separately-written throw site, so the
         // same guard has to be applied there independently -- fixing only the sync overload would
         // leave this one still letting a throwing supplier's exception escape raw.
-        var thrown = await Assert.ThrowsAsync<TimeoutException>(
-            () =>
-                Wait.UntilAsync(
-                    () => Task.FromResult(false),
-                    "the async widget flushed",
-                    Brief,
-                    Tick,
-                    observed: () => throw new InvalidOperationException("boom")
-                )
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.UntilAsync(
+                () => Task.FromResult(false),
+                "the async widget flushed",
+                Brief,
+                Tick,
+                observed: () => throw new InvalidOperationException("boom")
+            )
         );
 
-        Assert.Contains(
-            "Last observed: <observed supplier threw: boom>.",
-            thrown.Message,
-            StringComparison.Ordinal
-        );
+        Assert.Contains("Last observed: <observed supplier threw: boom>.", thrown.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -255,15 +238,14 @@ public class WaitTests
         // drops the append from only this overload is otherwise invisible: the sync-overload test
         // above (A_timeout_with_an_observed_supplier_appends_the_last_observed_state) exercises a
         // different code path and cannot catch a regression here.
-        var thrown = await Assert.ThrowsAsync<TimeoutException>(
-            () =>
-                Wait.UntilAsync(
-                    () => Task.FromResult(false),
-                    "the async widget flushed",
-                    Brief,
-                    Tick,
-                    observed: () => "status=pending"
-                )
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.UntilAsync(
+                () => Task.FromResult(false),
+                "the async widget flushed",
+                Brief,
+                Tick,
+                observed: () => "status=pending"
+            )
         );
 
         Assert.Contains("Last observed: status=pending.", thrown.Message, StringComparison.Ordinal);
@@ -278,8 +260,8 @@ public class WaitTests
         // ThrowsAnyAsync, not ThrowsAsync: Task.Delay raises the TaskCanceledException subtype, not the
         // base OperationCanceledException exactly -- the contract is "cancellation surfaces as some
         // OperationCanceledException, not a TimeoutException", not the precise concrete type.
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => Wait.UntilAsync(() => false, "a wait that gets cancelled", Generous, Tick, cancellationToken: cts.Token)
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            Wait.UntilAsync(() => false, "a wait that gets cancelled", Generous, Tick, cancellationToken: cts.Token)
         );
     }
 
@@ -296,8 +278,8 @@ public class WaitTests
     {
         var never = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var thrown = await Assert.ThrowsAsync<TimeoutException>(
-            () => Wait.ForTeardownAsync(() => new ValueTask(never.Task), "the widget host", Brief)
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.ForTeardownAsync(() => new ValueTask(never.Task), "the widget host", Brief)
         );
 
         Assert.Contains("the widget host", thrown.Message, StringComparison.Ordinal);
@@ -321,20 +303,19 @@ public class WaitTests
         // purely which exception comes out.
         const string ownFailure = "the subject's own disposal deadline";
 
-        var thrown = await Assert.ThrowsAsync<TimeoutException>(
-            () =>
-                Wait.ForTeardownAsync(
-                    () =>
-                        new ValueTask(
-                            Task.Run(async () =>
-                            {
-                                await Task.Yield();
-                                throw new TimeoutException(ownFailure);
-                            })
-                        ),
-                    "a subject whose disposal times out internally",
-                    Generous
-                )
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.ForTeardownAsync(
+                () =>
+                    new ValueTask(
+                        Task.Run(async () =>
+                        {
+                            await Task.Yield();
+                            throw new TimeoutException(ownFailure);
+                        })
+                    ),
+                "a subject whose disposal times out internally",
+                Generous
+            )
         );
 
         Assert.Equal(ownFailure, thrown.Message);
@@ -353,13 +334,12 @@ public class WaitTests
         // touched either. Generous budget, already-failing work — the ceiling is never in play.
         const string boom = "disposal-blew-up";
 
-        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
-            () =>
-                Wait.ForTeardownAsync(
-                    () => new ValueTask(Task.FromException(new InvalidOperationException(boom))),
-                    "a subject whose disposal fails outright",
-                    Generous
-                )
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Wait.ForTeardownAsync(
+                () => new ValueTask(Task.FromException(new InvalidOperationException(boom))),
+                "a subject whose disposal fails outright",
+                Generous
+            )
         );
 
         Assert.Equal(boom, thrown.Message);
@@ -420,13 +400,8 @@ public class WaitTests
     {
         var abandoned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        _ = await Assert.ThrowsAsync<TimeoutException>(
-            () =>
-                Wait.ForTeardownAsync(
-                    () => new ValueTask(abandoned.Task),
-                    "a teardown that outlives its ceiling",
-                    Brief
-                )
+        _ = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.ForTeardownAsync(() => new ValueTask(abandoned.Task), "a teardown that outlives its ceiling", Brief)
         );
 
         abandoned.SetException(new InvalidOperationException(AbandonedTeardownFault));
@@ -439,15 +414,12 @@ public class WaitTests
         // ceiling resolved to is to let it elapse and read the budget back out of the message.
         // Nothing here is timing-sensitive despite that — the teardown never completes, so there is
         // no race for a starved runner (#343) to lose; a slow machine only makes it slower.
-        Assert.NotEqual(
-            Wait.DefaultTimeout,
-            Wait.DefaultTeardownTimeout
-        );
+        Assert.NotEqual(Wait.DefaultTimeout, Wait.DefaultTeardownTimeout);
 
         var never = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var thrown = await Assert.ThrowsAsync<TimeoutException>(
-            () => Wait.ForTeardownAsync(() => new ValueTask(never.Task), "an unbudgeted teardown")
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.ForTeardownAsync(() => new ValueTask(never.Task), "an unbudgeted teardown")
         );
 
         Assert.Contains(
@@ -462,8 +434,8 @@ public class WaitTests
     [Fact]
     public async Task A_null_teardown_is_rejected_by_name_rather_than_NullReferenced()
     {
-        var thrown = await Assert.ThrowsAsync<ArgumentNullException>(
-            () => Wait.ForTeardownAsync((Func<ValueTask>)null!, "a teardown that was never supplied")
+        var thrown = await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            Wait.ForTeardownAsync((Func<ValueTask>)null!, "a teardown that was never supplied")
         );
 
         Assert.Equal("teardown", thrown.ParamName);
@@ -472,8 +444,8 @@ public class WaitTests
     [Fact]
     public async Task A_null_subject_is_rejected_by_name_rather_than_NullReferenced()
     {
-        var thrown = await Assert.ThrowsAsync<ArgumentNullException>(
-            () => Wait.ForTeardownAsync((IAsyncDisposable)null!, "a subject that was never supplied")
+        var thrown = await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            Wait.ForTeardownAsync((IAsyncDisposable)null!, "a subject that was never supplied")
         );
 
         Assert.Equal("subject", thrown.ParamName);
@@ -484,8 +456,8 @@ public class WaitTests
     {
         var subject = new NeverReturningDisposable();
 
-        var thrown = await Assert.ThrowsAsync<TimeoutException>(
-            () => Wait.ForTeardownAsync(subject, "the subject under test", Brief)
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() =>
+            Wait.ForTeardownAsync(subject, "the subject under test", Brief)
         );
 
         Assert.Contains("the subject under test", thrown.Message, StringComparison.Ordinal);
@@ -501,8 +473,7 @@ public class WaitTests
     /// <summary>An <see cref="IAsyncDisposable"/> whose disposal blocks until released.</summary>
     private sealed class NeverReturningDisposable : IAsyncDisposable
     {
-        private readonly TaskCompletionSource _release =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal void Release() => _release.TrySetResult();
 

@@ -104,9 +104,13 @@ public sealed class OpenAiResponsesClientRetryTests
 
         handler.SendCount.Should().Be(1);
         var response = handler.Responses.Should().ContainSingle().Subject;
-        response.Disposed.Should().BeTrue("the iterator must dispose the HttpResponseMessage when the consumer stops early");
+        response
+            .Disposed.Should()
+            .BeTrue("the iterator must dispose the HttpResponseMessage when the consumer stops early");
         response.BodyStream.Should().NotBeNull();
-        response.BodyStream!.Disposed.Should().BeTrue("the iterator must dispose the SSE stream when the consumer stops early");
+        response
+            .BodyStream!.Disposed.Should()
+            .BeTrue("the iterator must dispose the SSE stream when the consumer stops early");
     }
 
     [Fact]
@@ -262,7 +266,10 @@ public sealed class OpenAiResponsesClientRetryTests
             set => throw new NotSupportedException();
         }
 
-        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default
+        )
         {
             await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
             return 0; // unreachable — the await above only completes by throwing on cancellation

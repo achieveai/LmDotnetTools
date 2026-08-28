@@ -50,7 +50,8 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
         GitHubAuthOptions options,
         IOAuthTokenStore store,
         HttpClient http,
-        ILogger<GitHubOAuthProvider> logger)
+        ILogger<GitHubOAuthProvider> logger
+    )
         : base(logger)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -72,8 +73,19 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
                 return;
             }
 
-            SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, record.Account, record.Scopes, record.AccessTokenExpiresAtUtc, Error: null));
-            Logger.LogInformation("Restored persisted GitHub sign-in (account {Account}).", record.Account ?? "(unknown)");
+            SetStatus(
+                new OAuthStatus(
+                    OAuthSignInState.SignedIn,
+                    record.Account,
+                    record.Scopes,
+                    record.AccessTokenExpiresAtUtc,
+                    Error: null
+                )
+            );
+            Logger.LogInformation(
+                "Restored persisted GitHub sign-in (account {Account}).",
+                record.Account ?? "(unknown)"
+            );
         }
         catch (Exception ex)
         {
@@ -106,52 +118,63 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
 
         var authorizeUrl = BuildAuthorizeUrl(_options.ClientId, redirectUri, _options.Scopes, state, challenge);
 
-        SetStatus(new OAuthStatus(OAuthSignInState.Pending, Account: null, _options.Scopes, ExpiresAtUtc: null, Error: null));
+        SetStatus(
+            new OAuthStatus(OAuthSignInState.Pending, Account: null, _options.Scopes, ExpiresAtUtc: null, Error: null)
+        );
         var launched = OpenBrowser(authorizeUrl);
-        Logger.LogInformation("GitHub sign-in started (browser launched: {Launched}); awaiting loopback callback on port {Port}.", launched, port);
+        Logger.LogInformation(
+            "GitHub sign-in started (browser launched: {Launched}); awaiting loopback callback on port {Port}.",
+            launched,
+            port
+        );
 
         await StartBackgroundSignInAsync(async token =>
-        {
-            // Overall deadline: without it an abandoned browser tab leaves the provider Pending
-            // forever — the callback simply never arrives and nothing else fails.
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
-            deadline.CancelAfter(SignInTimeout);
-            try
             {
-                var query = await WaitForLoopbackCallbackAsync(listener, deadline.Token).ConfigureAwait(false);
-                if (!query.TryGetValue("state", out var returnedState) || returnedState != state)
+                // Overall deadline: without it an abandoned browser tab leaves the provider Pending
+                // forever — the callback simply never arrives and nothing else fails.
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+                deadline.CancelAfter(SignInTimeout);
+                try
                 {
-                    SetFailed("state_mismatch");
-                    Logger.LogWarning("GitHub sign-in aborted: OAuth state did not match.");
-                    return;
-                }
+                    var query = await WaitForLoopbackCallbackAsync(listener, deadline.Token).ConfigureAwait(false);
+                    if (!query.TryGetValue("state", out var returnedState) || returnedState != state)
+                    {
+                        SetFailed("state_mismatch");
+                        Logger.LogWarning("GitHub sign-in aborted: OAuth state did not match.");
+                        return;
+                    }
 
-                if (query.TryGetValue("error", out var oauthError))
+                    if (query.TryGetValue("error", out var oauthError))
+                    {
+                        SetFailed(oauthError ?? "authorization_error");
+                        Logger.LogWarning("GitHub sign-in failed at authorize step: {Error}.", oauthError);
+                        return;
+                    }
+
+                    if (!query.TryGetValue("code", out var code) || string.IsNullOrEmpty(code))
+                    {
+                        SetFailed("no_code");
+                        Logger.LogWarning("GitHub sign-in failed: authorization response carried no code.");
+                        return;
+                    }
+
+                    await ExchangeCodeAndPersistAsync(code, verifier, redirectUri, deadline.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested)
                 {
-                    SetFailed(oauthError ?? "authorization_error");
-                    Logger.LogWarning("GitHub sign-in failed at authorize step: {Error}.", oauthError);
-                    return;
+                    SetFailed("sign_in_timeout");
+                    Logger.LogWarning(
+                        "GitHub sign-in timed out after {Timeout:c} awaiting the loopback callback.",
+                        SignInTimeout
+                    );
                 }
-
-                if (!query.TryGetValue("code", out var code) || string.IsNullOrEmpty(code))
+                finally
                 {
-                    SetFailed("no_code");
-                    Logger.LogWarning("GitHub sign-in failed: authorization response carried no code.");
-                    return;
+                    listener.Stop();
                 }
-
-                await ExchangeCodeAndPersistAsync(code, verifier, redirectUri, deadline.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!token.IsCancellationRequested)
-            {
-                SetFailed("sign_in_timeout");
-                Logger.LogWarning("GitHub sign-in timed out after {Timeout:c} awaiting the loopback callback.", SignInTimeout);
-            }
-            finally
-            {
-                listener.Stop();
-            }
-        }).ConfigureAwait(false);
+            })
+            .ConfigureAwait(false);
 
         return new SignInChallenge(authorizeUrl, launched);
     }
@@ -161,12 +184,17 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
     {
         await CancelSignInAsync().ConfigureAwait(false);
         await _store.RemoveAsync(ProviderId, ct).ConfigureAwait(false);
-        SetStatus(new OAuthStatus(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null));
+        SetStatus(
+            new OAuthStatus(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null)
+        );
         Logger.LogInformation("Signed out of GitHub.");
     }
 
     /// <inheritdoc />
-    public override async Task<OAuthAccessToken> GetAccessTokenAsync(IReadOnlyList<string>? scopes = null, CancellationToken ct = default)
+    public override async Task<OAuthAccessToken> GetAccessTokenAsync(
+        IReadOnlyList<string>? scopes = null,
+        CancellationToken ct = default
+    )
     {
         var record = await ReadRecordAsync(ct).ConfigureAwait(false);
         if (TryGetValidToken(record) is { } token)
@@ -198,7 +226,8 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
     /// <summary>Reads the persisted token record, throwing when the provider is not signed in.</summary>
     private async Task<OAuthTokenRecord> ReadRecordAsync(CancellationToken ct)
     {
-        var record = await _store.GetAsync(ProviderId, ct).ConfigureAwait(false)
+        var record =
+            await _store.GetAsync(ProviderId, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("GitHub provider is not signed in.");
 
         if (string.IsNullOrEmpty(record.AccessToken))
@@ -226,7 +255,12 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
     }
 
     /// <summary>Exchanges the authorization code (with the PKCE verifier) for a token and persists it.</summary>
-    private async Task ExchangeCodeAndPersistAsync(string code, string verifier, string redirectUri, CancellationToken ct)
+    private async Task ExchangeCodeAndPersistAsync(
+        string code,
+        string verifier,
+        string redirectUri,
+        CancellationToken ct
+    )
     {
         var form = new Dictionary<string, string>
         {
@@ -252,10 +286,19 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
             token.RefreshToken ?? string.Empty,
             token.AccessToken,
             token.ExpiresIn > 0 ? DateTimeOffset.UtcNow.AddSeconds(token.ExpiresIn) : NonExpiringSentinel,
-            _options.Scopes);
+            _options.Scopes
+        );
 
         await _store.SaveAsync(record, ct).ConfigureAwait(false);
-        SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, account, _options.Scopes, record.AccessTokenExpiresAtUtc, Error: null));
+        SetStatus(
+            new OAuthStatus(
+                OAuthSignInState.SignedIn,
+                account,
+                _options.Scopes,
+                record.AccessTokenExpiresAtUtc,
+                Error: null
+            )
+        );
         Logger.LogInformation("Signed in to GitHub as {Account}.", account ?? "<unknown>");
     }
 
@@ -314,11 +357,16 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
                 root.TryGetProperty("access_token", out var at) ? at.GetString() : null,
                 root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null,
                 root.TryGetProperty("expires_in", out var ei) && ei.TryGetInt32(out var seconds) ? seconds : 0,
-                root.TryGetProperty("error", out var er) ? er.GetString() : null);
+                root.TryGetProperty("error", out var er) ? er.GetString() : null
+            );
         }
         catch (JsonException ex)
         {
-            Logger.LogWarning(ex, "GitHub token endpoint returned an unparseable body (HTTP {Status}).", (int)response.StatusCode);
+            Logger.LogWarning(
+                ex,
+                "GitHub token endpoint returned an unparseable body (HTTP {Status}).",
+                (int)response.StatusCode
+            );
             return new TokenResponse(null, null, 0, "unparseable_response");
         }
     }
@@ -336,7 +384,10 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
             using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                Logger.LogDebug("GitHub /user lookup returned HTTP {Status}; account name unavailable.", (int)response.StatusCode);
+                Logger.LogDebug(
+                    "GitHub /user lookup returned HTTP {Status}; account name unavailable.",
+                    (int)response.StatusCode
+                );
                 return null;
             }
 
@@ -357,7 +408,10 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
     /// (favicon probes, port scanners) get a 404 and are skipped rather than consuming the callback
     /// wait, and each connection's read is bounded so a stalled client cannot wedge the sign-in.
     /// </summary>
-    private static async Task<IReadOnlyDictionary<string, string?>> WaitForLoopbackCallbackAsync(TcpListener listener, CancellationToken ct)
+    private static async Task<IReadOnlyDictionary<string, string?>> WaitForLoopbackCallbackAsync(
+        TcpListener listener,
+        CancellationToken ct
+    )
     {
         while (true)
         {
@@ -371,7 +425,8 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
 
                 var buffer = new byte[8192];
                 var read = await stream.ReadAsync(buffer, readCts.Token).ConfigureAwait(false);
-                var requestLine = Encoding.ASCII.GetString(buffer, 0, read).Split('\n').FirstOrDefault() ?? string.Empty;
+                var requestLine =
+                    Encoding.ASCII.GetString(buffer, 0, read).Split('\n').FirstOrDefault() ?? string.Empty;
 
                 // Request line: "GET /callback?code=...&state=... HTTP/1.1"
                 var parts = requestLine.Split(' ');
@@ -383,15 +438,19 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
                 if (!string.Equals(path, "/callback", StringComparison.Ordinal))
                 {
                     const string notFound = "<!doctype html><html><body>Not found.</body></html>";
-                    await WriteHttpResponseAsync(stream, "404 Not Found", notFound, readCts.Token).ConfigureAwait(false);
+                    await WriteHttpResponseAsync(stream, "404 Not Found", notFound, readCts.Token)
+                        .ConfigureAwait(false);
                     continue;
                 }
 
-                const string html = "<!doctype html><html><body style=\"font-family:sans-serif\">"
+                const string html =
+                    "<!doctype html><html><body style=\"font-family:sans-serif\">"
                     + "<h3>Sign-in complete</h3><p>You can close this tab and return to the app.</p></body></html>";
                 await WriteHttpResponseAsync(stream, "200 OK", html, readCts.Token).ConfigureAwait(false);
 
-                return QueryHelpers.ParseQuery(query).ToDictionary(kvp => kvp.Key, kvp => (string?)kvp.Value.ToString());
+                return QueryHelpers
+                    .ParseQuery(query)
+                    .ToDictionary(kvp => kvp.Key, kvp => (string?)kvp.Value.ToString());
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
@@ -405,9 +464,15 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
     }
 
     /// <summary>Writes a minimal HTTP/1.1 response with an HTML body to the raw loopback stream.</summary>
-    private static async Task WriteHttpResponseAsync(NetworkStream stream, string status, string html, CancellationToken ct)
+    private static async Task WriteHttpResponseAsync(
+        NetworkStream stream,
+        string status,
+        string html,
+        CancellationToken ct
+    )
     {
-        var response = $"HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n"
+        var response =
+            $"HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n"
             + $"Content-Length: {Encoding.UTF8.GetByteCount(html)}\r\nConnection: close\r\n\r\n{html}";
         await stream.WriteAsync(Encoding.UTF8.GetBytes(response), ct).ConfigureAwait(false);
         await stream.FlushAsync(ct).ConfigureAwait(false);
@@ -422,16 +487,20 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
         string redirectUri,
         IReadOnlyList<string> scopes,
         string state,
-        string codeChallenge) =>
-        QueryHelpers.AddQueryString(AuthorizeEndpoint, new Dictionary<string, string?>
-        {
-            ["client_id"] = clientId,
-            ["redirect_uri"] = redirectUri,
-            ["scope"] = string.Join(' ', scopes),
-            ["state"] = state,
-            ["code_challenge"] = codeChallenge,
-            ["code_challenge_method"] = "S256",
-        });
+        string codeChallenge
+    ) =>
+        QueryHelpers.AddQueryString(
+            AuthorizeEndpoint,
+            new Dictionary<string, string?>
+            {
+                ["client_id"] = clientId,
+                ["redirect_uri"] = redirectUri,
+                ["scope"] = string.Join(' ', scopes),
+                ["state"] = state,
+                ["code_challenge"] = codeChallenge,
+                ["code_challenge_method"] = "S256",
+            }
+        );
 
     /// <summary>Parsed token-endpoint response (success or OAuth error).</summary>
     private sealed record TokenResponse(string? AccessToken, string? RefreshToken, int ExpiresIn, string? Error);

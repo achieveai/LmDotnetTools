@@ -63,7 +63,8 @@ internal static class HostGitCredentialEnv
     /// </summary>
     public static IReadOnlyDictionary<string, string> Build(
         IReadOnlyList<GitProviderToken> tokens,
-        IReadOnlyCollection<string>? adoOrgs = null)
+        IReadOnlyCollection<string>? adoOrgs = null
+    )
     {
         ArgumentNullException.ThrowIfNull(tokens);
 
@@ -71,8 +72,10 @@ internal static class HostGitCredentialEnv
         var index = 0;
         foreach (var token in tokens)
         {
-            if (string.IsNullOrWhiteSpace(token.Token)
-                || !ProviderGitHosts.TryGetValue(token.ProviderId, out var mapping))
+            if (
+                string.IsNullOrWhiteSpace(token.Token)
+                || !ProviderGitHosts.TryGetValue(token.ProviderId, out var mapping)
+            )
             {
                 continue;
             }

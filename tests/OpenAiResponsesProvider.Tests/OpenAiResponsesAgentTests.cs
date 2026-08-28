@@ -188,7 +188,10 @@ public sealed class OpenAiResponsesAgentTests
             ]}
             <|instruction_end|>
             """;
-        var messages = new IMessage[] { new TextMessage { Role = Role.User, Text = prompt } };
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = prompt },
+        };
 
         var pipeline = rig.Agent.WithMessageTransformation();
 
@@ -203,10 +206,12 @@ public sealed class OpenAiResponsesAgentTests
         deltas.Should().NotBeEmpty();
         var deltaOrderIdxs = deltas.Select(d => d.MessageOrderIdx).Distinct().ToList();
         deltaOrderIdxs.Should().ContainSingle("all text deltas of one answer share one messageOrderIdx");
-        finalText.MessageOrderIdx.Should().Be(
-            deltaOrderIdxs[0],
-            "the finalizing TextMessage must reuse the delta stream's messageOrderIdx so the client merges them into one bubble"
-        );
+        finalText
+            .MessageOrderIdx.Should()
+            .Be(
+                deltaOrderIdxs[0],
+                "the finalizing TextMessage must reuse the delta stream's messageOrderIdx so the client merges them into one bubble"
+            );
     }
 
     [Fact]
@@ -220,13 +225,14 @@ public sealed class OpenAiResponsesAgentTests
             ]}
             <|instruction_end|>
             """;
-        var messages = new IMessage[] { new TextMessage { Role = Role.User, Text = prompt } };
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = prompt },
+        };
 
         // The same downstream "for history" pipeline the MultiTurnAgentLoop assembles:
         //   provider -> MessageTransformation (assigns messageOrderIdx) -> MessageUpdateJoiner.
-        var pipeline = rig.Agent
-            .WithMessageTransformation()
-            .WithMiddleware(new MessageUpdateJoinerMiddleware());
+        var pipeline = rig.Agent.WithMessageTransformation().WithMiddleware(new MessageUpdateJoinerMiddleware());
 
         var collected = new List<IMessage>();
         await foreach (var m in await pipeline.GenerateReplyStreamingAsync(messages))
@@ -235,9 +241,11 @@ public sealed class OpenAiResponsesAgentTests
         }
 
         var textMessages = collected.OfType<TextMessage>().ToList();
-        textMessages.Should().ContainSingle(
-            "the joiner must not emit both a synthesized built copy and the provider's finalizing TextMessage"
-        );
+        textMessages
+            .Should()
+            .ContainSingle(
+                "the joiner must not emit both a synthesized built copy and the provider's finalizing TextMessage"
+            );
         textMessages[0].Role.Should().Be(Role.Assistant);
         textMessages[0].Text.Trim().Split(' ').Should().HaveCount(6);
     }

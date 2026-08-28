@@ -1,7 +1,7 @@
-using LmStreaming.Sample.Configuration;
-using LmStreaming.Sample.Services;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using LmStreaming.Sample.Configuration;
+using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -35,8 +35,7 @@ public class AgentOutputTokenPolicyTests
     [Fact]
     public void ApplyPrimary_UsesDelegatedFallback_WhenRequested()
     {
-        Policy().ApplyPrimary(new GenerateReplyOptions(), useDelegatedFallback: true)
-            .MaxToken.Should().Be(16_384);
+        Policy().ApplyPrimary(new GenerateReplyOptions(), useDelegatedFallback: true).MaxToken.Should().Be(16_384);
     }
 
     [Fact]
@@ -44,8 +43,7 @@ public class AgentOutputTokenPolicyTests
     {
         var policy = Policy(primary: 30_000, delegated: 18_000);
 
-        policy.ApplyPrimary(new GenerateReplyOptions { MaxToken = 4_096 })
-            .MaxToken.Should().Be(4_096);
+        policy.ApplyPrimary(new GenerateReplyOptions { MaxToken = 4_096 }).MaxToken.Should().Be(4_096);
     }
 
     [Fact]
@@ -112,10 +110,7 @@ public class AgentOutputTokenPolicyTests
     {
         var options = new SubAgentOptions
         {
-            Templates = new Dictionary<string, SubAgentTemplate>
-            {
-                ["test"] = Template(defaultOptions: null),
-            },
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test"] = Template(defaultOptions: null) },
             MaxConcurrentSubAgents = 3,
             MaxQueuedSubAgents = 50,
         };

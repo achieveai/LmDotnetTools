@@ -115,9 +115,7 @@ public class ReviewFindingParserTests
     [Fact]
     public void The_severity_on_a_line_applies_to_that_line_only()
     {
-        var findings = ReviewFindingParser.Parse(
-            "[Blocker] src/Foo/A.cs:1 is broken.\nsrc/Foo/B.cs:2 is merely odd."
-        );
+        var findings = ReviewFindingParser.Parse("[Blocker] src/Foo/A.cs:1 is broken.\nsrc/Foo/B.cs:2 is merely odd.");
 
         findings.Should().HaveCount(2);
         findings[0].Severity.Should().Be("blocker");
@@ -168,9 +166,7 @@ public class ReviewFindingParserTests
     [Fact]
     public void One_severity_still_covers_every_citation_on_its_line()
     {
-        var trailing = ReviewFindingParser.Parse(
-            "src/Foo/A.cs:1 and src/Foo/B.cs:2 are both wrong. **Blocker**"
-        );
+        var trailing = ReviewFindingParser.Parse("src/Foo/A.cs:1 and src/Foo/B.cs:2 are both wrong. **Blocker**");
 
         trailing.Should().HaveCount(2);
         trailing.Should().OnlyContain(f => f.Severity == "blocker");

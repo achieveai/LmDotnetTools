@@ -36,8 +36,7 @@ public class EvalCorpusSweepScheduleTests
     {
         private readonly Func<int, EvalSweepReport> _report;
 
-        public Sweeps(Func<int, EvalSweepReport>? report = null) =>
-            _report = report ?? (_ => Report());
+        public Sweeps(Func<int, EvalSweepReport>? report = null) => _report = report ?? (_ => Report());
 
         public int Count { get; private set; }
 
@@ -58,11 +57,7 @@ public class EvalCorpusSweepScheduleTests
     public async Task The_first_tick_sweeps()
     {
         var sweeps = new Sweeps();
-        var schedule = new EvalCorpusSweepSchedule(
-            sweeps.RunAsync,
-            Hour,
-            new FakeTimeProvider()
-        );
+        var schedule = new EvalCorpusSweepSchedule(sweeps.RunAsync, Hour, new FakeTimeProvider());
 
         await schedule.SweepAsync(CancellationToken.None);
 
@@ -159,9 +154,7 @@ public class EvalCorpusSweepScheduleTests
             clock
         );
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => schedule.SweepAsync(CancellationToken.None)
-        );
+        await Assert.ThrowsAsync<InvalidOperationException>(() => schedule.SweepAsync(CancellationToken.None));
 
         clock.Advance(TimeSpan.FromMinutes(30));
         await schedule.SweepAsync(CancellationToken.None);
@@ -178,11 +171,7 @@ public class EvalCorpusSweepScheduleTests
     [InlineData(-1)]
     public void A_non_positive_interval_is_refused(int minutes)
     {
-        var build = () =>
-            new EvalCorpusSweepSchedule(
-                _ => Task.FromResult(Report()),
-                TimeSpan.FromMinutes(minutes)
-            );
+        var build = () => new EvalCorpusSweepSchedule(_ => Task.FromResult(Report()), TimeSpan.FromMinutes(minutes));
 
         build.Should().Throw<ArgumentOutOfRangeException>();
     }

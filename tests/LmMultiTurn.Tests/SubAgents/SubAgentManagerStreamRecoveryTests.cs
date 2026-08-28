@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -6,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -44,11 +44,14 @@ public class SubAgentManagerStreamRecoveryTests : IAsyncLifetime
     public Task InitializeAsync()
     {
         _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         return Task.CompletedTask;
@@ -69,15 +72,19 @@ public class SubAgentManagerStreamRecoveryTests : IAsyncLifetime
         // The stream is severed and then ends NORMALLY, which is precisely why this was invisible:
         // no exception reaches the monitor's catch, so the run stayed "running" forever with a
         // latch nobody would ever resolve.
-        var agentId = await SpawnWithStreamAsync(
-            (_, ct) => SeveredStream(StreamRecoveryReason.SlowConsumer, ct));
+        var agentId = await SpawnWithStreamAsync((_, ct) => SeveredStream(StreamRecoveryReason.SlowConsumer, ct));
 
         var observe = () => _manager!.ObserveCompletionAsync(agentId, CancellationToken.None).WaitAsync(Bound);
 
-        var thrown = await observe.Should().ThrowAsync<InvalidOperationException>(
-            "a severed subscription must terminalize the run it was the only view of");
-        _ = thrown.WithMessage("*severed (SlowConsumer)*",
-            "the reason belongs in the message — it is the only clue the caller gets");
+        var thrown = await observe
+            .Should()
+            .ThrowAsync<InvalidOperationException>(
+                "a severed subscription must terminalize the run it was the only view of"
+            );
+        _ = thrown.WithMessage(
+            "*severed (SlowConsumer)*",
+            "the reason belongs in the message — it is the only clue the caller gets"
+        );
     }
 
     [Fact]
@@ -85,8 +92,7 @@ public class SubAgentManagerStreamRecoveryTests : IAsyncLifetime
     {
         // Faulting the latch is only half the contract: the agent's own record must go terminal too,
         // or CheckAgent/ListAgents keep reporting a "running" sub-agent that no longer exists.
-        var agentId = await SpawnWithStreamAsync(
-            (_, ct) => SeveredStream(StreamRecoveryReason.SlowConsumer, ct));
+        var agentId = await SpawnWithStreamAsync((_, ct) => SeveredStream(StreamRecoveryReason.SlowConsumer, ct));
 
         // Observing is what deterministically waits for the monitor to finish reacting; the status
         // is stamped on that same path, before the latch is resolved.
@@ -94,8 +100,10 @@ public class SubAgentManagerStreamRecoveryTests : IAsyncLifetime
         _ = await observe.Should().ThrowAsync<InvalidOperationException>();
 
         using var peek = JsonDocument.Parse(_manager!.Peek(agentId));
-        peek.RootElement.GetProperty("status").GetString().Should().Be("error",
-            "a run whose stream was severed is finished, not still running");
+        peek.RootElement.GetProperty("status")
+            .GetString()
+            .Should()
+            .Be("error", "a run whose stream was severed is finished, not still running");
     }
 
     [Fact]
@@ -104,13 +112,11 @@ public class SubAgentManagerStreamRecoveryTests : IAsyncLifetime
         // ReplayTruncated LEADS the stream: it says the buffered prefix was withheld, not that the
         // subscription is over. Treating it as terminal would fail a healthy run whose only sin was
         // joining late, so the monitor must ignore it and go on to observe the real completion.
-        var agentId = await SpawnWithStreamAsync(
-            (_, ct) => TruncatedThenCompletingStream("run-1", "the answer", ct));
+        var agentId = await SpawnWithStreamAsync((_, ct) => TruncatedThenCompletingStream("run-1", "the answer", ct));
 
         var result = await _manager!.ObserveCompletionAsync(agentId, CancellationToken.None).WaitAsync(Bound);
 
-        result.Should().Be("the answer",
-            "the live tail follows a truncation advisory on the very same subscription");
+        result.Should().Be("the answer", "the live tail follows a truncation advisory on the very same subscription");
     }
 
     #region Helpers
@@ -121,7 +127,8 @@ public class SubAgentManagerStreamRecoveryTests : IAsyncLifetime
     /// </summary>
     private static async IAsyncEnumerable<IMessage> SeveredStream(
         StreamRecoveryReason reason,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         yield return new StreamRecoveryMessage("fake-thread", "run-1", "gen-1", reason);
         await Task.CompletedTask;
@@ -135,10 +142,10 @@ public class SubAgentManagerStreamRecoveryTests : IAsyncLifetime
     private static async IAsyncEnumerable<IMessage> TruncatedThenCompletingStream(
         string runId,
         string answer,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
-        yield return new StreamRecoveryMessage(
-            "fake-thread", runId, "gen-1", StreamRecoveryReason.ReplayTruncated);
+        yield return new StreamRecoveryMessage("fake-thread", runId, "gen-1", StreamRecoveryReason.ReplayTruncated);
         yield return new TextMessage
         {
             Text = answer,
@@ -153,8 +160,7 @@ public class SubAgentManagerStreamRecoveryTests : IAsyncLifetime
     /// Spawns one background sub-agent whose monitor reads <paramref name="subscribe"/>, and returns
     /// its agent id.
     /// </summary>
-    private async Task<string> SpawnWithStreamAsync(
-        Func<int, CancellationToken, IAsyncEnumerable<IMessage>> subscribe)
+    private async Task<string> SpawnWithStreamAsync(Func<int, CancellationToken, IAsyncEnumerable<IMessage>> subscribe)
     {
         _manager = CreateManager();
         _manager.TestAgentFactoryOverride = (_, _) => new FakeMultiTurnAgent { SubscribeImpl = subscribe };
@@ -174,8 +180,10 @@ public class SubAgentManagerStreamRecoveryTests : IAsyncLifetime
                 {
                     Name = "worker",
                     SystemPrompt = "You are a test agent.",
-                    AgentFactory = () => throw new NotSupportedException(
-                        "Bypassed by TestAgentFactoryOverride; should never be invoked."),
+                    AgentFactory = () =>
+                        throw new NotSupportedException(
+                            "Bypassed by TestAgentFactoryOverride; should never be invoked."
+                        ),
                 },
             },
             MaxConcurrentSubAgents = 5,
@@ -186,7 +194,8 @@ public class SubAgentManagerStreamRecoveryTests : IAsyncLifetime
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: new MutableSubAgentTemplateSource(options.Templates));
+            source: new MutableSubAgentTemplateSource(options.Templates)
+        );
     }
 
     #endregion

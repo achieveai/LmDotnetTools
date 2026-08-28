@@ -53,9 +53,7 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
     }
 
     [HttpPost]
-    public async Task<IActionResult> Create(
-        [FromBody] ChatModeCreateUpdate createData,
-        CancellationToken ct = default)
+    public async Task<IActionResult> Create([FromBody] ChatModeCreateUpdate createData, CancellationToken ct = default)
     {
         var mode = await modeStore.CreateModeAsync(createData, ct);
         return Created($"/api/chat-modes/{mode.Id}", mode);
@@ -65,7 +63,8 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
     public async Task<IActionResult> Update(
         string modeId,
         [FromBody] ChatModeCreateUpdate updateData,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         try
         {
@@ -100,7 +99,8 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
     public async Task<IActionResult> Copy(
         string modeId,
         [FromBody] ChatModeCopy copyData,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(copyData);
         try

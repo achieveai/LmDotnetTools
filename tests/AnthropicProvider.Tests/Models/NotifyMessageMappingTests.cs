@@ -15,7 +15,11 @@ public class NotifyMessageMappingTests
     public void NotifyMessage_MapsToUserTextBlock_WithEnvelope()
     {
         var notify = NotifyMessage.Create(
-            NotifyKinds.SubAgentCompletion, detail: "sub done", sourceToolName: "Agent", sourceToolCallId: "call-1");
+            NotifyKinds.SubAgentCompletion,
+            detail: "sub done",
+            sourceToolName: "Agent",
+            sourceToolCallId: "call-1"
+        );
 
         var request = AnthropicRequest.FromMessages([notify], Options);
 
@@ -23,8 +27,11 @@ public class NotifyMessageMappingTests
         Assert.Equal("user", userMsg.Role);
         Assert.Contains(
             userMsg.Content,
-            c => c.Type == "text" && (c.Text ?? string.Empty).Contains("<notification")
-                && (c.Text ?? string.Empty).Contains("subagent-completion"));
+            c =>
+                c.Type == "text"
+                && (c.Text ?? string.Empty).Contains("<notification")
+                && (c.Text ?? string.Empty).Contains("subagent-completion")
+        );
     }
 
     [Fact]
@@ -35,8 +42,20 @@ public class NotifyMessageMappingTests
         // turn [tool_result, text(envelope)] — tool_result stays first (valid) and the envelope survives.
         IMessage[] messages =
         [
-            new ToolCallMessage { FunctionName = "f", FunctionArgs = "{}", ToolCallId = "tc1", Role = Role.Assistant },
-            new ToolCallResultMessage { ToolCallId = "tc1", ToolName = "f", Result = "ok", Role = Role.User },
+            new ToolCallMessage
+            {
+                FunctionName = "f",
+                FunctionArgs = "{}",
+                ToolCallId = "tc1",
+                Role = Role.Assistant,
+            },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "tc1",
+                ToolName = "f",
+                Result = "ok",
+                Role = Role.User,
+            },
             NotifyMessage.Create(NotifyKinds.SubAgentCompletion, detail: "bg done"),
         ];
 

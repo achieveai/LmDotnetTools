@@ -17,4 +17,5 @@ public record SendReceipt(
     string ReceiptId,
     string? InputId = null,
     DateTimeOffset QueuedAt = default,
-    bool SpawningSuppressed = false);
+    bool SpawningSuppressed = false
+);

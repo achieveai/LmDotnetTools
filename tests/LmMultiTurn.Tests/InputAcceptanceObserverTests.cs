@@ -30,8 +30,7 @@ namespace LmMultiTurn.Tests;
 /// </remarks>
 public class InputAcceptanceObserverTests
 {
-    private static List<IMessage> UserMessages(string text) =>
-        [new TextMessage { Text = text, Role = Role.User }];
+    private static List<IMessage> UserMessages(string text) => [new TextMessage { Text = text, Role = Role.User }];
 
     [Fact]
     public async Task SendAsync_ReportsTheAccept_CarryingTheIdTheSenderWasGiven()
@@ -41,15 +40,24 @@ public class InputAcceptanceObserverTests
 
         var receipt = await agent.SendAsync(UserMessages("hello"), inputId: "input-1");
 
-        observer.Accepted.Should().ContainSingle().Which
-            .Should().Be(("thread-send", "input-1"));
-        receipt.ReceiptId.Should().Be("input-1",
-            "the reported id must be the one the caller can correlate on — a receipt the sender holds "
-                + "and a ledger entry under a different id would retire nothing");
+        observer.Accepted.Should().ContainSingle().Which.Should().Be(("thread-send", "input-1"));
+        receipt
+            .ReceiptId.Should()
+            .Be(
+                "input-1",
+                "the reported id must be the one the caller can correlate on — a receipt the sender holds "
+                    + "and a ledger entry under a different id would retire nothing"
+            );
         observer.Rescinded.Should().BeEmpty();
-        observer.AcceptedBy.Should().ContainSingle().Which.Should().BeSameAs(agent,
-            "an observer that tracks agents by conversation compares this reference, so reporting the "
-                + "wrong instance would mark an agent that never took the input");
+        observer
+            .AcceptedBy.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeSameAs(
+                agent,
+                "an observer that tracks agents by conversation compares this reference, so reporting the "
+                    + "wrong instance would mark an agent that never took the input"
+            );
     }
 
     [Fact]
@@ -94,19 +102,19 @@ public class InputAcceptanceObserverTests
         };
 
         // Fill the channel. Nothing drains it — the loop is never started.
-        (await agent.TrySendAsync(UserMessages("first"), inputId: "queued-1")).Should().NotBeNull();
+        (await agent.TrySendAsync(UserMessages("first"), inputId: "queued-1"))
+            .Should()
+            .NotBeNull();
         (await agent.TrySendAsync(UserMessages("second"), inputId: "queued-2")).Should().NotBeNull();
 
         var rejected = await agent.TrySendAsync(UserMessages("third"), inputId: "rejected-3");
 
         rejected.Should().BeNull();
-        observer.Rescinded.Should().ContainSingle().Which
-            .Should().Be(("thread-full", "rejected-3"));
+        observer.Rescinded.Should().ContainSingle().Which.Should().Be(("thread-full", "rejected-3"));
 
         // Only the rejected one is withdrawn: the two that really are queued stay reported, or the
         // rollback would clear work the agent genuinely holds.
-        observer.Accepted.Select(a => a.InputId)
-            .Should().BeEquivalentTo(["queued-1", "queued-2", "rejected-3"]);
+        observer.Accepted.Select(a => a.InputId).Should().BeEquivalentTo(["queued-1", "queued-2", "rejected-3"]);
         observer.Rescinded.Select(r => r.InputId).Should().NotContain(["queued-1", "queued-2"]);
     }
 
@@ -131,7 +139,9 @@ public class InputAcceptanceObserverTests
 
         // Fill the channel so the next send takes the backpressure branch. Nothing drains it — the
         // loop is never started.
-        (await agent.TrySendAsync(UserMessages("filler"), inputId: "filler-1")).Should().NotBeNull();
+        (await agent.TrySendAsync(UserMessages("filler"), inputId: "filler-1"))
+            .Should()
+            .NotBeNull();
 
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
@@ -143,12 +153,15 @@ public class InputAcceptanceObserverTests
         // Non-vacuity: the accept really was reported, so the withdrawal below is a withdrawal of
         // something rather than a match against an id that never existed.
         observer.Accepted.Select(a => a.InputId).Should().Contain("blocked-1");
-        observer.Rescinded.Should().ContainSingle().Which
-            .Should().Be(("thread-backpressure", "blocked-1"));
+        observer.Rescinded.Should().ContainSingle().Which.Should().Be(("thread-backpressure", "blocked-1"));
 
-        agent.QueuedInputCount.Should().Be(1,
-            "only the filler is queued — the send that failed left nothing behind, which is why its "
-                + "report must not be left standing either");
+        agent
+            .QueuedInputCount.Should()
+            .Be(
+                1,
+                "only the filler is queued — the send that failed left nothing behind, which is why its "
+                    + "report must not be left standing either"
+            );
     }
 
     [Fact]
@@ -189,12 +202,15 @@ public class InputAcceptanceObserverTests
 
         var act = () => agent.SendAsync(UserMessages("hello"), inputId: "input-1").AsTask();
 
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*simulated observer failure*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*simulated observer failure*");
 
-        agent.QueuedInputCount.Should().Be(0,
-            "a failed report must block the enqueue entirely — an input in the channel that the host "
-                + "does not know about is exactly the state this mechanism exists to make impossible");
+        agent
+            .QueuedInputCount.Should()
+            .Be(
+                0,
+                "a failed report must block the enqueue entirely — an input in the channel that the host "
+                    + "does not know about is exactly the state this mechanism exists to make impossible"
+            );
     }
 
     [Fact]
@@ -208,18 +224,19 @@ public class InputAcceptanceObserverTests
         await using var agent = new ObservedTestAgent("thread-collab") { InputAcceptanceObserver = observer };
         var endpoint = new AgentLoopWriteEndpoint(agent);
 
-        var outcome = await endpoint.DeliverAsync(new AgentMessage
-        {
-            MessageId = "msg-1",
-            AgentMessageType = AgentMessageType.TaskUpdate,
-            FromAgentId = "peer",
-            FromName = "Peer",
-            Body = "ping",
-        });
+        var outcome = await endpoint.DeliverAsync(
+            new AgentMessage
+            {
+                MessageId = "msg-1",
+                AgentMessageType = AgentMessageType.TaskUpdate,
+                FromAgentId = "peer",
+                FromName = "Peer",
+                Body = "ping",
+            }
+        );
 
         outcome.Disposition.Should().Be(AgentDeliveryDisposition.Delivered);
-        observer.Accepted.Should().ContainSingle()
-            .Which.ThreadId.Should().Be("thread-collab");
+        observer.Accepted.Should().ContainSingle().Which.ThreadId.Should().Be("thread-collab");
     }
 
     [Fact]
@@ -236,18 +253,21 @@ public class InputAcceptanceObserverTests
 
         (await agent.TrySendAsync(UserMessages("fills the channel"), inputId: "filler")).Should().NotBeNull();
 
-        var outcome = await endpoint.DeliverAsync(new AgentMessage
-        {
-            MessageId = "msg-2",
-            AgentMessageType = AgentMessageType.TaskUpdate,
-            FromAgentId = "peer",
-            FromName = "Peer",
-            Body = "ping",
-        });
+        var outcome = await endpoint.DeliverAsync(
+            new AgentMessage
+            {
+                MessageId = "msg-2",
+                AgentMessageType = AgentMessageType.TaskUpdate,
+                FromAgentId = "peer",
+                FromName = "Peer",
+                Body = "ping",
+            }
+        );
 
         outcome.Disposition.Should().Be(AgentDeliveryDisposition.Refused);
-        observer.Rescinded.Should().ContainSingle(
-            "a refused collaboration delivery must withdraw the acceptance it reported");
+        observer
+            .Rescinded.Should()
+            .ContainSingle("a refused collaboration delivery must withdraw the acceptance it reported");
     }
 
     [Fact]
@@ -263,23 +283,25 @@ public class InputAcceptanceObserverTests
         // Refusing converts that into a failed send. Nothing queued is the whole point of the
         // assertion below — an enqueue here is the silent loss itself.
         var observer = new RecordingObserver { RefuseAccepts = true };
-        await using var agent = new ObservedTestAgent("thread-refused")
-        {
-            InputAcceptanceObserver = observer,
-        };
+        await using var agent = new ObservedTestAgent("thread-refused") { InputAcceptanceObserver = observer };
 
         var act = () => agent.SendAsync(UserMessages("hello"), inputId: "input-1").AsTask();
 
         var thrown = await act.Should().ThrowAsync<InputAcceptanceRefusedException>();
         thrown.Which.ThreadId.Should().Be("thread-refused");
-        thrown.Which.ReceiptId.Should().Be("input-1",
-            "the caller needs the id it was refused, because no run will ever name it");
+        thrown
+            .Which.ReceiptId.Should()
+            .Be("input-1", "the caller needs the id it was refused, because no run will ever name it");
 
-        agent.QueuedInputCount.Should().Be(0,
-            "queuing after a refusal is exactly the silent loss the refusal exists to prevent");
-        observer.Accepted.Should().ContainSingle(
-            "the agent must ASK before it refuses — a send that never reported would also leave "
-                + "nothing queued and would look identical here");
+        agent
+            .QueuedInputCount.Should()
+            .Be(0, "queuing after a refusal is exactly the silent loss the refusal exists to prevent");
+        observer
+            .Accepted.Should()
+            .ContainSingle(
+                "the agent must ASK before it refuses — a send that never reported would also leave "
+                    + "nothing queued and would look identical here"
+            );
     }
 
     [Fact]
@@ -294,10 +316,7 @@ public class InputAcceptanceObserverTests
         // no longer the one the conversation holds.
         var store = new InMemoryConversationStore();
         var observer = new RecordingObserver { RefuseAccepts = true };
-        await using var agent = new ObservedTestAgent(
-            "thread-refused-durable",
-            store: store,
-            persistRunLedger: true)
+        await using var agent = new ObservedTestAgent("thread-refused-durable", store: store, persistRunLedger: true)
         {
             InputAcceptanceObserver = observer,
         };
@@ -307,8 +326,9 @@ public class InputAcceptanceObserverTests
         _ = await act.Should().ThrowAsync<InputAcceptanceRefusedException>();
 
         agent.QueuedInputCount.Should().Be(0);
-        (await store.ListAcceptedInputIdsAsync("thread-refused-durable")).Should().BeEmpty(
-            "the durable record was written before the report, so the refusal has to withdraw it");
+        (await store.ListAcceptedInputIdsAsync("thread-refused-durable"))
+            .Should()
+            .BeEmpty("the durable record was written before the report, so the refusal has to withdraw it");
     }
 
     [Fact]
@@ -319,10 +339,7 @@ public class InputAcceptanceObserverTests
         // send to an agent the observer does not happen to track — including one it has not adopted
         // yet. Only a held entry naming a DIFFERENT agent is grounds to refuse.
         var observer = new RecordingObserver();
-        await using var agent = new ObservedTestAgent("thread-untracked")
-        {
-            InputAcceptanceObserver = observer,
-        };
+        await using var agent = new ObservedTestAgent("thread-untracked") { InputAcceptanceObserver = observer };
 
         _ = await agent.SendAsync(UserMessages("hello"), inputId: "input-1");
 
@@ -345,8 +362,8 @@ public class InputAcceptanceObserverTests
             string threadId,
             string inputId,
             DateTimeOffset acceptedAt,
-            CancellationToken ct = default) =>
-            throw new InvalidOperationException("simulated durable accepted-input write failure");
+            CancellationToken ct = default
+        ) => throw new InvalidOperationException("simulated durable accepted-input write failure");
 
         public Task RemoveAcceptedInputAsync(string threadId, string inputId, CancellationToken ct = default) =>
             _inner.RemoveAcceptedInputAsync(threadId, inputId, ct);
@@ -360,20 +377,27 @@ public class InputAcceptanceObserverTests
         public Task<RunLedgerEntry?> LoadRunLedgerAsync(string runId, CancellationToken ct = default) =>
             _inner.LoadRunLedgerAsync(runId, ct);
 
-        public Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(string threadId, CancellationToken ct = default) =>
-            _inner.ListRunLedgerAsync(threadId, ct);
+        public Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => _inner.ListRunLedgerAsync(threadId, ct);
 
         public Task AppendMessagesAsync(
             string threadId,
             IReadOnlyList<PersistedMessage> messages,
-            CancellationToken ct = default) =>
-            _inner.AppendMessagesAsync(threadId, messages, ct);
+            CancellationToken ct = default
+        ) => _inner.AppendMessagesAsync(threadId, messages, ct);
 
-        public Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default) =>
-            _inner.ReplaceMessageAsync(threadId, replacement, ct);
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => _inner.ReplaceMessageAsync(threadId, replacement, ct);
 
-        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default) =>
-            _inner.LoadMessagesAsync(threadId, ct);
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => _inner.LoadMessagesAsync(threadId, ct);
 
         public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
             _inner.SaveMetadataAsync(threadId, metadata, ct);
@@ -384,8 +408,8 @@ public class InputAcceptanceObserverTests
         public Task UpdateMetadataAsync(
             string threadId,
             Func<ThreadMetadata?, ThreadMetadata> update,
-            CancellationToken ct = default) =>
-            _inner.UpdateMetadataAsync(threadId, update, ct);
+            CancellationToken ct = default
+        ) => _inner.UpdateMetadataAsync(threadId, update, ct);
 
         public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
             _inner.DeleteThreadAsync(threadId, ct);
@@ -394,8 +418,8 @@ public class InputAcceptanceObserverTests
             int limit = 50,
             int offset = 0,
             ConversationListOptions? options = null,
-            CancellationToken ct = default) =>
-            _inner.ListThreadsAsync(limit, offset, options, ct);
+            CancellationToken ct = default
+        ) => _inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     #endregion

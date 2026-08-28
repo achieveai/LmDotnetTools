@@ -84,10 +84,15 @@ public class SubAgentParentRelayObserverTests : IAsyncLifetime
 
         var relayed = await AwaitRelayOfKind(NotifyKinds.SubAgentCompletion);
 
-        _observer.AcceptedSnapshot().Should().Contain((ParentThreadId, relayed.ReceiptId),
-            "the id the parent's channel actually holds is the id the ledger has to hold — a relay "
-                + "rerouted onto the loop's raw enqueue would still deliver this input under an id "
-                + "nobody announced");
+        _observer
+            .AcceptedSnapshot()
+            .Should()
+            .Contain(
+                (ParentThreadId, relayed.ReceiptId),
+                "the id the parent's channel actually holds is the id the ledger has to hold — a relay "
+                    + "rerouted onto the loop's raw enqueue would still deliver this input under an id "
+                    + "nobody announced"
+            );
     }
 
     [Fact]
@@ -97,18 +102,20 @@ public class SubAgentParentRelayObserverTests : IAsyncLifetime
         // sink when no upstream root target was supplied. It fires the moment a descendant parks on
         // its own AskUserQuestion, so it is the one relay that reaches the parent while the whole
         // spawn tree is otherwise idle — precisely when a handoff reads the entry releasable.
-        var askArgs = JsonSerializer.Serialize(new
-        {
-            context = "Need input before continuing.",
-            questions = new[]
+        var askArgs = JsonSerializer.Serialize(
+            new
             {
-                new
+                context = "Need input before continuing.",
+                questions = new[]
                 {
-                    prompt = "Which color?",
-                    options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                    new
+                    {
+                        prompt = "Which color?",
+                        options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                    },
                 },
-            },
-        });
+            }
+        );
         SetupSubAgentResponse([
             new ToolCallMessage
             {
@@ -124,9 +131,14 @@ public class SubAgentParentRelayObserverTests : IAsyncLifetime
 
         var relayed = await AwaitRelayOfKind(NotifyKinds.DescendantQuestion);
 
-        _observer.AcceptedSnapshot().Should().Contain((ParentThreadId, relayed.ReceiptId),
-            "this relay is one of the three accepts #434 exists for: it happens inside LmMultiTurn, "
-                + "against a pooled parent, and no host call site can cover it");
+        _observer
+            .AcceptedSnapshot()
+            .Should()
+            .Contain(
+                (ParentThreadId, relayed.ReceiptId),
+                "this relay is one of the three accepts #434 exists for: it happens inside LmMultiTurn, "
+                    + "against a pooled parent, and no host call site can cover it"
+            );
     }
 
     /// <summary>
@@ -150,17 +162,18 @@ public class SubAgentParentRelayObserverTests : IAsyncLifetime
                 return received.Exists(queued => CarriesNotifyKind(queued, notifyKind));
             },
             $"the parent received the {notifyKind} relay",
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
 
         var relayed = received.Find(queued => CarriesNotifyKind(queued, notifyKind))!;
-        relayed.ReceiptId.Should().NotBeNullOrEmpty(
-            "an input queued under no id could never be retired by the run assignment that takes it");
+        relayed
+            .ReceiptId.Should()
+            .NotBeNullOrEmpty("an input queued under no id could never be retired by the run assignment that takes it");
         return relayed;
     }
 
     private static bool CarriesNotifyKind(QueuedInput queued, string notifyKind) =>
-        queued.Input.Messages.Exists(message =>
-            message is NotifyMessage notify && notify.NotifyKind == notifyKind);
+        queued.Input.Messages.Exists(message => message is NotifyMessage notify && notify.NotifyKind == notifyKind);
 
     private SubAgentManager CreateManager()
     {
@@ -182,20 +195,25 @@ public class SubAgentParentRelayObserverTests : IAsyncLifetime
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: new MutableSubAgentTemplateSource(options.Templates));
+            source: new MutableSubAgentTemplateSource(options.Templates)
+        );
     }
 
     private void SetupSubAgentResponse(List<IMessage> messages) =>
         _subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable(messages)));
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         List<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var message in messages)
         {

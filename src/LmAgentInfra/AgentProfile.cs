@@ -39,4 +39,5 @@ public sealed record AgentProfile(
     string SystemPrompt,
     IReadOnlyList<string>? EnabledTools = null,
     IReadOnlyList<string>? EnabledBuiltInTools = null,
-    IReadOnlyList<string>? EnabledCapabilityTools = null);
+    IReadOnlyList<string>? EnabledCapabilityTools = null
+);

@@ -23,7 +23,8 @@ public class ModelResolverTests
         // Arrange
         var models = new List<ModelConfig>
         {
-            new() {
+            new()
+            {
                 Id = "test-model",
                 Providers =
                 [
@@ -71,7 +72,8 @@ public class ModelResolverTests
 
         var models = new List<ModelConfig>
         {
-            new() {
+            new()
+            {
                 Id = "test-model",
                 Providers =
                 [
@@ -132,7 +134,8 @@ public class ModelResolverTests
 
         var models = new List<ModelConfig>
         {
-            new() {
+            new()
+            {
                 Id = "test-model",
                 Providers =
                 [
@@ -196,7 +199,8 @@ public class ModelResolverTests
 
         var models = new List<ModelConfig>
         {
-            new() {
+            new()
+            {
                 Id = "test-model",
                 Providers =
                 [
@@ -276,7 +280,8 @@ public class ModelResolverTests
 
         var models = new List<ModelConfig>
         {
-            new() {
+            new()
+            {
                 Id = "test-model",
                 Providers =
                 [

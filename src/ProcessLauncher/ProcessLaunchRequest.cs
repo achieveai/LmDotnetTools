@@ -45,8 +45,8 @@ public sealed record ProcessLaunchRequest
 
     /// <summary>Environment variables to apply to the spawned process. A null
     /// value clears the inherited variable (matches <see cref="System.Diagnostics.ProcessStartInfo.Environment"/>).</summary>
-    public IReadOnlyDictionary<string, string?> EnvironmentOverrides { get; init; }
-        = ImmutableDictionary<string, string?>.Empty;
+    public IReadOnlyDictionary<string, string?> EnvironmentOverrides { get; init; } =
+        ImmutableDictionary<string, string?>.Empty;
 
     /// <summary>Encoding used to read stdout. Defaults to UTF-8 with no BOM.</summary>
     public Encoding StandardOutputEncoding { get; init; } = new UTF8Encoding(false);

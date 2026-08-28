@@ -49,7 +49,10 @@ public sealed class ProcessTriggerSource : ITriggerSource
 
     /// <inheritdoc />
     public ValueTask<IArmedTrigger> ArmAsync(
-        TriggerArmRequest request, ITriggerEventSink eventSink, CancellationToken cancellationToken)
+        TriggerArmRequest request,
+        ITriggerEventSink eventSink,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(eventSink);
@@ -60,7 +63,8 @@ public sealed class ProcessTriggerSource : ITriggerSource
             // until the wait's own ceiling timeout — a confusing, slow way to fail. Reject at arm
             // time instead (maps to the runtime's `invalid_args` rejection) with a clear reason.
             throw new ArgumentException(
-                "The 'process' trigger has no exit observer wired in this host; arming is not supported until a real IProcessExitObserver is provided.");
+                "The 'process' trigger has no exit observer wired in this host; arming is not supported until a real IProcessExitObserver is provided."
+            );
         }
 
         var (handle, expectCode, stdoutPattern) = ParseArgs(request.ArgsJson);
@@ -79,7 +83,8 @@ public sealed class ProcessTriggerSource : ITriggerSource
             {
                 throw new ArgumentException(
                     $"process 'stdoutPattern' uses a construct unsupported by non-backtracking matching: {ex.Message}",
-                    ex);
+                    ex
+                );
             }
         }
 
@@ -107,20 +112,21 @@ public sealed class ProcessTriggerSource : ITriggerSource
                 throw new ArgumentException("process args must be a JSON object.");
             }
 
-            var handle = root.TryGetProperty("handle", out var h) && h.ValueKind == JsonValueKind.String
-                ? h.GetString()
-                : null;
+            var handle =
+                root.TryGetProperty("handle", out var h) && h.ValueKind == JsonValueKind.String ? h.GetString() : null;
             if (string.IsNullOrWhiteSpace(handle))
             {
                 throw new ArgumentException("process requires a 'handle'.");
             }
 
-            int? expect = root.TryGetProperty("expectExitCode", out var c) && c.ValueKind == JsonValueKind.Number
-                ? c.GetInt32()
-                : null;
-            var pattern = root.TryGetProperty("stdoutPattern", out var p) && p.ValueKind == JsonValueKind.String
-                ? p.GetString()
-                : null;
+            int? expect =
+                root.TryGetProperty("expectExitCode", out var c) && c.ValueKind == JsonValueKind.Number
+                    ? c.GetInt32()
+                    : null;
+            var pattern =
+                root.TryGetProperty("stdoutPattern", out var p) && p.ValueKind == JsonValueKind.String
+                    ? p.GetString()
+                    : null;
 
             return (handle, expect, pattern);
         }
@@ -157,7 +163,8 @@ public sealed class ProcessTriggerSource : ITriggerSource
             int? expectCode,
             Regex? regex,
             IProcessExitObserver observer,
-            ITriggerEventSink sink)
+            ITriggerEventSink sink
+        )
         {
             WaitId = waitId;
 
@@ -192,8 +199,7 @@ public sealed class ProcessTriggerSource : ITriggerSource
         /// change beyond the ordering fix. Routed through the task, it still surfaces at the await
         /// inside <see cref="RunAsync"/> exactly as before.
         /// </summary>
-        private static Task<ProcessExit> ObserveExit(
-            IProcessExitObserver observer, string handle, CancellationToken ct)
+        private static Task<ProcessExit> ObserveExit(IProcessExitObserver observer, string handle, CancellationToken ct)
         {
             try
             {
@@ -211,7 +217,8 @@ public sealed class ProcessTriggerSource : ITriggerSource
             int? expectCode,
             Regex? regex,
             ITriggerEventSink sink,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             // Yield first so the fire is always asynchronous — never synchronous within ArmAsync.
             // This is purely about when the fire is delivered; the observation it awaits was already
@@ -239,7 +246,14 @@ public sealed class ProcessTriggerSource : ITriggerSource
             // conversation history, the model, and the UI. Report only whether a configured
             // stdoutPattern matched — never the raw stdout text.
             var stdoutMatched = regex != null && stdoutOk;
-            var payload = JsonSerializer.Serialize(new { handle, exitCode = exit.ExitCode, stdoutMatched });
+            var payload = JsonSerializer.Serialize(
+                new
+                {
+                    handle,
+                    exitCode = exit.ExitCode,
+                    stdoutMatched,
+                }
+            );
             await sink.FireAsync(new TriggerFireEvent(payload), ct);
         }
 
@@ -273,9 +287,7 @@ public sealed class NoopProcessExitObserver : IProcessExitObserver
 {
     public static NoopProcessExitObserver Instance { get; } = new();
 
-    private NoopProcessExitObserver()
-    {
-    }
+    private NoopProcessExitObserver() { }
 
     /// <inheritdoc />
     public Task<ProcessExit> WaitForExitAsync(string handle, CancellationToken ct)

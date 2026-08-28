@@ -5,7 +5,6 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using LmStreaming.Sample.Persistence;
-
 // The envelope has its own `Role` property, so the enum needs an alias to stay addressable inside
 // this type — an unaliased `Role.None` binds to the property and does not compile.
 using MessageRole = AchieveAi.LmDotnetTools.LmCore.Messages.Role;
@@ -237,7 +236,8 @@ public sealed record WorkspaceTranscriptLine
     public static WorkspaceTranscriptLine ForMessage(
         PersistedMessage message,
         string? parentUid = null,
-        string? agent = null)
+        string? agent = null
+    )
     {
         ArgumentNullException.ThrowIfNull(message);
 
@@ -273,7 +273,8 @@ public sealed record WorkspaceTranscriptLine
     public static IReadOnlyList<WorkspaceTranscriptLine> ChainMessages(
         IReadOnlyList<PersistedMessage> messages,
         string? agent = null,
-        string? rootParentUid = null)
+        string? rootParentUid = null
+    )
     {
         ArgumentNullException.ThrowIfNull(messages);
 
@@ -403,16 +404,12 @@ public sealed record WorkspaceTranscriptLine
         ArgumentException.ThrowIfNullOrWhiteSpace(shortAgentId);
 
         var slug = Slug(agentName);
-        return slug.Length == 0
-            ? $"{UnnamedAgentLeafPrefix}-{shortAgentId}"
-            : $"{slug}-{shortAgentId}";
+        return slug.Length == 0 ? $"{UnnamedAgentLeafPrefix}-{shortAgentId}" : $"{slug}-{shortAgentId}";
     }
 
     /// <summary>Formats a Unix-milliseconds instant as ISO-8601 UTC, round-trip ("O") format.</summary>
     public static string FormatTimestamp(long unixMillis) =>
-        DateTimeOffset
-            .FromUnixTimeMilliseconds(unixMillis)
-            .UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+        DateTimeOffset.FromUnixTimeMilliseconds(unixMillis).UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
 
     /// <summary>
     ///     Canonicalizes a persisted role string to the PascalCase name of a <see cref="MessageRole"/>

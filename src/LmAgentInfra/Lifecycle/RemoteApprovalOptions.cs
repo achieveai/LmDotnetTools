@@ -70,10 +70,7 @@ public sealed class RemoteApprovalOptions
 
         if (MaxPendingPerOwner > MaxPendingTotal)
         {
-            throw Invalid(
-                nameof(MaxPendingPerOwner),
-                $"must not exceed {nameof(MaxPendingTotal)} ({MaxPendingTotal})"
-            );
+            throw Invalid(nameof(MaxPendingPerOwner), $"must not exceed {nameof(MaxPendingTotal)} ({MaxPendingTotal})");
         }
 
         if (MaxTombstones <= 0)

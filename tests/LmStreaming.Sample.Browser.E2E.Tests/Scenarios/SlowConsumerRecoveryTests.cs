@@ -87,7 +87,18 @@ public sealed class SlowConsumerRecoveryTests
         var responder = ScriptedSseResponder
             .New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-            .Turn(t => t.TextLen(FirstTurnWordCount).ToolCall("calculate", new { a = 1, operation = "add", b = 1 }))
+            .Turn(t =>
+                t.TextLen(FirstTurnWordCount)
+                    .ToolCall(
+                        "calculate",
+                        new
+                        {
+                            a = 1,
+                            operation = "add",
+                            b = 1,
+                        }
+                    )
+            )
             .Turn(t => t.Text(FinalAnswer))
             .Build();
 
@@ -98,9 +109,9 @@ public sealed class SlowConsumerRecoveryTests
             heldFinalTurn,
             settings: new Dictionary<string, string?>
             {
-                ["LmStreaming:OutputChannelCapacity"] =
-                    OutputChannelCapacity.ToString(CultureInfo.InvariantCulture),
-            });
+                ["LmStreaming:OutputChannelCapacity"] = OutputChannelCapacity.ToString(CultureInfo.InvariantCulture),
+            }
+        );
         var page = session.Page;
 
         // Park the primary stream's pump. Sub-agent streams (threadId `subagent-*`) are untouched so a
@@ -151,24 +162,26 @@ public sealed class SlowConsumerRecoveryTests
         // --- The recovery contract, as the browser saw it -------------------------------------
         AssertDroppedStreamContract(sockets.Frames(0));
 
-        sockets.Count
-            .Should()
+        sockets
+            .Count.Should()
             .Be(2, "the client replaces a dropped stream exactly once — no socket storm, no silent give-up");
 
-        restCatchUp.Count
-            .Should()
+        restCatchUp
+            .Count.Should()
             .BeGreaterThan(
                 restCallsBeforeDrop,
                 "recovery reloads the authoritative history over REST, so the content that was skipped "
-                    + "while the channel overflowed is not lost");
+                    + "while the channel overflowed is not lost"
+            );
 
-        sockets.SampleAtSecondConnection
-            .Should()
+        sockets
+            .SampleAtSecondConnection.Should()
             .BeGreaterThan(
                 restCallsBeforeDrop,
                 "the reload happens BEFORE the replacement subscription — the resync coordinator runs "
                     + "discard -> loadHistory -> resubscribe, so re-subscribing first would leave the "
-                    + "skipped content unrecoverable from the live stream alone");
+                    + "skipped content unrecoverable from the live stream alone"
+            );
 
         // --- What the user ends up looking at --------------------------------------------------
         // The stream is already idle, so the rendered text is settled. Count OCCURRENCES rather than
@@ -190,12 +203,12 @@ public sealed class SlowConsumerRecoveryTests
             .Should()
             .BeFalse("a recovered drop is invisible to the user — no persistent error is left behind");
 
-        responder.RemainingTurns["parent"]
+        responder
+            .RemainingTurns["parent"]
             .Should()
             .Be(0, "the backend run completed its scripted plan despite the dropped subscriber");
 
-        await session.SaveSuccessScreenshotAsync(
-            $"SlowConsumerRecovery.Primary_stream_recovers_{providerMode}");
+        await session.SaveSuccessScreenshotAsync($"SlowConsumerRecovery.Primary_stream_recovers_{providerMode}");
     }
 
     /// <summary>
@@ -223,8 +236,29 @@ public sealed class SlowConsumerRecoveryTests
             // Turn 1 gives the focus view a transcript to replay, turn 2 is the burst that overflows the
             // child's output channel while the tab is parked, turn 3 is the final full message.
             .ForRole("researcher", ctx => ctx.SystemPromptContains(ResearcherMarker))
-            .Turn(t => t.ToolCall("calculate", new { a = 1, operation = "add", b = 1 }))
-            .Turn(t => t.TextLen(FirstTurnWordCount).ToolCall("calculate", new { a = 2, operation = "add", b = 1 }))
+            .Turn(t =>
+                t.ToolCall(
+                    "calculate",
+                    new
+                    {
+                        a = 1,
+                        operation = "add",
+                        b = 1,
+                    }
+                )
+            )
+            .Turn(t =>
+                t.TextLen(FirstTurnWordCount)
+                    .ToolCall(
+                        "calculate",
+                        new
+                        {
+                            a = 2,
+                            operation = "add",
+                            b = 1,
+                        }
+                    )
+            )
             .Turn(t => t.Text(ChildFinalAnswer))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
             .Turn(t => t.ToolCall("Agent", new { subagent_type = "researcher", prompt = "Find AI papers" }))
@@ -234,7 +268,11 @@ public sealed class SlowConsumerRecoveryTests
         // Only the child's requests are counted, so the parent's turns do not shift the ordinals.
         static bool IsChildTurn(string body) => body.Contains(ResearcherMarker, StringComparison.Ordinal);
 
-        var heldFinalTurn = new HeldProviderTurn(responder.HandlerFor(providerMode), turnOrdinal: 3, matchesBody: IsChildTurn);
+        var heldFinalTurn = new HeldProviderTurn(
+            responder.HandlerFor(providerMode),
+            turnOrdinal: 3,
+            matchesBody: IsChildTurn
+        );
         using var heldBurstTurn = new HeldProviderTurn(heldFinalTurn, turnOrdinal: 2, matchesBody: IsChildTurn);
 
         await using var session = await _fixture.OpenAsync(
@@ -255,7 +293,8 @@ public sealed class SlowConsumerRecoveryTests
                     },
                     MaxConcurrentSubAgents = 5,
                     OutputChannelCapacity = OutputChannelCapacity,
-                });
+                }
+        );
         var page = session.Page;
 
         // Park the focus view's pump only; the parent conversation streams normally throughout.
@@ -263,7 +302,10 @@ public sealed class SlowConsumerRecoveryTests
         session.Factory.AppServices.GetRequiredService<ChatWebSocketManager>().OutboundPumpGate = pump.WaitAsync;
 
         var focusSockets = new WebSocketObserver();
-        await page.RouteWebSocketAsync(url => url.Contains("/ws/subagent", StringComparison.Ordinal), focusSockets.Attach);
+        await page.RouteWebSocketAsync(
+            url => url.Contains("/ws/subagent", StringComparison.Ordinal),
+            focusSockets.Attach
+        );
 
         await page.ReloadAsync();
         await page.Textarea().WaitForAsync();
@@ -299,7 +341,8 @@ public sealed class SlowConsumerRecoveryTests
         //    focus view's loading-ended contract. Reading earlier would race a later duplicate.
         heldFinalTurn.Release();
         await focusSockets.SecondConnectionDone.WaitForAsync(
-            "the replacement focus socket to reach end-of-stream (sub-agent loading finished)");
+            "the replacement focus socket to reach end-of-stream (sub-agent loading finished)"
+        );
         await page.GetByTestId("subagent-transcript").WaitForTextContainsAsync(ChildFinalAnswer, timeoutMs: 30_000);
 
         AssertDroppedStreamContract(focusSockets.Frames(0));
@@ -314,23 +357,28 @@ public sealed class SlowConsumerRecoveryTests
             .Should()
             .NotContain(
                 f => f.Contains("\"$type\":\"stream_recovery\"", StringComparison.Ordinal),
-                "the replacement viewer keeps up — a second drop would mean recovery just moved the problem");
+                "the replacement viewer keeps up — a second drop would mean recovery just moved the problem"
+            );
 
-        focusSockets.Count
-            .Should()
-            .Be(2, "the focus view replaces a dropped stream exactly once — it must not give up, nor reconnect in a loop");
+        focusSockets
+            .Count.Should()
+            .Be(
+                2,
+                "the focus view replaces a dropped stream exactly once — it must not give up, nor reconnect in a loop"
+            );
 
         // Ordering note: unlike the primary chat's resync coordinator (discard -> loadHistory ->
         // resubscribe), the focus path deliberately SUBSCRIBES FIRST and buffers live frames while it
         // loads history, to close the snapshot->subscribe gap (see useSubAgentPanel.focusChild). So the
         // provable claim here is that the catch-up happened during recovery — and the restored pre-drop
         // tool calls below are what prove it carried the skipped canonical content.
-        restCatchUp.Count
-            .Should()
+        restCatchUp
+            .Count.Should()
             .BeGreaterThan(
                 restCallsBeforeDrop,
                 "re-focusing reloads the child's persisted transcript, so the content skipped while its "
-                    + "output channel overflowed is restored rather than lost");
+                    + "output channel overflowed is restored rather than lost"
+            );
 
         // Scoped to the focus transcript on purpose: a page-wide pill count would also see the parent
         // conversation's pills and could not prove WHERE the restored content landed. Both of the
@@ -342,13 +390,17 @@ public sealed class SlowConsumerRecoveryTests
 
         CountOccurrences(await page.GetByTestId("subagent-transcript").InnerTextAsync(), ChildFinalAnswer)
             .Should()
-            .Be(1, "the reloaded transcript and the replacement stream carry the same final message; it must merge, not duplicate");
+            .Be(
+                1,
+                "the reloaded transcript and the replacement stream carry the same final message; it must merge, not duplicate"
+            );
 
         (await page.GetByTestId("subagent-error").IsVisibleAsync())
             .Should()
             .BeFalse("a recovered drop leaves no error on the sub-agent view");
 
-        responder.RemainingTurns["researcher"]
+        responder
+            .RemainingTurns["researcher"]
             .Should()
             .Be(0, "the child run completed its scripted plan despite the dropped viewer");
 
@@ -357,7 +409,8 @@ public sealed class SlowConsumerRecoveryTests
         await page.WaitForStreamIdleAsync(timeoutMs: 60_000);
 
         await session.SaveSuccessScreenshotAsync(
-            $"SlowConsumerRecovery.Sub_agent_focus_stream_recovers_{providerMode}");
+            $"SlowConsumerRecovery.Sub_agent_focus_stream_recovers_{providerMode}"
+        );
     }
 
     /// <summary>
@@ -379,7 +432,8 @@ public sealed class SlowConsumerRecoveryTests
             .Should()
             .NotContain(
                 f => f.Contains(WebSocketObserver.DoneFrame, StringComparison.Ordinal),
-                "a dropped stream must NOT look like a completed one, or the client would stop waiting");
+                "a dropped stream must NOT look like a completed one, or the client would stop waiting"
+            );
     }
 
     /// <summary>

@@ -30,11 +30,16 @@ public sealed class DaemonPrPollingCoverageWiringTests
             builder.UseSetting("CodeReviewDaemon:MaxPrsPerPage", "40");
         });
 
-        var provider = configured.Services.GetServices<IPrProvider>().OfType<GitHubPrProvider>()
-            .Should().ContainSingle("GitHub is always registered").Subject;
+        var provider = configured
+            .Services.GetServices<IPrProvider>()
+            .OfType<GitHubPrProvider>()
+            .Should()
+            .ContainSingle("GitHub is always registered")
+            .Subject;
 
-        provider.MaxPagesPerPoll.Should().Be(
-            25, "the operator's CodeReviewDaemon:MaxPagesPerPoll must reach the provider Program.cs builds");
+        provider
+            .MaxPagesPerPoll.Should()
+            .Be(25, "the operator's CodeReviewDaemon:MaxPagesPerPoll must reach the provider Program.cs builds");
         provider.PageSize.Should().Be(40, "the operator's CodeReviewDaemon:MaxPrsPerPage must reach it too");
     }
 
@@ -49,8 +54,12 @@ public sealed class DaemonPrPollingCoverageWiringTests
             builder.UseSetting("CodeReviewDaemon:MaxPrsPerPage", "40");
         });
 
-        var provider = configured.Services.GetServices<IPrProvider>().OfType<AdoPrProvider>()
-            .Should().ContainSingle("EnableAdoProvider registers the ADO provider").Subject;
+        var provider = configured
+            .Services.GetServices<IPrProvider>()
+            .OfType<AdoPrProvider>()
+            .Should()
+            .ContainSingle("EnableAdoProvider registers the ADO provider")
+            .Subject;
 
         provider.MaxPagesPerPoll.Should().Be(25);
         provider.PageSize.Should().Be(40);
@@ -66,8 +75,12 @@ public sealed class DaemonPrPollingCoverageWiringTests
     {
         using var factory = new DaemonWebAppFactory();
 
-        var provider = factory.Services.GetServices<IPrProvider>().OfType<GitHubPrProvider>()
-            .Should().ContainSingle().Subject;
+        var provider = factory
+            .Services.GetServices<IPrProvider>()
+            .OfType<GitHubPrProvider>()
+            .Should()
+            .ContainSingle()
+            .Subject;
 
         provider.MaxPagesPerPoll.Should().Be(CodeReviewDaemonOptions.DefaultMaxPagesPerPoll);
         provider.MaxPagesPerPoll.Should().Be(10, "the documented default is 10 pages per poll");
@@ -85,13 +98,21 @@ public sealed class DaemonPrPollingCoverageWiringTests
     {
         using var factory = new DaemonWebAppFactory();
         using var host = factory.WithWebHostBuilder(builder =>
-            builder.UseSetting("CodeReviewDaemon:MaxPagesPerPoll", configured));
+            builder.UseSetting("CodeReviewDaemon:MaxPagesPerPoll", configured)
+        );
 
-        var provider = host.Services.GetServices<IPrProvider>().OfType<GitHubPrProvider>()
-            .Should().ContainSingle().Subject;
+        var provider = host
+            .Services.GetServices<IPrProvider>()
+            .OfType<GitHubPrProvider>()
+            .Should()
+            .ContainSingle()
+            .Subject;
 
-        provider.MaxPagesPerPoll.Should().Be(
-            CodeReviewDaemonOptions.DefaultMaxPagesPerPoll,
-            "a value that cannot be a page count is treated as unset, never as zero pages and never as unbounded");
+        provider
+            .MaxPagesPerPoll.Should()
+            .Be(
+                CodeReviewDaemonOptions.DefaultMaxPagesPerPoll,
+                "a value that cannot be a page count is treated as unset, never as zero pages and never as unbounded"
+            );
     }
 }

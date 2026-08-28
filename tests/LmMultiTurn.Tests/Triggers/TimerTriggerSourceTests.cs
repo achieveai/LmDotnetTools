@@ -14,8 +14,9 @@ public class TimerTriggerSourceTests
 {
     private sealed class CapturingSink : ITriggerEventSink
     {
-        private readonly TaskCompletionSource<TriggerFireEvent> _fired =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<TriggerFireEvent> _fired = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
 
         public Task<TriggerFireEvent> Fired => _fired.Task;
 
@@ -26,14 +27,15 @@ public class TimerTriggerSourceTests
         }
     }
 
-    private static TriggerArmRequest Request(string argsJson, DateTimeOffset armedAt, DateTimeOffset deadline) => new()
-    {
-        WaitId = "tc",
-        Kind = TimerTriggerSource.KindName,
-        ArgsJson = argsJson,
-        ArmedAt = armedAt,
-        Deadline = deadline,
-    };
+    private static TriggerArmRequest Request(string argsJson, DateTimeOffset armedAt, DateTimeOffset deadline) =>
+        new()
+        {
+            WaitId = "tc",
+            Kind = TimerTriggerSource.KindName,
+            ArgsJson = argsJson,
+            ArmedAt = armedAt,
+            Deadline = deadline,
+        };
 
     [Fact]
     public async Task Fires_AfterDelay()
@@ -43,7 +45,10 @@ public class TimerTriggerSourceTests
         var now = DateTimeOffset.UtcNow;
 
         await using var handle = await source.ArmAsync(
-            Request("{\"delay\":\"200ms\"}", now, now.AddMinutes(10)), sink, CancellationToken.None);
+            Request("{\"delay\":\"200ms\"}", now, now.AddMinutes(10)),
+            sink,
+            CancellationToken.None
+        );
 
         (await sink.Fired.WaitAsync(TimeSpan.FromSeconds(5))).Should().NotBeNull();
     }
@@ -57,7 +62,10 @@ public class TimerTriggerSourceTests
 
         // Empty args → the timer defaults to firing at the wait's ceiling deadline.
         await using var handle = await source.ArmAsync(
-            Request("{}", now, now.AddMilliseconds(200)), sink, CancellationToken.None);
+            Request("{}", now, now.AddMilliseconds(200)),
+            sink,
+            CancellationToken.None
+        );
 
         (await sink.Fired.WaitAsync(TimeSpan.FromSeconds(5))).Should().NotBeNull();
     }
@@ -70,7 +78,10 @@ public class TimerTriggerSourceTests
         var now = DateTimeOffset.UtcNow;
 
         var handle = await source.ArmAsync(
-            Request("{\"delay\":\"5s\"}", now, now.AddMinutes(10)), sink, CancellationToken.None);
+            Request("{\"delay\":\"5s\"}", now, now.AddMinutes(10)),
+            sink,
+            CancellationToken.None
+        );
 
         await handle.DisposeAsync();
 
@@ -87,7 +98,10 @@ public class TimerTriggerSourceTests
         var armedAt = DateTimeOffset.UtcNow.AddMinutes(-30);
 
         await using var handle = await source.ArmAsync(
-            Request("{\"delay\":\"5m\"}", armedAt, armedAt.AddMinutes(10)), sink, CancellationToken.None);
+            Request("{\"delay\":\"5m\"}", armedAt, armedAt.AddMinutes(10)),
+            sink,
+            CancellationToken.None
+        );
 
         (await sink.Fired.WaitAsync(TimeSpan.FromSeconds(5))).Should().NotBeNull();
     }
@@ -105,9 +119,12 @@ public class TimerTriggerSourceTests
         var sink = new CapturingSink();
         var now = DateTimeOffset.UtcNow;
 
-        var act = () => source.ArmAsync(Request(argsJson, now, now.AddMinutes(10)), sink, CancellationToken.None).AsTask();
+        var act = () =>
+            source.ArmAsync(Request(argsJson, now, now.AddMinutes(10)), sink, CancellationToken.None).AsTask();
 
-        await act.Should().ThrowAsync<ArgumentException>(
-            "malformed or contradictory timer args must be rejected, not silently armed against the wait's ceiling");
+        await act.Should()
+            .ThrowAsync<ArgumentException>(
+                "malformed or contradictory timer args must be rejected, not silently armed against the wait's ceiling"
+            );
     }
 }

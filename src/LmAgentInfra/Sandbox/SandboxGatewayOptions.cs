@@ -67,9 +67,10 @@ public sealed class SandboxGatewayOptions
             return (Path.GetDirectoryName(fullPath), Path.GetFileName(fullPath), fullPath);
         }
 
-        var combined = !string.IsNullOrWhiteSpace(WorkspaceBasePath) && !string.IsNullOrWhiteSpace(Workspace)
-            ? Path.Combine(WorkspaceBasePath, Workspace)
-            : null;
+        var combined =
+            !string.IsNullOrWhiteSpace(WorkspaceBasePath) && !string.IsNullOrWhiteSpace(Workspace)
+                ? Path.Combine(WorkspaceBasePath, Workspace)
+                : null;
         return (WorkspaceBasePath, Workspace, combined);
     }
 
@@ -117,7 +118,6 @@ public sealed class SandboxGatewayOptions
                 $"Workspace directory '{relPathOverride}' must not contain '..' path segments."
             );
         }
-
 
         var (basePath, _, _) = ResolveWorkspace();
         if (string.IsNullOrWhiteSpace(basePath))

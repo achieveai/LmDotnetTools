@@ -31,7 +31,8 @@ public class McpFunctionProvider : IFunctionProvider
         {
             Contract = contract,
             Handler = LegacyHandlerAdapter.ToNewHandler(
-                handlers[contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name]),
+                handlers[contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name]
+            ),
             ProviderName = ProviderName,
         });
     }

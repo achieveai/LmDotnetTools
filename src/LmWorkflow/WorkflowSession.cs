@@ -106,12 +106,10 @@ public static class WorkflowSession
         bool includeAuthoringTool = true,
         int? controllerMaxTurnsPerRun = null,
         GenerateReplyOptions? controllerDefaultOptions = null,
-
         IUsageSink? usageSink = null,
         CancellationToken ct = default,
         MultiTurnLifecycleServices? lifecycleServices = null,
         AgentCollaborationSetup? callerCollaboration = null
-
     )
     {
         ArgumentNullException.ThrowIfNull(objective);
@@ -161,12 +159,10 @@ public static class WorkflowSession
                 includeAuthoringTool,
                 controllerMaxTurnsPerRun,
                 controllerDefaultOptions,
-
                 usageSink,
                 logger,
                 lifecycleServices,
                 registration?.Setup
-
             );
 
             // A fresh workflow launch must begin with an EMPTY controller conversation. The controller thread
@@ -271,9 +267,15 @@ public static class WorkflowSession
             runtime.AttachStore(store, instanceId);
 
             var loop = BuildLoop(
-                controllerAgent, runtime, threadId, subAgentOptions, conversationStore,
-                logger: logger, lifecycleServices: lifecycleServices, collaboration: registration?.Setup);
-
+                controllerAgent,
+                runtime,
+                threadId,
+                subAgentOptions,
+                conversationStore,
+                logger: logger,
+                lifecycleServices: lifecycleServices,
+                collaboration: registration?.Setup
+            );
 
             // Restore the controller's prior conversation BEFORE driving so it continues with full context.
             // Doing it explicitly here also marks recovery complete so RunAsync does not re-recover.
@@ -283,7 +285,12 @@ public static class WorkflowSession
             }
 
             return BeginRun(
-                loop, runtime, ResumeObjective, TryBuildRepairer(subAgentOptions, logger), ct, registration
+                loop,
+                runtime,
+                ResumeObjective,
+                TryBuildRepairer(subAgentOptions, logger),
+                ct,
+                registration
             );
         }
         catch
@@ -304,12 +311,10 @@ public static class WorkflowSession
         bool includeAuthoringTool = true,
         int? maxTurnsPerRun = null,
         GenerateReplyOptions? controllerDefaultOptions = null,
-
         IUsageSink? usageSink = null,
         ILogger? logger = null,
         MultiTurnLifecycleServices? lifecycleServices = null,
         AgentCollaborationSetup? collaboration = null
-
     )
     {
         var registry = new FunctionRegistry();
@@ -342,7 +347,6 @@ public static class WorkflowSession
             maxTurnsPerRun: maxTurnsPerRun ?? 50,
             store: conversationStore,
             subAgentOptions: subAgentOptions,
-
             // Give the isolated controller loop (and its SubAgentManager) a logger so their structured logs —
             // notably the tool-transparency merge and per-delegate inherited-tool set — reach the same sink as
             // the rest of the workflow. The loop wants ILogger<MultiTurnAgentLoop>; adapt the workflow's
@@ -509,10 +513,9 @@ public static class WorkflowSession
                 // invalid reply into schema-valid JSON (auto-on only when the cheap tier is wired). This is the
                 // only genuinely async, lock-free point upstream of the runtime's synchronous, Monitor-locked
                 // recording, so the repair must happen HERE, not inside Observe.
-                var observed =
-                    repairer is null
-                        ? message
-                        : await MaybeRepairSpawnResultAsync(runtime, repairer, message, ct).ConfigureAwait(false);
+                var observed = repairer is null
+                    ? message
+                    : await MaybeRepairSpawnResultAsync(runtime, repairer, message, ct).ConfigureAwait(false);
                 Observe(runtime, observed);
             }
 
@@ -574,7 +577,10 @@ public static class WorkflowSession
             return message;
         }
 
-        return result with { Result = repaired };
+        return result with
+        {
+            Result = repaired,
+        };
     }
 }
 

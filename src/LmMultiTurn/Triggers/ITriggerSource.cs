@@ -23,5 +23,6 @@ public interface ITriggerSource
     ValueTask<IArmedTrigger> ArmAsync(
         TriggerArmRequest request,
         ITriggerEventSink eventSink,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken
+    );
 }

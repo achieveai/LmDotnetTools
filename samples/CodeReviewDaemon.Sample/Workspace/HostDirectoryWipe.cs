@@ -131,12 +131,12 @@ internal static class HostDirectoryWipe
     /// handed or one it found on the way down. <paramref name="cause"/> is carried when the refusal came from a
     /// failed call rather than from a verdict, so the log still shows whether the listing was denied or the
     /// device failed — the two produce the same refusal but not the same operator response.</summary>
-    private static SlotAddressUnusableException Refuse(
-        string root, HostPathRefusal refusal, Exception? cause = null) =>
+    private static SlotAddressUnusableException Refuse(string root, HostPathRefusal refusal, Exception? cause = null) =>
         new(
             $"Refusing to wipe host directory '{root}': '{refusal.Path}' — {refusal.Reason}. Not following it, "
                 + "and not removing it either.",
-            cause);
+            cause
+        );
 
     /// <summary>
     /// One directory's entries, or a refusal when it could not be enumerated.

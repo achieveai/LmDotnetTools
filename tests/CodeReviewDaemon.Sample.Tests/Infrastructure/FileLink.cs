@@ -25,10 +25,14 @@ internal static class FileLink
         _ = File.CreateSymbolicLink(link, target);
 
         var entry = new FileInfo(link);
-        entry.Attributes.HasFlag(FileAttributes.ReparsePoint).Should().BeTrue(
-            $"the test needs '{link}' to actually redirect");
-        Directory.Exists(link).Should().BeFalse(
-            $"the test needs '{link}' to read as absent to a directory-existence check");
+        entry
+            .Attributes.HasFlag(FileAttributes.ReparsePoint)
+            .Should()
+            .BeTrue($"the test needs '{link}' to actually redirect");
+        Directory
+            .Exists(link)
+            .Should()
+            .BeFalse($"the test needs '{link}' to read as absent to a directory-existence check");
     }
 
     private static bool Probe()

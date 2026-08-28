@@ -282,12 +282,7 @@ internal sealed class ReviewFeedbackAgent
     /// daemon-owned frontmatter is stripped so the model is never shown the fields it is told not to write),
     /// then the output contract.
     /// </summary>
-    private static string BuildExtractionInput(
-        string author,
-        string relPath,
-        string? existing,
-        string notesInput
-    )
+    private static string BuildExtractionInput(string author, string relPath, string? existing, string notesInput)
     {
         var builder = new StringBuilder();
         _ = builder.Append(notesInput ?? string.Empty);
@@ -299,9 +294,7 @@ internal sealed class ReviewFeedbackAgent
             .Append(")\n");
 
         var existingBody = StripFrontmatter(existing);
-        _ = builder.Append(
-            existingBody.Length == 0 ? "(none — this developer has no record yet)" : existingBody
-        );
+        _ = builder.Append(existingBody.Length == 0 ? "(none — this developer has no record yet)" : existingBody);
         _ = builder.Append(OutputContract);
         return builder.ToString();
     }
@@ -453,12 +446,7 @@ internal sealed class ReviewFeedbackAgent
     /// There is deliberately no <c>title</c>: this is not a curated knowledge entry, and a title would let
     /// it masquerade as one if it ever reached the index.
     /// </summary>
-    private static string BuildRecord(
-        string developer,
-        IReadOnlyList<string> sourcePrs,
-        string updated,
-        string body
-    )
+    private static string BuildRecord(string developer, IReadOnlyList<string> sourcePrs, string updated, string body)
     {
         var builder = new StringBuilder();
         _ = builder.Append("---\n");
@@ -521,6 +509,5 @@ internal sealed class ReviewFeedbackAgent
             : string.Concat(collapsed.AsSpan(0, ReplyPreviewChars), "…");
     }
 
-    private static string JoinPath(string root, string relative) =>
-        $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
+    private static string JoinPath(string root, string relative) => $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
 }

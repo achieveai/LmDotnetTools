@@ -138,13 +138,11 @@ public sealed class LifecycleSubscription
     /// cross-tenant leak.
     /// </summary>
     /// <param name="eventType">A value from <see cref="LifecycleEventTypes"/>.</param>
-    public bool AcceptsEventType(string eventType) =>
-        _eventTypes.Count == 0 || _eventTypes.Contains(eventType);
+    public bool AcceptsEventType(string eventType) => _eventTypes.Count == 0 || _eventTypes.Contains(eventType);
 
     /// <summary>Redacted by design — this object holds a signing secret.</summary>
     /// <returns>An identifier-only marker containing no key material.</returns>
-    public override string ToString() =>
-        $"{nameof(LifecycleSubscription)}[{SubscriptionId}, owner={Owner.Value}]";
+    public override string ToString() => $"{nameof(LifecycleSubscription)}[{SubscriptionId}, owner={Owner.Value}]";
 }
 
 /// <summary>
@@ -239,10 +237,7 @@ public sealed class LifecycleSubscriptionRejectedException : Exception
     /// <summary>Creates the exception with a machine-readable reason.</summary>
     /// <param name="reason">Why the operation was refused.</param>
     /// <param name="message">Operator-facing detail. Must not contain secrets or full callback URLs.</param>
-    public LifecycleSubscriptionRejectedException(
-        LifecycleSubscriptionRejection reason,
-        string message
-    )
+    public LifecycleSubscriptionRejectedException(LifecycleSubscriptionRejection reason, string message)
         : base(message) => Reason = reason;
 
     /// <summary>Why the operation was refused.</summary>

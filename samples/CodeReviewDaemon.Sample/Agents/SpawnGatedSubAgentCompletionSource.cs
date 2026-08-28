@@ -50,7 +50,8 @@ internal sealed class SpawnGatedSubAgentCompletionSource : IReviewSubAgentComple
     public async Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
         ReviewRun run,
         string parentThreadId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(run);
 
@@ -71,11 +72,14 @@ internal sealed class SpawnGatedSubAgentCompletionSource : IReviewSubAgentComple
             // the durable row: policy_refusal carries no run column (the HTTP seam that shares the table has
             // no run to name), and nothing maps a thread id back to a run, so a target of "thread X (agent Y)"
             // alone would leave an operator with a refusal they cannot attribute to a review.
-            if (!firstSighting
+            if (
+                !firstSighting
                 || _gate.IsSpawnAllowed(
                     run.Id,
                     node.Template,
-                    $"run {run.Id} thread {node.ThreadId} (agent {node.AgentId})"))
+                    $"run {run.Id} thread {node.ThreadId} (agent {node.AgentId})"
+                )
+            )
             {
                 continue;
             }

@@ -25,17 +25,11 @@ public sealed class CanonicalTimestampConverter : JsonConverter<DateTimeOffset>
     private const string CanonicalFormat = "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'";
 
     /// <inheritdoc />
-    public override DateTimeOffset Read(
-        ref Utf8JsonReader reader,
-        Type typeToConvert,
-        JsonSerializerOptions options
-    )
+    public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         if (reader.TokenType != JsonTokenType.String)
         {
-            throw new JsonException(
-                $"Expected an ISO 8601 timestamp string but found {reader.TokenType}."
-            );
+            throw new JsonException($"Expected an ISO 8601 timestamp string but found {reader.TokenType}.");
         }
 
         // Accept any valid ISO 8601 instant on the way in — a peer may legitimately send an offset
@@ -50,16 +44,10 @@ public sealed class CanonicalTimestampConverter : JsonConverter<DateTimeOffset>
     }
 
     /// <inheritdoc />
-    public override void Write(
-        Utf8JsonWriter writer,
-        DateTimeOffset value,
-        JsonSerializerOptions options
-    )
+    public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options)
     {
         ArgumentNullException.ThrowIfNull(writer);
 
-        writer.WriteStringValue(
-            value.ToUniversalTime().ToString(CanonicalFormat, CultureInfo.InvariantCulture)
-        );
+        writer.WriteStringValue(value.ToUniversalTime().ToString(CanonicalFormat, CultureInfo.InvariantCulture));
     }
 }

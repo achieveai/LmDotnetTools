@@ -25,10 +25,7 @@ namespace LmStreaming.Sample.Tests.Services;
 /// </summary>
 public sealed class ProvisionedPropertyRoundTripTests : IDisposable
 {
-    private readonly string _root = Path.Combine(
-        Path.GetTempPath(),
-        $"provisioned-props-{Guid.NewGuid():N}"
-    );
+    private readonly string _root = Path.Combine(Path.GetTempPath(), $"provisioned-props-{Guid.NewGuid():N}");
 
     public void Dispose()
     {
@@ -39,10 +36,7 @@ public sealed class ProvisionedPropertyRoundTripTests : IDisposable
     }
 
     /// <summary>Writes the property bag the way <c>ConversationsController.Provision</c> does.</summary>
-    private async Task<FileConversationStore> SeedAsync(
-        string threadId,
-        params (string Key, string Value)[] properties
-    )
+    private async Task<FileConversationStore> SeedAsync(string threadId, params (string Key, string Value)[] properties)
     {
         var store = new FileConversationStore(_root);
 
@@ -50,9 +44,7 @@ public sealed class ProvisionedPropertyRoundTripTests : IDisposable
             threadId,
             existing =>
             {
-                var builder =
-                    existing?.Properties?.ToBuilder()
-                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+                var builder = existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
                 foreach (var (key, value) in properties)
                 {
                     builder[key] = value;
@@ -124,9 +116,7 @@ public sealed class ProvisionedPropertyRoundTripTests : IDisposable
         var store = await SeedAsync(threadId, ("sample.unrelated", "value"));
 
         (await SystemPromptAugmenter.ReadAppendixAsync(store, threadId)).Should().BeNull();
-        (await SystemPromptAugmenter.ComposeAsync(store, threadId, "MODE PROMPT"))
-            .Should()
-            .Be("MODE PROMPT");
+        (await SystemPromptAugmenter.ComposeAsync(store, threadId, "MODE PROMPT")).Should().Be("MODE PROMPT");
         (await ConversationSubAgentModel.ReadAsync(store, threadId)).Should().BeNull();
     }
 }

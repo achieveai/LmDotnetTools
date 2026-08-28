@@ -1,5 +1,5 @@
-using System.Runtime.CompilerServices;
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
@@ -25,7 +25,8 @@ namespace LmMultiTurn.Tests;
 /// </summary>
 public class CodexAgentLoopInitialThreadIdTests : LoggingTestBase
 {
-    public CodexAgentLoopInitialThreadIdTests(ITestOutputHelper output) : base(output) { }
+    public CodexAgentLoopInitialThreadIdTests(ITestOutputHelper output)
+        : base(output) { }
 
     private const string Seeded = "codex_thread_seeded_from_option";
     private const string Persisted = "codex_thread_persisted_in_store";
@@ -33,11 +34,13 @@ public class CodexAgentLoopInitialThreadIdTests : LoggingTestBase
     [Fact]
     public async Task FirstRun_WithInitialThreadIdAndEmptyStore_PassesSeedToClient()
     {
-        var fakeClient = new FakeCodexClient(
-        [
-            Event("turn.completed", """
+        var fakeClient = new FakeCodexClient([
+            Event(
+                "turn.completed",
+                """
                 {"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}
-                """),
+                """
+            ),
         ]);
 
         var options = new CodexSdkOptions { InitialThreadId = Seeded };
@@ -51,26 +54,33 @@ public class CodexAgentLoopInitialThreadIdTests : LoggingTestBase
             threadId: "initial-thread-empty-store",
             store: store,
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+        );
 
         // RecoverAsync runs but finds no metadata — seed must survive.
         await loop.RecoverAsync(CancellationToken.None);
         await DriveOneRunAsync(loop);
 
         fakeClient.LastStartOptions.Should().NotBeNull();
-        fakeClient.LastStartOptions!.ThreadId.Should().Be(Seeded,
-            "with no persisted metadata, InitialThreadId must seed _codexThreadId so " +
-            "the first app-server call uses thread/resume against the supplied id");
+        fakeClient
+            .LastStartOptions!.ThreadId.Should()
+            .Be(
+                Seeded,
+                "with no persisted metadata, InitialThreadId must seed _codexThreadId so "
+                    + "the first app-server call uses thread/resume against the supplied id"
+            );
     }
 
     [Fact]
     public async Task FirstRun_WithInitialThreadIdAndStoreOverride_StoreWins()
     {
-        var fakeClient = new FakeCodexClient(
-        [
-            Event("turn.completed", """
+        var fakeClient = new FakeCodexClient([
+            Event(
+                "turn.completed",
+                """
                 {"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}
-                """),
+                """
+            ),
         ]);
 
         var options = new CodexSdkOptions { InitialThreadId = Seeded };
@@ -83,12 +93,12 @@ public class CodexAgentLoopInitialThreadIdTests : LoggingTestBase
             {
                 ThreadId = threadId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                Properties = ImmutableDictionary.CreateRange(
-                [
+                Properties = ImmutableDictionary.CreateRange([
                     new KeyValuePair<string, object>("codex_thread_id", Persisted),
                 ]),
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         await using var loop = new CodexAgentLoop(
             options,
@@ -98,25 +108,32 @@ public class CodexAgentLoopInitialThreadIdTests : LoggingTestBase
             threadId: threadId,
             store: store,
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+        );
 
         // RecoverAsync must overwrite the seeded value with the persisted thread id.
         await loop.RecoverAsync(CancellationToken.None);
         await DriveOneRunAsync(loop);
 
-        fakeClient.LastStartOptions!.ThreadId.Should().Be(Persisted,
-            "persisted codex_thread_id MUST win over InitialThreadId so cold-restart " +
-            "callers can still set a fallback without trampling real saved state");
+        fakeClient
+            .LastStartOptions!.ThreadId.Should()
+            .Be(
+                Persisted,
+                "persisted codex_thread_id MUST win over InitialThreadId so cold-restart "
+                    + "callers can still set a fallback without trampling real saved state"
+            );
     }
 
     [Fact]
     public async Task FirstRun_WithoutInitialThreadIdOrStore_PassesNullThreadId()
     {
-        var fakeClient = new FakeCodexClient(
-        [
-            Event("turn.completed", """
+        var fakeClient = new FakeCodexClient([
+            Event(
+                "turn.completed",
+                """
                 {"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}
-                """),
+                """
+            ),
         ]);
 
         var options = new CodexSdkOptions();
@@ -130,14 +147,18 @@ public class CodexAgentLoopInitialThreadIdTests : LoggingTestBase
             threadId: "no-seed-no-store",
             store: store,
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+        );
 
         await loop.RecoverAsync(CancellationToken.None);
         await DriveOneRunAsync(loop);
 
-        fakeClient.LastStartOptions!.ThreadId.Should().BeNull(
-            "no seed and no persisted metadata means the first call should go through " +
-            "thread/start (null ThreadId), not thread/resume");
+        fakeClient
+            .LastStartOptions!.ThreadId.Should()
+            .BeNull(
+                "no seed and no persisted metadata means the first call should go through "
+                    + "thread/start (null ThreadId), not thread/resume"
+            );
     }
 
     [Theory]
@@ -146,11 +167,13 @@ public class CodexAgentLoopInitialThreadIdTests : LoggingTestBase
     [InlineData("   ")]
     public async Task NullEmptyOrWhitespaceInitialThreadId_IsTreatedAsUnset(string? seed)
     {
-        var fakeClient = new FakeCodexClient(
-        [
-            Event("turn.completed", """
+        var fakeClient = new FakeCodexClient([
+            Event(
+                "turn.completed",
+                """
                 {"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}
-                """),
+                """
+            ),
         ]);
 
         var options = new CodexSdkOptions { InitialThreadId = seed };
@@ -164,13 +187,15 @@ public class CodexAgentLoopInitialThreadIdTests : LoggingTestBase
             threadId: "blank-seed",
             store: store,
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+        );
 
         await loop.RecoverAsync(CancellationToken.None);
         await DriveOneRunAsync(loop);
 
-        fakeClient.LastStartOptions!.ThreadId.Should().BeNull(
-            "null/empty/whitespace seeds must not propagate as a real thread id");
+        fakeClient
+            .LastStartOptions!.ThreadId.Should()
+            .BeNull("null/empty/whitespace seeds must not propagate as a real thread id");
     }
 
     private static async Task DriveOneRunAsync(CodexAgentLoop loop)
@@ -178,14 +203,11 @@ public class CodexAgentLoopInitialThreadIdTests : LoggingTestBase
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var input = new UserInput(
-            [new TextMessage { Role = Role.User, Text = "hello" }]);
+        var input = new UserInput([new TextMessage { Role = Role.User, Text = "hello" }]);
 
         var executeTask = Task.Run(async () =>
         {
-            await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token))
-            {
-            }
+            await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token)) { }
         });
 
         await executeTask.WaitAsync(TimeSpan.FromSeconds(10));
@@ -226,9 +248,8 @@ public class CodexAgentLoopInitialThreadIdTests : LoggingTestBase
         public string DependencyState => "ready";
 
         public void ConfigureDynamicToolExecutor(
-            Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor)
-        {
-        }
+            Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor
+        ) { }
 
         public Task StartOrResumeThreadAsync(CodexBridgeInitOptions options, CancellationToken ct = default)
         {
@@ -245,7 +266,8 @@ public class CodexAgentLoopInitialThreadIdTests : LoggingTestBase
 
         public async IAsyncEnumerable<CodexTurnEventEnvelope> RunStreamingAsync(
             string input,
-            [EnumeratorCancellation] CancellationToken ct = default)
+            [EnumeratorCancellation] CancellationToken ct = default
+        )
         {
             LastRunInput = input;
             foreach (var item in _events)

@@ -16,12 +16,8 @@ public class BoundedServerRequestDispatcherTests
     public void Constructor_RejectsANonPositiveCapacity()
     {
         // Zero would refuse every request while looking like configuration rather than a bug.
-        _ = Assert.Throws<ArgumentOutOfRangeException>(
-            () => new BoundedServerRequestDispatcher(0)
-        );
-        _ = Assert.Throws<ArgumentOutOfRangeException>(
-            () => new BoundedServerRequestDispatcher(-1)
-        );
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new BoundedServerRequestDispatcher(0));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new BoundedServerRequestDispatcher(-1));
     }
 
     [Fact]
@@ -34,17 +30,16 @@ public class BoundedServerRequestDispatcherTests
         // The handler blocks its thread outright rather than awaiting, which is the case an
         // `await handler(...)` on the read loop could not survive. Dispatching from a separate
         // task turns a regression into a timeout here instead of a hung test run.
-        var callerReturned = Task.Run(
-            () =>
-                dispatcher.TryDispatch(
-                    _ =>
-                    {
-                        handlerStarted.Set();
-                        handlerMayFinish.Wait();
-                        return Task.CompletedTask;
-                    },
-                    CancellationToken.None
-                )
+        var callerReturned = Task.Run(() =>
+            dispatcher.TryDispatch(
+                _ =>
+                {
+                    handlerStarted.Set();
+                    handlerMayFinish.Wait();
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None
+            )
         );
 
         Assert.True(await callerReturned.WaitAsync(Generous));

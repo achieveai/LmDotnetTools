@@ -110,8 +110,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         var act = async () => await _store.AppendMessagesAsync(null!, messages);
 
         // Assert
-        await act.Should().ThrowAsync<ArgumentNullException>()
-            .WithParameterName("threadId");
+        await act.Should().ThrowAsync<ArgumentNullException>().WithParameterName("threadId");
     }
 
     [Fact]
@@ -121,8 +120,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         var act = async () => await _store.AppendMessagesAsync("thread-1", null!);
 
         // Assert
-        await act.Should().ThrowAsync<ArgumentNullException>()
-            .WithParameterName("messages");
+        await act.Should().ThrowAsync<ArgumentNullException>().WithParameterName("messages");
     }
 
     #endregion
@@ -332,9 +330,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         {
             ThreadId = "thread-1",
             LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            Properties = ImmutableDictionary<string, object>.Empty
-                .Add("key1", "value1")
-                .Add("key2", 42),
+            Properties = ImmutableDictionary<string, object>.Empty.Add("key1", "value1").Add("key2", 42),
         };
 
         // Act
@@ -414,11 +410,13 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         for (var i = 0; i < 10; i++)
         {
             var runId = $"run-{i}";
-            tasks.Add(Task.Run(async () =>
-            {
-                var messages = CreateTestMessages("thread-1", runId, 10);
-                await _store.AppendMessagesAsync("thread-1", messages);
-            }));
+            tasks.Add(
+                Task.Run(async () =>
+                {
+                    var messages = CreateTestMessages("thread-1", runId, 10);
+                    await _store.AppendMessagesAsync("thread-1", messages);
+                })
+            );
         }
 
         await Task.WhenAll(tasks);
@@ -438,11 +436,13 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         for (var i = 0; i < 5; i++)
         {
             var threadId = $"thread-{i}";
-            tasks.Add(Task.Run(async () =>
-            {
-                var messages = CreateTestMessages(threadId, "run-1", 5);
-                await _store.AppendMessagesAsync(threadId, messages);
-            }));
+            tasks.Add(
+                Task.Run(async () =>
+                {
+                    var messages = CreateTestMessages(threadId, "run-1", 5);
+                    await _store.AppendMessagesAsync(threadId, messages);
+                })
+            );
         }
 
         await Task.WhenAll(tasks);
@@ -483,8 +483,11 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         var uniqueId = Guid.NewGuid().ToString("N")[..8];
         return
         [
-            .. Enumerable.Range(0, count)
-                .Select(i => CreateMessage(threadId, runId, $"msg-{runId}-{uniqueId}-{i}", now + i, messageOrderIdx: i))
+            .. Enumerable
+                .Range(0, count)
+                .Select(i =>
+                    CreateMessage(threadId, runId, $"msg-{runId}-{uniqueId}-{i}", now + i, messageOrderIdx: i)
+                ),
         ];
     }
 
@@ -493,7 +496,8 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         string runId,
         string id,
         long timestamp,
-        int? messageOrderIdx = null)
+        int? messageOrderIdx = null
+    )
     {
         return new PersistedMessage
         {

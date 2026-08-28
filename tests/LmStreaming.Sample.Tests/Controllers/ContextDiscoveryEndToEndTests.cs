@@ -47,8 +47,7 @@ public sealed class ContextDiscoveryEndToEndTests
         var result = await controller.NotifyAsync(payload, CancellationToken.None);
 
         result.Should().BeOfType<OkResult>();
-        var message = agent.SentMessages.Should().ContainSingle().Which
-            .Should().BeOfType<NotifyMessage>().Subject;
+        var message = agent.SentMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>().Subject;
         message.Role.Should().Be(Role.User);
         message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
         message.Label.Should().Be("CLAUDE.md");
@@ -71,17 +70,30 @@ public sealed class ContextDiscoveryEndToEndTests
             SessionId = SessionId,
             Discoveries =
             [
-                new ContextDiscoveryItem { Kind = "context_file", Path = "AGENTS.md", Content = "ROOT_MARKER" },
-                new ContextDiscoveryItem { Kind = "context_file", Path = "sub/CLAUDE.md", Content = "NESTED_MARKER" },
+                new ContextDiscoveryItem
+                {
+                    Kind = "context_file",
+                    Path = "AGENTS.md",
+                    Content = "ROOT_MARKER",
+                },
+                new ContextDiscoveryItem
+                {
+                    Kind = "context_file",
+                    Path = "sub/CLAUDE.md",
+                    Content = "NESTED_MARKER",
+                },
             ],
         };
 
         var result = await controller.NotifyAsync(payload, CancellationToken.None);
 
         result.Should().BeOfType<OkResult>();
-        agent.SentMessages.Should().SatisfyRespectively(
-            first => first.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
-            second => second.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("NESTED_MARKER"));
+        agent
+            .SentMessages.Should()
+            .SatisfyRespectively(
+                first => first.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
+                second => second.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("NESTED_MARKER")
+            );
     }
 
     [Fact]
@@ -99,18 +111,36 @@ public sealed class ContextDiscoveryEndToEndTests
             SessionId = SessionId,
             Discoveries =
             [
-                new ContextDiscoveryItem { Kind = "subagent", Name = "reviewer", Path = ".claude/agents/reviewer.md" },
-                new ContextDiscoveryItem { Kind = "context_file", Path = "AGENTS.md", Content = "ROOT_MARKER" },
-                new ContextDiscoveryItem { Kind = "context_file", Path = "sub/CLAUDE.md", Content = "NESTED_MARKER" },
+                new ContextDiscoveryItem
+                {
+                    Kind = "subagent",
+                    Name = "reviewer",
+                    Path = ".claude/agents/reviewer.md",
+                },
+                new ContextDiscoveryItem
+                {
+                    Kind = "context_file",
+                    Path = "AGENTS.md",
+                    Content = "ROOT_MARKER",
+                },
+                new ContextDiscoveryItem
+                {
+                    Kind = "context_file",
+                    Path = "sub/CLAUDE.md",
+                    Content = "NESTED_MARKER",
+                },
             ],
         };
 
         var result = await controller.NotifyAsync(payload, CancellationToken.None);
 
         result.Should().BeOfType<OkResult>();
-        agent.SentMessages.Should().SatisfyRespectively(
-            first => first.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
-            second => second.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("NESTED_MARKER"));
+        agent
+            .SentMessages.Should()
+            .SatisfyRespectively(
+                first => first.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
+                second => second.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("NESTED_MARKER")
+            );
     }
 
     [Fact]
@@ -124,7 +154,8 @@ public sealed class ContextDiscoveryEndToEndTests
         var controller = harness.CreateController(authorizationHeader: Secret);
         var result = await controller.NotifyAsync(
             new ContextDiscoveryEnvelope { SessionId = SessionId, Discoveries = [] },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         result.Should().BeOfType<OkResult>();
         agent.SentMessages.Should().BeEmpty();
@@ -152,7 +183,8 @@ public sealed class ContextDiscoveryEndToEndTests
                     },
                 ],
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         result.Should().BeOfType<UnauthorizedResult>();
         agent.SentMessages.Should().BeEmpty();
@@ -208,7 +240,8 @@ public sealed class ContextDiscoveryEndToEndTests
                     var agent = _agents.GetOrAdd(threadId, id => new RecordingMultiTurnAgent(id));
                     return new MultiTurnAgentPool.AgentCreationResult(agent);
                 },
-                NullLogger<MultiTurnAgentPool>.Instance);
+                NullLogger<MultiTurnAgentPool>.Instance
+            );
             Pool.ThreadRemoved += threadId => Registry.UnregisterThreadFromAllSessions(threadId);
 
             Injector = new ContextDiscoveryInjector(
@@ -217,11 +250,17 @@ public sealed class ContextDiscoveryEndToEndTests
                 new ContextDiscoveryFormatter(),
                 new ContextDiscoveryOptions(),
                 new ContextDiscoveryDiagnostics(),
-                NullLogger<ContextDiscoveryInjector>.Instance);
+                NullLogger<ContextDiscoveryInjector>.Instance
+            );
             Loader = new WorkspaceSubAgentLoader(Registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
             SessionSecretStore = new SessionSecretStore(
-                System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance);
+                System.IO.Path.Combine(
+                    System.IO.Path.GetTempPath(),
+                    "lmstreaming-test-secrets",
+                    Guid.NewGuid().ToString("N")
+                ),
+                NullLogger<SessionSecretStore>.Instance
+            );
             SessionSecretStore.SaveAsync(SessionId, Secret).GetAwaiter().GetResult();
             Diagnostics = new ContextDiscoveryDiagnostics();
         }
@@ -250,7 +289,8 @@ public sealed class ContextDiscoveryEndToEndTests
                 Injector,
                 Diagnostics,
                 new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
-                NullLogger<ContextDiscoveryController>.Instance);
+                NullLogger<ContextDiscoveryController>.Instance
+            );
 
             var httpContext = new DefaultHttpContext();
             if (authorizationHeader is not null)
@@ -275,7 +315,8 @@ public sealed class ContextDiscoveryEndToEndTests
             var gateway = new SandboxGatewayLifetime(
                 new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
                 NullLogger<SandboxGatewayLifetime>.Instance,
-                new HttpClient(new StubHandler(Unused)));
+                new HttpClient(new StubHandler(Unused))
+            );
 
             return new SandboxSessionRegistry(
                 gateway,
@@ -284,8 +325,14 @@ public sealed class ContextDiscoveryEndToEndTests
                 new HttpClient(new StubHandler(Unused)),
                 new AuthOptions(),
                 new SessionSecretStore(
-                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                    NullLogger<SessionSecretStore>.Instance));
+                    System.IO.Path.Combine(
+                        System.IO.Path.GetTempPath(),
+                        "lmstreaming-test-secrets",
+                        Guid.NewGuid().ToString("N")
+                    ),
+                    NullLogger<SessionSecretStore>.Instance
+                )
+            );
         }
     }
 
@@ -293,7 +340,8 @@ public sealed class ContextDiscoveryEndToEndTests
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(respond(request));
         }

@@ -40,7 +40,8 @@ public class MultiTurnAgentLoopPendingInputTests
         var agent = new GatedStreamingAgent(
             generationStarted,
             releaseGeneration,
-            _ => new TextMessage { Text = "answer", Role = Role.Assistant });
+            _ => new TextMessage { Text = "answer", Role = Role.Assistant }
+        );
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await using var loop = new MultiTurnAgentLoop(agent, new FunctionRegistry(), "test-thread");
@@ -51,17 +52,23 @@ public class MultiTurnAgentLoopPendingInputTests
         var runTask = Task.Run(
             async () =>
             {
-                await foreach (var msg in loop.ExecuteRunAsync(
-                    new UserInput([new TextMessage { Text = "first", Role = Role.User }], InputId: "input-1"),
-                    cts.Token))
+                await foreach (
+                    var msg in loop.ExecuteRunAsync(
+                        new UserInput([new TextMessage { Text = "first", Role = Role.User }], InputId: "input-1"),
+                        cts.Token
+                    )
+                )
                 {
                     messages.Add(msg);
                 }
             },
-            cts.Token);
+            cts.Token
+        );
 
         // Act: queue a second message while the first run is mid-generation, then let it finish.
-        (await generationStarted.Task.WaitAsync(TimeSpan.FromSeconds(15))).Should().BeTrue();
+        (await generationStarted.Task.WaitAsync(TimeSpan.FromSeconds(15)))
+            .Should()
+            .BeTrue();
         _ = await loop.SendAsync([new TextMessage { Text = "second", Role = Role.User }], inputId: "input-2");
         releaseGeneration.SetResult(true);
 
@@ -71,11 +78,12 @@ public class MultiTurnAgentLoopPendingInputTests
         // coming and must NOT tear the agent's provider down.
         var completed = messages.OfType<RunCompletedMessage>().Should().ContainSingle().Subject;
         completed.IsError.Should().BeFalse();
-        completed.PendingMessageCount.Should().Be(
-            1,
-            "the message queued during the run is still unassigned when the run completes");
-        completed.HasPendingMessages.Should().BeTrue(
-            "SubAgentManager disposes a sub-agent's owned provider only on a completion with no pending input");
+        completed
+            .PendingMessageCount.Should()
+            .Be(1, "the message queued during the run is still unassigned when the run completes");
+        completed
+            .HasPendingMessages.Should()
+            .BeTrue("SubAgentManager disposes a sub-agent's owned provider only on a completion with no pending input");
     }
 
     [Fact]
@@ -89,9 +97,11 @@ public class MultiTurnAgentLoopPendingInputTests
         var agent = new GatedStreamingAgent(
             generationStarted,
             releaseGeneration,
-            callIndex => callIndex == 1
-                ? throw new InvalidOperationException("generation failed")
-                : new TextMessage { Text = "answer", Role = Role.Assistant });
+            callIndex =>
+                callIndex == 1
+                    ? throw new InvalidOperationException("generation failed")
+                    : new TextMessage { Text = "answer", Role = Role.Assistant }
+        );
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await using var loop = new MultiTurnAgentLoop(agent, new FunctionRegistry(), "test-thread");
@@ -101,14 +111,18 @@ public class MultiTurnAgentLoopPendingInputTests
         var runTask = Task.Run(
             async () =>
             {
-                await foreach (var msg in loop.ExecuteRunAsync(
-                    new UserInput([new TextMessage { Text = "first", Role = Role.User }], InputId: "input-1"),
-                    cts.Token))
+                await foreach (
+                    var msg in loop.ExecuteRunAsync(
+                        new UserInput([new TextMessage { Text = "first", Role = Role.User }], InputId: "input-1"),
+                        cts.Token
+                    )
+                )
                 {
                     messages.Add(msg);
                 }
             },
-            cts.Token);
+            cts.Token
+        );
 
         (await generationStarted.Task.WaitAsync(TimeSpan.FromSeconds(15))).Should().BeTrue();
         _ = await loop.SendAsync([new TextMessage { Text = "second", Role = Role.User }], inputId: "input-2");
@@ -119,8 +133,9 @@ public class MultiTurnAgentLoopPendingInputTests
         var completed = messages.OfType<RunCompletedMessage>().Should().ContainSingle().Subject;
         completed.IsError.Should().BeTrue("the generation threw");
         completed.PendingMessageCount.Should().Be(1);
-        completed.HasPendingMessages.Should().BeTrue(
-            "a failed run is followed by a run for the queued input, through the same provider");
+        completed
+            .HasPendingMessages.Should()
+            .BeTrue("a failed run is followed by a run for the queued input, through the same provider");
     }
 
     /// <summary>
@@ -132,14 +147,16 @@ public class MultiTurnAgentLoopPendingInputTests
     private sealed class GatedStreamingAgent(
         TaskCompletionSource<bool> started,
         TaskCompletionSource<bool> release,
-        Func<int, IMessage> reply) : IStreamingAgent
+        Func<int, IMessage> reply
+    ) : IStreamingAgent
     {
         private int _callCount;
 
         public async Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             var callIndex = Interlocked.Increment(ref _callCount);
             if (callIndex == 1)
@@ -154,7 +171,8 @@ public class MultiTurnAgentLoopPendingInputTests
         public async Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             var stream = await GenerateReplyStreamingAsync(messages, options, cancellationToken);
             var collected = new List<IMessage>();
@@ -168,7 +186,8 @@ public class MultiTurnAgentLoopPendingInputTests
 
         private static async IAsyncEnumerable<IMessage> Single(
             IMessage message,
-            [EnumeratorCancellation] CancellationToken ct)
+            [EnumeratorCancellation] CancellationToken ct
+        )
         {
             ct.ThrowIfCancellationRequested();
             yield return message;

@@ -15,7 +15,10 @@ public class ClaudeAgentSdkClientLaunchContractTests
     {
         public ProcessLaunchRequest? LastRequest { get; private set; }
 
-        public Task<IProcessHandle> LaunchAsync(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
+        public Task<IProcessHandle> LaunchAsync(
+            ProcessLaunchRequest request,
+            CancellationToken cancellationToken = default
+        )
         {
             LastRequest = request;
             throw new ProcessLauncherException("recording launcher: never spawns");
@@ -52,7 +55,8 @@ public class ClaudeAgentSdkClientLaunchContractTests
             };
 
             await Assert.ThrowsAnyAsync<Exception>(async () =>
-                await client.StartAsync(request, CancellationToken.None));
+                await client.StartAsync(request, CancellationToken.None)
+            );
         }
         finally
         {
@@ -76,13 +80,9 @@ public class ClaudeAgentSdkClientLaunchContractTests
         Assert.Equal("4096", captured.EnvironmentOverrides["MAX_THINKING_TOKENS"]);
         Assert.Equal("300", captured.EnvironmentOverrides["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"]);
 
-        Assert.Contains(captured.HostPaths,
-            p => p.Kind == HostPathKind.WorkingDirectory && p.Path == workingDir);
-        Assert.Contains(captured.HostPaths,
-            p => p.Kind == HostPathKind.McpConfigFile && p.Path == "/fake/.mcp.json");
-        Assert.Contains(captured.HostPaths,
-            p => p.Kind == HostPathKind.StagingDirectory && p.Path == "/fake/staging");
-        Assert.Contains(captured.HostPaths,
-            p => p.Kind == HostPathKind.SystemPromptFile);
+        Assert.Contains(captured.HostPaths, p => p.Kind == HostPathKind.WorkingDirectory && p.Path == workingDir);
+        Assert.Contains(captured.HostPaths, p => p.Kind == HostPathKind.McpConfigFile && p.Path == "/fake/.mcp.json");
+        Assert.Contains(captured.HostPaths, p => p.Kind == HostPathKind.StagingDirectory && p.Path == "/fake/staging");
+        Assert.Contains(captured.HostPaths, p => p.Kind == HostPathKind.SystemPromptFile);
     }
 }

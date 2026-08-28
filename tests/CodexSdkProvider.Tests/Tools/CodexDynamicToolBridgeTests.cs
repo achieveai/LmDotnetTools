@@ -12,11 +12,7 @@ public class CodexDynamicToolBridgeTests
     {
         var contracts = new[]
         {
-            new FunctionContract
-            {
-                Name = "calculate",
-                Description = "calc",
-            },
+            new FunctionContract { Name = "calculate", Description = "calc" },
         };
         var handlers = new Dictionary<string, Func<string, Task<string>>>(StringComparer.OrdinalIgnoreCase)
         {
@@ -27,11 +23,8 @@ public class CodexDynamicToolBridgeTests
         var args = JsonDocument.Parse("""{"a":2}""").RootElement.Clone();
 
         var response = await bridge.ExecuteAsync(
-            new CodexDynamicToolCallRequest
-            {
-                Tool = "calculate",
-                Arguments = args,
-            });
+            new CodexDynamicToolCallRequest { Tool = "calculate", Arguments = args }
+        );
 
         response.Success.Should().BeFalse();
         response.ContentItems.Should().ContainSingle();
@@ -43,11 +36,7 @@ public class CodexDynamicToolBridgeTests
     {
         var contracts = new[]
         {
-            new FunctionContract
-            {
-                Name = "calculate",
-                Description = "calc",
-            },
+            new FunctionContract { Name = "calculate", Description = "calc" },
         };
         var handlers = new Dictionary<string, Func<string, Task<string>>>(StringComparer.OrdinalIgnoreCase)
         {
@@ -58,11 +47,8 @@ public class CodexDynamicToolBridgeTests
         var args = JsonDocument.Parse("""{"a":2}""").RootElement.Clone();
 
         var response = await bridge.ExecuteAsync(
-            new CodexDynamicToolCallRequest
-            {
-                Tool = "calculate",
-                Arguments = args,
-            });
+            new CodexDynamicToolCallRequest { Tool = "calculate", Arguments = args }
+        );
 
         response.Success.Should().BeTrue();
         response.ContentItems.Should().ContainSingle();

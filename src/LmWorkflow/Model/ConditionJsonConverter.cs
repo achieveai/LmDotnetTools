@@ -13,21 +13,13 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Model;
 public sealed class ConditionJsonConverter : JsonConverter<Condition>
 {
     /// <inheritdoc />
-    public override Condition? Read(
-        ref Utf8JsonReader reader,
-        Type typeToConvert,
-        JsonSerializerOptions options
-    )
+    public override Condition? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         return FromNode(JsonNode.Parse(ref reader));
     }
 
     /// <inheritdoc />
-    public override void Write(
-        Utf8JsonWriter writer,
-        Condition value,
-        JsonSerializerOptions options
-    )
+    public override void Write(Utf8JsonWriter writer, Condition value, JsonSerializerOptions options)
     {
         ArgumentNullException.ThrowIfNull(writer);
         ArgumentNullException.ThrowIfNull(value);
@@ -173,10 +165,9 @@ public sealed class ConditionJsonConverter : JsonConverter<Condition>
 /// </summary>
 internal static class ConditionOpNames
 {
-    private static readonly IReadOnlyDictionary<string, ConditionOp> ByWire = new Dictionary<
-        string,
-        ConditionOp
-    >(StringComparer.OrdinalIgnoreCase)
+    private static readonly IReadOnlyDictionary<string, ConditionOp> ByWire = new Dictionary<string, ConditionOp>(
+        StringComparer.OrdinalIgnoreCase
+    )
     {
         ["eq"] = ConditionOp.Eq,
         ["ne"] = ConditionOp.Ne,

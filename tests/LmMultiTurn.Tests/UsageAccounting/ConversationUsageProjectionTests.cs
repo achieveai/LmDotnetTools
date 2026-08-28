@@ -16,28 +16,32 @@ public class ConversationUsageProjectionTests
     private static ConversationUsageAggregate SampleAggregate()
     {
         var ledger = new UsageLedger("conv-1");
-        ledger.UpsertAttempt(new UsageRecord
-        {
-            LogicalCallId = "a1",
-            ProviderAttemptId = "a1",
-            RootConversationId = "conv-1",
-            RequestedModel = "model-A",
-            InputTokens = 100,
-            OutputTokens = 40,
-            CacheWriteTokens = 10,
-            EstimatedPublicCostMicros = 6000,
-        });
-        ledger.UpsertAttempt(new UsageRecord
-        {
-            LogicalCallId = "b1",
-            ProviderAttemptId = "b1",
-            RootConversationId = "conv-1",
-            RequestedModel = "model-B",
-            InputTokens = 20,
-            OutputTokens = 10,
-            ProviderReportedCostMicros = 5000,
-            Finalized = true,
-        });
+        ledger.UpsertAttempt(
+            new UsageRecord
+            {
+                LogicalCallId = "a1",
+                ProviderAttemptId = "a1",
+                RootConversationId = "conv-1",
+                RequestedModel = "model-A",
+                InputTokens = 100,
+                OutputTokens = 40,
+                CacheWriteTokens = 10,
+                EstimatedPublicCostMicros = 6000,
+            }
+        );
+        ledger.UpsertAttempt(
+            new UsageRecord
+            {
+                LogicalCallId = "b1",
+                ProviderAttemptId = "b1",
+                RootConversationId = "conv-1",
+                RequestedModel = "model-B",
+                InputTokens = 20,
+                OutputTokens = 10,
+                ProviderReportedCostMicros = 5000,
+                Finalized = true,
+            }
+        );
         return ledger.Snapshot(UsageCompleteness.Complete);
     }
 
@@ -105,15 +109,17 @@ public class ConversationUsageProjectionTests
     {
         var store = new InMemoryConversationStore();
         var ledger = new UsageLedger("conv-1");
-        ledger.UpsertAttempt(new UsageRecord
-        {
-            LogicalCallId = "a1",
-            ProviderAttemptId = "a1",
-            RootConversationId = "conv-1",
-            RequestedModel = "model-A",
-            InputTokens = 100,
-            OutputTokens = 40,
-        });
+        ledger.UpsertAttempt(
+            new UsageRecord
+            {
+                LogicalCallId = "a1",
+                ProviderAttemptId = "a1",
+                RootConversationId = "conv-1",
+                RequestedModel = "model-A",
+                InputTokens = 100,
+                OutputTokens = 40,
+            }
+        );
 
         await ConversationUsageProjection.SaveAsync(store, ledger.Snapshot(), ledger.SnapshotRecords());
 
@@ -168,9 +174,15 @@ public class ConversationUsageProjectionTests
         };
 
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [a1], foldedRevision: 1), [a1]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [a1], foldedRevision: 1),
+            [a1]
+        );
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [b1], foldedRevision: 1), [b1]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [b1], foldedRevision: 1),
+            [b1]
+        );
 
         var records = await ConversationUsageProjection.LoadRecordsAsync(store, "conv-1");
         records.Select(r => r.ProviderAttemptId).Should().BeEquivalentTo(["a1", "b1"]);
@@ -197,9 +209,15 @@ public class ConversationUsageProjectionTests
         var final = early with { InputTokens = 100, OutputTokens = 20, Revision = 7 };
 
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [early], foldedRevision: 1), [early]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [early], foldedRevision: 1),
+            [early]
+        );
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [final], foldedRevision: 7), [final]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [final], foldedRevision: 7),
+            [final]
+        );
 
         var loaded = await ConversationUsageProjection.LoadAsync(store, "conv-1");
         loaded!.TotalTokens.Should().Be(120); // final revision (100+20), not the sum of both revisions
@@ -223,7 +241,10 @@ public class ConversationUsageProjectionTests
             Revision = 1,
         };
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [a1], 1, UsageCompleteness.Complete), [a1]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [a1], 1, UsageCompleteness.Complete),
+            [a1]
+        );
 
         var b1 = new UsageRecord
         {
@@ -236,7 +257,10 @@ public class ConversationUsageProjectionTests
             Revision = 1,
         };
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [b1], 1, UsageCompleteness.InProgress), [b1]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [b1], 1, UsageCompleteness.InProgress),
+            [b1]
+        );
 
         var loaded = await ConversationUsageProjection.LoadAsync(store, "conv-1");
         loaded!.Completeness.Should().Be(UsageCompleteness.Complete); // not regressed to InProgress
@@ -259,9 +283,15 @@ public class ConversationUsageProjectionTests
         };
 
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [a1], 1, UsageCompleteness.InProgress), [a1]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [a1], 1, UsageCompleteness.InProgress),
+            [a1]
+        );
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [a1 with { Revision = 2 }], 2, UsageCompleteness.Complete), [a1 with { Revision = 2 }]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [a1 with { Revision = 2 }], 2, UsageCompleteness.Complete),
+            [a1 with { Revision = 2 }]
+        );
 
         var loaded = await ConversationUsageProjection.LoadAsync(store, "conv-1");
         loaded!.Completeness.Should().Be(UsageCompleteness.Complete);
@@ -283,17 +313,20 @@ public class ConversationUsageProjectionTests
             OutputTokens = 10,
             Revision = 5,
         };
-        await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [a1], 5), [a1]);
+        await ConversationUsageProjection.SaveAsync(store, ConversationUsageAggregate.Fold("conv-1", [a1], 5), [a1]);
 
         // Corrupt ONLY the records artifact; the aggregate stays valid.
         await store.UpdateMetadataAsync(
             "conv-1",
-            existing => existing! with
-            {
-                Properties = existing.Properties!.SetItem(
-                    ConversationUsageProjection.RecordsPropertyKey, "{ not valid json"),
-            });
+            existing =>
+                existing! with
+                {
+                    Properties = existing.Properties!.SetItem(
+                        ConversationUsageProjection.RecordsPropertyKey,
+                        "{ not valid json"
+                    ),
+                }
+        );
 
         var b1 = new UsageRecord
         {
@@ -305,8 +338,7 @@ public class ConversationUsageProjectionTests
             OutputTokens = 5,
             Revision = 6,
         };
-        await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [b1], 6), [b1]);
+        await ConversationUsageProjection.SaveAsync(store, ConversationUsageAggregate.Fold("conv-1", [b1], 6), [b1]);
 
         // The authoritative aggregate must be preserved, not overwritten with only b1's usage.
         var loaded = await ConversationUsageProjection.LoadAsync(store, "conv-1");
@@ -325,12 +357,23 @@ public class ConversationUsageProjectionTests
             "conv-1",
             existing =>
             {
-                var props = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty)
-                    .SetItem(ConversationUsageProjection.PropertyKey, futureJson);
+                var props = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
+                    ConversationUsageProjection.PropertyKey,
+                    futureJson
+                );
                 return existing is not null
-                    ? existing with { Properties = props }
-                    : new ThreadMetadata { ThreadId = "conv-1", LastUpdated = 0, Properties = props };
-            });
+                    ? existing with
+                    {
+                        Properties = props,
+                    }
+                    : new ThreadMetadata
+                    {
+                        ThreadId = "conv-1",
+                        LastUpdated = 0,
+                        Properties = props,
+                    };
+            }
+        );
 
         // A current (v1) writer attempts to save a smaller total.
         await ConversationUsageProjection.SaveAsync(store, SampleAggregate() with { TotalTokens = 5 });
@@ -387,9 +430,15 @@ public class ConversationUsageProjectionTests
         };
 
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [early], foldedRevision: 1), [early]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [early], foldedRevision: 1),
+            [early]
+        );
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [final], foldedRevision: 7), [final]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [final], foldedRevision: 7),
+            [final]
+        );
 
         var records = await ConversationUsageProjection.LoadRecordsAsync(store, "conv-1");
         records.Should().ContainSingle();
@@ -419,9 +468,15 @@ public class ConversationUsageProjectionTests
         var unstamped = stamped with { InputTokens = 100, Revision = 7, OccurredAtUtc = null };
 
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [stamped], foldedRevision: 1), [stamped]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [stamped], foldedRevision: 1),
+            [stamped]
+        );
         await ConversationUsageProjection.SaveAsync(
-            store, ConversationUsageAggregate.Fold("conv-1", [unstamped], foldedRevision: 7), [unstamped]);
+            store,
+            ConversationUsageAggregate.Fold("conv-1", [unstamped], foldedRevision: 7),
+            [unstamped]
+        );
 
         var records = await ConversationUsageProjection.LoadRecordsAsync(store, "conv-1");
         records.Should().ContainSingle();

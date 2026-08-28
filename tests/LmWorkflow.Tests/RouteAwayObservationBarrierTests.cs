@@ -189,11 +189,7 @@ public class RouteAwayObservationBarrierTests
             .Single(f => f.Contract.Name == WorkflowToolProvider.SetCurrentNodeToolName)
             .Handler;
 
-        var args = new JsonObject
-        {
-            ["completedNodeId"] = "author",
-            ["nextNodeId"] = "done",
-        }.ToJsonString();
+        var args = new JsonObject { ["completedNodeId"] = "author", ["nextNodeId"] = "done" }.ToJsonString();
 
         return handler(args, new ToolCallContext { ToolCallId = toolCallId }, CancellationToken.None);
     }
@@ -202,11 +198,7 @@ public class RouteAwayObservationBarrierTests
         new()
         {
             FunctionName = WorkflowToolProvider.SetCurrentNodeToolName,
-            FunctionArgs = new JsonObject
-            {
-                ["completedNodeId"] = "author",
-                ["nextNodeId"] = "done",
-            }.ToJsonString(),
+            FunctionArgs = new JsonObject { ["completedNodeId"] = "author", ["nextNodeId"] = "done" }.ToJsonString(),
             ToolCallId = toolCallId,
             Role = Role.Assistant,
         };

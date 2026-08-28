@@ -76,12 +76,7 @@ public class AgentMessageLedgerConcurrencyTests
                 Racers,
                 index =>
                     results[index] = ledger.TryAdmit(
-                        new AgentMessageAdmissionRequest(
-                            Target,
-                            Sender,
-                            AgentMessageType.Response,
-                            question.MessageId
-                        ),
+                        new AgentMessageAdmissionRequest(Target, Sender, AgentMessageType.Response, question.MessageId),
                         senderInbox
                     )
             );
@@ -92,8 +87,7 @@ public class AgentMessageLedgerConcurrencyTests
                 .Where(result => !result.Succeeded)
                 .Should()
                 .OnlyContain(result =>
-                    result.FailureCode == AgentMessageFailureCodes.CorrelationClosed
-                    && result.MessageId == null
+                    result.FailureCode == AgentMessageFailureCodes.CorrelationClosed && result.MessageId == null
                 );
 
             // Admission is a claim, not a closure: the winner reserves the exclusive right to answer,
@@ -133,12 +127,7 @@ public class AgentMessageLedgerConcurrencyTests
                 Racers,
                 index =>
                     results[index] = ledger.TryAdmit(
-                        new AgentMessageAdmissionRequest(
-                            Target,
-                            Sender,
-                            AgentMessageType.Response,
-                            question.MessageId
-                        ),
+                        new AgentMessageAdmissionRequest(Target, Sender, AgentMessageType.Response, question.MessageId),
                         senderInbox
                     )
             );
@@ -168,12 +157,7 @@ public class AgentMessageLedgerConcurrencyTests
             // between the two things that actually CLOSE a question — the answer landing and the target
             // leaving — rather than between an admission and a closure, which cannot tie.
             var reply = ledger.TryAdmit(
-                new AgentMessageAdmissionRequest(
-                    Target,
-                    Sender,
-                    AgentMessageType.Response,
-                    question.MessageId
-                ),
+                new AgentMessageAdmissionRequest(Target, Sender, AgentMessageType.Response, question.MessageId),
                 senderInbox
             );
             reply.Succeeded.Should().BeTrue();
@@ -193,12 +177,7 @@ public class AgentMessageLedgerConcurrencyTests
                     {
                         _ = Interlocked.Add(
                             ref abandoned,
-                            ledger
-                                .AbandonMessagesFor(
-                                    Target,
-                                    AgentCollaborationBundle.TargetLeftReasonCode
-                                )
-                                .Count
+                            ledger.AbandonMessagesFor(Target, AgentCollaborationBundle.TargetLeftReasonCode).Count
                         );
                     }
                 }
@@ -213,18 +192,14 @@ public class AgentMessageLedgerConcurrencyTests
             {
                 closed.ResponseMessageId.Should().NotBeNull();
                 closed.ReasonCode.Should().BeNull();
-                abandoned
-                    .Should()
-                    .Be(0, "the question was answered, so nothing may also have abandoned it");
+                abandoned.Should().Be(0, "the question was answered, so nothing may also have abandoned it");
             }
             else
             {
                 closed.State.Should().Be(AgentMessageDeliveryState.Abandoned);
                 closed.ReasonCode.Should().Be(AgentCollaborationBundle.TargetLeftReasonCode);
                 closed.ResponseMessageId.Should().BeNull();
-                abandoned
-                    .Should()
-                    .Be(1, "a question can be abandoned once, however many retirements race");
+                abandoned.Should().Be(1, "a question can be abandoned once, however many retirements race");
             }
         }
     }

@@ -50,5 +50,6 @@ public interface ISubAgentContextSink
     Task<SubAgentContextDeliveryResult> TryDeliverContextAsync(
         string agentId,
         IReadOnlyList<IMessage> messages,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

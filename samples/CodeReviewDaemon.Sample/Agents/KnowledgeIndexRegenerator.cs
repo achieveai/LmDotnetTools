@@ -176,7 +176,10 @@ internal sealed class KnowledgeIndexRegenerator
         var meta = content is null ? null : KnowledgeIndex.ParseFrontmatter(relFile, content);
         if (meta is null)
         {
-            _logger.LogDebug("Skipping Knowledge Base entry '{Entry}' with no parseable frontmatter during regen.", relFile);
+            _logger.LogDebug(
+                "Skipping Knowledge Base entry '{Entry}' with no parseable frontmatter during regen.",
+                relFile
+            );
             return;
         }
 
@@ -215,6 +218,5 @@ internal sealed class KnowledgeIndexRegenerator
     }
 
     /// <summary>Joins a Knowledge Base root and a forward-slash relative path into one sandbox path.</summary>
-    internal static string JoinPath(string root, string relative) =>
-        $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
+    internal static string JoinPath(string root, string relative) => $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
 }

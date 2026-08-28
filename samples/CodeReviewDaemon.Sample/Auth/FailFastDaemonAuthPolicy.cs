@@ -17,14 +17,14 @@ namespace CodeReviewDaemon.Sample.Auth;
 /// the daemon would deny silently. Routing the signal here satisfies the locked architecture's
 /// "auth-required signal on refresh failure" requirement.
 /// </remarks>
-internal sealed class FailFastDaemonAuthPolicy(
-    IAuthEventNotifier notifier,
-    ILogger<FailFastDaemonAuthPolicy> logger) : IAuthResolutionPolicy
+internal sealed class FailFastDaemonAuthPolicy(IAuthEventNotifier notifier, ILogger<FailFastDaemonAuthPolicy> logger)
+    : IAuthResolutionPolicy
 {
     public async Task<OAuthAccessToken?> ResolveAsync(
         IOAuthTokenProvider provider,
         IReadOnlyList<string>? scopes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(provider);
 
@@ -32,7 +32,8 @@ internal sealed class FailFastDaemonAuthPolicy(
         logger.LogWarning(
             "Auth-resolution fail-fast for provider {ProviderId}: {Reason}. Denying the webhook call and signaling that sign-in is needed.",
             provider.ProviderId,
-            reason);
+            reason
+        );
 
         // Operator signal — the daemon's notifier records this to the operator log (a later phase
         // routes it to a durable auth-required surface). Use CancellationToken.None: the signal must
@@ -41,7 +42,8 @@ internal sealed class FailFastDaemonAuthPolicy(
             provider.ProviderId,
             $"/auth/{provider.ProviderId}",
             reason,
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         return null;
     }

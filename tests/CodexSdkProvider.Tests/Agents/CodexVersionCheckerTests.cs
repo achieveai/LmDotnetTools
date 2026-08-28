@@ -59,8 +59,7 @@ public class CodexVersionCheckerTests
     [InlineData("1.0.2", "1.0.1", 1)]
     [InlineData("1.0.1", "1.0.2", -1)]
     [InlineData("0.9.1", "0.9.0", 1)]
-    public void CompareVersion_ReturnsCorrectOrdering(
-        string left, string right, int expectedSign)
+    public void CompareVersion_ReturnsCorrectOrdering(string left, string right, int expectedSign)
     {
         var result = CodexVersionChecker.CompareVersion(left, right);
         result.Should().Be(expectedSign);

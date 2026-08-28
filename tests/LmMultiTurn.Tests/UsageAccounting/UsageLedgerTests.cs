@@ -13,7 +13,8 @@ public class UsageLedgerTests
         long input,
         long output,
         bool finalized = false,
-        DateTimeOffset? occurredAt = null) =>
+        DateTimeOffset? occurredAt = null
+    ) =>
         new()
         {
             LogicalCallId = attemptId,
@@ -67,9 +68,7 @@ public class UsageLedgerTests
         // The aggregate-changed callback is the source of the live usage banner frame (#196, BUG 1b): each
         // accepted observation must fire it with the CURRENT folded total so descendant spend surfaces live.
         var totals = new List<long>();
-        var ledger = new UsageLedger(
-            "conv-1",
-            onAggregateUpdated: aggregate => totals.Add(aggregate.TotalTokens));
+        var ledger = new UsageLedger("conv-1", onAggregateUpdated: aggregate => totals.Add(aggregate.TotalTokens));
 
         ledger.UpsertAttempt(Obs("a1", "model-A", input: 100, output: 40)); // total 140
         ledger.UpsertAttempt(Obs("a2", "model-A", input: 50, output: 10)); // total 200
@@ -111,7 +110,8 @@ public class UsageLedgerTests
     {
         var ledger = new UsageLedger(
             "conv-1",
-            new StubResolver("model-A", promptPerMillion: 2m, completionPerMillion: 8m));
+            new StubResolver("model-A", promptPerMillion: 2m, completionPerMillion: 8m)
+        );
 
         ledger.UpsertAttempt(Obs("a1", "model-A", input: 1000, output: 500));
 
@@ -125,7 +125,8 @@ public class UsageLedgerTests
     {
         var ledger = new UsageLedger(
             "conv-1",
-            new StubResolver("model-A", promptPerMillion: 2m, completionPerMillion: 8m));
+            new StubResolver("model-A", promptPerMillion: 2m, completionPerMillion: 8m)
+        );
 
         var merged = ledger.UpsertAttempt(Obs("a1", "model-A", input: 1000, output: 500));
 
@@ -137,7 +138,8 @@ public class UsageLedgerTests
     {
         var ledger = new UsageLedger(
             "conv-1",
-            new StubResolver("model-A", promptPerMillion: 2m, completionPerMillion: 8m));
+            new StubResolver("model-A", promptPerMillion: 2m, completionPerMillion: 8m)
+        );
         var withProviderCost = Obs("a1", "model-A", input: 1000, output: 500) with
         {
             ProviderReportedCostMicros = 5000,
@@ -166,7 +168,8 @@ public class UsageLedgerTests
             {
                 ProviderReportedCostMicros = 7000,
                 CostProvenance = CostProvenance.ProviderReported,
-            });
+            }
+        );
 
         merged.CostProvenance.Should().Be(CostProvenance.ProviderReported);
         merged.ProviderReportedCostMicros.Should().Be(7000);
@@ -188,13 +191,16 @@ public class UsageLedgerTests
             {
                 ProviderReportedCostMicros = 7000,
                 CostProvenance = CostProvenance.ProviderReported,
-            });
-        var merged = ledger.UpsertAttempt(
-            Obs("a1", "model-A", input: 100, output: 55, finalized: true));
+            }
+        );
+        var merged = ledger.UpsertAttempt(Obs("a1", "model-A", input: 100, output: 55, finalized: true));
 
-        merged.CostProvenance.Should().Be(
-            CostProvenance.ProviderReported,
-            "a later observation carrying no cost info must not erase an already-known provider-reported provenance");
+        merged
+            .CostProvenance.Should()
+            .Be(
+                CostProvenance.ProviderReported,
+                "a later observation carrying no cost info must not erase an already-known provider-reported provenance"
+            );
         merged.ProviderReportedCostMicros.Should().Be(7000);
     }
 
@@ -231,25 +237,22 @@ public class UsageLedgerTests
         // deserializes to the default Unavailable — even when a real cost sits right beside it. Seeding must
         // re-derive the provenance from which cost field is populated rather than restoring the misleading
         // default verbatim (#393). Provider-reported is the higher-information source and wins over estimate.
-        var legacyReported =
-            Obs("a1", "model-A", input: 100, output: 40) with
-            {
-                ProviderReportedCostMicros = 5000,
-                CostProvenance = CostProvenance.Unavailable,
-            };
-        var legacyEstimated =
-            Obs("a2", "model-B", input: 10, output: 5) with
-            {
-                EstimatedPublicCostMicros = 1200,
-                CostProvenance = CostProvenance.Unavailable,
-            };
-        var legacyBoth =
-            Obs("a3", "model-C", input: 20, output: 10) with
-            {
-                EstimatedPublicCostMicros = 1200,
-                ProviderReportedCostMicros = 900,
-                CostProvenance = CostProvenance.Unavailable,
-            };
+        var legacyReported = Obs("a1", "model-A", input: 100, output: 40) with
+        {
+            ProviderReportedCostMicros = 5000,
+            CostProvenance = CostProvenance.Unavailable,
+        };
+        var legacyEstimated = Obs("a2", "model-B", input: 10, output: 5) with
+        {
+            EstimatedPublicCostMicros = 1200,
+            CostProvenance = CostProvenance.Unavailable,
+        };
+        var legacyBoth = Obs("a3", "model-C", input: 20, output: 10) with
+        {
+            EstimatedPublicCostMicros = 1200,
+            ProviderReportedCostMicros = 900,
+            CostProvenance = CostProvenance.Unavailable,
+        };
         var genuinelyUnpriced = Obs("a4", "model-D", input: 5, output: 5);
 
         var ledger = new UsageLedger("conv-1");
@@ -268,13 +271,12 @@ public class UsageLedgerTests
     {
         // Derivation fires only on the Unavailable default. A row that already carries an explicit provenance
         // is trusted as-is, even if a different cost field also happens to be populated.
-        var alreadyEstimate =
-            Obs("a1", "model-A", input: 100, output: 40) with
-            {
-                EstimatedPublicCostMicros = 1200,
-                ProviderReportedCostMicros = 5000,
-                CostProvenance = CostProvenance.PublicEstimate,
-            };
+        var alreadyEstimate = Obs("a1", "model-A", input: 100, output: 40) with
+        {
+            EstimatedPublicCostMicros = 1200,
+            ProviderReportedCostMicros = 5000,
+            CostProvenance = CostProvenance.PublicEstimate,
+        };
 
         var ledger = new UsageLedger("conv-1");
         ledger.SeedFromRecords([alreadyEstimate], foldedRevision: 1);
@@ -308,7 +310,8 @@ public class UsageLedgerTests
         ledger.UpsertAttempt(Obs("a1", "model-A", input: 40, output: 0, occurredAt: DayOne));
         ledger.UpsertAttempt(Obs("a1", "model-A", input: 100, output: 30, occurredAt: DayOne.AddMinutes(5)));
         var merged = ledger.UpsertAttempt(
-            Obs("a1", "model-A", input: 100, output: 55, finalized: true, occurredAt: DayOne.AddMinutes(20)));
+            Obs("a1", "model-A", input: 100, output: 55, finalized: true, occurredAt: DayOne.AddMinutes(20))
+        );
 
         merged.OccurredAtUtc.Should().Be(DayOne);
         ledger.SnapshotRecords().Single().OccurredAtUtc.Should().Be(DayOne);

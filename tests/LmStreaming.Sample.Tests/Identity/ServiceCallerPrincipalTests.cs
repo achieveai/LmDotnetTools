@@ -53,7 +53,8 @@ public sealed class ServiceCallerPrincipalTests
         IReadOnlyDictionary<string, string>? apps = null,
         string? allowedOrigin = null,
         string legacyTenantId = "legacy",
-        bool corsFirst = true)
+        bool corsFirst = true
+    )
     {
         var settings = new Dictionary<string, string?>(StringComparer.Ordinal);
         if (s2sSecret is not null)
@@ -62,60 +63,64 @@ public sealed class ServiceCallerPrincipalTests
         }
 
         var host = await new HostBuilder()
-            .ConfigureWebHost(webHost => webHost
-                .UseTestServer()
-                .ConfigureAppConfiguration(cfg => cfg.AddInMemoryCollection(settings))
-                .ConfigureServices(services =>
-                {
-                    _ = services.Configure<IdentityOptions>(o =>
+            .ConfigureWebHost(webHost =>
+                webHost
+                    .UseTestServer()
+                    .ConfigureAppConfiguration(cfg => cfg.AddInMemoryCollection(settings))
+                    .ConfigureServices(services =>
                     {
-                        o.Enforce = enforce;
-                        o.LegacyTenantId = legacyTenantId;
-                        foreach (var (appId, tenantId) in apps ?? new Dictionary<string, string>())
+                        _ = services.Configure<IdentityOptions>(o =>
                         {
-                            o.Apps[appId] = new ServiceAppOptions { TenantId = tenantId };
+                            o.Enforce = enforce;
+                            o.LegacyTenantId = legacyTenantId;
+                            foreach (var (appId, tenantId) in apps ?? new Dictionary<string, string>())
+                            {
+                                o.Apps[appId] = new ServiceAppOptions { TenantId = tenantId };
+                            }
+                        });
+                        _ = services.AddSingleton(TimeProvider.System);
+                        _ = services.AddSingleton<ITenantStore, StubTenantStore>();
+                        _ = services.AddSingleton<IAuditSink>(new RecordingAuditSink());
+                        _ = services.AddSingleton(sp => new PrincipalFactory(
+                            sp.GetRequiredService<ITenantStore>(),
+                            sp.GetRequiredService<IAuditSink>(),
+                            sp.GetRequiredService<IOptions<IdentityOptions>>(),
+                            TimeProvider.System,
+                            sp.GetRequiredService<ILogger<PrincipalFactory>>()
+                        ));
+                        _ = services.AddSingleton<IRequestPrincipalSource, ServiceCallerPrincipalSource>();
+                        _ = services.AddLmStreaming(o =>
+                        {
+                            o.AllowedOrigins = allowedOrigin is null ? [] : [allowedOrigin];
+                        });
+                    })
+                    .Configure(app =>
+                    {
+                        // The order under test. `corsFirst: false` IS the #346 defect, reproduced, and
+                        // the preflight and refusal-header tests below are what notice.
+                        if (corsFirst)
+                        {
+                            _ = app.UseLmStreamingCors();
+                            _ = app.UseMiddleware<IdentityMiddleware>();
                         }
-                    });
-                    _ = services.AddSingleton(TimeProvider.System);
-                    _ = services.AddSingleton<ITenantStore, StubTenantStore>();
-                    _ = services.AddSingleton<IAuditSink>(new RecordingAuditSink());
-                    _ = services.AddSingleton(sp => new PrincipalFactory(
-                        sp.GetRequiredService<ITenantStore>(),
-                        sp.GetRequiredService<IAuditSink>(),
-                        sp.GetRequiredService<IOptions<IdentityOptions>>(),
-                        TimeProvider.System,
-                        sp.GetRequiredService<ILogger<PrincipalFactory>>()));
-                    _ = services.AddSingleton<IRequestPrincipalSource, ServiceCallerPrincipalSource>();
-                    _ = services.AddLmStreaming(o =>
-                    {
-                        o.AllowedOrigins = allowedOrigin is null ? [] : [allowedOrigin];
-                    });
-                })
-                .Configure(app =>
-                {
-                    // The order under test. `corsFirst: false` IS the #346 defect, reproduced, and
-                    // the preflight and refusal-header tests below are what notice.
-                    if (corsFirst)
-                    {
-                        _ = app.UseLmStreamingCors();
-                        _ = app.UseMiddleware<IdentityMiddleware>();
-                    }
-                    else
-                    {
-                        _ = app.UseMiddleware<IdentityMiddleware>();
-                        _ = app.UseLmStreamingCors();
-                    }
+                        else
+                        {
+                            _ = app.UseMiddleware<IdentityMiddleware>();
+                            _ = app.UseLmStreamingCors();
+                        }
 
-                    app.Run(async context =>
-                    {
-                        var principal = context.Items[IdentityHttpItems.PrincipalKey] as Principal;
-                        await context.Response.WriteAsync(
-                            $"{ReachedBody}:{principal?.TenantId ?? "<none>"}"
-                                + $":{principal?.Actor.Kind.ToString() ?? "<none>"}"
-                                + $":{principal?.Actor.Id ?? "<none>"}"
-                                + $":{principal?.Source.ToString() ?? "<none>"}");
-                    });
-                }))
+                        app.Run(async context =>
+                        {
+                            var principal = context.Items[IdentityHttpItems.PrincipalKey] as Principal;
+                            await context.Response.WriteAsync(
+                                $"{ReachedBody}:{principal?.TenantId ?? "<none>"}"
+                                    + $":{principal?.Actor.Kind.ToString() ?? "<none>"}"
+                                    + $":{principal?.Actor.Id ?? "<none>"}"
+                                    + $":{principal?.Source.ToString() ?? "<none>"}"
+                            );
+                        });
+                    })
+            )
             .StartAsync();
 
         return host.GetTestServer();
@@ -128,7 +133,8 @@ public sealed class ServiceCallerPrincipalTests
     private static HttpRequestMessage DaemonRequest(
         string secret = Secret,
         string appId = DaemonAppId,
-        string path = GuardedRoute)
+        string path = GuardedRoute
+    )
     {
         var request = new HttpRequestMessage(HttpMethod.Get, new Uri(path, UriKind.Relative));
         request.Headers.TryAddWithoutValidation(InboundS2SAuthAttribute.HeaderName, secret);
@@ -153,21 +159,26 @@ public sealed class ServiceCallerPrincipalTests
         using var server = await StartAsync(
             enforce: true,
             s2sSecret: Secret,
-            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant });
+            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant }
+        );
 
         var response = await server.CreateClient().SendAsync(DaemonRequest());
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
-        _ = (await response.Content.ReadAsStringAsync()).Should().Be(
-            $"{ReachedBody}:{DaemonTenant}:{nameof(PrincipalKind.App)}:{DaemonAppId}"
-                + $":{nameof(PrincipalSource.AppOnly)}");
+        _ = (await response.Content.ReadAsStringAsync())
+            .Should()
+            .Be(
+                $"{ReachedBody}:{DaemonTenant}:{nameof(PrincipalKind.App)}:{DaemonAppId}"
+                    + $":{nameof(PrincipalSource.AppOnly)}"
+            );
     }
 
     [Theory]
     [InlineData("/api/lifecycle/subscriptions")]
     [InlineData("/api/lifecycle/approvals/decisions")]
     public async Task WithEnforcementOn_ALifecycleCallerWithTheDaemonsHeaders_PassesTheBoundaryWithAnAppPrincipal(
-        string path)
+        string path
+    )
     {
         // #402's other side. Bringing /api/lifecycle inside the boundary only closes the tenant-refusal
         // hole if the plane's LEGITIMATE callers are not newly refused BY THE BOUNDARY - otherwise the
@@ -193,14 +204,18 @@ public sealed class ServiceCallerPrincipalTests
         using var server = await StartAsync(
             enforce: true,
             s2sSecret: Secret,
-            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant });
+            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant }
+        );
 
         var response = await server.CreateClient().SendAsync(DaemonRequest(path: path));
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
-        _ = (await response.Content.ReadAsStringAsync()).Should().Be(
-            $"{ReachedBody}:{DaemonTenant}:{nameof(PrincipalKind.App)}:{DaemonAppId}"
-                + $":{nameof(PrincipalSource.AppOnly)}");
+        _ = (await response.Content.ReadAsStringAsync())
+            .Should()
+            .Be(
+                $"{ReachedBody}:{DaemonTenant}:{nameof(PrincipalKind.App)}:{DaemonAppId}"
+                    + $":{nameof(PrincipalSource.AppOnly)}"
+            );
     }
 
     [Fact]
@@ -215,7 +230,8 @@ public sealed class ServiceCallerPrincipalTests
             apps: new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 [IdentityOptions.DefaultServiceAppKey] = "tnt_infra",
-            });
+            }
+        );
 
         var request = new HttpRequestMessage(HttpMethod.Get, new Uri(GuardedRoute, UriKind.Relative));
         request.Headers.TryAddWithoutValidation(InboundS2SAuthAttribute.HeaderName, Secret);
@@ -223,8 +239,9 @@ public sealed class ServiceCallerPrincipalTests
         var response = await server.CreateClient().SendAsync(request);
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
-        _ = (await response.Content.ReadAsStringAsync()).Should().Contain(
-            $"tnt_infra:{nameof(PrincipalKind.App)}:{IdentityOptions.DefaultServiceAppKey}");
+        _ = (await response.Content.ReadAsStringAsync())
+            .Should()
+            .Contain($"tnt_infra:{nameof(PrincipalKind.App)}:{IdentityOptions.DefaultServiceAppKey}");
     }
 
     [Fact]
@@ -238,8 +255,12 @@ public sealed class ServiceCallerPrincipalTests
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         _ = (await ReadCodeAsync(response)).Should().Be(ServiceCallerPrincipalSource.AppNotRegisteredCode);
-        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
-            .Which.Should().Be(ServiceCallerPrincipalSource.AppNotRegisteredCode);
+        _ = response
+            .Headers.GetValues(IdentityMiddleware.RefusalCodeHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(ServiceCallerPrincipalSource.AppNotRegisteredCode);
     }
 
     [Fact]
@@ -251,7 +272,8 @@ public sealed class ServiceCallerPrincipalTests
             enforce: true,
             s2sSecret: Secret,
             apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = "legacy" },
-            legacyTenantId: "legacy");
+            legacyTenantId: "legacy"
+        );
 
         var response = await server.CreateClient().SendAsync(DaemonRequest());
 
@@ -265,7 +287,8 @@ public sealed class ServiceCallerPrincipalTests
         using var server = await StartAsync(
             enforce: true,
             s2sSecret: Secret,
-            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant });
+            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant }
+        );
 
         var response = await server.CreateClient().SendAsync(DaemonRequest(secret: "not-the-secret"));
 
@@ -282,7 +305,8 @@ public sealed class ServiceCallerPrincipalTests
         using var server = await StartAsync(
             enforce: true,
             s2sSecret: null,
-            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant });
+            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant }
+        );
 
         var response = await server.CreateClient().SendAsync(DaemonRequest());
 
@@ -298,13 +322,17 @@ public sealed class ServiceCallerPrincipalTests
         using var server = await StartAsync(
             enforce: false,
             s2sSecret: Secret,
-            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant });
+            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant }
+        );
 
         var response = await server.CreateClient().SendAsync(DaemonRequest());
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
-        _ = (await response.Content.ReadAsStringAsync()).Should().Be(
-            $"{ReachedBody}:legacy:{nameof(PrincipalKind.EndUser)}:dev:local:{nameof(PrincipalSource.Interactive)}");
+        _ = (await response.Content.ReadAsStringAsync())
+            .Should()
+            .Be(
+                $"{ReachedBody}:legacy:{nameof(PrincipalKind.EndUser)}:dev:local:{nameof(PrincipalSource.Interactive)}"
+            );
     }
 
     [Fact]
@@ -315,10 +343,10 @@ public sealed class ServiceCallerPrincipalTests
         using var server = await StartAsync(
             enforce: true,
             s2sSecret: Secret,
-            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant });
+            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant }
+        );
 
-        var response = await server.CreateClient()
-            .GetAsync(new Uri(GuardedRoute, UriKind.Relative));
+        var response = await server.CreateClient().GetAsync(new Uri(GuardedRoute, UriKind.Relative));
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         _ = (await ReadCodeAsync(response)).Should().Be("authentication_required");
@@ -361,10 +389,7 @@ public sealed class ServiceCallerPrincipalTests
     {
         // A preflight is OPTIONS with no Authorization header - browsers never attach one, by
         // specification. Refusing it kills the real request before it is ever sent.
-        using var server = await StartAsync(
-            enforce: true,
-            s2sSecret: Secret,
-            allowedOrigin: ClientOrigin);
+        using var server = await StartAsync(enforce: true, s2sSecret: Secret, allowedOrigin: ClientOrigin);
 
         var request = new HttpRequestMessage(HttpMethod.Options, new Uri(GuardedRoute, UriKind.Relative));
         request.Headers.TryAddWithoutValidation("Origin", ClientOrigin);
@@ -373,8 +398,12 @@ public sealed class ServiceCallerPrincipalTests
         var response = await server.CreateClient().SendAsync(request);
 
         _ = response.StatusCode.Should().NotBe(HttpStatusCode.Unauthorized);
-        _ = response.Headers.GetValues("Access-Control-Allow-Origin").Should().ContainSingle()
-            .Which.Should().Be(ClientOrigin);
+        _ = response
+            .Headers.GetValues("Access-Control-Allow-Origin")
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(ClientOrigin);
     }
 
     [Fact]
@@ -391,7 +420,8 @@ public sealed class ServiceCallerPrincipalTests
             enforce: true,
             s2sSecret: Secret,
             allowedOrigin: ClientOrigin,
-            corsFirst: false);
+            corsFirst: false
+        );
 
         var request = new HttpRequestMessage(HttpMethod.Options, new Uri(GuardedRoute, UriKind.Relative));
         request.Headers.TryAddWithoutValidation("Origin", ClientOrigin);
@@ -409,10 +439,7 @@ public sealed class ServiceCallerPrincipalTests
         // screen is driven by the stable code in X-Identity-Refusal; a cross-origin client that
         // cannot read the response sees an opaque network error instead of the explanation the 403
         // exists to give it.
-        using var server = await StartAsync(
-            enforce: true,
-            s2sSecret: Secret,
-            allowedOrigin: ClientOrigin);
+        using var server = await StartAsync(enforce: true, s2sSecret: Secret, allowedOrigin: ClientOrigin);
 
         var request = DaemonRequest();
         request.Headers.TryAddWithoutValidation("Origin", ClientOrigin);
@@ -420,8 +447,12 @@ public sealed class ServiceCallerPrincipalTests
         var response = await server.CreateClient().SendAsync(request);
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        _ = response.Headers.GetValues("Access-Control-Allow-Origin").Should().ContainSingle()
-            .Which.Should().Be(ClientOrigin);
+        _ = response
+            .Headers.GetValues("Access-Control-Allow-Origin")
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(ClientOrigin);
         _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle();
     }
 
@@ -463,13 +494,20 @@ public sealed class ServiceCallerPrincipalTests
         var afterFirst = MiddlewareComponentCount(builder);
         _ = builder.UseLmStreamingCors();
 
-        _ = MiddlewareComponentCount(builder).Should().Be(
-            afterFirst,
-            "the second registration must add no middleware to the pipeline; a repeated UseCors "
-                + "would apply the policy twice, and app.Properties.Count cannot see that because "
-                + "UseCors writes to the component list, not to Properties");
-        _ = provider.GetRequiredService<IOptions<LmStreamingOptions>>().Value.AllowedOrigins
-            .Should().ContainSingle().Which.Should().Be(ClientOrigin);
+        _ = MiddlewareComponentCount(builder)
+            .Should()
+            .Be(
+                afterFirst,
+                "the second registration must add no middleware to the pipeline; a repeated UseCors "
+                    + "would apply the policy twice, and app.Properties.Count cannot see that because "
+                    + "UseCors writes to the component list, not to Properties"
+            );
+        _ = provider
+            .GetRequiredService<IOptions<LmStreamingOptions>>()
+            .Value.AllowedOrigins.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(ClientOrigin);
     }
 
     /// <summary>
@@ -483,9 +521,7 @@ public sealed class ServiceCallerPrincipalTests
     /// </remarks>
     private static int MiddlewareComponentCount(IApplicationBuilder builder)
     {
-        var field = typeof(ApplicationBuilder).GetField(
-            "_components",
-            BindingFlags.Instance | BindingFlags.NonPublic);
+        var field = typeof(ApplicationBuilder).GetField("_components", BindingFlags.Instance | BindingFlags.NonPublic);
         var components = (IEnumerable)field!.GetValue(builder)!;
 
         var count = 0;

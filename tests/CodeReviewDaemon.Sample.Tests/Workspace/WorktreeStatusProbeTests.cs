@@ -26,16 +26,22 @@ public sealed class WorktreeStatusProbeTests
     [Fact]
     public void Reported_separates_a_clean_answer_from_no_answer_at_all()
     {
-        WorktreeStatusProbe.Reported(DetachedHeader).Should().BeTrue(
-            "a clean tree still emits the branch header, which is the evidence the probe ran");
+        WorktreeStatusProbe
+            .Reported(DetachedHeader)
+            .Should()
+            .BeTrue("a clean tree still emits the branch header, which is the evidence the probe ran");
         WorktreeStatusProbe.Reported(DetachedHeader + " M src/Edited.cs\0").Should().BeTrue();
         WorktreeStatusProbe.Reported("## main...origin/main\0").Should().BeTrue();
 
-        WorktreeStatusProbe.Reported(string.Empty).Should().BeFalse(
-            "the empty string is what a probe whose output was LOST produces, not what a clean tree answers");
+        WorktreeStatusProbe
+            .Reported(string.Empty)
+            .Should()
+            .BeFalse("the empty string is what a probe whose output was LOST produces, not what a clean tree answers");
         WorktreeStatusProbe.Reported(null).Should().BeFalse();
-        WorktreeStatusProbe.Reported(" M src/Edited.cs\0").Should().BeFalse(
-            "entries without the header did not come from a `-b` probe that ran to completion");
+        WorktreeStatusProbe
+            .Reported(" M src/Edited.cs\0")
+            .Should()
+            .BeFalse("entries without the header did not come from a `-b` probe that ran to completion");
     }
 
     /// <summary>
@@ -47,10 +53,8 @@ public sealed class WorktreeStatusProbeTests
     [Fact]
     public void Parse_does_not_read_the_branch_header_as_a_leftover_path()
     {
-        WorktreeStatusProbe.Parse(DetachedHeader).Should().BeEmpty(
-            "a detached checkout's header is not a dirty path");
-        WorktreeStatusProbe.Parse("## main...origin/main\0").Should().BeEmpty(
-            "neither is an attached one's");
+        WorktreeStatusProbe.Parse(DetachedHeader).Should().BeEmpty("a detached checkout's header is not a dirty path");
+        WorktreeStatusProbe.Parse("## main...origin/main\0").Should().BeEmpty("neither is an attached one's");
 
         var entries = WorktreeStatusProbe.Parse(DetachedHeader + " M src/Edited.cs\0?? build/out.log\0");
 
@@ -75,8 +79,7 @@ public sealed class WorktreeStatusProbeTests
     [Fact]
     public void Parse_reads_paths_that_the_newline_form_would_have_quoted()
     {
-        var entries = WorktreeStatusProbe.Parse(
-            DetachedHeader + " M src/My Documents/Ünïcode.cs\0?? build/out.log\0");
+        var entries = WorktreeStatusProbe.Parse(DetachedHeader + " M src/My Documents/Ünïcode.cs\0?? build/out.log\0");
 
         entries.Should().HaveCount(2);
         entries[0].Should().Be((" M", "src/My Documents/Ünïcode.cs"));
@@ -91,8 +94,7 @@ public sealed class WorktreeStatusProbeTests
     [Fact]
     public void Parse_consumes_the_second_path_field_of_a_rename_with_its_record()
     {
-        var entries = WorktreeStatusProbe.Parse(
-            DetachedHeader + "R  src/New.cs\0src/Old.cs\0 M src/Edited.cs\0");
+        var entries = WorktreeStatusProbe.Parse(DetachedHeader + "R  src/New.cs\0src/Old.cs\0 M src/Edited.cs\0");
 
         entries.Should().HaveCount(2);
         entries[0].Should().Be(("R ", "src/New.cs"));
@@ -122,13 +124,19 @@ public sealed class WorktreeStatusProbeTests
         var runner = new FakeSandboxCommandRunner()
             .OnArgvContains(
                 $"rev-parse :{NormalizedPath}",
-                new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty))
+                new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty)
+            )
             .OnArgvContains(
                 $"hash-object --no-filters -- {NormalizedPath}",
-                new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty));
+                new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty)
+            );
 
         var classified = await WorktreeStatusProbe.ClassifyAsync(
-            new GitRunner(runner), "/store", [(" M", NormalizedPath)], CancellationToken.None);
+            new GitRunner(runner),
+            "/store",
+            [(" M", NormalizedPath)],
+            CancellationToken.None
+        );
 
         classified.Normalized.Should().ContainSingle().Which.Should().Be(NormalizedPath);
         classified.Leftovers.Should().BeEmpty();
@@ -142,16 +150,18 @@ public sealed class WorktreeStatusProbeTests
     public async Task ClassifyAsync_keeps_a_genuinely_edited_path_as_a_leftover()
     {
         var runner = new FakeSandboxCommandRunner()
-            .OnArgvContains(
-                "rev-parse :src/Edited.cs",
-                new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty))
+            .OnArgvContains("rev-parse :src/Edited.cs", new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty))
             .OnArgvContains(
                 "hash-object --no-filters -- src/Edited.cs",
-                new SandboxCommandResult(
-                    0, "2222222222222222222222222222222222222222\n", string.Empty));
+                new SandboxCommandResult(0, "2222222222222222222222222222222222222222\n", string.Empty)
+            );
 
         var classified = await WorktreeStatusProbe.ClassifyAsync(
-            new GitRunner(runner), "/store", [(" M", "src/Edited.cs")], CancellationToken.None);
+            new GitRunner(runner),
+            "/store",
+            [(" M", "src/Edited.cs")],
+            CancellationToken.None
+        );
 
         classified.Leftovers.Should().ContainSingle().Which.Should().Be(" M src/Edited.cs");
         classified.Normalized.Should().BeEmpty();
@@ -168,16 +178,25 @@ public sealed class WorktreeStatusProbeTests
         var runner = new FakeSandboxCommandRunner();
 
         var classified = await WorktreeStatusProbe.ClassifyAsync(
-            new GitRunner(runner), "/store", [("??", "artifacts/agent-scratch.log")], CancellationToken.None);
+            new GitRunner(runner),
+            "/store",
+            [("??", "artifacts/agent-scratch.log")],
+            CancellationToken.None
+        );
 
         classified.Leftovers.Should().ContainSingle().Which.Should().Be("?? artifacts/agent-scratch.log");
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            // `rev-parse :<path>` is the FIRST of the two probes, so asserting only on `hash-object` would
-            // still pass while an untracked path was being classified — the index lookup fails for it and
-            // short-circuits before the second probe is ever reached.
-            command => command.Contains("hash-object", StringComparison.Ordinal)
-                || command.Contains("rev-parse :", StringComparison.Ordinal),
-            "blob identity is only ever asked about a tracked modification");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                // `rev-parse :<path>` is the FIRST of the two probes, so asserting only on `hash-object` would
+                // still pass while an untracked path was being classified — the index lookup fails for it and
+                // short-circuits before the second probe is ever reached.
+                command =>
+                    command.Contains("hash-object", StringComparison.Ordinal)
+                    || command.Contains("rev-parse :", StringComparison.Ordinal),
+                "blob identity is only ever asked about a tracked modification"
+            );
     }
 
     /// <summary>
@@ -187,13 +206,17 @@ public sealed class WorktreeStatusProbeTests
     [Fact]
     public async Task ClassifyAsync_keeps_a_path_whose_blob_probe_cannot_run_as_a_leftover()
     {
-        var runner = new FakeSandboxCommandRunner()
-            .OnArgvContains(
-                "rev-parse :src/Unreadable.cs",
-                new SandboxCommandResult(128, string.Empty, "fatal: path does not exist in the index"));
+        var runner = new FakeSandboxCommandRunner().OnArgvContains(
+            "rev-parse :src/Unreadable.cs",
+            new SandboxCommandResult(128, string.Empty, "fatal: path does not exist in the index")
+        );
 
         var classified = await WorktreeStatusProbe.ClassifyAsync(
-            new GitRunner(runner), "/store", [(" M", "src/Unreadable.cs")], CancellationToken.None);
+            new GitRunner(runner),
+            "/store",
+            [(" M", "src/Unreadable.cs")],
+            CancellationToken.None
+        );
 
         classified.Leftovers.Should().ContainSingle().Which.Should().Be(" M src/Unreadable.cs");
         classified.Normalized.Should().BeEmpty();
@@ -208,14 +231,18 @@ public sealed class WorktreeStatusProbeTests
     public async Task ClassifyAsync_does_not_read_two_empty_answers_as_matching_blobs()
     {
         var runner = new FakeSandboxCommandRunner()
-            .OnArgvContains(
-                "rev-parse :src/Silent.cs", new SandboxCommandResult(0, string.Empty, string.Empty))
+            .OnArgvContains("rev-parse :src/Silent.cs", new SandboxCommandResult(0, string.Empty, string.Empty))
             .OnArgvContains(
                 "hash-object --no-filters -- src/Silent.cs",
-                new SandboxCommandResult(0, string.Empty, string.Empty));
+                new SandboxCommandResult(0, string.Empty, string.Empty)
+            );
 
         var classified = await WorktreeStatusProbe.ClassifyAsync(
-            new GitRunner(runner), "/store", [(" M", "src/Silent.cs")], CancellationToken.None);
+            new GitRunner(runner),
+            "/store",
+            [(" M", "src/Silent.cs")],
+            CancellationToken.None
+        );
 
         classified.Leftovers.Should().ContainSingle().Which.Should().Be(" M src/Silent.cs");
     }
@@ -234,7 +261,11 @@ public sealed class WorktreeStatusProbeTests
         var runner = new FakeSandboxCommandRunner();
 
         var classified = await WorktreeStatusProbe.ClassifyAsync(
-            new GitRunner(runner), "/store", entries, CancellationToken.None);
+            new GitRunner(runner),
+            "/store",
+            entries,
+            CancellationToken.None
+        );
 
         classified.Leftovers.Should().HaveCount(WorktreeStatusProbe.MaxClassifiedLeftovers + 1);
         classified.Normalized.Should().BeEmpty();
@@ -254,7 +285,11 @@ public sealed class WorktreeStatusProbeTests
             .OnArgvContains("hash-object", new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty));
 
         var classified = await WorktreeStatusProbe.ClassifyAsync(
-            new GitRunner(runner), "/store", entries, CancellationToken.None);
+            new GitRunner(runner),
+            "/store",
+            entries,
+            CancellationToken.None
+        );
 
         classified.Normalized.Should().HaveCount(WorktreeStatusProbe.MaxClassifiedLeftovers);
         classified.Leftovers.Should().BeEmpty();

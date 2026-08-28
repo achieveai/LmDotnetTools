@@ -69,7 +69,8 @@ public sealed record InputAcceptance(
     InputAcceptanceState State,
     bool SpawningSuppressed,
     bool IdempotencyHonored,
-    Guid ReservationId);
+    Guid ReservationId
+);
 
 /// <summary>
 /// Opt-in capability for stores that can admit an input EXACTLY ONCE and remember the outcome durably.
@@ -134,5 +135,6 @@ public interface IInputAcceptanceStore
         string threadId,
         string inputId,
         Guid reservationId,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 }

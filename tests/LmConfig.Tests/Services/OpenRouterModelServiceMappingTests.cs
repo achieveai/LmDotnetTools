@@ -35,8 +35,7 @@ public class OpenRouterModelServiceMappingTests
         );
 
         // Act
-        var result = await (Task<IReadOnlyList<ModelConfig>>)
-            method!.Invoke(service, [cache, CancellationToken.None])!;
+        var result = await (Task<IReadOnlyList<ModelConfig>>)method!.Invoke(service, [cache, CancellationToken.None])!;
 
         // Assert
         Assert.NotNull(result);
@@ -69,8 +68,7 @@ public class OpenRouterModelServiceMappingTests
         );
 
         // Act
-        var result = await (Task<IReadOnlyList<ModelConfig>>)
-            method!.Invoke(service, [cache, CancellationToken.None])!;
+        var result = await (Task<IReadOnlyList<ModelConfig>>)method!.Invoke(service, [cache, CancellationToken.None])!;
 
         // Assert
         Assert.NotNull(result);
@@ -101,8 +99,7 @@ public class OpenRouterModelServiceMappingTests
         );
 
         // Act
-        var result = await (Task<IReadOnlyList<ModelConfig>>)
-            method!.Invoke(service, [cache, CancellationToken.None])!;
+        var result = await (Task<IReadOnlyList<ModelConfig>>)method!.Invoke(service, [cache, CancellationToken.None])!;
 
         // Assert
         Assert.NotNull(result);

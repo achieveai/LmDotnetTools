@@ -8,20 +8,18 @@ namespace AchieveAi.LmDotnetTools.CopilotAnthropicProxy.Tests;
 public class OpenAiDialectTests
 {
     private const string DiscoveryJson = """
-    {"data":[
-      {"id":"claude-opus-4.8","vendor":"Anthropic","supported_endpoints":["/v1/messages","/chat/completions"]},
-      {"id":"gpt-5.4","vendor":"OpenAI","supported_endpoints":["/responses","/chat/completions"]},
-      {"id":"gpt-5.3-codex","vendor":"OpenAI","supported_endpoints":["/responses"]}
-    ]}
-    """;
+        {"data":[
+          {"id":"claude-opus-4.8","vendor":"Anthropic","supported_endpoints":["/v1/messages","/chat/completions"]},
+          {"id":"gpt-5.4","vendor":"OpenAI","supported_endpoints":["/responses","/chat/completions"]},
+          {"id":"gpt-5.3-codex","vendor":"OpenAI","supported_endpoints":["/responses"]}
+        ]}
+        """;
 
     /// <summary>
     ///     Builds a factory whose upstream answers startup discovery from <see cref="DiscoveryJson"/>
     ///     and hands every other request to <paramref name="onProxied"/>, recording the path it hit.
     /// </summary>
-    private static ProxyWebAppFactory Factory(
-        Func<HttpRequestMessage, string, Task<HttpResponseMessage>> onProxied
-    ) =>
+    private static ProxyWebAppFactory Factory(Func<HttpRequestMessage, string, Task<HttpResponseMessage>> onProxied) =>
         new(
             async (request, _) =>
             {
@@ -158,11 +156,7 @@ public class OpenAiDialectTests
             {
                 model = "gpt-5.3-codex",
                 input = Array.Empty<object>(),
-                tools = new object[]
-                {
-                    new { type = "image_generation" },
-                    new { type = "function", name = "shell" },
-                },
+                tools = new object[] { new { type = "image_generation" }, new { type = "function", name = "shell" } },
             }
         );
 
@@ -238,9 +232,7 @@ public class OpenAiDialectTests
     [Fact]
     public async Task The_unprefixed_twins_are_bound_too()
     {
-        await using var factory = Factory(
-            (_, _) => Task.FromResult(TestUpstream.Json("""{"id":"x","choices":[]}"""))
-        );
+        await using var factory = Factory((_, _) => Task.FromResult(TestUpstream.Json("""{"id":"x","choices":[]}""")));
         using var client = factory.CreateClient();
 
         var chat = await client.PostAsJsonAsync(

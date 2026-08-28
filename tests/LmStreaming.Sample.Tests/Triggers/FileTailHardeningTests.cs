@@ -47,10 +47,17 @@ public class FileTailHardeningTests
 
         public IReadOnlyList<(LogLevel Level, string Message)> Entries
         {
-            get { lock (_entries) { return [.. _entries]; } }
+            get
+            {
+                lock (_entries)
+                {
+                    return [.. _entries];
+                }
+            }
         }
 
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
 
         public bool IsEnabled(LogLevel logLevel) => true;
 
@@ -59,7 +66,8 @@ public class FileTailHardeningTests
             EventId eventId,
             TState state,
             Exception? exception,
-            Func<TState, Exception?, string> formatter)
+            Func<TState, Exception?, string> formatter
+        )
         {
             lock (_entries)
             {
@@ -97,7 +105,10 @@ public class FileTailHardeningTests
     [InlineData("GET /v1 api_key=abcd1234efgh5678ijkl", "abcd1234efgh5678ijkl")]
     [InlineData("aws key AKIAIOSFODNN7EXAMPLE rotated", "AKIAIOSFODNN7EXAMPLE")]
     [InlineData("slack hook xoxb-123456789012-abcdefghij failed", "xoxb-123456789012-abcdefghij")]
-    [InlineData("jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r wrong", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r")]
+    [InlineData(
+        "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r wrong",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r"
+    )]
     // Quoted values. A value class that excludes the quote character matches nothing at all here —
     // it is not that the quotes survive, it is that the whole assignment goes unrecognized and the
     // secret is forwarded verbatim. The JSON row is the shape this repo's own structured logs are
@@ -128,15 +139,18 @@ public class FileTailHardeningTests
     public void Redact_WhenThePatternSweepFails_WithholdsTheContent(string failureKind)
     {
         const string line = "ERROR checkout failed for alice@example.com token=ghp_AbCdEfGhIjKlMnOpQrStUvWx";
-        Func<string, string> throwing = failureKind == "timeout"
-            ? _ => throw new RegexMatchTimeoutException(line, "pattern", TimeSpan.FromMilliseconds(1))
-            : _ => throw new InvalidOperationException("a pattern blew up in a way nobody predicted");
+        Func<string, string> throwing =
+            failureKind == "timeout"
+                ? _ => throw new RegexMatchTimeoutException(line, "pattern", TimeSpan.FromMilliseconds(1))
+                : _ => throw new InvalidOperationException("a pattern blew up in a way nobody predicted");
 
         var redacted = TriggerContentRedactor.Redact(line, throwing);
 
         redacted.Should().NotContain("alice@example.com", "content that could not be inspected must not be forwarded");
         redacted.Should().NotContain("ghp_AbCdEfGhIjKlMnOpQrStUvWx");
-        redacted.Should().NotContain("checkout failed", "fail-closed withholds the line, it does not partially redact it");
+        redacted
+            .Should()
+            .NotContain("checkout failed", "fail-closed withholds the line, it does not partially redact it");
         redacted.Should().Be(TriggerContentRedactor.WithheldOnFailure);
     }
 
@@ -229,10 +243,12 @@ public class FileTailHardeningTests
         File.Delete(file);
 
         await Wait.UntilAsync(
-            () => logger.Entries.Any(e => e.Level == LogLevel.Warning && e.Message.Contains("no file at its armed path")),
+            () =>
+                logger.Entries.Any(e => e.Level == LogLevel.Warning && e.Message.Contains("no file at its armed path")),
             "the file_tail watcher warned that its armed path has gone missing",
             timeout: TimeSpan.FromSeconds(20),
-            observed: () => $"entries: [{string.Join(" | ", logger.Entries.Select(e => e.Level + ": " + e.Message))}]");
+            observed: () => $"entries: [{string.Join(" | ", logger.Entries.Select(e => e.Level + ": " + e.Message))}]"
+        );
 
         fired.Task.IsCompleted.Should().BeFalse("nothing was appended, so nothing may fire");
     }

@@ -26,43 +26,51 @@ internal sealed class InMemoryResourceGrantStore : IResourceGrantStore
         ResourceRef resource,
         string subjectId,
         DateTimeOffset now,
-        CancellationToken ct = default) =>
-        Task.FromResult(Unexpired(tenantId, resource, now)
-            .Where(g => string.Equals(g.SubjectId, subjectId, StringComparison.Ordinal))
-            .Select(g => (GrantRole?)g.Role)
-            .FirstOrDefault());
+        CancellationToken ct = default
+    ) =>
+        Task.FromResult(
+            Unexpired(tenantId, resource, now)
+                .Where(g => string.Equals(g.SubjectId, subjectId, StringComparison.Ordinal))
+                .Select(g => (GrantRole?)g.Role)
+                .FirstOrDefault()
+        );
 
     public Task<IReadOnlyList<string>> ListGrantedResourceIdsAsync(
         string tenantId,
         string subjectId,
         string resourceType,
         DateTimeOffset now,
-        CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<string>>(
-        [
+        CancellationToken ct = default
+    ) =>
+        Task.FromResult<IReadOnlyList<string>>([
             .. _grants
-                .Where(g => string.Equals(g.TenantId, tenantId, StringComparison.Ordinal)
+                .Where(g =>
+                    string.Equals(g.TenantId, tenantId, StringComparison.Ordinal)
                     && string.Equals(g.Resource.Type, resourceType, StringComparison.Ordinal)
                     && string.Equals(g.SubjectId, subjectId, StringComparison.Ordinal)
-                    && (g.ExpiresAt is null || g.ExpiresAt > now))
+                    && (g.ExpiresAt is null || g.ExpiresAt > now)
+                )
                 .Select(g => g.Resource.Id),
         ]);
 
     public Task<IReadOnlyList<ResourceGrant>> ListGrantsForResourceAsync(
         string tenantId,
         ResourceRef resource,
-        CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<ResourceGrant>>(
-        [
-            .. _grants.Where(g => string.Equals(g.TenantId, tenantId, StringComparison.Ordinal)
-                && g.Resource == resource),
+        CancellationToken ct = default
+    ) =>
+        Task.FromResult<IReadOnlyList<ResourceGrant>>([
+            .. _grants.Where(g =>
+                string.Equals(g.TenantId, tenantId, StringComparison.Ordinal) && g.Resource == resource
+            ),
         ]);
 
     public Task GrantAsync(ResourceGrant grant, CancellationToken ct = default)
     {
-        _ = _grants.RemoveAll(g => string.Equals(g.TenantId, grant.TenantId, StringComparison.Ordinal)
+        _ = _grants.RemoveAll(g =>
+            string.Equals(g.TenantId, grant.TenantId, StringComparison.Ordinal)
             && g.Resource == grant.Resource
-            && string.Equals(g.SubjectId, grant.SubjectId, StringComparison.Ordinal));
+            && string.Equals(g.SubjectId, grant.SubjectId, StringComparison.Ordinal)
+        );
         _grants.Add(grant);
         return Task.CompletedTask;
     }
@@ -71,23 +79,29 @@ internal sealed class InMemoryResourceGrantStore : IResourceGrantStore
         string tenantId,
         ResourceRef resource,
         string subjectId,
-        CancellationToken ct = default) =>
-        Task.FromResult(_grants.RemoveAll(g =>
-            string.Equals(g.TenantId, tenantId, StringComparison.Ordinal)
-            && g.Resource == resource
-            && string.Equals(g.SubjectId, subjectId, StringComparison.Ordinal)) > 0);
+        CancellationToken ct = default
+    ) =>
+        Task.FromResult(
+            _grants.RemoveAll(g =>
+                string.Equals(g.TenantId, tenantId, StringComparison.Ordinal)
+                && g.Resource == resource
+                && string.Equals(g.SubjectId, subjectId, StringComparison.Ordinal)
+            ) > 0
+        );
 
     public Task<bool> HasAnyGrantAsync(
         string tenantId,
         ResourceRef resource,
         DateTimeOffset now,
-        CancellationToken ct = default) =>
-        Task.FromResult(Unexpired(tenantId, resource, now).Any());
+        CancellationToken ct = default
+    ) => Task.FromResult(Unexpired(tenantId, resource, now).Any());
 
     private IEnumerable<ResourceGrant> Unexpired(string tenantId, ResourceRef resource, DateTimeOffset now) =>
-        _grants.Where(g => string.Equals(g.TenantId, tenantId, StringComparison.Ordinal)
+        _grants.Where(g =>
+            string.Equals(g.TenantId, tenantId, StringComparison.Ordinal)
             && g.Resource == resource
-            && (g.ExpiresAt is null || g.ExpiresAt > now));
+            && (g.ExpiresAt is null || g.ExpiresAt > now)
+        );
 }
 
 /// <summary>
@@ -112,7 +126,8 @@ internal sealed class CountingResourceGrantStore(IResourceGrantStore inner) : IR
         ResourceRef resource,
         string subjectId,
         DateTimeOffset now,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         _ = Interlocked.Increment(ref _findGrantCalls);
         return inner.FindGrantAsync(tenantId, resource, subjectId, now, ct);
@@ -123,31 +138,30 @@ internal sealed class CountingResourceGrantStore(IResourceGrantStore inner) : IR
         string subjectId,
         string resourceType,
         DateTimeOffset now,
-        CancellationToken ct = default) =>
-        inner.ListGrantedResourceIdsAsync(tenantId, subjectId, resourceType, now, ct);
+        CancellationToken ct = default
+    ) => inner.ListGrantedResourceIdsAsync(tenantId, subjectId, resourceType, now, ct);
 
     public Task<IReadOnlyList<ResourceGrant>> ListGrantsForResourceAsync(
         string tenantId,
         ResourceRef resource,
-        CancellationToken ct = default) =>
-        inner.ListGrantsForResourceAsync(tenantId, resource, ct);
+        CancellationToken ct = default
+    ) => inner.ListGrantsForResourceAsync(tenantId, resource, ct);
 
-    public Task GrantAsync(ResourceGrant grant, CancellationToken ct = default) =>
-        inner.GrantAsync(grant, ct);
+    public Task GrantAsync(ResourceGrant grant, CancellationToken ct = default) => inner.GrantAsync(grant, ct);
 
     public Task<bool> RevokeAsync(
         string tenantId,
         ResourceRef resource,
         string subjectId,
-        CancellationToken ct = default) =>
-        inner.RevokeAsync(tenantId, resource, subjectId, ct);
+        CancellationToken ct = default
+    ) => inner.RevokeAsync(tenantId, resource, subjectId, ct);
 
     public Task<bool> HasAnyGrantAsync(
         string tenantId,
         ResourceRef resource,
         DateTimeOffset now,
-        CancellationToken ct = default) =>
-        inner.HasAnyGrantAsync(tenantId, resource, now, ct);
+        CancellationToken ct = default
+    ) => inner.HasAnyGrantAsync(tenantId, resource, now, ct);
 }
 
 /// <summary>Builds <see cref="ConversationAuthorizer"/> instances for controller tests.</summary>
@@ -163,8 +177,7 @@ internal static class TestAuthorizers
     /// NON-owner to prove the off-arm is the enforcement-off path and not "the principal happens to
     /// own the row".
     /// </param>
-    public static ConversationAuthorizer Disabled(Principal? principal = null) =>
-        Create(enforce: false, principal);
+    public static ConversationAuthorizer Disabled(Principal? principal = null) => Create(enforce: false, principal);
 
     /// <summary>An authorizer with enforcement ON, acting as <paramref name="principal"/>.</summary>
     /// <param name="principal">The signed-in caller, or null for an unauthenticated request.</param>
@@ -173,14 +186,15 @@ internal static class TestAuthorizers
     public static ConversationAuthorizer Enforcing(
         Principal? principal,
         IResourceGrantStore? grants = null,
-        IAuditSink? audit = null) =>
-        Create(enforce: true, principal, grants, audit);
+        IAuditSink? audit = null
+    ) => Create(enforce: true, principal, grants, audit);
 
     private static ConversationAuthorizer Create(
         bool enforce,
         Principal? principal,
         IResourceGrantStore? grants = null,
-        IAuditSink? audit = null)
+        IAuditSink? audit = null
+    )
     {
         var gate = new StaticEnforcementGate(enforce);
         var grantStore = grants ?? new InMemoryResourceGrantStore();
@@ -191,6 +205,7 @@ internal static class TestAuthorizers
             new ResourceAccessPolicy(grantStore, sink, gate, TimeProvider.System),
             grantStore,
             gate,
-            TimeProvider.System);
+            TimeProvider.System
+        );
     }
 }

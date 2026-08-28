@@ -14,46 +14,43 @@ public class KnowledgeTableOfContentsTests
     [Fact]
     public void Render_groups_scoped_entries_under_a_scope_heading_sorted_ordinal()
     {
-        var toc = KnowledgeTableOfContents.Render(
-        [
+        var toc = KnowledgeTableOfContents.Render([
             new KnowledgeEntry("system/a.md", "A"),
             new KnowledgeEntry("LmDotnetTools/b.md", "B"),
         ]);
 
         // Scopes sorted ordinal: 'L' (0x4C) before 's' (0x73), so LmDotnetTools precedes system.
-        toc.Should().Be(
-            "# Knowledge Base\n\n"
-            + "## LmDotnetTools\n\n- [B](LmDotnetTools/b.md)\n"
-            + "\n"
-            + "## system\n\n- [A](system/a.md)\n");
+        toc.Should()
+            .Be(
+                "# Knowledge Base\n\n"
+                    + "## LmDotnetTools\n\n- [B](LmDotnetTools/b.md)\n"
+                    + "\n"
+                    + "## system\n\n- [A](system/a.md)\n"
+            );
     }
 
     [Fact]
     public void Render_sorts_entries_within_a_scope_ordinal()
     {
-        var toc = KnowledgeTableOfContents.Render(
-        [
+        var toc = KnowledgeTableOfContents.Render([
             new KnowledgeEntry("system/apple.md", "apple"),
             new KnowledgeEntry("system/Zebra.md", "Zebra"),
         ]);
 
         // Ordinal (case-sensitive) sort by RelPath: 'Z' (0x5A) before 'a' (0x61).
-        toc.Should().Be(
-            "# Knowledge Base\n\n"
-            + "## system\n\n- [Zebra](system/Zebra.md)\n- [apple](system/apple.md)\n");
+        toc.Should()
+            .Be("# Knowledge Base\n\n" + "## system\n\n- [Zebra](system/Zebra.md)\n- [apple](system/apple.md)\n");
     }
 
     [Fact]
     public void Render_lists_unscoped_entries_flat_under_the_header()
     {
-        var toc = KnowledgeTableOfContents.Render(
-        [
+        var toc = KnowledgeTableOfContents.Render([
             new KnowledgeEntry("aaa-first.md", "Aaa First"),
             new KnowledgeEntry("null-checks.md", "Null Checks"),
         ]);
 
-        toc.Should().Be(
-            "# Knowledge Base\n\n- [Aaa First](aaa-first.md)\n- [Null Checks](null-checks.md)\n");
+        toc.Should().Be("# Knowledge Base\n\n- [Aaa First](aaa-first.md)\n- [Null Checks](null-checks.md)\n");
     }
 
     [Fact]

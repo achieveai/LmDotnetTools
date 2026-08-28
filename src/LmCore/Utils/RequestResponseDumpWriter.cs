@@ -140,9 +140,7 @@ public sealed class RequestResponseDumpWriter
             return;
         }
 
-        throw new IOException(
-            $"Failed to rotate dump file '{targetPath}' after {MaxRotationAttempts} attempts."
-        );
+        throw new IOException($"Failed to rotate dump file '{targetPath}' after {MaxRotationAttempts} attempts.");
     }
 
     private string GetRequestPath()
@@ -155,22 +153,15 @@ public sealed class RequestResponseDumpWriter
         return $"{_baseFileName}.response.txt";
     }
 
-    private void ExecuteIoBestEffort(
-        Action operation,
-        string operationName,
-        Action<Exception>? onFailure = null
-    )
+    private void ExecuteIoBestEffort(Action operation, string operationName, Action<Exception>? onFailure = null)
     {
         try
         {
             operation();
         }
-        catch (Exception ex) when (
-            ex is IOException
-                or UnauthorizedAccessException
-                or PathTooLongException
-                or DirectoryNotFoundException
-        )
+        catch (Exception ex)
+            when (ex is IOException or UnauthorizedAccessException or PathTooLongException or DirectoryNotFoundException
+            )
         {
             onFailure?.Invoke(ex);
             _logger.LogWarning(

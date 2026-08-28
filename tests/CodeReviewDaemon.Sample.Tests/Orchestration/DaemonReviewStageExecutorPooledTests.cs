@@ -64,8 +64,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Preparer.LastDefaultBranch.Should().Be("main");
 
         // The diff is taken through the run-bound SDK session, never the host or boot runner.
-        fixture.Provisioner.SdkRunner.Commands.Select(Join)
-            .Should().Contain(a => a.Contains("/workspace/store/repos/LmDotnetTools") && a.Contains("diff"));
+        fixture
+            .Provisioner.SdkRunner.Commands.Select(Join)
+            .Should()
+            .Contain(a => a.Contains("/workspace/store/repos/LmDotnetTools") && a.Contains("diff"));
         fixture.HostRunner.Commands.Should().BeEmpty("host git is reserved for the post-review commit gate");
         fixture.BootRunner.Commands.Should().BeEmpty("the pooled path never touches the boot-lifetime runner");
 
@@ -86,17 +88,22 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.HostFileSystem.Files.Clear();
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/.gitmodules",
-            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n");
+            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n"
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
         fixture.Pool.LeaseCount.Should().Be(1);
-        fixture.Pool.ReturnCount.Should().Be(1, "a declined lease is returned immediately so it can't leak pool capacity");
+        fixture
+            .Pool.ReturnCount.Should()
+            .Be(1, "a declined lease is returned immediately so it can't leak pool capacity");
         fixture.Preparer.PrepareCount.Should().Be(0, "the reviewed repo is not a store submodule, so no prepare runs");
         // The stage still completed via the fallback checkout — a context artifact was persisted.
-        fixture.Store.GetArtifacts(run.Id)
-            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind);
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind);
     }
 
     [Fact]
@@ -111,9 +118,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         fixture.Preparer.RecloneCount.Should().Be(1, "the session-bound preparer re-clones before retry");
         fixture.Preparer.PrepareCount.Should().Be(2, "prepare is retried exactly once after the re-clone");
-        fixture.Store.GetArtifacts(run.Id)
-            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind,
-                "the retried prepare succeeded, so the stage completed with a context artifact");
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(
+                a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind,
+                "the retried prepare succeeded, so the stage completed with a context artifact"
+            );
     }
 
     [Fact]
@@ -144,21 +155,30 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // of one — so returning the index to a free list that is a STACK hands it to the very next run, which
         // refuses again, forever. Retiring costs one directory name; the permit is released either way.
         fixture.Preparer.ThrowThenSucceed.Enqueue(
-            new SlotAddressUnusableException("Refusing to wipe host directory 'store': '.git/objects' — unreadable."));
+            new SlotAddressUnusableException("Refusing to wipe host directory 'store': '.git/objects' — unreadable.")
+        );
         var run = fixture.SeedRun();
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
         await act.Should().ThrowAsync<SlotAddressUnusableException>();
-        fixture.Preparer.RecloneCount.Should().Be(0,
-            "the re-clone starts by wiping the store, which is the walk that just refused — escalating there is "
-                + "the redirected write, so the recovery ladder must filter by TYPE and not by 'prepare failed'");
+        fixture
+            .Preparer.RecloneCount.Should()
+            .Be(
+                0,
+                "the re-clone starts by wiping the store, which is the walk that just refused — escalating there is "
+                    + "the redirected write, so the recovery ladder must filter by TYPE and not by 'prepare failed'"
+            );
         fixture.Preparer.PrepareCount.Should().Be(1, "and with no re-clone there is nothing to retry against");
         fixture.Pool.RetireCount.Should().Be(1);
         fixture.Pool.Retired.Should().ContainSingle().Which.Should().Be(fixture.Pool.Leased.Single());
-        fixture.Pool.ReturnCount.Should().Be(0,
-            "returning is what recycles the address — the test above pins that an ordinary prepare failure DOES "
-                + "return, so this zero is a routing decision and not an unreached path");
+        fixture
+            .Pool.ReturnCount.Should()
+            .Be(
+                0,
+                "returning is what recycles the address — the test above pins that an ordinary prepare failure DOES "
+                    + "return, so this zero is a routing decision and not an unreached path"
+            );
     }
 
     /// <summary>
@@ -175,7 +195,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         _ = fixture.HostRunner.OnArgvContainsFirst(
             "diff",
             new SandboxCommandResult(
-                128, string.Empty, "fatal: refusing to merge unrelated histories\nhint: see git-merge(1)"));
+                128,
+                string.Empty,
+                "fatal: refusing to merge unrelated histories\nhint: see git-merge(1)"
+            )
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -183,20 +207,32 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
         var payload = JsonDocument.Parse(artifact.Payload).RootElement;
         var reason = payload.GetProperty("UncomparableReason").GetString();
-        reason.Should().Contain(
-            "share no common ancestor",
-            "the stage's whole job on this outcome is to leave the record saying WHY, in the author's terms");
-        reason.Should().Contain(
-            "refusing to merge unrelated histories",
-            "quoted from git's own first stderr line — the claim has to carry the evidence it rests on");
-        reason.Should().NotContain(
-            "hint: see git-merge(1)",
-            "only the first line of a git stderr is the failure; the advice paragraphs after it are noise in "
-                + "a sentence a person reads");
-        artifact.ArtifactSchemaVersion.Should().Be(
-            DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
-            "a row that can carry a reason is a v2 row — a v1 row's silence means 'not measured', because "
-                + "before v2 this run wrote no artifact at all");
+        reason
+            .Should()
+            .Contain(
+                "share no common ancestor",
+                "the stage's whole job on this outcome is to leave the record saying WHY, in the author's terms"
+            );
+        reason
+            .Should()
+            .Contain(
+                "refusing to merge unrelated histories",
+                "quoted from git's own first stderr line — the claim has to carry the evidence it rests on"
+            );
+        reason
+            .Should()
+            .NotContain(
+                "hint: see git-merge(1)",
+                "only the first line of a git stderr is the failure; the advice paragraphs after it are noise in "
+                    + "a sentence a person reads"
+            );
+        artifact
+            .ArtifactSchemaVersion.Should()
+            .Be(
+                DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
+                "a row that can carry a reason is a v2 row — a v1 row's silence means 'not measured', because "
+                    + "before v2 this run wrote no artifact at all"
+            );
     }
 
     /// <summary>
@@ -230,7 +266,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         _ = fixture.HostRunner.OnArgvContainsFirst(
             "diff",
             new SandboxCommandResult(
-                128, string.Empty, "fatal: refusing to merge unrelated histories\nhint: see git-merge(1)"));
+                128,
+                string.Empty,
+                "fatal: refusing to merge unrelated histories\nhint: see git-merge(1)"
+            )
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -238,19 +278,29 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var brief = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        brief.Should().Contain(
-            "share no common ancestor",
-            "the reason ContextReady established is the one thing about this range the reviewer cannot work "
-                + "out for itself");
-        brief.Should().Contain(
-            "Do NOT substitute another range",
-            "an agent with tools and no diff picks a range of its own — that is the failure this brief exists "
-                + "to pre-empt, not a hypothetical one");
+        brief
+            .Should()
+            .Contain(
+                "share no common ancestor",
+                "the reason ContextReady established is the one thing about this range the reviewer cannot work "
+                    + "out for itself"
+            );
+        brief
+            .Should()
+            .Contain(
+                "Do NOT substitute another range",
+                "an agent with tools and no diff picks a range of its own — that is the failure this brief exists "
+                    + "to pre-empt, not a hypothetical one"
+            );
 
-        fixture.Logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().NotContain(
-            m => m.Contains("falling back to the inlined diff", StringComparison.Ordinal),
-            "that line names a cause that is false here and promises a fallback onto a diff that does not "
-                + "exist; the uncomparable branch has to be taken BEFORE the degraded arm, not alongside it");
+        fixture
+            .Logs.Capturing.MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .NotContain(
+                m => m.Contains("falling back to the inlined diff", StringComparison.Ordinal),
+                "that line names a cause that is false here and promises a fallback onto a diff that does not "
+                    + "exist; the uncomparable branch has to be taken BEFORE the degraded arm, not alongside it"
+            );
     }
 
     [Fact]
@@ -261,19 +311,28 @@ public sealed class DaemonReviewStageExecutorPooledTests
         _ = fixture.HostRunner.OnArgvContainsFirst(
             "diff",
             new SandboxCommandResult(
-                124, string.Empty, "git diff produced no output for 300s (idle timeout) and was killed"));
+                124,
+                string.Empty,
+                "git diff produced no output for 300s (idle timeout) and was killed"
+            )
+        );
         var run = fixture.SeedRun();
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
-        _ = await act.Should().ThrowAsync<InvalidOperationException>(
-            "nothing was learned about these commits, so the stage stays a failure and the run retries — "
-                + "which is precisely what would have fixed it");
+        _ = await act.Should()
+            .ThrowAsync<InvalidOperationException>(
+                "nothing was learned about these commits, so the stage stays a failure and the run retries — "
+                    + "which is precisely what would have fixed it"
+            );
         var written = string.Join('\n', fixture.Store.GetArtifacts(run.Id).Select(a => a.Payload));
-        written.Should().NotContain(
-            "share no common ancestor",
-            "that sentence is a statement about the author's branch, and nothing about their branch was "
-                + "established — our own git command was killed");
+        written
+            .Should()
+            .NotContain(
+                "share no common ancestor",
+                "that sentence is a statement about the author's branch, and nothing about their branch was "
+                    + "established — our own git command was killed"
+            );
     }
 
     /// <summary>
@@ -303,14 +362,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
         using var fixture = Fixture.CreateS2S();
         fixture.Preparer.MergeBase = outcome;
         _ = fixture.HostRunner.OnArgvContainsFirst(
-            "diff", new SandboxCommandResult(128, string.Empty, "fatal: bad object base-sha"));
+            "diff",
+            new SandboxCommandResult(128, string.Empty, "fatal: bad object base-sha")
+        );
         var run = fixture.SeedRun();
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
         _ = await act.Should().ThrowAsync<InvalidOperationException>();
-        fixture.Store.GetArtifacts(run.Id).Should().BeEmpty(
-            "a stage that failed leaves no partial record behind for a resumed run to mistake for a capture");
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .BeEmpty("a stage that failed leaves no partial record behind for a resumed run to mistake for a capture");
     }
 
     [Fact]
@@ -344,7 +407,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // what a real KnowledgeExtractionCommitter run would have already committed there.
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/KnowledgeBase/_toc.md",
-            "# Knowledge Base\n\n## system\n- [KB-ENTRY-XYZ](system/kb-entry-xyz.md)\n");
+            "# Knowledge Base\n\n## system\n- [KB-ENTRY-XYZ](system/kb-entry-xyz.md)\n"
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -357,9 +421,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // its own heading is therefore invisible: the agent is told, in the same breath, not to go looking.
         text.Should().Contain("## Prior knowledge (Knowledge Base)", "the ToC is prepended as a labelled block");
         text.Should().Contain("KB-ENTRY-XYZ", "the seeded ToC entry is surfaced to the pooled reviewer");
-        text.Should().Contain(
-            "/workspace/store/KnowledgeBase/_toc.md",
-            "the fallback must still hand over an exact absolute path, not a bare file name");
+        text.Should()
+            .Contain(
+                "/workspace/store/KnowledgeBase/_toc.md",
+                "the fallback must still hand over an exact absolute path, not a bare file name"
+            );
     }
 
     [Fact]
@@ -377,19 +443,24 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.HostFileSystem.Seed(
             "/pool/review-slot-0/store/KnowledgeBase/_index.jsonl",
             """{"file":"system/null-guard.md","title":"Null-guard boundaries","tags":["null"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
-                + "\n");
+                + "\n"
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain(
-            "/workspace/store/KnowledgeBase/system/null-guard.md",
-            "the entry was READ from the host slot but must be RENDERED at the root the agent sees");
-        text.Should().NotContain(
-            "/pool/review-slot-0",
-            "a host path is unopenable inside the review container, so it must never reach the agent's input");
+        text.Should()
+            .Contain(
+                "/workspace/store/KnowledgeBase/system/null-guard.md",
+                "the entry was READ from the host slot but must be RENDERED at the root the agent sees"
+            );
+        text.Should()
+            .NotContain(
+                "/pool/review-slot-0",
+                "a host path is unopenable inside the review container, so it must never reach the agent's input"
+            );
     }
 
     [Fact]
@@ -406,18 +477,22 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // simply never fire on the supported path.
         fixture.HostFileSystem.Seed(
             $"/pool/slot-0/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
-            "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- FEEDBACK-PATTERN-XYZ\n");
+            "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- FEEDBACK-PATTERN-XYZ\n"
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("## Recurring feedback for this PR's author", "the record is prepended as a labelled block");
+        text.Should()
+            .Contain("## Recurring feedback for this PR's author", "the record is prepended as a labelled block");
         text.Should().Contain("FEEDBACK-PATTERN-XYZ", "the seeded record body is surfaced to the pooled reviewer");
-        text.Should().Contain(
-            $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
-            "the heading hands over an exact absolute path, not a bare file name");
+        text.Should()
+            .Contain(
+                $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
+                "the heading hands over an exact absolute path, not a bare file name"
+            );
     }
 
     [Fact]
@@ -432,7 +507,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // for exactly these mistakes. Read host-side out of the leased slot, render at the mounted root.
         fixture.HostFileSystem.Seed(
             $"/pool/review-slot-0/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
-            "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- Leaves `ConfigureAwait(false)` off library awaits.\n");
+            "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- Leaves `ConfigureAwait(false)` off library awaits.\n"
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -440,12 +516,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var block = text[text.IndexOf("## Recurring feedback", StringComparison.Ordinal)..];
-        block.Should().Contain(
-            $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
-            "the record was READ from the host slot but must be RENDERED at the root the agent sees");
-        block.Should().NotContain(
-            "/pool/review-slot-0",
-            "a host path is unopenable inside the review container, and this block tells the agent to forward it to sub-agents");
+        block
+            .Should()
+            .Contain(
+                $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
+                "the record was READ from the host slot but must be RENDERED at the root the agent sees"
+            );
+        block
+            .Should()
+            .NotContain(
+                "/pool/review-slot-0",
+                "a host path is unopenable inside the review container, and this block tells the agent to forward it to sub-agents"
+            );
     }
 
     [Fact]
@@ -462,30 +544,34 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         // The two payloads that used to dominate the brief. On a real run (226) they were 117k and 15.6k chars
         // of a 173,567-char input, and the reviewer holds a checkout of the head that answers both.
-        text.Should().NotContain(
-            "Tracked files in the reviewed repository",
-            "the reviewer has the checkout and can Glob/ls-files it; listing every tracked file is dead weight");
-        text.Should().NotContain(
-            "\n\nDiff:\n",
-            "the patch is read from git now, not copied into the brief");
+        text.Should()
+            .NotContain(
+                "Tracked files in the reviewed repository",
+                "the reviewer has the checkout and can Glob/ls-files it; listing every tracked file is dead weight"
+            );
+        text.Should().NotContain("\n\nDiff:\n", "the patch is read from git now, not copied into the brief");
 
         // What replaces them has to leave the reviewer able to get there on its own: the range, the root, and
         // the changed-file listing (which the KB ranking already computes, so this costs nothing new).
         text.Should().Contain("Files changed (", "the reviewer still needs to know the blast radius up front");
-        text.Should().Contain(
-            $"diff {run.BaseSha}...{run.HeadSha}",
-            "the fetch instruction must carry the range, which is the one thing the reviewer cannot derive");
-        text.Should().Contain(
-            "git -C ",
-            "the instruction must be runnable as written, not assembled by the model");
-        text.Should().NotContain(
-            "/pool/slot-0",
-            "the brief now tells the reviewer to run git at this root, so a HOST path here would be a command "
-                + "that cannot run inside the review container (cf. the sub-agent block above)");
-        text.Should().Contain(
-            "UNTRUSTED DATA",
-            "the injection warning the inlined diff/guidance used to carry must survive their removal - the "
-                + "reviewer is now reading that same attacker-controlled content through its own tools");
+        text.Should()
+            .Contain(
+                $"diff {run.BaseSha}...{run.HeadSha}",
+                "the fetch instruction must carry the range, which is the one thing the reviewer cannot derive"
+            );
+        text.Should().Contain("git -C ", "the instruction must be runnable as written, not assembled by the model");
+        text.Should()
+            .NotContain(
+                "/pool/slot-0",
+                "the brief now tells the reviewer to run git at this root, so a HOST path here would be a command "
+                    + "that cannot run inside the review container (cf. the sub-agent block above)"
+            );
+        text.Should()
+            .Contain(
+                "UNTRUSTED DATA",
+                "the injection warning the inlined diff/guidance used to carry must survive their removal - the "
+                    + "reviewer is now reading that same attacker-controlled content through its own tools"
+            );
     }
 
     /// <summary>
@@ -509,13 +595,17 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
 
-        text.Should().Contain(
-            "diff --git a/Foo.cs",
-            "with no listing the patch is the only record of what the PR touched, so it is inlined rather than "
-                + "leaving the reviewer to review blind");
-        text.Should().NotContain(
-            "Files changed (",
-            "there is no listing to report, and an empty one would read as 'this PR changed nothing'");
+        text.Should()
+            .Contain(
+                "diff --git a/Foo.cs",
+                "with no listing the patch is the only record of what the PR touched, so it is inlined rather than "
+                    + "leaving the reviewer to review blind"
+            );
+        text.Should()
+            .NotContain(
+                "Files changed (",
+                "there is no listing to report, and an empty one would read as 'this PR changed nothing'"
+            );
     }
 
     [Fact]
@@ -530,10 +620,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // boot-lifetime sandbox session (which the gateway never registers for a pooled run).
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/repos/LmDotnetTools/CLAUDE.md",
-            "# LmDotnetTools\nUse CSharpier. REPO-GUIDANCE-MARKER.");
+            "# LmDotnetTools\nUse CSharpier. REPO-GUIDANCE-MARKER."
+        );
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/repos/LmDotnetTools/AGENTS.md",
-            "Agents must read AGENTS-MARKER before reviewing.");
+            "Agents must read AGENTS-MARKER before reviewing."
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -541,24 +633,32 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("Repository guidance", "the reviewer still has to be told the files are there");
-        text.Should().Contain(
-            "/workspace/store/repos/LmDotnetTools/CLAUDE.md",
-            "the pointer is only useful at the root the AGENT's tools resolve; the host path the daemon "
-                + "probed through (/pool/slot-0/...) does not exist inside the review container");
+        text.Should()
+            .Contain(
+                "/workspace/store/repos/LmDotnetTools/CLAUDE.md",
+                "the pointer is only useful at the root the AGENT's tools resolve; the host path the daemon "
+                    + "probed through (/pool/slot-0/...) does not exist inside the review container"
+            );
         text.Should().Contain("/workspace/store/repos/LmDotnetTools/AGENTS.md", "both files are named");
-        text.Should().NotContain(
-            "/pool/slot-0",
-            "rendering the daemon's own disk path fails silently - the block reads fine and every Read of it "
-                + "404s in the container");
-        text.Should().NotContain(
-            "REPO-GUIDANCE-MARKER",
-            "the file is pointed at, not quoted - on run 226 this content was ~24,500 chars of a 173,567-char "
-                + "brief, for a file the reviewer holds a checkout of");
+        text.Should()
+            .NotContain(
+                "/pool/slot-0",
+                "rendering the daemon's own disk path fails silently - the block reads fine and every Read of it "
+                    + "404s in the container"
+            );
+        text.Should()
+            .NotContain(
+                "REPO-GUIDANCE-MARKER",
+                "the file is pointed at, not quoted - on run 226 this content was ~24,500 chars of a 173,567-char "
+                    + "brief, for a file the reviewer holds a checkout of"
+            );
         text.Should().NotContain("AGENTS-MARKER", "same for AGENTS.md");
-        text.Should().Contain(
-            "prompt injection",
-            "the warning has to travel with the pointer: the reviewer now reads that attacker-controlled text "
-                + "through its own tools, where nothing else marks it as untrusted");
+        text.Should()
+            .Contain(
+                "prompt injection",
+                "the warning has to travel with the pointer: the reviewer now reads that attacker-controlled text "
+                    + "through its own tools, where nothing else marks it as untrusted"
+            );
     }
 
     [Fact]
@@ -597,18 +697,22 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain(
-            "## Prior knowledge (Knowledge Base)",
-            "the refusal has to arrive under the one heading the prompt teaches, or it is invisible");
-        text.Should().Contain(
-            "/workspace/store/KnowledgeBase/_index.jsonl",
-            "the reviewer is told exactly which listing was refused, at the root it can resolve");
-        text.Should().Contain(
-            "/workspace/store/KnowledgeBase/_toc.md",
-            "both routes were refused, so both are named");
-        text.Should().NotContain(
-            "xxxxxxxxxx",
-            "a refused file is never rendered in part — the point of refusing is that no prefix is safe");
+        text.Should()
+            .Contain(
+                "## Prior knowledge (Knowledge Base)",
+                "the refusal has to arrive under the one heading the prompt teaches, or it is invisible"
+            );
+        text.Should()
+            .Contain(
+                "/workspace/store/KnowledgeBase/_index.jsonl",
+                "the reviewer is told exactly which listing was refused, at the root it can resolve"
+            );
+        text.Should().Contain("/workspace/store/KnowledgeBase/_toc.md", "both routes were refused, so both are named");
+        text.Should()
+            .NotContain(
+                "xxxxxxxxxx",
+                "a refused file is never rendered in part — the point of refusing is that no prefix is safe"
+            );
     }
 
     [Fact]
@@ -622,10 +726,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // ranking degraded to the fallback is an alarm nobody reads on the run that matters.
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/KnowledgeBase/_index.jsonl",
-            new string('x', (int)SandboxReadLimits.KnowledgeListingBytes + 1));
+            new string('x', (int)SandboxReadLimits.KnowledgeListingBytes + 1)
+        );
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/KnowledgeBase/_toc.md",
-            "# Knowledge Base\n\n## system\n- [KB-ENTRY-XYZ](system/kb-entry-xyz.md)\n");
+            "# Knowledge Base\n\n## system\n- [KB-ENTRY-XYZ](system/kb-entry-xyz.md)\n"
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -633,9 +739,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("KB-ENTRY-XYZ", "the readable fallback listing still reaches the reviewer");
-        text.Should().NotContain(
-            "could be loaded for this review",
-            "nothing was lost to the reviewer, so nothing about a refusal belongs in its input");
+        text.Should()
+            .NotContain(
+                "could be loaded for this review",
+                "nothing was lost to the reviewer, so nothing about a refusal belongs in its input"
+            );
     }
 
     [Fact]
@@ -650,7 +758,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // is named exactly like a read one, and the reviewer opens it with its own budget.
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/repos/LmDotnetTools/CLAUDE.md",
-            "REPO-GUIDANCE-MARKER" + new string('x', (int)SandboxReadLimits.RepositoryFileBytes));
+            "REPO-GUIDANCE-MARKER" + new string('x', (int)SandboxReadLimits.RepositoryFileBytes)
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -658,13 +767,17 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("Repository guidance", "the block is rendered - the file exists");
-        text.Should().Contain(
-            "/workspace/store/repos/LmDotnetTools/CLAUDE.md",
-            "an oversize file is pointed at like any other; skipping it silently would have the reviewer "
-                + "fault a PR for conventions it was never shown");
-        text.Should().NotContain(
-            "REPO-GUIDANCE-MARKER",
-            "no prefix of a refused file is quoted - and none of any other file either, now");
+        text.Should()
+            .Contain(
+                "/workspace/store/repos/LmDotnetTools/CLAUDE.md",
+                "an oversize file is pointed at like any other; skipping it silently would have the reviewer "
+                    + "fault a PR for conventions it was never shown"
+            );
+        text.Should()
+            .NotContain(
+                "REPO-GUIDANCE-MARKER",
+                "no prefix of a refused file is quoted - and none of any other file either, now"
+            );
     }
 
     [Fact]
@@ -679,9 +792,17 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // The block must surface each comment's ACTIVE/RESOLVED status and its author (from ANY author — other
         // bots and humans), and instruct the reviewer to answer questions directed at it.
         fixture.Publisher.ExistingComments.Add(
-            new ExistingReviewComment("src/Foo.cs", "42", "Must — null deref EXISTING-FINDING", "revobot", IsActive: true));
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "42",
+                "Must — null deref EXISTING-FINDING",
+                "revobot",
+                IsActive: true
+            )
+        );
         fixture.Publisher.ExistingComments.Add(
-            new ExistingReviewComment("src/Bar.cs", "7", "Should — extract EXISTING-RESOLVED", "alice", IsActive: false));
+            new ExistingReviewComment("src/Bar.cs", "7", "Should — extract EXISTING-RESOLVED", "alice", IsActive: false)
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -698,13 +819,19 @@ public sealed class DaemonReviewStageExecutorPooledTests
         text.Should().Contain("(alice", "a human author is attributed too");
         text.Should().Contain("EXISTING-FINDING");
         text.Should().Contain("EXISTING-RESOLVED");
-        text.Should().Contain(
-            "UNTRUSTED DATA", "existing comment bodies must be framed as untrusted quoted data (prompt-injection defense)");
-        text.Should().Contain(
-            "«Must — null deref EXISTING-FINDING»", "each untrusted body is wrapped in guillemet delimiters");
+        text.Should()
+            .Contain(
+                "UNTRUSTED DATA",
+                "existing comment bodies must be framed as untrusted quoted data (prompt-injection defense)"
+            );
+        text.Should()
+            .Contain("«Must — null deref EXISTING-FINDING»", "each untrusted body is wrapped in guillemet delimiters");
         text.Should().Contain("ANSWER it as an in-thread reply", "a question directed at the bot must be answered");
-        text.Should().Contain(
-            "No new findings since the last review", "the reviewer is told to post nothing when there is nothing new");
+        text.Should()
+            .Contain(
+                "No new findings since the last review",
+                "the reviewer is told to post nothing when there is nothing new"
+            );
     }
 
     [Fact]
@@ -718,12 +845,28 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // belongs under "Comments during past reviews". Different thread ids keep them as separate threads.
         var botFindingTime = DateTimeOffset.Parse("2026-07-20T10:00:00Z");
         var humanReplyTime = DateTimeOffset.Parse("2026-07-21T09:00:00Z");
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Foo.cs", "10", "[Revobot] PAST-BOT-FINDING", "revobot", IsActive: true,
-            PublishedAt: botFindingTime, ThreadId: "th-bot"));
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Foo.cs", "20", "Alice asks: NEW-HUMAN-QUESTION for the bot?", "alice", IsActive: true,
-            PublishedAt: humanReplyTime, ThreadId: "th-human"));
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "10",
+                "[Revobot] PAST-BOT-FINDING",
+                "revobot",
+                IsActive: true,
+                PublishedAt: botFindingTime,
+                ThreadId: "th-bot"
+            )
+        );
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "20",
+                "Alice asks: NEW-HUMAN-QUESTION for the bot?",
+                "alice",
+                IsActive: true,
+                PublishedAt: humanReplyTime,
+                ThreadId: "th-human"
+            )
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -753,12 +896,28 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // mirror the descending fetch and assert the root finding renders before its later reply.
         var rootTime = DateTimeOffset.Parse("2026-07-20T10:00:00Z");
         var replyTime = DateTimeOffset.Parse("2026-07-22T15:00:00Z");
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Foo.cs", "10", "REPLY-fixed-in-abc123", "alice", IsActive: true,
-            PublishedAt: replyTime, ThreadId: "th-1"));
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Foo.cs", "10", "ROOT-null-deref-finding", "revobot", IsActive: true,
-            PublishedAt: rootTime, ThreadId: "th-1"));
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "10",
+                "REPLY-fixed-in-abc123",
+                "alice",
+                IsActive: true,
+                PublishedAt: replyTime,
+                ThreadId: "th-1"
+            )
+        );
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "10",
+                "ROOT-null-deref-finding",
+                "revobot",
+                IsActive: true,
+                PublishedAt: rootTime,
+                ThreadId: "th-1"
+            )
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -768,9 +927,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var rootIdx = text.IndexOf("ROOT-null-deref-finding", StringComparison.Ordinal);
         var replyIdx = text.IndexOf("REPLY-fixed-in-abc123", StringComparison.Ordinal);
         rootIdx.Should().BeGreaterThan(0, "the root finding must be rendered");
-        replyIdx.Should().BeGreaterThan(
-            rootIdx,
-            "within a thread the root finding renders before its later reply so the reviewer reads the conversation in order");
+        replyIdx
+            .Should()
+            .BeGreaterThan(
+                rootIdx,
+                "within a thread the root finding renders before its later reply so the reviewer reads the conversation in order"
+            );
     }
 
     [Fact]
@@ -823,21 +985,30 @@ public sealed class DaemonReviewStageExecutorPooledTests
     /// <summary>Seeds <paramref name="count"/> comments of roughly <paramref name="bodyChars"/> characters each,
     /// all before the bot cutoff (past) or all after it (new), each in a thread of its own.</summary>
     private static void SeedBulkComments(
-        Fixture fixture, string marker, int count, int bodyChars, bool isNew, string? threadId = null)
+        Fixture fixture,
+        string marker,
+        int count,
+        int bodyChars,
+        bool isNew,
+        string? threadId = null
+    )
     {
         var cutoff = DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture);
         for (var i = 0; i < count; i++)
         {
-            fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-                "src/Foo.cs",
-                i.ToString(CultureInfo.InvariantCulture),
-                $"{marker}-{i:D3}-" + new string('x', bodyChars),
-                "alice",
-                IsActive: true,
-                // Ascending in i either side of the cutoff, so index order IS conversation order — a thread renders
-                // oldest-first, and a test that names PAST-000 must be naming the comment rendered first.
-                PublishedAt: isNew ? cutoff.AddHours(i + 1) : cutoff.AddHours(i - count),
-                ThreadId: threadId ?? $"{marker}-{i:D3}"));
+            fixture.Publisher.ExistingComments.Add(
+                new ExistingReviewComment(
+                    "src/Foo.cs",
+                    i.ToString(CultureInfo.InvariantCulture),
+                    $"{marker}-{i:D3}-" + new string('x', bodyChars),
+                    "alice",
+                    IsActive: true,
+                    // Ascending in i either side of the cutoff, so index order IS conversation order — a thread renders
+                    // oldest-first, and a test that names PAST-000 must be naming the comment rendered first.
+                    PublishedAt: isNew ? cutoff.AddHours(i + 1) : cutoff.AddHours(i - count),
+                    ThreadId: threadId ?? $"{marker}-{i:D3}"
+                )
+            );
         }
     }
 
@@ -854,19 +1025,38 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var run = fixture.SeedRun();
         var postedAt = DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture);
         fixture.Store.MarkReviewPosted(run.Id, postedAt);
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Foo.cs", "10", "UNPREFIXED-BOT-SUMMARY", "revobot", IsActive: true,
-            PublishedAt: postedAt.AddMinutes(-5), ThreadId: "th-old"));
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Foo.cs", "20", "NEW-HUMAN-QUESTION after the stamp", "alice", IsActive: true,
-            PublishedAt: postedAt.AddHours(1), ThreadId: "th-human"));
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "10",
+                "UNPREFIXED-BOT-SUMMARY",
+                "revobot",
+                IsActive: true,
+                PublishedAt: postedAt.AddMinutes(-5),
+                ThreadId: "th-old"
+            )
+        );
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "20",
+                "NEW-HUMAN-QUESTION after the stamp",
+                "alice",
+                IsActive: true,
+                PublishedAt: postedAt.AddHours(1),
+                ThreadId: "th-human"
+            )
+        );
 
         var text = await RenderReviewInputAsync(fixture, run);
 
         var (past, fresh) = DedupSections(text);
-        fresh.Should().Contain(
-            "NEW-HUMAN-QUESTION",
-            "the stamp says the bot last spoke at 10:00, so a comment an hour later is new by definition");
+        fresh
+            .Should()
+            .Contain(
+                "NEW-HUMAN-QUESTION",
+                "the stamp says the bot last spoke at 10:00, so a comment an hour later is new by definition"
+            );
         past.Should().Contain("UNPREFIXED-BOT-SUMMARY", "and everything before the stamp is past");
     }
 
@@ -881,19 +1071,37 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var run = fixture.SeedRun();
         var stampedAt = DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture);
         fixture.Store.MarkReviewPosted(run.Id, stampedAt);
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Foo.cs", "10", "[Revobot] INLINE-FINDING", "revobot", IsActive: true,
-            PublishedAt: stampedAt.AddHours(5), ThreadId: "th-bot"));
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Foo.cs", "20", "BETWEEN-THE-TWO", "alice", IsActive: true,
-            PublishedAt: stampedAt.AddHours(2), ThreadId: "th-between"));
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "10",
+                "[Revobot] INLINE-FINDING",
+                "revobot",
+                IsActive: true,
+                PublishedAt: stampedAt.AddHours(5),
+                ThreadId: "th-bot"
+            )
+        );
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "20",
+                "BETWEEN-THE-TWO",
+                "alice",
+                IsActive: true,
+                PublishedAt: stampedAt.AddHours(2),
+                ThreadId: "th-between"
+            )
+        );
 
         var text = await RenderReviewInputAsync(fixture, run);
 
         var (past, fresh) = DedupSections(text);
-        past.Should().Contain(
-            "BETWEEN-THE-TWO",
-            "the bot spoke again at +5h, so a comment at +2h is older than the bot's last word and is past");
+        past.Should()
+            .Contain(
+                "BETWEEN-THE-TWO",
+                "the bot spoke again at +5h, so a comment at +2h is older than the bot's last word and is past"
+            );
         fresh.Should().NotContain("BETWEEN-THE-TWO");
     }
 
@@ -905,19 +1113,37 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var run = fixture.SeedRun();
         var botSpokeAt = DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture);
         fixture.Store.MarkReviewPosted(run.Id, botSpokeAt.AddHours(5));
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Foo.cs", "10", "[Revobot] OLD-PREFIXED-FINDING", "revobot", IsActive: true,
-            PublishedAt: botSpokeAt, ThreadId: "th-bot"));
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Foo.cs", "20", "BETWEEN-THE-TWO", "alice", IsActive: true,
-            PublishedAt: botSpokeAt.AddHours(2), ThreadId: "th-between"));
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "10",
+                "[Revobot] OLD-PREFIXED-FINDING",
+                "revobot",
+                IsActive: true,
+                PublishedAt: botSpokeAt,
+                ThreadId: "th-bot"
+            )
+        );
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "20",
+                "BETWEEN-THE-TWO",
+                "alice",
+                IsActive: true,
+                PublishedAt: botSpokeAt.AddHours(2),
+                ThreadId: "th-between"
+            )
+        );
 
         var text = await RenderReviewInputAsync(fixture, run);
 
         var (past, fresh) = DedupSections(text);
-        past.Should().Contain(
-            "BETWEEN-THE-TWO",
-            "the stamp proves the bot posted at +5h, so a comment at +2h predates the bot's last word");
+        past.Should()
+            .Contain(
+                "BETWEEN-THE-TWO",
+                "the stamp proves the bot posted at +5h, so a comment at +2h predates the bot's last word"
+            );
         fresh.Should().NotContain("BETWEEN-THE-TWO");
     }
 
@@ -931,8 +1157,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await RunAllStagesAsync(fixture, run);
 
         fixture.Publisher.PostCount.Should().Be(1, "this fixture authorizes live posting");
-        fixture.Store.GetLastPostedReviewAt(run.RepoId, run.PrId).Should().NotBeNull(
-            "the review reached the PR, so the next review's cutoff must know when");
+        fixture
+            .Store.GetLastPostedReviewAt(run.RepoId, run.PrId)
+            .Should()
+            .NotBeNull("the review reached the PR, so the next review's cutoff must know when");
     }
 
     [Fact]
@@ -956,17 +1184,24 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // assertion below proves it actually did rather than trusting the delay. Without that guard a clock
         // that had not ticked would make this test pass against a stamp rewritten on every pass.
         await Task.Delay(TimeSpan.FromMilliseconds(250));
-        DateTimeOffset.UtcNow.Should().BeAfter(
-            firstStamp!.Value,
-            "the gap must be observable, or this test cannot tell a frozen cutoff from a rewritten one");
+        DateTimeOffset
+            .UtcNow.Should()
+            .BeAfter(
+                firstStamp!.Value,
+                "the gap must be observable, or this test cannot tell a frozen cutoff from a rewritten one"
+            );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
 
         fixture.Publisher.PostCount.Should().Be(1, "the retry replays the outbox row; it does not post again");
-        fixture.Store.GetLastPostedReviewAt(run.RepoId, run.PrId).Should().Be(
-            firstStamp,
-            "the cutoff records when the bot last SPOKE, and the retry did not speak — it found the words "
-                + "already there");
+        fixture
+            .Store.GetLastPostedReviewAt(run.RepoId, run.PrId)
+            .Should()
+            .Be(
+                firstStamp,
+                "the cutoff records when the bot last SPOKE, and the retry did not speak — it found the words "
+                    + "already there"
+            );
     }
 
     [Fact]
@@ -982,8 +1217,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await RunAllStagesAsync(fixture, run);
 
         fixture.Publisher.PostCount.Should().Be(0, "this fixture does not authorize live posting");
-        fixture.Store.GetLastPostedReviewAt(run.RepoId, run.PrId).Should().BeNull(
-            "collecting a review is not delivering it, and only delivery may move the cutoff");
+        fixture
+            .Store.GetLastPostedReviewAt(run.RepoId, run.PrId)
+            .Should()
+            .BeNull("collecting a review is not delivering it, and only delivery may move the cutoff");
     }
 
     // ── #225 item 2: a failed listing withdraws posting on a re-review, not on a first review ─────
@@ -1000,18 +1237,26 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await RunAllStagesAsync(fixture, run);
 
         fixture.Publisher.ListCallCount.Should().BeGreaterThan(0, "the listing was attempted and it threw");
-        fixture.Publisher.PostCount.Should().Be(
-            0,
-            "the review was written without knowing what is already on the PR, and this PR already carries a "
-                + "review — posting it blind is how the duplicate-review spam comes back");
+        fixture
+            .Publisher.PostCount.Should()
+            .Be(
+                0,
+                "the review was written without knowing what is already on the PR, and this PR already carries a "
+                    + "review — posting it blind is how the duplicate-review spam comes back"
+            );
         fixture.Store.WasDedupContextLost(run.Id).Should().BeTrue();
 
         // AN ATTEMPT IS NOT EVIDENCE, and this is the only place that proves it: posting is authorized by
         // configuration here, so a post IS attempted and comes back CollectedOnly. A stamp written on the
         // outcome rather than on proven delivery would drag the cutoff to now — burying every comment made
         // since the real one, which is strictly worse than the null the stamp replaced.
-        fixture.Store.GetLastPostedReviewAt(run.RepoId, run.PrId).Should().Be(
-            seededCutoff, "nothing was delivered this round, so the cutoff is still where the last delivery left it");
+        fixture
+            .Store.GetLastPostedReviewAt(run.RepoId, run.PrId)
+            .Should()
+            .Be(
+                seededCutoff,
+                "nothing was delivered this round, so the cutoff is still where the last delivery left it"
+            );
     }
 
     [Fact]
@@ -1041,13 +1286,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
         using var fixture = Fixture.CreateS2S();
         var run = fixture.SeedRun(mode: "post");
         fixture.Store.MarkReviewPosted(
-            run.Id, DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture));
+            run.Id,
+            DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture)
+        );
         fixture.Publisher.ListFailure = new HttpRequestException("the provider is having a moment");
 
         var act = async () => await RunAllStagesAsync(fixture, run);
 
-        await act.Should().NotThrowAsync(
-            "collecting IS the truthful outcome for a run that was never authorized to post this round");
+        await act.Should()
+            .NotThrowAsync("collecting IS the truthful outcome for a run that was never authorized to post this round");
         fixture.Publisher.PostCount.Should().Be(0);
     }
 
@@ -1056,16 +1303,28 @@ public sealed class DaemonReviewStageExecutorPooledTests
     {
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
-        return fixture.Factory.CreatedAgents.Should().ContainSingle().Subject
-            .ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        return fixture
+            .Factory.CreatedAgents.Should()
+            .ContainSingle()
+            .Subject.ReceivedInputs[0]
+            .Messages.OfType<TextMessage>()
+            .Single()
+            .Text;
     }
 
     /// <summary>Seeds the bot's own last finding, which is the cutoff that splits "past" from "new".</summary>
     private static void SeedBotCutoff(Fixture fixture) =>
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Cutoff.cs", "1", "[Revobot] LAST-REVIEW-CUTOFF", "revobot", IsActive: true,
-            PublishedAt: DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture),
-            ThreadId: "th-cutoff"));
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Cutoff.cs",
+                "1",
+                "[Revobot] LAST-REVIEW-CUTOFF",
+                "revobot",
+                IsActive: true,
+                PublishedAt: DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture),
+                ThreadId: "th-cutoff"
+            )
+        );
 
     [Fact]
     public async Task Reviewed_bounds_the_past_section_to_what_is_not_reserved_for_the_new_one()
@@ -1089,15 +1348,20 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // The slack covers the single comment that was mid-render when the allowance ran out plus the section
         // heading; what is being pinned is the ORDER of magnitude — the past section spends the unreserved half,
         // not the whole block. Hand it the full budget and this doubles.
-        past.Length.Should().BeLessThan(
-            BlockCharBudget - NewSectionReservation + 3_000,
-            "the past section may only spend what is not reserved for the new-comments section");
+        past.Length.Should()
+            .BeLessThan(
+                BlockCharBudget - NewSectionReservation + 3_000,
+                "the past section may only spend what is not reserved for the new-comments section"
+            );
 
         // Non-vacuity: an empty section satisfies the bound on its own, and an empty section is what a block that
         // failed to render at all would produce.
         past.Should().Contain("PAST-000", "the past section really did render");
-        text.Should().Contain(
-            "more comment(s) not shown", "what did not fit is reported as a count rather than dropped silently");
+        text.Should()
+            .Contain(
+                "more comment(s) not shown",
+                "what did not fit is reported as a count rather than dropped silently"
+            );
     }
 
     [Fact]
@@ -1110,10 +1374,17 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // pushes out the question addressed to the bot — which the guidance tells it, in bold terms, to answer.
         SeedBotCutoff(fixture);
         SeedBulkComments(fixture, "PAST", count: 60, bodyChars: 900, isNew: false);
-        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
-            "src/Foo.cs", "20", "Alice asks: NEW-QUESTION-FOR-THE-BOT?", "alice", IsActive: true,
-            PublishedAt: DateTimeOffset.Parse("2026-07-21T09:00:00Z", CultureInfo.InvariantCulture),
-            ThreadId: "th-human"));
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "20",
+                "Alice asks: NEW-QUESTION-FOR-THE-BOT?",
+                "alice",
+                IsActive: true,
+                PublishedAt: DateTimeOffset.Parse("2026-07-21T09:00:00Z", CultureInfo.InvariantCulture),
+                ThreadId: "th-human"
+            )
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -1122,9 +1393,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var (past, fresh) = DedupSections(text);
 
-        fresh.Should().Contain(
-            "NEW-QUESTION-FOR-THE-BOT",
-            "the new-comments section holds a reserved floor of the block that history cannot spend");
+        fresh
+            .Should()
+            .Contain(
+                "NEW-QUESTION-FOR-THE-BOT",
+                "the new-comments section holds a reserved floor of the block that history cannot spend"
+            );
 
         // The distinguishing half: the history really was large enough to have swallowed the block. Without this
         // the assertion above passes on a PR whose history happened to fit, proving nothing about the reservation.
@@ -1150,12 +1424,19 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var (_, fresh) = DedupSections(text);
 
-        fresh.Length.Should().BeGreaterThan(
-            NewSectionReservation + 5_000,
-            "the new section draws on the whole block, not on a reserved share of it — held to that share it "
-                + "would stop around 20,000 characters");
-        fresh.Length.Should().BeLessThan(
-            BlockCharBudget + 3_000, "…but never more than the whole block, which is the point of one budget");
+        fresh
+            .Length.Should()
+            .BeGreaterThan(
+                NewSectionReservation + 5_000,
+                "the new section draws on the whole block, not on a reserved share of it — held to that share it "
+                    + "would stop around 20,000 characters"
+            );
+        fresh
+            .Length.Should()
+            .BeLessThan(
+                BlockCharBudget + 3_000,
+                "…but never more than the whole block, which is the point of one budget"
+            );
     }
 
     [Fact]
@@ -1178,8 +1459,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var (past, fresh) = DedupSections(text);
 
-        RenderedCommentCount(past + fresh).Should().Be(
-            BlockCommentBudget, "the comment cap bounds the whole block, not each section separately");
+        RenderedCommentCount(past + fresh)
+            .Should()
+            .Be(BlockCommentBudget, "the comment cap bounds the whole block, not each section separately");
 
         // Both sections are represented, so the 400 is not one section rendering the entire cap.
         RenderedCommentCount(past).Should().BeGreaterThan(0);
@@ -1207,17 +1489,21 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var (past, fresh) = DedupSections(text);
 
-        RenderedCommentCount(past + fresh).Should().Be(
-            201,
-            "the busiest PR the daemon has measured must fit inside the block, not be truncated by it (149 past "
-                + "+ the bot's own cutoff comment + 51 new)");
+        RenderedCommentCount(past + fresh)
+            .Should()
+            .Be(
+                201,
+                "the busiest PR the daemon has measured must fit inside the block, not be truncated by it (149 past "
+                    + "+ the bot's own cutoff comment + 51 new)"
+            );
 
         // Non-vacuity: the last comment of each section is present, so the count is not 201 lines of omission
         // notes, and the past section — the one that renders against what the new section left — is complete too.
         past.Should().Contain("PAST-148");
         fresh.Should().Contain("NEW-050");
-        (past + fresh).Should().NotContain(
-            "more comment(s)", "nothing was cut, so neither section should have written an omission note");
+        (past + fresh)
+            .Should()
+            .NotContain("more comment(s)", "nothing was cut, so neither section should have written an omission note");
     }
 
     [Fact]
@@ -1247,15 +1533,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var (past, fresh) = DedupSections(text);
 
-        fresh.Should().Contain(
-            "NEW-029",
-            "the new section claims the block first, so it renders its whole conversation even though the "
-                + "history that precedes it wanted more than the block had left");
+        fresh
+            .Should()
+            .Contain(
+                "NEW-029",
+                "the new section claims the block first, so it renders its whole conversation even though the "
+                    + "history that precedes it wanted more than the block had left"
+            );
 
         // The distinguishing half: the block really was oversubscribed, so "NEW-029 rendered" is a statement
         // about claim order rather than about a PR that happened to fit.
-        past.Should().Contain(
-            "more comment(s)", "the history is the section that absorbs the truncation under this order");
+        past.Should()
+            .Contain("more comment(s)", "the history is the section that absorbs the truncation under this order");
         past.Should().Contain("PAST-000", "non-vacuity: the past section did render up to its cut");
     }
 
@@ -1278,18 +1567,25 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
 
-        text.Should().Contain(
-            "at most 400 comment(s)", "the comment ceiling the renderer enforces is the one the block states");
-        text.Should().Contain(
-            "40,000 characters", "…and so is the character ceiling, which is the one that usually binds first");
-        text.Should().Contain(
-            "claims that allowance first",
-            "the model is told WHICH section the allowance is spent on first, so it can read a short past "
-                + "section as a budget decision rather than as a quiet PR");
-        text.Should().Contain(
-            "INCOMPLETE",
-            "and it is told what an omission note means for its own conclusions — the reason for saying any of "
-                + "this");
+        text.Should()
+            .Contain("at most 400 comment(s)", "the comment ceiling the renderer enforces is the one the block states");
+        text.Should()
+            .Contain(
+                "40,000 characters",
+                "…and so is the character ceiling, which is the one that usually binds first"
+            );
+        text.Should()
+            .Contain(
+                "claims that allowance first",
+                "the model is told WHICH section the allowance is spent on first, so it can read a short past "
+                    + "section as a budget decision rather than as a quiet PR"
+            );
+        text.Should()
+            .Contain(
+                "INCOMPLETE",
+                "and it is told what an omission note means for its own conclusions — the reason for saying any of "
+                    + "this"
+            );
     }
 
     [Fact]
@@ -1310,13 +1606,17 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var (past, _) = DedupSections(text);
 
-        past.Should().Contain(
-            "more comment(s) in this thread not shown",
-            "a thread is cut where the budget runs out, and the cut is named so the reviewer knows it is not "
-                + "reading the whole conversation");
-        past.Length.Should().BeLessThan(
-            BlockCharBudget - NewSectionReservation + 3_000,
-            "…which is what stops one thread from overrunning the section's allowance");
+        past.Should()
+            .Contain(
+                "more comment(s) in this thread not shown",
+                "a thread is cut where the budget runs out, and the cut is named so the reviewer knows it is not "
+                    + "reading the whole conversation"
+            );
+        past.Length.Should()
+            .BeLessThan(
+                BlockCharBudget - NewSectionReservation + 3_000,
+                "…which is what stops one thread from overrunning the section's allowance"
+            );
         past.Should().Contain("PAST-000", "non-vacuity: the thread did render up to the cut");
     }
 
@@ -1332,7 +1632,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // (3) diff-only on the bigger model → succeeds, yielding a leaner review instead of producing nothing.
         fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
             "HTTP request failed with status BadRequest (Bad Request). Response body: "
-                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
+                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}"
+        );
         fixture.Factory.DefaultText = "## Review (diff-only)\nMust: null check missing in Foo.cs:10.";
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -1354,8 +1655,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Factory.ThreadIds.Distinct().Should().HaveCount(3);
 
         // The review artifact holds the diff-only review — the run produced content, not a silent nothing.
-        var artifact = fixture.Store.GetArtifacts(run.Id)
-            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind).Subject;
+        var artifact = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind)
+            .Subject;
         artifact.Payload.Should().Contain("diff-only");
     }
 
@@ -1369,7 +1673,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // review stays grounded (keeps its sub-agents) instead of degrading to diff-only.
         fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
             "HTTP request failed with status BadRequest (Bad Request). Response body: "
-                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
+                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}"
+        );
         fixture.Factory.ThrowOnlyForModel = "gpt-5.6-luna";
         fixture.Factory.DefaultText = "## Review (grounded on the bigger model)\nShould: rename X.";
 
@@ -1383,8 +1688,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Factory.ModelIds[0].Should().Be("gpt-5.6-luna");
         fixture.Factory.ModelIds[1].Should().Be("gpt-5.6-terra");
 
-        var artifact = fixture.Store.GetArtifacts(run.Id)
-            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind).Subject;
+        var artifact = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind)
+            .Subject;
         artifact.Payload.Should().Contain("grounded on the bigger model");
     }
 
@@ -1404,7 +1712,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Factory.HonoursRequestedModelId = true;
         fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
             "HTTP request failed with status BadRequest (Bad Request). Response body: "
-                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
+                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}"
+        );
         fixture.Factory.ThrowOnlyForModel = "gpt-5.6-luna";
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -1432,7 +1741,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Factory.HonoursRequestedModelId = false;
         fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
             "HTTP request failed with status BadRequest (Bad Request). Response body: "
-                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
+                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}"
+        );
         fixture.Factory.ThrowOnlyForModel = "gpt-5.6-luna";
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -1450,7 +1760,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
     /// </summary>
     private static string? LatestCheckpointModelId(Fixture fixture, ReviewRun run)
     {
-        var checkpoints = fixture.Store.GetArtifacts(run.Id)
+        var checkpoints = fixture
+            .Store.GetArtifacts(run.Id)
             .Where(a => a.ArtifactKind == DaemonReviewStageExecutor.ProvisionalReviewArtifactKind)
             .ToList();
         checkpoints.Should().NotBeEmpty("the attempt must have checkpointed its lifecycle at all");
@@ -1485,27 +1796,31 @@ public sealed class DaemonReviewStageExecutorPooledTests
         using var fixture = Fixture.Create();
 
         // A prior round already completed for this PR at an older head — the current run is round 2.
-        var repoId = fixture.Store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "repo-stable-1",
-        });
-        _ = fixture.Store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = "118",
-            HeadSha = "sha-old",
-            BaseSha = "base-sha",
-            TriggerWatermark = "wm-0",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "collect-only",
-            Stage = ReviewStage.Posted,
-            WorkflowStatus = WorkflowStatus.Completed,
-            PrLifecycleState = PrLifecycleState.Open,
-        });
+        var repoId = fixture.Store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-stable-1",
+            }
+        );
+        _ = fixture.Store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = "118",
+                HeadSha = "sha-old",
+                BaseSha = "base-sha",
+                TriggerWatermark = "wm-0",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Posted,
+                WorkflowStatus = WorkflowStatus.Completed,
+                PrLifecycleState = PrLifecycleState.Open,
+            }
+        );
         var run = fixture.SeedRun(); // head-sha "head-sha" — this round's head
 
         // The prior round's own notes live on the LEASED SLOT's host store checkout (where
@@ -1514,8 +1829,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // gateway never registers for a pooled run (so it 404s) and whose first use would bind a boot gateway
         // session that collides with the per-run review MCP session, failing the whole review. Seeding host-side
         // (not boot) is the regression guard: reading prior notes through the boot fs would find nothing here.
-        fixture.HostFileSystem.Seed(
-            "/pool/slot-0/store/PRs/lmdotnettools-118/PR_Findings_01.md", "prior findings");
+        fixture.HostFileSystem.Seed("/pool/slot-0/store/PRs/lmdotnettools-118/PR_Findings_01.md", "prior findings");
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -1558,9 +1872,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         fixture.Pool.LeaseCount.Should().Be(2);
-        fixture.Factory.WorkspaceIds.Should().ContainSingle().Which.Should().Be(
-            "ws-review-slot-1",
-            "the hosted workspace must be prepared from the newly leased slot, not a cached bare PR clone");
+        fixture
+            .Factory.WorkspaceIds.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(
+                "ws-review-slot-1",
+                "the hosted workspace must be prepared from the newly leased slot, not a cached bare PR clone"
+            );
         fixture.S2SGit.Commands.Should().BeEmpty("slot adoption must not run the fallback clone preparer");
     }
 
@@ -1576,7 +1895,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
     public async Task S2S_judge_after_a_restart_re_leases_the_slot_rather_than_minting_an_unmanaged_workspace()
     {
         using var fixture = Fixture.CreateS2S(slots: 2, judge: true);
-        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
+            "{\"score\": 8, \"rationale\": \"Solid.\"}";
         var run = fixture.SeedRun();
 
         // Process A reviews on slot 0, then disappears with all process-local lease/workspace caches.
@@ -1586,21 +1906,29 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         await resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
 
-        fixture.Pool.LeaseCount.Should().Be(
-            2, "the resumed judge re-leases a slot because the prior lease died with the process");
-        fixture.Factory.WorkspaceIds.Should().Equal(
-            ["ws-review-slot-0", "ws-review-slot-1"],
-            "the judge's hosted conversation is mounted over the slot it holds NOW, not a bare per-PR clone");
-        fixture.S2SGit.Commands.Should().BeEmpty(
-            "no unmanaged per-PR host clone may be created for a resumed judge");
-        fixture.S2SHandler.Requests.Should().NotContain(
-            r => r.Body != null && r.Body.Contains("pr-118", StringComparison.Ordinal),
-            "no permanent per-PR LmStreaming workspace may be minted for a resumed judge");
+        fixture
+            .Pool.LeaseCount.Should()
+            .Be(2, "the resumed judge re-leases a slot because the prior lease died with the process");
+        fixture
+            .Factory.WorkspaceIds.Should()
+            .Equal(
+                ["ws-review-slot-0", "ws-review-slot-1"],
+                "the judge's hosted conversation is mounted over the slot it holds NOW, not a bare per-PR clone"
+            );
+        fixture.S2SGit.Commands.Should().BeEmpty("no unmanaged per-PR host clone may be created for a resumed judge");
+        fixture
+            .S2SHandler.Requests.Should()
+            .NotContain(
+                r => r.Body != null && r.Body.Contains("pr-118", StringComparison.Ordinal),
+                "no permanent per-PR LmStreaming workspace may be minted for a resumed judge"
+            );
 
         // Non-vacuity: the judge really ran over that workspace, so the assertions above are about a stage that
         // did its work — not about one that returned early and prepared nothing.
-        fixture.Store.GetArtifacts(run.Id).Should().Contain(
-            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the resumed judge still graded the review");
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the resumed judge still graded the review");
     }
 
     /// <summary>
@@ -1622,8 +1950,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
 
         fixture.Pool.LeaseCount.Should().Be(1, "the disabled judge returns before it needs a slot");
-        fixture.Factory.WorkspaceIds.Should().ContainSingle().Which.Should().Be(
-            "ws-review-slot-0", "only the review stage prepared a workspace");
+        fixture
+            .Factory.WorkspaceIds.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("ws-review-slot-0", "only the review stage prepared a workspace");
         fixture.S2SGit.Commands.Should().BeEmpty("nothing was prepared at all, so no clone either");
         fixture.Store.GetArtifacts(run.Id).Should().NotContain(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind);
     }
@@ -1648,20 +1979,27 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // declines and the judge arrives at EnsurePreparedAsync still holding nothing.
         fixture.HostFileSystem.Seed(
             "/pool/review-slot-1/store/.gitmodules",
-            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n");
+            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n"
+        );
         var resumed = fixture.BuildExecutor();
 
         var act = () => resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
 
         var thrown = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
         thrown.Message.Should().MatchRegex("(?i)no pooled review slot is leased");
-        fixture.S2SGit.Commands.Should().BeEmpty(
-            "the refusal comes BEFORE any host git — no unmanaged per-PR clone is created");
-        fixture.S2SHandler.Requests.Should().NotContain(
-            r => r.Body != null && r.Body.Contains("pr-118", StringComparison.Ordinal),
-            "the refusal comes BEFORE any workspace REST call — no permanent per-PR workspace is minted");
-        fixture.Store.GetArtifacts(run.Id).Should().NotContain(
-            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the stage failed, so it graded nothing");
+        fixture
+            .S2SGit.Commands.Should()
+            .BeEmpty("the refusal comes BEFORE any host git — no unmanaged per-PR clone is created");
+        fixture
+            .S2SHandler.Requests.Should()
+            .NotContain(
+                r => r.Body != null && r.Body.Contains("pr-118", StringComparison.Ordinal),
+                "the refusal comes BEFORE any workspace REST call — no permanent per-PR workspace is minted"
+            );
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .NotContain(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the stage failed, so it graded nothing");
     }
 
     [Fact]
@@ -1683,15 +2021,20 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        fixture.Pool.Leased.Select(s => s.Index).Should().Equal(
-            [0, 1], "the retry gets whatever slot is free, which is not the one it returned");
+        fixture
+            .Pool.Leased.Select(s => s.Index)
+            .Should()
+            .Equal([0, 1], "the retry gets whatever slot is free, which is not the one it returned");
 
         // The workspace is what the hosted agent's /workspace/store/... paths resolve through, and slot 0 is by
         // now some other PR's checkout. Reusing the first attempt's workspace would have the review read one
         // PR while reporting on another — a wrong review, not a failed one.
-        fixture.Factory.WorkspaceIds.Should().Equal(
-            ["ws-review-slot-0", "ws-review-slot-1"],
-            "each attempt binds the workspace of the slot it actually holds");
+        fixture
+            .Factory.WorkspaceIds.Should()
+            .Equal(
+                ["ws-review-slot-0", "ws-review-slot-1"],
+                "each attempt binds the workspace of the slot it actually holds"
+            );
     }
 
     [Fact]
@@ -1709,7 +2052,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // the slot the resumed run will lease next (slot-1), mirroring slot-0.
         fixture.HostFileSystem.Seed(
             "/pool/slot-1/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         var resumed = fixture.BuildExecutor();
 
         await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -1717,10 +2061,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // The resumed review must RE-LEASE a slot and mount the agent session OVER it — never the per-run
         // review-run-{id} mount, which does not exist under the gateway's read-only workspace base and 400s
         // (the silent degrade-to-diff-only these resumed runs were stuck in).
-        fixture.Pool.LeaseCount.Should().Be(2, "the resumed review re-leases a slot because the prior lease was lost on restart");
-        fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(2,
-            "the original context and resumed context each mount their own leased slot once");
-        fixture.Provisioner.GetOrCreateCalls.Should().Be(0, "the resumed review must never fall back to the broken per-run mount");
+        fixture
+            .Pool.LeaseCount.Should()
+            .Be(2, "the resumed review re-leases a slot because the prior lease was lost on restart");
+        fixture
+            .Provisioner.GetOrCreateForSlotCalls.Should()
+            .Be(2, "the original context and resumed context each mount their own leased slot once");
+        fixture
+            .Provisioner.GetOrCreateCalls.Should()
+            .Be(0, "the resumed review must never fall back to the broken per-run mount");
     }
 
     /// <summary>
@@ -1734,7 +2083,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
     public async Task Judged_re_leases_a_slot_after_a_restart_and_the_post_stage_reuses_it()
     {
         using var fixture = Fixture.Create(slots: 2, judge: true);
-        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
+            "{\"score\": 8, \"rationale\": \"Solid.\"}";
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -1743,18 +2093,26 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         await resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
 
-        fixture.Pool.LeaseCount.Should().Be(
-            2, "the resumed judge re-leases a slot because the prior lease died with the process");
-        fixture.Store.GetArtifacts(run.Id).Should().Contain(
-            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the resumed judge still graded the review");
+        fixture
+            .Pool.LeaseCount.Should()
+            .Be(2, "the resumed judge re-leases a slot because the prior lease died with the process");
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the resumed judge still graded the review");
 
         await resumed.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
 
-        fixture.Pool.LeaseCount.Should().Be(
-            2, "Posted reuses the lease the judge restored instead of leasing a third slot");
-        fixture.HostRunner.Commands.Select(Describe).Should().Contain(
-            a => a.Contains($"add -- {NotesRelPath}") && a.Contains("/pool/slot-1/store"),
-            "the notes are retained into the store of the slot the resumed run actually holds");
+        fixture
+            .Pool.LeaseCount.Should()
+            .Be(2, "Posted reuses the lease the judge restored instead of leasing a third slot");
+        fixture
+            .HostRunner.Commands.Select(Describe)
+            .Should()
+            .Contain(
+                a => a.Contains($"add -- {NotesRelPath}") && a.Contains("/pool/slot-1/store"),
+                "the notes are retained into the store of the slot the resumed run actually holds"
+            );
         fixture.Pool.ReturnCount.Should().Be(1, "the re-leased slot is returned once, on the terminal stage");
     }
 
@@ -1768,7 +2126,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
     public async Task Judged_in_the_same_process_reuses_the_lease_it_already_holds()
     {
         using var fixture = Fixture.Create(slots: 2, judge: true);
-        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
+            "{\"score\": 8, \"rationale\": \"Solid.\"}";
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -1776,8 +2135,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
 
         fixture.Pool.LeaseCount.Should().Be(1, "the judge already holds the context stage's lease");
-        fixture.Store.GetArtifacts(run.Id).Should().Contain(
-            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the judge ran — it just needed no new slot");
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the judge ran — it just needed no new slot");
     }
 
     [Fact]
@@ -1786,9 +2147,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
         using var fixture = Fixture.Create();
         // First review of the PR: the notes branch does not exist yet, so it is cut from the default branch.
         fixture.HostRunner.OnArgvContains(
-            $"rev-parse --verify {Branch}", new SandboxCommandResult(1, string.Empty, "unknown revision"));
+            $"rev-parse --verify {Branch}",
+            new SandboxCommandResult(1, string.Empty, "unknown revision")
+        );
         fixture.HostRunner.OnArgvContains(
-            $"rev-parse {Branch}", new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+            $"rev-parse {Branch}",
+            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
+        );
         var run = fixture.SeedRun();
 
         await RunAllStagesAsync(fixture, run);
@@ -1806,12 +2171,16 @@ public sealed class DaemonReviewStageExecutorPooledTests
         commands.Should().NotContain(a => a.Contains("push origin main"));
 
         // The review.md landed inside the per-PR notes dir on the slot's store checkout.
-        fixture.HostFileSystem.Writes.Should().Contain(
-            p => p.Contains($"/{NotesRelPath}/") && p.EndsWith("review.md"));
+        fixture
+            .HostFileSystem.Writes.Should()
+            .Contain(p => p.Contains($"/{NotesRelPath}/") && p.EndsWith("review.md"));
 
         // The retention push outcome is persisted (terminal Posted, carrying the pushed SHA).
-        var push = fixture.Store.GetOutboxForRun(run.Id)
-            .Should().ContainSingle(o => o.Operation == DaemonReviewStageExecutor.PushReviewBotOperation).Subject;
+        var push = fixture
+            .Store.GetOutboxForRun(run.Id)
+            .Should()
+            .ContainSingle(o => o.Operation == DaemonReviewStageExecutor.PushReviewBotOperation)
+            .Subject;
         push.Status.Should().Be(OutboxStatus.Posted);
         push.ProviderResponseId.Should().Be("f00dcafef00dcafe");
     }
@@ -1826,23 +2195,34 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // comparison never ran — which is exactly the shape a broken wiring would leave behind.
         using var fixture = Fixture.Create();
         fixture.HostRunner.OnArgvContains(
-            $"rev-parse --verify {Branch}", new SandboxCommandResult(1, string.Empty, "unknown revision"));
+            $"rev-parse --verify {Branch}",
+            new SandboxCommandResult(1, string.Empty, "unknown revision")
+        );
         fixture.HostRunner.OnArgvContains(
-            $"rev-parse {Branch}", new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+            $"rev-parse {Branch}",
+            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
+        );
         var run = fixture.SeedRun();
 
         await RunAllStagesAsync(fixture, run);
 
-        var reconciliation = fixture.HostFileSystem.Writes
-            .Should().ContainSingle(
-                p => p.Contains($"/{NotesRelPath}/", StringComparison.Ordinal)
+        var reconciliation = fixture
+            .HostFileSystem.Writes.Should()
+            .ContainSingle(
+                p =>
+                    p.Contains($"/{NotesRelPath}/", StringComparison.Ordinal)
                     && p.EndsWith("PR_Reconciliation_01.md", StringComparison.Ordinal),
-                "the disposition record is committed beside review.md, not left in the daemon's log")
+                "the disposition record is committed beside review.md, not left in the daemon's log"
+            )
             .Subject;
 
-        fixture.HostFileSystem.Files[reconciliation].Should().NotContain(
-            "## Not compared",
-            "the commit gate hands the builder the review body it is committing, so the comparison ran");
+        fixture
+            .HostFileSystem.Files[reconciliation]
+            .Should()
+            .NotContain(
+                "## Not compared",
+                "the commit gate hands the builder the review body it is committing, so the comparison ran"
+            );
     }
 
     [Fact]
@@ -1885,8 +2265,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // comment's ?threadId= deep-link is the entire reason this path exists, and tearing the conversation
         // down at teardown would 404 that link the moment the review finished.
         fixture.CleanupOrder.Should().NotContain("destroy");
-        fixture.CleanupOrder.Should().ContainSingle().Which.Should().Be(
-            "return", "the slot still goes back to the pool — only the session teardown is skipped");
+        fixture
+            .CleanupOrder.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("return", "the slot still goes back to the pool — only the session teardown is skipped");
     }
 
     [Fact]
@@ -1928,10 +2311,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
 
-        fixture.Pool.ReturnCount.Should().Be(
-            1, "a slot that is never returned is pool capacity the daemon loses permanently");
-        fixture.CleanupOrder.Should().ContainInOrder(
-            ["destroy", "return"], "the teardown is still attempted first; only its failure is contained");
+        fixture
+            .Pool.ReturnCount.Should()
+            .Be(1, "a slot that is never returned is pool capacity the daemon loses permanently");
+        fixture
+            .CleanupOrder.Should()
+            .ContainInOrder(
+                ["destroy", "return"],
+                "the teardown is still attempted first; only its failure is contained"
+            );
     }
 
     /// <summary>
@@ -1958,8 +2346,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         await act.Should().NotThrowAsync();
         fixture.Pool.ReturnCount.Should().Be(1);
-        fixture.CleanupOrder.Should().ContainInOrder(
-            ["destroy", "return"], "the teardown is still attempted first; only its failure is contained");
+        fixture
+            .CleanupOrder.Should()
+            .ContainInOrder(
+                ["destroy", "return"],
+                "the teardown is still attempted first; only its failure is contained"
+            );
     }
 
     /// <summary>
@@ -1985,11 +2377,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var act = () => orchestrator.RunAsync(run, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<InvalidOperationException>(
-                "the run died at Reviewed; a cancelled cleanup must not rewrite its cause of death"))
-            .WithMessage("*Simulated failure at stage Reviewed*");
-        fixture.CleanupOrder.Should().ContainInOrder(
-            ["destroy", "return"], "the teardown still ran, and its failure did not cost the slot");
+        (
+            await act.Should()
+                .ThrowAsync<InvalidOperationException>(
+                    "the run died at Reviewed; a cancelled cleanup must not rewrite its cause of death"
+                )
+        ).WithMessage("*Simulated failure at stage Reviewed*");
+        fixture
+            .CleanupOrder.Should()
+            .ContainInOrder(["destroy", "return"], "the teardown still ran, and its failure did not cost the slot");
         fixture.Pool.ReturnCount.Should().Be(1);
     }
 
@@ -2041,14 +2437,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // ContextReady (delegated to the real executor) leases a slot; a later stage then throws, so the run
         // never reaches Posted. Only the orchestrator's terminal finally can return the slot.
         var executor = new ThrowAfterStageExecutor(fixture.Executor, throwAt: ReviewStage.Reviewed);
-        var orchestrator = new PrOrchestrator(
-            fixture.Store, executor, NullLogger<PrOrchestrator>.Instance);
+        var orchestrator = new PrOrchestrator(fixture.Store, executor, NullLogger<PrOrchestrator>.Instance);
 
         var act = () => orchestrator.RunAsync(run, CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>();
         fixture.Pool.LeaseCount.Should().Be(1, "ContextReady leased a slot");
-        fixture.Pool.ReturnCount.Should().Be(1, "the orchestrator's terminal finally returned the slot despite the failure");
+        fixture
+            .Pool.ReturnCount.Should()
+            .Be(1, "the orchestrator's terminal finally returned the slot despite the failure");
         fixture.Pool.Returned.Should().ContainSingle(s => s.Index == 0);
     }
 
@@ -2063,8 +2460,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         fixture.Pool.ReturnCount.Should().Be(0);
 
-        var orchestrator = new PrOrchestrator(
-            fixture.Store, fixture.Executor, NullLogger<PrOrchestrator>.Instance);
+        var orchestrator = new PrOrchestrator(fixture.Store, fixture.Executor, NullLogger<PrOrchestrator>.Instance);
         var closed = run with { PrLifecycleState = PrLifecycleState.Merged };
 
         var result = await orchestrator.RunAsync(closed, CancellationToken.None);
@@ -2083,7 +2479,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.HostRunner.OnArgvContainsSequence(
             $"add -- {NotesRelPath}",
             new SandboxCommandResult(1, string.Empty, "fatal: Unable to create index.lock: File exists"),
-            new SandboxCommandResult(0, string.Empty, string.Empty));
+            new SandboxCommandResult(0, string.Empty, string.Empty)
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -2101,9 +2498,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var commands = fixture.HostRunner.Commands.Select(Describe).ToList();
         commands.Count(a => a.Contains($"add -- {NotesRelPath}")).Should().Be(2, "the retry re-runs the commit gate");
-        commands.Should().OnlyContain(
-            a => !a.Contains($"add -- {NotesRelPath}") || a.Contains("/pool/slot-0/store"),
-            "both attempts stage the notes inside the SAME leased slot");
+        commands
+            .Should()
+            .OnlyContain(
+                a => !a.Contains($"add -- {NotesRelPath}") || a.Contains("/pool/slot-0/store"),
+                "both attempts stage the notes inside the SAME leased slot"
+            );
         fixture.Pool.LeaseCount.Should().Be(1, "the retry reuses the retained lease rather than leasing a second slot");
         fixture.Pool.ReturnCount.Should().Be(1, "the slot is returned exactly once, on the successful retry");
     }
@@ -2123,14 +2523,17 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // always arrives with no recorded lease. Seed the gitmodules for the slot it will lease next.
         fixture.HostFileSystem.Seed(
             "/pool/slot-1/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         var resumed = fixture.BuildExecutor();
 
         await resumed.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
 
         // The retry must retain the notes through the POOL — the store checkout that carries the notes branch
         // and the PR's prior notes — never silently degrade to the host ReviewBot checkout.
-        fixture.Pool.LeaseCount.Should().Be(2, "the resumed Posted stage re-leases a slot because the prior lease was released");
+        fixture
+            .Pool.LeaseCount.Should()
+            .Be(2, "the resumed Posted stage re-leases a slot because the prior lease was released");
         var commands = fixture.HostRunner.Commands.Select(Describe).ToList();
         commands.Should().Contain(a => a.Contains($"add -- {NotesRelPath}") && a.Contains("/pool/slot-1/store"));
         fixture.Pool.ReturnCount.Should().Be(1, "the re-leased slot is stripped and returned on the terminal stage");
@@ -2159,8 +2562,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         await act.Should().NotThrowAsync("the review is already delivered; a cancelled teardown cannot undo it");
         fixture.CleanupOrder.Should().Contain("destroy", "the teardown is still attempted, only contained");
-        fixture.Pool.ReturnCount.Should().Be(
-            1, "retention and the slot return sit BELOW the teardown and must still run");
+        fixture
+            .Pool.ReturnCount.Should()
+            .Be(1, "retention and the slot return sit BELOW the teardown and must still run");
     }
 
     [Fact]
@@ -2194,12 +2598,21 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // becoming the very race it exists to prevent. Skipping leaves the store dirty until its next lease,
         // which is what clean-on-entry is for and what the call site's catch already tolerates.
         var commands = fixture.HostRunner.Commands.Select(Join).ToList();
-        commands.Should().NotContain(a => a.Contains("reset --hard"),
-            "the store is not reset while a live container still has it mounted");
-        commands.Should().NotContain(a => a.Contains("clean -ffdx"),
-            "cleaning would wipe the checkout under a deep-link visitor mid-session");
-        fixture.Pool.ReturnCount.Should().Be(1,
-            "skipping the strip must never cost the slot its return, which would leak pool capacity");
+        commands
+            .Should()
+            .NotContain(
+                a => a.Contains("reset --hard"),
+                "the store is not reset while a live container still has it mounted"
+            );
+        commands
+            .Should()
+            .NotContain(
+                a => a.Contains("clean -ffdx"),
+                "cleaning would wipe the checkout under a deep-link visitor mid-session"
+            );
+        fixture
+            .Pool.ReturnCount.Should()
+            .Be(1, "skipping the strip must never cost the slot its return, which would leak pool capacity");
     }
 
     [Fact]
@@ -2214,8 +2627,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // The pooled path is tried FIRST on S2S too: the slot carries the store, the Knowledge Base and the
         // PR's own notes dir, so it is the richer workspace to mount into the hosted conversation.
         fixture.Pool.LeaseCount.Should().Be(1);
-        fixture.Factory.ToolContexts.Should().ContainSingle().Which.Should().BeNull(
-            "the hosted conversation owns its tools, so the daemon builds no tool context on S2S");
+        fixture
+            .Factory.ToolContexts.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeNull("the hosted conversation owns its tools, so the daemon builds no tool context on S2S");
 
         // The regression guard: notes_dir/has_notes/has_store come from the pooled WRITE SCOPE, not from the
         // tool context. Sourcing them from the (null) tool context would render them empty HERE and silently
@@ -2241,12 +2657,16 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // container path the pooled stage computed (/workspace/store/...) is correct verbatim inside the hosted
         // conversation. Preparing a separate per-PR clone instead would mount a tree with no store at all.
         fixture.Factory.WorkspaceIds.Should().ContainSingle().Which.Should().Be("ws-review-slot-0");
-        var created = fixture.S2SHandler.Requests
-            .Should().ContainSingle(r => r.Method == HttpMethod.Post).Subject;
-        created.Body.Should().Contain(
-            "\"directoryRelPath\":\"review-slot-0\"", "the workspace names the slot ROOT leaf, not a child of it");
-        fixture.S2SGit.Commands.Should().BeEmpty(
-            "adoption is pure naming — re-running git here would fight the pool's preparer for the same tree");
+        var created = fixture.S2SHandler.Requests.Should().ContainSingle(r => r.Method == HttpMethod.Post).Subject;
+        created
+            .Body.Should()
+            .Contain(
+                "\"directoryRelPath\":\"review-slot-0\"",
+                "the workspace names the slot ROOT leaf, not a child of it"
+            );
+        fixture
+            .S2SGit.Commands.Should()
+            .BeEmpty("adoption is pure naming — re-running git here would fight the pool's preparer for the same tree");
     }
 
     [Fact]
@@ -2260,7 +2680,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.HostFileSystem.Files.Clear();
         fixture.HostFileSystem.Seed(
             "/pool/review-slot-0/store/.gitmodules",
-            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n");
+            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n"
+        );
         var run = fixture.SeedRun();
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -2268,10 +2689,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var thrown = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
         thrown.Message.Should().Contain("achieveai/lmdotnettools", "the error names the repo that must be onboarded");
         thrown.Message.Should().Contain(StoreUrl, "the error names the review store to onboard it into");
-        fixture.S2SGit.Commands.Should().BeEmpty(
-            "no unmanaged per-PR clone may be created for a pooled-but-declined review");
-        fixture.S2SHandler.Requests.Should().BeEmpty(
-            "no permanent per-PR LmStreaming workspace may be minted for a pooled-but-declined review");
+        fixture
+            .S2SGit.Commands.Should()
+            .BeEmpty("no unmanaged per-PR clone may be created for a pooled-but-declined review");
+        fixture
+            .S2SHandler.Requests.Should()
+            .BeEmpty("no permanent per-PR LmStreaming workspace may be minted for a pooled-but-declined review");
         fixture.Pool.ReturnCount.Should().Be(1, "the declined lease is still returned normally, before the failure");
         fixture.Store.GetArtifacts(run.Id).Should().BeEmpty("the stage failed, so it persisted no partial context");
     }
@@ -2299,13 +2722,23 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var thrown = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
         thrown.Message.Should().Contain("EnableToolAssistedReview", "the error names the flag that must be turned on");
-        thrown.Message.Should().Contain("EnableReviewerWrites", "the error names the other flag that must be turned on");
-        thrown.Message.Should().MatchRegex(
-            "(?i)review store|pool", "the error points at onboarding a review store/pool, not just the flags");
-        fixture.S2SGit.Commands.Should().BeEmpty(
-            "no unmanaged per-PR host clone may be created when no recyclable pooled workspace is configured");
-        fixture.S2SHandler.Requests.Should().BeEmpty(
-            "no permanent per-PR LmStreaming workspace may be minted when no recyclable pooled workspace is configured");
+        thrown
+            .Message.Should()
+            .Contain("EnableReviewerWrites", "the error names the other flag that must be turned on");
+        thrown
+            .Message.Should()
+            .MatchRegex(
+                "(?i)review store|pool",
+                "the error points at onboarding a review store/pool, not just the flags"
+            );
+        fixture
+            .S2SGit.Commands.Should()
+            .BeEmpty("no unmanaged per-PR host clone may be created when no recyclable pooled workspace is configured");
+        fixture
+            .S2SHandler.Requests.Should()
+            .BeEmpty(
+                "no permanent per-PR LmStreaming workspace may be minted when no recyclable pooled workspace is configured"
+            );
         fixture.Pool.LeaseCount.Should().Be(0, "no pool is configured at all, so nothing is ever leased");
         fixture.Store.GetArtifacts(run.Id).Should().BeEmpty("the stage failed, so it persisted no partial context");
     }
@@ -2323,25 +2756,30 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // otherwise carry the posting instructions, carries none…
         var inputs = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject.ReceivedInputs;
         inputs.Should().HaveCount(2, "one hosted conversation still drives the provisional turn then synthesis");
-        inputs[1].Messages.OfType<TextMessage>().Single().Text.Should().NotContain(
-            "api.github.com", "S2S must never ask the hosted agent to post to the PR itself");
+        inputs[1]
+            .Messages.OfType<TextMessage>()
+            .Single()
+            .Text.Should()
+            .NotContain("api.github.com", "S2S must never ask the hosted agent to post to the PR itself");
 
         // …and the host-side publisher is the ONLY delivery path, carrying the deep-link back to the hosted
         // conversation (the whole point of the S2S path: a human can open the review and its sub-agent tree).
         fixture.Publisher.PostCount.Should().Be(1);
         var body = fixture.Publisher.PostedBodies.Should().ContainSingle().Subject;
-        body.Split(S2SDeepLink(run), StringSplitOptions.None).Length.Should().Be(
-            2, "the deep link is appended exactly once — a duplicated link means the body was assembled twice");
-        body.Should().NotContain(
-            $"threadId=review-run-{run.Id}",
-            "the link carries the id LmStreaming minted, not the daemon's own thread id (which resolves to nothing)");
+        body.Split(S2SDeepLink(run), StringSplitOptions.None)
+            .Length.Should()
+            .Be(2, "the deep link is appended exactly once — a duplicated link means the body was assembled twice");
+        body.Should()
+            .NotContain(
+                $"threadId=review-run-{run.Id}",
+                "the link carries the id LmStreaming minted, not the daemon's own thread id (which resolves to nothing)"
+            );
 
         // The commit gate is unchanged by S2S: still ONLY the PR notes dir, never `add -A`.
         var commands = fixture.HostRunner.Commands.Select(Join).ToList();
         commands.Should().Contain(a => a.Contains($"add -- {NotesRelPath}"));
         commands.Should().NotContain(a => a.Contains("add -A"));
-        fixture.HostFileSystem.Writes.Should().Contain(
-            p => p.Contains($"/{NotesRelPath}/") && p.EndsWith("review.md"));
+        fixture.HostFileSystem.Writes.Should().Contain(p => p.Contains($"/{NotesRelPath}/") && p.EndsWith("review.md"));
         fixture.Pool.ReturnCount.Should().Be(1, "the slot is returned on the terminal stage on S2S too");
     }
 
@@ -2382,12 +2820,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         await Task.WhenAll(
             Task.Run(() => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, first, CancellationToken.None)),
-            Task.Run(() => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, second, CancellationToken.None)));
+            Task.Run(() => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, second, CancellationToken.None))
+        );
 
         // Both leases were held AT THE SAME TIME (the rendezvous could not have completed otherwise), and the
         // pool handed out two different slots rather than recycling one.
         fixture.Pool.LeaseCount.Should().Be(2);
-        fixture.Pool.ReturnCount.Should().Be(0, "both slots are still held — neither review has reached a terminal stage");
+        fixture
+            .Pool.ReturnCount.Should()
+            .Be(0, "both slots are still held — neither review has reached a terminal stage");
         // Typed locals rather than inline collection expressions: BeEquivalentTo's element type is a generic
         // parameter, which a target-typeless `[...]` cannot infer.
         string[] expectedSlots = ["/pool/review-slot-0", "/pool/review-slot-1"];
@@ -2423,12 +2864,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
         {
             var own = $"/pool/review-slot-{SlotOf(fixture, prId)}";
             var other = $"/pool/review-slot-{SlotOf(fixture, prId == "118" ? "222" : "118")}";
-            commands.Should().Contain(
-                a => a.Contains($"add -- PRs/lmdotnettools-{prId}") && a.Contains(own),
-                $"PR {prId}'s notes are staged in its own slot");
-            commands.Should().NotContain(
-                a => a.Contains($"lmdotnettools-{prId}") && a.Contains(other),
-                $"nothing touching PR {prId} may reach into the other review's slot");
+            commands
+                .Should()
+                .Contain(
+                    a => a.Contains($"add -- PRs/lmdotnettools-{prId}") && a.Contains(own),
+                    $"PR {prId}'s notes are staged in its own slot"
+                );
+            commands
+                .Should()
+                .NotContain(
+                    a => a.Contains($"lmdotnettools-{prId}") && a.Contains(other),
+                    $"nothing touching PR {prId} may reach into the other review's slot"
+                );
         }
 
         // Neither slot is stripped: this is the S2S path, where the session teardown that would make a store
@@ -2450,7 +2897,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private static int SlotOf(Fixture fixture, string prId)
     {
         var notesSuffix = $"/PRs/lmdotnettools-{prId}";
-        var prepared = fixture.Preparer.Prepared.Single(p => p.NotesDir.EndsWith(notesSuffix, StringComparison.Ordinal));
+        var prepared = fixture.Preparer.Prepared.Single(p =>
+            p.NotesDir.EndsWith(notesSuffix, StringComparison.Ordinal)
+        );
         return fixture.Pool.Leased.Single(s => prepared.StoreRoot == s.StorePath).Index;
     }
 
@@ -2498,10 +2947,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
             _db = new TempSqliteDatabase();
             Store = new ReviewStore(_db.ConnectionString);
             BootRunner = new FakeSandboxCommandRunner()
-                .OnArgvContains("rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a git repo"))
+                .OnArgvContains(
+                    "rev-parse --is-inside-work-tree",
+                    new SandboxCommandResult(1, string.Empty, "not a git repo")
+                )
                 .OnArgvContains("diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));
-            HostRunner = new FakeSandboxCommandRunner()
-                .OnArgvContains("diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));
+            HostRunner = new FakeSandboxCommandRunner().OnArgvContains(
+                "diff",
+                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty)
+            );
             // On S2S the slot dir doubles as the LmStreaming workspace leaf, so the pool is configured with the
             // single-segment "review-slot-" prefix Program.cs forces there (a "review-pool/slot-0" style name
             // would be FLATTENED by the workspace-directory sanitizer into a different, empty directory).
@@ -2511,12 +2965,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
             {
                 _ = HostFileSystem.Seed(
                     $"/pool/{slotPrefix}{i}/store/.gitmodules",
-                    "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+                    "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+                );
             }
 
             Pool = new FakeReviewSlotPool("/pool", slotPrefix);
             Preparer = new FakeReviewSlotPreparer();
-
 
             // Shared cleanup-order log so a test can assert the session is destroyed before the slot is returned.
             Pool.Order = CleanupOrder;
@@ -2555,15 +3009,19 @@ public sealed class DaemonReviewStageExecutorPooledTests
                             var sessionPath = path.Replace(
                                 $"/pool/{(s2s ? "review-slot-" : "slot-")}0/store",
                                 "/workspace/store",
-                                StringComparison.Ordinal);
-                            session.FileSystem.WriteFileAsync(sessionPath, content, CancellationToken.None)
-                                .GetAwaiter().GetResult();
+                                StringComparison.Ordinal
+                            );
+                            session
+                                .FileSystem.WriteFileAsync(sessionPath, content, CancellationToken.None)
+                                .GetAwaiter()
+                                .GetResult();
                         }
 
                         return Preparer;
                     },
                     HostRunner,
-                    HostFileSystem)
+                    HostFileSystem
+                )
                 : null;
 
             if (s2s)
@@ -2575,7 +3033,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 S2SHandler = new FakeHttpMessageHandler()
                     .OnJson(HttpMethod.Get, "api/workspaces", "[]")
                     .On(
-                        req => req.Method == HttpMethod.Post
+                        req =>
+                            req.Method == HttpMethod.Post
                             && req.RequestUri is not null
                             && req.RequestUri.ToString().Contains("api/workspaces", StringComparison.Ordinal),
                         req =>
@@ -2587,9 +3046,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
                                     $"{{\"id\":\"ws-{leaf}\",\"name\":\"Review {leaf}\",\"directoryRelPath\":\"{leaf}\","
                                         + "\"marketplaces\":[\"code-reviewer\"]}",
                                     Encoding.UTF8,
-                                    "application/json"),
+                                    "application/json"
+                                ),
                             };
-                        });
+                        }
+                    );
 
                 _s2sHttp = new HttpClient(S2SHandler) { BaseAddress = new Uri(LmStreamingBaseUrl + "/") };
                 _s2sPreparer = new S2SReviewWorkspacePreparer(
@@ -2597,7 +3058,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
                     new GitRunner(S2SGit),
                     "/pool",
                     reviewMarketplace: "code-reviewer",
-                    NullLogger<S2SReviewWorkspacePreparer>.Instance);
+                    NullLogger<S2SReviewWorkspacePreparer>.Instance
+                );
             }
 
             Executor = BuildExecutor();
@@ -2619,7 +3081,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 Logs,
                 provisioner: Provisioner,
                 slotWorkspace: _slotWorkspace,
-                preparer: _s2sPreparer);
+                preparer: _s2sPreparer
+            );
 
         public ReviewStore Store { get; }
 
@@ -2683,28 +3146,32 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// </summary>
         public ReviewRun SeedRun(string prId = "118", string? prAuthor = null, string mode = "collect-only")
         {
-            var repoId = Store.EnsureRepo(new RepoIdentity
-            {
-                Provider = "github",
-                OrgOrOwner = "achieveai",
-                RepoName = "LmDotnetTools",
-                RepoStableId = "repo-stable-1",
-            });
-            return Store.CreateOrGetReviewRun(new ReviewRun
-            {
-                RepoId = repoId,
-                PrId = prId,
-                PrAuthor = prAuthor,
-                HeadSha = "head-sha",
-                BaseSha = "base-sha",
-                TriggerWatermark = "wm-1",
-                ReviewKind = "full",
-                VariantId = "primary",
-                Mode = mode,
-                Stage = ReviewStage.Discovered,
-                WorkflowStatus = WorkflowStatus.Running,
-                PrLifecycleState = PrLifecycleState.Open,
-            });
+            var repoId = Store.EnsureRepo(
+                new RepoIdentity
+                {
+                    Provider = "github",
+                    OrgOrOwner = "achieveai",
+                    RepoName = "LmDotnetTools",
+                    RepoStableId = "repo-stable-1",
+                }
+            );
+            return Store.CreateOrGetReviewRun(
+                new ReviewRun
+                {
+                    RepoId = repoId,
+                    PrId = prId,
+                    PrAuthor = prAuthor,
+                    HeadSha = "head-sha",
+                    BaseSha = "base-sha",
+                    TriggerWatermark = "wm-1",
+                    ReviewKind = "full",
+                    VariantId = "primary",
+                    Mode = mode,
+                    Stage = ReviewStage.Discovered,
+                    WorkflowStatus = WorkflowStatus.Running,
+                    PrLifecycleState = PrLifecycleState.Open,
+                }
+            );
         }
 
         public void Dispose()
@@ -2826,15 +3293,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// </summary>
         public MergeBaseOutcome MergeBase { get; set; } = MergeBaseOutcome.Resolved;
 
-        public Task EnsureStoreAsync(
-            string storeRoot,
-            string storeUrl,
-            CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
 
-        public Task RecloneStoreAsync(
-            string storeRoot,
-            string storeUrl,
-            CancellationToken cancellationToken)
+        public Task RecloneStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken)
         {
             RecloneCount++;
             return Task.CompletedTask;
@@ -2857,9 +3319,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
             string defaultBranch,
             string notesRelPath,
             OperationPolicy policy,
-            CancellationToken cancellationToken) =>
-            PrepareCoreAsync(
-                run, storeRoot, submoduleRelPath, branch, defaultBranch, notesRelPath, cancellationToken);
+            CancellationToken cancellationToken
+        ) => PrepareCoreAsync(run, storeRoot, submoduleRelPath, branch, defaultBranch, notesRelPath, cancellationToken);
 
         public Task<PreparedCheckout> PrepareAsync(
             ReviewSlot slot,
@@ -2870,9 +3331,17 @@ public sealed class DaemonReviewStageExecutorPooledTests
             string defaultBranch,
             string notesRelPath,
             OperationPolicy policy,
-            CancellationToken cancellationToken) =>
+            CancellationToken cancellationToken
+        ) =>
             PrepareCoreAsync(
-                run, slot.StorePath, submoduleRelPath, branch, defaultBranch, notesRelPath, cancellationToken);
+                run,
+                slot.StorePath,
+                submoduleRelPath,
+                branch,
+                defaultBranch,
+                notesRelPath,
+                cancellationToken
+            );
 
         private async Task<PreparedCheckout> PrepareCoreAsync(
             ReviewRun run,
@@ -2881,7 +3350,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
             string branch,
             string defaultBranch,
             string notesRelPath,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             PreparedCheckout checkout;
             lock (_gate)
@@ -2897,8 +3367,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 LastNotesRelPath = notesRelPath;
                 LastDefaultBranch = defaultBranch;
                 checkout = new PreparedCheckout(
-                    storeRoot, $"{storeRoot}/{submoduleRelPath}", $"{storeRoot}/{notesRelPath}", branch,
-                    MergeBase);
+                    storeRoot,
+                    $"{storeRoot}/{submoduleRelPath}",
+                    $"{storeRoot}/{notesRelPath}",
+                    branch,
+                    MergeBase
+                );
                 Prepared.Add(checkout);
             }
 
@@ -2935,9 +3409,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
         {
             GetOrCreateCalls++;
-            return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
-                $"session-{run.Id}", $"/workspace/review-run-{run.Id}",
-                new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
+            return Task.FromResult<ReviewRunSession?>(
+                new ReviewRunSession(
+                    $"session-{run.Id}",
+                    $"/workspace/review-run-{run.Id}",
+                    new FakeSandboxCommandRunner(),
+                    new FakeSandboxFileSystem()
+                )
+            );
         }
 
         public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct)
@@ -2950,7 +3429,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public Task<ReviewRunSession> GetOrCreateRequiredForSlotAsync(
             ReviewRun run,
             ReviewSlot slot,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             GetOrCreateForSlotCalls++;
             LastSlot = slot;
@@ -2962,13 +3442,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
             SdkFileSystem.Seed(
                 "/workspace/store/.gitmodules",
                 "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
-                    + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+                    + "\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+            );
             // Registered FIRST so it wins over the broader patch rule below: the two commands differ only by
             // flags, and a runner rule that matched the patch would otherwise answer the listing with a patch.
             SdkRunner.OnArgvContainsFirst("diff --name-only", NameOnlyResult);
             SdkRunner.OnArgvContains(
                 "diff base-sha...head-sha",
-                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));
+                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty)
+            );
             return new ReviewRunSession($"session-{run.Id}", slot.HostPath, SdkRunner, SdkFileSystem);
         }
 

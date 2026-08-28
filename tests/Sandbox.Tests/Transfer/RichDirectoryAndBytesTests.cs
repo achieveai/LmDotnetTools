@@ -33,7 +33,9 @@ public class RichDirectoryAndBytesTests
 
     private static void OnListing(FakeGatewayHandler handler, string json) =>
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal),
             _ => JsonResponse(json)
         );
 
@@ -158,7 +160,10 @@ public class RichDirectoryAndBytesTests
     {
         var (client, handler) = CreateClient();
         using var _ = client;
-        OnListing(handler, """{"entries":[{"name":"a.txt","type":"file","size":1},{"name":"sub","type":"directory"}]}""");
+        OnListing(
+            handler,
+            """{"entries":[{"name":"a.txt","type":"file","size":1},{"name":"sub","type":"directory"}]}"""
+        );
 
         // The names-only projection is unchanged and the return type is still IReadOnlyList<string>
         // (existing consumers bind to it) — passing it to a typed local pins the contract at compile time.
@@ -181,7 +186,9 @@ public class RichDirectoryAndBytesTests
         // byte read must return them verbatim (this is how binary downloads work).
         var raw = new byte[] { 0xFF, 0xFE, 0x00, 0x80, 0x41 };
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(raw) }
         );
 
@@ -197,7 +204,9 @@ public class RichDirectoryAndBytesTests
         using var _ = client;
         var body = new byte[] { 1, 2, 3, 4 };
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(body) }
         );
 
@@ -214,7 +223,9 @@ public class RichDirectoryAndBytesTests
         // ByteArrayContent declares an exact Content-Length; 5 declared bytes exceed the caller's cap of 4,
         // so it is refused by the declared length before buffering.
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([1, 2, 3, 4, 5]) }
         );
 
@@ -231,7 +242,9 @@ public class RichDirectoryAndBytesTests
         // No Content-Length (chunked): only the streaming counter can catch it. 8 bytes stream past the
         // caller's cap of 4.
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new UnsizedZeroContent(8) }
         );
 
@@ -248,8 +261,13 @@ public class RichDirectoryAndBytesTests
         // With no maxBytes the default 64 MiB ceiling applies; a declared 64 MiB + 1 is refused before
         // buffering (no bytes are ever produced).
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
-            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new DeclaredLengthContent(SandboxClient.MaxDirectReadBytes + 1) }
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new DeclaredLengthContent(SandboxClient.MaxDirectReadBytes + 1),
+            }
         );
 
         Func<Task> act = () => client.ReadFileBytesAsync(Session, "huge.bin");
@@ -265,8 +283,13 @@ public class RichDirectoryAndBytesTests
         // A caller asking for MORE than the 64 MiB ceiling cannot widen it: a declared 64 MiB + 1 is still
         // refused (the requested cap is clamped down to the default).
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
-            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new DeclaredLengthContent(SandboxClient.MaxDirectReadBytes + 1) }
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new DeclaredLengthContent(SandboxClient.MaxDirectReadBytes + 1),
+            }
         );
 
         Func<Task> act = () => client.ReadFileBytesAsync(Session, "huge.bin", maxBytes: long.MaxValue);
@@ -283,7 +306,9 @@ public class RichDirectoryAndBytesTests
         using var _ = client;
         byte[]? sent = null;
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             req =>
             {
                 sent = req.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
@@ -305,7 +330,9 @@ public class RichDirectoryAndBytesTests
         var putCount = 0;
         byte[]? stored = null;
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             req =>
             {
                 putCount++;
@@ -322,7 +349,9 @@ public class RichDirectoryAndBytesTests
             }
         );
         handler.On(
-            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
             req =>
             {
                 var body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
@@ -339,7 +368,9 @@ public class RichDirectoryAndBytesTests
         putCount.Should().Be(2);
         handler
             .Requests.Should()
-            .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
+            .ContainSingle(r =>
+                r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+            );
     }
 
     [Fact]
@@ -348,11 +379,14 @@ public class RichDirectoryAndBytesTests
         var (client, handler) = CreateClient();
         using var _ = client;
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
-            _ => JsonResponse(
-                """{"error":"target locked","code":409,"error_code":"target_locked","retryable":true}""",
-                HttpStatusCode.Conflict
-            )
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ =>
+                JsonResponse(
+                    """{"error":"target locked","code":409,"error_code":"target_locked","retryable":true}""",
+                    HttpStatusCode.Conflict
+                )
         );
 
         Func<Task> act = () => client.WriteFileBytesAsync(Session, "busy.bin", [1]);
@@ -394,9 +428,11 @@ public class RichDirectoryAndBytesTests
 
         public UnsizedZeroContent(long length) => _length = length;
 
-        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => new ZeroStream(_length).CopyToAsync(stream);
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            new ZeroStream(_length).CopyToAsync(stream);
 
-        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new ZeroStream(_length));
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new ZeroStream(_length));
 
         protected override bool TryComputeLength(out long length)
         {
@@ -413,7 +449,11 @@ public class RichDirectoryAndBytesTests
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => throw new NotSupportedException();
-        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
 
         public override int Read(byte[] buffer, int offset, int count)
         {

@@ -55,7 +55,8 @@ internal sealed class VariantReviewer
         if (variant.CanWrite)
         {
             throw new InvalidOperationException(
-                $"variant '{variant.VariantId}' has write capability and must not run as a collect-only B arm");
+                $"variant '{variant.VariantId}' has write capability and must not run as a collect-only B arm"
+            );
         }
 
         var collected = await AgentTextCollector
@@ -66,17 +67,20 @@ internal sealed class VariantReviewer
             variant.VariantId,
             variant.ModelId,
             collected.Text,
-            collected.RunId);
+            collected.RunId
+        );
 
         // SQLite only — never the ReviewBot git repo (plan §5). The Judge reads B from here later.
-        var artifact = _store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = reviewRunId,
-            ArtifactSchemaVersion = VariantReviewArtifactSchemaVersion,
-            ArtifactKind = VariantReviewArtifactKind,
-            Provider = provider,
-            Payload = JsonSerializer.Serialize(payload),
-        });
+        var artifact = _store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = reviewRunId,
+                ArtifactSchemaVersion = VariantReviewArtifactSchemaVersion,
+                ArtifactKind = VariantReviewArtifactKind,
+                Provider = provider,
+                Payload = JsonSerializer.Serialize(payload),
+            }
+        );
 
         _logger.LogInformation(
             "Collect-only variant '{Variant}' (model {Model}) run {RunId} persisted b-variant-review artifact {ArtifactId}.",
@@ -95,11 +99,7 @@ internal sealed class VariantReviewer
 /// (the A/B model axis), the raw review text, and the agent run id. New fields must be additive and
 /// optional to preserve append-compatibility.
 /// </summary>
-internal sealed record VariantReviewArtifactPayload(
-    string VariantId,
-    string ModelId,
-    string ReviewText,
-    string? RunId);
+internal sealed record VariantReviewArtifactPayload(string VariantId, string ModelId, string ReviewText, string? RunId);
 
 /// <summary>The collect-only B-arm output and the id of the SQLite artifact it was written to.</summary>
 internal sealed record VariantReviewResult(string ReviewText, string? RunId, long ArtifactId);

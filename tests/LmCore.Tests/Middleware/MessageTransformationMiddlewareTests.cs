@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class MessageTransformationMiddlewareTests
@@ -14,10 +15,7 @@ public class MessageTransformationMiddlewareTests
             new TextMessage { Text = "World", GenerationId = "gen1" },
             new UsageMessage { Usage = new AchieveAi.LmDotnetTools.LmCore.Models.Usage(), GenerationId = "gen1" }
         );
-        var context = new MiddlewareContext(
-            Messages: [],
-            Options: null
-        );
+        var context = new MiddlewareContext(Messages: [], Options: null);
         // Act
         var result = await middleware.InvokeAsync(context, agent);
         var messages = result.ToList();
@@ -27,6 +25,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(1, messages[1].MessageOrderIdx);
         Assert.Equal(2, messages[2].MessageOrderIdx);
     }
+
     [Fact]
     public async Task Downstream_RestartsOrderingAtZero_ForNewGenerationId()
     {
@@ -38,10 +37,7 @@ public class MessageTransformationMiddlewareTests
             new TextMessage { Text = "Third", GenerationId = "gen2" },
             new TextMessage { Text = "Fourth", GenerationId = "gen2" }
         );
-        var context = new MiddlewareContext(
-            Messages: [],
-            Options: null
-        );
+        var context = new MiddlewareContext(Messages: [], Options: null);
         // Act
         var result = await middleware.InvokeAsync(context, agent);
         var messages = result.ToList();
@@ -54,6 +50,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(0, messages[2].MessageOrderIdx);
         Assert.Equal(1, messages[3].MessageOrderIdx);
     }
+
     [Fact]
     public async Task Downstream_PassesThrough_MessagesWithoutGenerationId()
     {
@@ -63,10 +60,7 @@ public class MessageTransformationMiddlewareTests
             new TextMessage { Text = "No generation", GenerationId = null },
             new TextMessage { Text = "Has generation", GenerationId = "gen1" }
         );
-        var context = new MiddlewareContext(
-            Messages: [],
-            Options: null
-        );
+        var context = new MiddlewareContext(Messages: [], Options: null);
         // Act
         var result = await middleware.InvokeAsync(context, agent);
         var messages = result.ToList();
@@ -75,6 +69,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Null(messages[0].MessageOrderIdx);
         Assert.Equal(0, messages[1].MessageOrderIdx);
     }
+
     [Fact]
     public async Task Downstream_AssignsOrdering_ToAllMessageTypes()
     {
@@ -85,15 +80,21 @@ public class MessageTransformationMiddlewareTests
             new ReasoningMessage { Reasoning = "Reason", GenerationId = "gen1" },
             new ToolsCallMessage
             {
-                ToolCalls = [new ToolCall { FunctionName = "test", FunctionArgs = "{}", ToolCallId = "call_1", ToolCallIdx = 0 }],
-                GenerationId = "gen1"
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = "test",
+                        FunctionArgs = "{}",
+                        ToolCallId = "call_1",
+                        ToolCallIdx = 0,
+                    },
+                ],
+                GenerationId = "gen1",
             },
             new UsageMessage { Usage = new(), GenerationId = "gen1" }
         );
-        var context = new MiddlewareContext(
-            Messages: [],
-            Options: null
-        );
+        var context = new MiddlewareContext(Messages: [], Options: null);
         // Act
         var result = await middleware.InvokeAsync(context, agent);
         var messages = result.ToList();
@@ -112,68 +113,65 @@ public class MessageTransformationMiddlewareTests
     {
         // Arrange
         var middleware = new MessageTransformationMiddleware();
-        var toolCall = new ToolCall { FunctionName = "test_function", FunctionArgs = "{\"arg\":\"value\"}", ToolCallId = "call_1", ToolCallIdx = 0 };
-        var agent = new MockAgent(
-            new TextMessage { Text = "Response", GenerationId = "gen1" }
-        );
+        var toolCall = new ToolCall
+        {
+            FunctionName = "test_function",
+            FunctionArgs = "{\"arg\":\"value\"}",
+            ToolCallId = "call_1",
+            ToolCallIdx = 0,
+        };
+        var agent = new MockAgent(new TextMessage { Text = "Response", GenerationId = "gen1" });
         var inputMessages = new IMessage[]
         {
             new ToolsCallMessage
             {
                 ToolCalls = [toolCall],
                 GenerationId = "gen1",
-                MessageOrderIdx = 0
+                MessageOrderIdx = 0,
             },
             new ToolsCallResultMessage
             {
                 ToolCallResults = [new ToolCallResult("call_1", "result")],
                 GenerationId = "gen1",
-                MessageOrderIdx = 1
-            }
+                MessageOrderIdx = 1,
+            },
         };
-        var context = new MiddlewareContext(
-            Messages: inputMessages,
-            Options: null
-        );
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
         // Act
         var result = await middleware.InvokeAsync(context, agent);
         // Assert - Agent should have received aggregated message
         _ = Assert.Single(agent.ReceivedMessages);
         _ = Assert.IsType<ToolsCallAggregateMessage>(agent.ReceivedMessages[0]);
     }
+
     [Fact]
     public async Task Upstream_ReconstructsCompositeMessage_FromMultipleMessagesWithSameGenerationId()
     {
         // Arrange
         var middleware = new MessageTransformationMiddleware();
-        var agent = new MockAgent(
-            new TextMessage { Text = "Response", GenerationId = "gen2" }
-        );
+        var agent = new MockAgent(new TextMessage { Text = "Response", GenerationId = "gen2" });
         var inputMessages = new IMessage[]
         {
             new TextMessage
             {
                 Text = "First",
                 GenerationId = "gen1",
-                MessageOrderIdx = 0
+                MessageOrderIdx = 0,
             },
             new TextMessage
             {
                 Text = "Second",
                 GenerationId = "gen1",
-                MessageOrderIdx = 1
+                MessageOrderIdx = 1,
             },
             new UsageMessage
             {
                 Usage = new AchieveAi.LmDotnetTools.LmCore.Models.Usage(),
                 GenerationId = "gen1",
-                MessageOrderIdx = 2
-            }
+                MessageOrderIdx = 2,
+            },
         };
-        var context = new MiddlewareContext(
-            Messages: inputMessages,
-            Options: null
-        );
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
         // Act
         var result = await middleware.InvokeAsync(context, agent);
         // Assert - Agent should have received composite message
@@ -183,27 +181,23 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal("First", ((TextMessage)composite.Messages[0]).Text);
         Assert.Equal("Second", ((TextMessage)composite.Messages[1]).Text);
     }
+
     [Fact]
     public async Task Upstream_PassesThrough_SingleMessagesWithGenerationId()
     {
         // Arrange
         var middleware = new MessageTransformationMiddleware();
-        var agent = new MockAgent(
-            new TextMessage { Text = "Response", GenerationId = "gen2" }
-        );
+        var agent = new MockAgent(new TextMessage { Text = "Response", GenerationId = "gen2" });
         var inputMessages = new IMessage[]
         {
             new TextMessage
             {
                 Text = "Single",
                 GenerationId = "gen1",
-                MessageOrderIdx = 0
-            }
+                MessageOrderIdx = 0,
+            },
         };
-        var context = new MiddlewareContext(
-            Messages: inputMessages,
-            Options: null
-        );
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
         // Act
         var result = await middleware.InvokeAsync(context, agent);
         // Assert - Single message should pass through unchanged
@@ -218,7 +212,13 @@ public class MessageTransformationMiddlewareTests
     {
         // Arrange
         var middleware = new MessageTransformationMiddleware();
-        var toolCall = new ToolCall { FunctionName = "test_func", FunctionArgs = "{}", ToolCallId = "call_1", ToolCallIdx = 0 };
+        var toolCall = new ToolCall
+        {
+            FunctionName = "test_func",
+            FunctionArgs = "{}",
+            ToolCallId = "call_1",
+            ToolCallIdx = 0,
+        };
         // Mock agent that returns raw messages (simulating provider)
         var agent = new MockAgent(
             new ToolsCallMessage { ToolCalls = [toolCall], GenerationId = "gen1" },
@@ -240,10 +240,7 @@ public class MessageTransformationMiddlewareTests
                 MessageOrderIdx = 1,
             },
         };
-        var context = new MiddlewareContext(
-            Messages: inputMessages,
-            Options: null
-        );
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
         // Act
         var result = await middleware.InvokeAsync(context, agent);
         var outputMessages = result.ToList();
@@ -280,6 +277,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(1, messages[1].ChunkIdx);
         Assert.Equal(2, messages[2].ChunkIdx);
     }
+
     [Fact]
     public async Task Downstream_AssignsChunkIdx_ToReasoningUpdateMessages()
     {
@@ -302,6 +300,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(1, messages[1].ChunkIdx);
         Assert.Equal(2, messages[2].ChunkIdx);
     }
+
     [Fact]
     public async Task Downstream_ResetsChunkIdx_WhenMessageTypeChanges()
     {
@@ -334,6 +333,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(1, reasoningUpdate2.MessageOrderIdx);
         Assert.Equal(1, reasoningUpdate2.ChunkIdx);
     }
+
     [Fact]
     public async Task Downstream_FinalizingTextMessage_SharesOrderIdx_WithPrecedingTextUpdateStream()
     {
@@ -409,11 +409,24 @@ public class MessageTransformationMiddlewareTests
         var agent = new MockAgent(
             new ToolsCallMessage
             {
-                ToolCalls = [
-                    new ToolCall { FunctionName = "func1", FunctionArgs = "{}", ToolCallId = "call_1", ToolCallIdx = 0 },
-                    new ToolCall { FunctionName = "func2", FunctionArgs = "{}", ToolCallId = "call_2", ToolCallIdx = 1 }
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = "func1",
+                        FunctionArgs = "{}",
+                        ToolCallId = "call_1",
+                        ToolCallIdx = 0,
+                    },
+                    new ToolCall
+                    {
+                        FunctionName = "func2",
+                        FunctionArgs = "{}",
+                        ToolCallId = "call_2",
+                        ToolCallIdx = 1,
+                    },
                 ],
-                GenerationId = "gen1"
+                GenerationId = "gen1",
             }
         );
         var context = new MiddlewareContext(Messages: [], Options: null);
@@ -431,6 +444,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal("func2", toolCall2.FunctionName);
         Assert.Equal("call_2", toolCall2.ToolCallId);
     }
+
     [Fact]
     public async Task Downstream_ConvertsToolsCallUpdateMessage_ToIndividualToolCallUpdateMessages()
     {
@@ -439,17 +453,21 @@ public class MessageTransformationMiddlewareTests
         var agent = new MockAgent(
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [
-                    new ToolCallUpdate { FunctionName = "func1", FunctionArgs = "{\"a\"", ToolCallId = "call_1" }
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate
+                    {
+                        FunctionName = "func1",
+                        FunctionArgs = "{\"a\"",
+                        ToolCallId = "call_1",
+                    },
                 ],
-                GenerationId = "gen1"
+                GenerationId = "gen1",
             },
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [
-                    new ToolCallUpdate { FunctionArgs = ":1}", ToolCallId = "call_1" }
-                ],
-                GenerationId = "gen1"
+                ToolCallUpdates = [new ToolCallUpdate { FunctionArgs = ":1}", ToolCallId = "call_1" }],
+                GenerationId = "gen1",
             }
         );
         var context = new MiddlewareContext(Messages: [], Options: null);
@@ -466,6 +484,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(1, messages[1].ChunkIdx);
         Assert.Null(messages[1].FunctionName);
     }
+
     [Fact]
     public async Task Downstream_ConvertsToolsCallResultMessage_ToIndividualToolCallResultMessages()
     {
@@ -474,11 +493,8 @@ public class MessageTransformationMiddlewareTests
         var agent = new MockAgent(
             new ToolsCallResultMessage
             {
-                ToolCallResults = [
-                    new ToolCallResult("call_1", "result1"),
-                    new ToolCallResult("call_2", "result2")
-                ],
-                GenerationId = "gen1"
+                ToolCallResults = [new ToolCallResult("call_1", "result1"), new ToolCallResult("call_2", "result2")],
+                GenerationId = "gen1",
             }
         );
         var context = new MiddlewareContext(Messages: [], Options: null);
@@ -506,24 +522,18 @@ public class MessageTransformationMiddlewareTests
         var agent = new MockAgent(
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [
-                    new ToolCallUpdate { FunctionName = "func1", ToolCallId = "call_1" }
-                ],
-                GenerationId = "gen1"
+                ToolCallUpdates = [new ToolCallUpdate { FunctionName = "func1", ToolCallId = "call_1" }],
+                GenerationId = "gen1",
             },
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [
-                    new ToolCallUpdate { FunctionArgs = "{\"a\"", ToolCallId = "call_1" }
-                ],
-                GenerationId = "gen1"
+                ToolCallUpdates = [new ToolCallUpdate { FunctionArgs = "{\"a\"", ToolCallId = "call_1" }],
+                GenerationId = "gen1",
             },
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [
-                    new ToolCallUpdate { FunctionArgs = ":1}", ToolCallId = "call_1" }
-                ],
-                GenerationId = "gen1"
+                ToolCallUpdates = [new ToolCallUpdate { FunctionArgs = ":1}", ToolCallId = "call_1" }],
+                GenerationId = "gen1",
             }
         );
         var context = new MiddlewareContext(Messages: [], Options: null);
@@ -539,6 +549,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(1, messages[1].ChunkIdx);
         Assert.Equal(2, messages[2].ChunkIdx);
     }
+
     [Fact]
     public async Task Downstream_StartsNewMessage_WhenToolCallIdChanges()
     {
@@ -547,31 +558,23 @@ public class MessageTransformationMiddlewareTests
         var agent = new MockAgent(
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [
-                    new ToolCallUpdate { FunctionName = "func1", ToolCallId = "call_1" }
-                ],
-                GenerationId = "gen1"
+                ToolCallUpdates = [new ToolCallUpdate { FunctionName = "func1", ToolCallId = "call_1" }],
+                GenerationId = "gen1",
             },
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [
-                    new ToolCallUpdate { FunctionArgs = "args1", ToolCallId = "call_1" }
-                ],
-                GenerationId = "gen1"
+                ToolCallUpdates = [new ToolCallUpdate { FunctionArgs = "args1", ToolCallId = "call_1" }],
+                GenerationId = "gen1",
             },
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [
-                    new ToolCallUpdate { FunctionName = "func2", ToolCallId = "call_2" }
-                ],
-                GenerationId = "gen1"
+                ToolCallUpdates = [new ToolCallUpdate { FunctionName = "func2", ToolCallId = "call_2" }],
+                GenerationId = "gen1",
             },
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [
-                    new ToolCallUpdate { FunctionArgs = "args2", ToolCallId = "call_2" }
-                ],
-                GenerationId = "gen1"
+                ToolCallUpdates = [new ToolCallUpdate { FunctionArgs = "args2", ToolCallId = "call_2" }],
+                GenerationId = "gen1",
             }
         );
         var context = new MiddlewareContext(Messages: [], Options: null);
@@ -595,6 +598,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(1, messages[3].ChunkIdx);
         Assert.Equal("call_2", messages[3].ToolCallId);
     }
+
     [Fact]
     public async Task Downstream_HandlesMultipleToolCallUpdates_InSingleMessage()
     {
@@ -603,11 +607,12 @@ public class MessageTransformationMiddlewareTests
         var agent = new MockAgent(
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [
+                ToolCallUpdates =
+                [
                     new ToolCallUpdate { FunctionName = "func1", ToolCallId = "call_1" },
-                    new ToolCallUpdate { FunctionName = "func2", ToolCallId = "call_2" }
+                    new ToolCallUpdate { FunctionName = "func2", ToolCallId = "call_2" },
                 ],
-                GenerationId = "gen1"
+                GenerationId = "gen1",
             }
         );
         var context = new MiddlewareContext(Messages: [], Options: null);
@@ -634,47 +639,55 @@ public class MessageTransformationMiddlewareTests
         var agent = new MockAgent(
             new CompositeMessage
             {
-                Messages = [
-                    new TextMessage { Text = "Test", GenerationId = "gen1" }
-                ],
-                GenerationId = "gen1"
+                Messages = [new TextMessage { Text = "Test", GenerationId = "gen1" }],
+                GenerationId = "gen1",
             }
         );
         var context = new MiddlewareContext(Messages: [], Options: null);
         // Act & Assert
         // Exception is thrown during enumeration, not during InvokeAsync call
-        var exception = await Assert.ThrowsAsync<NotSupportedException>(
-            async () =>
-            {
-                var result = await middleware.InvokeAsync(context, agent);
-                _ = result.ToList(); // Force enumeration
-            }
-        );
+        var exception = await Assert.ThrowsAsync<NotSupportedException>(async () =>
+        {
+            var result = await middleware.InvokeAsync(context, agent);
+            _ = result.ToList(); // Force enumeration
+        });
         Assert.Contains("CompositeMessage should not appear when assigning message orderings", exception.Message);
     }
+
     [Fact]
     public async Task Downstream_ThrowsException_ForToolsCallAggregateMessage()
     {
         // Arrange
         var middleware = new MessageTransformationMiddleware();
-        var toolCall = new ToolCall { FunctionName = "test", FunctionArgs = "{}", ToolCallId = "call_1", ToolCallIdx = 0 };
+        var toolCall = new ToolCall
+        {
+            FunctionName = "test",
+            FunctionArgs = "{}",
+            ToolCallId = "call_1",
+            ToolCallIdx = 0,
+        };
         var agent = new MockAgent(
             new ToolsCallAggregateMessage(
                 new ToolsCallMessage { ToolCalls = [toolCall], GenerationId = "gen1" },
-                new ToolsCallResultMessage { ToolCallResults = [new ToolCallResult("call_1", "result")], GenerationId = "gen1" }
+                new ToolsCallResultMessage
+                {
+                    ToolCallResults = [new ToolCallResult("call_1", "result")],
+                    GenerationId = "gen1",
+                }
             )
         );
         var context = new MiddlewareContext(Messages: [], Options: null);
         // Act & Assert
         // Exception is thrown during enumeration, not during InvokeAsync call
-        var exception = await Assert.ThrowsAsync<NotSupportedException>(
-            async () =>
-            {
-                var result = await middleware.InvokeAsync(context, agent);
-                _ = result.ToList(); // Force enumeration
-            }
+        var exception = await Assert.ThrowsAsync<NotSupportedException>(async () =>
+        {
+            var result = await middleware.InvokeAsync(context, agent);
+            _ = result.ToList(); // Force enumeration
+        });
+        Assert.Contains(
+            "ToolsCallAggregateMessage should not appear when assigning message orderings",
+            exception.Message
         );
-        Assert.Contains("ToolsCallAggregateMessage should not appear when assigning message orderings", exception.Message);
     }
     #endregion
     #region Complex Transition Tests
@@ -692,16 +705,22 @@ public class MessageTransformationMiddlewareTests
             // Tool calls
             new ToolsCallMessage
             {
-                ToolCalls = [
-                    new ToolCall { FunctionName = "func1", ToolCallId = "call_1", ToolCallIdx = 0 }
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = "func1",
+                        ToolCallId = "call_1",
+                        ToolCallIdx = 0,
+                    },
                 ],
-                GenerationId = "gen1"
+                GenerationId = "gen1",
             },
             // Tool results
             new ToolsCallResultMessage
             {
                 ToolCallResults = [new ToolCallResult("call_1", "result")],
-                GenerationId = "gen1"
+                GenerationId = "gen1",
             },
             // Text updates
             new TextUpdateMessage { Text = "Hello", GenerationId = "gen1" },
@@ -742,6 +761,7 @@ public class MessageTransformationMiddlewareTests
         var usage = Assert.IsType<UsageMessage>(messages[7]);
         Assert.Equal(5, usage.MessageOrderIdx);
     }
+
     [Fact]
     public async Task Downstream_HandlesMultipleGenerations_Independently()
     {
@@ -797,7 +817,7 @@ public class MessageTransformationMiddlewareTests
                 ToolCallId = "srvtoolu_01",
                 FunctionArgs = "{}",
                 ExecutionTarget = ExecutionTarget.ProviderServer,
-                GenerationId = "gen1"
+                GenerationId = "gen1",
             },
             new ToolCallResultMessage
             {
@@ -805,15 +825,23 @@ public class MessageTransformationMiddlewareTests
                 ToolName = "web_search",
                 Result = "{}",
                 ExecutionTarget = ExecutionTarget.ProviderServer,
-                GenerationId = "gen1"
+                GenerationId = "gen1",
             },
             new TextUpdateMessage { Text = "Based on ", GenerationId = "gen1" },
             new TextUpdateMessage { Text = "my research", GenerationId = "gen1" },
             new TextWithCitationsMessage
             {
                 Text = "Based on my research, here are the findings.",
-                Citations = [new CitationInfo { Type = "web_search_result_location", Url = "https://example.com", Title = "Example" }],
-                GenerationId = "gen1"
+                Citations =
+                [
+                    new CitationInfo
+                    {
+                        Type = "web_search_result_location",
+                        Url = "https://example.com",
+                        Title = "Example",
+                    },
+                ],
+                GenerationId = "gen1",
             },
             new UsageMessage { Usage = new AchieveAi.LmDotnetTools.LmCore.Models.Usage(), GenerationId = "gen1" }
         );
@@ -838,6 +866,7 @@ public class MessageTransformationMiddlewareTests
         var usageMsg = Assert.IsType<UsageMessage>(messages[5]);
         Assert.NotEqual(textUpdate1.MessageOrderIdx, usageMsg.MessageOrderIdx);
     }
+
     [Fact]
     public async Task Downstream_TextWithCitations_GetsNewOrderIdx_WhenNoPrecedingTextUpdates()
     {
@@ -849,7 +878,7 @@ public class MessageTransformationMiddlewareTests
             {
                 Text = "Cited text",
                 Citations = [new CitationInfo { Type = "web_search_result_location", Url = "https://example.com" }],
-                GenerationId = "gen1"
+                GenerationId = "gen1",
             }
         );
         var context = new MiddlewareContext(Messages: [], Options: null);
@@ -862,6 +891,7 @@ public class MessageTransformationMiddlewareTests
         // TextWithCitationsMessage gets its own orderIdx since no preceding text_update
         Assert.Equal(1, messages[1].MessageOrderIdx);
     }
+
     [Fact]
     public async Task Downstream_Streaming_TextWithCitations_SharesOrderIdx_WithPrecedingTextUpdates()
     {
@@ -875,9 +905,9 @@ public class MessageTransformationMiddlewareTests
             {
                 Text = "Hello World",
                 Citations = [new CitationInfo { Type = "web_search_result_location", Url = "https://example.com" }],
-                GenerationId = "gen1"
+                GenerationId = "gen1",
             },
-            new UsageMessage { Usage = new AchieveAi.LmDotnetTools.LmCore.Models.Usage(), GenerationId = "gen1" }
+            new UsageMessage { Usage = new AchieveAi.LmDotnetTools.LmCore.Models.Usage(), GenerationId = "gen1" },
         }.ToAsyncEnumerable();
         var agent = new MockStreamingAgent(streamingMessages);
         var context = new MiddlewareContext(Messages: [], Options: null);
@@ -908,10 +938,7 @@ public class MessageTransformationMiddlewareTests
             new TextUpdateMessage { Text = "World", GenerationId = "gen1" },
         }.ToAsyncEnumerable();
         var agent = new MockStreamingAgent(streamingMessages);
-        var context = new MiddlewareContext(
-            Messages: [],
-            Options: null
-        );
+        var context = new MiddlewareContext(Messages: [], Options: null);
         // Act
         var resultStream = await middleware.InvokeStreamingAsync(context, agent);
         var messages = await resultStream.ToListAsync();
@@ -921,6 +948,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(0, messages[0].MessageOrderIdx);
         Assert.Equal(0, messages[1].MessageOrderIdx);
     }
+
     [Fact]
     public async Task Downstream_Streaming_AssignsChunkIdx_ToUpdateMessages()
     {
@@ -930,7 +958,7 @@ public class MessageTransformationMiddlewareTests
         {
             new TextUpdateMessage { Text = "Hello", GenerationId = "gen1" },
             new TextUpdateMessage { Text = " ", GenerationId = "gen1" },
-            new TextUpdateMessage { Text = "World", GenerationId = "gen1" }
+            new TextUpdateMessage { Text = "World", GenerationId = "gen1" },
         }.ToAsyncEnumerable();
         var agent = new MockStreamingAgent(streamingMessages);
         var context = new MiddlewareContext(Messages: [], Options: null);
@@ -944,6 +972,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(1, messages[1].ChunkIdx);
         Assert.Equal(2, messages[2].ChunkIdx);
     }
+
     [Fact]
     public async Task Downstream_Streaming_HandlesIdentityChanges()
     {
@@ -954,7 +983,7 @@ public class MessageTransformationMiddlewareTests
             new TextUpdateMessage { Text = "Text1", GenerationId = "gen1" },
             new TextUpdateMessage { Text = "Text2", GenerationId = "gen1" },
             new ReasoningUpdateMessage { Reasoning = "Think1", GenerationId = "gen1" },
-            new ReasoningUpdateMessage { Reasoning = "Think2", GenerationId = "gen1" }
+            new ReasoningUpdateMessage { Reasoning = "Think2", GenerationId = "gen1" },
         }.ToAsyncEnumerable();
         var agent = new MockStreamingAgent(streamingMessages);
         var context = new MiddlewareContext(Messages: [], Options: null);
@@ -995,7 +1024,7 @@ public class MessageTransformationMiddlewareTests
                 Index = 0,
                 ToolCallIdx = 0,
                 GenerationId = "gen1",
-                MessageOrderIdx = 0
+                MessageOrderIdx = 0,
             },
             new ToolCallMessage
             {
@@ -1005,7 +1034,7 @@ public class MessageTransformationMiddlewareTests
                 Index = 1,
                 ToolCallIdx = 1,
                 GenerationId = "gen1",
-                MessageOrderIdx = 1
+                MessageOrderIdx = 1,
             },
             new ToolCallMessage
             {
@@ -1015,8 +1044,8 @@ public class MessageTransformationMiddlewareTests
                 Index = 2,
                 ToolCallIdx = 2,
                 GenerationId = "gen1",
-                MessageOrderIdx = 2
-            }
+                MessageOrderIdx = 2,
+            },
         };
         var agent = new MockAgent();
         var context = new MiddlewareContext(Messages: inputMessages, Options: null);
@@ -1033,6 +1062,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal("gen1", toolsCallMessage.GenerationId);
         Assert.Equal(0, toolsCallMessage.MessageOrderIdx);
     }
+
     [Fact]
     public async Task Upstream_AggregatesMultipleToolCallResultMessages_IntoToolsCallResultMessage()
     {
@@ -1045,22 +1075,22 @@ public class MessageTransformationMiddlewareTests
                 ToolCallId = "call_1",
                 Result = "result1",
                 GenerationId = "gen1",
-                MessageOrderIdx = 0
+                MessageOrderIdx = 0,
             },
             new ToolCallResultMessage
             {
                 ToolCallId = "call_2",
                 Result = "result2",
                 GenerationId = "gen1",
-                MessageOrderIdx = 1
+                MessageOrderIdx = 1,
             },
             new ToolCallResultMessage
             {
                 ToolCallId = "call_3",
                 Result = "result3",
                 GenerationId = "gen1",
-                MessageOrderIdx = 2
-            }
+                MessageOrderIdx = 2,
+            },
         };
         var agent = new MockAgent();
         var context = new MiddlewareContext(Messages: inputMessages, Options: null);
@@ -1080,6 +1110,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal("gen1", toolsCallResultMessage.GenerationId);
         Assert.Equal(0, toolsCallResultMessage.MessageOrderIdx);
     }
+
     [Fact]
     public async Task Upstream_CreatesToolsCallAggregateMessage_FromAggregatedMessages()
     {
@@ -1096,7 +1127,7 @@ public class MessageTransformationMiddlewareTests
                 Index = 0,
                 ToolCallIdx = 0,
                 GenerationId = "gen1",
-                MessageOrderIdx = 0
+                MessageOrderIdx = 0,
             },
             new ToolCallMessage
             {
@@ -1106,7 +1137,7 @@ public class MessageTransformationMiddlewareTests
                 Index = 1,
                 ToolCallIdx = 1,
                 GenerationId = "gen1",
-                MessageOrderIdx = 1
+                MessageOrderIdx = 1,
             },
             // Tool call results
             new ToolCallResultMessage
@@ -1114,15 +1145,15 @@ public class MessageTransformationMiddlewareTests
                 ToolCallId = "call_1",
                 Result = "result1",
                 GenerationId = "gen1",
-                MessageOrderIdx = 2
+                MessageOrderIdx = 2,
             },
             new ToolCallResultMessage
             {
                 ToolCallId = "call_2",
                 Result = "result2",
                 GenerationId = "gen1",
-                MessageOrderIdx = 3
-            }
+                MessageOrderIdx = 3,
+            },
         };
         var agent = new MockAgent();
         var context = new MiddlewareContext(Messages: inputMessages, Options: null);
@@ -1139,6 +1170,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal("result1", aggregate.ToolsCallResult.ToolCallResults[0].Result);
         Assert.Equal("result2", aggregate.ToolsCallResult.ToolCallResults[1].Result);
     }
+
     [Fact]
     public async Task Upstream_PreservesMessageOrdering_WhenAggregating()
     {
@@ -1146,7 +1178,12 @@ public class MessageTransformationMiddlewareTests
         var middleware = new MessageTransformationMiddleware();
         var inputMessages = new List<IMessage>
         {
-            new TextMessage { Text = "Before", GenerationId = "gen1", MessageOrderIdx = 0 },
+            new TextMessage
+            {
+                Text = "Before",
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
             new ToolCallMessage
             {
                 FunctionName = "func1",
@@ -1154,7 +1191,7 @@ public class MessageTransformationMiddlewareTests
                 ToolCallId = "call_1",
                 ToolCallIdx = 0,
                 GenerationId = "gen1",
-                MessageOrderIdx = 1
+                MessageOrderIdx = 1,
             },
             new ToolCallMessage
             {
@@ -1163,9 +1200,14 @@ public class MessageTransformationMiddlewareTests
                 ToolCallId = "call_2",
                 ToolCallIdx = 1,
                 GenerationId = "gen1",
-                MessageOrderIdx = 2
+                MessageOrderIdx = 2,
             },
-            new TextMessage { Text = "After", GenerationId = "gen1", MessageOrderIdx = 3 }
+            new TextMessage
+            {
+                Text = "After",
+                GenerationId = "gen1",
+                MessageOrderIdx = 3,
+            },
         };
         var agent = new MockAgent();
         var context = new MiddlewareContext(Messages: inputMessages, Options: null);
@@ -1185,6 +1227,7 @@ public class MessageTransformationMiddlewareTests
         Assert.IsType<TextMessage>(composite.Messages[2]);
         Assert.Equal("After", ((TextMessage)composite.Messages[2]).Text);
     }
+
     [Fact]
     public async Task Upstream_HandlesMessagesWithoutGenerationId()
     {
@@ -1200,8 +1243,8 @@ public class MessageTransformationMiddlewareTests
                 ToolCallId = "call_1",
                 ToolCallIdx = 0,
                 GenerationId = "gen1",
-                MessageOrderIdx = 0
-            }
+                MessageOrderIdx = 0,
+            },
         };
         var agent = new MockAgent();
         var context = new MiddlewareContext(Messages: inputMessages, Options: null);
@@ -1218,6 +1261,7 @@ public class MessageTransformationMiddlewareTests
         var toolsCall = Assert.IsType<ToolsCallMessage>(receivedMessages[1]);
         Assert.Single(toolsCall.ToolCalls);
     }
+
     [Fact]
     public async Task Upstream_HandlesMixedGenerationIds()
     {
@@ -1232,7 +1276,7 @@ public class MessageTransformationMiddlewareTests
                 ToolCallId = "call_1",
                 ToolCallIdx = 0,
                 GenerationId = "gen1",
-                MessageOrderIdx = 0
+                MessageOrderIdx = 0,
             },
             new ToolCallMessage
             {
@@ -1241,8 +1285,8 @@ public class MessageTransformationMiddlewareTests
                 ToolCallId = "call_2",
                 ToolCallIdx = 0,
                 GenerationId = "gen2",
-                MessageOrderIdx = 0
-            }
+                MessageOrderIdx = 0,
+            },
         };
         var agent = new MockAgent();
         var context = new MiddlewareContext(Messages: inputMessages, Options: null);
@@ -1261,6 +1305,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal("gen2", toolsCall2.GenerationId);
         Assert.Equal("func2", toolsCall2.ToolCalls[0].FunctionName);
     }
+
     [Fact]
     public async Task Upstream_PreservesReasoningMessage_WhenCreatingToolCallAggregate()
     {
@@ -1336,8 +1381,10 @@ public class MessageTransformationMiddlewareTests
         // Verify tool call aggregate is also present
         var aggregate = Assert.IsType<ToolsCallAggregateMessage>(composite.Messages[2]);
         Assert.Equal("search_books", aggregate.ToolsCallMessage.ToolCalls[0].FunctionName);
-        Assert.Equal("Found: Hematosis is the process of gas exchange in lungs.",
-            aggregate.ToolsCallResult.ToolCallResults[0].Result);
+        Assert.Equal(
+            "Found: Hematosis is the process of gas exchange in lungs.",
+            aggregate.ToolsCallResult.ToolCallResults[0].Result
+        );
     }
 
     [Fact]
@@ -1442,8 +1489,8 @@ public class MessageTransformationMiddlewareTests
                 ToolCallId = "call_1",
                 ToolCallIdx = 0,
                 GenerationId = "gen1",
-                MessageOrderIdx = 0
-            }
+                MessageOrderIdx = 0,
+            },
         };
         var agent = new MockAgent();
         var context = new MiddlewareContext(Messages: inputMessages, Options: null);
@@ -1464,10 +1511,12 @@ public class MessageTransformationMiddlewareTests
         private readonly IMessage[] _responsesToReturn;
         public List<IMessage> ReceivedMessages { get; } = [];
         public static string Name => "MockAgent";
+
         public MockAgent(params IMessage[] responsesToReturn)
         {
             _responsesToReturn = responsesToReturn;
         }
+
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
@@ -1478,14 +1527,17 @@ public class MessageTransformationMiddlewareTests
             return Task.FromResult<IEnumerable<IMessage>>(_responsesToReturn);
         }
     }
+
     private class MockStreamingAgent : IStreamingAgent
     {
         private readonly IAsyncEnumerable<IMessage> _streamToReturn;
         public static string Name => "MockStreamingAgent";
+
         public MockStreamingAgent(IAsyncEnumerable<IMessage> streamToReturn)
         {
             _streamToReturn = streamToReturn;
         }
+
         public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
@@ -1494,6 +1546,7 @@ public class MessageTransformationMiddlewareTests
         {
             return Task.FromResult(_streamToReturn);
         }
+
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
@@ -1505,6 +1558,7 @@ public class MessageTransformationMiddlewareTests
     }
     #endregion
 }
+
 internal static class AsyncEnumerableExtensions
 {
     public static async Task<List<T>> ToListAsync<T>(this IAsyncEnumerable<T> source)
@@ -1517,6 +1571,7 @@ internal static class AsyncEnumerableExtensions
 
         return list;
     }
+
     public static async IAsyncEnumerable<T> ToAsyncEnumerable<T>(this IEnumerable<T> source)
     {
         foreach (var item in source)

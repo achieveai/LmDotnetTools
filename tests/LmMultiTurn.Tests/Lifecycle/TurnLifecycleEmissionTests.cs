@@ -40,10 +40,9 @@ public class TurnLifecycleEmissionTests
         await agent.CloseTurnAsync(assignment.RunId, assignment.GenerationId);
         await agent.CompleteAsync(assignment);
 
-        publisher.EventTypes.Should().Equal(
-            LifecycleEventTypes.RunStarted,
-            LifecycleEventTypes.TurnCompleted,
-            LifecycleEventTypes.RunCompleted);
+        publisher
+            .EventTypes.Should()
+            .Equal(LifecycleEventTypes.RunStarted, LifecycleEventTypes.TurnCompleted, LifecycleEventTypes.RunCompleted);
 
         var turn = publisher.PayloadAt<TurnCompletedPayload>(1);
         turn.RunId.Should().Be(assignment.RunId);
@@ -54,7 +53,8 @@ public class TurnLifecycleEmissionTests
         turn.ToolCallCount.Should().Be(0);
         turn.Error.Should().BeNull();
 
-        publisher.PayloadAt<RunCompletedPayload>(2)
+        publisher
+            .PayloadAt<RunCompletedPayload>(2)
             .TurnCount.Should()
             .Be(1, "the run reports the turns it was told about");
     }
@@ -112,8 +112,8 @@ public class TurnLifecycleEmissionTests
         await agent.CloseTurnAsync(assignment.RunId, assignment.GenerationId);
         await agent.CloseTurnAsync(assignment.RunId, assignment.GenerationId);
 
-        publisher.EventTypes
-            .Count(t => t == LifecycleEventTypes.TurnCompleted)
+        publisher
+            .EventTypes.Count(t => t == LifecycleEventTypes.TurnCompleted)
             .Should()
             .Be(1, "a second report would double-count the turn a subscriber already saw finish");
     }
@@ -129,9 +129,7 @@ public class TurnLifecycleEmissionTests
 
         var racers = Enumerable
             .Range(0, 8)
-            .Select(_ => Task.Run(() => agent.Lifecycle.TurnCompletedAsync(
-                assignment.RunId,
-                assignment.GenerationId)))
+            .Select(_ => Task.Run(() => agent.Lifecycle.TurnCompletedAsync(assignment.RunId, assignment.GenerationId)))
             .ToArray();
 
         var winners = await Task.WhenAll(racers);
@@ -155,9 +153,9 @@ public class TurnLifecycleEmissionTests
 
         var turns = publisher.Payloads<TurnCompletedPayload>(LifecycleEventTypes.TurnCompleted);
         turns.Should().ContainSingle();
-        turns[0].Outcome.Should().Be(
-            LifecycleTurnOutcomes.Completed,
-            "the turn had already finished normally before the run went wrong");
+        turns[0]
+            .Outcome.Should()
+            .Be(LifecycleTurnOutcomes.Completed, "the turn had already finished normally before the run went wrong");
     }
 
     #endregion
@@ -176,10 +174,9 @@ public class TurnLifecycleEmissionTests
 
         await agent.CompleteAsync(assignment, isError: true, error: "the provider refused");
 
-        publisher.EventTypes.Should().Equal(
-            LifecycleEventTypes.RunStarted,
-            LifecycleEventTypes.TurnCompleted,
-            LifecycleEventTypes.RunCompleted);
+        publisher
+            .EventTypes.Should()
+            .Equal(LifecycleEventTypes.RunStarted, LifecycleEventTypes.TurnCompleted, LifecycleEventTypes.RunCompleted);
 
         var turn = publisher.PayloadAt<TurnCompletedPayload>(1);
         turn.Outcome.Should().Be(LifecycleTurnOutcomes.Error);
@@ -198,7 +195,8 @@ public class TurnLifecycleEmissionTests
             "thread-1",
             new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store },
             store,
-            openTurnOnLoop: true);
+            openTurnOnLoop: true
+        );
 
         var run = agent.RunAsync();
         var runId = await agent.WaitForLoopRunAsync();
@@ -212,10 +210,9 @@ public class TurnLifecycleEmissionTests
         turn.RunId.Should().Be(runId);
         turn.Outcome.Should().Be(LifecycleTurnOutcomes.Cancelled);
 
-        publisher.EventTypes.Should().Equal(
-            LifecycleEventTypes.RunStarted,
-            LifecycleEventTypes.TurnCompleted,
-            LifecycleEventTypes.RunCompleted);
+        publisher
+            .EventTypes.Should()
+            .Equal(LifecycleEventTypes.RunStarted, LifecycleEventTypes.TurnCompleted, LifecycleEventTypes.RunCompleted);
     }
 
     [Fact]
@@ -226,7 +223,8 @@ public class TurnLifecycleEmissionTests
         var agent = new TurnProbeAgent(
             "thread-1",
             new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store },
-            store);
+            store
+        );
 
         var assignment = await agent.StartAsync();
         agent.OpenTurn(assignment.RunId, assignment.GenerationId);
@@ -249,11 +247,13 @@ public class TurnLifecycleEmissionTests
         await agent.CompleteAsync(assignment, outcome: LifecycleRunOutcomes.MaxTurns);
 
         publisher.PayloadAt<RunCompletedPayload>(2).Outcome.Should().Be(LifecycleRunOutcomes.MaxTurns);
-        publisher.PayloadAt<TurnCompletedPayload>(1)
+        publisher
+            .PayloadAt<TurnCompletedPayload>(1)
             .Outcome.Should()
             .Be(
                 LifecycleTurnOutcomes.Completed,
-                "a run that stops at its ceiling stopped between turns — the turn itself was fine");
+                "a run that stops at its ceiling stopped between turns — the turn itself was fine"
+            );
     }
 
     [Fact]
@@ -261,11 +261,7 @@ public class TurnLifecycleEmissionTests
     {
         var store = new InMemoryConversationStore();
         var publisher = new RecordingLifecyclePublisher();
-        var services = new MultiTurnLifecycleServices
-        {
-            Publisher = publisher,
-            LifecycleStore = store,
-        };
+        var services = new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store };
 
         var first = new RunTurnLifecycleFinalizer("thread-1", services);
         var second = new RunTurnLifecycleFinalizer("thread-1", services);
@@ -275,12 +271,8 @@ public class TurnLifecycleEmissionTests
         first.TurnStarted("run-1", "gen-1");
         second.TurnStarted("run-1", "gen-1");
 
-        (await first.TryCompleteRunAsync("run-1", "gen-1", LifecycleRunOutcomes.Completed))
-            .Should()
-            .BeTrue();
-        (await second.TryCompleteRunAsync("run-1", "gen-1", LifecycleRunOutcomes.Error))
-            .Should()
-            .BeFalse();
+        (await first.TryCompleteRunAsync("run-1", "gen-1", LifecycleRunOutcomes.Completed)).Should().BeTrue();
+        (await second.TryCompleteRunAsync("run-1", "gen-1", LifecycleRunOutcomes.Error)).Should().BeFalse();
 
         // The loser swept its own copy of the turn before discovering it lost the run. Reporting a
         // turn is cheap and idempotent per finalizer, but the run must still end once.
@@ -309,7 +301,8 @@ public class TurnLifecycleEmissionTests
         agent.Observe(
             assignment.RunId,
             assignment.GenerationId,
-            new ToolCallUpdateMessage { FunctionName = "search", FunctionArgs = "{\"q\"" });
+            new ToolCallUpdateMessage { FunctionName = "search", FunctionArgs = "{\"q\"" }
+        );
         agent.Observe(assignment.RunId, assignment.GenerationId, Text("the answer"));
 
         await agent.CloseTurnAsync(assignment.RunId, assignment.GenerationId);
@@ -340,15 +333,18 @@ public class TurnLifecycleEmissionTests
                     new ToolCall { FunctionName = "search", ToolCallId = "call-1" },
                     new ToolCall { FunctionName = "read", ToolCallId = "call-2" },
                 ],
-            });
+            }
+        );
         agent.Observe(
             assignment.RunId,
             assignment.GenerationId,
-            new ToolCallMessage { FunctionName = "write", ToolCallId = "call-3" });
+            new ToolCallMessage { FunctionName = "write", ToolCallId = "call-3" }
+        );
         agent.Observe(
             assignment.RunId,
             assignment.GenerationId,
-            new ToolCallResultMessage { ToolCallId = "call-3", Result = "ok" });
+            new ToolCallResultMessage { ToolCallId = "call-3", Result = "ok" }
+        );
 
         await agent.CloseTurnAsync(assignment.RunId, assignment.GenerationId);
 
@@ -370,8 +366,14 @@ public class TurnLifecycleEmissionTests
             assignment.GenerationId,
             new UsageMessage
             {
-                Usage = new Usage { PromptTokens = 120, CompletionTokens = 30, TotalTokens = 150 },
-            });
+                Usage = new Usage
+                {
+                    PromptTokens = 120,
+                    CompletionTokens = 30,
+                    TotalTokens = 150,
+                },
+            }
+        );
 
         await agent.CloseTurnAsync(assignment.RunId, assignment.GenerationId);
 
@@ -380,8 +382,9 @@ public class TurnLifecycleEmissionTests
         usage!.PromptTokens.Should().Be(120);
         usage.CompletionTokens.Should().Be(30);
         usage.TotalTokens.Should().Be(150);
-        usage.CachedPromptTokens.Should().BeNull(
-            "a provider that reports no cache detail is not a provider reporting zero cached tokens");
+        usage
+            .CachedPromptTokens.Should()
+            .BeNull("a provider that reports no cache detail is not a provider reporting zero cached tokens");
         usage.ReasoningTokens.Should().BeNull();
         usage.Completeness.Should().Be(LifecycleUsageCompleteness.Complete);
     }
@@ -407,7 +410,8 @@ public class TurnLifecycleEmissionTests
                     InputTokenDetails = new InputTokenDetails { CachedTokens = 96 },
                     OutputTokenDetails = new OutputTokenDetails { ReasoningTokens = 12 },
                 },
-            });
+            }
+        );
 
         await agent.CloseTurnAsync(assignment.RunId, assignment.GenerationId);
 
@@ -472,15 +476,15 @@ public class TurnLifecycleEmissionTests
 
     private static TextMessage Text(string text) => new() { Text = text, Role = Role.Assistant };
 
-    private static (TurnProbeAgent Agent, RecordingLifecyclePublisher Publisher) CreateWiredAgent(
-        string threadId)
+    private static (TurnProbeAgent Agent, RecordingLifecyclePublisher Publisher) CreateWiredAgent(string threadId)
     {
         var store = new InMemoryConversationStore();
         var publisher = new RecordingLifecyclePublisher();
         var agent = new TurnProbeAgent(
             threadId,
             new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store },
-            store);
+            store
+        );
         return (agent, publisher);
     }
 
@@ -491,14 +495,16 @@ public class TurnLifecycleEmissionTests
     private sealed class TurnProbeAgent : MultiTurnAgentBase
     {
         private readonly bool _openTurnOnLoop;
-        private readonly TaskCompletionSource<string> _loopRunStarted =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<string> _loopRunStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
 
         public TurnProbeAgent(
             string threadId,
             MultiTurnLifecycleServices? services = null,
             IConversationStore? store = null,
-            bool openTurnOnLoop = false)
+            bool openTurnOnLoop = false
+        )
             : base(threadId, store: store, lifecycleServices: services)
         {
             _openTurnOnLoop = openTurnOnLoop;
@@ -506,8 +512,7 @@ public class TurnLifecycleEmissionTests
 
         public new RunTurnLifecycleFinalizer Lifecycle => base.Lifecycle;
 
-        public Task<RunAssignment> StartAsync(CancellationToken ct = default) =>
-            StartRunAsync([], null, ct);
+        public Task<RunAssignment> StartAsync(CancellationToken ct = default) => StartRunAsync([], null, ct);
 
         public void OpenTurn(string runId, string generationId) => BeginTurn(runId, generationId);
 
@@ -518,22 +523,24 @@ public class TurnLifecycleEmissionTests
             string runId,
             string generationId,
             string? outcome = null,
-            CancellationToken ct = default) =>
-            CompleteTurnAsync(runId, generationId, outcome, ct);
+            CancellationToken ct = default
+        ) => CompleteTurnAsync(runId, generationId, outcome, ct);
 
         public Task CompleteAsync(
             RunAssignment assignment,
             bool isError = false,
             string? error = null,
             string? outcome = null,
-            CancellationToken ct = default) =>
+            CancellationToken ct = default
+        ) =>
             CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
                 isError: isError,
                 errorMessage: error,
                 outcome: outcome,
-                ct: ct);
+                ct: ct
+            );
 
         public Task<string> WaitForLoopRunAsync() => _loopRunStarted.Task;
 

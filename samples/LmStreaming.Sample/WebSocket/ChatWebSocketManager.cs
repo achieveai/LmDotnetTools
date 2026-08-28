@@ -1,16 +1,16 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmAgentInfra;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
-using AchieveAi.LmDotnetTools.LmAgentInfra;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using Serilog.Context;
@@ -28,7 +28,10 @@ public sealed class ChatWebSocketManager
     /// instead of silently substituting replacement characters, so malformed inbound frames are
     /// detected and skipped rather than corrupting a relayed prompt.
     /// </summary>
-    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+    private static readonly UTF8Encoding StrictUtf8 = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true
+    );
 
     private readonly MultiTurnAgentPool _agentPool;
     private readonly WebSocketConnectionRegistry _connectionRegistry;
@@ -83,7 +86,8 @@ public sealed class ChatWebSocketManager
         Services.WorkflowRunRegistry workflowRunRegistry,
         PendingAuthCoordinator pendingAuth,
         IConversationStore conversationStore,
-        ILogger<ChatWebSocketManager> logger)
+        ILogger<ChatWebSocketManager> logger
+    )
     {
         _agentPool = agentPool ?? throw new ArgumentNullException(nameof(agentPool));
         _connectionRegistry = connectionRegistry ?? throw new ArgumentNullException(nameof(connectionRegistry));
@@ -127,7 +131,8 @@ public sealed class ChatWebSocketManager
         StreamWriter? recordWriter,
         CancellationToken cancellationToken,
         string? workspaceId = null,
-        string? ownerUserId = null)
+        string? ownerUserId = null
+    )
     {
         ArgumentNullException.ThrowIfNull(webSocket);
         var codexSessionId = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
@@ -145,7 +150,8 @@ public sealed class ChatWebSocketManager
             mode?.Id ?? "default",
             providerId ?? "(default)",
             effectiveProviderId ?? "(default)",
-            codexSessionId);
+            codexSessionId
+        );
 
         var resolvedMode = mode ?? SystemChatModes.All[0];
 
@@ -162,8 +168,10 @@ public sealed class ChatWebSocketManager
                     WebSocketAuthEventNotifier.BuildAuthRequiredJson(
                         pending.ProviderId,
                         pending.SigninUrl,
-                        pending.Reason),
-                    cancellationToken);
+                        pending.Reason
+                    ),
+                    cancellationToken
+                );
             }
 
             // Get or create agent for this thread with the specified mode and requested provider.
@@ -184,10 +192,13 @@ public sealed class ChatWebSocketManager
                     providerId,
                     requestResponseDumpFileName,
                     workspaceId,
-                    ownerUserId: ownerUserId);
-                agent = (await _agentPool
-                    .EnsureCurrentAgentAsync(threadId, ct: cancellationToken, ownerUserId: ownerUserId)
-                    .ConfigureAwait(false)).Agent;
+                    ownerUserId: ownerUserId
+                );
+                agent = (
+                    await _agentPool
+                        .EnsureCurrentAgentAsync(threadId, ct: cancellationToken, ownerUserId: ownerUserId)
+                        .ConfigureAwait(false)
+                ).Agent;
             }
             catch (ProviderUnavailableException ex)
             {
@@ -196,7 +207,8 @@ public sealed class ChatWebSocketManager
                     "Provider {ProviderId} unavailable for thread {ThreadId}: {Reason}",
                     ex.ProviderId,
                     threadId,
-                    ex.Reason);
+                    ex.Reason
+                );
 
                 await SendProviderUnavailableErrorAsync(connection, ex, recordWriter, cancellationToken);
                 return;
@@ -211,7 +223,8 @@ public sealed class ChatWebSocketManager
                     "Sandbox unavailable for thread {ThreadId} (workspace {WorkspaceId}, gateway status {StatusCode})",
                     threadId,
                     workspaceId,
-                    ex.StatusCode);
+                    ex.StatusCode
+                );
 
                 await SendSandboxUnavailableErrorAsync(connection, ex, recordWriter, cancellationToken);
                 return;
@@ -228,7 +241,8 @@ public sealed class ChatWebSocketManager
                     "Credential conflict for thread {ThreadId}: bound to '{ExistingAppId}', requested '{RequestedAppId}'",
                     threadId,
                     ex.ExistingAppId,
-                    ex.RequestedAppId);
+                    ex.RequestedAppId
+                );
 
                 await SendCredentialConflictErrorAsync(connection, ex, recordWriter, cancellationToken);
                 return;
@@ -251,12 +265,12 @@ public sealed class ChatWebSocketManager
                     "Principal conflict for thread {ThreadId}: bound to user '{ExistingUserId}', requested '{RequestedUserId}'",
                     threadId,
                     ex.ExistingUserId,
-                    ex.RequestedUserId);
+                    ex.RequestedUserId
+                );
 
                 await SendPrincipalConflictErrorAsync(connection, ex, recordWriter, cancellationToken);
                 return;
             }
-
             catch (AgentNotPooledException ex)
             {
                 // Setup calls GetOrCreateAgent and then EnsureCurrentAgentAsync, and a grantee handoff
@@ -269,7 +283,8 @@ public sealed class ChatWebSocketManager
                 _logger.LogInformation(
                     ex,
                     "Connection setup for thread {ThreadId} met a released agent; closing so the client reconnects",
-                    threadId);
+                    threadId
+                );
 
                 await SendAgentReleasedAsync(connection, recordWriter, cancellationToken);
                 return;
@@ -279,7 +294,13 @@ public sealed class ChatWebSocketManager
             using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
             // Start subscription task to stream messages to client
-            var subscriptionTask = StreamMessagesToClientAsync(connection, agent, threadId, recordWriter, connectionCts.Token);
+            var subscriptionTask = StreamMessagesToClientAsync(
+                connection,
+                agent,
+                threadId,
+                recordWriter,
+                connectionCts.Token
+            );
 
             // Handle incoming messages from client
             var receiveTask = ReceiveMessagesFromClientAsync(
@@ -288,7 +309,8 @@ public sealed class ChatWebSocketManager
                 agent,
                 threadId,
                 connectionCts.Token,
-                ownerUserId);
+                ownerUserId
+            );
 
             try
             {
@@ -351,14 +373,16 @@ public sealed class ChatWebSocketManager
         string parentThreadId,
         string agentId,
         bool mayReplayPersistedTranscript,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(webSocket);
 
         _logger.LogInformation(
             "Sub-agent WebSocket connection started for parent thread {ParentThreadId} sub-agent {AgentId}",
             parentThreadId,
-            agentId);
+            agentId
+        );
 
         // Register before resolution so every outbound frame (including the subagent_unavailable
         // error below) flows through the connection's single gated write path, mirroring
@@ -370,14 +394,17 @@ public sealed class ChatWebSocketManager
 
             // Resolve the stream: an Agent-tool sub-agent (via its parent's SubAgentManager) OR a
             // StartWorkflowAgent run's isolated controller loop (via this conversation's WorkflowManager).
-            System.Collections.Generic.IAsyncEnumerable<AchieveAi.LmDotnetTools.LmCore.Messages.IMessage>? stream = null;
+            System.Collections.Generic.IAsyncEnumerable<AchieveAi.LmDotnetTools.LmCore.Messages.IMessage>? stream =
+                null;
             SubAgentManager? subAgentManager = null;
 
-            if (_agentPool.TryGet(parentThreadId, out var parentAgent)
+            if (
+                _agentPool.TryGet(parentThreadId, out var parentAgent)
                 && parentAgent is MultiTurnAgentLoop loop
                 && loop.SubAgentManager is { } sam
                 && sam.TryGetAgent(agentId, out var childAgent)
-                && childAgent is not null)
+                && childAgent is not null
+            )
             {
                 subAgentManager = sam;
 
@@ -387,21 +414,25 @@ public sealed class ChatWebSocketManager
                 // internally so the focused client keeps receiving the restarted turn's frames.
                 stream = sam.SubscribeToAgentAcrossRestartsAsync(agentId, connectionCts.Token);
             }
-            else if (_workflowRunRegistry.TryGet(parentThreadId, out var workflowManager)
+            else if (
+                _workflowRunRegistry.TryGet(parentThreadId, out var workflowManager)
                 && workflowManager is not null
                 && workflowManager.TryGetRunLoop(agentId, out var controllerLoop)
-                && controllerLoop is not null)
+                && controllerLoop is not null
+            )
             {
                 // A StartWorkflowAgent run: stream the isolated controller loop's own conversation, the
                 // same way the main /ws pump subscribes to a loop. The tab is read-only.
                 stream = controllerLoop.SubscribeAsync(connectionCts.Token);
             }
-            else if (_workflowRunRegistry.TryGet(parentThreadId, out var nestingManager)
+            else if (
+                _workflowRunRegistry.TryGet(parentThreadId, out var nestingManager)
                 && nestingManager is not null
                 && nestingManager.TryGetRunLoopOwningSubAgent(agentId, out var ownerLoop)
                 && ownerLoop?.SubAgentManager is { } nestedManager
                 && nestedManager.TryGetAgent(agentId, out var nestedAgent)
-                && nestedAgent is not null)
+                && nestedAgent is not null
+            )
             {
                 // A nested delegate spawned BY a running controller: stream it through the controller's
                 // own SubAgentManager, same as a top-level sub-agent (restart-spanning, follow-ups relay).
@@ -431,7 +462,8 @@ public sealed class ChatWebSocketManager
                     _logger.LogWarning(
                         "Sub-agent {AgentId} unavailable for parent thread {ParentThreadId} (no live stream, no persisted history)",
                         agentId,
-                        parentThreadId);
+                        parentThreadId
+                    );
 
                     await SendSubAgentUnavailableErrorAsync(connection, agentId, cancellationToken);
                     return;
@@ -441,11 +473,13 @@ public sealed class ChatWebSocketManager
                     "Sub-agent {AgentId} has no live stream; replaying {Count} persisted messages read-only for parent thread {ParentThreadId}",
                     agentId,
                     persisted.Count,
-                    parentThreadId);
+                    parentThreadId
+                );
 
                 // The transcript itself renders from REST; the socket emits ONLY the done sentinel so the
                 // client settles its focused-streaming state (no WS content ⇒ no merge-key/duplicate risk).
-                var doneJson = /*lang=json,strict*/ """{"$type":"done"}""";
+                var doneJson = /*lang=json,strict*/
+                    """{"$type":"done"}""";
                 if (await connection.TrySendTextAsync(doneJson, connectionCts.Token))
                 {
                     // Keep the read-only socket open until the client disconnects (or shutdown cancels),
@@ -454,7 +488,8 @@ public sealed class ChatWebSocketManager
                         webSocket,
                         $"subagent-replay {agentId}",
                         (_, _) => Task.CompletedTask,
-                        connectionCts.Token);
+                        connectionCts.Token
+                    );
                 }
 
                 return;
@@ -469,9 +504,18 @@ public sealed class ChatWebSocketManager
             // receive loop just drains client frames to detect disconnect.
             var receiveTask = subAgentManager is not null
                 ? ReceiveSubAgentMessagesFromClientAsync(
-                    webSocket, connection, subAgentManager, agentId, connectionCts.Token)
+                    webSocket,
+                    connection,
+                    subAgentManager,
+                    agentId,
+                    connectionCts.Token
+                )
                 : ReceiveTextMessagesAsync(
-                    webSocket, $"workflow {agentId}", (_, _) => Task.CompletedTask, connectionCts.Token);
+                    webSocket,
+                    $"workflow {agentId}",
+                    (_, _) => Task.CompletedTask,
+                    connectionCts.Token
+                );
 
             try
             {
@@ -499,7 +543,8 @@ public sealed class ChatWebSocketManager
         _logger.LogInformation(
             "Sub-agent WebSocket connection ended for parent thread {ParentThreadId} sub-agent {AgentId}",
             parentThreadId,
-            agentId);
+            agentId
+        );
     }
 
     /// <summary>
@@ -510,7 +555,8 @@ public sealed class ChatWebSocketManager
         IMultiTurnAgent agent,
         string threadId,
         StreamWriter? recordWriter,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         return PumpMessagesToClientAsync(connection, agent.SubscribeAsync(ct), threadId, recordWriter, ct);
     }
@@ -529,7 +575,8 @@ public sealed class ChatWebSocketManager
         RegisteredWebSocketConnection connection,
         IAsyncEnumerable<IMessage> source,
         string agentId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         try
         {
@@ -550,7 +597,8 @@ public sealed class ChatWebSocketManager
                 "Sub-agent {AgentId} focus stream failed; category {FailureCategory}, exceptionType {ExceptionType}",
                 agentId,
                 "subagent_stream_failed",
-                ex.GetType().Name);
+                ex.GetType().Name
+            );
 
             await SendSubAgentStreamFailedErrorAsync(connection, agentId);
         }
@@ -565,9 +613,7 @@ public sealed class ChatWebSocketManager
     /// stream already faulted, and a cancelled connection token would suppress the very frame that tells
     /// the client what happened.
     /// </summary>
-    private async Task SendSubAgentStreamFailedErrorAsync(
-        RegisteredWebSocketConnection connection,
-        string agentId)
+    private async Task SendSubAgentStreamFailedErrorAsync(RegisteredWebSocketConnection connection, string agentId)
     {
         var payload = new Dictionary<string, object?>
         {
@@ -583,7 +629,8 @@ public sealed class ChatWebSocketManager
         await connection.TryCloseAsync(
             WebSocketCloseStatus.InternalServerError,
             "Sub-agent stream failed",
-            CancellationToken.None);
+            CancellationToken.None
+        );
     }
 
     /// <summary>
@@ -599,7 +646,8 @@ public sealed class ChatWebSocketManager
         IAsyncEnumerable<IMessage> source,
         string threadId,
         StreamWriter? recordWriter,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         try
         {
@@ -632,7 +680,8 @@ public sealed class ChatWebSocketManager
                     threadId,
                     message.MessageOrderIdx,
                     message.GenerationId,
-                    message.RunId);
+                    message.RunId
+                );
 
                 // Log cache metrics when usage message is received
                 if (message is UsageMessage usageMsg)
@@ -644,9 +693,8 @@ public sealed class ChatWebSocketManager
                     // SEPARATELY from input_tokens, so when the cache read exceeds the reported prompt we
                     // fall back to PromptTokens (the additive case) and never go negative. The proper
                     // cross-provider normalization of Usage is tracked as a follow-up.
-                    var uncachedInput = u.TotalCachedTokens <= u.PromptTokens
-                        ? u.PromptTokens - u.TotalCachedTokens
-                        : u.PromptTokens;
+                    var uncachedInput =
+                        u.TotalCachedTokens <= u.PromptTokens ? u.PromptTokens - u.TotalCachedTokens : u.PromptTokens;
                     _logger.LogInformation(
                         "Cache: read={CacheRead}, created={CacheCreation}, uncached_input={Uncached}, prompt={Prompt}, output={Output}, total={Total}",
                         u.TotalCachedTokens,
@@ -654,13 +702,15 @@ public sealed class ChatWebSocketManager
                         uncachedInput,
                         u.PromptTokens,
                         u.CompletionTokens,
-                        u.TotalTokens);
+                        u.TotalTokens
+                    );
                 }
 
                 // Send done signal after RunCompletedMessage
                 if (message is RunCompletedMessage)
                 {
-                    var doneJson = /*lang=json,strict*/ """{"$type":"done"}""";
+                    var doneJson = /*lang=json,strict*/
+                        """{"$type":"done"}""";
                     if (!await connection.TrySendTextAsync(doneJson, ct))
                     {
                         break;
@@ -693,7 +743,8 @@ public sealed class ChatWebSocketManager
                     await connection.TryCloseAsync(
                         WebSocketCloseStatus.NormalClosure,
                         "resync_required",
-                        CancellationToken.None);
+                        CancellationToken.None
+                    );
                     break;
                 }
             }
@@ -718,13 +769,14 @@ public sealed class ChatWebSocketManager
         IMultiTurnAgent agent,
         string threadId,
         CancellationToken ct,
-        string? ownerUserId)
-        => ReceiveTextMessagesAsync(
+        string? ownerUserId
+    ) =>
+        ReceiveTextMessagesAsync(
             webSocket,
             $"thread {threadId}",
-            (message, token) =>
-                ProcessClientMessageAsync(connection, agent, threadId, message, token, ownerUserId),
-            ct);
+            (message, token) => ProcessClientMessageAsync(connection, agent, threadId, message, token, ownerUserId),
+            ct
+        );
 
     /// <summary>
     /// Shared bounded receive pump used by BOTH the parent <c>/ws</c> and the <c>/ws/subagent</c>
@@ -752,7 +804,8 @@ public sealed class ChatWebSocketManager
         System.Net.WebSockets.WebSocket webSocket,
         string logLabel,
         Func<string, CancellationToken, Task> onMessage,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var buffer = new byte[4096];
         var assembled = new byte[4096];
@@ -774,7 +827,14 @@ public sealed class ChatWebSocketManager
 
                 if (!AppendFragment(ref assembled, ref length, buffer, result.Count))
                 {
-                    await CloseAsync(webSocket, WebSocketCloseStatus.MessageTooBig, "Message too big", logLabel, "oversized", length);
+                    await CloseAsync(
+                        webSocket,
+                        WebSocketCloseStatus.MessageTooBig,
+                        "Message too big",
+                        logLabel,
+                        "oversized",
+                        length
+                    );
                     return;
                 }
 
@@ -797,7 +857,14 @@ public sealed class ChatWebSocketManager
 
                             if (!AppendFragment(ref assembled, ref length, buffer, result.Count))
                             {
-                                await CloseAsync(webSocket, WebSocketCloseStatus.MessageTooBig, "Message too big", logLabel, "oversized", length);
+                                await CloseAsync(
+                                    webSocket,
+                                    WebSocketCloseStatus.MessageTooBig,
+                                    "Message too big",
+                                    logLabel,
+                                    "oversized",
+                                    length
+                                );
                                 return;
                             }
                         } while (!result.EndOfMessage);
@@ -808,8 +875,16 @@ public sealed class ChatWebSocketManager
                             "Inbound assembly deadline exceeded for {ConnectionLabel} after {ByteCount} bytes; category {RejectCategory}",
                             logLabel,
                             length,
-                            "assembly_timeout");
-                        await CloseAsync(webSocket, WebSocketCloseStatus.PolicyViolation, "Assembly deadline exceeded", logLabel, "assembly_timeout", length);
+                            "assembly_timeout"
+                        );
+                        await CloseAsync(
+                            webSocket,
+                            WebSocketCloseStatus.PolicyViolation,
+                            "Assembly deadline exceeded",
+                            logLabel,
+                            "assembly_timeout",
+                            length
+                        );
                         return;
                     }
                 }
@@ -826,7 +901,8 @@ public sealed class ChatWebSocketManager
                         "Skipped invalid UTF-8 message ({ByteCount} bytes) for {ConnectionLabel}; category {RejectCategory}",
                         length,
                         logLabel,
-                        "invalid_utf8");
+                        "invalid_utf8"
+                    );
                     continue;
                 }
 
@@ -855,7 +931,8 @@ public sealed class ChatWebSocketManager
     private async Task<bool> TryHandleNonTextFrameAsync(
         System.Net.WebSockets.WebSocket webSocket,
         WebSocketReceiveResult result,
-        string logLabel)
+        string logLabel
+    )
     {
         if (result.MessageType == WebSocketMessageType.Close)
         {
@@ -870,9 +947,13 @@ public sealed class ChatWebSocketManager
                 "Rejected binary frame ({ByteCount} bytes) for {ConnectionLabel}; category {RejectCategory}",
                 result.Count,
                 logLabel,
-                "binary_frame");
+                "binary_frame"
+            );
             await webSocket.CloseAsync(
-                WebSocketCloseStatus.InvalidMessageType, "Binary frames are not supported", CancellationToken.None);
+                WebSocketCloseStatus.InvalidMessageType,
+                "Binary frames are not supported",
+                CancellationToken.None
+            );
             return true;
         }
 
@@ -917,28 +998,24 @@ public sealed class ChatWebSocketManager
         string description,
         string logLabel,
         string category,
-        int byteCount)
+        int byteCount
+    )
     {
         _logger.LogWarning(
             "Closing {ConnectionLabel} ({ByteCount} bytes); category {RejectCategory}, status {CloseStatus}",
             logLabel,
             byteCount,
             category,
-            status);
+            status
+        );
 
         try
         {
             await webSocket.CloseAsync(status, description, CancellationToken.None);
         }
-        catch (WebSocketException)
-        {
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-        catch (InvalidOperationException)
-        {
-        }
+        catch (WebSocketException) { }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
     }
 
     /// <summary>
@@ -950,7 +1027,8 @@ public sealed class ChatWebSocketManager
         string threadId,
         string json,
         CancellationToken ct,
-        string? ownerUserId)
+        string? ownerUserId
+    )
     {
         if (TryPeekFrameType(json, out var frameType) && frameType == ClientToolResultFrameType)
         {
@@ -970,7 +1048,8 @@ public sealed class ChatWebSocketManager
             _logger.LogInformation(
                 "Processing chat request for thread {ThreadId}: {Message}",
                 threadId,
-                request.Message);
+                request.Message
+            );
 
             var refresh = await _agentPool
                 .EnsureCurrentAgentAsync(threadId, ct: ct, replace: false, ownerUserId: ownerUserId)
@@ -983,20 +1062,17 @@ public sealed class ChatWebSocketManager
                         or MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred
             )
             {
-                var refreshType = refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred
-                    ? "sandbox_session_refresh_deferred"
-                    : "sandbox_session_refresh";
-                var refreshed = JsonSerializer.Serialize(new Dictionary<string, string>
-                {
-                    ["$type"] = refreshType,
-                });
+                var refreshType =
+                    refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred
+                        ? "sandbox_session_refresh_deferred"
+                        : "sandbox_session_refresh";
+                var refreshed = JsonSerializer.Serialize(new Dictionary<string, string> { ["$type"] = refreshType });
                 _ = await connection.TrySendTextAsync(refreshed, ct).ConfigureAwait(false);
                 if (agentChanged || refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshRequired)
                 {
-                    await connection.TryCloseAsync(
-                        WebSocketCloseStatus.NormalClosure,
-                        "Sandbox session refreshed",
-                        ct).ConfigureAwait(false);
+                    await connection
+                        .TryCloseAsync(WebSocketCloseStatus.NormalClosure, "Sandbox session refreshed", ct)
+                        .ConfigureAwait(false);
                 }
                 return;
             }
@@ -1004,11 +1080,7 @@ public sealed class ChatWebSocketManager
             agent = refresh.Agent;
 
             // Create user message
-            var userMessage = new TextMessage
-            {
-                Role = Role.User,
-                Text = request.Message,
-            };
+            var userMessage = new TextMessage { Role = Role.User, Text = request.Message };
 
             // Send to agent (non-blocking - queues the message)
             var inputId = Guid.NewGuid().ToString();
@@ -1016,15 +1088,9 @@ public sealed class ChatWebSocketManager
             // No pool ledger call here (#442). The agent announces this accept itself from the place
             // the receipt id is minted, and the pool refuses to pool an agent that cannot - so the id
             // below reaches the ledger through SendAsync, and a failed send withdraws it there too.
-            var receipt = await agent.SendAsync(
-                [userMessage],
-                inputId: inputId,
-                ct: ct);
+            var receipt = await agent.SendAsync([userMessage], inputId: inputId, ct: ct);
 
-            _logger.LogDebug(
-                "Message queued for thread {ThreadId}, receipt: {InputId}",
-                threadId,
-                receipt.InputId);
+            _logger.LogDebug("Message queued for thread {ThreadId}, receipt: {InputId}", threadId, receipt.InputId);
         }
         catch (SandboxSessionUnavailableException ex)
         {
@@ -1105,12 +1171,14 @@ public sealed class ChatWebSocketManager
         RegisteredWebSocketConnection connection,
         SubAgentManager subAgentManager,
         string agentId,
-        CancellationToken ct)
-        => ReceiveTextMessagesAsync(
+        CancellationToken ct
+    ) =>
+        ReceiveTextMessagesAsync(
             webSocket,
             $"sub-agent {agentId}",
             (message, token) => RelaySubAgentMessageAsync(connection, subAgentManager, agentId, message, token),
-            ct);
+            ct
+        );
 
     /// <summary>
     /// Relays one already-assembled client frame to the focused child sub-agent. Never logs the message
@@ -1124,7 +1192,8 @@ public sealed class ChatWebSocketManager
         SubAgentManager subAgentManager,
         string agentId,
         string json,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var byteCount = Encoding.UTF8.GetByteCount(json);
 
@@ -1146,7 +1215,8 @@ public sealed class ChatWebSocketManager
                 "Discarded invalid JSON ({ByteCount} bytes) for sub-agent {AgentId}; category {RejectCategory}",
                 byteCount,
                 agentId,
-                "invalid_json");
+                "invalid_json"
+            );
             return;
         }
 
@@ -1156,14 +1226,12 @@ public sealed class ChatWebSocketManager
                 "Discarded chat request with no message ({ByteCount} bytes) for sub-agent {AgentId}; category {RejectCategory}",
                 byteCount,
                 agentId,
-                "invalid_json");
+                "invalid_json"
+            );
             return;
         }
 
-        _logger.LogDebug(
-            "Relaying message ({ByteCount} bytes) to sub-agent {AgentId}",
-            byteCount,
-            agentId);
+        _logger.LogDebug("Relaying message ({ByteCount} bytes) to sub-agent {AgentId}", byteCount, agentId);
 
         try
         {
@@ -1171,8 +1239,7 @@ public sealed class ChatWebSocketManager
             // completes, which would stall this receive loop. Background returns a JSON receipt
             // immediately (discarded) while the sibling StreamMessagesToClientAsync task carries the
             // child's live deltas back to the client.
-            _ = await subAgentManager.SendMessageAsync(
-                agentId, request.Message, runInBackground: true, ct);
+            _ = await subAgentManager.SendMessageAsync(agentId, request.Message, runInBackground: true, ct);
         }
         catch (ArgumentException)
         {
@@ -1183,7 +1250,8 @@ public sealed class ChatWebSocketManager
                 "Sub-agent {AgentId} is gone ({ByteCount} bytes discarded); category {RejectCategory}",
                 agentId,
                 byteCount,
-                "subagent_unavailable");
+                "subagent_unavailable"
+            );
             await SendSubAgentUnavailableErrorAsync(connection, agentId, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1217,7 +1285,8 @@ public sealed class ChatWebSocketManager
         IMultiTurnAgent agent,
         string threadId,
         string json,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (!TryParseClientToolResultFrame(json, out var toolCallId, out var result, out var isError))
         {
@@ -1232,7 +1301,8 @@ public sealed class ChatWebSocketManager
                 "client_tool_result for thread {ThreadId} (tool_call {ToolCallId}) targets an agent that "
                     + "does not support deferred tool resolution",
                 threadId,
-                toolCallId);
+                toolCallId
+            );
             await SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct);
             return;
         }
@@ -1251,7 +1321,8 @@ public sealed class ChatWebSocketManager
                 "client_tool_result for thread {ThreadId} (tool_call {ToolCallId}) targets an agent "
                     + "that was disposed before the frame was processed",
                 threadId,
-                toolCallId);
+                toolCallId
+            );
             await SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct);
             return;
         }
@@ -1272,7 +1343,8 @@ public sealed class ChatWebSocketManager
         SubAgentManager subAgentManager,
         string agentId,
         string json,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (!TryParseClientToolResultFrame(json, out var toolCallId, out var result, out var isError))
         {
@@ -1287,7 +1359,8 @@ public sealed class ChatWebSocketManager
                 "client_tool_result for sub-agent {AgentId} (tool_call {ToolCallId}) targets an unavailable "
                     + "or non-deferrable agent",
                 agentId,
-                toolCallId);
+                toolCallId
+            );
             await SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct);
             return;
         }
@@ -1306,7 +1379,8 @@ public sealed class ChatWebSocketManager
                 "client_tool_result for sub-agent {AgentId} (tool_call {ToolCallId}) targets an agent "
                     + "that was disposed before the frame was processed",
                 agentId,
-                toolCallId);
+                toolCallId
+            );
             await SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct);
             return;
         }
@@ -1336,9 +1410,7 @@ public sealed class ChatWebSocketManager
                 return true;
             }
         }
-        catch (JsonException)
-        {
-        }
+        catch (JsonException) { }
 
         return false;
     }
@@ -1354,7 +1426,8 @@ public sealed class ChatWebSocketManager
         string json,
         out string? toolCallId,
         out string? result,
-        out bool isError)
+        out bool isError
+    )
     {
         toolCallId = null;
         result = null;
@@ -1369,12 +1442,14 @@ public sealed class ChatWebSocketManager
                 return false;
             }
 
-            toolCallId = root.TryGetProperty("toolCallId", out var idEl) && idEl.ValueKind == JsonValueKind.String
-                ? idEl.GetString()
-                : null;
-            result = root.TryGetProperty("result", out var resultEl) && resultEl.ValueKind == JsonValueKind.String
-                ? resultEl.GetString()
-                : null;
+            toolCallId =
+                root.TryGetProperty("toolCallId", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                    ? idEl.GetString()
+                    : null;
+            result =
+                root.TryGetProperty("result", out var resultEl) && resultEl.ValueKind == JsonValueKind.String
+                    ? resultEl.GetString()
+                    : null;
             isError = root.TryGetProperty("isError", out var errorEl) && errorEl.ValueKind == JsonValueKind.True;
 
             return !string.IsNullOrEmpty(toolCallId) && result != null;
@@ -1395,14 +1470,20 @@ public sealed class ChatWebSocketManager
         RegisteredWebSocketConnection connection,
         string toolCallId,
         ResolveToolCallOutcome outcome,
-        CancellationToken ct) =>
+        CancellationToken ct
+    ) =>
         outcome switch
         {
             ResolveToolCallOutcome.Resolved => SendClientToolResultAckAsync(connection, toolCallId, "resolved", ct),
             ResolveToolCallOutcome.Duplicate => SendClientToolResultAckAsync(connection, toolCallId, "duplicate", ct),
             ResolveToolCallOutcome.NotFound => SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct),
             ResolveToolCallOutcome.Conflict => SendClientToolResultErrorAsync(connection, toolCallId, "conflict", ct),
-            ResolveToolCallOutcome.StoreFailed => SendClientToolResultErrorAsync(connection, toolCallId, "store_failed", ct),
+            ResolveToolCallOutcome.StoreFailed => SendClientToolResultErrorAsync(
+                connection,
+                toolCallId,
+                "store_failed",
+                ct
+            ),
             ResolveToolCallOutcome.Cancelled => SendClientToolResultErrorAsync(connection, toolCallId, "cancelled", ct),
             _ => SendClientToolResultErrorAsync(connection, toolCallId, "invalid", ct),
         };
@@ -1411,7 +1492,8 @@ public sealed class ChatWebSocketManager
         RegisteredWebSocketConnection connection,
         string toolCallId,
         string status,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var payload = new Dictionary<string, object?>
         {
@@ -1427,7 +1509,8 @@ public sealed class ChatWebSocketManager
         RegisteredWebSocketConnection connection,
         string? toolCallId,
         string code,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var payload = new Dictionary<string, object?>
         {
@@ -1472,7 +1555,8 @@ public sealed class ChatWebSocketManager
             byteCount,
             agentId,
             "relay_failed",
-            ex.GetType().Name);
+            ex.GetType().Name
+        );
 
     /// <summary>
     /// Sends a structured, correlated <c>relay_failed</c> error frame to the client without closing the
@@ -1482,7 +1566,8 @@ public sealed class ChatWebSocketManager
     private async Task SendRelayFailedErrorAsync(
         RegisteredWebSocketConnection connection,
         string agentId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var payload = new Dictionary<string, object?>
         {
@@ -1500,7 +1585,8 @@ public sealed class ChatWebSocketManager
     private async Task SendSubAgentUnavailableErrorAsync(
         RegisteredWebSocketConnection connection,
         string agentId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var payload = new Dictionary<string, object?>
         {
@@ -1520,14 +1606,16 @@ public sealed class ChatWebSocketManager
         await connection.TryCloseAsync(
             WebSocketCloseStatus.NormalClosure,
             "Sub-agent unavailable",
-            CancellationToken.None);
+            CancellationToken.None
+        );
     }
 
     private async Task SendProviderUnavailableErrorAsync(
         RegisteredWebSocketConnection connection,
         ProviderUnavailableException ex,
         StreamWriter? recordWriter,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var payload = new Dictionary<string, object?>
         {
@@ -1554,14 +1642,16 @@ public sealed class ChatWebSocketManager
         await connection.TryCloseAsync(
             WebSocketCloseStatus.NormalClosure,
             "Provider unavailable",
-            CancellationToken.None);
+            CancellationToken.None
+        );
     }
 
     private async Task SendSandboxUnavailableErrorAsync(
         RegisteredWebSocketConnection connection,
         SandboxSessionUnavailableException ex,
         StreamWriter? recordWriter,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var summary = ex.StatusCode is { } status
             ? $"Workspace Agent is unavailable: the sandbox gateway rejected the session (HTTP {status})."
@@ -1593,7 +1683,8 @@ public sealed class ChatWebSocketManager
         await connection.TryCloseAsync(
             WebSocketCloseStatus.NormalClosure,
             "Sandbox unavailable",
-            CancellationToken.None);
+            CancellationToken.None
+        );
     }
 
     /// <summary>
@@ -1610,12 +1701,10 @@ public sealed class ChatWebSocketManager
     private static async Task SendAgentReleasedAsync(
         RegisteredWebSocketConnection connection,
         StreamWriter? recordWriter,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
-        var json = JsonSerializer.Serialize(new Dictionary<string, string>
-        {
-            ["$type"] = "sandbox_session_refresh",
-        });
+        var json = JsonSerializer.Serialize(new Dictionary<string, string> { ["$type"] = "sandbox_session_refresh" });
 
         if (await connection.TrySendTextAsync(json, ct).ConfigureAwait(false) && recordWriter != null)
         {
@@ -1623,17 +1712,15 @@ public sealed class ChatWebSocketManager
             await recordWriter.FlushAsync();
         }
 
-        await connection.TryCloseAsync(
-            WebSocketCloseStatus.NormalClosure,
-            "Agent released",
-            ct).ConfigureAwait(false);
+        await connection.TryCloseAsync(WebSocketCloseStatus.NormalClosure, "Agent released", ct).ConfigureAwait(false);
     }
 
     private async Task SendPrincipalConflictErrorAsync(
         RegisteredWebSocketConnection connection,
         PrincipalConflictException ex,
         StreamWriter? recordWriter,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var payload = new Dictionary<string, object?>
         {
@@ -1645,8 +1732,7 @@ public sealed class ChatWebSocketManager
 
             // Deliberately does NOT relay ex.Message: that names the OTHER user's id, and this
             // connection has not been authorized to learn who else uses this conversation.
-            ["message"] =
-                "This conversation's agent is in use by a different user and cannot be continued here.",
+            ["message"] = "This conversation's agent is in use by a different user and cannot be continued here.",
         };
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
 
@@ -1664,14 +1750,16 @@ public sealed class ChatWebSocketManager
         await connection.TryCloseAsync(
             WebSocketCloseStatus.NormalClosure,
             "Principal conflict",
-            CancellationToken.None);
+            CancellationToken.None
+        );
     }
 
     private async Task SendCredentialConflictErrorAsync(
         RegisteredWebSocketConnection connection,
         SandboxCredentialConflictException ex,
         StreamWriter? recordWriter,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var payload = new Dictionary<string, object?>
         {
@@ -1684,8 +1772,7 @@ public sealed class ChatWebSocketManager
             // on the grounds that app ids are not app keys - true, and beside the point once the REST
             // body stopped carrying them. Two transports answering one condition must agree on what
             // the refused caller may learn. The ids remain on the log line above.
-            ["message"] =
-                "This conversation belongs to a different caller identity and cannot be continued here.",
+            ["message"] = "This conversation belongs to a different caller identity and cannot be continued here.",
         };
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
 
@@ -1703,7 +1790,8 @@ public sealed class ChatWebSocketManager
         await connection.TryCloseAsync(
             WebSocketCloseStatus.NormalClosure,
             "Credential conflict",
-            CancellationToken.None);
+            CancellationToken.None
+        );
     }
 }
 

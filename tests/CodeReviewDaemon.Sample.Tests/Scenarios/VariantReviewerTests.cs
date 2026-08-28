@@ -22,13 +22,15 @@ public sealed class VariantReviewerTests : LoggingTestBase
     private const string RunId = "b-variant-run-1";
     private const string Provider = "github";
 
-    private static readonly ReviewVariant ComparisonVariant =
-        new(VariantId: "b", ModelId: "anthropic/claude-haiku-4-5", SystemPrompt: "Be terse.", CanWrite: false);
+    private static readonly ReviewVariant ComparisonVariant = new(
+        VariantId: "b",
+        ModelId: "anthropic/claude-haiku-4-5",
+        SystemPrompt: "Be terse.",
+        CanWrite: false
+    );
 
     public VariantReviewerTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     [Fact]
     public async Task ReviewAsync_persists_b_variant_output_to_sqlite_with_model_and_variant()
@@ -39,8 +41,14 @@ public sealed class VariantReviewerTests : LoggingTestBase
 
         var agent = AgentReturning("## Review (B)\nConsider: extract the parser.");
 
-        var result = await Reviewer(agent, store).ReviewAsync(
-            reviewRunId, Provider, ComparisonVariant, "Review this diff:\n- Foo.cs", CancellationToken.None);
+        var result = await Reviewer(agent, store)
+            .ReviewAsync(
+                reviewRunId,
+                Provider,
+                ComparisonVariant,
+                "Review this diff:\n- Foo.cs",
+                CancellationToken.None
+            );
 
         result.ReviewText.Should().Be("## Review (B)\nConsider: extract the parser.");
         result.RunId.Should().Be(RunId);
@@ -71,8 +79,8 @@ public sealed class VariantReviewerTests : LoggingTestBase
         // The reviewer is constructed with NO filesystem/sandbox handle at all — the B arm structurally
         // cannot touch the ReviewBot checkout. We assert the artifact landed in SQLite and the (unused)
         // filesystem fake recorded zero writes.
-        _ = await Reviewer(agent, store).ReviewAsync(
-            reviewRunId, Provider, ComparisonVariant, "diff", CancellationToken.None);
+        _ = await Reviewer(agent, store)
+            .ReviewAsync(reviewRunId, Provider, ComparisonVariant, "diff", CancellationToken.None);
 
         store.GetArtifacts(reviewRunId).Should().ContainSingle();
         fs.Writes.Should().BeEmpty("the B arm persists only to SQLite, never the ReviewBot repo");
@@ -88,15 +96,23 @@ public sealed class VariantReviewerTests : LoggingTestBase
         var writingVariant = ComparisonVariant with { VariantId = "primary", CanWrite = true };
         var agent = AgentReturning("body");
 
-        var act = () => Reviewer(agent, store).ReviewAsync(
-            reviewRunId, Provider, writingVariant, "diff", CancellationToken.None);
+        var act = () =>
+            Reviewer(agent, store).ReviewAsync(reviewRunId, Provider, writingVariant, "diff", CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>();
         store.GetArtifacts(reviewRunId).Should().BeEmpty("a writing variant must never be persisted as a B artifact");
     }
 
     private static FakeMultiTurnAgent AgentReturning(string text) =>
-        new(RunId, new TextMessage { Text = text, Role = Role.Assistant, RunId = RunId });
+        new(
+            RunId,
+            new TextMessage
+            {
+                Text = text,
+                Role = Role.Assistant,
+                RunId = RunId,
+            }
+        );
 
     private VariantReviewer Reviewer(FakeMultiTurnAgent agent, ReviewStore store) =>
         new(agent, store, LoggerFactory.CreateLogger<VariantReviewer>());
@@ -106,26 +122,32 @@ public sealed class VariantReviewerTests : LoggingTestBase
 
     private static long SeedRun(ReviewStore store)
     {
-        var repoId = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "R_node_123",
-        });
-        return store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = "118",
-            HeadSha = "head-sha",
-            BaseSha = "base-sha",
-            TriggerWatermark = "wm-1",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "collect-only",
-            Stage = ReviewStage.Reviewed,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        }).Id;
+        var repoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "R_node_123",
+            }
+        );
+        return store
+            .CreateOrGetReviewRun(
+                new ReviewRun
+                {
+                    RepoId = repoId,
+                    PrId = "118",
+                    HeadSha = "head-sha",
+                    BaseSha = "base-sha",
+                    TriggerWatermark = "wm-1",
+                    ReviewKind = "full",
+                    VariantId = "primary",
+                    Mode = "collect-only",
+                    Stage = ReviewStage.Reviewed,
+                    WorkflowStatus = WorkflowStatus.Running,
+                    PrLifecycleState = PrLifecycleState.Open,
+                }
+            )
+            .Id;
     }
 }

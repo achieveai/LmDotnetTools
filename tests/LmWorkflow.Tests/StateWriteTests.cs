@@ -14,8 +14,7 @@ public class StateWriteTests
 {
     private static JsonObject State(string json) => (JsonObject)JsonNode.Parse(json)!;
 
-    private static int[] IntArray(JsonNode? node) =>
-        [.. node!.AsArray().Select(element => element!.GetValue<int>())];
+    private static int[] IntArray(JsonNode? node) => [.. node!.AsArray().Select(element => element!.GetValue<int>())];
 
     [Fact]
     public void Set_OverwritesDestination()
@@ -32,11 +31,7 @@ public class StateWriteTests
     {
         var state = State("""{ "arr": [1] }""");
 
-        StateWriter.Apply(
-            state,
-            new WriteSpec { To = "state.arr", Mode = WriteMode.Append },
-            JsonValue.Create(2)
-        );
+        StateWriter.Apply(state, new WriteSpec { To = "state.arr", Mode = WriteMode.Append }, JsonValue.Create(2));
 
         IntArray(state["arr"]).Should().Equal(1, 2);
     }
@@ -46,11 +41,7 @@ public class StateWriteTests
     {
         var state = State("""{ "arr": [1] }""");
 
-        StateWriter.Apply(
-            state,
-            new WriteSpec { To = "state.arr", Mode = WriteMode.Append },
-            JsonNode.Parse("[2, 3]")
-        );
+        StateWriter.Apply(state, new WriteSpec { To = "state.arr", Mode = WriteMode.Append }, JsonNode.Parse("[2, 3]"));
 
         // Concatenated (spread), NOT nested as [1, [2, 3]].
         IntArray(state["arr"]).Should().Equal(1, 2, 3);
@@ -61,11 +52,7 @@ public class StateWriteTests
     {
         var state = State("{}");
 
-        StateWriter.Apply(
-            state,
-            new WriteSpec { To = "state.arr", Mode = WriteMode.Append },
-            JsonValue.Create(5)
-        );
+        StateWriter.Apply(state, new WriteSpec { To = "state.arr", Mode = WriteMode.Append }, JsonValue.Create(5));
 
         IntArray(state["arr"]).Should().Equal(5);
     }
@@ -95,7 +82,12 @@ public class StateWriteTests
 
         StateWriter.Apply(
             state,
-            new WriteSpec { From = "summary", To = "state.s", Mode = WriteMode.Set },
+            new WriteSpec
+            {
+                From = "summary",
+                To = "state.s",
+                Mode = WriteMode.Set,
+            },
             output
         );
 
@@ -107,11 +99,7 @@ public class StateWriteTests
     {
         var state = State("{}");
 
-        StateWriter.Apply(
-            state,
-            new WriteSpec { To = "state.a.b", Mode = WriteMode.Set },
-            JsonValue.Create(7)
-        );
+        StateWriter.Apply(state, new WriteSpec { To = "state.a.b", Mode = WriteMode.Set }, JsonValue.Create(7));
 
         state["a"].Should().BeOfType<JsonObject>();
         state["a"]!["b"]!.GetValue<int>().Should().Be(7);
@@ -123,11 +111,7 @@ public class StateWriteTests
         var state = State("{}");
 
         var act = () =>
-            StateWriter.Apply(
-                state,
-                new WriteSpec { To = "state.x", Mode = WriteMode.Upsert },
-                JsonValue.Create(1)
-            );
+            StateWriter.Apply(state, new WriteSpec { To = "state.x", Mode = WriteMode.Upsert }, JsonValue.Create(1));
 
         act.Should().Throw<NotSupportedException>();
     }
@@ -138,11 +122,7 @@ public class StateWriteTests
         var state = State("{}");
 
         var act = () =>
-            StateWriter.Apply(
-                state,
-                new WriteSpec { To = "outputs.x", Mode = WriteMode.Set },
-                JsonValue.Create(1)
-            );
+            StateWriter.Apply(state, new WriteSpec { To = "outputs.x", Mode = WriteMode.Set }, JsonValue.Create(1));
 
         act.Should().Throw<ArgumentException>();
     }

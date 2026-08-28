@@ -35,7 +35,8 @@ internal sealed class RetryHandler : DelegatingHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         // Buffer any request content up front so the request can be safely re-sent on retry.
         var body = request.Content is null
@@ -47,9 +48,11 @@ internal sealed class RetryHandler : DelegatingHandler
             using var attemptRequest = attempt == 0 ? request : Clone(request, body);
             var response = await base.SendAsync(attemptRequest, cancellationToken).ConfigureAwait(false);
 
-            if (response.IsSuccessStatusCode
+            if (
+                response.IsSuccessStatusCode
                 || attempt >= MaxRetries
-                || !ShouldRetry(request.Method, response.StatusCode))
+                || !ShouldRetry(request.Method, response.StatusCode)
+            )
             {
                 // Detach the response's request so disposing attemptRequest does not dispose live content.
                 response.RequestMessage = null;
@@ -64,7 +67,8 @@ internal sealed class RetryHandler : DelegatingHandler
                 (int)response.StatusCode,
                 delay.TotalMilliseconds,
                 attempt + 1,
-                MaxRetries);
+                MaxRetries
+            );
             response.Dispose();
             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
         }

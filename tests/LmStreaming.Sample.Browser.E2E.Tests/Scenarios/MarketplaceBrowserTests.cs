@@ -33,13 +33,13 @@ public sealed class MarketplaceBrowserTests
         await using var session = await _fixture.OpenAsync(
             "test",
             responder.HandlerFor("test"),
-            catalogClient: FakeMarketplaceCatalogClient.WithSampleCatalog());
+            catalogClient: FakeMarketplaceCatalogClient.WithSampleCatalog()
+        );
         var page = session.Page;
 
         await page.MarketplaceButton().ClickAsync();
 
-        await page.MarketplaceModal()
-            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.MarketplaceModal().WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
 
         // The fake catalog's marketplace, plugin and its skill + agent chips all render.
         await page.GetByTestId("marketplace-item-ClaudePlugins")
@@ -50,8 +50,7 @@ public sealed class MarketplaceBrowserTests
 
         // Closing the modal removes it from the DOM.
         await page.MarketplaceModalClose().ClickAsync();
-        await page.MarketplaceModal()
-            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
+        await page.MarketplaceModal().WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
 
         await session.SaveSuccessScreenshotAsync("MarketplaceBrowser.Renders_catalog");
     }
@@ -67,7 +66,8 @@ public sealed class MarketplaceBrowserTests
         await using var session = await _fixture.OpenAsync(
             "test",
             responder.HandlerFor("test"),
-            catalogClient: FakeMarketplaceCatalogClient.Offline());
+            catalogClient: FakeMarketplaceCatalogClient.Offline()
+        );
         var page = session.Page;
 
         await page.MarketplaceButton().ClickAsync();

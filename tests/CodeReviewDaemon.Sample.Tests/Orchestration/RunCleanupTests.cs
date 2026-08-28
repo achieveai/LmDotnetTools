@@ -23,7 +23,11 @@ public sealed class RunCleanupTests
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
         var provisioner = new RecordingProvisioner();
-        var executor = BuildExecutor(store, new CodeReviewDaemonOptions { EnableToolAssistedReview = true }, provisioner);
+        var executor = BuildExecutor(
+            store,
+            new CodeReviewDaemonOptions { EnableToolAssistedReview = true },
+            provisioner
+        );
         var run = SeedRunReadyToPost(store);
 
         await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
@@ -37,7 +41,11 @@ public sealed class RunCleanupTests
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
         var provisioner = new RecordingProvisioner();
-        var executor = BuildExecutor(store, new CodeReviewDaemonOptions { EnableToolAssistedReview = false }, provisioner);
+        var executor = BuildExecutor(
+            store,
+            new CodeReviewDaemonOptions { EnableToolAssistedReview = false },
+            provisioner
+        );
         var run = SeedRunReadyToPost(store);
 
         await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
@@ -46,7 +54,10 @@ public sealed class RunCleanupTests
     }
 
     private static DaemonReviewStageExecutor BuildExecutor(
-        ReviewStore store, CodeReviewDaemonOptions options, IReviewSessionProvisioner provisioner) =>
+        ReviewStore store,
+        CodeReviewDaemonOptions options,
+        IReviewSessionProvisioner provisioner
+    ) =>
         new(
             store,
             new FakeReviewAgentLoopFactory(),
@@ -55,7 +66,8 @@ public sealed class RunCleanupTests
             options,
             [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
-            provisioner);
+            provisioner
+        );
 
     /// <summary>
     /// Seeds a run + the 'review' artifact the Posted stage reads, so the test can drive
@@ -64,36 +76,42 @@ public sealed class RunCleanupTests
     /// </summary>
     private static ReviewRun SeedRunReadyToPost(ReviewStore store)
     {
-        var repoId = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "repo-stable-1",
-        });
-        var run = store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = "118",
-            HeadSha = "head-sha",
-            BaseSha = "base-sha",
-            TriggerWatermark = "wm-1",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "collect-only",
-            Stage = ReviewStage.Discovered,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        });
+        var repoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-stable-1",
+            }
+        );
+        var run = store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = "118",
+                HeadSha = "head-sha",
+                BaseSha = "base-sha",
+                TriggerWatermark = "wm-1",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Running,
+                PrLifecycleState = PrLifecycleState.Open,
+            }
+        );
 
-        _ = store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
-            Provider = "github",
-            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload("Looks fine.", "run-1", "primary")),
-        });
+        _ = store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(new ReviewArtifactPayload("Looks fine.", "run-1", "primary")),
+            }
+        );
 
         return run;
     }
@@ -104,11 +122,14 @@ public sealed class RunCleanupTests
         public List<ReviewRun> DestroyCalls { get; } = [];
 
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
-            Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
-                $"session-{run.Id}",
-                $"/workspace/review-run-{run.Id}",
-                new FakeSandboxCommandRunner(),
-                new FakeSandboxFileSystem()));
+            Task.FromResult<ReviewRunSession?>(
+                new ReviewRunSession(
+                    $"session-{run.Id}",
+                    $"/workspace/review-run-{run.Id}",
+                    new FakeSandboxCommandRunner(),
+                    new FakeSandboxFileSystem()
+                )
+            );
 
         public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
             GetOrCreateAsync(run, ct);

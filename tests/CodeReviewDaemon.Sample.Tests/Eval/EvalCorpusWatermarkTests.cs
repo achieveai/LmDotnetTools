@@ -39,8 +39,7 @@ public sealed class EvalCorpusWatermarkTests : IDisposable
         _store = new ReviewStore(_db.ConnectionString);
     }
 
-    private EvalCorpusWatermark Watermark(ILogger<EvalCorpusWatermark>? logger = null) =>
-        new(_store, logger);
+    private EvalCorpusWatermark Watermark(ILogger<EvalCorpusWatermark>? logger = null) => new(_store, logger);
 
     /// <summary>Writes a cursor row at an arbitrary version, behind the watermark's back.</summary>
     private void WriteRawCursor(string payload, int version = EvalCorpusWatermark.CursorVersion) =>

@@ -17,7 +17,8 @@ namespace LmMultiTurn.Tests;
 
 public class CopilotAgentLoopProfileTests : LoggingTestBase
 {
-    public CopilotAgentLoopProfileTests(ITestOutputHelper output) : base(output) { }
+    public CopilotAgentLoopProfileTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Fact]
     public async Task Profile_SystemPrompt_OverridesDeveloperInstructions()
@@ -32,7 +33,8 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
             },
             threadId: "thread-copilot-profile-1",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>()
+        );
 
         await RunOneTurnAsync(loop);
 
@@ -46,14 +48,12 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
         var fakeClient = new RecordingCopilotClient([PromptCompleted()]);
 
         await using var loop = new CopilotAgentLoop(
-            new CopilotSdkOptions
-            {
-                Profile = new AgentRuntimeProfile { SystemPrompt = "profile-wins" },
-            },
+            new CopilotSdkOptions { Profile = new AgentRuntimeProfile { SystemPrompt = "profile-wins" } },
             threadId: "thread-copilot-profile-2",
             systemPrompt: "ctor-prompt",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>()
+        );
 
         await RunOneTurnAsync(loop);
 
@@ -79,7 +79,8 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
             },
             threadId: "thread-copilot-warning-once",
             clientFactory: (_, _) => fakeClient,
-            logger: capture);
+            logger: capture
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -108,7 +109,8 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
             },
             threadId: "thread-copilot-warning-skills-subagents",
             clientFactory: (_, _) => fakeClient,
-            logger: capture);
+            logger: capture
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -134,13 +136,11 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
         };
 
         await using var loop = new CopilotAgentLoop(
-            new CopilotSdkOptions
-            {
-                McpServers = mcp,
-            },
+            new CopilotSdkOptions { McpServers = mcp },
             threadId: "thread-copilot-mcp-passthrough",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>()
+        );
 
         await RunOneTurnAsync(loop);
 
@@ -168,7 +168,8 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
             },
             threadId: "thread-copilot-profile-3",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>()
+        );
 
         await RunOneTurnAsync(loop);
 
@@ -180,9 +181,7 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
         var input = new UserInput([new TextMessage { Role = Role.User, Text = "hi" }]);
-        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token))
-        {
-        }
+        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token)) { }
         await cts.CancelAsync();
     }
 
@@ -217,9 +216,8 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
         public string DependencyState => "ready";
 
         public void ConfigureDynamicToolExecutor(
-            Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor)
-        {
-        }
+            Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor
+        ) { }
 
         public Task StartOrResumeSessionAsync(CopilotBridgeInitOptions options, CancellationToken ct = default)
         {
@@ -229,12 +227,13 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
             return Task.CompletedTask;
         }
 
-        public Task EnsureStartedAsync(CopilotBridgeInitOptions options, CancellationToken ct = default)
-            => StartOrResumeSessionAsync(options, ct);
+        public Task EnsureStartedAsync(CopilotBridgeInitOptions options, CancellationToken ct = default) =>
+            StartOrResumeSessionAsync(options, ct);
 
         public async IAsyncEnumerable<CopilotTurnEventEnvelope> RunStreamingAsync(
             string input,
-            [EnumeratorCancellation] CancellationToken ct = default)
+            [EnumeratorCancellation] CancellationToken ct = default
+        )
         {
             foreach (var item in _events)
             {
@@ -254,5 +253,4 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
-
 }

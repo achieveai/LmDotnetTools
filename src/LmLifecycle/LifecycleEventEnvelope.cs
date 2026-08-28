@@ -146,9 +146,7 @@ public sealed record LifecycleEventEnvelope
 
         if (SourceSequence <= 0)
         {
-            throw new LifecycleContractException(
-                $"'{nameof(SourceSequence)}' must be positive; ordinals start at 1."
-            );
+            throw new LifecycleContractException($"'{nameof(SourceSequence)}' must be positive; ordinals start at 1.");
         }
 
         if (!LifecycleProtocol.IsSupported(SchemaMajor))

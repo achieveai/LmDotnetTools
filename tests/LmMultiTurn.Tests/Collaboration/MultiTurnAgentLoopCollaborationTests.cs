@@ -48,19 +48,21 @@ public class MultiTurnAgentLoopCollaborationTests
         // replace a working endpoint with one pointing at a loop nobody drives.
         var root = CreateRegisteredRoot();
         var childContext = root.Context.CreateChild(
-            "agent-child", AgentKind.SubAgent, "worker", "Already published by its parent.");
+            "agent-child",
+            AgentKind.SubAgent,
+            "worker",
+            "Already published by its parent."
+        );
         var existing = new NoopEndpoint();
 
         _ = root.Directory.TryAcquireCapacity(childContext.AgentId);
-        _ = root.Directory.TryRegister(
-            childContext, "child", AgentCollaborationStatuses.Queued, existing);
+        _ = root.Directory.TryRegister(childContext, "child", AgentCollaborationStatuses.Queued, existing);
 
         await using var loop = CreateLoop(root.ForChild(childContext, "child"));
 
         root.Directory.Count.Should().Be(2);
         root.Directory.GetWriteEndpoint(childContext.AgentId).Should().BeSameAs(existing);
-        root.Directory.FindById(childContext.AgentId)!.Status
-            .Should().Be(AgentCollaborationStatuses.Queued);
+        root.Directory.FindById(childContext.AgentId)!.Status.Should().Be(AgentCollaborationStatuses.Queued);
     }
 
     [Fact]
@@ -73,40 +75,41 @@ public class MultiTurnAgentLoopCollaborationTests
         var (_, peer) = RegisterPeer(setup, "asker");
 
         var dispatch = new AgentCollaborationMessenger(peer).Send(
-            setup.AgentId, "Are you there?", AgentMessageType.Question);
+            setup.AgentId,
+            "Are you there?",
+            AgentMessageType.Question
+        );
         dispatch.Result.Succeeded.Should().BeTrue();
         await dispatch.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
 
-        setup.Bundle.Ledger.Find(dispatch.Result.MessageId!)!.State
-            .Should().Be(AgentMessageDeliveryState.Delivered);
+        setup.Bundle.Ledger.Find(dispatch.Result.MessageId!)!.State.Should().Be(AgentMessageDeliveryState.Delivered);
     }
 
     private MultiTurnAgentLoop CreateLoop(AgentCollaborationSetup? collaboration) =>
-        new(
-            _providerMock.Object,
-            new FunctionRegistry(),
-            "test-thread",
-            collaboration: collaboration);
+        new(_providerMock.Object, new FunctionRegistry(), "test-thread", collaboration: collaboration);
 
     private static AgentCollaborationSetup CreateRegisteredRoot()
     {
         var setup = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions());
-        _ = setup.Directory.TryRegister(
-            setup.Context, setup.Name, AgentCollaborationStatuses.Running);
+        _ = setup.Directory.TryRegister(setup.Context, setup.Name, AgentCollaborationStatuses.Running);
         return setup;
     }
 
     private static (NoopEndpoint Endpoint, AgentCollaborationSetup Setup) RegisterPeer(
         AgentCollaborationSetup root,
-        string name)
+        string name
+    )
     {
         var context = root.Context.CreateChild(
-            $"agent-{name}", AgentKind.SubAgent, $"{name} role", $"Stands in for {name}.");
+            $"agent-{name}",
+            AgentKind.SubAgent,
+            $"{name} role",
+            $"Stands in for {name}."
+        );
         var endpoint = new NoopEndpoint();
 
         _ = root.Directory.TryAcquireCapacity(context.AgentId);
-        _ = root.Directory.TryRegister(
-            context, name, AgentCollaborationStatuses.Running, endpoint);
+        _ = root.Directory.TryRegister(context, name, AgentCollaborationStatuses.Running, endpoint);
 
         return (endpoint, root.ForChild(context, name));
     }
@@ -116,7 +119,7 @@ public class MultiTurnAgentLoopCollaborationTests
     {
         public ValueTask<AgentDeliveryOutcome> DeliverAsync(
             AgentMessage message,
-            CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(new AgentDeliveryOutcome(AgentDeliveryDisposition.Delivered));
+            CancellationToken cancellationToken = default
+        ) => ValueTask.FromResult(new AgentDeliveryOutcome(AgentDeliveryDisposition.Delivered));
     }
 }

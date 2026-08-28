@@ -262,10 +262,7 @@ internal sealed class ReviewStore : IDisposable
     /// its window instead, and the reader above says out loud when the limit cut that window short.
     /// </para>
     /// </param>
-    public IReadOnlyList<ReviewRun> ListReviewRuns(
-        ReviewStage minimumStage,
-        int limit,
-        long afterId = 0)
+    public IReadOnlyList<ReviewRun> ListReviewRuns(ReviewStage minimumStage, int limit, long afterId = 0)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         ArgumentOutOfRangeException.ThrowIfNegative(afterId);
@@ -273,10 +270,7 @@ internal sealed class ReviewStore : IDisposable
         // Stage is persisted as its enum NAME, so SQL cannot order it. The ordinal comparison is
         // done here, where the enum's own ordering is available, rather than by hardcoding a name
         // list into the query that a new stage would silently fall out of.
-        var eligible = Enum.GetValues<ReviewStage>()
-            .Where(s => s >= minimumStage)
-            .Select(s => s.ToString())
-            .ToList();
+        var eligible = Enum.GetValues<ReviewStage>().Where(s => s >= minimumStage).Select(s => s.ToString()).ToList();
 
         var placeholders = string.Join(',', eligible.Select((_, i) => $"$stage{i}"));
 
@@ -339,7 +333,12 @@ internal sealed class ReviewStore : IDisposable
     }
 
     /// <summary>Advances the three resume axes for a run (orchestrator step completion).</summary>
-    public void UpdateReviewRunState(long id, ReviewStage stage, WorkflowStatus workflowStatus, PrLifecycleState prLifecycleState)
+    public void UpdateReviewRunState(
+        long id,
+        ReviewStage stage,
+        WorkflowStatus workflowStatus,
+        PrLifecycleState prLifecycleState
+    )
     {
         using var gate = _gate.EnterScope();
         using var command = _connection.CreateCommand();
@@ -531,7 +530,8 @@ internal sealed class ReviewStore : IDisposable
         long repoId,
         string prId,
         long excludeRunId,
-        string artifactKind)
+        string artifactKind
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prId);
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactKind);
@@ -672,11 +672,14 @@ internal sealed class ReviewStore : IDisposable
                 RepoName = reader.GetString(reader.GetOrdinal("repo_name")),
                 RepoStableId = GetNullableString(reader, "repo_stable_id"),
             };
-            results.Add(new ReviewedPrRow(
-                repo,
-                repo.Provider,
-                reader.GetString(reader.GetOrdinal("pr_id")),
-                GetNullableString(reader, "pr_author")));
+            results.Add(
+                new ReviewedPrRow(
+                    repo,
+                    repo.Provider,
+                    reader.GetString(reader.GetOrdinal("pr_id")),
+                    GetNullableString(reader, "pr_author")
+                )
+            );
         }
 
         return Task.FromResult<IReadOnlyList<ReviewedPrRow>>(results);
@@ -757,7 +760,11 @@ internal sealed class ReviewStore : IDisposable
     /// review of a commit pair that a later run has already replaced.
     /// </summary>
     private IReadOnlyList<StrandedRunRow> ListStrandedRunsWhere(
-        string statusOperator, WorkflowStatus status, DateTimeOffset staleBefore, int limit)
+        string statusOperator,
+        WorkflowStatus status,
+        DateTimeOffset staleBefore,
+        int limit
+    )
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
 
@@ -790,10 +797,9 @@ internal sealed class ReviewStore : IDisposable
                 RepoName = reader.GetString(reader.GetOrdinal("repo_name")),
                 RepoStableId = GetNullableString(reader, "repo_stable_id"),
             };
-            results.Add(new StrandedRunRow(
-                MapReviewRun(reader),
-                repo,
-                reader.GetInt64(reader.GetOrdinal("superseded")) != 0));
+            results.Add(
+                new StrandedRunRow(MapReviewRun(reader), repo, reader.GetInt64(reader.GetOrdinal("superseded")) != 0)
+            );
         }
 
         return results;
@@ -860,17 +866,19 @@ internal sealed class ReviewStore : IDisposable
             return CursorReadResult.Resync();
         }
 
-        return CursorReadResult.Usable(new OpaqueCursor
-        {
-            Provider = reader.GetString(reader.GetOrdinal("provider")),
-            Scope = reader.GetString(reader.GetOrdinal("scope")),
-            CursorVersion = version,
-            CursorPayload = payload,
-            HighWaterMark = GetNullableString(reader, "high_water_mark"),
-            Etag = GetNullableString(reader, "etag"),
-            Continuation = GetNullableString(reader, "continuation"),
-            SinceTimestamp = GetNullableString(reader, "since_timestamp"),
-        });
+        return CursorReadResult.Usable(
+            new OpaqueCursor
+            {
+                Provider = reader.GetString(reader.GetOrdinal("provider")),
+                Scope = reader.GetString(reader.GetOrdinal("scope")),
+                CursorVersion = version,
+                CursorPayload = payload,
+                HighWaterMark = GetNullableString(reader, "high_water_mark"),
+                Etag = GetNullableString(reader, "etag"),
+                Continuation = GetNullableString(reader, "continuation"),
+                SinceTimestamp = GetNullableString(reader, "since_timestamp"),
+            }
+        );
     }
 
     // ── review_outbox (§11) ──────────────────────────────────────────────────────────────────────
@@ -1044,8 +1052,9 @@ internal sealed class ReviewStore : IDisposable
         {
             throw new ArgumentException(
                 "A kind-filtered artifact listing needs at least one artifact kind; an empty filter "
-                + "matches no row, which reads as a run that recorded nothing.",
-                nameof(artifactKinds));
+                    + "matches no row, which reads as a run that recorded nothing.",
+                nameof(artifactKinds)
+            );
         }
 
         foreach (var kind in artifactKinds)
@@ -1105,15 +1114,16 @@ internal sealed class ReviewStore : IDisposable
         return reader.Read() ? MapArtifact(reader) : null;
     }
 
-    private static ReviewArtifact MapArtifact(SqliteDataReader reader) => new()
-    {
-        Id = reader.GetInt64(reader.GetOrdinal("id")),
-        ReviewRunId = reader.GetInt64(reader.GetOrdinal("review_run_id")),
-        ArtifactSchemaVersion = reader.GetInt32(reader.GetOrdinal("artifact_schema_version")),
-        ArtifactKind = reader.GetString(reader.GetOrdinal("artifact_kind")),
-        Provider = reader.GetString(reader.GetOrdinal("provider")),
-        Payload = reader.GetString(reader.GetOrdinal("payload")),
-    };
+    private static ReviewArtifact MapArtifact(SqliteDataReader reader) =>
+        new()
+        {
+            Id = reader.GetInt64(reader.GetOrdinal("id")),
+            ReviewRunId = reader.GetInt64(reader.GetOrdinal("review_run_id")),
+            ArtifactSchemaVersion = reader.GetInt32(reader.GetOrdinal("artifact_schema_version")),
+            ArtifactKind = reader.GetString(reader.GetOrdinal("artifact_kind")),
+            Provider = reader.GetString(reader.GetOrdinal("provider")),
+            Payload = reader.GetString(reader.GetOrdinal("payload")),
+        };
 
     // ── deep_link_conversation (deep-link retention ledger) ──────────────────────────────────────
 
@@ -1139,9 +1149,7 @@ internal sealed class ReviewStore : IDisposable
             """;
         _ = command.Parameters.AddWithValue("$threadId", threadId);
         _ = command.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
-        _ = command.Parameters.AddWithValue(
-            "$mintedAt",
-            mintedAtUtc is { } minted ? Utc(minted) : UtcNow());
+        _ = command.Parameters.AddWithValue("$mintedAt", mintedAtUtc is { } minted ? Utc(minted) : UtcNow());
         _ = command.ExecuteNonQuery();
     }
 
@@ -1166,13 +1174,17 @@ internal sealed class ReviewStore : IDisposable
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            results.Add(new DeepLinkConversationRow(
-                reader.GetString(reader.GetOrdinal("thread_id")),
-                GetNullableString(reader, "title"),
-                DateTimeOffset.Parse(
-                    reader.GetString(reader.GetOrdinal("minted_at")),
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind)));
+            results.Add(
+                new DeepLinkConversationRow(
+                    reader.GetString(reader.GetOrdinal("thread_id")),
+                    GetNullableString(reader, "title"),
+                    DateTimeOffset.Parse(
+                        reader.GetString(reader.GetOrdinal("minted_at")),
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind
+                    )
+                )
+            );
         }
 
         return results;
@@ -1237,17 +1249,21 @@ internal sealed class ReviewStore : IDisposable
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            results.Add(new PolicyRefusalRecord(
-                DateTimeOffset.Parse(
-                    reader.GetString(reader.GetOrdinal("at_utc")),
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind),
-                Enum.Parse<PolicyRefusalKind>(reader.GetString(reader.GetOrdinal("kind"))),
-                reader.GetString(reader.GetOrdinal("provider")),
-                reader.GetString(reader.GetOrdinal("subject")),
-                reader.GetString(reader.GetOrdinal("method")),
-                reader.GetString(reader.GetOrdinal("target")),
-                reader.GetString(reader.GetOrdinal("reason"))));
+            results.Add(
+                new PolicyRefusalRecord(
+                    DateTimeOffset.Parse(
+                        reader.GetString(reader.GetOrdinal("at_utc")),
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind
+                    ),
+                    Enum.Parse<PolicyRefusalKind>(reader.GetString(reader.GetOrdinal("kind"))),
+                    reader.GetString(reader.GetOrdinal("provider")),
+                    reader.GetString(reader.GetOrdinal("subject")),
+                    reader.GetString(reader.GetOrdinal("method")),
+                    reader.GetString(reader.GetOrdinal("target")),
+                    reader.GetString(reader.GetOrdinal("reason"))
+                )
+            );
         }
 
         return results;
@@ -1255,45 +1271,47 @@ internal sealed class ReviewStore : IDisposable
 
     // ── mapping helpers ──────────────────────────────────────────────────────────────────────────
 
-    private static ReviewRun MapReviewRun(SqliteDataReader reader) => new()
-    {
-        Id = reader.GetInt64(reader.GetOrdinal("id")),
-        RepoId = reader.GetInt64(reader.GetOrdinal("repo_id")),
-        PrId = reader.GetString(reader.GetOrdinal("pr_id")),
-        HeadSha = reader.GetString(reader.GetOrdinal("head_sha")),
-        BaseSha = reader.GetString(reader.GetOrdinal("base_sha")),
-        TriggerWatermark = reader.GetString(reader.GetOrdinal("trigger_watermark")),
-        ReviewKind = reader.GetString(reader.GetOrdinal("review_kind")),
-        VariantId = reader.GetString(reader.GetOrdinal("variant_id")),
-        Mode = reader.GetString(reader.GetOrdinal("mode")),
-        MergeSha = GetNullableString(reader, "merge_sha"),
-        ModelProvider = GetNullableString(reader, "model_provider"),
-        ModelId = GetNullableString(reader, "model_id"),
-        PromptTemplateHash = GetNullableString(reader, "prompt_template_hash"),
-        PolicyBundleVersion = GetNullableString(reader, "policy_bundle_version"),
-        FeatureFlagSnapshot = GetNullableString(reader, "feature_flag_snapshot"),
-        Stage = Enum.Parse<ReviewStage>(reader.GetString(reader.GetOrdinal("stage"))),
-        WorkflowStatus = Enum.Parse<WorkflowStatus>(reader.GetString(reader.GetOrdinal("workflow_status"))),
-        PrLifecycleState = Enum.Parse<PrLifecycleState>(reader.GetString(reader.GetOrdinal("pr_lifecycle_state"))),
-        IsForkPr = reader.GetBoolean(reader.GetOrdinal("is_fork_pr")),
-        IsTargetRepoPublic = reader.GetBoolean(reader.GetOrdinal("is_target_repo_public")),
-        PrAuthor = GetNullableString(reader, "pr_author"),
-        PrTitle = GetNullableString(reader, "pr_title"),
-        PrDescription = GetNullableString(reader, "pr_description"),
-    };
+    private static ReviewRun MapReviewRun(SqliteDataReader reader) =>
+        new()
+        {
+            Id = reader.GetInt64(reader.GetOrdinal("id")),
+            RepoId = reader.GetInt64(reader.GetOrdinal("repo_id")),
+            PrId = reader.GetString(reader.GetOrdinal("pr_id")),
+            HeadSha = reader.GetString(reader.GetOrdinal("head_sha")),
+            BaseSha = reader.GetString(reader.GetOrdinal("base_sha")),
+            TriggerWatermark = reader.GetString(reader.GetOrdinal("trigger_watermark")),
+            ReviewKind = reader.GetString(reader.GetOrdinal("review_kind")),
+            VariantId = reader.GetString(reader.GetOrdinal("variant_id")),
+            Mode = reader.GetString(reader.GetOrdinal("mode")),
+            MergeSha = GetNullableString(reader, "merge_sha"),
+            ModelProvider = GetNullableString(reader, "model_provider"),
+            ModelId = GetNullableString(reader, "model_id"),
+            PromptTemplateHash = GetNullableString(reader, "prompt_template_hash"),
+            PolicyBundleVersion = GetNullableString(reader, "policy_bundle_version"),
+            FeatureFlagSnapshot = GetNullableString(reader, "feature_flag_snapshot"),
+            Stage = Enum.Parse<ReviewStage>(reader.GetString(reader.GetOrdinal("stage"))),
+            WorkflowStatus = Enum.Parse<WorkflowStatus>(reader.GetString(reader.GetOrdinal("workflow_status"))),
+            PrLifecycleState = Enum.Parse<PrLifecycleState>(reader.GetString(reader.GetOrdinal("pr_lifecycle_state"))),
+            IsForkPr = reader.GetBoolean(reader.GetOrdinal("is_fork_pr")),
+            IsTargetRepoPublic = reader.GetBoolean(reader.GetOrdinal("is_target_repo_public")),
+            PrAuthor = GetNullableString(reader, "pr_author"),
+            PrTitle = GetNullableString(reader, "pr_title"),
+            PrDescription = GetNullableString(reader, "pr_description"),
+        };
 
-    private static OutboxEntry MapOutbox(SqliteDataReader reader) => new()
-    {
-        Id = reader.GetInt64(reader.GetOrdinal("id")),
-        IdempotencyKey = reader.GetString(reader.GetOrdinal("idempotency_key")),
-        Provider = reader.GetString(reader.GetOrdinal("provider")),
-        ReviewRunId = reader.GetInt64(reader.GetOrdinal("review_run_id")),
-        Operation = reader.GetString(reader.GetOrdinal("operation")),
-        ArtifactKind = reader.GetString(reader.GetOrdinal("artifact_kind")),
-        Status = Enum.Parse<OutboxStatus>(reader.GetString(reader.GetOrdinal("status"))),
-        BodyHash = GetNullableString(reader, "body_hash"),
-        ProviderResponseId = GetNullableString(reader, "provider_response_id"),
-    };
+    private static OutboxEntry MapOutbox(SqliteDataReader reader) =>
+        new()
+        {
+            Id = reader.GetInt64(reader.GetOrdinal("id")),
+            IdempotencyKey = reader.GetString(reader.GetOrdinal("idempotency_key")),
+            Provider = reader.GetString(reader.GetOrdinal("provider")),
+            ReviewRunId = reader.GetInt64(reader.GetOrdinal("review_run_id")),
+            Operation = reader.GetString(reader.GetOrdinal("operation")),
+            ArtifactKind = reader.GetString(reader.GetOrdinal("artifact_kind")),
+            Status = Enum.Parse<OutboxStatus>(reader.GetString(reader.GetOrdinal("status"))),
+            BodyHash = GetNullableString(reader, "body_hash"),
+            ProviderResponseId = GetNullableString(reader, "provider_response_id"),
+        };
 
     private static string? GetNullableString(SqliteDataReader reader, string column)
     {

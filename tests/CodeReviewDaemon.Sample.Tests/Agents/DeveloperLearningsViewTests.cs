@@ -32,7 +32,8 @@ public sealed class DeveloperLearningsViewTests
     private static DeveloperObservation Pr(
         int day,
         IReadOnlyList<string> exposure,
-        params DeveloperObservationHit[] hits) =>
+        params DeveloperObservationHit[] hits
+    ) =>
         new(
             DeveloperObservation.CurrentSchemaVersion,
             $"azure-devops/o365exchange/weve_da/nova/{5000 + day}",
@@ -42,27 +43,34 @@ public sealed class DeveloperLearningsViewTests
             new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddDays(day).ToString("O"),
             [1],
             exposure,
-            DeveloperObservation.DedupeByPattern(hits));
+            DeveloperObservation.DedupeByPattern(hits)
+        );
 
     private static DeveloperLearningsView Build(
         IReadOnlyList<DeveloperObservation> observations,
         IReadOnlyDictionary<string, string>? dimensions = null,
         IReadOnlyDictionary<string, PatternProse>? prose = null,
         LearningsThresholds? thresholds = null,
-        IReadOnlySet<string>? suppressed = null)
+        IReadOnlySet<string>? suppressed = null
+    )
     {
         var effective = thresholds ?? LearningsThresholds.Defaults;
-        var map =
-            dimensions ?? new Dictionary<string, string>(StringComparer.Ordinal) { [NullGuard] = ExceptionDim };
+        var map = dimensions ?? new Dictionary<string, string>(StringComparer.Ordinal) { [NullGuard] = ExceptionDim };
         var standings = DeveloperLearningsLedger.Compute(
-            observations, map, effective, suppressed ?? NoSuppression, Now);
+            observations,
+            map,
+            effective,
+            suppressed ?? NoSuppression,
+            Now
+        );
         return DeveloperLearningsView.Build(
             Slug,
             observations,
             standings,
             prose ?? new Dictionary<string, PatternProse>(StringComparer.Ordinal),
             effective,
-            Now);
+            Now
+        );
     }
 
     [Fact]
@@ -85,12 +93,11 @@ public sealed class DeveloperLearningsViewTests
     {
         // "Seen in" is what makes a count auditable back to specific PRs. A count whose corpus cannot be
         // named cannot be checked by the person it is about.
-        var view = Build(
-            [
-                Pr(1, [ExceptionDim], Hit(NullGuard)),
-                Pr(2, [ExceptionDim]),
-                Pr(3, [ExceptionDim], Hit(NullGuard)),
-            ]);
+        var view = Build([
+            Pr(1, [ExceptionDim], Hit(NullGuard)),
+            Pr(2, [ExceptionDim]),
+            Pr(3, [ExceptionDim], Hit(NullGuard)),
+        ]);
 
         var sightings = view.Patterns.Should().ContainSingle().Subject.Sightings;
         _ = sightings.Should().HaveCount(2);
@@ -99,7 +106,8 @@ public sealed class DeveloperLearningsViewTests
             .Should()
             .ContainInOrder(
                 "azure-devops/o365exchange/weve_da/nova/5001",
-                "azure-devops/o365exchange/weve_da/nova/5003");
+                "azure-devops/o365exchange/weve_da/nova/5003"
+            );
     }
 
     [Fact]
@@ -143,8 +151,7 @@ public sealed class DeveloperLearningsViewTests
         var observations = new List<DeveloperObservation>();
         for (var day = 1; day <= 10; day++)
         {
-            observations.Add(
-                day % 2 == 1 ? Pr(day, [ExceptionDim], Hit(NullGuard)) : Pr(day, [ExceptionDim]));
+            observations.Add(day % 2 == 1 ? Pr(day, [ExceptionDim], Hit(NullGuard)) : Pr(day, [ExceptionDim]));
         }
 
         for (var day = 11; day <= 20; day++)
@@ -193,7 +200,8 @@ public sealed class DeveloperLearningsViewTests
             {
                 [NullGuard] = ExceptionDim,
                 [Retry] = ExceptionDim,
-            });
+            }
+        );
 
         var window = view.DimensionTrends.Should().ContainSingle().Subject.Windows.Should().ContainSingle().Subject;
         _ = window.Findings.Should().Be(2);
@@ -208,9 +216,7 @@ public sealed class DeveloperLearningsViewTests
         // dimensions that produced findings would leave the table showing only where they were caught.
         var view = Build([Pr(1, [ExceptionDim, TestDim], Hit(NullGuard))]);
 
-        var testDimension = view.DimensionTrends.Should()
-            .Contain(t => t.Dimension == TestDim)
-            .Subject;
+        var testDimension = view.DimensionTrends.Should().Contain(t => t.Dimension == TestDim).Subject;
         testDimension.Windows.Should().ContainSingle().Subject.Findings.Should().Be(0);
     }
 
@@ -257,10 +263,7 @@ public sealed class DeveloperLearningsViewTests
         var recent = ActivePattern(rate: 0.4, cleanStreak: 0);
         var quiet = ActivePattern(rate: 0.4, cleanStreak: 9);
 
-        DeveloperLearningsView
-            .ChecklistScore(quiet)
-            .Should()
-            .BeLessThan(DeveloperLearningsView.ChecklistScore(recent));
+        DeveloperLearningsView.ChecklistScore(quiet).Should().BeLessThan(DeveloperLearningsView.ChecklistScore(recent));
     }
 
     [Fact]
@@ -274,9 +277,7 @@ public sealed class DeveloperLearningsViewTests
             observations.Add(Pr(day, [ExceptionDim]));
         }
 
-        var view = Build(
-            observations,
-            suppressed: new HashSet<string>(StringComparer.Ordinal) { ExceptionDim });
+        var view = Build(observations, suppressed: new HashSet<string>(StringComparer.Ordinal) { ExceptionDim });
 
         _ = view.Resolved.Should().ContainSingle();
         _ = view.ProvisionalResolutions.Should().ContainSingle();
@@ -318,8 +319,10 @@ public sealed class DeveloperLearningsViewTests
                 FirstSeenUtc: "2026-01-01T00:00:00Z",
                 LastSeenUtc: "2026-02-01T00:00:00Z",
                 RegressedAtUtc: null,
-                StreakBrokenAt: null),
+                StreakBrokenAt: null
+            ),
             PatternProse.Missing(NullGuard),
             new PatternTrend(TrendDirection.InsufficientData, null, null, 0, 0),
-            []);
+            []
+        );
 }

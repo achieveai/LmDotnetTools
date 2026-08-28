@@ -43,7 +43,14 @@ public class WaitTriggerLoopIntegrationTests
         var waitCall = new ToolCallMessage
         {
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "timer", args = new { delay = "1s" }, timeout = "10m" }),
+            FunctionArgs = WaitArgs(
+                new
+                {
+                    kind = "timer",
+                    args = new { delay = "1s" },
+                    timeout = "10m",
+                }
+            ),
             ToolCallId = "tc_wait",
             Role = Role.Assistant,
         };
@@ -52,20 +59,25 @@ public class WaitTriggerLoopIntegrationTests
         var callCount = 0;
         IEnumerable<IMessage>? secondCallMessages = null;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((msgs, _, _) =>
-            {
-                callCount++;
-                if (callCount == 1)
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, _, _) =>
                 {
-                    return Task.FromResult(ToAsyncEnumerable([waitCall]));
+                    callCount++;
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(ToAsyncEnumerable([waitCall]));
+                    }
+                    secondCallMessages = [.. msgs];
+                    return Task.FromResult(ToAsyncEnumerable([finalText]));
                 }
-                secondCallMessages = [.. msgs];
-                return Task.FromResult(ToAsyncEnumerable([finalText]));
-            });
+            );
 
         await using var loop = BuildLoop(new TriggerOptions());
         using var cts = new CancellationTokenSource();
@@ -115,7 +127,14 @@ public class WaitTriggerLoopIntegrationTests
         var waitCall = new ToolCallMessage
         {
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "host_event", args = new { }, timeout = "10m" }),
+            FunctionArgs = WaitArgs(
+                new
+                {
+                    kind = "host_event",
+                    args = new { },
+                    timeout = "10m",
+                }
+            ),
             ToolCallId = "tc_host",
             Role = Role.Assistant,
         };
@@ -124,20 +143,25 @@ public class WaitTriggerLoopIntegrationTests
         var callCount = 0;
         IEnumerable<IMessage>? secondCallMessages = null;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((msgs, _, _) =>
-            {
-                callCount++;
-                if (callCount == 1)
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, _, _) =>
                 {
-                    return Task.FromResult(ToAsyncEnumerable([waitCall]));
+                    callCount++;
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(ToAsyncEnumerable([waitCall]));
+                    }
+                    secondCallMessages = [.. msgs];
+                    return Task.FromResult(ToAsyncEnumerable([finalText]));
                 }
-                secondCallMessages = [.. msgs];
-                return Task.FromResult(ToAsyncEnumerable([finalText]));
-            });
+            );
 
         await using var loop = BuildLoop(options);
         using var cts = new CancellationTokenSource();
@@ -169,7 +193,14 @@ public class WaitTriggerLoopIntegrationTests
         var waitCall = new ToolCallMessage
         {
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "does_not_exist", args = new { }, timeout = "10m" }),
+            FunctionArgs = WaitArgs(
+                new
+                {
+                    kind = "does_not_exist",
+                    args = new { },
+                    timeout = "10m",
+                }
+            ),
             ToolCallId = "tc_bad",
             Role = Role.Assistant,
         };
@@ -177,31 +208,42 @@ public class WaitTriggerLoopIntegrationTests
 
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                return callCount == 1
-                    ? Task.FromResult(ToAsyncEnumerable([waitCall]))
-                    : Task.FromResult(ToAsyncEnumerable([finalText]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                {
+                    callCount++;
+                    return callCount == 1
+                        ? Task.FromResult(ToAsyncEnumerable([waitCall]))
+                        : Task.FromResult(ToAsyncEnumerable([finalText]));
+                }
+            );
 
         await using var loop = BuildLoop(new TriggerOptions());
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
         var messages = new List<IMessage>();
-        await foreach (var msg in loop.ExecuteRunAsync(
-            new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token))
+        await foreach (
+            var msg in loop.ExecuteRunAsync(
+                new UserInput([new TextMessage { Text = "go", Role = Role.User }]),
+                cts.Token
+            )
+        )
         {
             messages.Add(msg);
         }
 
         // No deferral: the rejection resolved inline and the run ran to a normal completion.
-        (await loop.GetDeferredToolCallsAsync()).Should().BeEmpty();
+        (await loop.GetDeferredToolCallsAsync())
+            .Should()
+            .BeEmpty();
         var result = messages.OfType<ToolCallResultMessage>().Single(m => m.ToolCallId == "tc_bad");
         result.IsError.Should().BeTrue();
         result.Result.Should().Contain("unknown_kind");
@@ -223,7 +265,14 @@ public class WaitTriggerLoopIntegrationTests
         {
             ToolCallId = "tc_restore",
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "timer", args = new { }, timeout = "1m" }),
+            FunctionArgs = WaitArgs(
+                new
+                {
+                    kind = "timer",
+                    args = new { },
+                    timeout = "1m",
+                }
+            ),
             Role = Role.Assistant,
             FromAgent = "test",
             GenerationId = generationId,
@@ -242,24 +291,32 @@ public class WaitTriggerLoopIntegrationTests
             RunId = runId,
         };
 
-        await store.AppendMessagesAsync(threadId,
-        [
-            MessagePersistenceConverter.ToPersistedMessage(toolCall, threadId, runId),
-            MessagePersistenceConverter.ToPersistedMessage(deferred, threadId, runId),
-        ]);
-        await store.SaveMetadataAsync(threadId, new ThreadMetadata
-        {
-            ThreadId = threadId,
-            LatestRunId = runId,
-            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        });
+        await store.AppendMessagesAsync(
+            threadId,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(toolCall, threadId, runId),
+                MessagePersistenceConverter.ToPersistedMessage(deferred, threadId, runId),
+            ]
+        );
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
 
         // Any auto-resumed run just returns final text.
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable([new TextMessage { Text = "back", Role = Role.Assistant }])));
 
         await using var loop = new MultiTurnAgentLoop(
@@ -268,7 +325,8 @@ public class WaitTriggerLoopIntegrationTests
             threadId,
             store: store,
             logger: _loggerMock.Object,
-            triggerOptions: new TriggerOptions());
+            triggerOptions: new TriggerOptions()
+        );
 
         (await loop.RecoverAsync()).Should().BeTrue();
 
@@ -286,12 +344,14 @@ public class WaitTriggerLoopIntegrationTests
         (await loop.GetDeferredToolCallsAsync()).Should().BeEmpty("a restored timer wait must not be left hanging");
     }
 
-    private MultiTurnAgentLoop BuildLoop(TriggerOptions options) => new(
-        _mockAgent.Object,
-        new FunctionRegistry(),
-        "trigger-thread",
-        logger: _loggerMock.Object,
-        triggerOptions: options);
+    private MultiTurnAgentLoop BuildLoop(TriggerOptions options) =>
+        new(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            "trigger-thread",
+            logger: _loggerMock.Object,
+            triggerOptions: options
+        );
 
     private static string ReadStatus(string payloadJson)
     {
@@ -300,20 +360,27 @@ public class WaitTriggerLoopIntegrationTests
     }
 
     private static List<ToolCallResultMessage> ExtractResults(IEnumerable<IMessage> messages) =>
-    [
-        .. messages.OfType<ToolCallResultMessage>()
-            .Concat(messages.OfType<ToolsCallResultMessage>()
-                .SelectMany(m => m.ToolCallResults.Select(r => new ToolCallResultMessage
-                {
-                    ToolCallId = r.ToolCallId,
-                    Result = r.Result,
-                    IsError = r.IsError,
-                }))),
-    ];
+        [
+            .. messages
+                .OfType<ToolCallResultMessage>()
+                .Concat(
+                    messages
+                        .OfType<ToolsCallResultMessage>()
+                        .SelectMany(m =>
+                            m.ToolCallResults.Select(r => new ToolCallResultMessage
+                            {
+                                ToolCallId = r.ToolCallId,
+                                Result = r.Result,
+                                IsError = r.IsError,
+                            })
+                        )
+                ),
+        ];
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {
@@ -328,7 +395,11 @@ public class WaitTriggerLoopIntegrationTests
     {
         private volatile ITriggerEventSink? _sink;
 
-        public ValueTask<IArmedTrigger> ArmAsync(TriggerArmRequest request, ITriggerEventSink eventSink, CancellationToken cancellationToken)
+        public ValueTask<IArmedTrigger> ArmAsync(
+            TriggerArmRequest request,
+            ITriggerEventSink eventSink,
+            CancellationToken cancellationToken
+        )
         {
             _sink = eventSink;
             return ValueTask.FromResult<IArmedTrigger>(new Handle(request.WaitId));

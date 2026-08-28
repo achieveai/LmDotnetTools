@@ -158,11 +158,7 @@ public sealed record EvalBaseline
     {
         get => _maxInconclusiveGateRate;
         init =>
-            _maxInconclusiveGateRate = Fraction(
-                value,
-                nameof(MaxInconclusiveGateRate),
-                "An inconclusive-gate bound"
-            );
+            _maxInconclusiveGateRate = Fraction(value, nameof(MaxInconclusiveGateRate), "An inconclusive-gate bound");
     }
 
     private readonly double _minCoverage;
@@ -332,10 +328,7 @@ public sealed record EvalBaseline
         // configuration, and refusing every baseline it could mint would make the bound unusable
         // rather than safe. The pattern match is what keeps that case from silently comparing false
         // the way a NaN would.
-        if (
-            run.InconclusiveGateRate is { } inconclusiveRate
-            && inconclusiveRate > maxInconclusiveGateRate
-        )
+        if (run.InconclusiveGateRate is { } inconclusiveRate && inconclusiveRate > maxInconclusiveGateRate)
         {
             throw new ArgumentException(
                 $"Run '{run.RunId}' has an inconclusive-gate rate of {inconclusiveRate:F4}, above "

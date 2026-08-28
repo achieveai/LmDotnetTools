@@ -181,7 +181,13 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"deleting operation '{operationId}'", sessionId, ct, operationId: operationId)
+            throw await MapDirectErrorAsync(
+                    response,
+                    $"deleting operation '{operationId}'",
+                    sessionId,
+                    ct,
+                    operationId: operationId
+                )
                 .ConfigureAwait(false);
         }
 
@@ -192,7 +198,8 @@ public sealed partial class SandboxClient
     }
 
     /// <summary>The gateway execution timeout, in whole seconds (at least 1), sent as the operation's <c>timeout_secs</c>.</summary>
-    private long GatewayExecutionTimeoutSeconds() => Math.Max(1, (long)Math.Ceiling(_options.ExecutionTimeout.TotalSeconds));
+    private long GatewayExecutionTimeoutSeconds() =>
+        Math.Max(1, (long)Math.Ceiling(_options.ExecutionTimeout.TotalSeconds));
 
     /// <summary>Submits the operation and returns its initial status snapshot (a fresh <c>202</c> or an idempotent-replay <c>200</c>).</summary>
     private async Task<OperationStatusDto> SubmitOperationAsync(
@@ -218,7 +225,13 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"submitting operation '{operationId}'", sessionId, ct, operationId: operationId)
+            throw await MapDirectErrorAsync(
+                    response,
+                    $"submitting operation '{operationId}'",
+                    sessionId,
+                    ct,
+                    operationId: operationId
+                )
                 .ConfigureAwait(false);
         }
 
@@ -231,7 +244,11 @@ public sealed partial class SandboxClient
     /// deadline is the configured <see cref="SandboxClientOptions.ExecutionTimeout"/> plus a short
     /// grace, and honours caller cancellation; it deliberately does not busy-poll a fixed tiny window.
     /// </summary>
-    private async Task<OperationStatusDto> PollOperationAsync(string sessionId, string operationId, CancellationToken ct)
+    private async Task<OperationStatusDto> PollOperationAsync(
+        string sessionId,
+        string operationId,
+        CancellationToken ct
+    )
     {
         var deadline = DateTimeOffset.UtcNow + _options.ExecutionTimeout + S_commandPollGrace;
         var delay = S_commandPollInitialDelay;
@@ -259,7 +276,11 @@ public sealed partial class SandboxClient
     }
 
     /// <summary>Issues one idempotent <c>GET .../operations/{operation_id}</c> poll and returns the parsed status.</summary>
-    private async Task<OperationStatusDto> GetOperationStatusAsync(string sessionId, string operationId, CancellationToken ct)
+    private async Task<OperationStatusDto> GetOperationStatusAsync(
+        string sessionId,
+        string operationId,
+        CancellationToken ct
+    )
     {
         using var response = await SendDirectAsync(
                 HttpMethod.Get,
@@ -273,7 +294,13 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"polling operation '{operationId}'", sessionId, ct, operationId: operationId)
+            throw await MapDirectErrorAsync(
+                    response,
+                    $"polling operation '{operationId}'",
+                    sessionId,
+                    ct,
+                    operationId: operationId
+                )
                 .ConfigureAwait(false);
         }
 
@@ -300,7 +327,9 @@ public sealed partial class SandboxClient
         OperationStatusDto? status;
         try
         {
-            status = await response.Content.ReadFromJsonAsync<OperationStatusDto>(SandboxJson.RestOptions, ct).ConfigureAwait(false);
+            status = await response
+                .Content.ReadFromJsonAsync<OperationStatusDto>(SandboxJson.RestOptions, ct)
+                .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is JsonException or NotSupportedException)
         {
@@ -385,7 +414,8 @@ public sealed partial class SandboxClient
             ),
         };
 
-        var artifacts = status.Artifacts
+        var artifacts =
+            status.Artifacts
             ?? throw new SandboxException(
                 SandboxErrorKind.Protocol,
                 $"Sandbox gateway did not report artifacts for terminal operation '{operationId}'.",
@@ -404,9 +434,23 @@ public sealed partial class SandboxClient
             );
         }
 
-        var standardOutput = await DownloadArtifactAsync(sessionId, artifacts.MountId, artifacts.StdoutPath, "stdout", operationId, ct)
+        var standardOutput = await DownloadArtifactAsync(
+                sessionId,
+                artifacts.MountId,
+                artifacts.StdoutPath,
+                "stdout",
+                operationId,
+                ct
+            )
             .ConfigureAwait(false);
-        var standardError = await DownloadArtifactAsync(sessionId, artifacts.MountId, artifacts.StderrPath, "stderr", operationId, ct)
+        var standardError = await DownloadArtifactAsync(
+                sessionId,
+                artifacts.MountId,
+                artifacts.StderrPath,
+                "stderr",
+                operationId,
+                ct
+            )
             .ConfigureAwait(false);
 
         return new SandboxCommandResult

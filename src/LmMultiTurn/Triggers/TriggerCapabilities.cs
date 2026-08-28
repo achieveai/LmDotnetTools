@@ -16,7 +16,4 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 /// persisted arming record. Sources that cannot (e.g. a one-shot external event) return false,
 /// and a restored block wait against them resolves with <c>trigger_lost_on_restart</c>.
 /// </param>
-public sealed record TriggerCapabilities(
-    bool SupportsBlock,
-    bool SupportsNotify,
-    bool SupportsRestore);
+public sealed record TriggerCapabilities(bool SupportsBlock, bool SupportsNotify, bool SupportsRestore);

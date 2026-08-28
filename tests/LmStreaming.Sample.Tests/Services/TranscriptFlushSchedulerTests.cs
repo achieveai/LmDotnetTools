@@ -34,8 +34,7 @@ public sealed class TranscriptFlushSchedulerTests
 
         public IReadOnlyCollection<string> Flushed => _flushed;
 
-        public SemaphoreSlim SignalFor(string key) =>
-            _signals.GetOrAdd(key, static _ => new SemaphoreSlim(0));
+        public SemaphoreSlim SignalFor(string key) => _signals.GetOrAdd(key, static _ => new SemaphoreSlim(0));
 
         public void Record(string key)
         {
@@ -480,10 +479,13 @@ public sealed class TranscriptFlushSchedulerTests
         var order = recorder.Flushed.ToList();
         order.Should().HaveCountGreaterThanOrEqualTo(2);
         order[0].Should().Be("a", "'a' was scheduled first, so it is drained first");
-        order[1].Should().Be(
-            "b",
-            "'b' had been waiting since before 'a' was flushed, so 'a' re-scheduling itself must put it "
-                + "BEHIND 'b', not back at the front");
+        order[1]
+            .Should()
+            .Be(
+                "b",
+                "'b' had been waiting since before 'a' was flushed, so 'a' re-scheduling itself must put it "
+                    + "BEHIND 'b', not back at the front"
+            );
     }
 
     [Fact]

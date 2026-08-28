@@ -28,14 +28,18 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
         string providerMode,
         ITestAgentBuilder builder,
         IDictionary<string, string?>? settings = null,
-        Action<IServiceCollection>? configureServices = null)
+        Action<IServiceCollection>? configureServices = null
+    )
     {
-        if (!string.Equals(providerMode, "test", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(providerMode, "test-anthropic", StringComparison.OrdinalIgnoreCase))
+        if (
+            !string.Equals(providerMode, "test", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(providerMode, "test-anthropic", StringComparison.OrdinalIgnoreCase)
+        )
         {
             throw new ArgumentException(
                 $"providerMode must be 'test' or 'test-anthropic'; got '{providerMode}'",
-                nameof(providerMode));
+                nameof(providerMode)
+            );
         }
 
         _providerMode = providerMode;
@@ -105,7 +109,8 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
         string threadId,
         string? modeId = null,
         CancellationToken ct = default,
-        IEnumerable<string>? subProtocols = null)
+        IEnumerable<string>? subProtocols = null
+    )
     {
         var wsClient = Server.CreateWebSocketClient();
         AddSubProtocols(wsClient, subProtocols);
@@ -137,13 +142,13 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
         string parentThreadId,
         string agentId,
         CancellationToken ct = default,
-        IEnumerable<string>? subProtocols = null)
+        IEnumerable<string>? subProtocols = null
+    )
     {
         var wsClient = Server.CreateWebSocketClient();
         AddSubProtocols(wsClient, subProtocols);
 
-        var query =
-            $"parentThreadId={Uri.EscapeDataString(parentThreadId)}&agentId={Uri.EscapeDataString(agentId)}";
+        var query = $"parentThreadId={Uri.EscapeDataString(parentThreadId)}&agentId={Uri.EscapeDataString(agentId)}";
 
         var uri = new UriBuilder(Server.BaseAddress)
         {

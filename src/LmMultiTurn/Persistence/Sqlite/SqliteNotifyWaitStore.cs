@@ -98,9 +98,7 @@ public sealed class SqliteNotifyWaitStore : INotifyWaitStore
         _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(string threadId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -120,17 +118,20 @@ public sealed class SqliteNotifyWaitStore : INotifyWaitStore
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
-            results.Add(new NotifyWaitRecord(
-                reader.GetString(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.GetString(3),
-                reader.IsDBNull(4) ? null : reader.GetString(4),
-                reader.IsDBNull(5) ? null : reader.GetInt32(5),
-                reader.GetInt32(6),
-                reader.GetInt64(7),
-                reader.GetInt64(8),
-                reader.GetString(9)));
+            results.Add(
+                new NotifyWaitRecord(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetInt32(5),
+                    reader.GetInt32(6),
+                    reader.GetInt64(7),
+                    reader.GetInt64(8),
+                    reader.GetString(9)
+                )
+            );
         }
 
         return results;

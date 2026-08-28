@@ -16,11 +16,7 @@ internal static class OAuthProviderHosts
         // chain (results-receiver -> a SAS-signed Azure blob) is deliberately NOT here — those hops
         // already carry their own authorization and must be reached WITHOUT the GitHub token; they get
         // a separate network-only allow rule (see <see cref="GithubEgressOnlyHosts"/>).
-        ["github"] = [
-            "github.com",
-            "api.github.com",
-            "codeload.github.com",
-        ],
+        ["github"] = ["github.com", "api.github.com", "codeload.github.com"],
         ["ado"] = ["dev.azure.com", "*.dev.azure.com", "*.visualstudio.com"],
         ["m365"] = ["graph.microsoft.com"],
     };
@@ -57,8 +53,7 @@ internal static class OAuthProviderHosts
     /// one algorithm.
     /// </summary>
     public static bool IsAllowed(string providerId, string? destinationHost) =>
-        HostsByProvider.TryGetValue(providerId, out var hosts)
-        && EgressHostMatcher.IsAllowed(hosts, destinationHost);
+        HostsByProvider.TryGetValue(providerId, out var hosts) && EgressHostMatcher.IsAllowed(hosts, destinationHost);
 
     /// <summary>
     /// True when a user-entered predefined-key host <paramref name="pattern"/> would match (or be
@@ -80,8 +75,10 @@ internal static class OAuthProviderHosts
         {
             // Collision either way: the entry matches a managed host, or a managed *.wildcard matches
             // the entry's host.
-            if (EgressHostMatcher.IsAllowed(hosts, candidate)
-                || hosts.Any(h => EgressHostMatcher.IsAllowed([pattern], h)))
+            if (
+                EgressHostMatcher.IsAllowed(hosts, candidate)
+                || hosts.Any(h => EgressHostMatcher.IsAllowed([pattern], h))
+            )
             {
                 return true;
             }

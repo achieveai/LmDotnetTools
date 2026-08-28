@@ -20,11 +20,19 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class S2SReviewAgentLoopFactoryTests
 {
     private static readonly PreparedReviewWorkspace Workspace = new(
-        Leaf: "pr-118", WorkspaceId: "ws-118", HostDir: "/srv/checkouts/pr-118", PrId: "118");
+        Leaf: "pr-118",
+        WorkspaceId: "ws-118",
+        HostDir: "/srv/checkouts/pr-118",
+        PrId: "118"
+    );
 
     private static readonly AgentProfile Profile = new(
-        Id: "review", Name: "Review Agent", SystemPrompt: "REVIEW METHODOLOGY",
-        EnabledTools: null, EnabledBuiltInTools: []);
+        Id: "review",
+        Name: "Review Agent",
+        SystemPrompt: "REVIEW METHODOLOGY",
+        EnabledTools: null,
+        EnabledBuiltInTools: []
+    );
 
     private static S2SReviewAgentLoopFactory NewFactory(
         FakeHttpMessageHandler handler,
@@ -32,7 +40,8 @@ public sealed class S2SReviewAgentLoopFactoryTests
         string subAgentModelId = "",
         ILoggerFactory? loggerFactory = null,
         string providerId = "openai",
-        string reviewModelId = "openai") =>
+        string reviewModelId = "openai"
+    ) =>
         new(
             new LmStreamingS2SClient(http, "s", "id", "key"),
             new CodeReviewDaemonOptions
@@ -43,30 +52,35 @@ public sealed class S2SReviewAgentLoopFactoryTests
                 ReviewModelId = reviewModelId,
                 SubAgentModelId = subAgentModelId,
             },
-            loggerFactory ?? NullLoggerFactory.Instance);
+            loggerFactory ?? NullLoggerFactory.Instance
+        );
 
     /// <summary>A handler that answers the whole provision → send → status turn, so a test can read the
     /// PROVISION body — the only place the conversation's model (its provider id) is stated.</summary>
     private static FakeHttpMessageHandler ProvisioningHandler() =>
-        new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
+        new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(
                 HttpMethod.Get,
                 "/status",
-                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"answer\"}}")
+                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"answer\"}}"
+            )
             .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-fresh\"}");
 
     /// <summary>The <c>providerId</c> the daemon named on the provision request — i.e. the model the hosted
     /// conversation will run on, since a Copilot-discovered provider id IS a model id on the review host.</summary>
     private static string? ProvisionedProviderId(FakeHttpMessageHandler handler) =>
-        handler.Requests
-            .Where(r => r.Body is not null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
+        handler
+            .Requests.Where(r => r.Body is not null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
             .Select(r => JsonDocument.Parse(r.Body!).RootElement.GetProperty("providerId").GetString())
             .SingleOrDefault();
 
     private static async Task<List<IMessage>> DriveAsync(
-        AchieveAi.LmDotnetTools.LmMultiTurn.IMultiTurnAgent agent, string userText)
+        AchieveAi.LmDotnetTools.LmMultiTurn.IMultiTurnAgent agent,
+        string userText
+    )
     {
         var collected = new List<IMessage>();
         var input = new UserInput([new TextMessage { Text = userText, Role = Role.User }]);
@@ -96,12 +110,18 @@ public sealed class S2SReviewAgentLoopFactoryTests
         using var http = new HttpClient(new FakeHttpMessageHandler()) { BaseAddress = new Uri("http://host/") };
         var factory = NewFactory(new FakeHttpMessageHandler(), http);
 
-        factory.ResolveEffectiveModelId("anthropic/claude-opus-4").Should().Be(
-            "lmstreaming:anthropic/claude-opus-4",
-            "the requested id is what the conversation is provisioned on, so it is what ran");
+        factory
+            .ResolveEffectiveModelId("anthropic/claude-opus-4")
+            .Should()
+            .Be(
+                "lmstreaming:anthropic/claude-opus-4",
+                "the requested id is what the conversation is provisioned on, so it is what ran"
+            );
         factory.ResolveEffectiveModelId(null).Should().Be("lmstreaming:openai");
-        factory.ResolveEffectiveModelId("   ").Should().Be(
-            "lmstreaming:openai", "blank is not a model, and Create falls back on it too");
+        factory
+            .ResolveEffectiveModelId("   ")
+            .Should()
+            .Be("lmstreaming:openai", "blank is not a model, and Create falls back on it too");
     }
 
     /// <summary>
@@ -115,7 +135,8 @@ public sealed class S2SReviewAgentLoopFactoryTests
         var factory = new S2SReviewAgentLoopFactory(
             new LmStreamingS2SClient(http, "s", "id", "key"),
             new CodeReviewDaemonOptions { UseS2SReviewAgent = true, LmStreamingModeId = "workspace-agent" },
-            NullLoggerFactory.Instance);
+            NullLoggerFactory.Instance
+        );
 
         factory.ResolveEffectiveModelId("anthropic/claude-opus-4").Should().BeNull();
     }
@@ -139,7 +160,8 @@ public sealed class S2SReviewAgentLoopFactoryTests
         var unconfigured = new S2SReviewAgentLoopFactory(
             new LmStreamingS2SClient(http, "s", "id", "key"),
             new CodeReviewDaemonOptions { UseS2SReviewAgent = true, LmStreamingModeId = "workspace-agent" },
-            NullLoggerFactory.Instance);
+            NullLoggerFactory.Instance
+        );
 
         configured.HonoursRequestedModelId.Should().BeTrue();
         unconfigured.HonoursRequestedModelId.Should().BeTrue();
@@ -168,10 +190,13 @@ public sealed class S2SReviewAgentLoopFactoryTests
         var judge = factory.ResolveEffectiveModelId("anthropic/claude-opus-4");
         var generator = factory.ResolveEffectiveModelId("openai/gpt-5");
 
-        judge.Should().NotBe(
-            generator,
-            "the judge is only independent if the transport runs it on another model — the boot refusal of "
-                + "JudgeModelId was removed on exactly this basis");
+        judge
+            .Should()
+            .NotBe(
+                generator,
+                "the judge is only independent if the transport runs it on another model — the boot refusal of "
+                    + "JudgeModelId was removed on exactly this basis"
+            );
         judge.Should().Be("lmstreaming:anthropic/claude-opus-4");
         generator.Should().Be("lmstreaming:openai/gpt-5");
     }
@@ -181,50 +206,70 @@ public sealed class S2SReviewAgentLoopFactoryTests
     {
         // No provision route is registered: the fake handler answers an unrouted request with 501, so any
         // ProvisionAsync call fails this test outright.
-        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-2\"}")
             .OnJson(
                 HttpMethod.Get,
                 "/status",
-                "{\"status\":\"Completed\",\"runId\":\"run-resumed\",\"response\":{\"text\":\"resumed answer\"}}");
+                "{\"status\":\"Completed\",\"runId\":\"run-resumed\",\"response\":{\"text\":\"resumed answer\"}}"
+            );
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
 
-        await using var agent = NewFactory(handler, http).Create(
-            Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace,
-            resumeHostedThreadId: "thread-persisted");
+        await using var agent = NewFactory(handler, http)
+            .Create(
+                Profile,
+                modelId: null,
+                threadId: "review-run-7-a",
+                reviewWorkspace: Workspace,
+                resumeHostedThreadId: "thread-persisted"
+            );
 
         var messages = await DriveAsync(agent, "synthesize now");
 
-        messages.Should().ContainSingle().Subject.Should().BeOfType<TextMessage>()
-            .Which.Text.Should().Be("resumed answer");
+        messages
+            .Should()
+            .ContainSingle()
+            .Subject.Should()
+            .BeOfType<TextMessage>()
+            .Which.Text.Should()
+            .Be("resumed answer");
         agent.ThreadId.Should().Be("thread-persisted");
-        handler.Requests.Should().NotContain(
-            r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal),
-            "a resumed review rejoins its persisted conversation instead of minting a new one");
+        handler
+            .Requests.Should()
+            .NotContain(
+                r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal),
+                "a resumed review rejoins its persisted conversation instead of minting a new one"
+            );
     }
 
     [Fact]
     public async Task Create_without_a_resume_thread_still_provisions_a_fresh_conversation()
     {
-        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(
                 HttpMethod.Get,
                 "/status",
-                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"fresh answer\"}}")
+                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"fresh answer\"}}"
+            )
             .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-fresh\"}");
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
 
-        await using var agent = NewFactory(handler, http).Create(
-            Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
+        await using var agent = NewFactory(handler, http)
+            .Create(Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
 
         _ = await DriveAsync(agent, "review this PR");
 
         agent.ThreadId.Should().Be("thread-fresh");
-        handler.Requests.Should().Contain(
-            r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal),
-            "the first turn of a new review still mints its conversation");
+        handler
+            .Requests.Should()
+            .Contain(
+                r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal),
+                "the first turn of a new review still mints its conversation"
+            );
     }
 
     /// <summary>
@@ -244,29 +289,34 @@ public sealed class S2SReviewAgentLoopFactoryTests
     [Fact]
     public async Task Create_puts_the_configured_SubAgentModelId_on_the_provision_wire()
     {
-        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(
                 HttpMethod.Get,
                 "/status",
-                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"fresh answer\"}}")
+                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"fresh answer\"}}"
+            )
             .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-fresh\"}");
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
 
-        await using var agent = NewFactory(handler, http, subAgentModelId: "gpt-5.6-sol").Create(
-            Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
+        await using var agent = NewFactory(handler, http, subAgentModelId: "gpt-5.6-sol")
+            .Create(Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
 
         _ = await DriveAsync(agent, "review this PR");
 
-        var provision = handler.Requests
-            .Should()
+        var provision = handler
+            .Requests.Should()
             .ContainSingle(r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
             .Subject;
-        provision.Body.Should().Contain(
-            "\"subAgentModelId\":\"gpt-5.6-sol\"",
-            "the operator configured this model for the review sub-agents, and provision is the only call "
-                + "that can carry it to the host");
+        provision
+            .Body.Should()
+            .Contain(
+                "\"subAgentModelId\":\"gpt-5.6-sol\"",
+                "the operator configured this model for the review sub-agents, and provision is the only call "
+                    + "that can carry it to the host"
+            );
     }
 
     /// <summary>
@@ -280,23 +330,25 @@ public sealed class S2SReviewAgentLoopFactoryTests
     [Fact]
     public async Task Create_sends_null_rather_than_a_blank_model_when_SubAgentModelId_is_unset()
     {
-        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(
                 HttpMethod.Get,
                 "/status",
-                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"fresh answer\"}}")
+                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"fresh answer\"}}"
+            )
             .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-fresh\"}");
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
 
-        await using var agent = NewFactory(handler, http).Create(
-            Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
+        await using var agent = NewFactory(handler, http)
+            .Create(Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
 
         _ = await DriveAsync(agent, "review this PR");
 
-        var provision = handler.Requests
-            .Should()
+        var provision = handler
+            .Requests.Should()
             .ContainSingle(r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
             .Subject;
         provision.Body.Should().Contain("\"subAgentModelId\":null");
@@ -317,14 +369,14 @@ public sealed class S2SReviewAgentLoopFactoryTests
         var handler = ProvisioningHandler();
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
 
-        await using var agent = NewFactory(handler, http, providerId: "gpt-5.6-luna").Create(
-            Profile, modelId: "gpt-5.6-terra", threadId: "review-run-7-a-esc", reviewWorkspace: Workspace);
+        await using var agent = NewFactory(handler, http, providerId: "gpt-5.6-luna")
+            .Create(Profile, modelId: "gpt-5.6-terra", threadId: "review-run-7-a-esc", reviewWorkspace: Workspace);
 
         _ = await DriveAsync(agent, "review this PR");
 
-        ProvisionedProviderId(handler).Should().Be(
-            "gpt-5.6-terra",
-            "an escalation that does not change the model is not an escalation");
+        ProvisionedProviderId(handler)
+            .Should()
+            .Be("gpt-5.6-terra", "an escalation that does not change the model is not an escalation");
     }
 
     /// <summary>
@@ -339,8 +391,8 @@ public sealed class S2SReviewAgentLoopFactoryTests
         var handler = ProvisioningHandler();
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
 
-        await using var agent = NewFactory(handler, http, providerId: "gpt-5.6-luna").Create(
-            Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
+        await using var agent = NewFactory(handler, http, providerId: "gpt-5.6-luna")
+            .Create(Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
 
         _ = await DriveAsync(agent, "review this PR");
 
@@ -355,8 +407,8 @@ public sealed class S2SReviewAgentLoopFactoryTests
         var handler = ProvisioningHandler();
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
 
-        await using var agent = NewFactory(handler, http, providerId: "gpt-5.6-luna").Create(
-            Profile, modelId: "   ", threadId: "review-run-7-a", reviewWorkspace: Workspace);
+        await using var agent = NewFactory(handler, http, providerId: "gpt-5.6-luna")
+            .Create(Profile, modelId: "   ", threadId: "review-run-7-a", reviewWorkspace: Workspace);
 
         _ = await DriveAsync(agent, "review this PR");
 
@@ -377,12 +429,15 @@ public sealed class S2SReviewAgentLoopFactoryTests
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
         using var logs = new CapturingLoggerFactory();
 
-        _ = NewFactory(
-            handler, http, loggerFactory: logs, providerId: "gpt-5.6-luna", reviewModelId: "claude-opus-5");
+        _ = NewFactory(handler, http, loggerFactory: logs, providerId: "gpt-5.6-luna", reviewModelId: "claude-opus-5");
 
         // ONE line must carry BOTH ids: an operator reading "these disagree" needs to see which two.
-        logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().ContainSingle()
-            .Which.Should().Contain("gpt-5.6-luna").And.Contain("claude-opus-5");
+        logs.Capturing.MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Contain("gpt-5.6-luna")
+            .And.Contain("claude-opus-5");
     }
 
     /// <summary>The control: the shipped configuration agrees, so booting it must stay silent. Without this,
@@ -394,8 +449,7 @@ public sealed class S2SReviewAgentLoopFactoryTests
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
         using var logs = new CapturingLoggerFactory();
 
-        _ = NewFactory(
-            handler, http, loggerFactory: logs, providerId: "gpt-5.6-luna", reviewModelId: "gpt-5.6-luna");
+        _ = NewFactory(handler, http, loggerFactory: logs, providerId: "gpt-5.6-luna", reviewModelId: "gpt-5.6-luna");
 
         logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().BeEmpty();
     }

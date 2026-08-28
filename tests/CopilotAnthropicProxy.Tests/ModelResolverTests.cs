@@ -54,14 +54,14 @@ public sealed class ModelResolverTests
     public void ParseServableModels_keeps_models_with_a_reachable_endpoint_and_a_servable_vendor()
     {
         const string json = """
-        {"data":[
-          {"id":"claude-opus-4.8","vendor":"Anthropic","supported_endpoints":["/v1/messages","/chat/completions"]},
-          {"id":"gpt-5.3-codex","vendor":"OpenAI","supported_endpoints":["/responses","ws:/responses"]},
-          {"id":"gemini-3.5-flash","vendor":"Google","supported_endpoints":["/chat/completions"]},
-          {"id":"mai-code-1-flash-picker","vendor":"Microsoft","supported_endpoints":["/responses"]},
-          {"id":"text-embedding-3-small","vendor":"Azure OpenAI","supported_endpoints":[]}
-        ]}
-        """;
+            {"data":[
+              {"id":"claude-opus-4.8","vendor":"Anthropic","supported_endpoints":["/v1/messages","/chat/completions"]},
+              {"id":"gpt-5.3-codex","vendor":"OpenAI","supported_endpoints":["/responses","ws:/responses"]},
+              {"id":"gemini-3.5-flash","vendor":"Google","supported_endpoints":["/chat/completions"]},
+              {"id":"mai-code-1-flash-picker","vendor":"Microsoft","supported_endpoints":["/responses"]},
+              {"id":"text-embedding-3-small","vendor":"Azure OpenAI","supported_endpoints":[]}
+            ]}
+            """;
 
         var models = ProxyModelResolver.ParseServableModels(json);
 
@@ -78,8 +78,8 @@ public sealed class ModelResolverTests
     public void ParseServableModels_falls_back_to_every_id_when_no_entry_has_endpoint_metadata()
     {
         const string json = """
-        {"data":[{"id":"claude-opus-4.8"},{"id":"claude-sonnet-4.5"}]}
-        """;
+            {"data":[{"id":"claude-opus-4.8"},{"id":"claude-sonnet-4.5"}]}
+            """;
 
         var models = ProxyModelResolver.ParseServableModels(json);
 
@@ -366,12 +366,12 @@ public sealed class ModelResolverTests
         // MIXED response the metadata is trustworthy, so an entry that declares none declares that it
         // serves none — keeping it would advertise a model every route then answers 404 for.
         const string json = """
-        {"data":[
-          {"id":"claude-opus-4.8","vendor":"Anthropic","supported_endpoints":["/v1/messages"]},
-          {"id":"mystery-model","vendor":"Anthropic"},
-          {"id":"embedding-only","vendor":"Anthropic","supported_endpoints":[]}
-        ]}
-        """;
+            {"data":[
+              {"id":"claude-opus-4.8","vendor":"Anthropic","supported_endpoints":["/v1/messages"]},
+              {"id":"mystery-model","vendor":"Anthropic"},
+              {"id":"embedding-only","vendor":"Anthropic","supported_endpoints":[]}
+            ]}
+            """;
 
         var models = ProxyModelResolver.ParseServableModels(json);
 

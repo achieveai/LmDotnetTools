@@ -25,7 +25,11 @@ public class CopilotVersionCheckerIntegrationTests
         }
 
         var version = await CopilotVersionChecker.EnsureCopilotCliVersionAsync(
-            cliPath, minVersion: "0.0.410", timeout: TimeSpan.FromSeconds(30), ct: CancellationToken.None);
+            cliPath,
+            minVersion: "0.0.410",
+            timeout: TimeSpan.FromSeconds(30),
+            ct: CancellationToken.None
+        );
 
         version.Should().NotBeNullOrWhiteSpace();
     }

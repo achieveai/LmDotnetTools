@@ -25,7 +25,8 @@ public sealed class ClaudeAgentSdkAgainstMockTests
         // the heavy "spawn the actual SDK" path.
         Skip.If(
             Environment.GetEnvironmentVariable("LMDOTNET_RUN_CLAUDE_E2E") != "1",
-            "Set LMDOTNET_RUN_CLAUDE_E2E=1 to run real-CLI E2E tests.");
+            "Set LMDOTNET_RUN_CLAUDE_E2E=1 to run real-CLI E2E tests."
+        );
 
         var (available, reason) = ClaudeCliPrerequisites.Detect();
         Skip.IfNot(available, reason ?? "Claude Agent SDK CLI not available.");
@@ -39,11 +40,12 @@ public sealed class ClaudeAgentSdkAgainstMockTests
         // pool of identical turns so whichever request is the user-visible one carries the
         // marker. The assertion is "marker text present in rendered output", not "exactly N
         // requests served".
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("parent", _ => true)
-                .Turn(t => t.Text(markerText))
-                .Turn(t => t.Text(markerText))
-                .Turn(t => t.Text(markerText))
+            .Turn(t => t.Text(markerText))
+            .Turn(t => t.Text(markerText))
+            .Turn(t => t.Text(markerText))
             .Build();
         await using var fixture = await EphemeralHostFixture.StartAsync(responder);
 
@@ -68,19 +70,12 @@ public sealed class ClaudeAgentSdkAgainstMockTests
             ModelId = "claude-test",
             SystemPrompt = "You are a helpful assistant.",
             MaxTurns = 1,
-            InputMessages =
-            [
-                new { role = "user", content = "say hello" },
-            ],
+            InputMessages = [new { role = "user", content = "say hello" }],
         };
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await client.StartAsync(request, cts.Token);
-        var userMessage = new TextMessage
-        {
-            Role = Role.User,
-            Text = "say hello",
-        };
+        var userMessage = new TextMessage { Role = Role.User, Text = "say hello" };
 
         var renderedText = new System.Text.StringBuilder();
         try
@@ -104,9 +99,16 @@ public sealed class ClaudeAgentSdkAgainstMockTests
             // (host never reached vs. text never rendered) far better than a bare timeout.
         }
 
-        responder.RemainingTurns["parent"].Should().BeLessThan(3,
-            "the CLI is expected to make at least one /v1/messages call against the mock host");
-        renderedText.ToString().Should().Contain(markerText,
-            "the scripted assistant turn must round-trip through the SDK as a TextMessage so chat clients render content (issue #29)");
+        responder
+            .RemainingTurns["parent"]
+            .Should()
+            .BeLessThan(3, "the CLI is expected to make at least one /v1/messages call against the mock host");
+        renderedText
+            .ToString()
+            .Should()
+            .Contain(
+                markerText,
+                "the scripted assistant turn must round-trip through the SDK as a TextMessage so chat clients render content (issue #29)"
+            );
     }
 }

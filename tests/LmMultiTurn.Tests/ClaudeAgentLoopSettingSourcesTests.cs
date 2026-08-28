@@ -51,8 +51,7 @@ public class ClaudeAgentLoopSettingSourcesTests
     [InlineData(true, true, false, "user,project")]
     [InlineData(true, false, true, "user,local")]
     [InlineData(false, true, true, "project,local")]
-    public void BuildSettingSources_Mixed_ReturnsCommaJoinedSubset(
-        bool user, bool project, bool local, string expected)
+    public void BuildSettingSources_Mixed_ReturnsCommaJoinedSubset(bool user, bool project, bool local, string expected)
     {
         var options = new ClaudeAgentSdkOptions
         {

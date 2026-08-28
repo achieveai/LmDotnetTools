@@ -78,14 +78,10 @@ internal sealed class ObservedTestAgent : MultiTurnAgentBase
         string threadId,
         IConversationStore? store = null,
         bool persistRunLedger = false,
-        int inputChannelCapacity = 100)
-        : base(
-            threadId,
-            store: store,
-            inputChannelCapacity: inputChannelCapacity,
-            persistRunLedger: persistRunLedger)
-    {
-    }
+        int inputChannelCapacity = 100
+    )
+        : base(threadId, store: store, inputChannelCapacity: inputChannelCapacity, persistRunLedger: persistRunLedger)
+    { }
 
     public int QueuedInputCount => InputReader.Count;
 

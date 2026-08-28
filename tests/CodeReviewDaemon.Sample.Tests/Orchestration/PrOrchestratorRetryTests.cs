@@ -33,7 +33,12 @@ public sealed class PrOrchestratorRetryTests : IDisposable
     {
         var governor = Governor(maxAttempts: 1);
         var executor = new CountingFailingExecutor();
-        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var orchestrator = new PrOrchestrator(
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         // First poll: the stage throws → recorded as a failure → parked (maxAttempts=1).
@@ -56,7 +61,12 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         // time. The reconcile entry is where the caller's decision to spend another attempt is honoured.
         var governor = Governor(maxAttempts: 1);
         var executor = new CountingFailingExecutor();
-        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var orchestrator = new PrOrchestrator(
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         var poll = async () => await orchestrator.RunAsync(run, CancellationToken.None);
@@ -76,7 +86,12 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         // back through the reconciler's door.
         var governor = Governor(maxAttempts: 1);
         var executor = new CountingFailingExecutor();
-        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var orchestrator = new PrOrchestrator(
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         var reconcile = async () => await orchestrator.ReconcileAsync(run, CancellationToken.None);
@@ -92,7 +107,12 @@ public sealed class PrOrchestratorRetryTests : IDisposable
     {
         var governor = Governor(maxAttempts: 5);
         var executor = new CountingFailingExecutor();
-        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var orchestrator = new PrOrchestrator(
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
@@ -117,7 +137,12 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         // at maxAttempts=1 the run is attempted again rather than parked.
         var governor = Governor(maxAttempts: 1);
         var executor = new FailsAtStageExecutor(ReviewStage.Posted);
-        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var orchestrator = new PrOrchestrator(
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
@@ -126,7 +151,9 @@ public sealed class PrOrchestratorRetryTests : IDisposable
 
         // Not parked (a ContextReady failure at maxAttempts=1 WOULD be): the Posted stage is attempted again.
         await attempt.Should().ThrowAsync<InvalidOperationException>();
-        executor.FailStageCalls.Should().Be(2, "a non-ContextReady failure is not governed by the context-retry budget");
+        executor
+            .FailStageCalls.Should()
+            .Be(2, "a non-ContextReady failure is not governed by the context-retry budget");
     }
 
     [Fact]
@@ -137,7 +164,12 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         // the same reason the ContextReady hot-loop is governed.
         var governor = Governor(maxAttempts: 1);
         var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
-        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var orchestrator = new PrOrchestrator(
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
@@ -157,8 +189,15 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         // round would fan out another on top of it. Bounded attempts then park is the only terminating option.
         var governor = Governor(maxAttempts: 1);
         var executor = new FailsAtStageExecutor(
-            ReviewStage.Reviewed, () => new ReviewCheckpointCorruptException("unreadable", new FormatException()));
-        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+            ReviewStage.Reviewed,
+            () => new ReviewCheckpointCorruptException("unreadable", new FormatException())
+        );
+        var orchestrator = new PrOrchestrator(
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
@@ -177,8 +216,15 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         // attempts are not free: each one can leave another turn running on the host. Bounded then parked.
         var governor = Governor(maxAttempts: 1);
         var executor = new FailsAtStageExecutor(
-            ReviewStage.Reviewed, () => new ReviewHostContractException("host predates message idempotency"));
-        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+            ReviewStage.Reviewed,
+            () => new ReviewHostContractException("host predates message idempotency")
+        );
+        var orchestrator = new PrOrchestrator(
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
@@ -196,7 +242,12 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         // usually transient. Charging those to the budget would park recoverable reviews on a bad minute.
         var governor = Governor(maxAttempts: 1);
         var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new InvalidOperationException("host 503"));
-        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var orchestrator = new PrOrchestrator(
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
@@ -222,14 +273,18 @@ public sealed class PrOrchestratorRetryTests : IDisposable
     [InlineData(nameof(ReviewStage.Judged))]
     [InlineData(nameof(ReviewStage.Posted))]
     public async Task A_slot_prep_failure_is_charged_to_the_retry_budget_at_every_stage_that_re_prepares(
-        string stageName)
+        string stageName
+    )
     {
         var stage = Enum.Parse<ReviewStage>(stageName);
         var governor = Governor(maxAttempts: 1);
-        var executor = new FailsAtStageExecutor(
-            stage, () => new SlotNeedsRecloneException("store has no .git"));
+        var executor = new FailsAtStageExecutor(stage, () => new SlotNeedsRecloneException("store has no .git"));
         var orchestrator = new PrOrchestrator(
-            _store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
@@ -237,8 +292,9 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         executor.FailStageCalls.Should().Be(1);
 
         _ = await orchestrator.RunAsync(run, CancellationToken.None);
-        executor.FailStageCalls.Should().Be(
-            1, "a store that cannot be prepared is stuck wherever the prep ran, so it must park, not busy-loop");
+        executor
+            .FailStageCalls.Should()
+            .Be(1, "a store that cannot be prepared is stuck wherever the prep ran, so it must park, not busy-loop");
     }
 
     /// <summary>
@@ -265,7 +321,11 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         var governor = Governor(maxAttempts: 1);
         var executor = new FailsAtStageExecutor(ReviewStage.Judged, error);
         var orchestrator = new PrOrchestrator(
-            _store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
@@ -286,7 +346,11 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         var governor = Governor(maxAttempts: 1);
         var executor = new FailsAtStageExecutor(ReviewStage.Posted, () => new InvalidOperationException("502"));
         var orchestrator = new PrOrchestrator(
-            _store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var run = SeedRun();
 
         var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
@@ -296,36 +360,42 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         executor.FailStageCalls.Should().Be(2, "a transient posting failure must not be parked");
     }
 
-    private RetryGovernor Governor(int maxAttempts) => new(
-        maxAttempts,
-        TimeSpan.FromSeconds(30),
-        TimeSpan.FromSeconds(900),
-        () => _now,
-        NullLogger<RetryGovernor>.Instance);
+    private RetryGovernor Governor(int maxAttempts) =>
+        new(
+            maxAttempts,
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromSeconds(900),
+            () => _now,
+            NullLogger<RetryGovernor>.Instance
+        );
 
     private ReviewRun SeedRun()
     {
-        var repoId = _store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "repo-1",
-        });
-        return _store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = "1",
-            HeadSha = "h",
-            BaseSha = "b",
-            TriggerWatermark = "wm",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "collect-only",
-            Stage = ReviewStage.Discovered,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        });
+        var repoId = _store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-1",
+            }
+        );
+        return _store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = "1",
+                HeadSha = "h",
+                BaseSha = "b",
+                TriggerWatermark = "wm",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Running,
+                PrLifecycleState = PrLifecycleState.Open,
+            }
+        );
     }
 
     private sealed class CountingFailingExecutor : IReviewStageExecutor

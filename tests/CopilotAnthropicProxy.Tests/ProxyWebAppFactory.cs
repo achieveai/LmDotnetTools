@@ -83,8 +83,14 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
         _jinaUpstream = jinaUpstream;
         Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL", model);
         Environment.SetEnvironmentVariable("JINA_API_KEY", jinaApiKey);
-        Environment.SetEnvironmentVariable("WEB_TOOLS_OUTPUT_CAP", webToolsOutputCap?.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        Environment.SetEnvironmentVariable("WEB_TOOLS_TIMEOUT_MS", webToolsTimeoutMs?.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Environment.SetEnvironmentVariable(
+            "WEB_TOOLS_OUTPUT_CAP",
+            webToolsOutputCap?.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        );
+        Environment.SetEnvironmentVariable(
+            "WEB_TOOLS_TIMEOUT_MS",
+            webToolsTimeoutMs?.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        );
         Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL_ENDPOINTS", modelEndpoints);
         if (idleTimeoutSeconds is not null)
         {
@@ -128,13 +134,11 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
             if (_jinaUpstream is not null)
             {
                 services.RemoveAll<JinaWebProvider>();
-                services.AddSingleton(sp =>
-                    new JinaWebProvider(
-                        new HttpClient(new FakeHttpMessageHandler(_jinaUpstream)),
-                        sp.GetRequiredService<WebToolsOptions>(),
-                        sp.GetRequiredService<ILoggerFactory>().CreateLogger<JinaWebProvider>()
-                    )
-                );
+                services.AddSingleton(sp => new JinaWebProvider(
+                    new HttpClient(new FakeHttpMessageHandler(_jinaUpstream)),
+                    sp.GetRequiredService<WebToolsOptions>(),
+                    sp.GetRequiredService<ILoggerFactory>().CreateLogger<JinaWebProvider>()
+                ));
                 services.RemoveAll<McpJinaToolCatalog>();
                 services.AddSingleton<McpJinaToolCatalog>();
                 services.RemoveAll<McpToolComposition>();

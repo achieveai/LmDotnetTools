@@ -269,11 +269,7 @@ public class ClaudeAgentSdkClientCliArgumentsTests
     public void BuildCliArgumentTokens_EmitsToolsToken_WhenAllowedToolsSet()
     {
         var client = new ClaudeAgentSdkClient(new ClaudeAgentSdkOptions());
-        var request = new ClaudeAgentSdkRequest
-        {
-            ModelId = "claude-sonnet-4-6",
-            AllowedTools = "Read,Write,Bash",
-        };
+        var request = new ClaudeAgentSdkRequest { ModelId = "claude-sonnet-4-6", AllowedTools = "Read,Write,Bash" };
 
         var tokens = client.BuildCliArgumentTokens(request);
 
@@ -295,11 +291,7 @@ public class ClaudeAgentSdkClientCliArgumentsTests
     public void BuildCliArgumentTokens_EmitsResumeToken_WhenSessionIdSet()
     {
         var client = new ClaudeAgentSdkClient(new ClaudeAgentSdkOptions());
-        var request = new ClaudeAgentSdkRequest
-        {
-            ModelId = "claude-sonnet-4-6",
-            SessionId = "abc-123",
-        };
+        var request = new ClaudeAgentSdkRequest { ModelId = "claude-sonnet-4-6", SessionId = "abc-123" };
 
         var tokens = client.BuildCliArgumentTokens(request);
 

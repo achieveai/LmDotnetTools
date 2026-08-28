@@ -22,13 +22,10 @@ public sealed class AnthropicSseRoundTripProbeTests
         var plan = new InstructionPlan(
             "round-trip",
             reasoningLength: null,
-            messages: [InstructionMessage.ForExplicitText(scriptedText)]);
+            messages: [InstructionMessage.ForExplicitText(scriptedText)]
+        );
 
-        var content = new AnthropicSseStreamHttpContent(
-            plan,
-            model: "claude-test",
-            wordsPerChunk: 1,
-            chunkDelayMs: 0);
+        var content = new AnthropicSseStreamHttpContent(plan, model: "claude-test", wordsPerChunk: 1, chunkDelayMs: 0);
 
         using var buffer = new MemoryStream();
         await content.CopyToAsync(buffer);
@@ -41,8 +38,7 @@ public sealed class AnthropicSseRoundTripProbeTests
             collected.AddRange(parser.ProcessEvent(eventType, data));
         }
 
-        var rendered = string.Concat(
-            collected.OfType<TextMessage>().Select(m => m.Text));
+        var rendered = string.Concat(collected.OfType<TextMessage>().Select(m => m.Text));
         Assert.Contains(scriptedText, rendered);
     }
 
@@ -52,7 +48,8 @@ public sealed class AnthropicSseRoundTripProbeTests
         var plan = new InstructionPlan(
             "ordering",
             reasoningLength: null,
-            messages: [InstructionMessage.ForExplicitText("alpha beta gamma")]);
+            messages: [InstructionMessage.ForExplicitText("alpha beta gamma")]
+        );
 
         var content = new AnthropicSseStreamHttpContent(plan, model: "claude-test", wordsPerChunk: 1, chunkDelayMs: 0);
 

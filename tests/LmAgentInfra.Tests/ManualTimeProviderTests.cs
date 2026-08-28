@@ -27,13 +27,7 @@ public class ManualTimeProviderTests
         ITimer? armed = null;
 
         using var first = clock.CreateTimer(
-            _ =>
-                armed = clock.CreateTimer(
-                    _ => { },
-                    null,
-                    TimeSpan.FromMilliseconds(1200),
-                    Timeout.InfiniteTimeSpan
-                ),
+            _ => armed = clock.CreateTimer(_ => { }, null, TimeSpan.FromMilliseconds(1200), Timeout.InfiniteTimeSpan),
             null,
             TimeSpan.FromMilliseconds(600),
             Timeout.InfiniteTimeSpan
@@ -55,12 +49,7 @@ public class ManualTimeProviderTests
         // The other half of the contract: matching on the scheduled delay must not resurrect a timer
         // that already fired, or a test could "see" a backoff that is long since spent.
         var clock = new ManualTimeProvider(Start);
-        using var timer = clock.CreateTimer(
-            _ => { },
-            null,
-            TimeSpan.FromSeconds(1),
-            Timeout.InfiniteTimeSpan
-        );
+        using var timer = clock.CreateTimer(_ => { }, null, TimeSpan.FromSeconds(1), Timeout.InfiniteTimeSpan);
 
         await clock
             .WaitForTimerAsync(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1))

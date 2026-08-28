@@ -74,12 +74,7 @@ public class MessagesTests
     public void RunAssignment_CanBeCreatedWithAllParameters()
     {
         // Arrange & Act
-        var assignment = new RunAssignment(
-            "run-id",
-            "gen-id",
-            ["input-id"],
-            "parent-run-id",
-            WasInjected: true);
+        var assignment = new RunAssignment("run-id", "gen-id", ["input-id"], "parent-run-id", WasInjected: true);
 
         // Assert
         assignment.RunId.Should().Be("run-id");
@@ -100,11 +95,7 @@ public class MessagesTests
         var assignment = new RunAssignment("run-id", "gen-id");
 
         // Act
-        var message = new RunAssignmentMessage
-        {
-            Assignment = assignment,
-            ThreadId = "thread-1",
-        };
+        var message = new RunAssignmentMessage { Assignment = assignment, ThreadId = "thread-1" };
 
         // Assert
         message.Role.Should().Be(Role.System);
@@ -117,11 +108,7 @@ public class MessagesTests
         var assignment = new RunAssignment("run-123", "gen-456", ["input-789"], "parent-000");
 
         // Act
-        var message = new RunAssignmentMessage
-        {
-            Assignment = assignment,
-            ThreadId = "thread-1",
-        };
+        var message = new RunAssignmentMessage { Assignment = assignment, ThreadId = "thread-1" };
 
         // Assert
         message.RunId.Should().Be("run-123");
@@ -138,10 +125,7 @@ public class MessagesTests
     public void RunCompletedMessage_HasCorrectRole()
     {
         // Arrange & Act
-        var message = new RunCompletedMessage
-        {
-            CompletedRunId = "run-id",
-        };
+        var message = new RunCompletedMessage { CompletedRunId = "run-id" };
 
         // Assert
         message.Role.Should().Be(Role.System);
@@ -173,10 +157,7 @@ public class MessagesTests
     public void RunCompletedMessage_DefaultsToNotForked()
     {
         // Arrange & Act
-        var message = new RunCompletedMessage
-        {
-            CompletedRunId = "run-id",
-        };
+        var message = new RunCompletedMessage { CompletedRunId = "run-id" };
 
         // Assert
         message.WasForked.Should().BeFalse();
@@ -192,7 +173,10 @@ public class MessagesTests
     {
         // Regression: the pre-Trigger 4-arg positional shape (input, receiptId, queuedAt, resume)
         // must still construct, with Trigger defaulting to null.
-        var messages = new List<IMessage> { new TextMessage { Text = "hi", Role = Role.User } };
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Text = "hi", Role = Role.User },
+        };
         var input = new UserInput(messages);
         var queuedAt = DateTimeOffset.UtcNow;
         var resume = new ResumeSentinel("run-1", "gen-1");
@@ -211,7 +195,10 @@ public class MessagesTests
     {
         // Regression: the pre-Trigger 4-value Deconstruct((input, receiptId, queuedAt, resume) = ...)
         // shape must keep working even though the record now carries a 5th (Trigger) member.
-        var messages = new List<IMessage> { new TextMessage { Text = "hi", Role = Role.User } };
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Text = "hi", Role = Role.User },
+        };
         var input = new UserInput(messages);
         var queuedAt = DateTimeOffset.UtcNow;
         var queued = new QueuedInput(input, "receipt-2", queuedAt, Resume: null, Trigger: null);
@@ -270,7 +257,8 @@ public class MessagesTests
     public void StreamRecoveryMessage_EmitsTheDiscriminatorTheChatClientMatchesOn()
     {
         var json = SerializeAsProductionFrame(
-            new StreamRecoveryMessage("thread-1", "run-1", "gen-1", StreamRecoveryReason.SlowConsumer));
+            new StreamRecoveryMessage("thread-1", "run-1", "gen-1", StreamRecoveryReason.SlowConsumer)
+        );
 
         // Matched by wsClient.ts: data.includes('"$type":"stream_recovery"').
         json.Should().Contain("\"$type\":\"stream_recovery\"");

@@ -34,15 +34,18 @@ public static class TestLoggingModuleInitializer
         Log.Information(
             "=== Test Logging Module Initialized === RunId: {RunId}, LogPath: {LogPath}",
             TestLoggingConfiguration.CurrentRunId,
-            TestLoggingConfiguration.LogFilePath);
+            TestLoggingConfiguration.LogFilePath
+        );
 
         IsInitialized = true;
 
         // Register for process exit to flush logs
         AppDomain.CurrentDomain.ProcessExit += (_, _) =>
         {
-            Log.Information("=== Test Logging Module Shutting Down === RunId: {RunId}",
-                TestLoggingConfiguration.CurrentRunId);
+            Log.Information(
+                "=== Test Logging Module Shutting Down === RunId: {RunId}",
+                TestLoggingConfiguration.CurrentRunId
+            );
             TestLoggingConfiguration.Shutdown();
         };
     }
@@ -90,4 +93,3 @@ public sealed class TestLoggingFixture : IDisposable
         Log.Debug("TestLoggingFixture disposed");
     }
 }
-

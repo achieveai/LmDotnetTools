@@ -74,7 +74,11 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         {
             var startTime = DateTime.UtcNow;
             var request = AnthropicRequest.FromMessages(messages, options, _logger);
-            var dumpWriter = RequestResponseDumpWriter.Create(options?.RequestResponseDumpFileName, s_dumpJsonOptions, _logger);
+            var dumpWriter = RequestResponseDumpWriter.Create(
+                options?.RequestResponseDumpFileName,
+                s_dumpJsonOptions,
+                _logger
+            );
             dumpWriter?.WriteRequest(request);
 
             _logger.LogDebug(
@@ -153,7 +157,11 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         try
         {
             var request = AnthropicRequest.FromMessages(messages, options, _logger) with { Stream = true };
-            var dumpWriter = RequestResponseDumpWriter.Create(options?.RequestResponseDumpFileName, s_dumpJsonOptions, _logger);
+            var dumpWriter = RequestResponseDumpWriter.Create(
+                options?.RequestResponseDumpFileName,
+                s_dumpJsonOptions,
+                _logger
+            );
             dumpWriter?.WriteRequest(request);
 
             _logger.LogDebug(

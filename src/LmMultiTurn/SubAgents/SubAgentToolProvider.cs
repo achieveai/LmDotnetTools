@@ -59,15 +59,15 @@ public class SubAgentToolProvider : IFunctionProvider
     /// so the two cannot drift.
     /// </summary>
     public static readonly IReadOnlyList<string> AllToolNames =
-        [
-            SpawnToolName,
-            SendMessageToolName,
-            CheckAgentToolName,
-            WaitAgentToolName,
-            CheckAgentsToolName,
-            WaitForAgentsToolName,
-            GetAgentsToolName,
-        ];
+    [
+        SpawnToolName,
+        SendMessageToolName,
+        CheckAgentToolName,
+        WaitAgentToolName,
+        CheckAgentsToolName,
+        WaitForAgentsToolName,
+        GetAgentsToolName,
+    ];
 
     /// <summary>
     /// How many known agent ids an unknown-id error may list. Bounded so a hierarchy with hundreds of
@@ -113,7 +113,8 @@ public class SubAgentToolProvider : IFunctionProvider
     public SubAgentToolProvider(
         SubAgentManager manager,
         MutableSubAgentTemplateSource source,
-        IReadOnlySet<string>? exposedToolNames = null)
+        IReadOnlySet<string>? exposedToolNames = null
+    )
     {
         ArgumentNullException.ThrowIfNull(manager);
         ArgumentNullException.ThrowIfNull(source);
@@ -143,9 +144,7 @@ public class SubAgentToolProvider : IFunctionProvider
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
         var shape = EmitShape();
-        return _exposedToolNames is null
-            ? shape
-            : shape.Where(d => _exposedToolNames.Contains(d.Contract.Name));
+        return _exposedToolNames is null ? shape : shape.Where(d => _exposedToolNames.Contains(d.Contract.Name));
     }
 
     /// <summary>
@@ -242,8 +241,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "subagent_type",
-                    Description =
-                        $"Which sub-agent to spawn. One of: {typeList}.",
+                    Description = $"Which sub-agent to spawn. One of: {typeList}.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -285,8 +283,7 @@ public class SubAgentToolProvider : IFunctionProvider
                             + "directory, so write it for a stranger, not for yourself. Every agent "
                             + "in the collaboration can read it, so put no secrets, credentials, "
                             + "private or customer data in it."
-                        : "Optional short 3-5 word label for this delegation "
-                            + "(used for telemetry/UI).",
+                        : "Optional short 3-5 word label for this delegation " + "(used for telemetry/UI).",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = collaborationEnabled,
                 },
@@ -333,16 +330,14 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "add_tools",
-                    Description =
-                        "Comma-separated list of additional tool names to enable.",
+                    Description = "Comma-separated list of additional tool names to enable.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
                 new FunctionParameterContract
                 {
                     Name = "remove_tools",
-                    Description =
-                        "Comma-separated list of tool names to disable.",
+                    Description = "Comma-separated list of tool names to disable.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
@@ -389,8 +384,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "target",
-                    Description =
-                        "The sub-agent's id (from Agent) or the name you assigned it.",
+                    Description = "The sub-agent's id (from Agent) or the name you assigned it.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -433,8 +427,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "target",
-                    Description =
-                        "The recipient's agent_id (preferred — names can collide) or its name.",
+                    Description = "The recipient's agent_id (preferred — names can collide) or its name.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -497,8 +490,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "agent_id",
-                    Description =
-                        "The id of the sub-agent to check (from Agent or SendMessage).",
+                    Description = "The id of the sub-agent to check (from Agent or SendMessage).",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -534,14 +526,14 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "Pass timeout_seconds so a wedged agent cannot stall you indefinitely: on expiry the "
                 + "call returns status 'timeout', the agent keeps running, and you can wait again. Do "
                 + "not wait while you still have work of your own — do it and wait afterwards.\n\n"
-                + "Use an `agent_id` returned by `Agent`; do not pass workflow IDs." + WorkflowIdRedirect,
+                + "Use an `agent_id` returned by `Agent`; do not pass workflow IDs."
+                + WorkflowIdRedirect,
             Parameters =
             [
                 new FunctionParameterContract
                 {
                     Name = "agent_id",
-                    Description =
-                        "The id of the sub-agent to wait for (from Agent or SendMessage).",
+                    Description = "The id of the sub-agent to wait for (from Agent or SendMessage).",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -588,9 +580,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "agent_ids",
-                    Description =
-                        "Comma-separated agent ids or names to check, e.g. "
-                        + "'agt_1, auth-reviewer'.",
+                    Description = "Comma-separated agent ids or names to check, e.g. " + "'agt_1, auth-reviewer'.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -627,14 +617,14 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "question ends at most one wait, so a question you have chosen not to answer will "
                 + "not keep interrupting.\n\n"
                 + "Use `agent_ids` returned by `Agent` (or the names you gave them); do not pass "
-                + "workflow IDs." + WorkflowIdRedirect,
+                + "workflow IDs."
+                + WorkflowIdRedirect,
             Parameters =
             [
                 new FunctionParameterContract
                 {
                     Name = "agent_ids",
-                    Description =
-                        "Comma-separated ids or names of your own sub-agents to wait for.",
+                    Description = "Comma-separated ids or names of your own sub-agents to wait for.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -749,7 +739,8 @@ public class SubAgentToolProvider : IFunctionProvider
     private async Task<ToolHandlerResult> HandleAgentToolAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         // Handlers are snapshotted by the loop at construction time, so dropping the contract
         // is not enough — refuse here too if the model replays a spawn from earlier history.
@@ -758,17 +749,18 @@ public class SubAgentToolProvider : IFunctionProvider
             return ToolHandlerResult.FromError(
                 "Spawning new sub-agents is not available for this turn. Use CheckAgent to read what "
                     + "the existing sub-agents delivered, or SendMessage to follow up with one of them.",
-                "spawn_suppressed");
+                "spawn_suppressed"
+            );
         }
 
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
 
-        var prompt = GetOptionalString(root, "prompt")
-            ?? throw new ArgumentException("The 'prompt' parameter is required.");
-        var subagentType = GetOptionalString(root, "subagent_type")
-            ?? throw new ArgumentException(
-                "The 'subagent_type' parameter is required.");
+        var prompt =
+            GetOptionalString(root, "prompt") ?? throw new ArgumentException("The 'prompt' parameter is required.");
+        var subagentType =
+            GetOptionalString(root, "subagent_type")
+            ?? throw new ArgumentException("The 'subagent_type' parameter is required.");
 
         var name = GetOptionalString(root, "name");
         var model = GetOptionalString(root, "model");
@@ -815,7 +807,8 @@ public class SubAgentToolProvider : IFunctionProvider
                 // subscriber sees a sub-agent appear with a parent run but no reason.
                 context.ToolCallId,
                 role,
-                description);
+                description
+            );
 
             return ToolHandlerResult.FromText(result);
         }
@@ -847,27 +840,27 @@ public class SubAgentToolProvider : IFunctionProvider
     private async Task<ToolHandlerResult> HandleSendMessageToolAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
 
-        var target = GetOptionalString(root, "target")
-            ?? throw new ArgumentException("The 'target' parameter is required.");
+        var target =
+            GetOptionalString(root, "target") ?? throw new ArgumentException("The 'target' parameter is required.");
 
         if (_manager.Collaboration is { } collaboration)
         {
             return SendCollaborationMessage(collaboration, root, target);
         }
 
-        var prompt = GetOptionalString(root, "prompt")
-            ?? throw new ArgumentException("The 'prompt' parameter is required.");
+        var prompt =
+            GetOptionalString(root, "prompt") ?? throw new ArgumentException("The 'prompt' parameter is required.");
         var runInBackground = GetOptionalBool(root, "run_in_background") ?? false;
 
         try
         {
-            var result = await _manager.SendMessageAsync(
-                target, prompt, runInBackground, cancellationToken);
+            var result = await _manager.SendMessageAsync(target, prompt, runInBackground, cancellationToken);
 
             return ToolHandlerResult.FromText(result);
         }
@@ -890,20 +883,22 @@ public class SubAgentToolProvider : IFunctionProvider
     private static ToolHandlerResult SendCollaborationMessage(
         AgentCollaborationSetup collaboration,
         JsonElement root,
-        string target)
+        string target
+    )
     {
-        var content = GetOptionalString(root, "content")
-            ?? throw new ArgumentException("The 'content' parameter is required.");
+        var content =
+            GetOptionalString(root, "content") ?? throw new ArgumentException("The 'content' parameter is required.");
 
-        var rawType = GetOptionalString(root, "msg_type")
-            ?? throw new ArgumentException("The 'msg_type' parameter is required.");
+        var rawType =
+            GetOptionalString(root, "msg_type") ?? throw new ArgumentException("The 'msg_type' parameter is required.");
 
         if (!TryParseMessageType(rawType, out var messageType))
         {
             return ToolHandlerResult.FromError(
                 $"Unknown msg_type '{rawType}'. Use one of: question, delegate_task, "
                     + "task_update, steer, response.",
-                "invalid_msg_type");
+                "invalid_msg_type"
+            );
         }
 
         // Some callers cannot omit an optional string parameter and send "" or whitespace where they
@@ -918,42 +913,42 @@ public class SubAgentToolProvider : IFunctionProvider
         // Both reply-shaped types are checked here, not just Response. The ledger refuses either one
         // without a correlation, but doing it at the tool boundary is what turns that refusal into a
         // sentence naming the parameter the model left out.
-        if (
-            messageType is AgentMessageType.Response or AgentMessageType.TaskUpdate
-            && inResponseTo is null
-        )
+        if (messageType is AgentMessageType.Response or AgentMessageType.TaskUpdate && inResponseTo is null)
         {
             return ToolHandlerResult.FromError(
                 messageType == AgentMessageType.Response
                     ? "A 'response' must set 'in_response_to' to the message_id it answers."
                     : "A 'task_update' must set 'in_response_to' to the message_id of the task that "
                         + "was delegated to you.",
-                AgentMessageFailureCodes.MissingCorrelation);
+                AgentMessageFailureCodes.MissingCorrelation
+            );
         }
 
-        var dispatch = new AgentCollaborationMessenger(collaboration).Send(
-            target, content, messageType, inResponseTo);
+        var dispatch = new AgentCollaborationMessenger(collaboration).Send(target, content, messageType, inResponseTo);
 
         if (!dispatch.Result.Succeeded)
         {
             return ToolHandlerResult.FromError(
                 DescribeSendFailure(dispatch.Result.FailureCode, target),
-                dispatch.Result.FailureCode ?? "send_refused");
+                dispatch.Result.FailureCode ?? "send_refused"
+            );
         }
 
-        return ToolHandlerResult.FromText(JsonSerializer.Serialize(new
-        {
-            status = "accepted",
-            message_id = dispatch.Result.MessageId,
-            to_agent_id = dispatch.Result.Target?.AgentId,
-            to_name = dispatch.Result.Target?.Name,
-            msg_type = rawType,
-            // Restated rather than inferred by the caller: only these two types leave a correlation
-            // open, and a sender that waits for an answer that is never coming is a deadlock.
-            expects_reply = messageType
-                is AgentMessageType.Question
-                    or AgentMessageType.DelegateTask,
-        }));
+        return ToolHandlerResult.FromText(
+            JsonSerializer.Serialize(
+                new
+                {
+                    status = "accepted",
+                    message_id = dispatch.Result.MessageId,
+                    to_agent_id = dispatch.Result.Target?.AgentId,
+                    to_name = dispatch.Result.Target?.Name,
+                    msg_type = rawType,
+                    // Restated rather than inferred by the caller: only these two types leave a correlation
+                    // open, and a sender that waits for an answer that is never coming is a deadlock.
+                    expects_reply = messageType is AgentMessageType.Question or AgentMessageType.DelegateTask,
+                }
+            )
+        );
     }
 
     /// <summary>Maps the tool's snake_case wire vocabulary onto the closed message-type set.</summary>
@@ -1001,14 +996,10 @@ public class SubAgentToolProvider : IFunctionProvider
                 $"More than one agent is named '{target}'. Address it by agent_id instead.",
             AgentMessageFailureCodes.InboxFull =>
                 $"'{target}' has too many messages pending. Wait for it to catch up, then retry.",
-            AgentMessageFailureCodes.SelfDelivery =>
-                "You cannot send a message to yourself.",
-            AgentMessageFailureCodes.InvalidSender =>
-                "Your agent is no longer active, so it cannot send new messages.",
-            AgentMessageFailureCodes.UnknownCorrelation =>
-                "The 'in_response_to' message_id is not one you received.",
-            AgentMessageFailureCodes.CorrelationClosed =>
-                "That message has already been answered.",
+            AgentMessageFailureCodes.SelfDelivery => "You cannot send a message to yourself.",
+            AgentMessageFailureCodes.InvalidSender => "Your agent is no longer active, so it cannot send new messages.",
+            AgentMessageFailureCodes.UnknownCorrelation => "The 'in_response_to' message_id is not one you received.",
+            AgentMessageFailureCodes.CorrelationClosed => "That message has already been answered.",
             AgentMessageFailureCodes.CorrelationNotAddressedToSender =>
                 "That message was not addressed to you, so you cannot answer it.",
             AgentMessageFailureCodes.CorrelationDoesNotExpectReply =>
@@ -1030,17 +1021,18 @@ public class SubAgentToolProvider : IFunctionProvider
     private Task<ToolHandlerResult> HandleCheckAgentsToolAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
 
-        var targets = ParseCommaSeparated(GetOptionalString(root, "agent_ids"))
+        var targets =
+            ParseCommaSeparated(GetOptionalString(root, "agent_ids"))
             ?? throw new ArgumentException("The 'agent_ids' parameter is required.");
 
         var batch = WidenToCollaboration(_manager.CheckAgents(targets));
-        return Task.FromResult<ToolHandlerResult>(
-            ToolHandlerResult.FromText(SerializeObservationBatch(batch)));
+        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(SerializeObservationBatch(batch)));
     }
 
     /// <summary>
@@ -1066,8 +1058,7 @@ public class SubAgentToolProvider : IFunctionProvider
             Entries =
             [
                 .. batch.Entries.Select(entry =>
-                    entry.IsFound
-                    || collaboration.Directory.Resolve(entry.Target).Entry is not { } found
+                    entry.IsFound || collaboration.Directory.Resolve(entry.Target).Entry is not { } found
                         ? entry
                         : entry with
                         {
@@ -1120,47 +1111,53 @@ public class SubAgentToolProvider : IFunctionProvider
     private Task<ToolHandlerResult> HandleGetAgentsToolAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (_manager.Collaboration is not { } collaboration)
         {
             // Unreachable through the advertised surface — the descriptor only exists under a
             // collaboration — but a stale tool call from an earlier turn must not throw.
-            return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromError(
-                "Agent collaboration is not enabled.", "collaboration_disabled"));
+            return Task.FromResult<ToolHandlerResult>(
+                ToolHandlerResult.FromError("Agent collaboration is not enabled.", "collaboration_disabled")
+            );
         }
 
         // Serialized rather than formatted: role and description are model-authored, so rendering them
         // into a hand-built listing is how one agent's description forges another agent's row.
-        var payload = JsonSerializer.Serialize(new
-        {
-            collaboration_id = collaboration.Bundle.CollaborationId,
-            your_agent_id = collaboration.AgentId,
-            agents = collaboration.Directory.Snapshot().Select(e => new
+        var payload = JsonSerializer.Serialize(
+            new
             {
-                agent_id = e.AgentId,
-                name = e.Name,
-                role = e.Role,
-                description = e.Description,
-                kind = e.Kind.ToString(),
-                agent_type = e.AgentType,
-                parent_agent_id = e.ParentAgentId,
-                depth = e.StructuralDepth,
-                // Both depths, because they answer different questions and diverge: structural depth is
-                // where an agent sits, delegation depth is how much spawning budget reaching it spent,
-                // and a workflow controller hop advances one without the other.
-                structural_depth = e.StructuralDepth,
-                delegation_depth = e.DelegationDepth,
-                status = e.Status,
-                is_live = e.IsLive,
-                is_you = string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal),
-                // Stated up front so the reader does not have to discover by refusal which transcripts
-                // it may read; the policy is evaluated here rather than assumed from the hierarchy.
-                transcript_readable = collaboration
-                    .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
-                    .IsAllowed,
-            }),
-        });
+                collaboration_id = collaboration.Bundle.CollaborationId,
+                your_agent_id = collaboration.AgentId,
+                agents = collaboration
+                    .Directory.Snapshot()
+                    .Select(e => new
+                    {
+                        agent_id = e.AgentId,
+                        name = e.Name,
+                        role = e.Role,
+                        description = e.Description,
+                        kind = e.Kind.ToString(),
+                        agent_type = e.AgentType,
+                        parent_agent_id = e.ParentAgentId,
+                        depth = e.StructuralDepth,
+                        // Both depths, because they answer different questions and diverge: structural depth is
+                        // where an agent sits, delegation depth is how much spawning budget reaching it spent,
+                        // and a workflow controller hop advances one without the other.
+                        structural_depth = e.StructuralDepth,
+                        delegation_depth = e.DelegationDepth,
+                        status = e.Status,
+                        is_live = e.IsLive,
+                        is_you = string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal),
+                        // Stated up front so the reader does not have to discover by refusal which transcripts
+                        // it may read; the policy is evaluated here rather than assumed from the hierarchy.
+                        transcript_readable = collaboration
+                            .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
+                            .IsAllowed,
+                    }),
+            }
+        );
 
         return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(payload));
     }
@@ -1168,19 +1165,20 @@ public class SubAgentToolProvider : IFunctionProvider
     private async Task<ToolHandlerResult> HandleWaitForAgentsToolAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
 
-        var targets = ParseCommaSeparated(GetOptionalString(root, "agent_ids"))
+        var targets =
+            ParseCommaSeparated(GetOptionalString(root, "agent_ids"))
             ?? throw new ArgumentException("The 'agent_ids' parameter is required.");
 
         var mode = (GetOptionalString(root, "mode") ?? "all").Trim().ToLowerInvariant();
         if (mode is not ("all" or "any"))
         {
-            return ToolHandlerResult.FromError(
-                $"Unknown mode '{mode}'. Use 'all' or 'any'.", "invalid_mode");
+            return ToolHandlerResult.FromError($"Unknown mode '{mode}'. Use 'all' or 'any'.", "invalid_mode");
         }
 
         // Resolve every target before waiting on any of them: a typo in one id would otherwise leave
@@ -1192,7 +1190,8 @@ public class SubAgentToolProvider : IFunctionProvider
             return ToolHandlerResult.FromError(
                 $"You have no sub-agent matching: {string.Join(", ", unknown)}. "
                     + "WaitForAgents only covers agents you spawned yourself.",
-                "unknown_agent");
+                "unknown_agent"
+            );
         }
 
         if (!TryReadTimeoutSeconds(root, out var timeoutSeconds, out var timeoutError))
@@ -1211,13 +1210,9 @@ public class SubAgentToolProvider : IFunctionProvider
 
         var completion = mode == "any" ? Task.WhenAny(waits) : Task.WhenAll(waits);
         var question = WatchForQuestionAsync(linked.Token);
-        var timeout = timeoutSeconds is { } cap
-            ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token)
-            : null;
+        var timeout = timeoutSeconds is { } cap ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token) : null;
 
-        Task[] races = timeout is null
-            ? [completion, question]
-            : [completion, question, timeout];
+        Task[] races = timeout is null ? [completion, question] : [completion, question, timeout];
 
         var winner = await Task.WhenAny(races);
 
@@ -1240,17 +1235,22 @@ public class SubAgentToolProvider : IFunctionProvider
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        var status = asked is not null ? "question_received"
+        var status =
+            asked is not null ? "question_received"
             : winner == completion ? "completed"
             : "timeout";
 
-        return ToolHandlerResult.FromText(JsonSerializer.Serialize(new
-        {
-            status,
-            mode,
-            question = asked,
-            agents = BuildObservationPayload(_manager.CheckAgents(targets)),
-        }));
+        return ToolHandlerResult.FromText(
+            JsonSerializer.Serialize(
+                new
+                {
+                    status,
+                    mode,
+                    question = asked,
+                    agents = BuildObservationPayload(_manager.CheckAgents(targets)),
+                }
+            )
+        );
     }
 
     /// <summary>
@@ -1311,8 +1311,7 @@ public class SubAgentToolProvider : IFunctionProvider
     /// </remarks>
     private async Task<QuestionInterrupt?> WatchForQuestionAsync(CancellationToken cancellationToken)
     {
-        var signal = new TaskCompletionSource<QuestionInterrupt?>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        var signal = new TaskCompletionSource<QuestionInterrupt?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         using var registration = cancellationToken.Register(() => signal.TrySetResult(null));
 
@@ -1326,10 +1325,7 @@ public class SubAgentToolProvider : IFunctionProvider
         var ledger = collaboration.Bundle.Ledger;
 
         QuestionInterrupt Describe(string messageId, string fromAgentId) =>
-            new(
-                messageId,
-                fromAgentId,
-                collaboration.Directory.FindById(fromAgentId)?.Name);
+            new(messageId, fromAgentId, collaboration.Directory.FindById(fromAgentId)?.Name);
 
         // Claim first, report second, and give the claim back if the report lost a race — a claim that
         // was taken but never surfaced would silently spend the one interrupt the question gets.
@@ -1351,9 +1347,10 @@ public class SubAgentToolProvider : IFunctionProvider
 
         void OnAdmitted(AgentMessageAdmittedNotice notice)
         {
-            if (notice.MessageType == AgentMessageType.Question
-                && string.Equals(
-                    notice.ToAgentId, collaboration.AgentId, StringComparison.Ordinal))
+            if (
+                notice.MessageType == AgentMessageType.Question
+                && string.Equals(notice.ToAgentId, collaboration.AgentId, StringComparison.Ordinal)
+            )
             {
                 _ = TryReport(notice.MessageId, notice.FromAgentId);
             }
@@ -1366,8 +1363,7 @@ public class SubAgentToolProvider : IFunctionProvider
             // would otherwise stay unnoticed until an unrelated second question arrived.
             foreach (var open in ledger.GetOpenInbound(collaboration.AgentId))
             {
-                if (open.MessageType == AgentMessageType.Question
-                    && TryReport(open.MessageId, open.FromAgentId))
+                if (open.MessageType == AgentMessageType.Question && TryReport(open.MessageId, open.FromAgentId))
                 {
                     break;
                 }
@@ -1395,22 +1391,23 @@ public class SubAgentToolProvider : IFunctionProvider
     private Task<ToolHandlerResult> HandleCheckAgentToolAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
 
-        var agentId = GetOptionalString(root, "agent_id")
-            ?? throw new ArgumentException(
-                "The 'agent_id' parameter is required.");
+        var agentId =
+            GetOptionalString(root, "agent_id") ?? throw new ArgumentException("The 'agent_id' parameter is required.");
 
         // An unknown/stale/mistyped agent id is a MODEL mistake (e.g. polling with the wrong id), not a host
         // fault — return a helpful tool result listing the valid ids rather than throwing, which would surface
         // as an "Error executing tool call" and derail the loop.
         if (!_manager.TryPeek(agentId, out var status))
         {
-            return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromError(
-                DescribeUnknownAgent(agentId, "CheckAgent"), "unknown_agent"));
+            return Task.FromResult<ToolHandlerResult>(
+                ToolHandlerResult.FromError(DescribeUnknownAgent(agentId, "CheckAgent"), "unknown_agent")
+            );
         }
 
         return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(status));
@@ -1429,20 +1426,20 @@ public class SubAgentToolProvider : IFunctionProvider
     private async Task<ToolHandlerResult> HandleWaitAgentToolAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
 
-        var agentId = GetOptionalString(root, "agent_id")
-            ?? throw new ArgumentException("The 'agent_id' parameter is required.");
+        var agentId =
+            GetOptionalString(root, "agent_id") ?? throw new ArgumentException("The 'agent_id' parameter is required.");
 
         // Resolve BEFORE waiting: a mistyped id would otherwise block until the timeout and then report
         // a "still running" agent that never existed.
         if (!_manager.TryPeek(agentId, out _))
         {
-            return ToolHandlerResult.FromError(
-                DescribeUnknownAgent(agentId, WaitAgentToolName), "unknown_agent");
+            return ToolHandlerResult.FromError(DescribeUnknownAgent(agentId, WaitAgentToolName), "unknown_agent");
         }
 
         if (!TryReadTimeoutSeconds(root, out var timeoutSeconds, out var timeoutError))
@@ -1454,15 +1451,10 @@ public class SubAgentToolProvider : IFunctionProvider
 
         // Quiet racer: the loser is never awaited, so a cancellation fault would surface as an
         // unobserved task exception long after this tool call is gone.
-        var completion = AwaitQuietlyAsync(
-            _manager.ObserveTargetCompletionAsync(agentId, linked.Token));
-        var timeout = timeoutSeconds is { } cap
-            ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token)
-            : null;
+        var completion = AwaitQuietlyAsync(_manager.ObserveTargetCompletionAsync(agentId, linked.Token));
+        var timeout = timeoutSeconds is { } cap ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token) : null;
 
-        var winner = timeout is null
-            ? await Task.WhenAny(completion)
-            : await Task.WhenAny(completion, timeout);
+        var winner = timeout is null ? await Task.WhenAny(completion) : await Task.WhenAny(completion, timeout);
 
         await linked.CancelAsync();
         cancellationToken.ThrowIfCancellationRequested();
@@ -1478,18 +1470,22 @@ public class SubAgentToolProvider : IFunctionProvider
             ? JsonSerializer.Deserialize<JsonElement>(observed)
             : (JsonElement?)null;
 
-        return ToolHandlerResult.FromText(JsonSerializer.Serialize(new
-        {
-            status = agent is null ? "unavailable"
-                : winner == completion ? "completed"
-                : "timeout",
-            detail = agent is not null
-                ? null
-                : $"The wait on '{agentId}' ended without the agent reaching a terminal state: it stopped "
-                    + "being tracked before it could produce a result — its start failed, or the sub-agent "
-                    + "system shut down. There is nothing to collect. Spawn it again if you still need the work.",
-            agent,
-        }));
+        return ToolHandlerResult.FromText(
+            JsonSerializer.Serialize(
+                new
+                {
+                    status = agent is null ? "unavailable"
+                    : winner == completion ? "completed"
+                    : "timeout",
+                    detail = agent is not null
+                        ? null
+                        : $"The wait on '{agentId}' ended without the agent reaching a terminal state: it stopped "
+                            + "being tracked before it could produce a result — its start failed, or the sub-agent "
+                            + "system shut down. There is nothing to collect. Spawn it again if you still need the work.",
+                    agent,
+                }
+            )
+        );
     }
 
     /// <summary>
@@ -1512,19 +1508,16 @@ public class SubAgentToolProvider : IFunctionProvider
 
         var sorted = known.OrderBy(id => id, StringComparer.Ordinal).ToArray();
         var listed = sorted.Take(MaxListedAgentIds);
-        var suffix = sorted.Length > MaxListedAgentIds
-            ? $" (showing {MaxListedAgentIds} of {sorted.Length})"
-            : string.Empty;
+        var suffix =
+            sorted.Length > MaxListedAgentIds ? $" (showing {MaxListedAgentIds} of {sorted.Length})" : string.Empty;
 
         return $"No sub-agent with id '{agentId}'. Use one of the ids the Agent tool returned: "
             + $"{string.Join(", ", listed)}{suffix}.";
     }
 
-    private static string? GetOptionalString(
-        JsonElement root, string propertyName)
+    private static string? GetOptionalString(JsonElement root, string propertyName)
     {
-        return root.TryGetProperty(propertyName, out var prop)
-            && prop.ValueKind == JsonValueKind.String
+        return root.TryGetProperty(propertyName, out var prop) && prop.ValueKind == JsonValueKind.String
             ? prop.GetString()
             : null;
     }
@@ -1536,8 +1529,7 @@ public class SubAgentToolProvider : IFunctionProvider
     /// treated as an attempted (but unknown) correlation rather than as no correlation at all. A real,
     /// non-blank id — even one that turns out not to exist — is returned unchanged.
     /// </summary>
-    private static string? NormalizeCorrelationId(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value;
+    private static string? NormalizeCorrelationId(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static bool? GetOptionalBool(JsonElement root, string propertyName)
     {
@@ -1598,7 +1590,8 @@ public class SubAgentToolProvider : IFunctionProvider
         // returns "timeout" before observing anything is indistinguishable from a wedged agent.
         if (requested is not > 0)
         {
-            error = "The 'timeout_seconds' parameter must be a positive whole number of seconds. "
+            error =
+                "The 'timeout_seconds' parameter must be a positive whole number of seconds. "
                 + "Omit it entirely to wait without a cap.";
             return false;
         }
@@ -1627,8 +1620,6 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         return string.IsNullOrWhiteSpace(value)
             ? null
-            : [.. value
-            .Split(',', StringSplitOptions.RemoveEmptyEntries
-                | StringSplitOptions.TrimEntries)];
+            : [.. value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
     }
 }

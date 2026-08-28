@@ -21,16 +21,11 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 public sealed class AuthPagesControllerTests : LoggingTestBase
 {
     public AuthPagesControllerTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private static E2EWebAppFactory NewFactory()
     {
-        var responder = ScriptedSseResponder.New()
-            .ForRole("noop", _ => true)
-                .Turn(t => t.Text("ok"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("noop", _ => true).Turn(t => t.Text("ok")).Build();
         return new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()));
     }
 
@@ -91,7 +86,8 @@ public sealed class AuthPagesControllerTests : LoggingTestBase
                 Account: "ada@example.com",
                 Scopes: ["repo", "read:user"],
                 ExpiresAtUtc: expiry,
-                Error: null),
+                Error: null
+            ),
         };
         var controller = new AuthPagesController([stub], NullLogger<AuthPagesController>.Instance);
 
@@ -104,15 +100,21 @@ public sealed class AuthPagesControllerTests : LoggingTestBase
         content.Content.Should().Contain("Signed in to github");
         stub.BeginSignInCalls.Should().Be(0, "the signed-in branch must not kick off a fresh sign-in");
 
-        content.Content.Should().NotContain(
-            "ada@example.com",
-            because: "the account belongs to the HOST, and this route answers an anonymous caller");
-        content.Content.Should().NotContain(
-            "repo read:user",
-            because: "the granted scopes describe what the host can do, which is not the caller's to read");
-        content.Content.Should().NotContain(
-            "2030-01-02T03:04:05",
-            because: "the token expiry is a fact about the host's credential");
+        content
+            .Content.Should()
+            .NotContain(
+                "ada@example.com",
+                because: "the account belongs to the HOST, and this route answers an anonymous caller"
+            );
+        content
+            .Content.Should()
+            .NotContain(
+                "repo read:user",
+                because: "the granted scopes describe what the host can do, which is not the caller's to read"
+            );
+        content
+            .Content.Should()
+            .NotContain("2030-01-02T03:04:05", because: "the token expiry is a fact about the host's credential");
         LogTestEnd();
     }
 
@@ -187,8 +189,10 @@ public sealed class AuthPagesControllerTests : LoggingTestBase
             return Task.CompletedTask;
         }
 
-        public Task<OAuthAccessToken> GetAccessTokenAsync(IReadOnlyList<string>? scopes = null, CancellationToken ct = default) =>
-            throw new InvalidOperationException("stub does not vend tokens");
+        public Task<OAuthAccessToken> GetAccessTokenAsync(
+            IReadOnlyList<string>? scopes = null,
+            CancellationToken ct = default
+        ) => throw new InvalidOperationException("stub does not vend tokens");
     }
 
     [Fact]
@@ -205,7 +209,8 @@ public sealed class AuthPagesControllerTests : LoggingTestBase
         using var response = await client.GetAsync("/auth/m365");
         var body = await response.Content.ReadAsStringAsync();
 
-        body.Should().NotContain("<script>m365", because: "provider id must be HTML-encoded, not interpolated as raw markup");
+        body.Should()
+            .NotContain("<script>m365", because: "provider id must be HTML-encoded, not interpolated as raw markup");
         LogTestEnd();
     }
 }

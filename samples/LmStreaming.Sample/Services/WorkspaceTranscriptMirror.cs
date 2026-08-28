@@ -95,8 +95,7 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     ///     agent instance) on purpose: the writer owns that conversation's watermarks, and rebuilding it
     ///     would re-append the whole history.
     /// </summary>
-    private readonly ConcurrentDictionary<string, ConversationTranscriptWriter> _writers =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ConversationTranscriptWriter> _writers = new(StringComparer.Ordinal);
 
     /// <summary>
     ///     Consecutive deferred flushes per conversation, against <see cref="MaxDeferredRetries"/>, stamped
@@ -109,8 +108,7 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     ///     thread; without the stamp, that older flush's <c>Deferred</c> outcome re-creates the counter at 1
     ///     and the new generation silently starts one attempt down.
     /// </remarks>
-    private readonly ConcurrentDictionary<string, DeferredBudget> _deferredAttempts =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DeferredBudget> _deferredAttempts = new(StringComparer.Ordinal);
 
     /// <summary>
     ///     Monotonic generation per conversation, bumped by <see cref="ScheduleFreshAttempt"/>. Identifies
@@ -149,7 +147,8 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         ConversationDescendantScanner descendants,
         ILoggerFactory loggerFactory,
         TimeSpan? resubscribeDelay = null,
-        TimeSpan? readSettleDelay = null)
+        TimeSpan? readSettleDelay = null
+    )
     {
         ArgumentNullException.ThrowIfNull(agentLookup);
         ArgumentNullException.ThrowIfNull(store);
@@ -167,10 +166,9 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         _readSettleDelay = readSettleDelay;
         _scheduler = new TranscriptFlushScheduler(
             FlushAsync,
-            (threadId, error) => _logger.LogWarning(
-                error,
-                "Transcript flush for thread {ThreadId} faulted on the drain loop",
-                threadId));
+            (threadId, error) =>
+                _logger.LogWarning(error, "Transcript flush for thread {ThreadId} faulted on the drain loop", threadId)
+        );
     }
 
     /// <summary>
@@ -224,7 +222,9 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
                 _fileBrowser,
                 _descendants,
                 _loggerFactory.CreateLogger<ConversationTranscriptWriter>(),
-                _readSettleDelay));
+                _readSettleDelay
+            )
+        );
 
         Subscription? replaced;
         Subscription subscription;
@@ -235,8 +235,7 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
                 return;
             }
 
-            if (_subscriptions.TryGetValue(threadId, out var existing)
-                && ReferenceEquals(existing.Agent, agent))
+            if (_subscriptions.TryGetValue(threadId, out var existing) && ReferenceEquals(existing.Agent, agent))
             {
                 return;
             }
@@ -297,10 +296,7 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Subscribing the transcript mirror to thread {ThreadId} failed",
-                agent.ThreadId);
+            _logger.LogWarning(ex, "Subscribing the transcript mirror to thread {ThreadId} failed", agent.ThreadId);
             AbandonFailedSubscription(subscription, enumerator);
             return;
         }
@@ -352,7 +348,8 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
                 _logger.LogDebug(
                     ex,
                     "Disposing the failed transcript subscription for thread {ThreadId} threw",
-                    threadId);
+                    threadId
+                );
             }
         });
     }
@@ -383,8 +380,7 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
 
         lock (_gate)
         {
-            if (_subscriptions.TryGetValue(threadId, out var current)
-                && ReferenceEquals(current, subscription))
+            if (_subscriptions.TryGetValue(threadId, out var current) && ReferenceEquals(current, subscription))
             {
                 _ = _subscriptions.Remove(threadId);
             }
@@ -469,7 +465,11 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         {
             // Cancel() surfaces whatever a downstream registration threw. Teardown continues regardless:
             // neither Evict nor Dispose may throw into the pool's ThreadRemoved fan-out or host shutdown.
-            _logger.LogDebug(ex, "Cancelling the transcript subscription for {ThreadId} threw", subscription.Agent.ThreadId);
+            _logger.LogDebug(
+                ex,
+                "Cancelling the transcript subscription for {ThreadId} threw",
+                subscription.Agent.ThreadId
+            );
         }
     }
 
@@ -522,7 +522,8 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     private async Task PumpAsync(
         Subscription subscription,
         IAsyncEnumerator<IMessage> enumerator,
-        ValueTask<bool> pending)
+        ValueTask<bool> pending
+    )
     {
         var agent = subscription.Agent;
         var threadId = agent.ThreadId;
@@ -532,10 +533,12 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         {
             while (true)
             {
-                if (await ConsumeAsync(threadId, enumerator, pending).ConfigureAwait(false)
+                if (
+                    await ConsumeAsync(threadId, enumerator, pending).ConfigureAwait(false)
                     || ct.IsCancellationRequested
                     || _agentLookup(threadId) is not { } current
-                    || !ReferenceEquals(current, agent))
+                    || !ReferenceEquals(current, agent)
+                )
                 {
                     return;
                 }
@@ -545,7 +548,8 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
                     "Transcript subscription for thread {ThreadId} was dropped (its output channel filled); "
                         + "re-subscribing. Turns published during the gap are still recovered — the writer's "
                         + "watermark is cumulative and the next flush re-reads the whole thread.",
-                    threadId);
+                    threadId
+                );
 
                 try
                 {
@@ -564,7 +568,11 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
                     // back as a faulted ValueTask and re-enters through ConsumeAsync above. This return is
                     // covered for free by the finally, not handled separately; it is written out only so the
                     // next reader does not have to re-derive that it is safe.
-                    _logger.LogWarning(ex, "Re-subscribing the transcript mirror to thread {ThreadId} failed", threadId);
+                    _logger.LogWarning(
+                        ex,
+                        "Re-subscribing the transcript mirror to thread {ThreadId} failed",
+                        threadId
+                    );
                     return;
                 }
 
@@ -587,7 +595,6 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
                 // ARRIVED, so the message itself is the signal — sub-agent activity already arms a rescan
                 // through NoteSubAgentActivity, and a run completion is not evidence about descendants.
                 ScheduleFreshAttempt(threadId, forceDescendantRescan: true);
-
             }
         }
         finally
@@ -604,7 +611,8 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     private async Task<bool> ConsumeAsync(
         string threadId,
         IAsyncEnumerator<IMessage> enumerator,
-        ValueTask<bool> pending)
+        ValueTask<bool> pending
+    )
     {
         try
         {
@@ -718,8 +726,9 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     private static bool IsSubAgentActivity(IMessage message) =>
         message switch
         {
-            NotifyMessage notify => notify.NotifyKind is NotifyKinds.SubAgentCompletion
-                or NotifyKinds.DescendantQuestion,
+            NotifyMessage notify => notify.NotifyKind
+                is NotifyKinds.SubAgentCompletion
+                    or NotifyKinds.DescendantQuestion,
             ToolsCallAggregateMessage aggregate => HasSpawnCall(aggregate.ToolsCallMessage),
             ICanGetToolCalls calls => HasSpawnCall(calls),
             _ => false,
@@ -820,7 +829,8 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
                     + "conversation itself is untouched — but this conversation's workspace copy now stops "
                     + "short until something triggers it again.",
                 threadId,
-                budget.Attempts);
+                budget.Attempts
+            );
             return;
         }
 

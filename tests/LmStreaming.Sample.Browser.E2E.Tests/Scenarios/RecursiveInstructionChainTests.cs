@@ -93,6 +93,8 @@ public sealed class RecursiveInstructionChainTests
             .Be(1, "the run ends at the first text-only turn, leaving the third scripted turn unconsumed");
 
         responder.RemainingTurns["parent"].Should().Be(0);
-        await session.SaveSuccessScreenshotAsync($"RecursiveChain.Parent_and_sub_agent_instruction_chains_render_end_to_end_{providerMode}");
+        await session.SaveSuccessScreenshotAsync(
+            $"RecursiveChain.Parent_and_sub_agent_instruction_chains_render_end_to_end_{providerMode}"
+        );
     }
 }

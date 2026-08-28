@@ -6,7 +6,8 @@ namespace AchieveAi.LmDotnetTools.ProcessLauncher;
 /// </summary>
 public sealed class ProcessLauncherException : Exception
 {
-    public ProcessLauncherException(string message) : base(message) { }
+    public ProcessLauncherException(string message)
+        : base(message) { }
 
     public ProcessLauncherException(string message, Exception innerException)
         : base(message, innerException) { }

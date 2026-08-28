@@ -103,9 +103,7 @@ public sealed class LifecycleApprovalControllerTests
         var harness = new Harness();
         using var ticket = harness.Register(AppA);
 
-        var result = await harness
-            .As(AppA)
-            .Decide(Decision(ticket, WireOutcomes.Allowed, hash: new string('a', 64)));
+        var result = await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed, hash: new string('a', 64)));
 
         var body = ShouldRespond(result, StatusCodes.Status409Conflict);
         body.Outcome.Should().BeNull("nothing was decided, so there is no outcome to report");
@@ -125,7 +123,9 @@ public sealed class LifecycleApprovalControllerTests
 
         var body = ShouldRespond(result, StatusCodes.Status409Conflict);
         body.Outcome.Should().Be(WireOutcomes.Denied, "the decision in force is the first one, not the latest");
-        (await ticket.Decision).Decision.Should().Be(WireOutcomes.Denied, "an allow arriving second must not overturn a deny");
+        (await ticket.Decision)
+            .Decision.Should()
+            .Be(WireOutcomes.Denied, "an allow arriving second must not overturn a deny");
     }
 
     // ---- Identity ---------------------------------------------------------------------------------
@@ -260,12 +260,11 @@ public sealed class LifecycleApprovalControllerTests
 
         var body = ShouldRespond(first, StatusCodes.Status202Accepted);
         body.RequestId.Should().Be(ticket.Request.RequestId);
-        body.Outcome.Should().BeNull("nothing is decided yet, and echoing the caller's own answer would read as if it were");
+        body.Outcome.Should()
+            .BeNull("nothing is decided yet, and echoing the caller's own answer would read as if it were");
         ticket.Decision.IsCompleted.Should().BeFalse("the call stays blocked until every approver allows");
 
-        var second = await harness
-            .As(AppA)
-            .Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubA2));
+        var second = await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubA2));
 
         ShouldRespond(second, StatusCodes.Status200OK).Outcome.Should().Be(WireOutcomes.Allowed);
         (await ticket.Decision).Decision.Should().Be(WireOutcomes.Allowed);
@@ -280,9 +279,7 @@ public sealed class LifecycleApprovalControllerTests
         var harness = TwoApprovers();
         using var ticket = harness.Register(AppA, SubA);
 
-        var substitute = await harness
-            .As(AppA)
-            .Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubA2));
+        var substitute = await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubA2));
 
         ShouldRespond(substitute, StatusCodes.Status404NotFound);
         ticket.Decision.IsCompleted.Should().BeFalse("nobody entitled to answer has answered");
@@ -311,10 +308,28 @@ public sealed class LifecycleApprovalControllerTests
 
         var answers = new List<(string Case, IActionResult Result)>
         {
-            ("an id that was never registered", await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed, requestId: NeverRegistered(ticket)))),
-            ("another owner's request", await harness.As(AppB).Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubB))),
-            ("a request this approver was not asked about", await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubA2))),
-            ("an id minted by a previous process", await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed, requestId: WithForeignEpoch(ticket.Request.RequestId)))),
+            (
+                "an id that was never registered",
+                await harness
+                    .As(AppA)
+                    .Decide(Decision(ticket, WireOutcomes.Allowed, requestId: NeverRegistered(ticket)))
+            ),
+            (
+                "another owner's request",
+                await harness.As(AppB).Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubB))
+            ),
+            (
+                "a request this approver was not asked about",
+                await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubA2))
+            ),
+            (
+                "an id minted by a previous process",
+                await harness
+                    .As(AppA)
+                    .Decide(
+                        Decision(ticket, WireOutcomes.Allowed, requestId: WithForeignEpoch(ticket.Request.RequestId))
+                    )
+            ),
         };
 
         // Last, because it moves the clock for every request this harness holds.
@@ -325,9 +340,7 @@ public sealed class LifecycleApprovalControllerTests
         foreach (var (name, result) in answers)
         {
             ShouldRespond(result, StatusCodes.Status404NotFound);
-            BodyHex(result)
-                .Should()
-                .Be(reference, "'{0}' must be indistinguishable from '{1}'", name, answers[0].Case);
+            BodyHex(result).Should().Be(reference, "'{0}' must be indistinguishable from '{1}'", name, answers[0].Case);
         }
     }
 
@@ -406,12 +419,36 @@ public sealed class LifecycleApprovalControllerTests
             ("identical retry", await harness.As(AppA).Decide(accepted)),
             ("contradicted", await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Denied))),
             ("recorded", await harness.As(AppA).Decide(Decision(unanimous, WireOutcomes.Allowed))),
-            ("mismatched hash", await harness.As(AppA).Decide(Decision(second, WireOutcomes.Allowed, hash: new string('a', 64)))),
-            ("unknown id", await harness.As(AppA).Decide(Decision(second, WireOutcomes.Allowed, requestId: NeverRegistered(second)))),
-            ("foreign owner", await harness.As(AppB).Decide(Decision(second, WireOutcomes.Allowed, subscriptionId: SubB))),
-            ("not among the frozen approvers", await harness.As(AppA).Decide(Decision(second, WireOutcomes.Allowed, subscriptionId: SubA2))),
-            ("subscription the caller does not own", await harness.As(AppB).Decide(Decision(second, WireOutcomes.Allowed))),
-            ("stale epoch", await harness.As(AppA).Decide(Decision(second, WireOutcomes.Allowed, requestId: WithForeignEpoch(second.Request.RequestId)))),
+            (
+                "mismatched hash",
+                await harness.As(AppA).Decide(Decision(second, WireOutcomes.Allowed, hash: new string('a', 64)))
+            ),
+            (
+                "unknown id",
+                await harness
+                    .As(AppA)
+                    .Decide(Decision(second, WireOutcomes.Allowed, requestId: NeverRegistered(second)))
+            ),
+            (
+                "foreign owner",
+                await harness.As(AppB).Decide(Decision(second, WireOutcomes.Allowed, subscriptionId: SubB))
+            ),
+            (
+                "not among the frozen approvers",
+                await harness.As(AppA).Decide(Decision(second, WireOutcomes.Allowed, subscriptionId: SubA2))
+            ),
+            (
+                "subscription the caller does not own",
+                await harness.As(AppB).Decide(Decision(second, WireOutcomes.Allowed))
+            ),
+            (
+                "stale epoch",
+                await harness
+                    .As(AppA)
+                    .Decide(
+                        Decision(second, WireOutcomes.Allowed, requestId: WithForeignEpoch(second.Request.RequestId))
+                    )
+            ),
             ("unresolvable caller", await harness.As("app-nobody").Decide(Decision(second, WireOutcomes.Allowed))),
             ("unauthenticated", await harness.AsAnonymous().Decide(Decision(second, WireOutcomes.Allowed))),
             ("no principal", await harness.WithoutHttpContext().Decide(Decision(second, WireOutcomes.Allowed))),
@@ -572,8 +609,9 @@ public sealed class LifecycleApprovalControllerTests
 
         /// <summary>A controller reached by a caller the host authenticated as <paramref name="appId"/>.</summary>
         public LifecycleApprovalController As(string appId) =>
-            WithPrincipal(new ClaimsPrincipal(new ClaimsIdentity(
-                [new Claim(LifecycleAppIdentity.AppIdClaimType, appId)], "test")));
+            WithPrincipal(
+                new ClaimsPrincipal(new ClaimsIdentity([new Claim(LifecycleAppIdentity.AppIdClaimType, appId)], "test"))
+            );
 
         /// <summary>
         /// A controller reached by a signed-in <em>human</em>: authenticated by a bearer scheme, with
@@ -581,17 +619,23 @@ public sealed class LifecycleApprovalControllerTests
         /// name, and no app-id claim anywhere. This is the shape #433 was about.
         /// </summary>
         public LifecycleApprovalController AsSignedInHuman(string subject) =>
-            WithPrincipal(new ClaimsPrincipal(new ClaimsIdentity(
-                [new Claim(ClaimTypes.NameIdentifier, subject), new Claim(ClaimTypes.Name, subject)],
-                "Bearer")));
+            WithPrincipal(
+                new ClaimsPrincipal(
+                    new ClaimsIdentity(
+                        [new Claim(ClaimTypes.NameIdentifier, subject), new Claim(ClaimTypes.Name, subject)],
+                        "Bearer"
+                    )
+                )
+            );
 
         /// <summary>A controller reached with a principal no scheme authenticated — the default host.</summary>
-        public LifecycleApprovalController AsAnonymous() =>
-            WithPrincipal(new ClaimsPrincipal(new ClaimsIdentity()));
+        public LifecycleApprovalController AsAnonymous() => WithPrincipal(new ClaimsPrincipal(new ClaimsIdentity()));
 
         /// <summary>A controller reached by an authenticated caller whose principal names no app.</summary>
         public LifecycleApprovalController AsNamelessIdentity() =>
-            WithPrincipal(new ClaimsPrincipal(new ClaimsIdentity(authenticationType: "test", nameType: null, roleType: null)));
+            WithPrincipal(
+                new ClaimsPrincipal(new ClaimsIdentity(authenticationType: "test", nameType: null, roleType: null))
+            );
 
         /// <summary>A controller with no request context at all, so the principal is null rather than empty.</summary>
         public LifecycleApprovalController WithoutHttpContext() => NewController();
@@ -607,13 +651,7 @@ public sealed class LifecycleApprovalControllerTests
         }
 
         private LifecycleApprovalController NewController() =>
-            new(
-                Store,
-                Resolver,
-                _subscriptions,
-                _options,
-                NullLogger<LifecycleApprovalController>.Instance
-            );
+            new(Store, Resolver, _subscriptions, _options, NullLogger<LifecycleApprovalController>.Instance);
     }
 
     /// <summary>
@@ -634,9 +672,7 @@ public sealed class LifecycleApprovalControllerTests
         )
         {
             Asked.Add(appId);
-            return ValueTask.FromResult(
-                _known.Contains(appId) ? LifecycleOwnerKey.ForAppId(appId) : null
-            );
+            return ValueTask.FromResult(_known.Contains(appId) ? LifecycleOwnerKey.ForAppId(appId) : null);
         }
 
         public ValueTask<LifecycleOwnerKey?> ResolveEventOwnerAsync(
@@ -660,11 +696,7 @@ public sealed class LifecycleApprovalControllerTests
         private readonly List<LifecycleSubscription> _subscriptions = [.. subscriptions];
 
         public IReadOnlyList<LifecycleSubscription> ForOwner(LifecycleOwnerKey owner) =>
-            [
-                .. _subscriptions.Where(s =>
-                    string.Equals(s.Owner.Value, owner.Value, StringComparison.Ordinal)
-                ),
-            ];
+            [.. _subscriptions.Where(s => string.Equals(s.Owner.Value, owner.Value, StringComparison.Ordinal))];
 
         public LifecycleSubscriptionGrant Register(
             LifecycleOwnerKey owner,
@@ -678,13 +710,9 @@ public sealed class LifecycleApprovalControllerTests
         public void RevokePreviousKey(LifecycleOwnerKey owner, string subscriptionId) =>
             throw new NotSupportedException();
 
-        public void Unregister(LifecycleOwnerKey owner, string subscriptionId) =>
-            throw new NotSupportedException();
+        public void Unregister(LifecycleOwnerKey owner, string subscriptionId) => throw new NotSupportedException();
 
-        public bool TryGet(
-            LifecycleOwnerKey owner,
-            string subscriptionId,
-            out LifecycleSubscription? subscription
-        ) => throw new NotSupportedException();
+        public bool TryGet(LifecycleOwnerKey owner, string subscriptionId, out LifecycleSubscription? subscription) =>
+            throw new NotSupportedException();
     }
 }

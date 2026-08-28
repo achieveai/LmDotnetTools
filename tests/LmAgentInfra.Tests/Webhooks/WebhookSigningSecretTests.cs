@@ -59,8 +59,8 @@ public sealed class WebhookSigningSecretTests
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    [InlineData("zzzz")]            // hex-length but not hex digits
-    [InlineData("abc")]             // odd length
+    [InlineData("zzzz")] // hex-length but not hex digits
+    [InlineData("abc")] // odd length
     [InlineData("not a signature")]
     public void A_missing_or_malformed_signature_is_false_rather_than_an_exception(string? presented)
     {

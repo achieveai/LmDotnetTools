@@ -52,15 +52,15 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     ///     Derived from the same name constants <see cref="GetFunctions"/> uses so the two cannot drift.
     /// </summary>
     public static readonly IReadOnlyList<string> AllToolNames =
-        [
-            SetWorkflowToolName,
-            GetWorkflowToolName,
-            SetCurrentNodeToolName,
-            SetStateToolName,
-            SetNotesToolName,
-            AddNodeToolName,
-            RemoveNodeToolName,
-        ];
+    [
+        SetWorkflowToolName,
+        GetWorkflowToolName,
+        SetCurrentNodeToolName,
+        SetStateToolName,
+        SetNotesToolName,
+        AddNodeToolName,
+        RemoveNodeToolName,
+    ];
 
     private readonly WorkflowRuntime _runtime;
     private readonly bool _includeSetWorkflow;
@@ -102,7 +102,14 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             yield return Descriptor(
                 SetWorkflowToolName,
                 "Author (or replace) the workflow definition and position the controller at the start node.",
-                [Param("definition", "The workflow to author, in the flat step DSL (objective + steps).", SimpleWorkflowSchema.Workflow(), required: true)],
+                [
+                    Param(
+                        "definition",
+                        "The workflow to author, in the flat step DSL (objective + steps).",
+                        SimpleWorkflowSchema.Workflow(),
+                        required: true
+                    ),
+                ],
                 HandleSetWorkflowAsync
             );
 
@@ -113,7 +120,12 @@ public sealed class WorkflowToolProvider : IFunctionProvider
                     + "'nextNodeId' to wire the new node's own outgoing edge, or both. At least one is "
                     + "required so the new node is reachable.",
                 [
-                    Param("node", "The step to add, in the flat step DSL (id, kind, and kind-specific fields).", SimpleWorkflowSchema.Step(), required: true),
+                    Param(
+                        "node",
+                        "The step to add, in the flat step DSL (id, kind, and kind-specific fields).",
+                        SimpleWorkflowSchema.Step(),
+                        required: true
+                    ),
                     Param(
                         "previousNodeId",
                         "An existing start/procedural node to append the new node after.",
@@ -172,7 +184,12 @@ public sealed class WorkflowToolProvider : IFunctionProvider
                     required: false
                 ),
                 Param("nextNodeId", "The node to transition to.", JsonSchemaObject.String(), required: true),
-                Param("result", "The final result object when entering a terminal node.", ObjectSchema(), required: false),
+                Param(
+                    "result",
+                    "The final result object when entering a terminal node.",
+                    ObjectSchema(),
+                    required: false
+                ),
             ],
             HandleSetCurrentNodeAsync
         );
@@ -183,7 +200,12 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             [
                 Param("path", "The destination path, e.g. state.analysis.", JsonSchemaObject.String(), required: true),
                 Param("value", "The value to write.", ObjectSchema(), required: true),
-                Param("mode", "The merge mode: set (default), append, or merge.", JsonSchemaObject.String(), required: false),
+                Param(
+                    "mode",
+                    "The merge mode: set (default), append, or merge.",
+                    JsonSchemaObject.String(),
+                    required: false
+                ),
             ],
             HandleSetStateAsync
         );
@@ -236,10 +258,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             }
             catch (JsonException ex)
             {
-                return Error(
-                    $"The workflow definition is not valid JSON: {ex.Message}",
-                    "invalid_workflow"
-                );
+                return Error($"The workflow definition is not valid JSON: {ex.Message}", "invalid_workflow");
             }
 
             try
@@ -270,10 +289,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         {
             var root = doc.RootElement;
 
-            if (
-                !root.TryGetProperty("node", out var nodeElement)
-                || nodeElement.ValueKind != JsonValueKind.Object
-            )
+            if (!root.TryGetProperty("node", out var nodeElement) || nodeElement.ValueKind != JsonValueKind.Object)
             {
                 return Error("The 'node' object parameter is required.", "invalid_args");
             }
@@ -424,8 +440,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             nextNodeId = requestedNodeId;
             completedNodeId = OptionalString(root, "completedNodeId");
             result =
-                root.TryGetProperty("result", out var resultElement)
-                && resultElement.ValueKind != JsonValueKind.Null
+                root.TryGetProperty("result", out var resultElement) && resultElement.ValueKind != JsonValueKind.Null
                     ? JsonNode.Parse(resultElement.GetRawText())
                     : null;
         }
@@ -449,9 +464,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         }
 
         return _runtime.IsComplete
-            ? ToolHandlerResult.FromText(
-                "Workflow complete. " + _runtime.GetProjection("all").ToJsonString()
-            )
+            ? ToolHandlerResult.FromText("Workflow complete. " + _runtime.GetProjection("all").ToJsonString())
             : ToolHandlerResult.FromText(_runtime.GetProjection(null).ToJsonString());
     }
 
@@ -476,18 +489,16 @@ public sealed class WorkflowToolProvider : IFunctionProvider
                 return Error("The 'path' parameter is required.", "invalid_args");
             }
 
-            var value =
-                root.TryGetProperty("value", out var valueElement)
-                    ? JsonNode.Parse(valueElement.GetRawText())
-                    : null;
+            var value = root.TryGetProperty("value", out var valueElement)
+                ? JsonNode.Parse(valueElement.GetRawText())
+                : null;
             var mode = OptionalString(root, "mode");
 
             try
             {
                 _runtime.SetState(path, value, mode);
             }
-            catch (Exception ex)
-                when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
             {
                 return Error(ex.Message, "invalid_state_write");
             }
@@ -562,11 +573,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     ///     instead of letting a malformed-args <see cref="JsonException"/> escape to the executor (where it
     ///     would surface as a generic, unstructured tool failure).
     /// </summary>
-    private static bool TryParseArgs(
-        string argsJson,
-        out JsonDocument doc,
-        out ToolHandlerResult? error
-    )
+    private static bool TryParseArgs(string argsJson, out JsonDocument doc, out ToolHandlerResult? error)
     {
         try
         {
@@ -577,17 +584,13 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         catch (JsonException ex)
         {
             doc = null!;
-            error = ToolHandlerResult.FromError(
-                $"Tool arguments are not valid JSON: {ex.Message}",
-                "invalid_args"
-            );
+            error = ToolHandlerResult.FromError($"Tool arguments are not valid JSON: {ex.Message}", "invalid_args");
             return false;
         }
     }
 
     private static string? OptionalString(JsonElement root, string propertyName) =>
-        root.TryGetProperty(propertyName, out var property)
-        && property.ValueKind == JsonValueKind.String
+        root.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
             ? property.GetString()
             : null;
 

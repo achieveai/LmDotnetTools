@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 /// <summary>
@@ -42,9 +43,10 @@ public static class AnthropicExtensions
                 PromptTokens = response.Usage.InputTokens,
                 CompletionTokens = response.Usage.OutputTokens,
                 TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens,
-                InputTokenDetails = response.Usage.CacheReadInputTokens > 0
-                    ? new InputTokenDetails { CachedTokens = response.Usage.CacheReadInputTokens }
-                    : null,
+                InputTokenDetails =
+                    response.Usage.CacheReadInputTokens > 0
+                        ? new InputTokenDetails { CachedTokens = response.Usage.CacheReadInputTokens }
+                        : null,
             };
 
             if (response.Usage.CacheCreationInputTokens > 0)
@@ -96,28 +98,28 @@ public static class AnthropicExtensions
             // Handle content block delta event for text content
             AnthropicContentBlockDeltaEvent contentBlockDeltaEvent
                 when contentBlockDeltaEvent.Delta is AnthropicTextDelta textDelta => new TextUpdateMessage
-                {
-                    Text = textDelta.Text,
-                    Role = Role.Assistant,
-                    IsThinking = false,
-                },
+            {
+                Text = textDelta.Text,
+                Role = Role.Assistant,
+                IsThinking = false,
+            },
 
             // Handle content block delta event for thinking content
             AnthropicContentBlockDeltaEvent contentBlockDeltaEvent
                 when contentBlockDeltaEvent.Delta is AnthropicThinkingDelta thinkingDelta => new TextUpdateMessage
-                {
-                    Text = thinkingDelta.Thinking,
-                    Role = Role.Assistant,
-                    IsThinking = true,
-                },
+            {
+                Text = thinkingDelta.Thinking,
+                Role = Role.Assistant,
+                IsThinking = true,
+            },
 
             // Handle content block delta event for tool calls
             AnthropicContentBlockDeltaEvent contentBlockDeltaEvent
                 when contentBlockDeltaEvent.Delta is AnthropicToolCallsDelta toolCallsDelta
                     && toolCallsDelta.ToolCalls.Count > 0 => new ToolsCallUpdateMessage
-                    {
-                        Role = Role.Assistant,
-                        ToolCallUpdates =
+            {
+                Role = Role.Assistant,
+                ToolCallUpdates =
                 [
                     new ToolCallUpdate
                     {
@@ -128,7 +130,7 @@ public static class AnthropicExtensions
                         ExecutionTarget = ExecutionTarget.LocalFunction,
                     },
                 ],
-                    },
+            },
 
             // Default empty update message for unhandled event types
             _ => new TextUpdateMessage { Text = string.Empty, Role = Role.Assistant },
@@ -165,24 +167,25 @@ public static class AnthropicExtensions
         return content switch
         {
             // Text with citations must be checked before plain text (Citations property on base class)
-            AnthropicResponseTextContent { Citations.Count: > 0 } textWithCitations =>
-                new TextWithCitationsMessage
-                {
-                    Text = textWithCitations.Text,
-                    Citations = [.. textWithCitations.Citations
-                        .Select(c => new CitationInfo
-                        {
-                            Type = c.Type,
-                            Url = c.Url,
-                            Title = c.Title,
-                            CitedText = c.CitedText,
-                            StartIndex = c.StartCharIndex,
-                            EndIndex = c.EndCharIndex,
-                        })],
-                    Role = ParseRole("assistant"),
-                    FromAgent = agentName,
-                    GenerationId = messageId,
-                },
+            AnthropicResponseTextContent { Citations.Count: > 0 } textWithCitations => new TextWithCitationsMessage
+            {
+                Text = textWithCitations.Text,
+                Citations =
+                [
+                    .. textWithCitations.Citations.Select(c => new CitationInfo
+                    {
+                        Type = c.Type,
+                        Url = c.Url,
+                        Title = c.Title,
+                        CitedText = c.CitedText,
+                        StartIndex = c.StartCharIndex,
+                        EndIndex = c.EndCharIndex,
+                    }),
+                ],
+                Role = ParseRole("assistant"),
+                FromAgent = agentName,
+                GenerationId = messageId,
+            },
 
             AnthropicResponseTextContent textContent => new TextMessage
             {
@@ -222,9 +225,8 @@ public static class AnthropicExtensions
             {
                 ToolCallId = serverToolUse.Id,
                 FunctionName = serverToolUse.Name,
-                FunctionArgs = serverToolUse.Input.ValueKind != JsonValueKind.Undefined
-                    ? serverToolUse.Input.ToString()
-                    : "{}",
+                FunctionArgs =
+                    serverToolUse.Input.ValueKind != JsonValueKind.Undefined ? serverToolUse.Input.ToString() : "{}",
                 ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole("assistant"),
                 FromAgent = agentName,
@@ -235,9 +237,10 @@ public static class AnthropicExtensions
             {
                 ToolCallId = webSearchResult.ToolUseId,
                 ToolName = "web_search",
-                Result = webSearchResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? webSearchResult.Content.GetRawText()
-                    : "{}",
+                Result =
+                    webSearchResult.Content.ValueKind != JsonValueKind.Undefined
+                        ? webSearchResult.Content.GetRawText()
+                        : "{}",
                 IsError = IsContentError(webSearchResult.Content),
                 ErrorCode = GetContentErrorCode(webSearchResult.Content),
                 ExecutionTarget = ExecutionTarget.ProviderServer,
@@ -250,9 +253,10 @@ public static class AnthropicExtensions
             {
                 ToolCallId = webFetchResult.ToolUseId,
                 ToolName = "web_fetch",
-                Result = webFetchResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? webFetchResult.Content.GetRawText()
-                    : "{}",
+                Result =
+                    webFetchResult.Content.ValueKind != JsonValueKind.Undefined
+                        ? webFetchResult.Content.GetRawText()
+                        : "{}",
                 IsError = IsContentError(webFetchResult.Content),
                 ErrorCode = GetContentErrorCode(webFetchResult.Content),
                 ExecutionTarget = ExecutionTarget.ProviderServer,
@@ -265,9 +269,8 @@ public static class AnthropicExtensions
             {
                 ToolCallId = bashResult.ToolUseId,
                 ToolName = "bash_code_execution",
-                Result = bashResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? bashResult.Content.GetRawText()
-                    : "{}",
+                Result =
+                    bashResult.Content.ValueKind != JsonValueKind.Undefined ? bashResult.Content.GetRawText() : "{}",
                 IsError = IsContentError(bashResult.Content),
                 ErrorCode = GetContentErrorCode(bashResult.Content),
                 ExecutionTarget = ExecutionTarget.ProviderServer,
@@ -280,9 +283,10 @@ public static class AnthropicExtensions
             {
                 ToolCallId = textEditorResult.ToolUseId,
                 ToolName = "text_editor_code_execution",
-                Result = textEditorResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? textEditorResult.Content.GetRawText()
-                    : "{}",
+                Result =
+                    textEditorResult.Content.ValueKind != JsonValueKind.Undefined
+                        ? textEditorResult.Content.GetRawText()
+                        : "{}",
                 IsError = IsContentError(textEditorResult.Content),
                 ErrorCode = GetContentErrorCode(textEditorResult.Content),
                 ExecutionTarget = ExecutionTarget.ProviderServer,
@@ -297,7 +301,8 @@ public static class AnthropicExtensions
 
     private static bool IsContentError(JsonElement content)
     {
-        return content.ValueKind == JsonValueKind.Object && content.TryGetProperty("type", out var typeElement)
+        return content.ValueKind == JsonValueKind.Object
+            && content.TryGetProperty("type", out var typeElement)
             && typeElement.GetString()?.EndsWith("_error") == true;
     }
 

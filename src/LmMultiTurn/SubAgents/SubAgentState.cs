@@ -45,7 +45,8 @@ public sealed record SubAgentTurnSnapshot(
     string? ToolName,
     string? ToolArgsPreview,
     string? TextPreview,
-    DateTimeOffset Timestamp);
+    DateTimeOffset Timestamp
+);
 
 /// <summary>
 /// Typed observation entry for a single target in a batch CheckAgents query.
@@ -163,8 +164,9 @@ internal class SubAgentState
     // the replacement instance (or null at teardown) and re-subscribe. It is set with RunContinuationsAsynchronously so completing it never runs an
     // observer's continuation inline under a restart/dispose path. It does NOT participate in execution
     // and is never awaited by the run/monitor/restart machinery.
-    private volatile TaskCompletionSource<IMultiTurnAgent?> _agentReplaced =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private volatile TaskCompletionSource<IMultiTurnAgent?> _agentReplaced = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
 
     // Guards the (Agent, _agentReplaced) pair so a presentation-only observer can capture BOTH under one
     // critical section (SnapshotForObservation) while an owned-provider restart swaps BOTH atomically
@@ -295,7 +297,11 @@ internal class SubAgentState
     /// handler awaiting <see cref="Completion"/> returns the result directly instead.
     /// </summary>
     private volatile bool _notifyParentOnCompletion;
-    public bool NotifyParentOnCompletion { get => _notifyParentOnCompletion; set => _notifyParentOnCompletion = value; }
+    public bool NotifyParentOnCompletion
+    {
+        get => _notifyParentOnCompletion;
+        set => _notifyParentOnCompletion = value;
+    }
 
     /// <summary>
     /// Serializes the terminal-completion relay decision against an observer trying to suppress it.
@@ -377,7 +383,11 @@ internal class SubAgentState
     public ConcurrentQueue<SubAgentTurnSummary> TurnBuffer { get; } = new();
 
     private volatile SubAgentStatus _status = SubAgentStatus.Running;
-    public SubAgentStatus Status { get => _status; set => _status = value; }
+    public SubAgentStatus Status
+    {
+        get => _status;
+        set => _status = value;
+    }
 
     /// <summary>
     /// UTC instant the sub-agent reached its terminal status, captured once at the transition
@@ -389,7 +399,13 @@ internal class SubAgentState
     private DateTimeOffset? _terminalAtUtc;
     public DateTimeOffset? TerminalAtUtc
     {
-        get { lock (_lifecycleLock) { return _terminalAtUtc; } }
+        get
+        {
+            lock (_lifecycleLock)
+            {
+                return _terminalAtUtc;
+            }
+        }
     }
 
     /// <summary>
@@ -823,8 +839,7 @@ internal class SubAgentState
     /// continuation must create a fresh provider pipeline.
     /// </summary>
     public bool HasDisposedOwnedProviderAgent =>
-        OwnedProviderAgent is not null
-        && Volatile.Read(ref _ownedProviderDisposeState) == OwnedProviderDisposeDisposed;
+        OwnedProviderAgent is not null && Volatile.Read(ref _ownedProviderDisposeState) == OwnedProviderDisposeDisposed;
 
     /// <summary>
     /// Assigns the provider created for the current run. This resets the per-run disposal guard
@@ -1044,7 +1059,8 @@ internal class SubAgentState
     {
         var previous = Interlocked.Exchange(
             ref _agentReplaced,
-            new TaskCompletionSource<IMultiTurnAgent?>(TaskCreationOptions.RunContinuationsAsynchronously));
+            new TaskCompletionSource<IMultiTurnAgent?>(TaskCreationOptions.RunContinuationsAsynchronously)
+        );
         _ = previous.TrySetResult(replacement);
     }
 }

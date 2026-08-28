@@ -26,14 +26,17 @@ public static class FailoverServiceCollectionExtensions
     /// </example>
     public static IServiceCollection AddFailoverEmbeddings(
         this IServiceCollection services,
-        IConfigurationSection section)
+        IConfigurationSection section
+    )
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(section);
 
-        var config = section.Get<FailoverEmbeddingConfiguration>()
+        var config =
+            section.Get<FailoverEmbeddingConfiguration>()
             ?? throw new InvalidOperationException(
-                $"Failed to bind configuration section '{section.Path}' to {nameof(FailoverEmbeddingConfiguration)}.");
+                $"Failed to bind configuration section '{section.Path}' to {nameof(FailoverEmbeddingConfiguration)}."
+            );
 
         ValidateEmbeddingConfig(config, section.Path);
 
@@ -46,22 +49,29 @@ public static class FailoverServiceCollectionExtensions
                 model: config.Primary.Model,
                 embeddingSize: config.Primary.EmbeddingSize,
                 apiKey: config.Primary.ApiKey,
-                logger: loggerFactory?.CreateLogger<ServerEmbeddings>());
+                logger: loggerFactory?.CreateLogger<ServerEmbeddings>()
+            );
 
             var backup = new ServerEmbeddings(
                 endpoint: config.Backup.Endpoint,
                 model: config.Backup.Model,
                 embeddingSize: config.Backup.EmbeddingSize,
                 apiKey: config.Backup.ApiKey,
-                logger: loggerFactory?.CreateLogger<ServerEmbeddings>());
+                logger: loggerFactory?.CreateLogger<ServerEmbeddings>()
+            );
 
-            var options = BuildOptions(config.PrimaryRequestTimeoutSeconds, config.FailoverOnHttpError, config.RecoveryIntervalSeconds);
+            var options = BuildOptions(
+                config.PrimaryRequestTimeoutSeconds,
+                config.FailoverOnHttpError,
+                config.RecoveryIntervalSeconds
+            );
 
             return new FailoverEmbeddingService(
                 primary,
                 backup,
                 options,
-                loggerFactory?.CreateLogger<FailoverEmbeddingService>());
+                loggerFactory?.CreateLogger<FailoverEmbeddingService>()
+            );
         });
 
         return services;
@@ -80,7 +90,8 @@ public static class FailoverServiceCollectionExtensions
         this IServiceCollection services,
         IEmbeddingService primary,
         IEmbeddingService backup,
-        FailoverOptions options)
+        FailoverOptions options
+    )
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(primary);
@@ -94,7 +105,8 @@ public static class FailoverServiceCollectionExtensions
                 primary,
                 backup,
                 options,
-                loggerFactory?.CreateLogger<FailoverEmbeddingService>());
+                loggerFactory?.CreateLogger<FailoverEmbeddingService>()
+            );
         });
 
         return services;
@@ -114,14 +126,17 @@ public static class FailoverServiceCollectionExtensions
     /// </example>
     public static IServiceCollection AddFailoverReranking(
         this IServiceCollection services,
-        IConfigurationSection section)
+        IConfigurationSection section
+    )
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(section);
 
-        var config = section.Get<FailoverRerankConfiguration>()
+        var config =
+            section.Get<FailoverRerankConfiguration>()
             ?? throw new InvalidOperationException(
-                $"Failed to bind configuration section '{section.Path}' to {nameof(FailoverRerankConfiguration)}.");
+                $"Failed to bind configuration section '{section.Path}' to {nameof(FailoverRerankConfiguration)}."
+            );
 
         ValidateRerankConfig(config, section.Path);
 
@@ -133,21 +148,28 @@ public static class FailoverServiceCollectionExtensions
                 endpoint: config.Primary.Endpoint,
                 model: config.Primary.Model,
                 apiKey: config.Primary.ApiKey,
-                logger: loggerFactory?.CreateLogger<RerankingService>());
+                logger: loggerFactory?.CreateLogger<RerankingService>()
+            );
 
             var backup = new RerankingService(
                 endpoint: config.Backup.Endpoint,
                 model: config.Backup.Model,
                 apiKey: config.Backup.ApiKey,
-                logger: loggerFactory?.CreateLogger<RerankingService>());
+                logger: loggerFactory?.CreateLogger<RerankingService>()
+            );
 
-            var options = BuildOptions(config.PrimaryRequestTimeoutSeconds, config.FailoverOnHttpError, config.RecoveryIntervalSeconds);
+            var options = BuildOptions(
+                config.PrimaryRequestTimeoutSeconds,
+                config.FailoverOnHttpError,
+                config.RecoveryIntervalSeconds
+            );
 
             return new FailoverRerankService(
                 primary,
                 backup,
                 options,
-                loggerFactory?.CreateLogger<FailoverRerankService>());
+                loggerFactory?.CreateLogger<FailoverRerankService>()
+            );
         });
 
         return services;
@@ -166,7 +188,8 @@ public static class FailoverServiceCollectionExtensions
         this IServiceCollection services,
         IRerankService primary,
         IRerankService backup,
-        FailoverOptions options)
+        FailoverOptions options
+    )
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(primary);
@@ -180,14 +203,18 @@ public static class FailoverServiceCollectionExtensions
                 primary,
                 backup,
                 options,
-                loggerFactory?.CreateLogger<FailoverRerankService>());
+                loggerFactory?.CreateLogger<FailoverRerankService>()
+            );
         });
 
         return services;
     }
 
     private static FailoverOptions BuildOptions(
-        double timeoutSeconds, bool failoverOnHttpError, double? recoveryIntervalSeconds)
+        double timeoutSeconds,
+        bool failoverOnHttpError,
+        double? recoveryIntervalSeconds
+    )
     {
         return new FailoverOptions
         {
@@ -195,13 +222,17 @@ public static class FailoverServiceCollectionExtensions
             FailoverOnHttpError = failoverOnHttpError,
             RecoveryInterval = recoveryIntervalSeconds.HasValue
                 ? TimeSpan.FromSeconds(recoveryIntervalSeconds.Value)
-                : null
+                : null,
         };
     }
 
     private static void ValidateEndpoint(
-        string endpoint, string apiKey, string model,
-        string endpointLabel, string sectionPath)
+        string endpoint,
+        string apiKey,
+        string model,
+        string endpointLabel,
+        string sectionPath
+    )
     {
         if (string.IsNullOrWhiteSpace(endpoint))
         {
@@ -224,7 +255,8 @@ public static class FailoverServiceCollectionExtensions
         if (timeoutSeconds <= 0)
         {
             throw new InvalidOperationException(
-                $"'{sectionPath}:PrimaryRequestTimeoutSeconds' must be greater than 0.");
+                $"'{sectionPath}:PrimaryRequestTimeoutSeconds' must be greater than 0."
+            );
         }
     }
 
@@ -233,7 +265,8 @@ public static class FailoverServiceCollectionExtensions
         if (recoveryIntervalSeconds.HasValue && recoveryIntervalSeconds.Value <= 0)
         {
             throw new InvalidOperationException(
-                $"'{sectionPath}:RecoveryIntervalSeconds' must be greater than 0 when specified.");
+                $"'{sectionPath}:RecoveryIntervalSeconds' must be greater than 0 when specified."
+            );
         }
     }
 
@@ -247,9 +280,10 @@ public static class FailoverServiceCollectionExtensions
         if (config.Primary.EmbeddingSize != config.Backup.EmbeddingSize)
         {
             throw new InvalidOperationException(
-                $"Primary and backup embedding sizes must match. " +
-                $"Primary: {config.Primary.EmbeddingSize}, Backup: {config.Backup.EmbeddingSize}. " +
-                $"Section: '{sectionPath}'.");
+                $"Primary and backup embedding sizes must match. "
+                    + $"Primary: {config.Primary.EmbeddingSize}, Backup: {config.Backup.EmbeddingSize}. "
+                    + $"Section: '{sectionPath}'."
+            );
         }
     }
 

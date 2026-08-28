@@ -43,8 +43,7 @@ public sealed class LifecycleContentRedactor
             }
         }
 
-        internal bool TryGetChild(string name, out AllowList? child) =>
-            _properties.TryGetValue(name, out child);
+        internal bool TryGetChild(string name, out AllowList? child) => _properties.TryGetValue(name, out child);
     }
 
     // Shared sub-shapes. LifecycleUsage is pure arithmetic, so all of it is safe. LifecycleError is
@@ -122,12 +121,7 @@ public sealed class LifecycleContentRedactor
                 ("duration_ms", null),
                 (
                     "approval",
-                    new AllowList(
-                        ("decision", null),
-                        ("arguments_hash", null),
-                        ("decided_by", null),
-                        ("wait_ms", null)
-                    )
+                    new AllowList(("decision", null), ("arguments_hash", null), ("decided_by", null), ("wait_ms", null))
                 ),
                 ("error", ErrorAllowList)
             ),
@@ -151,13 +145,7 @@ public sealed class LifecycleContentRedactor
                 ("was_recreated", null),
                 ("replaced_session_id", null),
                 ("status", null),
-                (
-                    "inventory",
-                    new AllowList(
-                        ("status", null),
-                        ("items", new AllowList(("kind", null)))
-                    )
-                )
+                ("inventory", new AllowList(("status", null), ("items", new AllowList(("kind", null)))))
             ),
         };
 
@@ -172,10 +160,7 @@ public sealed class LifecycleContentRedactor
     /// projected onto the allow-list, or whose payload is <see langword="null"/> when the event type
     /// has no allow-list.
     /// </returns>
-    public LifecycleEventEnvelope Redact(
-        LifecycleEventEnvelope lifecycleEvent,
-        LifecycleSubscription subscription
-    )
+    public LifecycleEventEnvelope Redact(LifecycleEventEnvelope lifecycleEvent, LifecycleSubscription subscription)
     {
         ArgumentNullException.ThrowIfNull(lifecycleEvent);
         ArgumentNullException.ThrowIfNull(subscription);
@@ -202,10 +187,7 @@ public sealed class LifecycleContentRedactor
             || !_allowListsByEventType.TryGetValue(lifecycleEvent.EventType, out var allowList)
         )
         {
-            return lifecycleEvent with
-            {
-                Payload = null,
-            };
+            return lifecycleEvent with { Payload = null };
         }
 
         return lifecycleEvent with

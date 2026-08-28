@@ -15,13 +15,10 @@ public class BindingContextTests
     private static BindingContext CreateContext() =>
         new()
         {
-            Inputs = (JsonObject)
-                JsonNode.Parse("""{ "name": "alice", "nested": { "x": 1 } }""")!,
+            Inputs = (JsonObject)JsonNode.Parse("""{ "name": "alice", "nested": { "x": 1 } }""")!,
             State = (JsonObject)JsonNode.Parse("""{ "count": 5, "items": [10, 20, 30] }""")!,
             Outputs = (JsonObject)
-                JsonNode.Parse(
-                    """{ "review": { "lint": [ { "severity": "high" }, { "severity": "low" } ] } }"""
-                )!,
+                JsonNode.Parse("""{ "review": { "lint": [ { "severity": "high" }, { "severity": "low" } ] } }""")!,
             Notes = (JsonObject)JsonNode.Parse("""{ "global": { "memo": "hello" } }""")!,
             Visits = new Dictionary<string, int> { ["nodeA"] = 3 },
             Step = 7,

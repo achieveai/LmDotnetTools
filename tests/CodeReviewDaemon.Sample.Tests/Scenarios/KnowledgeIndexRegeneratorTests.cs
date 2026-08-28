@@ -16,25 +16,23 @@ public sealed class KnowledgeIndexRegeneratorTests : LoggingTestBase
     private const string KnowledgeBaseDir = "/work/reviewbot/KnowledgeBase";
 
     public KnowledgeIndexRegeneratorTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private KnowledgeIndexRegenerator Create(FakeSandboxFileSystem fs) =>
         new(fs, LoggerFactory.CreateLogger<KnowledgeIndexRegeneratorTests>());
 
     private static string Entry(string title, string scope) =>
         $"""
-        ---
-        title: {title}
-        tags: []
-        scope: {scope}
-        sourcePrs: []
-        updated: 2026-08-25
-        ---
+            ---
+            title: {title}
+            tags: []
+            scope: {scope}
+            sourcePrs: []
+            updated: 2026-08-25
+            ---
 
-        Body.
-        """;
+            Body.
+            """;
 
     [Fact]
     public async Task Rebuilds_a_listing_that_lost_an_entry_to_a_merge_resolution()
@@ -49,14 +47,16 @@ public sealed class KnowledgeIndexRegeneratorTests : LoggingTestBase
             .Seed(
                 $"{KnowledgeBaseDir}/_index.jsonl",
                 """{"file":"system/this-lane.md","title":"This Lane Lesson","tags":[],"scope":"system","sourcePrs":[],"updated":"2026-08-25"}"""
-                    + "\n")
-            .Seed($"{KnowledgeBaseDir}/_toc.md", "# Knowledge Base\n\n## system\n\n- [This Lane Lesson](system/this-lane.md)\n");
+                    + "\n"
+            )
+            .Seed(
+                $"{KnowledgeBaseDir}/_toc.md",
+                "# Knowledge Base\n\n## system\n\n- [This Lane Lesson](system/this-lane.md)\n"
+            );
 
         var changed = await Create(fs).RegenerateAsync(KnowledgeBaseDir, CancellationToken.None);
 
-        changed
-            .Should()
-            .BeTrue("the rebuilt listings differ from the ones the merge resolution left behind");
+        changed.Should().BeTrue("the rebuilt listings differ from the ones the merge resolution left behind");
 
         var index = fs.Files[$"{KnowledgeBaseDir}/_index.jsonl"];
         index.Should().Contain("system/earlier-lane.md", "the entry the resolution dropped is back in the index");
@@ -70,8 +70,10 @@ public sealed class KnowledgeIndexRegeneratorTests : LoggingTestBase
     [Fact]
     public async Task Reports_no_change_when_the_listings_already_describe_the_tree()
     {
-        var fs = new FakeSandboxFileSystem()
-            .Seed($"{KnowledgeBaseDir}/system/only-entry.md", Entry("Only Entry", "system"));
+        var fs = new FakeSandboxFileSystem().Seed(
+            $"{KnowledgeBaseDir}/system/only-entry.md",
+            Entry("Only Entry", "system")
+        );
 
         // First pass establishes the listings; the second has nothing to do. The merge caller commits only
         // on a true, so a false here is what keeps an empty commit off the default branch every sweep.
