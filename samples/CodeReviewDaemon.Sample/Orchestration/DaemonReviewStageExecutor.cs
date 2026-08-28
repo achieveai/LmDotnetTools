@@ -2873,13 +2873,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Placed BEFORE the artifact write below, which is the property that matters: a guard that throws after
         // persisting has already shipped the false claim to everything that reads the artifact later.
         var reviewChars = result.ReviewText.Length;
-        if (IsNoNewFindingsSentinel(result.ReviewText) && !PriorReviewBodyExists(run))
+        if (IsSentinelWholeBody(result.ReviewText) && !PriorReviewBodyExists(run))
         {
-            throw new InvalidOperationException(
+            throw new SentinelUnauthorizedException(
                 $"Run {run.Id} (PR {run.PrId}): the review came back as the no-new-findings sentinel "
                     + $"({reviewChars} chars), but no earlier primary round on this PR persisted a review body. "
                     + "There is no last review for findings to be new since, so this claim is false and will not "
-                    + "be retained. The run fails and will retry rather than deliver a silent non-review.");
+                    + "be retained. The run fails, and its attempts are bounded by the retry budget rather than "
+                    + "re-reviewing the PR every poll.");
         }
 
         _ = _store.AddArtifact(new ReviewArtifact
@@ -2894,6 +2895,35 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>
+    /// Whether the review body is the no-new-findings sentinel AND NOTHING ELSE — the guard's own, stricter
+    /// reading of <see cref="IsNoNewFindingsSentinel"/>.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="IsNoNewFindingsSentinel"/> is a PREFIX match, and it has to stay one: its existing consumers
+    /// only withhold a comment, so a false positive there costs a post that was probably noise anyway. This
+    /// guard is not in that position — it throws the review away, unrecoverably for the round — so a body that
+    /// merely OPENS with the phrase and then reports findings ("No new findings in the auth path, but three
+    /// Must-fix items below…") must not be refused. It is a real review, and it authorizes nothing about an
+    /// earlier round either way.
+    /// <para>
+    /// The discriminator is length, because that is the fact that separates the two: the sentinel is a single
+    /// mandated sentence (the two accepted forms are 38 and 34 characters), while a body carrying findings runs
+    /// to hundreds. The bound is deliberately far above both sentences and far below any review — it does not
+    /// need to be tight to be decisive, and a tight bound would refuse a sentinel a prompt revision rephrased
+    /// slightly, which is the failure mode with the worse cost. Applied at the guard ONLY; the shared
+    /// classifier is untouched.
+    /// </para>
+    /// </remarks>
+    private static bool IsSentinelWholeBody(string? reviewText) =>
+        IsNoNewFindingsSentinel(reviewText)
+        && reviewText!.Trim().Length <= SentinelWholeBodyMaxChars;
+
+    /// <summary>Longest body the guard will read as the sentinel ALONE — see <see cref="IsSentinelWholeBody"/>.
+    /// Roughly three times the longer mandated sentence, so rewording it cannot escape the guard while a review
+    /// that actually reports something cannot fall inside it.</summary>
+    private const int SentinelWholeBodyMaxChars = 120;
+
+    /// <summary>
     /// Whether an EARLIER primary round on this PR left a review body that actually reviewed something —
     /// non-blank, and not the sentinel itself.
     /// </summary>
@@ -2903,6 +2933,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// round that asserted it too, and bottoms out nowhere. This is not theoretical — the live store already
     /// holds 58 such bodies, so counting them would let the exact runs this guard exists for re-authorize
     /// themselves on their next round.
+    /// <para>
+    /// Tested with <see cref="IsSentinelWholeBody"/> rather than the shared prefix classifier, for the mirror
+    /// of the reason the throw is: a prior round that opened with the phrase and then reported findings IS the
+    /// earlier review a later sentinel is entitled to point at, and reading it as a sentinel would refuse a
+    /// round that has a genuine predecessor.
+    /// </para>
     /// </remarks>
     private bool PriorReviewBodyExists(ReviewRun run)
     {
@@ -2920,7 +2956,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(text) && !IsNoNewFindingsSentinel(text))
+            if (!string.IsNullOrWhiteSpace(text) && !IsSentinelWholeBody(text))
             {
                 return true;
             }
@@ -4769,6 +4805,28 @@ internal sealed record ReviewCheckpoint(
 /// </summary>
 internal sealed class ReviewCheckpointCorruptException(string message, Exception innerException)
     : InvalidOperationException(message, innerException);
+
+/// <summary>
+/// The review came back as the no-new-findings sentinel on a PR that holds no earlier review body, so the
+/// claim is false and the run refuses to persist it (see <c>DaemonReviewStageExecutor.PriorReviewBodyExists</c>).
+/// </summary>
+/// <remarks>
+/// A dedicated type ONLY so <c>PrOrchestrator.IsGovernedFailure</c> can charge it against the run's retry
+/// budget. As a plain <see cref="InvalidOperationException"/> the refusal was ungoverned, which means the run
+/// is written RetryPending, re-attempted every poll, and additionally prioritized by
+/// <c>StrandedRunReconciler</c>'s RetryPending fast path — and each of those attempts is a FULL review,
+/// fanned out and billed, discarded at the last line. That is the shape the governor exists to bound: nothing
+/// about the PR's history changes between two polls, so a refusal reproduces identically and the run has to
+/// park eventually. It matters immediately rather than in theory, because every PR whose only prior primary
+/// body is one of the 58 historical sentinels enters that loop on its next round.
+/// <para>
+/// It is NOT a transient. The prior-review question is answered from the store, so the next poll asks the
+/// same question of the same rows. What clears it is a genuine earlier review appearing — which is a new
+/// round, i.e. a new run id, which starts with a fresh budget — or a restart, the operator's documented
+/// "retry everything" gesture.
+/// </para>
+/// </remarks>
+internal sealed class SentinelUnauthorizedException(string message) : InvalidOperationException(message);
 
 /// <summary>
 /// The host-side pooled-review dependencies (Layer 1), non-null in <see cref="DaemonReviewStageExecutor"/>

@@ -173,6 +173,80 @@ public sealed class SentinelAuthorizationTests
         store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind).Should().BeNull();
     }
 
+    /// <summary>
+    /// The refusal must be a BOUNDED loop, not a permanent one. A refused run is written RetryPending, and
+    /// RetryPending is both re-attempted on every poll and given the fast path by <c>StrandedRunReconciler</c>
+    /// — while the prior-review question is answered from the store, so the next poll asks the same question
+    /// of the same rows and refuses identically. Each of those attempts is a FULL review, fanned out and
+    /// billed, thrown away at the last line. That is precisely what the retry budget exists to bound, and it
+    /// is not hypothetical: every PR whose only prior primary body is one of the 58 historical sentinels
+    /// enters this loop on its next round.
+    /// <para>
+    /// Driven end to end through the real executor rather than a stub that throws the type, because the
+    /// property is about the SECOND poll not re-reviewing — which is only observable if the first one
+    /// genuinely did.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Consecutive_refusals_of_the_same_run_are_parked_rather_than_re_reviewed_every_poll()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory { DefaultText = Sentinel };
+        var governor = new RetryGovernor(
+            maxAttempts: 1,
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromSeconds(900),
+            () => new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero),
+            NullLogger<RetryGovernor>.Instance);
+        var orchestrator = new PrOrchestrator(
+            store, Executor(store, factory), NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var seed = RunSeed(EnsureRepo(store), "head-sha", "wm-1", ReviewStage.Discovered);
+
+        var poll = async () => await orchestrator.RunAsync(seed, CancellationToken.None);
+        _ = await poll.Should().ThrowAsync<SentinelUnauthorizedException>(
+            "the refusal carries its own type so the governor can charge it");
+        var reviewsAfterFirstPoll = factory.CreatedProfileIds.Count;
+        reviewsAfterFirstPoll.Should().BeGreaterThan(
+            0, "the first poll paid for a full review before the refusal — that is the cost being bounded");
+
+        _ = await orchestrator.RunAsync(seed, CancellationToken.None);
+
+        factory.CreatedProfileIds.Count.Should().Be(
+            reviewsAfterFirstPoll,
+            "the budget is spent, so the run parks instead of buying the identical review again every poll");
+    }
+
+    /// <summary>
+    /// The guard throws the review AWAY, unrecoverably for the round, so it may not fire on a prefix.
+    /// <c>IsNoNewFindingsSentinel</c> is a `StartsWith("No new findings")` match and stays one — its other
+    /// consumers only withhold a comment, where a false positive is cheap. Here it is not: a substantive first
+    /// review that happens to OPEN with the phrase and then reports findings must be persisted, or the daemon
+    /// discards real work and then loops on it.
+    /// </summary>
+    [Fact]
+    public async Task A_first_ever_review_that_only_opens_with_the_phrase_and_reports_findings_is_kept()
+    {
+        const string OpensWithThePhrase =
+            "No new findings in the auth path, but three Must-fix items below.\n\n"
+            + "## Review\n"
+            + "- [BLOCKER] `AddTenantId` adds a NOT NULL column with no default against a populated table.\n"
+            + "- Must: null check missing in Foo.cs:10.\n"
+            + "- Must: the retry budget is never charged for this failure, so it loops.";
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var executor = Executor(store, OpensWithThePhrase);
+        var run = SeedRun(store);
+
+        await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var artifact = store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind);
+        artifact.Should().NotBeNull("a review that reports findings is a review, whatever it opens with");
+        JsonSerializer.Deserialize<ReviewArtifactPayload>(artifact!.Payload)!.ReviewText
+            .Should().Be(OpensWithThePhrase, "and it is kept verbatim, not trimmed to the part that survived");
+    }
+
     // ── the standing population check ─────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -222,9 +296,32 @@ public sealed class SentinelAuthorizationTests
         DaemonReviewStageExecutor.IsNoNewFindingsSentinel(ReviewTextOf(payloads[0])).Should().BeFalse();
     }
 
-    /// <summary>A cutoff old enough to include every seeded artifact, so these two pin the FIRST-review rule
-    /// rather than the time window.</summary>
-    private const string EpochStart = "2000-01-01T00:00:00.0000000+00:00";
+    /// <summary>
+    /// The window is a real term in the query and needs its own test: the two above deliberately pass
+    /// <see cref="EpochStart"/> so that they pin the FIRST-review rule alone, which leaves
+    /// <c>created_at &gt;= $since</c> unexercised — deleting it kept the suite green. A first review that
+    /// predates the cutoff is history, not a signal about the fleet now, and must not be counted.
+    /// </summary>
+    [Fact]
+    public void The_standing_check_ignores_a_first_review_older_than_the_window()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        _ = SeedPriorRound(store, EnsureRepo(store), ReviewStage.Posted, Sentinel);
+
+        // The artifact is stamped by the store at insert time, so the cutoff moves instead: a window that opens
+        // a day from now leaves the row it just wrote outside it, which is the same relation as a row written a
+        // fortnight before a seven-day window.
+        var payloads = store.GetFirstReviewPayloadsSince(
+            DateTimeOffset.UtcNow.AddDays(1), DaemonReviewStageExecutor.ReviewArtifactKind);
+
+        payloads.Should().BeEmpty("a first review from before the window says nothing about the fleet today");
+    }
+
+    /// <summary>A cutoff old enough to include every seeded artifact, so the two tests above pin the
+    /// FIRST-review rule rather than the time window — which
+    /// <see cref="The_standing_check_ignores_a_first_review_older_than_the_window"/> pins separately.</summary>
+    private static readonly DateTimeOffset EpochStart = new(2000, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
     private static string? ReviewTextOf(string payload) =>
         JsonSerializer
@@ -232,7 +329,10 @@ public sealed class SentinelAuthorizationTests
 
     // ── fixtures ──────────────────────────────────────────────────────────────────────────────────
 
-    private static DaemonReviewStageExecutor Executor(ReviewStore store, string reviewText)
+    private static DaemonReviewStageExecutor Executor(ReviewStore store, string reviewText) =>
+        Executor(store, new FakeReviewAgentLoopFactory { DefaultText = reviewText });
+
+    private static DaemonReviewStageExecutor Executor(ReviewStore store, FakeReviewAgentLoopFactory factory)
     {
         var sandbox = new FakeSandboxCommandRunner()
             .OnArgvContains(
@@ -244,7 +344,7 @@ public sealed class SentinelAuthorizationTests
 
         return new DaemonReviewStageExecutor(
             store,
-            new FakeReviewAgentLoopFactory { DefaultText = reviewText },
+            factory,
             sandbox,
             new FakeSandboxFileSystem(),
             new CodeReviewDaemonOptions(),

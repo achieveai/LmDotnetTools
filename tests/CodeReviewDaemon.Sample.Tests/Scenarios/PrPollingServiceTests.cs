@@ -5,6 +5,7 @@ using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
@@ -382,6 +383,33 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             0, "a real review is not the sentinel and must not be counted as one");
     }
 
+    /// <summary>
+    /// The lookback is a real term, and the option that sets it has to reach the query. Driven from the far
+    /// side of the window: the seeded first review is a sentinel, so the ONLY thing keeping the warning quiet
+    /// is that it fell outside the window the configured value asked for.
+    /// </summary>
+    [Fact]
+    public async Task Startup_ignores_a_first_review_sentinel_from_before_the_lookback_window()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        SeedFirstReview(store, "No new findings since the last review.");
+        // Two days past a one-day window, so the artifact the store just stamped is outside it.
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow.AddDays(2));
+        var progress = new CapturingLogger<ReviewProgressReporter>();
+        var poller = BuildPoller(
+            store, new MockPrProvider(Provider, [], NextCursor()), new ReviewProgressReporter(progress),
+            timeProvider: clock, lookbackDays: 1);
+
+        await poller.StartAsync(CancellationToken.None);
+        await poller.StopAsync(CancellationToken.None);
+
+        progress.CountAtLevel(LogLevel.Warning, "on a PR that had no last review").Should().Be(
+            0, "a sentinel from before the window is history, not a statement about the fleet now");
+        progress.CountAtLevel(LogLevel.Information, "nothing to report yet").Should().Be(
+            1, "and the empty window says so rather than reporting a healthy count it did not measure");
+    }
+
     /// <summary>A PR whose one and only review carries <paramref name="reviewText"/>, on the primary variant,
     /// so the startup check sees exactly one first review.</summary>
     private static void SeedFirstReview(ReviewStore store, string reviewText)
@@ -398,13 +426,18 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         });
     }
 
-    private PrPollingService BuildPoller(ReviewStore store, IPrProvider provider, ReviewProgressReporter progress)
+    private PrPollingService BuildPoller(
+        ReviewStore store,
+        IPrProvider provider,
+        ReviewProgressReporter progress,
+        TimeProvider? timeProvider = null,
+        int? lookbackDays = null)
     {
         var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
         var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
         return new PrPollingService(
             [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>(),
-            progress: progress);
+            timeProvider: timeProvider, progress: progress, firstReviewLookbackDays: lookbackDays);
     }
 
     private PrPollingService BuildPoller(

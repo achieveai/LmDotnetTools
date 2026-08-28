@@ -565,7 +565,7 @@ internal sealed class ReviewStore : IDisposable
     }
 
     /// <summary>
-    /// The FIRST review payload of every PR whose first review landed at or after <paramref name="sinceUtcIso"/>,
+    /// The FIRST review payload of every PR whose first review landed at or after <paramref name="since"/>,
     /// so a caller can measure how often a first-ever review answered that nothing had changed.
     /// </summary>
     /// <remarks>
@@ -584,10 +584,15 @@ internal sealed class ReviewStore : IDisposable
     /// "First" is by artifact id within (repo, PR) on the primary variant, so a legitimate later-round sentinel
     /// cannot inflate the rate. The caller counts sentinels; the persistence layer does not know what one is.
     /// </para>
+    /// <para>
+    /// <paramref name="since"/> is an INSTANT, not a pre-formatted string, so the one "O"-shaped rendering that
+    /// makes <c>created_at</c> comparable lexicographically lives in <see cref="Utc"/> beside the writer —
+    /// exactly as <see cref="ListStrandedRuns"/> and <see cref="ListRetryPendingRuns"/> take theirs. A caller
+    /// formatting its own cutoff would be a second copy of that contract, agreeing today and pinned by nothing.
+    /// </para>
     /// </remarks>
-    public IReadOnlyList<string> GetFirstReviewPayloadsSince(string sinceUtcIso, string artifactKind)
+    public IReadOnlyList<string> GetFirstReviewPayloadsSince(DateTimeOffset since, string artifactKind)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sinceUtcIso);
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactKind);
 
         using var gate = _gate.EnterScope();
@@ -608,7 +613,7 @@ internal sealed class ReviewStore : IDisposable
             """;
         _ = command.Parameters.AddWithValue("$kind", artifactKind);
         _ = command.Parameters.AddWithValue("$variant", PrimaryVariantId);
-        _ = command.Parameters.AddWithValue("$since", sinceUtcIso);
+        _ = command.Parameters.AddWithValue("$since", Utc(since));
 
         var payloads = new List<string>();
         using var reader = command.ExecuteReader();

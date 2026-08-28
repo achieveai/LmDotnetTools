@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence;
@@ -144,9 +143,7 @@ internal sealed class PrPollingService : BackgroundService
 
         try
         {
-            var since = _timeProvider.GetUtcNow()
-                .AddDays(-_firstReviewLookbackDays)
-                .ToString("O", CultureInfo.InvariantCulture);
+            var since = _timeProvider.GetUtcNow().AddDays(-_firstReviewLookbackDays);
             var payloads = _store.GetFirstReviewPayloadsSince(
                 since, DaemonReviewStageExecutor.ReviewArtifactKind);
             var sentinels = payloads.Count(static p =>
