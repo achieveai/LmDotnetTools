@@ -3,6 +3,7 @@ using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Workspace;
@@ -807,6 +808,413 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         // SlotCorruptException derives from Exception (not InvalidOperationException), so asserting the exact
         // InvalidOperationException type proves the failure was classified transient, not corrupt.
         await act.Should().ThrowExactlyAsync<InvalidOperationException>();
+    }
+
+    /// <summary>
+    /// What the host git runner returns for a command its watchdog killed on the idle timeout, and the stderr
+    /// it writes with it. Named because the whole point of the tests below is that this arrives through the
+    /// same channel as git's own answers and would otherwise be indistinguishable from one.
+    /// </summary>
+    private const int WatchdogKillExit = 124;
+
+    /// <summary>The kernel's exit code for a process killed by SIGKILL — an OOM killer, a container stop, an
+    /// operator. Different cause, same obligation: it is not an answer about anyone's branch.</summary>
+    private const int SigkillExit = 137;
+
+    private const string KilledStderr =
+        "git merge-base produced no output for 300s (idle timeout) and was killed by the daemon after 300.1s.";
+
+    /// <summary>
+    /// The runner shape the merge-base tests share: a full clone, healthy in every respect except what
+    /// <c>merge-base</c> reports. Extracted so that the ONLY difference between those tests is the result
+    /// handed to that one command — which is the whole of what separates a fact about the pull request from a
+    /// fact about this daemon's own machine.
+    /// </summary>
+    private static FakeSandboxCommandRunner FullCloneWhoseMergeBaseAnswers(
+        string target, SandboxCommandResult mergeBase) =>
+        new FakeSandboxCommandRunner()
+            .OnArgvContains($"-C {target} merge-base", mergeBase)
+            .OnArgvContains(
+                $"-C {target} rev-parse --is-shallow-repository",
+                new SandboxCommandResult(0, "false\n", string.Empty));
+
+    /// <summary>
+    /// The control for every test that follows, and the one case that keeps its licence. <c>git merge-base</c>
+    /// is documented to exit 1 with no output when the commits share no ancestor: that is git ANSWERING, not
+    /// git failing, and on a clone that is not shallow it is as final as the question gets. So this run may —
+    /// and must still — reach the author-facing claim.
+    /// <para>
+    /// Pinned explicitly because the discriminator is a single number. The obvious way to write the probe is
+    /// "the command did not succeed", which any non-zero exit satisfies; it is the number 1 specifically, and
+    /// nothing else here asserts that 1 still qualifies.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_MergeBaseExitOneIsAnAnswerAndStillEarnsTheUnrelatedClaim()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        using var logs = new CapturingLoggerFactory();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = FullCloneWhoseMergeBaseAnswers(
+            target, new SandboxCommandResult(1, string.Empty, string.Empty));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", logs);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        prepared.MergeBase.Should().Be(
+            MergeBaseOutcome.UnrelatedHistories,
+            "exit 1 from merge-base is git's documented 'no common ancestor', and a clone that reports itself "
+                + "not shallow has no more history to find — this is the one shape that is genuinely a fact "
+                + "about the pull request's commits");
+        logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().Contain(
+            m => m.Contains("is not shallow", StringComparison.Ordinal),
+            "and it says so in the terms an operator can check, rather than as an indeterminate shrug");
+    }
+
+    /// <summary>
+    /// The defect the three-state probe exists for. The host git runner kills a command that has been silent
+    /// past its idle timeout and returns exit 124 — and that runner has already been observed killing healthy
+    /// multi-gigabyte git operations, so this is the failure mode of this exact code path rather than a
+    /// hypothetical one.
+    /// <para>
+    /// Read as a bool, 124 is indistinguishable from git's exit 1, and the run goes on to conclude the commits
+    /// share no ancestor and to say so in a comment on the pull request telling the author to re-target or
+    /// rebase. Our timeout, delivered as a fact about their branch, with no hedge and nothing in the wording
+    /// to suggest we had failed rather than they had.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_AWatchdogKilledMergeBaseIsIndeterminateNotUnrelatedHistories()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = FullCloneWhoseMergeBaseAnswers(
+            target, new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        prepared.MergeBase.Should().Be(
+            MergeBaseOutcome.Indeterminate,
+            "the probe never answered, so nothing about these commits was established — and only "
+                + "UnrelatedHistories is licensed to become author-facing text");
+        prepared.MergeBase.Should().NotBe(
+            MergeBaseOutcome.UnrelatedHistories,
+            "stated separately because this is the assertion that matters: a killed command must never reach "
+                + "the one outcome that tells a pull-request author to re-target or rebase their branch");
+    }
+
+    /// <summary>
+    /// The same rule for a SIGKILL rather than the daemon's own watchdog — an OOM killer, a container stop, a
+    /// stray <c>kill -9</c>. There is deliberately no separate code path for it; production reads every
+    /// non-1 exit the same way, and this test exists so the rule is pinned as "only 1 is an answer" rather
+    /// than as a list of exit codes someone remembered to enumerate.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_ASigkilledMergeBaseIsIndeterminateNotUnrelatedHistories()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = FullCloneWhoseMergeBaseAnswers(
+            target, new SandboxCommandResult(SigkillExit, string.Empty, string.Empty));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        prepared.MergeBase.Should().Be(MergeBaseOutcome.Indeterminate);
+    }
+
+    /// <summary>
+    /// The second of the three sites, and the one whose failure reads most like a success. The obvious way to
+    /// consume the shallow probe is <c>!shallow.Succeeded || stdout != "true"</c> — one expression in which a
+    /// command that was KILLED and a command that printed <c>false</c> are the same thing. A killed probe then
+    /// arrives at the "full history already, and still unrelated" branch, which is exactly the branch that
+    /// concludes the base commit was orphaned by the author's force-push.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_AWatchdogKilledShallowProbeIsIndeterminateNotAConfirmedFullClone()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContains($"-C {target} merge-base", new SandboxCommandResult(1, string.Empty, string.Empty))
+            .OnArgvContains(
+                $"-C {target} rev-parse --is-shallow-repository",
+                new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        prepared.MergeBase.Should().Be(
+            MergeBaseOutcome.Indeterminate,
+            "whether the checkout is shallow was never established, and 'we could not ask' is not "
+                + "'we asked and it is a full clone'");
+        prepared.MergeBase.Should().NotBe(
+            MergeBaseOutcome.UnrelatedHistories,
+            "merge-base genuinely said there is no ancestor here — but that only becomes permanent once the "
+                + "clone is KNOWN to hold all the history there is, and a killed probe knows nothing");
+    }
+
+    /// <summary>A SIGKILL at the same site, for the same reason as the merge-base pair: the rule is "true or
+    /// false, and nothing else", not an enumeration of the exit codes we happened to think of.</summary>
+    [Fact]
+    public async Task PrepareAsync_ASigkilledShallowProbeIsIndeterminateNotAConfirmedFullClone()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContains($"-C {target} merge-base", new SandboxCommandResult(1, string.Empty, string.Empty))
+            .OnArgvContains(
+                $"-C {target} rev-parse --is-shallow-repository",
+                new SandboxCommandResult(SigkillExit, string.Empty, string.Empty));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        prepared.MergeBase.Should().Be(MergeBaseOutcome.Indeterminate);
+    }
+
+    /// <summary>
+    /// The runner shape for the third site: a shallow clone whose base sits on the graft root, whose head is
+    /// whole, and whose <c>rev-list --count</c> of BASE follows <paramref name="baseCounts"/> round by round.
+    /// The climb's give-up test is "did this fetch extend either commit", and that test is computed entirely
+    /// from these numbers — so scripting them IS scripting the decision.
+    /// </summary>
+    private static FakeSandboxCommandRunner ShallowCloneCountingBaseAs(
+        string target, string baseSha, string headSha, params SandboxCommandResult[] baseCounts) =>
+        new FakeSandboxCommandRunner()
+            .OnArgvContains($"-C {target} merge-base", new SandboxCommandResult(1, string.Empty, string.Empty))
+            .OnArgvContains(
+                $"-C {target} rev-parse --is-shallow-repository",
+                new SandboxCommandResult(0, "true\n", string.Empty))
+            .OnArgvContainsSequence($"-C {target} rev-list --count {baseSha}", baseCounts)
+            .OnArgvContains(
+                $"-C {target} rev-list --count {headSha}",
+                new SandboxCommandResult(0, "34579\n", string.Empty));
+
+    /// <summary>
+    /// The third site, and the least obvious of the three because the corrupted value never leaves the method
+    /// it is computed in. Reporting 0 for a count that could not be taken lets the climb compare that 0
+    /// against the previous round's reading, find it is not larger, and conclude the fetch bought no history
+    /// — which is the loop's definition of "both walks reached real roots" and its only route to
+    /// UnrelatedHistories.
+    /// <para>
+    /// So a <c>rev-list</c> killed by the watchdog would produce a permanent verdict about a pull request
+    /// without any git command ever having reported anything about it. Zero is not a small number here; it is
+    /// the absence of a number, and the two have opposite meanings for the comparison that consumes it.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_AWatchdogKilledReachableCountIsIndeterminateNotAnExhaustedHistory()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        // Round 1 measures base at 1 and the fetch goes out; round 2's count is killed, so whether that fetch
+        // bought anything is unknown — the same rounds as the exhaustion case, with one probe lost.
+        var runner = ShallowCloneCountingBaseAs(
+            target,
+            run.BaseSha,
+            run.HeadSha,
+            new SandboxCommandResult(0, "1\n", string.Empty),
+            new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        prepared.MergeBase.Should().Be(
+            MergeBaseOutcome.Indeterminate,
+            "an unmeasured round did not observe a flat history, it observed nothing");
+        prepared.MergeBase.Should().NotBe(
+            MergeBaseOutcome.UnrelatedHistories,
+            "reading a lost count as 'this fetch bought no history' is how a killed rev-list becomes a "
+                + "permanent statement about someone else's commits");
+    }
+
+    /// <summary>A SIGKILL at the counting site. Same rule, second exit code — production has one path for
+    /// both, and this pins that the rule is about the absence of an answer rather than about 124.</summary>
+    [Fact]
+    public async Task PrepareAsync_ASigkilledReachableCountIsIndeterminateNotAnExhaustedHistory()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = ShallowCloneCountingBaseAs(
+            target,
+            run.BaseSha,
+            run.HeadSha,
+            new SandboxCommandResult(0, "1\n", string.Empty),
+            new SandboxCommandResult(SigkillExit, string.Empty, string.Empty));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        prepared.MergeBase.Should().Be(MergeBaseOutcome.Indeterminate);
+    }
+
+    /// <summary>
+    /// The outcome enum is not the deliverable — the sentence is. Both give-ups below stop the climb, and an
+    /// operator reading the log has to be able to tell "the pull request's commits are unrelated" from "our
+    /// own probe was killed", because those call for opposite actions: the first is answered by re-targeting
+    /// the PR, the second by looking at this daemon's box.
+    /// <para>
+    /// Asserted as a difference between two runs rather than as two independent substring checks, because the
+    /// failure being guarded against is the two messages CONVERGING. A pair of tests that each look for their
+    /// own phrase both keep passing when one message is quietly reworded into the other's wording, as long as
+    /// each phrase survives somewhere in the merged text.
+    /// </para>
+    /// <para>
+    /// The two fixtures differ in exactly one respect: round two's <c>rev-list --count</c> of base returns
+    /// <c>100</c> in the first and is killed in the second. Every other command, count and round is identical,
+    /// so any difference in what is logged is caused by that and by nothing else.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_SaysSomethingDifferentWhenTheCountWasKilledThanWhenTheHistoryIsExhausted()
+    {
+        var exhausted = await GiveUpWarningAsync(new SandboxCommandResult(0, "100\n", string.Empty));
+        var killed = await GiveUpWarningAsync(
+            new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr));
+
+        exhausted.Should().Contain(
+            "unrelated histories",
+            "the measured run reached real roots on both walks, which is a fact about the commits and is "
+                + "allowed to be stated as one");
+        killed.Should().NotContain(
+            "unrelated histories",
+            "the killed run established nothing about the commits, and this phrase is the one that ends up "
+                + "in a pull request telling the author to re-target or rebase");
+        killed.Should().NotBe(
+            exhausted,
+            "if our infrastructure failure and the author's unrelated branch read the same, the distinction "
+                + "exists only in an enum nobody reads");
+        killed.Should().Contain(
+            "UNKNOWN", "and the line has to name what it could not establish, not merely omit the claim");
+    }
+
+    /// <summary>
+    /// Runs the climb to its give-up and returns the single warning that explains why it stopped. Round one
+    /// measures base at 1 and fetches; <paramref name="secondBaseCount"/> is what round two's count of base
+    /// comes back as, and head is flat throughout — so round two is where the loop decides, and that result
+    /// is the only thing the caller varies.
+    /// </summary>
+    private async Task<string> GiveUpWarningAsync(SandboxCommandResult secondBaseCount)
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        using var logs = new CapturingLoggerFactory();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = ShallowCloneCountingBaseAs(
+            target, run.BaseSha, run.HeadSha, new SandboxCommandResult(0, "1\n", string.Empty), secondBaseCount);
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", logs);
+
+        _ = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        // "deepening" is the word both give-up lines share and no other warning on this path uses, so it
+        // selects the line under test without presuming which of the two was written.
+        return logs.Capturing.MessagesAtLevel(LogLevel.Warning)
+            .Where(m => m.Contains("deepening", StringComparison.Ordinal))
+            .Should().ContainSingle(
+                "the climb stops once and says why once; two lines here would mean the assertion below is "
+                    + "comparing an arbitrary one of them")
+            .Subject;
+    }
+
+    /// <summary>
+    /// The happy path, and the proof that the climb is not merely a way of arriving at a verdict. A shallow
+    /// checkout whose base sits on the graft root has no merge base until history is fetched for it; one
+    /// deepening round buys that history, and the RE-ASK after the fetch is what turns it into a reviewable
+    /// pull request. Without that re-ask the loop runs to the ceiling and the PR is never reviewed at all.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_DeepensAShallowCheckoutAndResolvesOnceTheFetchBuysTheHistory()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContainsSequence(
+                $"-C {target} merge-base",
+                new SandboxCommandResult(1, string.Empty, string.Empty),
+                new SandboxCommandResult(0, "d34db33f\n", string.Empty))
+            .OnArgvContains(
+                $"-C {target} rev-parse --is-shallow-repository",
+                new SandboxCommandResult(0, "true\n", string.Empty))
+            .OnArgvContains(
+                $"-C {target} rev-list --count {run.BaseSha}", new SandboxCommandResult(0, "1\n", string.Empty))
+            .OnArgvContains(
+                $"-C {target} rev-list --count {run.HeadSha}",
+                new SandboxCommandResult(0, "34579\n", string.Empty));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        prepared.MergeBase.Should().Be(
+            MergeBaseOutcome.Resolved,
+            "the deepening fetch brought base its ancestry, and the re-ask after the fetch is what observes it");
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
+            a => a.Contains($"-C {target} fetch --depth=100 origin {run.BaseSha}", StringComparison.Ordinal),
+            "only the truncated commit is named: `--depth` shortens exactly the refs a fetch names, so naming "
+                + "the whole head would slice away the history the merge base is hiding in");
+    }
+
+    /// <summary>
+    /// The other end of the same guarantee: a checkout that already has a merge base is not deepened at all.
+    /// A fetch here is not merely wasted — on the live store it is gigabytes, and it is issued on the one path
+    /// where nothing was wrong.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_DoesNotDeepenWhenTheMergeBaseIsAlreadyReachable()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContains(
+                $"-C {target} merge-base", new SandboxCommandResult(0, "d34db33f\n", string.Empty));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        prepared.MergeBase.Should().Be(MergeBaseOutcome.Resolved);
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            a => a.Contains("fetch --depth=", StringComparison.Ordinal),
+            "the question was already answered, so no history needed buying");
     }
 
     private ReviewSlot CreateSlot(bool withGitDir = true)
