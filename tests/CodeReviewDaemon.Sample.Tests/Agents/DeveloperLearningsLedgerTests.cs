@@ -136,6 +136,49 @@ public sealed class DeveloperLearningsLedgerTests
     }
 
     [Fact]
+    public void A_streak_past_the_active_window_but_short_of_confidence_is_Watch_not_Resolved()
+    {
+        // Watch is the residual state, and it is the ONLY one whose boundary is drawn by the resolution
+        // threshold itself. Every other case lands somewhere by a different rule — staleness, the judging
+        // minimum, or recency — so if nothing exercises this band, the threshold's VALUE is unpinned: the
+        // suite cannot tell `luck < 1 - ResolutionConfidence` (0.05) from `luck < ResolutionConfidence`
+        // (0.95), because no fixture ever produces a luck that falls between the two. Confusing a
+        // confidence with its complement resolves patterns on a one-in-eight chance and reads, under a
+        // named person's file, exactly like a measured improvement.
+        //
+        // Two hits two exposed PRs apart, then three clean exposed PRs, judged at a three-PR active window:
+        // rate 3/6 = 0.50, luck 0.5^3 = 0.125 — comfortably inside [0.05, 0.95), so the state is decided by
+        // which of the two numbers the rule actually compares against.
+        var thresholds = new LearningsThresholds(
+            ResolutionConfidence: 0.95, ActiveWindowPrs: 3, ExposureStalenessDays: 90, CohortDropThreshold: 0.40);
+
+        List<DeveloperObservation> ledger =
+        [
+            Pr(1, [ExceptionDim], Hit(NullGuard)),
+            Pr(2, [ExceptionDim]),
+            Pr(3, [ExceptionDim]),
+            Pr(4, [ExceptionDim], Hit(NullGuard)),
+            .. Enumerable.Range(5, 3).Select(d => Pr(d, [ExceptionDim])),
+        ];
+
+        var standing = Compute(ledger, thresholds: thresholds).Should().ContainSingle().Subject;
+
+        standing.Occurrences.Should().Be(2);
+        standing.ExposedInWindow.Should().Be(4, "first hit to last hit inclusive, counted in exposed PRs");
+        standing.Rate.Should().BeApproximately(0.5, 1e-9, "(2+1)/(4+2) with smoothing");
+        standing.CleanStreak.Should().Be(3);
+        standing.LuckProbability.Should().BeApproximately(0.125, 1e-9, "(1-0.5)^3");
+
+        // The streak is long enough to be judged and past the active window, so it is not Active; but a
+        // one-in-eight chance of luck is not the 1-in-20 that licenses a resolution.
+        standing.State.Should().Be(PatternState.Watch);
+
+        // Not a regression either: the two-PR gap between the hits is short enough that the pattern was
+        // never resolved in the first place, so there is nothing for it to have come back from.
+        standing.Regressed.Should().BeFalse();
+    }
+
+    [Fact]
     public void Zero_exposure_for_ninety_days_is_Unjudgeable_and_never_Resolved()
     {
         // A long clean streak whose last exposure was months ago is silence from a dimension nobody read.
