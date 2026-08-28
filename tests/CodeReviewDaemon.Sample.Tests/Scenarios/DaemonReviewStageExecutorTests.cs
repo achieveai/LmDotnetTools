@@ -1745,6 +1745,39 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Posted_commits_the_finding_disposition_reconciliation_on_the_host_retention_gate_too()
+    {
+        // The SECOND commit gate. PublishToReviewBotAsync is the sole retention path when no pooled slot was
+        // leased, and it hands the builder its own `reviewBody` argument — a separate one from the pooled
+        // gate's, at a separate call site. Pinning only the pooled gate leaves this one free to pass the wrong
+        // thing: the artifact still gets written, it just says the comparison never ran, on every non-pooled
+        // run, forever. That is the exact failure shape this feature exists to kill, so both gates are pinned.
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+        fixture.Runner.OnArgvContains(
+            "rev-parse --verify review/lmdotnettools-118",
+            new SandboxCommandResult(1, string.Empty, "unknown revision"));
+        fixture.Runner.OnArgvContains(
+            "rev-parse review/lmdotnettools-118",
+            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        var reconciliation = fixture.FileSystem.Writes
+            .Should().ContainSingle(
+                p => p.Contains("/PRs/", StringComparison.Ordinal)
+                    && p.EndsWith("PR_Reconciliation_01.md", StringComparison.Ordinal),
+                "the host-retention gate must not produce a thinner PR directory than the pooled one")
+            .Subject;
+
+        fixture.FileSystem.Files[reconciliation].Should().NotContain(
+            "## Not compared",
+            "this gate hands the builder the review body it is committing, so the comparison ran");
+    }
+
+    [Fact]
     public async Task Posted_clones_and_validates_the_reviewbot_checkout_before_pushing()
     {
         using var fixture = Fixture.GitHub(

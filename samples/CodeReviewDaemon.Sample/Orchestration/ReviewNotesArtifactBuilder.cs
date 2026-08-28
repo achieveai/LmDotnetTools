@@ -246,13 +246,21 @@ internal sealed class ReviewNotesArtifactBuilder
     /// Produces the round's artifacts, relative to <paramref name="notesRelPath"/> (the lease's per-PR notes
     /// dir — the only path the commit stages). Always returns at least the context file. Never throws for a
     /// transcript-side failure; the returned files record it instead.
+    /// <para>
+    /// <paramref name="shippedReviewBody"/> is the review that actually went out, and it is what makes the
+    /// reconciliation artifact possible: the specialists' findings are already captured, but what happened to
+    /// each one was recorded nowhere. Null is a supported state and is rendered as "not compared" rather than
+    /// as a page of dropped findings — a comparison that did not run and a finding that did not survive are
+    /// different facts, and only one of them is a loss.
+    /// </para>
     /// </summary>
     public async Task<IReadOnlyList<ReviewArtifactFile>> BuildAsync(
         ReviewRun run,
         RepoIdentity repo,
         string notesRelPath,
         ReviewNotesArtifactContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? shippedReviewBody = null)
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(context);
@@ -260,11 +268,25 @@ internal sealed class ReviewNotesArtifactBuilder
         var round = context.ReviewRound.ToString("D2", CultureInfo.InvariantCulture);
         var lead = await BuildLeadFindingsAsync(run, round, context, cancellationToken).ConfigureAwait(false);
         var findings = await BuildFindingsAsync(run, round, context, cancellationToken).ConfigureAwait(false);
-        var contextFile = BuildContextFile(run, repo, round, context, lead, findings);
+
+        // Built from the specialists' OWN words as read back out of their transcripts — the same text the
+        // per-agent findings files carry, taken before the artifact size budget trims anything, so a finding
+        // cut from a file for space is still reconciled.
+        var sources = findings
+            .Select(f => new ReviewFindingSource(f.Label, f.Template, f.OwnText))
+            .ToArray();
+        var comparable = !string.IsNullOrWhiteSpace(shippedReviewBody);
+        var reconciled = ReviewFindingReconciler.Reconcile(sources, shippedReviewBody);
+        var reconciliationFileName = $"{ReviewFindingReconciler.FileNamePrefix}{round}.md";
+        var reconciliation = ReviewFindingReconciler.Render(round, sources, reconciled, shippedReviewBody);
+
+        var contextFile = BuildContextFile(
+            run, repo, round, context, lead, findings, reconciliationFileName, reconciled.Count);
 
         List<ReviewArtifactFile> files =
         [
             new($"{notesRelPath}/PR_Context_{round}.md", contextFile),
+            new($"{notesRelPath}/{reconciliationFileName}", reconciliation),
             new($"{notesRelPath}/{lead.FileName}", lead.Body),
             .. findings.Select(f => new ReviewArtifactFile($"{notesRelPath}/{f.FileName}", f.Body)),
         ];
@@ -274,11 +296,84 @@ internal sealed class ReviewNotesArtifactBuilder
                 + "({AgentCount} reviewer transcript(s), {FailureCount} unreadable).",
             run.Id, files.Count, round, findings.Count, findings.Count(f => !f.TranscriptRead) + (lead.TranscriptRead ? 0 : 1));
 
+        // The disposition of every specialist finding, as a rate rather than an anecdote. Logged on every
+        // build including the one where nothing changed, because a number that only appears when something
+        // looks wrong has no denominator, and "0 severity-changed out of 0 reconciled" and "0 out of 40" are
+        // not the same review.
+        //
+        // 'not-traceable' is NOT a loss rate and must never be quoted as one. Specialists cite locations they
+        // examined and CLEARED as well as locations they are reporting, so a citation with no shipped
+        // counterpart is most often a cleared one. What this number is good for is movement: a run where it
+        // jumps is a run where the mapping, the review shape, or the fan-out changed.
+        _logger.LogInformation(
+            "Run {RunId}: round {Round} reconciled {Reconciled} specialist finding(s) against the shipped "
+                + "review — {Kept} kept, {SeverityChanged} severity-changed, {Reframed} reframed, "
+                + "{MergedInto} merged-into, {NotTraceable} not traceable to a shipped location "
+                + "(comparison ran: {Compared}).",
+            run.Id,
+            round,
+            reconciled.Count,
+            reconciled.Count(r => r.Outcome == ReviewFindingOutcome.Kept),
+            reconciled.Count(r => r.Outcome == ReviewFindingOutcome.SeverityChanged),
+            reconciled.Count(r => r.Outcome == ReviewFindingOutcome.Reframed),
+            reconciled.Count(r => r.Outcome == ReviewFindingOutcome.MergedInto),
+            reconciled.Count(r => r.Outcome == ReviewFindingOutcome.Dropped),
+            comparable);
+
         return files;
     }
 
-    /// <summary>One per-reviewer findings file, plus whether its transcript actually came back.</summary>
-    private sealed record FindingsArtifact(string FileName, string Body, string Label, bool TranscriptRead);
+    /// <summary>
+    /// How one transcript read ended.
+    /// <para>
+    /// A READ has three possible endings and they must never collapse into two. "The host refused" is a
+    /// daemon-side gap; "the host answered with nothing" is a reviewer that genuinely said nothing; "the host
+    /// answered and none of it was this agent's own output" is a reviewer whose words are missing from a
+    /// record that looks complete. That third state is the one this class was built to make impossible, and it
+    /// was surviving inside it: two live specialist transcripts read successfully, reported
+    /// <c>TranscriptRead=true</c>, emitted no warning, and produced files with no reviewer content in them.
+    /// </para>
+    /// </summary>
+    private enum TranscriptState
+    {
+        /// <summary>No transcript source configured, or no hosted conversation id — nothing was addressed.</summary>
+        NotAddressable,
+
+        /// <summary>The host was asked and threw. The findings file quotes the error; this is the 404 posture.</summary>
+        ReadFailed,
+
+        /// <summary>The host answered with zero messages: a genuine "this agent said nothing".</summary>
+        NoMessages,
+
+        /// <summary>The host answered with messages and none of them was this agent's own output.</summary>
+        FilteredEmpty,
+
+        /// <summary>The host answered and the agent's own output is in the file.</summary>
+        Read,
+    }
+
+    /// <summary>
+    /// One per-reviewer findings file, how its transcript read ended, and the reviewer's own words lifted back
+    /// out so the reconciliation artifact can be built from them.
+    /// <para>
+    /// <see cref="TranscriptRead"/> stays a two-valued summary on purpose — it feeds the build's count of
+    /// unreadable transcripts, which is a question about the HOST answering. What it must never be used for is
+    /// telling a read that produced findings apart from a read that produced nothing; that is
+    /// <see cref="State"/>'s job, and the two being the same boolean is the defect this record was widened to
+    /// fix.
+    /// </para>
+    /// </summary>
+    private sealed record FindingsArtifact(
+        string FileName,
+        string Body,
+        string Label,
+        string Template,
+        TranscriptState State,
+        string OwnText)
+    {
+        public bool TranscriptRead =>
+            State is TranscriptState.NoMessages or TranscriptState.FilteredEmpty or TranscriptState.Read;
+    }
 
     /// <summary>
     /// The lead (primary) reviewer's own file, indexed <c>00</c> so it sorts above the specialists it
@@ -317,11 +412,18 @@ internal sealed class ReviewNotesArtifactBuilder
             run,
             context,
             Label,
+            LeadTemplate,
             static (source, threadId, ct) => source.GetRootTranscriptAsync(threadId, ct),
             cancellationToken).ConfigureAwait(false);
 
-        return new FindingsArtifact($"PR_Findings_{round}_00_lead-reviewer.md", header.ToString(), Label, read);
+        return new FindingsArtifact(
+            $"PR_Findings_{round}_00_lead-reviewer.md", header.ToString(), Label, LeadTemplate,
+            read.State, read.OwnText);
     }
+
+    /// <summary>What the lead's rows are labelled with where a specialist would carry its roster template. The
+    /// lead is not a roster node, so it has none; naming that explicitly beats an empty column.</summary>
+    private const string LeadTemplate = "(primary review)";
 
     private async Task<IReadOnlyList<FindingsArtifact>> BuildFindingsAsync(
         ReviewRun run,
@@ -352,13 +454,15 @@ internal sealed class ReviewNotesArtifactBuilder
 
             var (body, read) = await RenderFindingsAsync(run, round, context, node, label, cancellationToken)
                 .ConfigureAwait(false);
-            artifacts.Add(new FindingsArtifact(fileName, body, label, read));
+            artifacts.Add(new FindingsArtifact(
+                fileName, body, label, UntrustedTranscriptText.Inline(node.Template, maxChars: 60),
+                read.State, read.OwnText));
         }
 
         return artifacts;
     }
 
-    private async Task<(string Body, bool TranscriptRead)> RenderFindingsAsync(
+    private async Task<(string Body, RetainedTranscript Read)> RenderFindingsAsync(
         ReviewRun run,
         string round,
         ReviewNotesArtifactContext context,
@@ -393,6 +497,7 @@ internal sealed class ReviewNotesArtifactBuilder
             run,
             context,
             label,
+            UntrustedTranscriptText.Inline(node.Template, maxChars: 60),
             (source, threadId, ct) => source.GetTranscriptAsync(threadId, node.AgentId, ct),
             cancellationToken).ConfigureAwait(false);
 
@@ -400,8 +505,7 @@ internal sealed class ReviewNotesArtifactBuilder
     }
 
     /// <summary>
-    /// Appends one agent's retained transcript under the caller's header, returning whether the host
-    /// actually answered.
+    /// Appends one agent's retained transcript under the caller's header, returning how the read ended.
     /// <para>
     /// The <paramref name="fetch"/> delegate is what lets the lead and the specialists share this body
     /// despite living on different host routes: the specialists are addressed by agent id against the
@@ -410,11 +514,12 @@ internal sealed class ReviewNotesArtifactBuilder
     /// must be identical for both, which is exactly why it lives here once.
     /// </para>
     /// </summary>
-    private async Task<bool> AppendTranscriptAsync(
+    private async Task<RetainedTranscript> AppendTranscriptAsync(
         StringBuilder header,
         ReviewRun run,
         ReviewNotesArtifactContext context,
         string label,
+        string template,
         Func<
             IReviewAgentTranscriptSource,
             string,
@@ -431,7 +536,7 @@ internal sealed class ReviewNotesArtifactBuilder
                         + "above could be recorded._"
                     : "_This review has no hosted conversation id, so its agents' transcripts could not be "
                         + "addressed._");
-            return false;
+            return RetainedTranscript.Unread(TranscriptState.NotAddressable);
         }
 
         IReadOnlyList<ReviewAgentTranscriptEntry> entries;
@@ -451,12 +556,63 @@ internal sealed class ReviewNotesArtifactBuilder
                 .AppendLine("_The daemon could not read this transcript from the review host:_")
                 .AppendLine()
                 .AppendLine(UntrustedTranscriptText.Fence(ex.Message, maxChars: 2_000));
-            return false;
+            return RetainedTranscript.Unread(TranscriptState.ReadFailed);
         }
 
-        AppendRetainedEntries(header, entries);
-        return true;
+        var retention = AppendRetainedEntries(header, entries);
+
+        // A successful read that yielded nothing of the agent's own. This is the failure this class exists to
+        // end, surviving INSIDE it: the read succeeds, TranscriptRead is true, the file renders, and a
+        // reviewer with no recorded output is indistinguishable from a reviewer that had nothing to report.
+        // Measured on the live store it is rare and real — two specialist transcripts, read fine, one with 78
+        // of 79 messages filtered as tool traffic and one with 256 of 259, both producing a file with no
+        // reviewer content and no warning anywhere.
+        //
+        // Warning, not Information, and it does NOT fire routinely: it requires a transcript that answered and
+        // still carried none of the agent's own turns. If it ever does become routine, that is a defect in the
+        // filter or in the host's retention, which is exactly what an operator would need to be told.
+        if (retention.State == TranscriptState.FilteredEmpty)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: {Label} (template {Template}) transcript was READ SUCCESSFULLY but yielded no "
+                    + "agent-authored content — {Omitted} of {Total} message(s) were filtered as tool traffic, "
+                    + "token accounting, or empty payloads, and nothing remaining is this agent's own turn. "
+                    + "Its findings file exists and says so; treat it as a gap, not as a clean review.",
+                run.Id, label, template, retention.OmittedMessages, retention.TotalMessages);
+        }
+
+        return retention;
     }
+
+    /// <summary>
+    /// What one call to <see cref="AppendRetainedEntries"/> found, and how the read ended.
+    /// <para>
+    /// <see cref="OwnText"/> is every own turn the filter kept, joined — captured BEFORE the size budget
+    /// decides what fits, so a conclusion trimmed out of the rendered file is still available to the
+    /// reconciliation artifact. It is sanitized but otherwise untouched, and it is untrusted.
+    /// </para>
+    /// </summary>
+    private sealed record RetainedTranscript(
+        TranscriptState State,
+        int TotalMessages,
+        int OmittedMessages,
+        string OwnText)
+    {
+        /// <summary>A read that never produced entries at all — nothing addressed, or the host refused.</summary>
+        public static RetainedTranscript Unread(TranscriptState state) => new(state, 0, 0, string.Empty);
+    }
+
+    /// <summary>The transcript role whose entries are the agent's own output rather than what it was handed.</summary>
+    private const string OwnTurnRole = "assistant";
+
+    /// <summary>
+    /// The phrase that separates "read, and none of it was this agent's own" from a read FAILURE and from a
+    /// genuine "nothing to say". A constant because three states must have three renderings, and a marker
+    /// living only inline is one careless edit away from becoming two states again.
+    /// </summary>
+    internal const string ReadButEmptyMarker =
+        "[daemon: READ BUT EMPTY — this transcript was read successfully and carries none of this agent's "
+        + "own output]";
 
     /// <summary>
     /// Writes the entries worth keeping, then states plainly what it left out.
@@ -467,12 +623,13 @@ internal sealed class ReviewNotesArtifactBuilder
     /// most of it".
     /// </para>
     /// </summary>
-    private static void AppendRetainedEntries(StringBuilder header, IReadOnlyList<ReviewAgentTranscriptEntry> entries)
+    private static RetainedTranscript AppendRetainedEntries(
+        StringBuilder header, IReadOnlyList<ReviewAgentTranscriptEntry> entries)
     {
         if (entries.Count == 0)
         {
             header.AppendLine("_The review host returned no messages for this agent._");
-            return;
+            return RetainedTranscript.Unread(TranscriptState.NoMessages);
         }
 
         var retained = entries.Where(IsFindingsBearing).ToArray();
@@ -483,7 +640,9 @@ internal sealed class ReviewNotesArtifactBuilder
                 .Append("_All ").Append(entries.Count.ToString(CultureInfo.InvariantCulture))
                 .AppendLine(" of this agent's messages were tool traffic, token accounting, or empty")
                 .AppendLine("payloads — it produced no prose of its own._");
-            return;
+            AppendReadButEmpty(header, entries.Count, entries.Count);
+            return new RetainedTranscript(
+                TranscriptState.FilteredEmpty, entries.Count, entries.Count, string.Empty);
         }
 
         var budget = UntrustedTranscriptText.MaxArtifactChars;
@@ -526,7 +685,49 @@ internal sealed class ReviewNotesArtifactBuilder
                 .AppendLine(" message(s) omitted as tool traffic, token accounting, or empty payloads —")
                 .AppendLine("this file keeps what the reviewer concluded, not how it looked things up]_");
         }
+
+        // Retained entries but not one of them the agent's own: the file above holds only what this reviewer
+        // was HANDED. Without this line that reads as a reviewer with little to say, which is the precise
+        // confusion this class was built to end.
+        var ownTurns = retained.Where(IsOwnTurn).ToArray();
+        var state = ownTurns.Length == 0 ? TranscriptState.FilteredEmpty : TranscriptState.Read;
+        if (state == TranscriptState.FilteredEmpty)
+        {
+            AppendReadButEmpty(header, dropped, entries.Count);
+        }
+
+        return new RetainedTranscript(
+            state,
+            entries.Count,
+            dropped,
+            string.Join("\n\n", ownTurns.Select(e => UntrustedTranscriptText.Sanitize(e.Body))));
     }
+
+    /// <summary>
+    /// States, in the file itself, that the read succeeded and produced nothing of the agent's own. Written
+    /// for both shapes of that outcome — nothing survived the filter at all, and something survived but none
+    /// of it was an own turn — because a reader cannot tell them apart and does not need to: what matters is
+    /// that this is neither a read failure nor a quiet reviewer.
+    /// </summary>
+    private static void AppendReadButEmpty(StringBuilder header, int omitted, int total) =>
+        header
+            .AppendLine()
+            .Append("_").Append(ReadButEmptyMarker).AppendLine("_")
+            .AppendLine()
+            .Append("_").Append(omitted.ToString(CultureInfo.InvariantCulture))
+            .Append(" of ").Append(total.ToString(CultureInfo.InvariantCulture))
+            .AppendLine(" message(s) were filtered as tool traffic, token accounting or empty")
+            .AppendLine("payloads, and nothing left is this agent's own turn. The review host **did** answer, so")
+            .AppendLine("this is not a read failure; and the agent **did** produce messages, so this is not a")
+            .AppendLine("reviewer that had nothing to say. It is a reviewer whose own words are absent from the")
+            .AppendLine("record. Read it as a gap._");
+
+    /// <summary>
+    /// Whether this row is the agent's own output rather than something it was handed. Compared
+    /// case-insensitively because the role is a raw string off the host's persisted message, not an enum.
+    /// </summary>
+    private static bool IsOwnTurn(ReviewAgentTranscriptEntry entry) =>
+        string.Equals(entry.Role, OwnTurnRole, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Whether one transcript row carries something a later round or the knowledge extractor can use.
@@ -569,7 +770,9 @@ internal sealed class ReviewNotesArtifactBuilder
         string round,
         ReviewNotesArtifactContext context,
         FindingsArtifact lead,
-        IReadOnlyList<FindingsArtifact> findings)
+        IReadOnlyList<FindingsArtifact> findings,
+        string reconciliationFileName,
+        int reconciledCount)
     {
         var builder = new StringBuilder()
             .Append("# PR review context — round ").AppendLine(round)
@@ -646,16 +849,39 @@ internal sealed class ReviewNotesArtifactBuilder
             .AppendLine($"- `review.md` — the authoritative review body")
             .AppendLine($"- `PR_Context_{round}.md` — this file")
             .Append("- `").Append(lead.FileName).Append("` — ").Append(lead.Label)
-            .AppendLine(lead.TranscriptRead ? string.Empty : " (transcript unavailable — see the file)");
+            .AppendLine(ManifestNote(lead));
         foreach (var artifact in findings)
         {
             builder
                 .Append("- `").Append(artifact.FileName).Append("` — ").Append(artifact.Label)
-                .AppendLine(artifact.TranscriptRead ? string.Empty : " (transcript unavailable — see the file)");
+                .AppendLine(ManifestNote(artifact));
         }
+
+        builder
+            .Append("- `").Append(reconciliationFileName)
+            .Append("` — what the shipped review did with each specialist finding (")
+            .Append(reconciledCount.ToString(CultureInfo.InvariantCulture))
+            .AppendLine(" mapped). Deliberately")
+            .AppendLine("  outside the `PR_Context_`/`PR_Findings_` prefix the next round reads back: it is an audit")
+            .AppendLine("  of this round, not input to the next one, and feeding it forward would put every finding")
+            .AppendLine("  into the following review's context a second time.");
 
         return builder.ToString();
     }
+
+    /// <summary>
+    /// The manifest suffix for one findings file. Three transcript states, three renderings — a read that
+    /// FAILED and a read that succeeded and carried nothing are different problems and must not share a line.
+    /// The unavailable wording is unchanged from the read-failure posture that already works.
+    /// </summary>
+    private static string ManifestNote(FindingsArtifact artifact) => artifact.State switch
+    {
+        TranscriptState.NotAddressable or TranscriptState.ReadFailed =>
+            " (transcript unavailable — see the file)",
+        TranscriptState.FilteredEmpty =>
+            " (transcript read, but none of this agent's own output survived — see the file)",
+        _ => string.Empty,
+    };
 
     private static string PathCell(string? value) =>
         string.IsNullOrWhiteSpace(value) ? "(none)" : $"`{UntrustedTranscriptText.Inline(value, maxChars: 200)}`";
