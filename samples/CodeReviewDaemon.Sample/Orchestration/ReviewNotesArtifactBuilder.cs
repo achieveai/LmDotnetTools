@@ -8,6 +8,22 @@ using CodeReviewDaemon.Sample.Workspace.Git;
 namespace CodeReviewDaemon.Sample.Orchestration;
 
 /// <summary>
+/// Everything one round's notes build produced: the files to commit, and the same round's findings as data.
+/// <para>
+/// Two returns rather than one because they have different destinations and different failure modes. The
+/// files go to the notes branch through the git commit path; the payload goes to the review store as an
+/// artifact row. Returning both keeps the builder pure — it does no I/O of its own and needs no store handle
+/// — while guaranteeing the markdown and the record are built from one list on one call, which is the only
+/// way the two can be relied on to agree.
+/// </para>
+/// </summary>
+/// <param name="Files">The notes artifacts to commit, in the order they should appear.</param>
+/// <param name="Findings">The round's specialist findings, structured for counting.</param>
+internal sealed record ReviewNotesArtifacts(
+    IReadOnlyList<ReviewArtifactFile> Files,
+    ReviewFindingsArtifactPayload Findings);
+
+/// <summary>
 /// The one sanctioned way transcript text — anything a review agent or its tools produced — is allowed to
 /// reach a file in the notes store.
 /// <para>
@@ -254,7 +270,7 @@ internal sealed class ReviewNotesArtifactBuilder
     /// different facts, and only one of them is a loss.
     /// </para>
     /// </summary>
-    public async Task<IReadOnlyList<ReviewArtifactFile>> BuildAsync(
+    public async Task<ReviewNotesArtifacts> BuildAsync(
         ReviewRun run,
         RepoIdentity repo,
         string notesRelPath,
@@ -320,7 +336,36 @@ internal sealed class ReviewNotesArtifactBuilder
             reconciled.Count(r => r.Outcome == ReviewFindingOutcome.Dropped),
             comparable);
 
-        return files;
+        // The same reconciled list, serialised a second way. The markdown above is what an author reads; this
+        // is what a query counts. Both come off the one `reconciled` variable, so the artifact cannot report a
+        // finding the table omits or vice versa.
+        var payload = ReviewFindingsArtifactPayload.Build(
+            context.ReviewRound, sources, reconciled, comparable, run.PromptTemplateHash);
+
+        // A row that was extracted and then failed to reach the record is the one failure this whole artifact
+        // cannot tolerate, because it makes the count silently low and a low count reads exactly like a quiet
+        // review. Warned, not thrown: losing the structured copy must not cost the author their prose review.
+        // Suppressed when the comparison did not run at all — there are no rows to lose in that state, and the
+        // payload records the fact positively rather than as a shortfall.
+        if (comparable && payload.Shortfall != 0)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: round {Round} extracted {Parsed} specialist finding(s) but recorded only "
+                    + "{Recorded} in the findings artifact — {Shortfall} row(s) were lost between extraction "
+                    + "and the record. Per reviewer: {Sources}.",
+                run.Id,
+                round,
+                payload.ParsedCount,
+                payload.RecordedCount,
+                payload.Shortfall,
+                string.Join(
+                    ", ",
+                    payload.Sources
+                        .Where(s => s.Parsed != s.Recorded)
+                        .Select(s => $"{s.Label} {s.Parsed}->{s.Recorded}")));
+        }
+
+        return new ReviewNotesArtifacts(files, payload);
     }
 
     /// <summary>
