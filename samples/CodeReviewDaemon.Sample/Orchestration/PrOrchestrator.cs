@@ -242,11 +242,19 @@ internal sealed class PrOrchestrator
         // Slot PREPARATION is governed wherever it runs, not only under the stage it usually runs under. The
         // slot lease lives in memory only, so a run that persisted Stage=ContextReady in an earlier process (a
         // restart, or a resume after RetryPending) arrives at Reviewed/Judged/Posted with no lease and
-        // re-prepares a slot there. These three are the same stuck-store conditions ContextReady already
+        // re-prepares a slot there. These are the same stuck-store conditions ContextReady already
         // parks — a store that will not clone, a tree that will not clean, a path that cannot be established
         // as contained — and none of them is made better by waiting one more poll interval. Tagged with a
         // later stage they used to escape the budget entirely and busy-loop forever (issue #218 item 7).
-        if (ex is SlotNeedsRecloneException or SlotCorruptException or SlotAddressUnusableException)
+        // A cleanliness probe that will not answer joins them, and is the mildest of the four: nothing
+        // re-clones or retires the slot for it, so it RETRIES by construction — which is exactly why it needs
+        // the budget. A probe that loses its output on every attempt would otherwise busy-loop a stage that
+        // can never make progress, and the transient case it exists for is retried and gone long before the
+        // budget is reached.
+        if (ex is SlotNeedsRecloneException
+            or SlotCorruptException
+            or SlotAddressUnusableException
+            or SlotProbeUnansweredException)
         {
             return true;
         }

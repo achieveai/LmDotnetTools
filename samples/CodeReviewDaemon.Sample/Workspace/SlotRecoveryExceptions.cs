@@ -15,6 +15,27 @@ internal sealed class SlotNeedsRecloneException(string message) : Exception(mess
 internal sealed class SlotCorruptException(string message) : Exception(message);
 
 /// <summary>
+/// The leased slot's cleanliness probe did not ANSWER (see <see cref="HygieneVerdict.ProbeUnanswered"/>), so
+/// prepare stopped rather than review a store nothing established the state of.
+/// <para>
+/// It is deliberately NOT one of the two above, and the difference is the point of having it. Those two mean
+/// "the store's content is unusable" and are answered by a re-clone; here nothing has been established about
+/// the content at all, so a re-clone would spend the daemon's most expensive recovery on a question that was
+/// never put. It is equally not <see cref="SlotAddressUnusableException"/>: that condition belongs to the
+/// ADDRESS and retires the slot, whereas a lost probe answer belongs to the ATTEMPT — the same slot, probed
+/// again on the next lease, is expected to answer. So this type is caught by nothing on the way out: the slot
+/// is RELEASED back to the pool unchanged, the stage fails, and the run retries.
+/// </para>
+/// <para>
+/// It is charged against the run's retry budget by <c>PrOrchestrator.IsGovernedFailure</c> alongside the other
+/// slot-preparation failures, for the reason those are: a probe that loses its output on every attempt would
+/// otherwise busy-loop a stage that never makes progress. Governed means bounded, not abandoned — a transient
+/// lost answer is retried and succeeds long before the budget is reached.
+/// </para>
+/// </summary>
+internal sealed class SlotProbeUnansweredException(string message) : Exception(message);
+
+/// <summary>
 /// A host path the daemon was about to create in, walk, or wipe could not be established as CONTAINED: it is a
 /// symlink or junction, or its attributes could not be read at all (see <see cref="HostPathGuard"/>).
 /// <para>

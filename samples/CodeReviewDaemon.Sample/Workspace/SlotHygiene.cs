@@ -23,6 +23,22 @@ internal enum HygieneVerdict
     /// so the retirement follows from the decision itself.
     /// </summary>
     HostPathUnreadable,
+
+    /// <summary>
+    /// The cleanliness probe did not ANSWER — it failed to run, or it exited 0 with output that did not
+    /// survive (see <see cref="WorktreeStatusProbe.Reported"/>). Neither of the two answers is available, so
+    /// this is neither: the store is not known to be clean, and it is not known to be dirty either.
+    /// <para>
+    /// It is deliberately not <see cref="NeedsReclone"/>. A re-clone is minutes of work, and nothing about an
+    /// unanswered probe says the store's CONTENT is the problem — condemning on it spends the daemon's most
+    /// expensive recovery on a question that was never put. It is equally deliberately not
+    /// <see cref="Clean"/>: that is the fail-open this verdict exists to close, where an empty stdout was read
+    /// as a clean tree and the store handed to the next review on the strength of a check that never ran. The
+    /// slot is RETURNED unchanged and the next lease asks again; a condition that reproduces is bounded by
+    /// the run's retry budget rather than by a re-clone loop.
+    /// </para>
+    /// </summary>
+    ProbeUnanswered,
 }
 
 /// <summary>
@@ -137,7 +153,7 @@ internal static class SlotHygiene
                     + "{CleanErr}; restore: {RestoreErr}; foreach: {ForeachErr}; status: {Status}); force-resetting "
                     + "once more before condemning it.",
                 storePath, pass.Reset.Stderr, pass.Clean.Stderr, pass.Restore.Stderr, pass.Foreach.Stderr,
-                status.Stdout);
+                status.Result.Stdout);
             pass = await ForceResetAsync(git, storePath, ct, fileSystem).ConfigureAwait(false);
             status = await SuperprojectStatusAsync(git, storePath, ct).ConfigureAwait(false);
         }
@@ -242,12 +258,43 @@ internal static class SlotHygiene
         // whose only sin is holding the previous PR's head — or, worse, condemns them over content no clone can
         // reproduce cleanly. Leftover SUPERPROJECT state is the contamination that would actually cross into the
         // next review, and it is the only thing here a fresh clone is guaranteed to fix.
-        if (!status.Succeeded || !string.IsNullOrWhiteSpace(status.Stdout))
+        //
+        // What the probe SAYS is read through three cases rather than two, because "the tree is dirty" and
+        // "nobody told me anything" used to be the same empty-string test and are not the same fact:
+        //  - no answer at all → HygieneVerdict.ProbeUnanswered. The store is left exactly as it is and the
+        //    next lease asks again. Nothing is claimed about it in either direction, and in particular NO
+        //    clean verdict is returned on the strength of a probe whose output never arrived.
+        //  - entries whose bytes on disk already ARE the blob the index records → not leftovers. That is the
+        //    repository's own eol/filter attributes disagreeing with what was committed, which no reset,
+        //    checkout or clean can settle, so condemning the slot for it re-clones into the identical
+        //    condition on every lease forever (measured on WeveNova; see WorktreeStatusProbe.ClassifyAsync).
+        //  - anything else still listed → the contamination this gate exists for, and a re-clone fixes it.
+        if (status.Classification is not { } classified)
+        {
+            logger?.LogWarning(
+                "Slot hygiene at {StorePath}: the superproject cleanliness probe did not answer (exit {Exit}, "
+                    + "stdout {Stdout}, stderr {Stderr}). `status --porcelain -b` always emits a branch header, "
+                    + "so this is indistinguishable from a probe that never ran and is NOT being read as a clean "
+                    + "tree. Leaving the store untouched for the next lease to re-probe.",
+                storePath, status.Result.ExitCode, status.Result.Stdout, status.Result.Stderr);
+            return HygieneVerdict.ProbeUnanswered;
+        }
+
+        if (classified.Normalized.Count > 0)
+        {
+            logger?.LogInformation(
+                "Slot hygiene at {StorePath}: {Count} path(s) report as modified while holding bytes identical "
+                    + "to the blob the index records for them, so they are the committed content and not "
+                    + "leftovers from a prior lease: {Paths}",
+                storePath, classified.Normalized.Count, string.Join(", ", classified.Normalized));
+        }
+
+        if (classified.Leftovers.Count > 0)
         {
             logger?.LogWarning(
                 "Slot hygiene at {StorePath}: re-cloning — the superproject is still dirty after a force reset "
                     + "({Status}{Stderr}).",
-                storePath, status.Stdout, status.Stderr);
+                storePath, string.Join(", ", classified.Leftovers), status.Result.Stderr);
             return HygieneVerdict.NeedsReclone;
         }
 
@@ -274,12 +321,44 @@ internal static class SlotHygiene
             : HygieneVerdict.NeedsReclone;
 
     /// <summary>
-    /// Reads the SUPERPROJECT's working-tree status, ignoring submodule state (see the gate in
-    /// <see cref="EnsureCleanAsync"/> for why submodules are excluded).
+    /// The raw result of one superproject status probe together with what it MEANS, or a null
+    /// <see cref="SuperprojectStatus.Classification"/> when it means nothing because the probe did not answer.
+    /// The raw result is carried alongside so the caller can report the exit code and stderr of a probe that
+    /// has no classification to report.
     /// </summary>
-    private static Task<SandboxCommandResult> SuperprojectStatusAsync(
-        GitRunner git, string storePath, CancellationToken ct) =>
-        git.RunAsync(["-C", storePath, "status", "--porcelain", "--ignore-submodules=all"], storePath, ct);
+    private readonly record struct SuperprojectStatus(
+        SandboxCommandResult Result,
+        WorktreeStatusProbe.StatusClassification? Classification);
+
+    /// <summary>
+    /// Reads the SUPERPROJECT's working-tree status, ignoring submodule state (see the gate in
+    /// <see cref="EnsureCleanAsync"/> for why submodules are excluded), and classifies what came back.
+    /// <para>
+    /// <c>-b</c> is what makes a SUCCESSFUL probe say so. Without it a clean tree answers with the empty
+    /// string, which is byte-for-byte what a probe whose output was lost produces — and this daemon has
+    /// measured a git command exiting 0 with its output silently gone. Under that failure the old gate saw no
+    /// leftovers and concluded the store was clean. With <c>-b</c>, "clean" carries evidence and "nothing came
+    /// back" is a state this code can recognise instead of mistaking for success. <c>-z</c> is what makes the
+    /// paths usable: porcelain v1 QUOTES any path holding a space, quote or non-ASCII byte, and a quoted path
+    /// would never match the index entry the blob-identity check looks up.
+    /// </para>
+    /// </summary>
+    private static async Task<SuperprojectStatus> SuperprojectStatusAsync(
+        GitRunner git, string storePath, CancellationToken ct)
+    {
+        var result = await git.RunAsync(
+                ["-C", storePath, "status", "--porcelain", "-b", "-z", "--ignore-submodules=all"], storePath, ct)
+            .ConfigureAwait(false);
+        if (!result.Succeeded || !WorktreeStatusProbe.Reported(result.Stdout))
+        {
+            return new SuperprojectStatus(result, Classification: null);
+        }
+
+        var classification = await WorktreeStatusProbe
+            .ClassifyAsync(git, storePath, WorktreeStatusProbe.Parse(result.Stdout), ct)
+            .ConfigureAwait(false);
+        return new SuperprojectStatus(result, classification);
+    }
 
     /// <summary>
     /// Re-runs the submodule clean over a walk that no broken submodule can cut short, then reports what untracked
@@ -484,12 +563,19 @@ internal static class SlotHygiene
     /// deterministic non-corrupt failure — a missing local object, a deinit'd submodule, a committed embedded
     /// gitlink — is excluded on purpose: retrying it only burns a second pass on every lease and never changes
     /// the outcome.
+    /// <para>
+    /// A probe that did not ANSWER retries: this is the fail-closed side, where the cost of being wrong is one
+    /// extra reset rather than a store handed on unverified, and the second probe may well answer. A tree
+    /// reporting ONLY paths whose bytes are already the recorded blob does NOT retry, and that exclusion is
+    /// the same rule as the one two paragraphs up: an eol/filter disagreement is precisely a deterministic
+    /// condition no repeated reset can settle, so retrying it burns a second pass on every single lease.
+    /// </para>
     /// </summary>
-    private static bool ShouldForceResetAgain(ResetPass pass, SandboxCommandResult status) =>
+    private static bool ShouldForceResetAgain(ResetPass pass, SuperprojectStatus status) =>
         !pass.Reset.Succeeded
         || !pass.Clean.Succeeded
-        || !status.Succeeded
-        || !string.IsNullOrWhiteSpace(status.Stdout)
+        || status.Classification is not { } classified
+        || classified.Leftovers.Count > 0
         || (!pass.Restore.Succeeded
             && GitFailureClassifier.Classify(pass.Restore.Stderr) == GitFailureKind.Corrupt)
         || (!pass.Foreach.Succeeded
