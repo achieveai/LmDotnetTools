@@ -75,3 +75,17 @@ together with their slugs.
 * [0011 — Mirror each conversation's transcript into its own workspace, readable by anyone who can reach the workspace](0011-workspace-transcript-files.md)
 * [0012 — Inventory wall-clock-discriminating tests; convert the narrow-gap cases, justify the rest](0012-wall-clock-discriminating-test-inventory.md)
 * [0013 — A background transcript flush has no caller, so it is resolved without a provenance comparison](0013-background-transcript-flush-has-no-caller.md) (supersedes gap 3 of 0011)
+* [0014 — Accepted residuals and deferred work from PR #274's host workspace wipe](0014-host-directory-wipe-accepted-residuals.md)
+* [0015 — The model classifies, the daemon counts](0015-model-classifies-daemon-counts.md)
+* [0016 — Developer learnings are an append-only per-PR ledger with regenerated views](0016-developer-learnings-append-only-ledger.md)
+* [0017 — Infer resolution from absence over exposed PRs, and guard it against cohort drift](0017-resolution-from-absence-over-exposed-prs.md)
+* [0018 — Route improvement feedback to the producer, never to the judge](0018-feedback-to-producer-not-judge.md)
+
+Records 0015–0018 are the first ADRs covering `samples/CodeReviewDaemon.Sample`'s own architecture.
+Earlier records name that component only in passing: where it consumes a host or gateway decision
+(`0001-route-gateway-access-through-sandbox-sdk`, `0002-lifecycle-event-wire-contract`,
+`0005-service-to-service-lifecycle-delivery`), or as one row of a test inventory
+(`0012-wall-clock-discriminating-test-inventory`). They were authored on
+`daemon/review-reliability-and-pr-coverage` as 0012–0015 and renumbered
+on the way in, because `main` had allocated 0012–0014 meanwhile; each carries a status note saying so
+and saying how much of it `main` implements today.
