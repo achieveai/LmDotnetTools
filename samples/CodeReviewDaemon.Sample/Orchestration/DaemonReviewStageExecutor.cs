@@ -4956,9 +4956,47 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// head, plus the changed-path listing. That listing is one line per file, so it survives the payload cap on
     /// a PR one or two orders of magnitude larger than the patch does.
     /// </para>
+    /// <para>
+    /// The same reasoning is why <see cref="ContextArtifactPayload.UncomparableReason"/> is read here and read
+    /// FIRST: "there is no range" is a fact about the range, it is established at ContextReady and nowhere
+    /// else, and a reviewer that is not told it will not conclude it — it will pick a range of its own.
+    /// </para>
     /// </summary>
     private string BuildReviewInput(ReviewRun run, RepoIdentity repo, ContextArtifactPayload context)
     {
+        // Checked BEFORE the degraded arm below, because an uncomparable pair arrives here looking exactly
+        // like an older artifact. ContextReady writes ChangedPaths as "" on that path deliberately — the
+        // listing is the same symmetric difference and fails the same way — so the IsNullOrWhiteSpace branch
+        // would log "no changed-path listing ... falling back to the inlined diff (0 chars)": a false cause,
+        // and a promised fallback onto a diff that does not exist. The reviewer would then get a brief with
+        // no patch, no file list, and no hint that the range is undiffable.
+        //
+        // That is not a review that stops; it is a review that invents a range. Run 32 did exactly what an
+        // agent with tools and no diff does — it diffed a local commit against its parent and reviewed THAT,
+        // opening "Review basis: Local commit b531b302…, compared with parent 0d11c184…", a fluent review of
+        // a range nobody asked for, delivered with the same confidence as a real one. Whether the commits are
+        // comparable at all is the one thing the reviewer cannot establish for itself, so it is exactly what
+        // the brief has to carry.
+        if (!string.IsNullOrWhiteSpace(context.UncomparableReason))
+        {
+            _logger.LogWarning(
+                "Run {RunId}: the context artifact records {BaseSha}...{HeadSha} as uncomparable, so the "
+                    + "review brief states that instead of a diff. There is no range to read and nothing to "
+                    + "fall back to — this is the recorded condition, not a capture that came up short.",
+                run.Id,
+                run.BaseSha,
+                run.HeadSha);
+
+            return $"Review pull request {repo.DisplayName}#{run.PrId}.\n\n"
+                + $"  base:     {run.BaseSha}\n"
+                + $"  head:     {run.HeadSha}\n\n"
+                + $"THESE COMMITS CANNOT BE COMPARED. {context.UncomparableReason}\n\n"
+                + "There is no diff to review and none can be produced: no fetch depth and no retry can "
+                + "create an ancestor that does not exist. Do NOT substitute another range — diffing the head "
+                + "against its parent, or against the default branch, reviews changes this pull request did "
+                + "not make and reports them as this author's. Report the condition above and stop.";
+        }
+
         // Trimmed of line terminators ONLY: these are records the reviewer is told to use as exact paths, and a
         // blanket Trim() would rewrite the first and last of them into paths git never reported.
         var changed = context.ChangedPaths?.Trim('\n', '\r');

@@ -12,6 +12,7 @@ using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -208,6 +209,50 @@ public sealed class DaemonReviewStageExecutorPooledTests
     /// inheriting the wording that blames the branch.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// The record is not the deliverable — the brief is. Recording `UncomparableReason` and then not reading
+    /// it is worse than not recording it: ContextReady writes `ChangedPaths` as `""` on this path, which is
+    /// indistinguishable from the older-artifact shape `BuildReviewInput`'s degraded arm exists for, so the
+    /// run would log "no changed-path listing … falling back to the inlined diff (0 chars)" — naming a cause
+    /// that is false and a fallback onto a diff that does not exist — and then fan a full review out against
+    /// nothing, with no line anywhere telling the reviewer the range is undiffable.
+    /// <para>
+    /// Both halves are asserted on the SAME run, because either alone passes on the broken code: the brief
+    /// could carry the reason while the false warning still fires, and the warning could be silenced while
+    /// the brief stays empty.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_tells_the_reviewer_the_commits_are_uncomparable_instead_of_a_false_diff_fallback()
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.Preparer.MergeBase = MergeBaseOutcome.UnrelatedHistories;
+        _ = fixture.HostRunner.OnArgvContainsFirst(
+            "diff",
+            new SandboxCommandResult(
+                128, string.Empty, "fatal: refusing to merge unrelated histories\nhint: see git-merge(1)"));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var brief = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        brief.Should().Contain(
+            "share no common ancestor",
+            "the reason ContextReady established is the one thing about this range the reviewer cannot work "
+                + "out for itself");
+        brief.Should().Contain(
+            "Do NOT substitute another range",
+            "an agent with tools and no diff picks a range of its own — that is the failure this brief exists "
+                + "to pre-empt, not a hypothetical one");
+
+        fixture.Logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().NotContain(
+            m => m.Contains("falling back to the inlined diff", StringComparison.Ordinal),
+            "that line names a cause that is false here and promises a fallback onto a diff that does not "
+                + "exist; the uncomparable branch has to be taken BEFORE the degraded arm, not alongside it");
+    }
+
     [Fact]
     public async Task ContextReady_never_tells_an_author_to_rebase_when_our_own_probe_was_the_thing_that_failed()
     {
@@ -2464,12 +2509,22 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 BootFileSystem,
                 _options,
                 [Publisher],
-                NullLoggerFactory.Instance,
+                Logs,
                 provisioner: Provisioner,
                 slotWorkspace: _slotWorkspace,
                 preparer: _s2sPreparer);
 
         public ReviewStore Store { get; }
+
+        /// <summary>
+        /// Everything the executor logged, shared by every executor this fixture builds (including the one a
+        /// restart test builds second). Present because one guarantee here is about a line that must NOT be
+        /// written: the uncomparable brief exists precisely so the degraded arm's "falling back to the inlined
+        /// diff" warning — a false cause, promising a fallback onto a diff that does not exist — is never
+        /// reached, and an absence cannot be asserted through a null sink.
+        /// </summary>
+        public CapturingLoggerFactory Logs { get; } = new();
+
         public FakeReviewAgentLoopFactory Factory { get; } = new();
         public FakeReviewCommentPublisher Publisher { get; } = new("github");
         public RecordingProvisioner Provisioner { get; } = new();
