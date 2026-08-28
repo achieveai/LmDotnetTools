@@ -231,11 +231,15 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
     // ---- Issue #537: $top + $skip paging, bounded by the operator's MaxPagesPerPoll ----
 
-    private AdoPrProvider Provider(FakeHttpMessageHandler handler, int maxPagesPerPoll, int maxPrsPerPage = 200) =>
+    private AdoPrProvider Provider(
+        FakeHttpMessageHandler handler,
+        int maxPagesPerPoll,
+        int maxPrsPerPage = 200,
+        ILogger<AdoPrProvider>? logger = null) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            LoggerFactory.CreateLogger<AdoPrProvider>(),
+            logger ?? LoggerFactory.CreateLogger<AdoPrProvider>(),
             maxPagesPerPoll,
             maxPrsPerPage);
 
@@ -349,6 +353,48 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
         handler.Requests.Select(r => System.Web.HttpUtility.ParseQueryString(r.Uri.Query)["$skip"])
             .Should().Equal([null, "3", "6"], "the first page carries no $skip; each later one skips what was read");
+    }
+
+    /// <summary>
+    /// A truncated poll must SAY it was truncated. This matters more on ADO than anywhere else: the endpoint
+    /// sends no continuation token, so a full page and the end of the repo are the same response, and the
+    /// only thing distinguishing "you have seen everything" from "you have seen 101 of 711" is this line.
+    /// Asserted on the RENDERED text including the counts, because a warning naming the wrong numbers sends
+    /// the operator to raise a bound that was not the one that bound.
+    /// </summary>
+    [Fact]
+    public async Task A_truncated_poll_warns_with_the_counts_that_bound_it()
+    {
+        var logger = new CapturingLogger<AdoPrProvider>();
+        var handler = PagedRepo(totalPrs: 30);
+
+        var page = await Provider(handler, maxPagesPerPoll: 10, maxPrsPerPage: 2, logger: logger)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Should().HaveCount(20, "10 pages of 2, of the repo's 30 PRs");
+        logger.CountAtLevel(
+                LogLevel.Warning,
+                "stopped after 10 page(s) of 2 with more results still available; 20 PR(s)")
+            .Should().Be(1, "the operator is told the poll was incomplete, and with the real counts");
+    }
+
+    /// <summary>
+    /// The other half, without which the assertion above is satisfied by a guard that always fires. It also
+    /// pins the termination rule itself: the poll is complete because the last page came back SHORTER than
+    /// <c>$top</c> — the only end-of-list evidence this endpoint offers.
+    /// </summary>
+    [Fact]
+    public async Task A_complete_poll_does_not_warn()
+    {
+        var logger = new CapturingLogger<AdoPrProvider>();
+        var handler = PagedRepo(totalPrs: 7);
+
+        var page = await Provider(handler, maxPagesPerPoll: 10, maxPrsPerPage: 3, logger: logger)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Should().HaveCount(7, "the whole repo was enumerated");
+        logger.CountAtLevel(LogLevel.Warning, "stopped after")
+            .Should().Be(0, "a page shorter than $top proved the end of the list; nothing was left unseen");
     }
 
     private static HttpResponseMessage JsonResponse(string json, params (string Name, string Value)[] headers)

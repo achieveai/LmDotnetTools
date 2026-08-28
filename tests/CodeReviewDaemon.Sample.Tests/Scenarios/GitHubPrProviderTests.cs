@@ -302,11 +302,15 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
 
     // ---- Issue #537: MaxPagesPerPoll is the bound, and it must be able to exceed the old hardcoded 10 ----
 
-    private GitHubPrProvider Provider(FakeHttpMessageHandler handler, int maxPagesPerPoll, int maxPrsPerPage = 100) =>
+    private GitHubPrProvider Provider(
+        FakeHttpMessageHandler handler,
+        int maxPagesPerPoll,
+        int maxPrsPerPage = 100,
+        ILogger<GitHubPrProvider>? logger = null) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
-            LoggerFactory.CreateLogger<GitHubPrProvider>(),
+            logger ?? LoggerFactory.CreateLogger<GitHubPrProvider>(),
             maxPagesPerPoll,
             maxPrsPerPage);
 
@@ -408,5 +412,46 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
             .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
         handler.Requests.Should().ContainSingle().Which.Uri.Query.Should().Contain(expected);
+    }
+
+    /// <summary>
+    /// A truncated poll must SAY it was truncated. This is the operator's only signal that the PR list they
+    /// are looking at is partial — a truncated page and a complete one are the same shape on the wire, which
+    /// is how a 101-of-711 cap survived unnoticed in production — so the warning is load-bearing, not
+    /// decoration. It is asserted on the RENDERED text including the numbers, because a warning that fires
+    /// with the wrong counts tells the operator to raise a bound that was not the one that bound.
+    /// </summary>
+    [Fact]
+    public async Task A_truncated_poll_warns_with_the_counts_that_bound_it()
+    {
+        var logger = new CapturingLogger<GitHubPrProvider>();
+        var handler = PagedRepo(totalPages: 30);
+
+        var page = await Provider(handler, maxPagesPerPoll: 10, logger: logger)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Should().HaveCount(10, "10 of the repo's 30 pages were read");
+        logger.CountAtLevel(
+                LogLevel.Warning,
+                "stopped after 10 page(s) of 100 with more results still available; 10 PR(s)")
+            .Should().Be(1, "the operator is told the poll was incomplete, and with the real counts");
+    }
+
+    /// <summary>
+    /// The other half, without which the assertion above is satisfied by a guard that always fires: a poll
+    /// that reached the end of the repo must warn about NOTHING. A warning on every poll is a warning on no
+    /// poll.
+    /// </summary>
+    [Fact]
+    public async Task A_complete_poll_does_not_warn()
+    {
+        var logger = new CapturingLogger<GitHubPrProvider>();
+        var handler = PagedRepo(totalPages: 3);
+
+        _ = await Provider(handler, maxPagesPerPoll: 10, logger: logger)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        logger.CountAtLevel(LogLevel.Warning, "stopped after")
+            .Should().Be(0, "the repo's last page carried no rel=\"next\", so nothing was left unseen");
     }
 }

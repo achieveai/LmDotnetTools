@@ -6,9 +6,10 @@ using Microsoft.Extensions.DependencyInjection;
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
 /// <summary>
-/// Issue #537 — <c>CodeReviewDaemon:MaxPagesPerPoll</c> was declared, documented and set by operators while
-/// both PR providers ignored it in favour of a private <c>const int MaxPages = 10</c>. Measured consequence:
-/// ~101 of 711 active PRs enumerated per poll.
+/// Issue #537 — <c>CodeReviewDaemon:MaxPagesPerPoll</c> was declared and documented with <b>zero readers</b>:
+/// both PR providers ignored it in favour of a private <c>const int MaxPages = 10</c>, so an operator who set
+/// it would have changed nothing. (No shipped profile does set it — the knob was documented, not used.)
+/// Measured consequence: ~101 of 711 active PRs enumerated per poll.
 /// <para>
 /// These tests pin the half a provider-level test cannot: that the operator's configured value actually
 /// reaches the provider instance the host registers. The provider tests prove the bound changes how many
