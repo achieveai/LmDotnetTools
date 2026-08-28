@@ -60,8 +60,12 @@ public sealed class DaemonOperationPolicyTests
     [Fact]
     public void GitHub_run_policy_scopes_the_reviewbot_push_to_the_configured_remote()
     {
+        // The grant is explicit because the parameter defaults to false since #536 — this case is about
+        // WHERE a write-capable policy may push, so it has to be handed the capability to have a question.
         var policy = DaemonOperationPolicy.BuildForRun(
-            GitHubRepo, reviewBotRepoUrl: "https://github.com/acme/reviewbot.git");
+            GitHubRepo,
+            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git",
+            allowWriteOperations: true);
 
         Receive(policy, "github.com", "/acme/reviewbot.git/git-receive-pack").IsAllowed.Should().BeTrue();
         Receive(policy, "github.com", "/acme/widgets.git/git-receive-pack")

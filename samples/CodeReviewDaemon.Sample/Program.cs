@@ -188,6 +188,15 @@ var dbConnectionString = new SqliteConnectionStringBuilder { DataSource = databa
 // already in place: each concurrent review leases its own pooled slot.
 builder.Services.AddSingleton(_ => new ReviewStore(dbConnectionString));
 
+// The refusal ledger (#536). Every capability gate that DENIES something writes here, because the absence
+// of a Posted row in review_outbox was never evidence that nothing was posted: a review sub-agent posting
+// straight to the provider REST API over the sandbox egress proxy does not touch that table at all. A
+// refusal that leaves no trace cannot be told apart from an attempt nobody made, and that is exactly the
+// distinction an operator is trying to draw when they ask whether collect-only held.
+builder.Services.AddSingleton<IPolicyRefusalRecorder>(sp => new StorePolicyRefusalRecorder(
+    sp.GetRequiredService<ReviewStore>(),
+    sp.GetRequiredService<ILogger<StorePolicyRefusalRecorder>>()));
+
 // Sandbox: all deterministic git/fs work runs in the gateway via the typed SandboxClient SDK, wrapped
 // by SandboxSessionAdapter. The client is lazy (built on first command), so registering it does no work
 // at boot and the daemon stays inert until a repo is allow-listed. The gateway base URL / session come

@@ -1,6 +1,7 @@
 using System.Globalization;
 using CodeReviewDaemon.Sample.Persistence.Migrations;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Data.Sqlite;
 
 namespace CodeReviewDaemon.Sample.Persistence;
@@ -1030,6 +1031,66 @@ internal sealed class ReviewStore : IDisposable
         command.CommandText = "DELETE FROM deep_link_conversation WHERE thread_id = $threadId;";
         _ = command.Parameters.AddWithValue("$threadId", threadId);
         _ = command.ExecuteNonQuery();
+    }
+
+    // ── policy refusals (the collect-only capability gates, #536) ────────────────────────────────
+
+    /// <summary>
+    /// Appends one refusal to the ledger. Append-only and never deduplicated: a gate that fired twice
+    /// refused twice, and collapsing repeats would erase the rate — which is the only thing that
+    /// distinguishes a one-off from a reviewer that retries a write every run.
+    /// </summary>
+    public void RecordPolicyRefusal(PolicyRefusalRecord refusal)
+    {
+        ArgumentNullException.ThrowIfNull(refusal);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO policy_refusal (at_utc, kind, provider, subject, method, target, reason)
+            VALUES ($atUtc, $kind, $provider, $subject, $method, $target, $reason);
+            """;
+        _ = command.Parameters.AddWithValue("$atUtc", Utc(refusal.AtUtc));
+        _ = command.Parameters.AddWithValue("$kind", refusal.Kind.ToString());
+        _ = command.Parameters.AddWithValue("$provider", refusal.Provider);
+        _ = command.Parameters.AddWithValue("$subject", refusal.Subject);
+        _ = command.Parameters.AddWithValue("$method", refusal.Method);
+        _ = command.Parameters.AddWithValue("$target", refusal.Target);
+        _ = command.Parameters.AddWithValue("$reason", refusal.Reason);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Every recorded refusal, oldest first. Ordered by <c>id</c> rather than <c>at_utc</c> so two refusals
+    /// written inside the same timestamp tick still read back in the order they happened.
+    /// </summary>
+    public IReadOnlyList<PolicyRefusalRecord> ListPolicyRefusals()
+    {
+        var results = new List<PolicyRefusalRecord>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT at_utc, kind, provider, subject, method, target, reason
+            FROM policy_refusal
+            ORDER BY id;
+            """;
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(new PolicyRefusalRecord(
+                DateTimeOffset.Parse(
+                    reader.GetString(reader.GetOrdinal("at_utc")),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind),
+                Enum.Parse<PolicyRefusalKind>(reader.GetString(reader.GetOrdinal("kind"))),
+                reader.GetString(reader.GetOrdinal("provider")),
+                reader.GetString(reader.GetOrdinal("subject")),
+                reader.GetString(reader.GetOrdinal("method")),
+                reader.GetString(reader.GetOrdinal("target")),
+                reader.GetString(reader.GetOrdinal("reason"))));
+        }
+
+        return results;
     }
 
     // ── mapping helpers ──────────────────────────────────────────────────────────────────────────
