@@ -242,19 +242,24 @@ public sealed class PrOrchestratorRetryTests : IDisposable
     }
 
     /// <summary>
-    /// All three slot-recovery conditions are the same class of stuck: re-cloning or re-addressing is what
-    /// they need, and nothing about waiting one more poll interval supplies it.
+    /// All four slot-recovery conditions are the same class of stuck: re-cloning, re-addressing or a probe
+    /// that will answer is what they need, and nothing about waiting one more poll interval supplies it. The
+    /// fourth is the mildest — nothing re-clones or retires the slot for an unanswered probe, so it retries by
+    /// construction, which is exactly why it must be BOUNDED: a probe that loses its output every time would
+    /// otherwise busy-loop a stage that can never make progress.
     /// </summary>
     [Theory]
     [InlineData("reclone")]
     [InlineData("corrupt")]
     [InlineData("address")]
+    [InlineData("unanswered")]
     public async Task Every_slot_recovery_failure_at_a_later_stage_is_charged_to_the_retry_budget(string kind)
     {
         Func<Exception> error = kind switch
         {
             "reclone" => () => new SlotNeedsRecloneException("store has no .git"),
             "corrupt" => () => new SlotCorruptException("stale index.lock survived cleaning"),
+            "unanswered" => () => new SlotProbeUnansweredException("the cleanliness probe returned no answer"),
             _ => () => new SlotAddressUnusableException("store path is a junction"),
         };
         var governor = Governor(maxAttempts: 1);

@@ -716,6 +716,39 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         thrown.Should().BeNull("a non-corrupt hygiene restore failure proceeds; preparation completes without a reclone");
     }
 
+    /// <summary>
+    /// A cleanliness probe that returned no answer is mapped to a type of its OWN, and the mapping is the
+    /// point of the test. It must not be <see cref="SlotNeedsRecloneException"/> — the executor's recovery
+    /// ladder catches that by type and spends minutes re-cloning a store nothing said was broken. It must not
+    /// be <see cref="SlotAddressUnusableException"/> either — that RETIRES the slot, and a lost answer belongs
+    /// to the attempt rather than to the address. Nothing catches this one, so the slot is released back to
+    /// the pool untouched and the next lease probes it again.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_UnansweredHygieneProbe_ThrowsItsOwnType_NotRecloneOrRetire()
+    {
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        // Exit 0 with no branch header: `status --porcelain -b` cannot produce that, so the output was lost.
+        runner.OnArgvContains(
+            "status --porcelain", new SandboxCommandResult(0, string.Empty, string.Empty));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        await act.Should().ThrowExactlyAsync<SlotProbeUnansweredException>(
+            "a re-clone answers a question that was never put, and retirement condemns the address for it");
+        runner.Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                // `fetch origin` is the FIRST step past the hygiene switch, so its absence pins that the
+                // throw happened at the gate and not somewhere later that happens to raise the same type.
+                a => a.EndsWith("fetch origin", StringComparison.Ordinal),
+                "preparation stops at the gate rather than reviewing a tree nothing established the state of");
+    }
+
     [Fact]
     public async Task PrepareAsync_ReviewedSubmoduleTransientInitFailure_DoesNotDriveReclone()
     {

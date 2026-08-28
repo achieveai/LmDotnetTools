@@ -249,6 +249,17 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                     $"Run {run.Id}: review store '{storeRoot}' cannot have its cleanup walked (an entry under it "
                         + "is unreadable); a re-clone would refuse on the same entry, so the slot is retired.");
 
+            // The cleanliness probe did not answer, so the store is neither known clean nor known dirty. Raise
+            // a type of its own rather than reusing either neighbour: SlotNeedsRecloneException would spend
+            // minutes re-cloning over a question that was never put, and SlotAddressUnusableException would
+            // RETIRE a slot whose only fault is one lost answer. Nothing downstream catches this one — the
+            // slot is released back to the pool untouched and the next lease probes it again.
+            case HygieneVerdict.ProbeUnanswered:
+                throw new SlotProbeUnansweredException(
+                    $"Run {run.Id}: the cleanliness probe on review store '{storeRoot}' returned no answer, so "
+                        + "the store is not known to be clean; releasing the slot to be re-probed on the next "
+                        + "lease rather than reviewing an unverified tree or re-cloning a store that may be fine.");
+
             case HygieneVerdict.Clean:
             default:
                 break;

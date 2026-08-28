@@ -19,6 +19,16 @@ public sealed class SlotHygieneTests : IDisposable
     private readonly string _root =
         Path.Combine(Path.GetTempPath(), "crd-hygiene-" + Guid.NewGuid().ToString("N"));
 
+    /// <summary>
+    /// What <c>git status --porcelain -b -z</c> prepends in the pooled store, which the daemon keeps DETACHED.
+    /// Every scripted status answer carries it, because without the header the gate reads the output as an
+    /// answer that never arrived — which is the point of <c>-b</c> and is exercised on purpose below.
+    /// </summary>
+    private const string DetachedHeader = FakeSandboxCommandRunner.DetachedBranchHeader;
+
+    /// <summary>The blob sha the index and the raw worktree bytes agree on in the eol-normalization cases.</summary>
+    private const string RecordedBlob = "4c38366b709654d4e876cb887e5ace15dd67bbeb";
+
     public void Dispose()
     {
         DirectoryLink.UnlinkAllUnder(_root);
@@ -212,11 +222,186 @@ public sealed class SlotHygieneTests : IDisposable
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
-            "status --porcelain", new SandboxCommandResult(0, " M src/Foo.cs\n?? leftover.tmp\n", string.Empty));
+            "status --porcelain",
+            new SandboxCommandResult(
+                0, DetachedHeader + " M src/Foo.cs\0?? leftover.tmp\0", string.Empty));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    /// <summary>
+    /// The live defect this gate had until the <c>-b</c> probe landed. A clean tree and a probe whose output
+    /// was LOST both answered the empty string, so the gate read the lost answer as cleanliness and handed the
+    /// store to the next review on the strength of a check that never reported. This daemon has measured
+    /// exactly that shape — a git command exiting 0 with its stdout gone (run 200, <c>rev-parse HEAD</c>) —
+    /// so it is a failure mode, not a hypothesis. With <c>-b</c> git always emits a branch header, so its
+    /// absence is a state the gate can name.
+    /// </summary>
+    [Fact]
+    public async Task EnsureClean_reports_ProbeUnanswered_when_the_status_output_did_not_arrive()
+    {
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "status --porcelain", new SandboxCommandResult(0, string.Empty, string.Empty));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(
+            HygieneVerdict.ProbeUnanswered,
+            "an exit-0 probe with no branch header did not answer, and a non-answer is not a clean tree");
+        verdict.Should().NotBe(
+            HygieneVerdict.NeedsReclone,
+            "nothing about a lost answer says the store's CONTENT is the problem, and a re-clone costs minutes");
+    }
+
+    /// <summary>
+    /// A probe that could not RUN is the same non-answer as one whose output was lost, and gets the same
+    /// verdict. It used to condemn the store to a re-clone — the daemon's most expensive recovery — on the
+    /// strength of a question that was never put.
+    /// </summary>
+    [Fact]
+    public async Task EnsureClean_reports_ProbeUnanswered_when_the_status_probe_itself_fails()
+    {
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "status --porcelain",
+            new SandboxCommandResult(128, string.Empty, "fatal: unable to read the index"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.ProbeUnanswered);
+    }
+
+    /// <summary>
+    /// A non-answer is retried, not accepted: the second force-reset pass runs, and the probe is asked again.
+    /// This is the fail-CLOSED side of the same verdict — the cost of being wrong here is one extra reset,
+    /// where the cost of being wrong at the gate is a store handed on unverified.
+    /// </summary>
+    [Fact]
+    public async Task EnsureClean_force_resets_again_when_the_first_status_probe_did_not_answer()
+    {
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContainsSequence(
+            "status --porcelain",
+            new SandboxCommandResult(0, string.Empty, string.Empty),
+            new SandboxCommandResult(0, DetachedHeader, string.Empty));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.Clean, "the second probe answered, and answered clean");
+        CountStoreResets(runner).Should().Be(
+            2, "an unanswered probe is retried before any verdict is drawn from it");
+    }
+
+    /// <summary>
+    /// The live, self-amplifying defect the blob-identity check closes. WeveNova declares
+    /// <c>services/app/ServiceConfig.ini</c> as <c>text eol=crlf</c> while the blob committed for it already
+    /// holds CRLF, so git's clean filter maps the worktree copy to LF, compares it against a CRLF blob, and
+    /// reports the path modified on a checkout nothing has touched. No <c>reset --hard</c>, <c>checkout
+    /// --force</c> or <c>clean -ffdx</c> settles it, so the gate condemned the slot, the re-clone reproduced
+    /// the identical condition, and the next lease condemned it again — forever, for that repository.
+    /// </summary>
+    [Fact]
+    public async Task EnsureClean_reports_Clean_when_every_dirty_path_holds_the_bytes_the_index_records()
+    {
+        const string NormalizedPath = "services/app/ServiceConfig.ini";
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "status --porcelain",
+            new SandboxCommandResult(0, DetachedHeader + $" M {NormalizedPath}\0", string.Empty));
+        runner.OnArgvContains(
+            $"rev-parse :{NormalizedPath}", new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty));
+        runner.OnArgvContains(
+            $"hash-object --no-filters -- {NormalizedPath}",
+            new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(
+            HygieneVerdict.Clean,
+            "the bytes on disk ARE the recorded blob, so this is the repo's own eol attributes disagreeing "
+                + "with what was committed, not contamination a re-clone could remove");
+        CountStoreResets(runner).Should().Be(
+            1, "a condition no reset can settle must not buy itself a second reset on every lease");
+    }
+
+    /// <summary>
+    /// The tolerance is keyed on blob identity, never on the status code. An untracked leftover next to a
+    /// normalized path is still contamination, and the slot is still condemned.
+    /// </summary>
+    [Fact]
+    public async Task EnsureClean_still_reports_NeedsReclone_for_a_leftover_beside_a_normalized_path()
+    {
+        const string NormalizedPath = "services/app/ServiceConfig.ini";
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "status --porcelain",
+            new SandboxCommandResult(
+                0, DetachedHeader + $" M {NormalizedPath}\0?? artifacts/agent-scratch.log\0", string.Empty));
+        runner.OnArgvContains(
+            $"rev-parse :{NormalizedPath}", new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty));
+        runner.OnArgvContains(
+            $"hash-object --no-filters -- {NormalizedPath}",
+            new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    /// <summary>
+    /// Above the bound the tree is wrong in bulk rather than normalized oddly, and it is refused without
+    /// spending a pair of git invocations per path to say so.
+    /// </summary>
+    [Fact]
+    public async Task EnsureClean_refuses_a_bulk_dirty_tree_without_classifying_any_path()
+    {
+        var store = SeedStore();
+        var paths = string.Concat(
+            Enumerable
+                .Range(0, WorktreeStatusProbe.MaxClassifiedLeftovers + 1)
+                .Select(i => $" M src/File{i}.cs\0"));
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "status --porcelain", new SandboxCommandResult(0, DetachedHeader + paths, string.Empty));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+        runner.Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                a => a.Contains("hash-object", StringComparison.Ordinal),
+                "a tree this wrong is refused without paying two git invocations per path to explain itself");
+    }
+
+    /// <summary>
+    /// The superproject probe must carry <c>-b</c> (so a clean answer carries evidence) and <c>-z</c> (so a
+    /// path holding a space or a non-ASCII byte is not QUOTED, which would make it unmatchable against the
+    /// index entry the blob lookup asks about) — while keeping <c>--ignore-submodules=all</c>.
+    /// </summary>
+    [Fact]
+    public async Task EnsureClean_probes_the_superproject_with_a_reporting_machine_readable_status()
+    {
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+
+        await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        runner.Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .Contain(
+                a => a.EndsWith(
+                    $"-C {store} status --porcelain -b -z --ignore-submodules=all", StringComparison.Ordinal),
+                "without -b a lost answer is the same empty string as a clean tree, and without -z an "
+                    + "awkward path arrives quoted and never matches its index entry");
     }
 
     [Fact]
@@ -533,8 +718,8 @@ public sealed class SlotHygieneTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContainsSequence(
             "status --porcelain",
-            new SandboxCommandResult(0, " M src/Foo.cs\n", string.Empty),
-            new SandboxCommandResult(0, string.Empty, string.Empty));
+            new SandboxCommandResult(0, DetachedHeader + " M src/Foo.cs\0", string.Empty),
+            new SandboxCommandResult(0, DetachedHeader, string.Empty));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 

@@ -100,7 +100,66 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
             return Task.FromResult(new SandboxCommandResult(128, string.Empty, "fatal: not a git repository"));
         }
 
+        // The blob-identity pair behind the cleanliness gate's normalization check. Both print a sha on
+        // success, so answering them with the empty-stdout Default would silently mean "these bytes are NOT
+        // the recorded blob" — a decision about whether a review is refused, made by a fake that was never
+        // told anything. Fail loudly instead, so a test that reaches the check has to say what it means.
+        if (IsBlobIdentityProbe(command.Argv))
+        {
+            return Task.FromResult(new SandboxCommandResult(
+                128,
+                string.Empty,
+                "fatal: this fake was not told what blob to report. Script the `hash-object` / "
+                    + "`rev-parse :<path>` pair if this test means to reach the normalization check."));
+        }
+
+        // `git status --porcelain -b` ALWAYS emits a branch header, and the gate reads its absence as "the
+        // probe did not answer". A fake that answered the empty string would put every unscripted test on
+        // that path by accident, and would let the header-skip in the parser go untested because nothing
+        // ever produced a header. Answer as the daemon's own DETACHED checkout does, so no-answer stays a
+        // state a test has to script on purpose.
+        if (IsBranchHeaderStatusProbe(command.Argv))
+        {
+            return Task.FromResult(new SandboxCommandResult(0, DetachedBranchHeader, string.Empty));
+        }
+
         return Task.FromResult(Default);
+    }
+
+    /// <summary>What a clean detached checkout answers <c>status --porcelain -b -z</c> with (git 2.53.0).</summary>
+    internal const string DetachedBranchHeader = "## HEAD (no branch)\0";
+
+    /// <summary>True for <c>status --porcelain</c> carrying <c>-b</c>, whose output must start with a header.</summary>
+    private static bool IsBranchHeaderStatusProbe(IReadOnlyList<string> argv) =>
+        argv.Contains("status", StringComparer.Ordinal)
+        && argv.Contains("--porcelain", StringComparer.Ordinal)
+        && argv.Contains("-b", StringComparer.Ordinal);
+
+    /// <summary>
+    /// True for <c>hash-object</c> and for <c>rev-parse :&lt;path&gt;</c>, the lookup that reads the blob the
+    /// index records for a path.
+    /// </summary>
+    private static bool IsBlobIdentityProbe(IReadOnlyList<string> argv)
+    {
+        if (argv.Contains("hash-object", StringComparer.Ordinal))
+        {
+            return true;
+        }
+
+        if (!argv.Contains("rev-parse", StringComparer.Ordinal))
+        {
+            return false;
+        }
+
+        for (var i = 0; i < argv.Count; i++)
+        {
+            if (argv[i].Length > 1 && argv[i][0] == ':')
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsGitDirectoryProbe(SandboxCommand command, out string storePath)
