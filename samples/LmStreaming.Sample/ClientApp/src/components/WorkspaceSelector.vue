@@ -47,9 +47,13 @@ const props = defineProps<{
    */
   isLoading?: boolean;
   /**
-   * TERMINAL unavailability: the gateway is down, a run is streaming, the thread is locked. The
-   * dropdown is closed and any open form discarded, because the condition is not about to reverse
-   * on its own within the user's current action. See {@link isLoading} for the transient case.
+   * TERMINAL unavailability: a run is streaming, the thread is locked. The dropdown is closed and
+   * any open form discarded, because the condition is not about to reverse on its own within the
+   * user's current action. See {@link isLoading} for the transient case.
+   *
+   * An unreadable marketplace catalog is deliberately NOT one of these (#459). It used to be, and
+   * it was the only condition that ever fired on a gateway-less host — which made this whole
+   * component unreachable there, badge and all. See `ChatLayout.workspaceSelectorDisabled`.
    */
   disabled?: boolean;
 }>();

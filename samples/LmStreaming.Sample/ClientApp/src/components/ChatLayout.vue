@@ -338,10 +338,20 @@ const lockedWorkspaceId = computed<string | null>(() => {
  * nothing — the save silently failed with no visible error (F6). Blocking interaction during a
  * reload is still correct (the list is momentarily stale); that is what the separate `is-loading`
  * prop does, without the teardown.
+ *
+ * `gateway.available === false` is NOT one of them either, and removing it is the point of #459.
+ * That flag says the marketplace CATALOG could not be read — nothing more. It is false in exactly
+ * one situation: a gateway-less host, where it is the permanent answer. (A failed `/api/workspaces`
+ * leaves `gateway` null, not false, so this never covered a broken list request; and a list with no
+ * workspaces at all reports true.) Disabling on it therefore did not guard against anything — it
+ * just made the picker inert on precisely the host whose rows the compatibility split now marks
+ * selectable-but-unverified, so nothing downstream ever got asked. Choosing a workspace is safe
+ * without a readable catalog; ACTING on one is what must fail closed, and that still happens
+ * server-side (`ValidateForMutationAsync` / `ValidateForSessionAsync` both refuse on `Unavailable`)
+ * with the error surfaced inline on the form.
  */
 const workspaceSelectorDisabled = computed(
-  () => workspaceGateway?.value?.available === false
-    || chatLoading.value
+  () => chatLoading.value
     || isSending.value
     || isSwitchingMode.value
 );

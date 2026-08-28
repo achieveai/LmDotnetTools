@@ -9,6 +9,7 @@ import {
   WorkspaceRevisionConflictError,
 } from '@/api/workspacesApi';
 import type { ConversationSummary } from '@/types/conversations';
+import type { Workspace, WorkspaceGateway } from '@/types/workspace';
 
 // Build a fixture from the REAL wire type rather than a hand-rolled shadow (#488). The shadow this
 // replaced optional-ized every field and silently drifted from the server DTO — `visibility` (#445)
@@ -57,6 +58,14 @@ const sharedMocks = vi.hoisted(() => ({
   // that only holds the PROVIDER catalog open cannot tell whether the workspace half is awaited.
   workspaceCatalogLoad: Promise.resolve() as Promise<void>,
   workspaceSelectionRef: null as Ref<string | null> | null,
+  // The workspace ROWS and the gateway envelope the flat stub hands ChatLayout. Both were hard-coded
+  // ([] and absent) until #459, and that is exactly why F-001 hid: with no `gateway` key at all,
+  // `workspaceGateway?.value?.available` was `undefined` in every test here, so the parent's
+  // gateway-down gate could never fire and nothing noticed it disabling the whole selector.
+  // Defaults keep every pre-existing test byte-identical: an empty list, and a null envelope (which
+  // reads as `undefined` through the same optional chain the old stub produced).
+  workspaces: [] as Workspace[],
+  workspaceGateway: null as WorkspaceGateway | null,
   // The options object ChatLayout handed to useChat, so a test can drive the provisioning hook the
   // real composable calls on the first send.
   chatOptions: null as { provisionThreadId?: () => Promise<string> } | null,
@@ -269,7 +278,8 @@ vi.mock('@/composables/useWorkspaces', async () => {
       const selectedWorkspaceId = ref<string | null>(sharedMocks.selectedWorkspaceId);
       sharedMocks.workspaceSelectionRef = selectedWorkspaceId;
       return {
-        workspaces: ref([]),
+        workspaces: ref(sharedMocks.workspaces),
+        gateway: ref(sharedMocks.workspaceGateway),
         selectedWorkspaceId,
         isLoading: ref(false),
         loadWorkspaces: vi.fn(() => sharedMocks.workspaceCatalogLoad),
@@ -1799,5 +1809,120 @@ describe('ChatLayout share control visibility (#375)', () => {
     await flushPromises();
 
     expect(sharedMocks.loadConversations).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+/**
+ * #459 / F-001. Every other test for this feature sits BELOW the parent gate: they mount
+ * `WorkspaceSelector` directly, or drive `useWorkspaces` on its own. Neither can see that
+ * `ChatLayout` was terminally disabling the selector on the very signal the split reinterprets, so
+ * on a gateway-less host the dropdown could not be opened at all and none of the new behaviour —
+ * relaxed rows, the `unverified` caveat, `isWorkspaceWithheld` — ever got asked a question.
+ *
+ * This test is therefore deliberately end-to-end through the real `WorkspaceSelector`: the assertion
+ * is not "the flag is false", it is "a human can open this thing and click the row".
+ */
+describe('ChatLayout keeps the workspace picker usable on a gateway-less host (#459 F-001)', () => {
+  const unverifiedRow = (id: string, name: string): Workspace => ({
+    id,
+    name,
+    directoryRelPath: id,
+    marketplaces: [],
+    isSystemDefined: id === 'default',
+    createdAt: 0,
+    updatedAt: 0,
+    compatibility: 'unavailable',
+    unsupportedMarketplaces: [],
+  });
+
+  beforeEach(() => {
+    sharedMocks.selectWorkspace.mockReset();
+    sharedMocks.conversations = [];
+    sharedMocks.currentThreadId = null;
+    sharedMocks.workspaces = [unverifiedRow('default', 'Default'), unverifiedRow('repo', 'Repo')];
+    // What the backend actually sends from a host with no sandbox gateway: the workspace list is
+    // served fine, and the marketplace catalog behind it is not readable.
+    sharedMocks.workspaceGateway = {
+      canonicalBaseUrl: 'http://gateway:3000',
+      appId: 'sample',
+      available: false,
+      error: 'gateway offline',
+    };
+
+    // WorkspaceSelector fetches /api/marketplaces on mount; 503 is what a gateway-less host answers.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith('/api/marketplaces')) {
+          return { ok: false, status: 503, statusText: 'Service Unavailable', json: async () => ({}) };
+        }
+        return { ok: true, status: 200, statusText: 'OK', json: async () => ({}) };
+      })
+    );
+  });
+
+  afterEach(() => {
+    sharedMocks.workspaces = [];
+    sharedMocks.workspaceGateway = null;
+    vi.unstubAllGlobals();
+  });
+
+  const mountWithRealSelector = () =>
+    mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          ModeSelector: true,
+          ProviderSelector: true,
+          // WorkspaceSelector deliberately NOT stubbed — reaching its rows is the whole point.
+        },
+      },
+    });
+
+  it('opens the dropdown and selects an unverified row while the catalog is unavailable', async () => {
+    const wrapper = mountWithRealSelector();
+    await flushPromises();
+
+    // The gate itself: the trigger button must be live, not merely present.
+    const button = wrapper.get<HTMLButtonElement>('[data-testid="workspace-selector-button"]');
+    expect(button.element.disabled).toBe(false);
+
+    await button.trigger('click');
+    await flushPromises();
+
+    const row = wrapper.get<HTMLButtonElement>('[data-testid="workspace-option-repo"]');
+    expect(row.element.disabled).toBe(false);
+    // The caveat still renders, so "selectable" has not quietly become "vouched for".
+    expect(wrapper.find('[data-testid="workspace-unverified-repo"]').exists()).toBe(true);
+
+    await row.trigger('click');
+    await flushPromises();
+
+    // Reached the composable through ChatLayout's own handler, which shares the same gate.
+    expect(sharedMocks.selectWorkspace).toHaveBeenCalledWith('repo');
+  });
+
+  /**
+   * The gate that WAS there is not simply gone — the streaming/sending conditions still close the
+   * picker. Without this, deleting the whole computed would also pass the test above.
+   */
+  it('still disables the picker while a run is streaming', async () => {
+    sharedMocks.isSending = true;
+    try {
+      const wrapper = mountWithRealSelector();
+      await flushPromises();
+
+      expect(
+        wrapper.get<HTMLButtonElement>('[data-testid="workspace-selector-button"]').element.disabled
+      ).toBe(true);
+    } finally {
+      sharedMocks.isSending = false;
+    }
   });
 });
