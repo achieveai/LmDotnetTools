@@ -20,6 +20,7 @@ internal static class SchemaMigrations
         new Migration(4, V4Sql),
         new Migration(5, V5Sql),
         new Migration(6, V6Sql),
+        new Migration(7, V7Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -231,5 +232,25 @@ internal static class SchemaMigrations
 
         CREATE INDEX ix_policy_refusal_at_utc ON policy_refusal (at_utc);
         CREATE INDEX ix_policy_refusal_kind   ON policy_refusal (kind);
+        """;
+
+    // ── v7: what the PR SAYS it does ─────────────────────────────────────────────────────────────
+    // Knowledge retrieval ranked entries purely on token overlap with the PR's own changed paths. Sibling
+    // PRs applying one architectural pattern routinely touch entirely different files and share no path
+    // token at all, so the same lesson was retrieved for one and not the other — which is how one leftover
+    // defect came to be blocked on one PR and declined as out of scope on its sibling. The pattern is
+    // named in the title, and the title was never persisted.
+    //
+    // Captured at poll time, on the run, rather than re-fetched at review time: the Reviewed stage runs
+    // long after the poll page is gone, and on a resumed run it may be a different process entirely.
+    //
+    // NULL-able with no default, matching v4's pr_author. NULL means "not captured" — for every
+    // pre-migration row, and for any provider payload that omits it — and every reader degrades to
+    // path-only ranking, which is exactly the behaviour that existed before these columns. A blank string
+    // is normalized to NULL at the provider seam so "the author wrote no description" and "we captured
+    // none" do not rank differently.
+    private const string V7Sql = """
+        ALTER TABLE review_run ADD COLUMN pr_title       TEXT NULL;
+        ALTER TABLE review_run ADD COLUMN pr_description TEXT NULL;
         """;
 }

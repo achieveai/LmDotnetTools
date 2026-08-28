@@ -579,6 +579,69 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             "the entry matching the truncated-away path must still be ranked on it");
     }
 
+    /// <summary>
+    /// The production wiring of prose-aware ranking, asserted on the case that DISTINGUISHES it: the PR
+    /// touches a file that shares no token with either entry, so on changed paths alone both score zero and
+    /// the deterministic file-ordinal tie-break puts the wrong entry first. The pattern is named only in the
+    /// PR's title. Both halves run here, against the same fixture, so the assertion cannot pass for a reason
+    /// other than the title reaching the ranker.
+    /// <para>
+    /// Wired end to end deliberately. <c>KnowledgeDigestTests</c> already pins the scorer; what that cannot
+    /// see is whether <c>run.PrTitle</c> survives the poll, the store round trip and the Reviewed stage to
+    /// reach it. A correct ranker that is handed null on every real review is the failure mode this whole
+    /// change exists to end.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_ranks_knowledge_on_the_pr_title_when_no_changed_path_names_the_pattern()
+    {
+        const string index =
+            """{"file":"system/a-unrelated.md","title":"Filter before paging","tags":["pagination"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+            + "\n"
+            + """{"file":"system/z-flags.md","title":"Leftover featureflag entries","tags":["featureflag"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+            + "\n";
+
+        // Premise first: with no title, the right entry does NOT come first. Without this the assertion
+        // below could be satisfied by an ordering the fixture produces anyway.
+        var withoutTitle = await RankedKnowledgeBlockAsync(index, prTitle: null);
+        withoutTitle.IndexOf("system/a-unrelated.md", StringComparison.Ordinal).Should().BeLessThan(
+            withoutTitle.IndexOf("system/z-flags.md", StringComparison.Ordinal),
+            "on paths alone both entries score zero and the ordinal tie-break wins, so this test can fail");
+
+        var withTitle = await RankedKnowledgeBlockAsync(index, prTitle: "Remove the stale featureflag entry");
+
+        withTitle.IndexOf("system/z-flags.md", StringComparison.Ordinal).Should().BeLessThan(
+            withTitle.IndexOf("system/a-unrelated.md", StringComparison.Ordinal),
+            "the pattern is named in the PR's title and nowhere in its changed paths");
+    }
+
+    /// <summary>Runs ContextReady + Reviewed over one seeded <c>_index.jsonl</c> and returns the review brief
+    /// the agent actually received. The changed path shares no token with any entry on purpose.</summary>
+    private async Task<string> RankedKnowledgeBlockAsync(string index, string? prTitle)
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "deploy/task.json\n", string.Empty));
+        fixture.Runner.OnArgvContainsFirst(
+            "diff --name-only", new SandboxCommandResult(0, "deploy/task.json\n", string.Empty));
+        fixture.FileSystem.Seed("/workspace/store/KnowledgeBase/_index.jsonl", index);
+        var run = fixture.SeedRun(prTitle: prTitle);
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        return fixture.Factory.CreatedAgents.Should().ContainSingle().Subject
+            .ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+    }
+
     [Fact]
     public async Task Reviewed_refuses_a_knowledge_entry_whose_path_escapes_the_knowledge_base()
     {
@@ -2735,7 +2798,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             string watermark = "wm-1",
             string mode = "collect-only",
             string? prAuthor = null,
-            string? modelId = null)
+            string? modelId = null,
+            string? prTitle = null,
+            string? prDescription = null)
         {
             var repoId = Store.EnsureRepo(new RepoIdentity
             {
@@ -2760,6 +2825,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 PrLifecycleState = PrLifecycleState.Open,
                 PrAuthor = prAuthor,
                 ModelId = modelId,
+                PrTitle = prTitle,
+                PrDescription = prDescription,
             });
         }
 

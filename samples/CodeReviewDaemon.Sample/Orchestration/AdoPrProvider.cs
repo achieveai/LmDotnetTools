@@ -172,7 +172,10 @@ internal sealed class AdoPrProvider : IPrProvider
                         // Who OPENED the PR. ADO's uniqueName is normally an email address; it is only
                         // carried as an opaque identity string here, and the consumer is responsible for
                         // reducing it to a safe, confined file name.
-                        UniqueNameOf(pr, "createdBy")));
+                        UniqueNameOf(pr, "createdBy"),
+                        // What the PR SAYS it does — the prose half of the knowledge-retrieval key.
+                        StringOf(pr, "title"),
+                        StringOf(pr, "description")));
                 }
 
                 // Phase 2: resolve each PR's recency signal. ADO's PR list has no last-activity field, so a PR
@@ -203,6 +206,8 @@ internal sealed class AdoPrProvider : IPrProvider
                         CreatedAt = recencyCreatedAt,
                         UpdatedAt = updatedAt,
                         Author = raw.Author,
+                        Title = raw.Title,
+                        Description = raw.Description,
                     });
 
                     if (raw.PrId > highWaterMark)
@@ -305,7 +310,18 @@ internal sealed class AdoPrProvider : IPrProvider
     /// resolution (a <see cref="JsonElement"/> can't outlive its document).</summary>
     private sealed record RawAdoPr(
         long PrId, string HeadSha, string BaseSha, DateTimeOffset? CreatedAt, string? SourceRefName, string? Status,
-        string? Author);
+        string? Author, string? Title, string? Description);
+
+    /// <summary>
+    /// Reads a string property off an ADO PR payload, or null when it is absent, non-string, or blank.
+    /// Blank collapses to null so a PR with an empty description ranks identically to one with none.
+    /// </summary>
+    private static string? StringOf(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value)
+        && value.ValueKind is JsonValueKind.String
+        && !string.IsNullOrWhiteSpace(value.GetString())
+            ? value.GetString()
+            : null;
 
     /// <summary>
     /// Resolves each PR's recency signal (<c>UpdatedAt</c>, <c>CreatedAt</c>) for

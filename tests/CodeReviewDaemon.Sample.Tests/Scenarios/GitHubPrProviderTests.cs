@@ -88,6 +88,70 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         first.LifecycleState.Should().Be(PrLifecycleState.Open);
     }
 
+    /// <summary>
+    /// The prose half of the knowledge-retrieval key. Sibling PRs applying one architectural pattern often
+    /// touch entirely different files, so ranked purely on changed paths the relevant lesson scores zero on
+    /// one of them; the pattern is named in the title, and the title has to survive the poll to be usable.
+    /// </summary>
+    [Fact]
+    public async Task ListOpenPullRequests_captures_what_the_pr_says_it_does()
+    {
+        const string describedPr = """
+            [
+              {
+                "number": 7,
+                "state": "open",
+                "merged_at": null,
+                "updated_at": "2026-06-01T10:00:00Z",
+                "head": { "sha": "head-7" },
+                "base": { "sha": "base-7" },
+                "title": "Remove the stale featureflag entry",
+                "body": "The ECS task definition still carries the flag."
+              }
+            ]
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls", describedPr);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests[0].Title.Should().Be("Remove the stale featureflag entry");
+        page.PullRequests[0].Description.Should().Be("The ECS task definition still carries the flag.");
+    }
+
+    /// <summary>
+    /// GitHub sends <c>"body": ""</c> — not a missing property — for a PR opened with no description, and
+    /// <c>null</c> for some shapes. Both must arrive as null, because "the author wrote nothing" and "we
+    /// captured nothing" must rank identically rather than one of them looking like prose.
+    /// </summary>
+    [Theory]
+    [InlineData("\"\"")]
+    [InlineData("\"   \"")]
+    [InlineData("null")]
+    public async Task ListOpenPullRequests_maps_an_empty_body_to_no_prose_at_all(string body)
+    {
+        var emptyBodyPr = $$"""
+            [
+              {
+                "number": 7,
+                "state": "open",
+                "merged_at": null,
+                "updated_at": "2026-06-01T10:00:00Z",
+                "head": { "sha": "head-7" },
+                "base": { "sha": "base-7" },
+                "title": "Remove the stale featureflag entry",
+                "body": {{body}}
+              }
+            ]
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls", emptyBodyPr);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests[0].Description.Should().BeNull();
+        page.PullRequests[0].Title.Should().Be(
+            "Remove the stale featureflag entry", "a blank body must not take the title down with it");
+    }
+
     [Fact]
     public async Task ListOpenPullRequests_sends_the_request_github_requires()
     {

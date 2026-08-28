@@ -296,6 +296,10 @@ internal sealed class PrPollingService : BackgroundService
                 // Captured now, while the PR is still open and the poll payload is in hand: the at-close
                 // feedback extraction runs much later, against a PR that may already be closed.
                 PrAuthor = pr.Author,
+                // The prose half of the knowledge-retrieval key, captured from the same poll payload: the
+                // Reviewed stage reads the run from the store long after this page is gone.
+                PrTitle = pr.Title,
+                PrDescription = pr.Description,
             };
 
             // Per-PR isolation: one poison PR must not abort the rest of the target's PRs. The

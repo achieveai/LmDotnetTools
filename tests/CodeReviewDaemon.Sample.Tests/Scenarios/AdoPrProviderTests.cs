@@ -140,6 +140,38 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         first.LifecycleState.Should().Be(PrLifecycleState.Open);
     }
 
+    /// <summary>
+    /// The prose half of the knowledge-retrieval key, captured at poll time because the Reviewed stage runs
+    /// long after this page is gone. A blank description collapses to null so it ranks identically to a PR
+    /// that carries none at all.
+    /// </summary>
+    [Theory]
+    [InlineData("""  "title": "Remove the stale featureflag entry", "description": "Still in the task def." """,
+        "Remove the stale featureflag entry", "Still in the task def.")]
+    [InlineData("""  "title": "Remove the stale featureflag entry", "description": "  " """,
+        "Remove the stale featureflag entry", null)]
+    [InlineData("""  "title": "Remove the stale featureflag entry" """,
+        "Remove the stale featureflag entry", null)]
+    [InlineData("""  "description": "Still in the task def." """, null, "Still in the task def.")]
+    public async Task ListOpenPullRequests_captures_what_the_pr_says_it_does(
+        string prose, string? expectedTitle, string? expectedDescription)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullrequests",
+            $$"""
+            { "value": [ { "pullRequestId": 42, "status": "active", {{prose}},
+                "lastMergeSourceCommit": { "commitId": "head-42" },
+                "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
+            """);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        var pr = page.PullRequests.Should().ContainSingle().Subject;
+        pr.Title.Should().Be(expectedTitle);
+        pr.Description.Should().Be(expectedDescription);
+    }
+
     [Fact]
     public async Task ListOpenPullRequests_sends_the_request_ado_requires()
     {

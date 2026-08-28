@@ -117,6 +117,11 @@ internal sealed class GitHubPrProvider : IPrProvider
                         // the payload omits it (deleted account, or a shape we didn't expect) so the daemon
                         // skips the record rather than addressing it to a placeholder.
                         Author = LoginOf(pr, "user"),
+                        // What the PR SAYS it does. Retrieval ranks on this as well as on the changed
+                        // paths, because sibling PRs applying one pattern often share no path token at all
+                        // and the pattern is named here.
+                        Title = StringOf(pr, "title"),
+                        Description = StringOf(pr, "body"),
                     });
 
                     if (string.CompareOrdinal(updatedAt, highWaterMark) > 0)
@@ -289,6 +294,18 @@ internal sealed class GitHubPrProvider : IPrProvider
         && DateTimeOffset.TryParse(
             value.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
             ? parsed
+            : null;
+
+    /// <summary>
+    /// Reads a string property off a PR payload, or null when it is absent, non-string, or blank. Blank
+    /// collapses to null on purpose: an empty <c>body</c> is what GitHub sends for a PR with no
+    /// description, and "" and null must rank identically rather than one of them looking like prose.
+    /// </summary>
+    private static string? StringOf(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value)
+        && value.ValueKind is JsonValueKind.String
+        && !string.IsNullOrWhiteSpace(value.GetString())
+            ? value.GetString()
             : null;
 
     /// <summary>
