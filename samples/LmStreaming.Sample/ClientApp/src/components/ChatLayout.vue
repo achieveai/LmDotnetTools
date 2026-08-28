@@ -152,12 +152,18 @@ async function provisionThread(): Promise<string> {
     throw new Error('Choose a provider before starting a conversation.');
   }
 
-  // A null workspace selection is NOT a reason to refuse. `useWorkspaces` only keeps a selection the
-  // catalog reports as `compatible`, and the backend reports every workspace as `unknown` whenever
-  // the marketplace catalog is unreachable — a gateway-less host, or a runner where
-  // `/api/marketplaces` answers 503. Refusing there would make provisioning stricter than the socket
-  // it replaced: that path sent whatever it had and let the server resolve its own default, so a
-  // host with no gateway could still chat. Fall back to the workspace the backend always resolves.
+  // A null workspace selection is NOT a reason to refuse. It means the catalog listed nothing this
+  // client could choose — an empty list, or one whose every entry the gateway checked and refused.
+  // Refusing there would make provisioning stricter than the socket it replaced: that path sent
+  // whatever it had and let the server resolve its own default. Fall back to the workspace the
+  // backend always resolves.
+  //
+  // An UNREADABLE catalog no longer arrives here (#459). It used to: every workspace came back
+  // `unknown`, `useWorkspaces` kept only `compatible` ones, so a gateway-less host reached this line
+  // on every send. Now such rows report `unavailable`, stay selectable, and the user's own choice
+  // survives — which matters because this fallback WRITES: the id below is persisted as the
+  // conversation's workspace and is immutable afterwards, so substituting the default here for a
+  // selection the user had already made would silently rewrite a binding, not just a default.
   const workspaceId = selectedWorkspaceId.value ?? DEFAULT_WORKSPACE_ID;
   return await createNewConversation({
     workspaceId,
