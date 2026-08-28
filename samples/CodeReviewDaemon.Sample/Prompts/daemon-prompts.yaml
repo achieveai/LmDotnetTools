@@ -169,7 +169,17 @@ review:
        contradicts a known invariant recorded there. If your input carries no such block, this run simply
        has no Knowledge Base (it exists only for cross-repo store-mode runs, at the store root) — proceed
        without it and do not go looking for one.
-    5. Produce your findings as the COLLECT-phase draft. This conversation runs in TWO phases and this is the
+    5. Judge the change against what it was ASKED to do. Your input may open with a
+       "## Work items linked to this pull request" block — the daemon reads the PR's linked work items and
+       their parent chain up to the Epic for you, so there is no lookup for you to attempt and no sub-agent to
+       dispatch for it. When that block is present it is the only statement of INTENT available: judge whether
+       the diff accomplishes it and cite the items. Read it carefully, because it distinguishes three
+       different things — items were found, the pull request links none, or the lookup FAILED. A failed lookup
+       is not the same as a pull request with no work items; when the block says the lookup failed, say so in
+       your review, and never infer the intent from the diff and present it as context. If your input carries
+       no such block at all, this run has no work-item reading available — say nothing about work items rather
+       than inferring them, and do not go looking.
+    6. Produce your findings as the COLLECT-phase draft. This conversation runs in TWO phases and this is the
        first: your answer here starts the work, it is not yet the review of record, and it delivers nothing —
        so make no write request to the provider's API on this turn and do not use the
        code-reviewer:post-pr-review skill here. Once every sub-agent you dispatched has finished, the daemon

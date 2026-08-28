@@ -89,6 +89,36 @@ internal sealed record ReviewScope(
     /// where the concrete repo route is not yet known).
     /// </summary>
     public string? ApiRepoPathPrefix { get; init; }
+
+    /// <summary>
+    /// The provider-API route roots outside <see cref="ApiRepoPathPrefix"/> this run may READ to establish
+    /// what its PR was ASKED to do (ADO: the work-item batch route, walked up the
+    /// <c>System.LinkTypes.Hierarchy-Reverse</c> chain to the Epic). Empty for GitHub, whose linked issues
+    /// hang off the repo route already in scope.
+    /// <para>
+    /// One root, and deliberately only one. The PR's own list of linked items
+    /// (<c>_apis/git/repositories/{repo}/pullRequests/{id}/workitems</c>) already sits UNDER
+    /// <see cref="ApiRepoPathPrefix"/> and needed nothing added; only the work items THEMSELVES
+    /// (<c>_apis/wit/workitems</c>) are project-scoped and unreachable from a per-repo prefix, because ADO
+    /// keys work items to a PROJECT and not to the repository a PR happens to live in.
+    /// </para>
+    /// <para>
+    /// Without it the reviewer cannot judge whether a diff does what was asked, and the gap was structural
+    /// rather than a model choice: the capability was offered to the reviewer in its PROMPT, which told it to
+    /// dispatch a context gatherer, while across 644 observed review sub-agent spawns ZERO carried any tool
+    /// that could reach ADO. It was dispatched once in 698 spawns, and that one had nothing to do the job with.
+    /// </para>
+    /// <para>
+    /// Each entry is a route ROOT, not the project's <c>_apis</c> surface: <c>_apis/wit/wiql</c>,
+    /// <c>_apis/wit/queries</c> and every other <c>wit</c> sibling stay outside it, because
+    /// <see cref="OperationPolicy"/> matches a root at a directory boundary. Scoped to exactly one project
+    /// (the run's) and honoured only for the read-only <see cref="SandboxOperation.ReadProviderMetadata"/>
+    /// arm — widening the method or the project would hand back exactly what the repo confinement protects.
+    /// READ only: no work item can be created, updated, commented on or linked through this, because the
+    /// write arm never passes the flag that makes these roots reachable at all.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> ApiWorkItemPaths { get; init; } = [];
 }
 
 /// <summary>
@@ -183,9 +213,10 @@ internal sealed class OperationPolicy
 
             SandboxOperation.PostReviewComment => !_allowWriteOperations
                 ? PolicyDecision.Deny("this variant is collect-only and has no post capability")
-                : DecideApi(request, "POST", "post review comment"),
+                : DecideApi(request, "POST", "post review comment", allowReadOnlyProjectRoutes: false),
 
-            SandboxOperation.ReadProviderMetadata => DecideApi(request, "GET", "read provider metadata"),
+            SandboxOperation.ReadProviderMetadata => DecideApi(
+                request, "GET", "read provider metadata", allowReadOnlyProjectRoutes: true),
 
             _ => PolicyDecision.Deny($"unknown operation '{request.Operation}'"),
         };
@@ -302,7 +333,17 @@ internal sealed class OperationPolicy
             $"submodule '{request.Host}{StripQuery(request.Path)}' is not on the allow-list");
     }
 
-    private PolicyDecision DecideApi(OperationRequest request, string expectedMethod, string label)
+    /// <summary>
+    /// Evaluates a provider-API request. <paramref name="allowReadOnlyProjectRoutes"/> lets the run's
+    /// project-scoped exception — <see cref="ReviewScope.ApiWorkItemPaths"/> — count as an in-scope route
+    /// alongside the repo prefix; it is passed only by the read-only
+    /// <see cref="SandboxOperation.ReadProviderMetadata"/> arm, so no write can ever reach it.
+    /// </summary>
+    private PolicyDecision DecideApi(
+        OperationRequest request,
+        string expectedMethod,
+        string label,
+        bool allowReadOnlyProjectRoutes)
     {
         if (!HostMatches(request.Host, _scope.ApiHost))
         {
@@ -317,14 +358,42 @@ internal sealed class OperationPolicy
         }
 
         // When the concrete repo route is known (per-run policy, PR #121 H2), the request path must fall
-        // under it — host + method alone are not enough, or a review could hit a sibling repo's API.
-        if (_scope.ApiRepoPathPrefix is { } prefix && !PathUnderApiPrefix(request.Path, prefix))
+        // under it — host + method alone are not enough, or a review could hit a sibling repo's API. The
+        // run's OWN project-scoped read routes are the only exception (see ApiWorkItemPaths): ADO publishes
+        // work items nowhere else, and a reviewer that cannot tell whether the diff does what was asked is a
+        // reviewer the review is wrong without.
+        if (_scope.ApiRepoPathPrefix is { } prefix
+            && !PathUnderApiPrefix(request.Path, prefix)
+            && !IsReadOnlyProjectRoute(request.Path, allowReadOnlyProjectRoutes))
         {
             return PolicyDecision.Deny(
                 $"{label} path '{StripQuery(request.Path)}' is outside the run's API route '{prefix}'");
         }
 
         return PolicyDecision.Allow($"{label} on '{_scope.ApiHost}'");
+    }
+
+    /// <summary>
+    /// Whether <paramref name="requestPath"/> targets one of the run's own project-scoped READ routes. Always
+    /// false when <paramref name="allowed"/> is false, which is what keeps the exception unreachable from the
+    /// write arm regardless of how the route roots are configured.
+    /// </summary>
+    private bool IsReadOnlyProjectRoute(string requestPath, bool allowed)
+    {
+        if (!allowed)
+        {
+            return false;
+        }
+
+        foreach (var workItemRoute in _scope.ApiWorkItemPaths)
+        {
+            if (PathUnderApiPrefix(requestPath, workItemRoute))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

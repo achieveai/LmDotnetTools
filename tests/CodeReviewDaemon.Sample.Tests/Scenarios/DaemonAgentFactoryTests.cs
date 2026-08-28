@@ -113,6 +113,39 @@ public sealed class DaemonAgentFactoryTests
         first.EnabledBuiltInTools.Should().BeEquivalentTo(second.EnabledBuiltInTools);
     }
 
+    /// <summary>
+    /// The block the daemon prepends is invisible unless the prompt names it. The reviewer is told, in the
+    /// same breath, that a MISSING block means this run has no work-item reading — so an unannounced block
+    /// would be read as noise, and an announced-but-absent one as a lookup nobody performed.
+    /// <para>
+    /// The three outcomes must be distinguished IN the prompt too. A reviewer that is not told "failed" and
+    /// "none linked" are different things will collapse them into the reassuring one, which is the whole
+    /// defect the block's wording exists to prevent.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void ReviewProfile_Prompt_points_the_reviewer_at_the_work_item_block_the_daemon_prepends()
+    {
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot" }).SystemPrompt;
+
+        prompt.Should().Contain(
+            "## Work items linked to this pull request",
+            "the reviewer has to be told the block exists and what it is");
+        prompt.Should().MatchRegex(
+            "(?i)lookup FAILED",
+            "the three outcomes are distinguished IN the block, so the reviewer must be told to read them "
+                + "apart rather than to treat silence as an answer");
+        prompt.Should().MatchRegex(
+            "(?i)never infer the intent from the diff",
+            "and the gap a failed lookup leaves must not be filled by guessing the work item from the diff");
+        prompt.Should().NotContain(
+            "pr-context-gatherer",
+            "the daemon fetches the work items in code; asking the reviewer to dispatch an agent for it "
+                + "makes it narrate work that already happened — and across 644 observed sub-agent spawns "
+                + "ZERO carried a tool that could reach ADO, so the instruction was never executable");
+    }
+
     [Fact]
     public void CreateReviewProfile_with_variables_renders_the_rereview_section()
     {

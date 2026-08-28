@@ -101,6 +101,7 @@ internal static class DaemonOperationPolicy
                 AllowedSubmodules: allowedSubmodules ?? [])
             {
                 ApiRepoPathPrefix = apiRepoPathPrefix,
+                ApiWorkItemPaths = isAdo ? AdoApiWorkItemPaths(repo) : [],
             },
             allowWriteOperations);
     }
@@ -118,6 +119,36 @@ internal static class DaemonOperationPolicy
     /// <summary>ADO REST repo route prefix: <c>/{org}/{project}/_apis/git/repositories/{repo}</c>.</summary>
     private static string AdoApiRepoPrefix(RepoIdentity repo) =>
         $"/{repo.OrgOrOwner}/{repo.Project}/_apis/git/repositories/{repo.RepoName}";
+
+    /// <summary>
+    /// The ADO REST route root <see cref="Orchestration.AdoWorkItemContextReader"/> reads a PR's linked work
+    /// items and their ancestry from. Empty when the repo carries no project, since without one there is no
+    /// route to name.
+    /// <para>
+    /// EXACTLY ONE root, and the count is the point. The other half of that reader's traffic — the PR's own
+    /// list of linked items at <c>_apis/git/repositories/{repo}/pullRequests/{id}/workitems</c> — already sits
+    /// under <see cref="AdoApiRepoPrefix"/> and needed no widening at all; only <c>_apis/wit/workitems</c> is
+    /// project-scoped, because ADO keys work items to a PROJECT and not to the repository a PR happens to live
+    /// in. Naming the git route here as well would have granted nothing and implied the surface was twice its
+    /// actual size.
+    /// </para>
+    /// <para>
+    /// The root covers the batch form the reader calls (<c>?ids=…&amp;$expand=relations</c>) and, as a
+    /// directory boundary, the per-item form under it — but NOT <c>_apis/wit/wiql</c>, <c>_apis/wit/queries</c>
+    /// or any other <c>wit</c> sibling: <see cref="OperationPolicy"/> matches a root, so <c>workitemtypes</c>
+    /// is outside it. It is reachable only through the read-only
+    /// <see cref="SandboxOperation.ReadProviderMetadata"/> arm, so this grants no way to create, update or
+    /// comment on a work item.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> AdoApiWorkItemPaths(RepoIdentity repo) =>
+        string.IsNullOrEmpty(repo.Project)
+            ?
+            []
+            :
+            [
+                $"/{repo.OrgOrOwner}/{repo.Project}/_apis/wit/workitems",
+            ];
 
     /// <summary>
     /// Parses the configured ReviewBot remote into a (host, repo-path) the push policy matches against.
