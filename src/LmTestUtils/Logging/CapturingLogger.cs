@@ -33,18 +33,6 @@ public sealed class CapturingLogger<T> : ILogger<T>
             && e.Text.Contains(substring, StringComparison.Ordinal));
 
     /// <summary>
-    ///     The rendered messages of every captured entry logged at <paramref name="level"/>, in log order.
-    ///     <para>
-    ///     <see cref="CountAtLevel"/> answers "does some line mention X?"; this answers "does ONE line carry
-    ///     X and Y and Z together?". Where a log line exists so an operator can act on it, the correlating
-    ///     fields (a run id, a category tag) and the payload have to be on the SAME line to be usable — three
-    ///     separate substring counts pass just as happily when the run id is on an unrelated line.
-    ///     </para>
-    /// </summary>
-    public IReadOnlyList<string> MessagesAtLevel(LogLevel level)
-        => [.. _entries.Where(e => e.Level == level).Select(e => e.Text)];
-
-    /// <summary>
     ///     Number of captured entries at <paramref name="level"/> whose logged EXCEPTION — rather than its
     ///     rendered message — carries <paramref name="substring"/> somewhere in its <c>InnerException</c> chain
     ///     (ordinal comparison). Entries logged without an exception never match.
