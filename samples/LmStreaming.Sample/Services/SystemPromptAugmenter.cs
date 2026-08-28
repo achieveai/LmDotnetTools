@@ -29,9 +29,18 @@ public static class SystemPromptAugmenter
     /// none (every conversation the UI creates, and every conversation provisioned before this field was
     /// honoured).
     /// <para>
-    /// Never throws. A missing thread, a missing property or a non-string value all mean "no caller
-    /// instructions", which is the behavior every existing conversation depends on; an agent build is not
-    /// worth failing over a prompt addendum.
+    /// <b>Absence</b> never throws: a missing thread, a missing property or a non-string value all mean
+    /// "no caller instructions", which is the behavior every existing conversation depends on; an agent
+    /// build is not worth failing over an addendum that was never recorded.
+    /// </para>
+    /// <para>
+    /// <b>Failure</b> does throw, and deliberately so — this is not a catch-all. A null
+    /// <paramref name="store"/> is a wiring bug and throws <see cref="ArgumentNullException"/>, and
+    /// whatever the store's own <c>LoadMetadataAsync</c> raises propagates unchanged:
+    /// <c>FileConversationStore</c> swallows only <c>JsonException</c> around its read, so IO and access
+    /// failures — and any backing-store failure from another implementation — reach the caller. A
+    /// degraded store surfaces as a failed agent build rather than as a silently bare prompt, which is
+    /// the distinction #528 existed to restore.
     /// </para>
     /// <para>
     /// The value is extracted with <see cref="ThreadPropertyValue.AsString"/> and NOT with a bare
