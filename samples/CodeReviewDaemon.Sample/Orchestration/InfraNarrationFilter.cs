@@ -116,20 +116,60 @@ internal static partial class InfraNarrationFilter
             var joined = string.Join('\n', segment);
             var bare = bulletPrefix is null ? joined : joined[bulletPrefix.Length..];
 
+            // Severity tags exempt the WHOLE segment, wherever the tag sits — in the section heading above
+            // it, or in the segment's own text. The heading check alone was not enough and erased real
+            // findings: this daemon reviews .NET repositories, so `dotnet`, `msbuild` and "no comments were
+            // posted" are the AUTHOR's domain vocabulary as much as ours. A "- **[HIGH]** the packaging step
+            // could not be run because `msbuild` is not available" bullet under a process heading, or a
+            // "Must — the toolchain is not installed on the release agent" line with no heading at all, both
+            // matched the structural patterns below and were rewritten into a false generic statement or
+            // deleted to the operator log. Checking the segment's own text closes that: a segment that
+            // announces its own severity is a finding by construction, whatever vocabulary it uses. It is
+            // hoisted to segment granularity rather than applied per sentence on purpose — a finding whose
+            // tag sits in its first sentence must protect its later sentences too.
+            if (IsFindingHeading(currentHeading) || CarriesSeverityTag(bare))
+            {
+                output.Append(joined).Append('\n');
+                lastCategory = null;
+                segment.Clear();
+                bulletPrefix = null;
+                return;
+            }
+
             // Sentence granularity, never more: a bullet or paragraph can mix an infra-narration sentence
             // with a real one the author needs (measured: run 235 — one paragraph, "No new comment should
             // be posted from this review." followed by "The PR still requires resolution ... before
             // approval." in the very same sentence run). Classify every sentence independently first; only
             // if NONE of them match does this fall through to the byte-for-byte fast path below, which is
             // what keeps the overwhelming majority of every review's original wrapping untouched.
-            var sentences = SentenceBoundary().Split(bare);
-            var categories = new (InfraCategory? Category, string SubTag)[sentences.Length];
+            //
+            // Classification and re-emission are both done PER INPUT LINE, and the surviving sentences of one
+            // line are re-joined with a space onto that same line. Splitting a segment into sentences and
+            // giving each its own line destroyed any structure that lives in the line breaks: an ordered-list
+            // item ("2. Local build ...") became two lines, a markdown table row was torn into fragments that
+            // no longer parse as a row, and a two-sentence bullet lost its marker on the continuation. The
+            // filter's job is to change matched sentences, not to re-wrap the document around them.
+            List<(string? Prefix, List<(string Text, InfraCategory? Category, string SubTag)> Sentences)> perLine =
+                new(segment.Count);
             var anyMatch = false;
-            for (var i = 0; i < sentences.Length; i++)
+            for (var li = 0; li < segment.Count; li++)
             {
-                var category = Classify(sentences[i], currentHeading, out var subTag);
-                categories[i] = (category, subTag);
-                anyMatch |= category is not null;
+                var prefix = li == 0 ? bulletPrefix : null;
+                var lineBody = prefix is null ? segment[li] : segment[li][prefix.Length..];
+                List<(string Text, InfraCategory? Category, string SubTag)> classified = [];
+                foreach (var sentence in SentenceBoundary().Split(lineBody))
+                {
+                    if (sentence.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    var category = Classify(sentence, out var subTag);
+                    anyMatch |= category is not null;
+                    classified.Add((sentence, category, subTag));
+                }
+
+                perLine.Add((prefix, classified));
             }
 
             if (!anyMatch)
@@ -141,43 +181,42 @@ internal static partial class InfraNarrationFilter
                 return;
             }
 
-            var firstLineEmitted = false;
-            for (var i = 0; i < sentences.Length; i++)
+            foreach (var (prefix, sentences) in perLine)
             {
-                var sentence = sentences[i];
-                if (sentence.Length == 0)
+                List<string> kept = [];
+                foreach (var (text, category, subTag) in sentences)
+                {
+                    switch (category)
+                    {
+                        case InfraCategory.SandboxTooling:
+                            // Rewrite in place — never delete. A neighboring sentence/bullet (a CI-evidence
+                            // bullet, or a second sentence on the same line) was never touched: this only
+                            // rewrites the matched sentence itself.
+                            kept.Add(RewrittenSandboxSentence);
+                            lastCategory = InfraCategory.SandboxTooling;
+                            break;
+                        case InfraCategory.ProviderOrPosting:
+                            // Moved, not written to the PR body at all — the caller logs this to the operator
+                            // channel. Zero value to the author; nothing substituted, because nothing is owed
+                            // here.
+                            moved.Add(new MovedNote(InfraCategory.ProviderOrPosting, subTag, currentHeading, text));
+                            lastCategory = InfraCategory.ProviderOrPosting;
+                            break;
+                        default:
+                            kept.Add(text);
+                            lastCategory = null;
+                            break;
+                    }
+                }
+
+                // Every sentence on this line was MOVEd, so there is nothing left to write. Drop the line
+                // outright rather than emit an orphaned bullet marker or a blank line the author never wrote.
+                if (kept.Count == 0)
                 {
                     continue;
                 }
 
-                var (category, subTag) = categories[i];
-
-                // The bullet marker (if any) rides on whichever sentence is actually the first one WRITTEN
-                // — a MOVEd leading sentence must not leave the bullet marker orphaned on a blank line.
-                var prefix = !firstLineEmitted ? bulletPrefix : null;
-                switch (category)
-                {
-                    case InfraCategory.SandboxTooling:
-                        // Rewrite in place — never delete. A neighboring sentence/bullet (a CI-evidence
-                        // bullet, or a second sentence in the same paragraph) was never touched: this only
-                        // rewrites the matched sentence itself.
-                        output.Append(prefix).Append(RewrittenSandboxSentence).Append('\n');
-                        lastCategory = InfraCategory.SandboxTooling;
-                        firstLineEmitted = true;
-                        break;
-                    case InfraCategory.ProviderOrPosting:
-                        // Moved, not written to the PR body at all — the caller logs this to the operator
-                        // channel. Zero value to the author; nothing substituted, because nothing is owed
-                        // here.
-                        moved.Add(new MovedNote(InfraCategory.ProviderOrPosting, subTag, currentHeading, sentence));
-                        lastCategory = InfraCategory.ProviderOrPosting;
-                        break;
-                    default:
-                        output.Append(prefix).Append(sentence).Append('\n');
-                        lastCategory = null;
-                        firstLineEmitted = true;
-                        break;
-                }
+                output.Append(prefix).Append(string.Join(' ', kept)).Append('\n');
             }
 
             segment.Clear();
@@ -265,17 +304,44 @@ internal static partial class InfraNarrationFilter
     }
 
     /// <summary>
-    /// Classifies one segment. Returns <c>null</c> — never touched — for anything under a finding heading
-    /// (see <see cref="IsFindingHeading"/>) and for anything that fails both structural patterns below, even
-    /// if it shares vocabulary with one (an author's own retry-policy or HTTP-status finding).
+    /// Whether <paramref name="body"/> still says anything to the PR author, ignoring the markdown scaffolding
+    /// that survives filtering on its own. A review that was entirely infra narration does NOT filter down to
+    /// the empty string — its section headings pass through untouched, because headings are never classified —
+    /// so it filters down to something like <c>"### Posting status\n"</c>. A plain
+    /// <see cref="string.IsNullOrWhiteSpace(string?)"/> test calls that content and posts it, which is how the
+    /// author got a comment consisting of the bot name and a bare heading. A line contributes nothing if it is
+    /// a heading, or if it carries no letter or digit at all (an orphaned bullet marker, a table separator row,
+    /// a horizontal rule, a stray fence).
     /// </summary>
-    private static InfraCategory? Classify(string segmentText, string? heading, out string subTag)
+    public static bool HasAuthorFacingContent(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return false;
+        }
+
+        foreach (var line in body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            if (HeadingLine().IsMatch(line) || NoWordCharacters().IsMatch(line))
+            {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Classifies one sentence. Returns <c>null</c> — never touched — for anything that fails both
+    /// structural patterns below, even if it shares vocabulary with one (an author's own retry-policy or
+    /// HTTP-status finding). Severity exemption is NOT checked here: it is hoisted to the caller so that it
+    /// applies to the whole segment, protecting the later sentences of a finding whose tag sits in its first.
+    /// </summary>
+    private static InfraCategory? Classify(string segmentText, out string subTag)
     {
         subTag = string.Empty;
-        if (IsFindingHeading(heading))
-        {
-            return null;
-        }
 
         // Checked first and takes precedence over a provider/HTTP vocabulary hit in the SAME segment (see
         // run 228 in the #113 corpus: "Jest test run... could not start because dependency resolution
@@ -315,17 +381,53 @@ internal static partial class InfraNarrationFilter
     private static bool IsFindingHeading(string? heading) =>
         heading is not null && FindingHeadingWord().IsMatch(heading);
 
+    /// <summary>
+    /// Whether a segment announces its OWN severity, and so is a finding regardless of the heading it sits
+    /// under or the vocabulary it uses. Two shapes, both taken from what this daemon's own prompt asks for:
+    /// a bracketed tag anywhere in the segment (<c>[BLOCKER]</c>, <c>**[HIGH]**</c>, <c>[MEDIUM]</c>), or a
+    /// severity word in TAG POSITION at the very start, followed by a separator (<c>Must — ...</c>,
+    /// <c>Should: ...</c>), after any bullet/emphasis/quote markers.
+    /// <para>
+    /// Tag position is the whole point of the second shape and it may not be relaxed into a bare word match.
+    /// "should", "must" and "low" are ordinary English that infra narration uses freely — measured run 235
+    /// is "No new comment <b>should</b> be posted from this review.", which is posting-state narration and
+    /// has to stay filtered. Requiring the word to lead the segment and be followed by a separator
+    /// distinguishes the prompt's <c>Must</c>/<c>Should</c>/<c>Consider</c> tag from the modal verb.
+    /// </para>
+    /// </summary>
+    private static bool CarriesSeverityTag(string segmentText) => SeverityTagInText().IsMatch(segmentText);
+
     [GeneratedRegex(@"^(?<hashes>#{1,6})\s+(?<text>.*)$")]
     private static partial Regex HeadingLine();
 
     [GeneratedRegex(@"^\s*[-*]\s+")]
     private static partial Regex BulletLine();
 
+    /// <summary>A line with no letter and no digit anywhere carries nothing an author can read.</summary>
+    [GeneratedRegex(@"^[^\p{L}\p{N}]*$")]
+    private static partial Regex NoWordCharacters();
+
     [GeneratedRegex(@"^\s*(```|~~~)")]
     private static partial Regex FenceMarker();
 
-    [GeneratedRegex(@"\b(BLOCKER|CRITICAL|HIGH|MEDIUM|LOW|MUST|SHOULD|CONSIDER|FINDING)\b", RegexOptions.IgnoreCase)]
+    // Plural and derived forms are matched because real headings use them: "## Findings",
+    // "## Review findings", "## Blockers", "## Considerations". The singular-only alternation left every one
+    // of those sections unprotected, which is where the over-filtering measured worst — a findings section is
+    // exactly where an author's real defects live. Widening this admits a known and DELIBERATE
+    // under-filtering trade: a genuinely infra-narrating bullet parked under a findings heading now survives
+    // to the author. That direction is recoverable (the author reads one irrelevant sentence); the other
+    // direction silently erases a defect report and nobody can tell it happened.
+    [GeneratedRegex(
+        @"\b(BLOCKERS?|CRITICAL|HIGH|MEDIUM|LOW|MUST|SHOULD|CONSIDER(?:ATION)?S?|FINDINGS?)\b",
+        RegexOptions.IgnoreCase)]
     private static partial Regex FindingHeadingWord();
+
+    [GeneratedRegex(
+        @"\[\s*(?:BLOCKERS?|CRITICAL|HIGH|MEDIUM|LOW|MUST|SHOULD|CONSIDER(?:ATION)?S?|FINDINGS?)\s*\]"
+            + @"|^[\s>*_#`-]*(?:BLOCKERS?|CRITICAL|HIGH|MEDIUM|LOW|MUST|SHOULD|CONSIDER(?:ATION)?S?|FINDINGS?)"
+            + @"\b\s*[:\-–—]",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex SeverityTagInText();
 
     // Broadened past "did not run"/"could not run" after the #113 fixture corpus turned up real phrasings a
     // narrower pattern missed: "I did not build or test locally" (run 283), "No local build or test commands

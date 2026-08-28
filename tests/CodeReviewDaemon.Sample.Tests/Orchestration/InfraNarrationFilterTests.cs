@@ -553,14 +553,19 @@ public sealed class InfraNarrationFilterTests
     {
         // No corpus review mixes a genuine finding and infra narration as adjacent bullets under one heading
         // (checked: zero such cases across all 261 completed #113-window reviews), so this composes two real
-        // pieces rather than quoting one run. The heading is run 245's actual heading verbatim ("## Review
-        // findings" — a flat bullet-list finding style with no per-bullet severity heading of its own, so
-        // IsFindingHeading does NOT exempt this section). The first bullet is run 245's actual MEDIUM finding,
-        // verbatim. The second bullet is run 41's actual sandbox sentence, verbatim, reformatted onto a bullet
-        // line rather than a bare paragraph. If this filter operated at section or heading granularity rather
-        // than per-bullet, either both bullets would be left alone (the sandbox sentence leaks to the author)
-        // or both would be touched (the real finding is corrupted or dropped) — BulletLine's per-line
-        // segmentation is what keeps them independent.
+        // pieces rather than quoting one run. The first bullet is run 245's actual MEDIUM finding, verbatim.
+        // The second bullet is run 41's actual sandbox sentence, verbatim, reformatted onto a bullet line
+        // rather than a bare paragraph. If this filter operated at section or heading granularity rather than
+        // per-bullet, either both bullets would be left alone (the sandbox sentence leaks to the author) or
+        // both would be touched (the real finding is corrupted or dropped) — per-line segmentation is what
+        // keeps them independent, and that is the ONLY property this test exists to pin.
+        //
+        // The heading is run 227's "## Review Coverage Notes", not run 245's own "## Review findings". Those
+        // are interchangeable for this test — both are section headings the sandbox bullet sits under — but
+        // they are no longer interchangeable for the filter: "findings" now exempts its whole section by
+        // design (see Filter_FindingsHeading_ExemptsTheWholeSectionIncludingUntaggedNarration below for that
+        // deliberate trade). Using a severity-free heading here keeps this test measuring bullet granularity
+        // rather than accidentally re-measuring heading scoping.
         const string FindingBullet =
             "- **[MEDIUM]** `Sources/AutomationTests/Tests/Analysis/Analysis-CreateAnalysisTests.spec.ts:714-719` "
             + "`selectCategoryFilter` converts every `visibleTab.click()` failure into `false` and then treats "
@@ -569,7 +574,7 @@ public sealed class InfraNarrationFilterTests
             + "confirmed overflow condition should use the fallback; unexpected click errors should propagate.";
         const string SandboxBullet =
             "- Focused tests could not be run because the sandbox does not have `dotnet` installed.";
-        const string Body = "## Review findings\n\n" + FindingBullet + "\n" + SandboxBullet;
+        const string Body = "## Review Coverage Notes\n\n" + FindingBullet + "\n" + SandboxBullet;
 
         var (filtered, moved) = InfraNarrationFilter.Filter(Body);
 
@@ -588,5 +593,185 @@ public sealed class InfraNarrationFilterTests
             "the adjacent sandbox bullet is still rewritten (never deleted) even though it directly follows "
                 + "a real finding bullet with no blank line between them");
         moved.Should().BeEmpty();
+    }
+
+    // ---- Severity-tagged segments are never touched, wherever the tag sits ---------------------------------
+    // The daemon reviews .NET repositories. `dotnet`, `msbuild`, "the toolchain is not installed" and "no
+    // comments were posted" are the AUTHOR's domain vocabulary at least as often as they are ours, and a
+    // review of THIS daemon says all four about the code under review. Heading scoping alone did not save
+    // them: a finding bullet under a process heading, or with no heading at all, matched the structural
+    // patterns and was rewritten into a false generic statement or deleted to the operator log — silently.
+    // Each case below is a genuine finding whose text must survive BYTE-FOR-BYTE.
+
+    [Fact]
+    public void Filter_HighFindingAboutMsbuildUnderAFindingsHeading_SurvivesByteForByte()
+    {
+        // Both protections cover this one: the heading names "findings", and the bullet carries [HIGH].
+        const string Body =
+            "## Review findings\n\n"
+            + "- **[HIGH]** `build/pack.ps1:12` The packaging step could not be run on Linux agents "
+            + "because `msbuild` is not available there; use `dotnet msbuild` instead.";
+
+        var (filtered, moved) = InfraNarrationFilter.Filter(Body);
+
+        filtered.Should().Be(
+            Body,
+            "a HIGH finding about the author's own build script is not infra narration, however much "
+                + "vocabulary it shares with it");
+        moved.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Filter_BlockerFindingAboutDotnetTestInCi_SurvivesByteForByte()
+    {
+        const string Body =
+            "## Findings\n\n"
+            + "- **[BLOCKER]** `Dockerfile:3` The base image ships no .NET SDK, so `dotnet test` could "
+            + "not be run in CI at all.";
+
+        var (filtered, moved) = InfraNarrationFilter.Filter(Body);
+
+        filtered.Should().Be(Body, "the author's CI is broken; that is the finding, not our sandbox");
+        moved.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Filter_MustTaggedFindingWithNoHeadingAtAll_SurvivesByteForByte()
+    {
+        // No heading, so heading scoping cannot help. The prompt's `Must —` tag in leading position is the
+        // only signal, and it has to be enough. Note this is also the case that forbids matching a bare
+        // "must"/"should" anywhere in a segment — see the run 235 posting-state test, which must stay filtered.
+        const string Body =
+            "Must — `scripts/ci.sh:8`: the toolchain is not installed on the release agent, so the signing "
+            + "step was not run for tagged builds.";
+
+        var (filtered, moved) = InfraNarrationFilter.Filter(Body);
+
+        filtered.Should().Be(Body, "a severity tag in tag position identifies a finding with no heading to help");
+        moved.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Filter_MediumFindingAboutOutboxPostingState_IsNotMovedToTheOperatorLog()
+    {
+        // A review OF THIS DAEMON. "no comments were posted" is the defect being reported, and moving it to
+        // the operator log would delete the finding from the author's review entirely — the worst disposition,
+        // because MOVE substitutes nothing and leaves no trace the author can see.
+        const string Body =
+            "## Review findings\n\n"
+            + "- **[MEDIUM]** `ReviewPoster.cs:40` On a collect-only run no comments were posted, but the "
+            + "outbox row is still marked Posted, so a later replay skips a real delivery.";
+
+        var (filtered, moved) = InfraNarrationFilter.Filter(Body);
+
+        filtered.Should().Be(Body);
+        moved.Should().BeEmpty(
+            "a MEDIUM finding about posting state is a finding about the AUTHOR's code, not our delivery "
+                + "narration, and MOVE would have deleted it outright");
+    }
+
+    [Fact]
+    public void Filter_FindingsHeading_ExemptsTheWholeSectionIncludingUntaggedNarration()
+    {
+        // The deliberate cost of widening the heading deny-list to plurals, written down rather than left to
+        // be discovered. An untagged sandbox sentence parked under a findings heading now reaches the author.
+        // That is the safe direction: the author reads one irrelevant sentence. The direction this buys
+        // protection from — erasing an untagged real finding under the same heading — is unrecoverable and
+        // invisible.
+        const string Body =
+            "## Findings\n\nFocused tests could not be run because the sandbox does not have `dotnet` installed.";
+
+        var (filtered, moved) = InfraNarrationFilter.Filter(Body);
+
+        filtered.Should().Be(Body, "a findings section is exempt as a whole, untagged segments included");
+        moved.Should().BeEmpty();
+    }
+
+    // ---- Emptiness is judged on what the author can READ, not on whitespace --------------------------------
+
+    [Theory]
+    // Headings are never classified, so an all-narration review filters down to its scaffolding, not to "".
+    [InlineData("### Posting status\n", false)]
+    [InlineData("## Verification\n\n### Posting status\n", false)]
+    [InlineData("", false)]
+    [InlineData("   \n\n  ", false)]
+    // Scaffolding with no letter or digit: an orphaned bullet, a table separator, a rule, a stray fence.
+    [InlineData("### Verification\n\n- \n| --- | --- |\n***\n```\n", false)]
+    // One real sentence anywhere is content, however much scaffolding surrounds it.
+    [InlineData("### Verification\n\nThe migration needs a default backfill.\n", true)]
+    [InlineData("- [BLOCKER] `AddTenantId` has no default.\n", true)]
+    public void HasAuthorFacingContent_ignores_scaffolding_and_reports_only_readable_content(
+        string body, bool expected)
+    {
+        InfraNarrationFilter.HasAuthorFacingContent(body).Should().Be(
+            expected,
+            "a bot-name prefix over a bare heading is not a review, and IsNullOrWhiteSpace calls it one");
+    }
+
+    // ---- Line structure survives filtering ----------------------------------------------------------------
+    // Filtering changes matched SENTENCES. It may not re-wrap the document around them: emitting each sentence
+    // of a matched line on its own line tore ordered-list items in half, broke markdown table rows into
+    // fragments that no longer parse as rows, and orphaned the second sentence of a bullet off its marker.
+
+    [Fact]
+    public void Filter_OrderedListItem_KeepsTheNumberAndTheRewriteOnOneLine()
+    {
+        const string Body =
+            "### Verification\n\n"
+            + "1. CI ran the full suite on the merge commit.\n"
+            + "2. Local build could not be run because the sandbox does not have `dotnet` installed.";
+
+        var (filtered, _) = InfraNarrationFilter.Filter(Body);
+
+        var lines = filtered.Split('\n');
+        lines.Should().ContainSingle(
+            l => l.StartsWith("2. ", StringComparison.Ordinal),
+            "the list marker and the rewritten text stay on ONE line — '2.' reads as a sentence end, and "
+                + "splitting there left a bare '2.' on its own line and orphaned the item text below it");
+        lines.Should().Contain(
+            "1. CI ran the full suite on the merge commit.", "the untouched item is byte-identical");
+        filtered.Should().Contain(
+            "2. Local build/test execution was not possible for this review; no results from running the code "
+                + "are reflected in this assessment.");
+    }
+
+    [Fact]
+    public void Filter_TableRow_StaysOnOneLineWithItsSurvivingCellText()
+    {
+        const string Body =
+            "### Verification\n\n"
+            + "| Check | Result |\n"
+            + "| --- | --- |\n"
+            + "| Build | Focused tests could not be run because the sandbox lacks `dotnet`. CI reported 1204 "
+            + "passing. |";
+
+        var (filtered, _) = InfraNarrationFilter.Filter(Body);
+
+        var rowLines = filtered.Split('\n').Where(l => l.Contains("1204", StringComparison.Ordinal)).ToList();
+        rowLines.Should().ContainSingle(
+            "the surviving cell text stays on its original row rather than being torn onto a line of its own");
+        rowLines[0].Should().Contain(
+            "Local build/test execution was not possible",
+            "the rewritten sentence stays in the same row as the text it sat beside");
+        filtered.Should().Contain("| --- | --- |", "the table's separator row is untouched");
+    }
+
+    [Fact]
+    public void Filter_TwoSentenceBullet_KeepsBothSentencesOnTheBulletLine()
+    {
+        const string Body =
+            "### Verification\n\n"
+            + "- Focused tests could not be run because the sandbox does not have `dotnet` installed. The "
+            + "migration still needs a default backfill before it is safe.";
+
+        var (filtered, _) = InfraNarrationFilter.Filter(Body);
+
+        var bulletLines = filtered.Split('\n').Where(l => l.StartsWith("- ", StringComparison.Ordinal)).ToList();
+        bulletLines.Should().ContainSingle(
+            "one input bullet stays one output bullet — the surviving sentence must not be orphaned onto a "
+                + "second line without a marker");
+        bulletLines[0].Should().Contain("The migration still needs a default backfill before it is safe.");
+        bulletLines[0].Should().Contain("Local build/test execution was not possible");
+        bulletLines[0].Should().NotContain("dotnet");
     }
 }
