@@ -7,8 +7,8 @@
     <RootNamespace>AchieveAi.LmDotnetTools.LmTestUtils</RootNamespace>
     <AssemblyName>AchieveAi.LmDotnetTools.LmTestUtils</AssemblyName>
     <PackageId>AchieveAi.LmDotnetTools.LmTestUtils</PackageId>
-    <Description>Test utilities for LmDotnetTools: fake HTTP message handlers, scripted SSE responders, provider test data generators, and Serilog/xUnit logging helpers. Use to mock OpenAI/Anthropic/OpenAI-Responses providers in unit and integration tests.</Description>
-    <PackageTags>$(PackageTags);testing;mocks;http-mocks;xunit;sse</PackageTags>
+    <Description>Test utilities for LmDotnetTools: fake HTTP message handlers, scripted SSE responders, and provider test data generators. Use to mock OpenAI/Anthropic/OpenAI-Responses providers in unit and integration tests. Carries no test-framework dependency; the xUnit-coupled logging helpers are in AchieveAi.LmDotnetTools.LmTestUtils.Xunit.</Description>
+    <PackageTags>$(PackageTags);testing;mocks;http-mocks;sse</PackageTags>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
@@ -19,15 +19,19 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.5" />
     <PackageReference Include="System.Net.Http" Version="4.3.4" />
     <PackageReference Include="System.Text.Json" Version="9.0.5" />
-    <PackageReference Include="xunit" Version="2.9.2" />
-    <!-- Serilog for structured test logging -->
-    <PackageReference Include="Serilog" Version="4.2.0" />
-    <PackageReference Include="Serilog.Extensions.Logging" Version="9.0.0" />
-    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
-    <PackageReference Include="Serilog.Sinks.XUnit" Version="3.0.5" />
-    <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
-    <PackageReference Include="Serilog.Enrichers.Thread" Version="4.0.0" />
-    <PackageReference Include="Serilog.Enrichers.Environment" Version="3.0.1" />
+    <!--
+      No xunit and no Serilog here on purpose. Applications reference this project for the
+      mock HTTP handlers and TestMode SSE responders (LmStreaming.Sample and MockProviderHost
+      both do), so anything referenced here lands in their published closure and, worse, in
+      the assembly graph that Serilog.Enrichers.CallerInfo eagerly walks at host startup.
+      The xunit-coupled logging helpers live in LmTestUtils.Xunit instead.
+
+      Note that this splits the AchieveAi.LmDotnetTools.LmTestUtils.Logging namespace across two
+      assemblies with no reference between them: CapturingLogger and ListLogger stay here, while
+      LoggingTestBase, TestLoggingConfiguration, TestLoggingFixture and TestLoggingModuleInitializer
+      are in LmTestUtils.Xunit. A "type or namespace not found" on one of those four means the
+      project needs a reference to LmTestUtils.Xunit, not a using directive.
+    -->
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />

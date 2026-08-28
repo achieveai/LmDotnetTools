@@ -98,6 +98,7 @@ $projects = @(
     "src/CopilotSdkProvider/AchieveAi.LmDotnetTools.CopilotSdkProvider.csproj",
     "src/CodexSdkProvider/AchieveAi.LmDotnetTools.CodexSdkProvider.csproj",
     "src/LmTestUtils/LmTestUtils.csproj",
+    "src/LmTestUtils.Xunit/LmTestUtils.Xunit.csproj",
     "samples/MockProviderHost/MockProviderHost.csproj",
     "src/Sandbox/AchieveAi.LmDotnetTools.Sandbox.csproj"
 )
