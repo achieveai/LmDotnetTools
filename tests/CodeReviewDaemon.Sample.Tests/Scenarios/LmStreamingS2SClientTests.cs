@@ -43,7 +43,7 @@ public sealed class LmStreamingS2SClientTests
             http, s2sSecret: "s2s-secret", sandboxAppId: "codereview-daemon", sandboxAppKey: "sbx-key");
 
         var threadId = await client.ProvisionAsync(
-            "ws-1", "openai", "workspace-agent", "REVIEW METHODOLOGY", CancellationToken.None);
+            "ws-1", "openai", "workspace-agent", "REVIEW METHODOLOGY", "gpt-5.6-sol", CancellationToken.None);
 
         threadId.Should().Be("thread-abc123");
         var recorded = handler.Requests.Should().ContainSingle().Subject;
@@ -58,7 +58,10 @@ public sealed class LmStreamingS2SClientTests
             // LmStreaming.Sample.E2E.Tests.SystemPromptCompositionTests, which reads the composed prompt
             // off the outbound provider request. If that test is ever deleted, delete this assertion's
             // claim to meaning with it rather than leaving it green.
-            .And.Contain("\"systemPromptAppendix\":\"REVIEW METHODOLOGY\"");
+            .And.Contain("\"systemPromptAppendix\":\"REVIEW METHODOLOGY\"")
+            // The configured sub-agent model rides the same call. Provision is the only moment it can be
+            // set: the host builds a thread's sub-agent options once, when it creates the agent.
+            .And.Contain("\"subAgentModelId\":\"gpt-5.6-sol\"");
         // The sandbox binds to whatever app id the daemon forwards — both passthrough headers must ride the call.
         recorded.SbxAppId.Should().Be("codereview-daemon");
         recorded.SbxAppKey.Should().Be("sbx-key");
@@ -74,13 +77,35 @@ public sealed class LmStreamingS2SClientTests
         var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
 
         _ = await client.ProvisionAsync(
-            "ws-1", "openai", "workspace-agent", systemPromptAppendix: null, CancellationToken.None);
+            "ws-1", "openai", "workspace-agent",
+            systemPromptAppendix: null, subAgentModelId: null, CancellationToken.None);
 
         var recorded = handler.Requests.Should().ContainSingle().Subject;
         recorded.SbxAppId.Should().BeNull();
         recorded.SbxAppKey.Should().BeNull();
         // A caller with no instructions sends an explicit null, which the host treats as absent.
         recorded.Body.Should().Contain("\"systemPromptAppendix\":null");
+        // Same for an unconfigured sub-agent model: an explicit null, never an empty string. A host that
+        // stored "" would then hand every spawn a blank model id instead of leaving it to inherit.
+        recorded.Body.Should().Contain("\"subAgentModelId\":null");
+    }
+
+    [Fact]
+    public async Task ProvisionAsync_sends_a_blank_sub_agent_model_as_null_rather_than_an_empty_string()
+    {
+        // CodeReviewDaemonOptions.SubAgentModelId defaults to "" — not null — so the unconfigured daemon
+        // hits this path on every provision, and it is the path that must not put "" on the wire.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-y\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
+
+        _ = await client.ProvisionAsync(
+            "ws-1", "openai", "workspace-agent",
+            systemPromptAppendix: null, subAgentModelId: "   ", CancellationToken.None);
+
+        handler.Requests.Should().ContainSingle().Subject.Body
+            .Should().Contain("\"subAgentModelId\":null");
     }
 
     [Fact]

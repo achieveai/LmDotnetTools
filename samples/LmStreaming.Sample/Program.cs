@@ -1595,6 +1595,16 @@ try
                     if (subAgentOptions is not null)
                     {
                         var subAgentModelResolver = sp.GetRequiredService<SubAgentModelResolver>();
+                        // The conversation's own default sub-agent model, set by the headless caller at
+                        // provision (ProvisionConversationRequest.SubAgentModelId). This is what lets a
+                        // caller run a cheap orchestrator and stronger workers; without it the caller can
+                        // only choose the conversation's provider id, which every child then inherits.
+                        // Read here, at the point of use, so the value cannot be accepted at provision and
+                        // then quietly drive nothing — the state #529 found it in.
+                        var conversationSubAgentModelId = ConversationSubAgentModel
+                            .ReadAsync(sp.GetRequiredService<IConversationStore>(), threadId)
+                            .GetAwaiter()
+                            .GetResult();
                         subAgentOptions = subAgentOptions with
                         {
                             TierModelResolver = tier => subAgentModelResolver.ResolveClimbing(null, tier),
@@ -1604,6 +1614,7 @@ try
                             // LLM picks a real one in the first place.
                             ModelOverrideValidator = subAgentModelResolver.IsKnownModel,
                             AvailableModelIds = subAgentModelResolver.AvailableModelIds,
+                            DefaultSubAgentModelId = conversationSubAgentModelId,
                         };
                     }
 

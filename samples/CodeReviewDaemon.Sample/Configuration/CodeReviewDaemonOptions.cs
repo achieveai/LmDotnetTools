@@ -122,11 +122,30 @@ internal sealed class CodeReviewDaemonOptions
     /// the focused, deep review passes the primary loop dispatches. Empty (default) ⇒ sub-agents inherit the
     /// primary loop's model (<see cref="ReviewModelId"/>), exactly as before. Set it to split the two roles:
     /// a stronger model for the actual reviewing (e.g. <c>gpt-5.6-sol</c>) while the orchestrator/dispatcher
-    /// runs a lighter one (<see cref="ReviewModelId"/>, e.g. <c>gpt-5.6-luna</c>). When set it overrides
-    /// whatever <c>model:</c> a discovered sub-agent's markdown declares. It must be served by the same
-    /// Copilot backend the daemon uses (a <c>gpt-*</c>/<c>o*</c> id routes through OpenAI Responses, a
+    /// runs a lighter one (<see cref="ReviewModelId"/>, e.g. <c>gpt-5.6-luna</c>). It must be served by the
+    /// same Copilot backend the daemon uses (a <c>gpt-*</c>/<c>o*</c> id routes through OpenAI Responses, a
     /// <c>claude-*</c> id through Anthropic Messages) — an unsupported slug is rejected with
     /// <c>model_not_supported</c>.
+    /// <para>
+    /// <b>Precedence.</b> The value is not the last word — it is one rung of a ladder the review host
+    /// applies per spawn, highest first:
+    /// <code>spawn-model &gt; spawn-tier &gt; SubAgentModelId &gt; template-model &gt; template-tier &gt; ReviewModelId</code>
+    /// So a spawn that names its own <c>model</c> or <c>modelIntelligence</c> tier still wins (the parent
+    /// agent deciding for THAT task), this value then outranks whatever <c>model:</c>/
+    /// <c>modelintelligence:</c> a discovered sub-agent's markdown declares (those templates live in a
+    /// workspace the operator does not author), and only with none of the above does a sub-agent fall
+    /// through to the orchestrator's <see cref="ReviewModelId"/>. Empty (default) removes this rung
+    /// entirely, so <see cref="ReviewModelId"/> is inherited exactly as before. Which rung actually won is
+    /// reported per sub-agent as <c>modelSelectionSource</c> (<c>conversation-default</c> when this one
+    /// did), so "the configured model won" is distinguishable from "nothing was configured".
+    /// </para>
+    /// <para>
+    /// <b>Wire.</b> Read by <c>S2SReviewAgentLoopFactory</c> and sent to the review host as
+    /// <c>ProvisionConversationRequest.SubAgentModelId</c> when a review provisions its conversation. It is
+    /// conversation-scoped, so it takes effect only on a host running this build or newer, only from that
+    /// host's next restart, and only for conversations provisioned after that — a review RESUMED onto an
+    /// existing thread keeps whatever its original provision set.
+    /// </para>
     /// </summary>
     public string SubAgentModelId { get; init; } = "";
 

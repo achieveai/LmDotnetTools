@@ -322,6 +322,11 @@ public class ConversationsController(
                         request.SystemPromptAppendix;
                 }
 
+                if (!string.IsNullOrWhiteSpace(request.SubAgentModelId))
+                {
+                    propertiesBuilder[ConversationSubAgentModel.PropertyKey] = request.SubAgentModelId;
+                }
+
                 if (!string.IsNullOrWhiteSpace(request.AuthWebhookUrl))
                 {
                     propertiesBuilder["sample.authWebhookUrl"] = request.AuthWebhookUrl;

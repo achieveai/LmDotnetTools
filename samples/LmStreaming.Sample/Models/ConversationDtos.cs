@@ -198,6 +198,29 @@ public record ProvisionConversationRequest
     /// a replacement — the mode stays in charge of the workspace, tools and sub-agent catalog.
     /// </summary>
     public string? SystemPromptAppendix { get; init; }
+
+    /// <summary>
+    /// Optional model id every sub-agent spawned in THIS conversation runs on, unless the spawn itself named
+    /// a <c>model</c> or a <c>modelIntelligence</c> tier. This is the channel by which a headless caller that
+    /// owns the spend — the code-review daemon's <c>SubAgentModelId</c> — splits a cheap orchestrator from
+    /// stronger workers: without it the caller can only pick ONE model (the conversation's provider id) and
+    /// every child silently inherits it.
+    /// <para>
+    /// Additive and optional on purpose. A host that predates this field ignores it and every child inherits
+    /// the parent exactly as before, so the property needs no schema-version bump; a caller that predates it
+    /// sends nothing and gets the same. It outranks a sub-agent template's own <c>model:</c> frontmatter,
+    /// because the templates live in a workspace the caller does not author and cannot read — see
+    /// <c>SubAgentOptions.DefaultSubAgentModelId</c> for the full ordering.
+    /// </para>
+    /// <para>
+    /// One documented exclusion: workflow-controller delegates. Those spawn through the separate options
+    /// built by <c>BuildControllerOptions</c> in <c>Program.cs</c>, which deliberately leaves
+    /// <c>DefaultSubAgentModelId</c> unset so a delegate runs on the controller's own model and keeps its
+    /// already-transport-shaped inherited reasoning. So "every sub-agent in this conversation" means every
+    /// sub-agent the thread's own agent spawns, not the delegates a workflow controller spawns beneath it.
+    /// </para>
+    /// </summary>
+    public string? SubAgentModelId { get; init; }
 }
 
 /// <summary>
