@@ -203,9 +203,13 @@ internal static class SchemaMigrations
     // NOT a child of review_run, and it carries no run id at all — deliberately. The two enforcement
     // points that write here do not both have a run in hand: the outbound HTTP seam is a singleton shared
     // with the poller, whose calls belong to no run. An FK (or even a plain run column) would force either
-    // a fabricated id or a silently dropped record at exactly the site that must never drop one. The run a
-    // refusal belongs to, when there is one, is recoverable from `target` and `at_utc`; a refusal that was
-    // not written is recoverable from nothing.
+    // a fabricated id or a silently dropped record at exactly the site that must never drop one. A refusal
+    // that was not written is recoverable from nothing, which is the trade being made.
+    //
+    // The consequence, stated plainly rather than waved at: a writer that HAS a run must put the run id in
+    // `target` itself, because nothing else here will. The spawn gate does (`run {id} thread {…}`); the HTTP
+    // seam records the request URI, which names the PR route but not the run, and no table maps a thread id
+    // or a URI back to a run. So an egress refusal is attributable to a PR and an interval, not to a run.
     //
     // at_utc is a fixed-width UTC round-trip ("O") string like every other timestamp in this schema, so
     // lexicographic comparison is chronological.

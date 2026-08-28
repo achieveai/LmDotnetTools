@@ -277,6 +277,53 @@ public sealed class CollectOnlyProviderWriteGateTests : LoggingTestBase
         rows[0].Target.Should().Be(PrThreadsRoute);
         rows[0].AtUtc.Should().Be(new DateTimeOffset(2026, 8, 10, 4, 5, 6, TimeSpan.Zero));
     }
+
+    /// <summary>
+    /// The "never throws" contract, exercised against a store that actually fails rather than only against a
+    /// healthy one. The recorder is called from inside the HTTP handler AFTER the request has already been
+    /// denied and the credential stripped, so an exception escaping here would not un-refuse anything — it
+    /// would replace a completed refusal with a fault propagating out of <c>SendAsync</c>, turning an audit
+    /// gap into an outage at the seam whose whole job is to fail closed quietly.
+    /// <para>
+    /// The failure is a store whose connection is closed, which is what a disposed or torn-down host looks
+    /// like from here; the same catch covers the locked, full and mid-migration cases the doc comment names.
+    /// Two things are asserted, and the second is the one that matters: the call does not throw, AND the gap
+    /// is LOGGED at Error — a swallow that says nothing would satisfy "never throws" while making a lost
+    /// refusal indistinguishable from a refusal that never happened, which is the exact confusion this whole
+    /// ledger exists to end.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_failing_store_degrades_the_recording_to_a_logged_gap_not_a_throw()
+    {
+        using var database = new TempSqliteDatabase();
+        var store = new ReviewStore(database.ConnectionString);
+        var logs = new CapturingLoggerFactory();
+        var recorder = new StorePolicyRefusalRecorder(
+            store,
+            logs.CreateLogger<StorePolicyRefusalRecorder>());
+
+        // Break it: the connection the store writes through is gone, so the INSERT cannot be attempted.
+        store.Dispose();
+
+        var act = () => recorder.Record(new PolicyRefusalRecord(
+            DateTimeOffset.UtcNow,
+            PolicyRefusalKind.ProviderWrite,
+            "ado",
+            nameof(SandboxOperation.PostReviewComment),
+            "POST",
+            PrThreadsRoute,
+            "this policy is collect-only and has no provider-API write capability"));
+
+        act.Should().NotThrow(
+            "the write was already refused; letting the RECORDING fail the call turns an audit gap into an "
+                + "outage at the enforcement site");
+
+        logs.Capturing.CountAtLevel(LogLevel.Error, "not in the ledger").Should()
+            .Be(1, "a refusal that could not be persisted must say so, or the gap is itself silent");
+        logs.Capturing.CountAtLevel(LogLevel.Warning, nameof(SandboxOperation.PostReviewComment)).Should()
+            .Be(1, "the refusal line itself is still emitted — the log is the fallback record");
+    }
 }
 
 /// <summary>
@@ -436,6 +483,14 @@ public sealed class ReviewSpawnGateTests : LoggingTestBase
         refusals.Recorded.Should().ContainSingle(
             "a barrier polls for minutes; one refusal per template per review, not one per poll");
         logs.Capturing.CountAtLevel(LogLevel.Error, "ado:ado-devops-assistant").Should().Be(1);
+
+        // The run id has to reach the DURABLE row, not only the log. policy_refusal carries no run column and
+        // nothing maps a thread id back to a run, so a target naming only the thread leaves an operator
+        // holding a refusal they cannot attribute to a review.
+        refusals.Recorded[0].Target.Should()
+            .Be(
+                "run 5501220 thread thread-a2 (agent a2)",
+                "the refusal target is the only place the run id survives into the ledger");
     }
 
     [Fact]

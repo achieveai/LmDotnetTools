@@ -4,7 +4,7 @@ namespace CodeReviewDaemon.Sample.Workspace;
 
 /// <summary>
 /// The production <see cref="IPolicyRefusalRecorder"/>: writes every refusal to the daemon's own store
-/// (<c>policy_refusal</c>, migration v7) and mirrors it to the log at Warning so it is visible in both the
+/// (<c>policy_refusal</c>, migration v6) and mirrors it to the log at Warning so it is visible in both the
 /// place an operator queries and the place an operator tails.
 /// <para>
 /// <b>Never throws.</b> A store that is locked, full, or mid-migration must not be able to convert a

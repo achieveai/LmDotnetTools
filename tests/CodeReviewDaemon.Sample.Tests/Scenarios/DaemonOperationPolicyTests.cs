@@ -103,7 +103,13 @@ public sealed class DaemonOperationPolicyTests
     [Fact]
     public void Without_a_reviewbot_url_push_is_denied_but_fetch_and_metadata_work()
     {
-        var policy = DaemonOperationPolicy.BuildForRun(GitHubRepo, reviewBotRepoUrl: null);
+        // Write-capable ON PURPOSE. This case is about the ROUTE half of the push decision — that a missing
+        // ReviewBot URL leaves ParseReviewBotRemote's unmatchable fallback host as the only destination. Since
+        // #536 the capability check runs first, so a policy built without an explicit grant would deny on the
+        // capability and never reach DecideReceivePack at all: the assertion below would pass no matter what
+        // ParseReviewBotRemote did, which is the vacuous shape this comment exists to prevent recurring.
+        var policy = DaemonOperationPolicy.BuildForRun(
+            GitHubRepo, reviewBotRepoUrl: null, allowWriteOperations: true);
 
         Fetch(policy, SandboxOperation.FetchTarget, "github.com", "/acme/widgets.git/info/refs?service=git-upload-pack")
             .IsAllowed.Should().BeTrue();
