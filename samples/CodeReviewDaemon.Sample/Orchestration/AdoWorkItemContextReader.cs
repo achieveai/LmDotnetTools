@@ -88,6 +88,20 @@ internal sealed record AdoWorkItemContext
     /// reported as ending at a Feature can say it might not really end there.</summary>
     public bool DepthCapReached { get; init; }
 
+    /// <summary>
+    /// Whether a LEVEL of the ancestry walk could not be read, cutting the chain short of where it really
+    /// ends. Distinct from <see cref="AdoWorkItemLookup.Failed"/>, which is the whole lookup coming back
+    /// empty: here the items already collected are true and worth reporting, and only what sits ABOVE them is
+    /// unknown.
+    /// <para>
+    /// It has to be REPORTED for the same reason <see cref="OmittedItems"/> and <see cref="DepthCapReached"/>
+    /// do, and rather more urgently: without it, a child whose parent batch 403s renders as a one-item chain
+    /// under a preamble that tells the reviewer to "check the chain before calling anything missing". The
+    /// reviewer would be checking a chain the daemon knows is incomplete and has not said so.
+    /// </para>
+    /// </summary>
+    public bool AncestryReadFailed { get; init; }
+
     /// <summary>Nobody looked. Renders no block at all.</summary>
     public static readonly AdoWorkItemContext Unavailable = new() { Outcome = AdoWorkItemLookup.Unavailable };
 
@@ -309,6 +323,7 @@ internal sealed class AdoWorkItemContextReader
         var seen = new HashSet<int>();
         var omitted = 0;
         var depthCapReached = false;
+        var ancestryReadFailed = false;
 
         // The frontier for the current level, already de-duplicated and already capped.
         var frontier = Admit(linkedIds, seen, items.Count, ref omitted);
@@ -326,6 +341,10 @@ internal sealed class AdoWorkItemContextReader
                     return AdoWorkItemContext.Failed;
                 }
 
+                // The chain is now SHORTER than it really is, and the reviewer cannot tell that from the items
+                // alone. Recorded here rather than inferred at the render, because this is the only point that
+                // knows the walk stopped for want of an answer rather than for want of a parent.
+                ancestryReadFailed = true;
                 break;
             }
 
@@ -363,6 +382,7 @@ internal sealed class AdoWorkItemContextReader
             Items = [.. items.OrderBy(static i => i.Depth).ThenBy(static i => i.Id)],
             OmittedItems = omitted,
             DepthCapReached = depthCapReached,
+            AncestryReadFailed = ancestryReadFailed,
         };
     }
 
