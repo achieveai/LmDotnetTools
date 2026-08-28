@@ -4812,18 +4812,28 @@ internal sealed class ReviewCheckpointCorruptException(string message, Exception
 /// </summary>
 /// <remarks>
 /// A dedicated type ONLY so <c>PrOrchestrator.IsGovernedFailure</c> can charge it against the run's retry
-/// budget. As a plain <see cref="InvalidOperationException"/> the refusal was ungoverned, which means the run
-/// is written RetryPending, re-attempted every poll, and additionally prioritized by
-/// <c>StrandedRunReconciler</c>'s RetryPending fast path — and each of those attempts is a FULL review,
-/// fanned out and billed, discarded at the last line. That is the shape the governor exists to bound: nothing
-/// about the PR's history changes between two polls, so a refusal reproduces identically and the run has to
-/// park eventually. It matters immediately rather than in theory, because every PR whose only prior primary
-/// body is one of the 58 historical sentinels enters that loop on its next round.
+/// budget. As a plain <see cref="InvalidOperationException"/> the refusal was ungoverned, so the run was
+/// written RetryPending and re-attempted on EVERY poll — and each of those attempts is a FULL review, fanned
+/// out and billed, discarded at the last line. That is the shape the governor exists to bound: nothing about
+/// the PR's history changes between two polls, so a refusal reproduces identically. It matters immediately
+/// rather than in theory, because every PR whose only prior primary body is one of the 58 historical
+/// sentinels enters that loop on its next round.
 /// <para>
-/// It is NOT a transient. The prior-review question is answered from the store, so the next poll asks the
-/// same question of the same rows. What clears it is a genuine earlier review appearing — which is a new
-/// round, i.e. a new run id, which starts with a fresh budget — or a restart, the operator's documented
-/// "retry everything" gesture.
+/// What governance buys is the poll cadence, not permanent silence. Once the budget is spent the run parks,
+/// and the poll path stops re-reviewing it. <c>StrandedRunReconciler</c> then picks the parked run up on its
+/// grace timer (<c>StrandedRunRetryPendingGraceMinutes</c>, 45 by default) and resumes it through
+/// <c>PrOrchestrator.ReconcileAsync</c>, which is <c>RunAsync(admitParked: true)</c> and resets the governor
+/// for that run id before any stage — so the refusal IS re-attempted, once per reconciler pass, and refused
+/// identically. That reset is deliberate: it is also the only path by which a run parked for a since-resolved
+/// reason recovers without an operator. So the win is cadence — roughly one wasted review per 45 minutes
+/// instead of one per poll — and the reviews the reconciler spends are the price of that recovery path.
+/// </para>
+/// <para>
+/// It is NOT a transient. The prior-review question is answered from the store, so the next attempt asks the
+/// same question of the same rows, and a genuine earlier review appearing does not by itself unpark this run
+/// — the park is keyed on the run id and is never re-evaluated. What clears the park is the reconciler's
+/// reset above, or a restart, the operator's documented "retry everything" gesture. What ends the refusals is
+/// a later round: a new run id, asking the store a question that now has a real prior body to find.
 /// </para>
 /// </remarks>
 internal sealed class SentinelUnauthorizedException(string message) : InvalidOperationException(message);

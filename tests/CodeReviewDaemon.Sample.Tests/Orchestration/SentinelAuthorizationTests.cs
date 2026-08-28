@@ -174,13 +174,20 @@ public sealed class SentinelAuthorizationTests
     }
 
     /// <summary>
-    /// The refusal must be a BOUNDED loop, not a permanent one. A refused run is written RetryPending, and
-    /// RetryPending is both re-attempted on every poll and given the fast path by <c>StrandedRunReconciler</c>
-    /// — while the prior-review question is answered from the store, so the next poll asks the same question
-    /// of the same rows and refuses identically. Each of those attempts is a FULL review, fanned out and
-    /// billed, thrown away at the last line. That is precisely what the retry budget exists to bound, and it
-    /// is not hypothetical: every PR whose only prior primary body is one of the 58 historical sentinels
-    /// enters this loop on its next round.
+    /// A refused run is written RetryPending and re-attempted on every poll — while the prior-review question
+    /// is answered from the store, so the next poll asks the same question of the same rows and refuses
+    /// identically. Each of those attempts is a FULL review, fanned out and billed, thrown away at the last
+    /// line. That is precisely what the retry budget exists to bound, and it is not hypothetical: every PR
+    /// whose only prior primary body is one of the 58 historical sentinels enters this loop on its next round.
+    /// <para>
+    /// Scope: this pins the POLL path only. It asserts that once the budget is spent the poll path parks the
+    /// run and stops re-reviewing it. It does NOT assert the run is never re-attempted, because it is:
+    /// <c>StrandedRunReconciler</c> resumes parked RetryPending runs on its grace timer through
+    /// <c>PrOrchestrator.ReconcileAsync</c> (<c>RunAsync(admitParked: true)</c>), which resets the governor for
+    /// the run id, so one refusal per reconciler pass remains — by design, since that reset is also the only
+    /// unattended recovery path for a run parked on a since-resolved cause. What is bounded here is the
+    /// cadence: roughly one wasted review per grace window instead of one per poll.
+    /// </para>
     /// <para>
     /// Driven end to end through the real executor rather than a stub that throws the type, because the
     /// property is about the SECOND poll not re-reviewing — which is only observable if the first one
