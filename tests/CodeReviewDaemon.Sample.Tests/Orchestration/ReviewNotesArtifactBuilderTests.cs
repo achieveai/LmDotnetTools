@@ -958,6 +958,44 @@ public sealed class ReviewNotesArtifactBuilderTests
     }
 
     [Fact]
+    public async Task Two_reviewers_sharing_a_label_are_each_credited_only_with_their_own_rows()
+    {
+        // A reviewer's LABEL is not its identity. It is `node.Name ?? node.Template`, and Name arrives off
+        // the wire chosen by the model, so two specialists running the same template with no name of their
+        // own are labelled identically — an ordinary roster, not a pathological one.
+        //
+        // Attributing rows by that label makes the per-source arithmetic impossible: a join on it fans out,
+        // and every colliding source is credited with the WHOLE group's rows. The failure is silent, because
+        // the global Shortfall is computed from totals that are still correct and so never trips the warning
+        // at the call site — and the rows are permanent, since the transcripts they came from are not kept.
+        //
+        // The two invariants below are what "Recorded" has to mean for a shortfall to be a shortfall rather
+        // than a restatement: the per-source counts must PARTITION the record, and no source may be credited
+        // with more rows than it was parsed for.
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", ThreeFindings)]));
+
+        var built = await BuildFullAsync(
+            builder,
+            NewContext(Node("agent-1", "architecture"), Node("agent-2", "architecture")),
+            shippedReviewBody: ThreeShipped);
+
+        var findings = built.Findings;
+        findings.RecordedCount.Should().Be(6, "two reviewers contributed three findings each");
+        findings.Sources.Should().HaveCount(2, "two roster nodes reviewed, whatever they are called");
+
+        findings.Sources.Sum(s => s.Recorded).Should().Be(
+            findings.RecordedCount,
+            "the per-source counts must partition the record — a row belongs to exactly one reviewer, so "
+                + "double-counting one reviewer's rows against another inflates the sum past the total");
+        findings.Sources.Should().OnlyContain(
+            s => s.Recorded <= s.Parsed,
+            "no reviewer can contribute more rows than it had findings parsed out of it");
+        findings.Sources.Should().OnlyContain(
+            s => s.Parsed == 3 && s.Recorded == 3,
+            "each of the two reviewers is credited with its own three findings and none of the other's");
+    }
+
+    [Fact]
     public async Task A_finding_is_recorded_with_its_severity_as_tokens_not_only_as_prose()
     {
         // Positive control, on a real citation from a live review (DiCouplingSite is the round-01

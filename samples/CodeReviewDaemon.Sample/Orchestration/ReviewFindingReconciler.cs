@@ -61,7 +61,15 @@ internal sealed record ParsedReviewFinding(
     bool IsQuestion);
 
 /// <summary>One specialist finding and what the shipped review did with it.</summary>
-/// <param name="Source">The reviewer's display name, as the findings file names it.</param>
+/// <param name="SourceIndex">
+/// Which reviewer in the source list produced this row — its position, not its name. This is the ONLY
+/// identity a caller may group these rows by. <paramref name="Source"/> is a display label derived from
+/// <c>node.Name ?? node.Template</c>, and <c>Name</c> is chosen by the model off the wire, so two
+/// specialists running one template with no name of their own carry the same label. Grouping on that label
+/// fans out and credits every colliding reviewer with the whole group's rows, which makes the per-reviewer
+/// accounting arithmetically impossible while the global totals stay correct — i.e. silently.
+/// </param>
+/// <param name="Source">The reviewer's display name, as the findings file names it. Not unique.</param>
 /// <param name="Template">The sub-agent template it ran.</param>
 /// <param name="Title">The finding's lead line, verbatim.</param>
 /// <param name="Location">The cited <c>path:line</c>, rendered.</param>
@@ -75,6 +83,7 @@ internal sealed record ParsedReviewFinding(
 /// <param name="ShippedTitle">The shipped item's lead line, or null when nothing cited it.</param>
 /// <param name="SynthesisNote">The shipped review's own stated reason, never a generated one.</param>
 internal sealed record ReconciledFinding(
+    int SourceIndex,
     string Source,
     string Template,
     string Title,
@@ -87,7 +96,13 @@ internal sealed record ReconciledFinding(
     string? SynthesisNote);
 
 /// <summary>How many finding-shaped blocks one reviewer contributed, before any matching happened.</summary>
-internal sealed record ReviewFindingSourceCount(string Label, string Template, int Parsed);
+/// <param name="Index">The reviewer's position in the source list — the join key that
+/// <see cref="ReconciledFinding.SourceIndex"/> matches. <paramref name="Label"/> is a display name and can
+/// repeat across reviewers, so it is not one.</param>
+/// <param name="Label">The reviewer's display name. Not unique.</param>
+/// <param name="Template">The sub-agent template it ran.</param>
+/// <param name="Parsed">Finding-shaped blocks extracted from its own text.</param>
+internal sealed record ReviewFindingSourceCount(int Index, string Label, string Template, int Parsed);
 
 /// <summary>
 /// Maps each specialist finding to its outcome in the shipped review, and renders that map as a notes
@@ -289,9 +304,14 @@ internal static partial class ReviewFindingReconciler
         }
 
         var shipped = ParseFindings(shippedReviewBody);
-        var pending = new List<(ReviewFindingSource Source, ParsedReviewFinding Finding, int ShippedIndex)>();
-        foreach (var source in sources)
+        var pending = new List<(
+            int SourceIndex,
+            ReviewFindingSource Source,
+            ParsedReviewFinding Finding,
+            int ShippedIndex)>();
+        for (var sourceIndex = 0; sourceIndex < sources.Count; sourceIndex++)
         {
+            var source = sources[sourceIndex];
             foreach (var finding in ParseFindings(source.OwnText))
             {
                 var best = -1;
@@ -306,7 +326,7 @@ internal static partial class ReviewFindingReconciler
                     }
                 }
 
-                pending.Add((source, finding, best));
+                pending.Add((sourceIndex, source, finding, best));
             }
         }
 
@@ -314,7 +334,7 @@ internal static partial class ReviewFindingReconciler
         // row is classified, because "merged" is a property of the shipped item and cannot be seen from one
         // specialist's side.
         var absorbed = new int[shipped.Count];
-        foreach (var (_, _, index) in pending)
+        foreach (var (_, _, _, index) in pending)
         {
             if (index >= 0)
             {
@@ -323,12 +343,12 @@ internal static partial class ReviewFindingReconciler
         }
 
         var rows = new List<ReconciledFinding>(pending.Count);
-        foreach (var (source, finding, index) in pending)
+        foreach (var (sourceIndex, source, finding, index) in pending)
         {
             if (index < 0)
             {
                 rows.Add(new ReconciledFinding(
-                    source.Label, source.Template, finding.Title, RenderLocation(finding),
+                    sourceIndex, source.Label, source.Template, finding.Title, RenderLocation(finding),
                     finding.SeverityPhrase, finding.SeverityTokens, ReviewFindingOutcome.Dropped,
                     ShippedSeverity: null, ShippedTitle: null, SynthesisNote: null));
                 continue;
@@ -350,7 +370,7 @@ internal static partial class ReviewFindingReconciler
                         : ReviewFindingOutcome.Kept;
 
             rows.Add(new ReconciledFinding(
-                source.Label, source.Template, finding.Title, RenderLocation(finding),
+                sourceIndex, source.Label, source.Template, finding.Title, RenderLocation(finding),
                 finding.SeverityPhrase, finding.SeverityTokens, outcome,
                 match.SeverityPhrase, match.Title, StatedDisposition(match)));
         }
@@ -376,7 +396,8 @@ internal static partial class ReviewFindingReconciler
         ArgumentNullException.ThrowIfNull(sources);
         return
         [
-            .. sources.Select(s => new ReviewFindingSourceCount(s.Label, s.Template, ParseFindings(s.OwnText).Count)),
+            .. sources.Select((s, i) =>
+                new ReviewFindingSourceCount(i, s.Label, s.Template, ParseFindings(s.OwnText).Count)),
         ];
     }
 

@@ -125,16 +125,23 @@ internal sealed record ReviewFindingsArtifactPayload(
         ArgumentNullException.ThrowIfNull(reconciled);
 
         var parsed = ReviewFindingReconciler.CountParsed(sources);
+
+        // Grouped by the reviewer's POSITION, never by its label. The label is `node.Name ?? node.Template`
+        // and Name comes off the wire chosen by the model, so two specialists running one template with no
+        // name of their own share it. A join on the label fans out and credits each colliding reviewer with
+        // the whole group's rows — the per-reviewer counts then sum past RecordedCount and can exceed the
+        // reviewer's own Parsed, while the global totals stay right and the shortfall warning never fires.
+        // Silent, and permanent: the transcripts these rows came from are not kept.
         var recordedBySource = reconciled
-            .GroupBy(r => r.Source, StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
+            .GroupBy(r => r.SourceIndex)
+            .ToDictionary(g => g.Key, g => g.Count());
 
         var totals = parsed
             .Select(p => new ReviewFindingSourceTotal(
                 p.Label,
                 p.Template,
                 p.Parsed,
-                recordedBySource.TryGetValue(p.Label, out var recorded) ? recorded : 0))
+                recordedBySource.TryGetValue(p.Index, out var recorded) ? recorded : 0))
             .ToArray();
 
         var rows = reconciled
