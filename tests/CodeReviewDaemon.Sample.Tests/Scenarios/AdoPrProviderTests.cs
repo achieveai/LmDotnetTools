@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -226,6 +227,174 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         page.PullRequests.Select(p => p.PrId).Should().BeEquivalentTo(["42", "50"], "both pages are accumulated");
         handler.CountRequests("/pullrequests").Should().Be(2, "the provider followed exactly one continuation token");
         page.NextCursor.HighWaterMark.Should().Be("50", "the highest pullRequestId across all pages");
+    }
+
+    // ---- Issue #537: $top + $skip paging, bounded by the operator's MaxPagesPerPoll ----
+
+    private AdoPrProvider Provider(
+        FakeHttpMessageHandler handler,
+        int maxPagesPerPoll,
+        int maxPrsPerPage = 200,
+        ILogger<AdoPrProvider>? logger = null) =>
+        new(
+            new HttpClient(handler),
+            new FakeOAuthTokenProvider("ado", "ado-token-abc"),
+            logger ?? LoggerFactory.CreateLogger<AdoPrProvider>(),
+            maxPagesPerPoll,
+            maxPrsPerPage);
+
+    /// <summary>
+    /// A repo of <paramref name="totalPrs"/> active PRs served the way ADO serves them: honouring
+    /// <c>$top</c>/<c>$skip</c> and — the detail that made this a live defect — sending <b>no</b>
+    /// <c>x-ms-continuationtoken</c> at all. A provider that pages on the token alone reads the very first
+    /// full page as the whole repo, which is how 711 active PRs presented as 101.
+    /// </summary>
+    private static FakeHttpMessageHandler PagedRepo(int totalPrs) =>
+        new FakeHttpMessageHandler().On(
+            req => req.RequestUri!.AbsolutePath.EndsWith("/pullrequests", StringComparison.Ordinal),
+            req =>
+            {
+                var query = System.Web.HttpUtility.ParseQueryString(req.RequestUri!.Query);
+                var top = int.Parse(query["$top"]!, System.Globalization.CultureInfo.InvariantCulture);
+                var skip = query["$skip"] is { } s
+                    ? int.Parse(s, System.Globalization.CultureInfo.InvariantCulture)
+                    : 0;
+
+                var ids = Enumerable.Range(skip + 1, Math.Clamp(totalPrs - skip, 0, top));
+                var values = string.Join(",", ids.Select(id => $$"""
+                    { "pullRequestId": {{id}}, "status": "active",
+                      "lastMergeSourceCommit": { "commitId": "head-{{id}}" },
+                      "lastMergeTargetCommit": { "commitId": "base-{{id}}" } }
+                    """));
+                return JsonResponse($$"""{ "value": [ {{values}} ] }""");
+            });
+
+    /// <summary>
+    /// AC#3 — 30 active PRs at 2 per page is 15 pages, more than the old hardcoded ceiling of 10. With
+    /// <c>MaxPagesPerPoll</c> configured above it, PRs 21–30 (which live only on pages 11–15) must be
+    /// enumerated. Restoring <c>pages &lt; 10</c> stops at PR 20 and fails here.
+    /// </summary>
+    [Fact]
+    public async Task ListOpenPullRequests_enumerates_past_page_ten_when_configured_to()
+    {
+        var handler = PagedRepo(totalPrs: 30);
+
+        var page = await Provider(handler, maxPagesPerPoll: 20, maxPrsPerPage: 2)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Select(p => p.PrId).Should().Contain(
+            ["21", "25", "30"], "these PRs exist only on pages past the old hardcoded ceiling of 10");
+        page.PullRequests.Should().HaveCount(30);
+        // 15 full pages, then one short (empty) page proving the end of the list rather than assuming it.
+        handler.CountRequests("/pullrequests").Should().Be(16);
+    }
+
+    /// <summary>
+    /// The same repo under the old bound: the poll is truncated at 10 pages. This is the measured M7
+    /// symptom, and it is what an operator raises <c>MaxPagesPerPoll</c> to escape.
+    /// </summary>
+    [Fact]
+    public async Task ListOpenPullRequests_stops_at_the_configured_bound()
+    {
+        var handler = PagedRepo(totalPrs: 30);
+
+        var page = await Provider(handler, maxPagesPerPoll: 10, maxPrsPerPage: 2)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        handler.CountRequests("/pullrequests").Should().Be(10);
+        page.PullRequests.Should().HaveCount(20, "10 pages of 2 — the rest were not seen this poll");
+    }
+
+    /// <summary>A page bound that cannot be a page count is treated as unset, never as zero pages (which
+    /// would make the repo read as empty) and never as unbounded.</summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public async Task A_nonsensical_page_bound_polls_the_documented_default_number_of_pages(int configured)
+    {
+        var handler = PagedRepo(totalPrs: 100);
+
+        _ = await Provider(handler, maxPagesPerPoll: configured, maxPrsPerPage: 2)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        handler.CountRequests("/pullrequests").Should().Be(
+            CodeReviewDaemonOptions.DefaultMaxPagesPerPoll, "a nonsensical bound degrades to the default, not to 0");
+    }
+
+    /// <summary>
+    /// <c>$top</c> is sent explicitly. Omitting it is not "no limit": ADO substitutes its own default of
+    /// 101, which is indistinguishable in the response from a repo that has 101 open PRs.
+    /// </summary>
+    [Theory]
+    [InlineData(50, "$top=50")]
+    [InlineData(5000, "$top=1000")]
+    [InlineData(0, "$top=200")]
+    public async Task The_page_size_is_sent_and_clamped_to_ados_maximum(int configured, string expected)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests", """{ "value": [] }""");
+
+        _ = await Provider(handler, maxPagesPerPoll: 10, maxPrsPerPage: configured)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        handler.Requests.Should().ContainSingle().Which.Uri.Query.Should().Contain(expected);
+    }
+
+    /// <summary>
+    /// Page 2 onwards is addressed by <c>$skip</c>, advanced by the number of PRs actually read — not by a
+    /// continuation token, which this endpoint does not send.
+    /// </summary>
+    [Fact]
+    public async Task Subsequent_pages_are_addressed_by_skip()
+    {
+        var handler = PagedRepo(totalPrs: 7);
+
+        _ = await Provider(handler, maxPagesPerPoll: 10, maxPrsPerPage: 3)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        handler.Requests.Select(r => System.Web.HttpUtility.ParseQueryString(r.Uri.Query)["$skip"])
+            .Should().Equal([null, "3", "6"], "the first page carries no $skip; each later one skips what was read");
+    }
+
+    /// <summary>
+    /// A truncated poll must SAY it was truncated. This matters more on ADO than anywhere else: the endpoint
+    /// sends no continuation token, so a full page and the end of the repo are the same response, and the
+    /// only thing distinguishing "you have seen everything" from "you have seen 101 of 711" is this line.
+    /// Asserted on the RENDERED text including the counts, because a warning naming the wrong numbers sends
+    /// the operator to raise a bound that was not the one that bound.
+    /// </summary>
+    [Fact]
+    public async Task A_truncated_poll_warns_with_the_counts_that_bound_it()
+    {
+        var logger = new CapturingLogger<AdoPrProvider>();
+        var handler = PagedRepo(totalPrs: 30);
+
+        var page = await Provider(handler, maxPagesPerPoll: 10, maxPrsPerPage: 2, logger: logger)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Should().HaveCount(20, "10 pages of 2, of the repo's 30 PRs");
+        logger.CountAtLevel(
+                LogLevel.Warning,
+                "stopped after 10 page(s) of 2 with more results still available; 20 PR(s)")
+            .Should().Be(1, "the operator is told the poll was incomplete, and with the real counts");
+    }
+
+    /// <summary>
+    /// The other half, without which the assertion above is satisfied by a guard that always fires. It also
+    /// pins the termination rule itself: the poll is complete because the last page came back SHORTER than
+    /// <c>$top</c> — the only end-of-list evidence this endpoint offers.
+    /// </summary>
+    [Fact]
+    public async Task A_complete_poll_does_not_warn()
+    {
+        var logger = new CapturingLogger<AdoPrProvider>();
+        var handler = PagedRepo(totalPrs: 7);
+
+        var page = await Provider(handler, maxPagesPerPoll: 10, maxPrsPerPage: 3, logger: logger)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Should().HaveCount(7, "the whole repo was enumerated");
+        logger.CountAtLevel(LogLevel.Warning, "stopped after")
+            .Should().Be(0, "a page shorter than $top proved the end of the list; nothing was left unseen");
     }
 
     private static HttpResponseMessage JsonResponse(string json, params (string Name, string Value)[] headers)

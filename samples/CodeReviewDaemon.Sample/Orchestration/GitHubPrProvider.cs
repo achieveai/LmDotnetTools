@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
 
@@ -24,17 +25,46 @@ internal sealed class GitHubPrProvider : IPrProvider
     private readonly IOAuthTokenProvider _tokenProvider;
     private readonly ILogger<GitHubPrProvider> _logger;
 
-    public GitHubPrProvider(HttpClient httpClient, IOAuthTokenProvider tokenProvider, ILogger<GitHubPrProvider> logger)
+    public GitHubPrProvider(
+        HttpClient httpClient,
+        IOAuthTokenProvider tokenProvider,
+        ILogger<GitHubPrProvider> logger,
+        int maxPagesPerPoll = CodeReviewDaemonOptions.DefaultMaxPagesPerPoll,
+        int maxPrsPerPage = CodeReviewDaemonOptions.DefaultMaxPrsPerPage)
     {
         _httpClient = httpClient;
         _tokenProvider = tokenProvider;
         _logger = logger;
+
+        // Normalized rather than validated: a nonsensical bound must not stop the daemon polling, and it
+        // must not silently become "no pages" (a repo that looks permanently empty) or "no limit". Both
+        // fall back to the documented default — see CodeReviewDaemonOptions.MaxPagesPerPoll.
+        MaxPagesPerPoll = maxPagesPerPoll > 0 ? maxPagesPerPoll : CodeReviewDaemonOptions.DefaultMaxPagesPerPoll;
+        // 100 is GitHub's hard ceiling for per_page; asking for more is not an error, it is silently
+        // ignored, which would make a configured 500 read as if it had been honoured.
+        PageSize = Math.Min(
+            maxPrsPerPage > 0 ? maxPrsPerPage : CodeReviewDaemonOptions.DefaultMaxPrsPerPage,
+            GitHubMaxPageSize);
     }
 
     public string Provider => "github";
 
-    /// <summary>Bounded pages per poll (PR #121 M5) so one poll can't spin unboundedly on a huge repo.</summary>
-    private const int MaxPages = 10;
+    /// <summary>
+    /// Bounded pages per poll (PR #121 M5) so one poll can't spin unboundedly on a huge repo. This is the
+    /// operator's <see cref="CodeReviewDaemonOptions.MaxPagesPerPoll"/>, carried in by <c>Program.cs</c> at
+    /// registration and normalized in the constructor. It is a property rather than a field so the effective
+    /// bound the loop below reads is the same value a wiring test can observe on a provider resolved out of
+    /// the real host — the knob had no reader at all before issue #537, and a reader nothing can see is how
+    /// that recurs.
+    /// </summary>
+    internal int MaxPagesPerPoll { get; }
+
+    /// <summary>The effective <c>per_page</c>: the operator's
+    /// <see cref="CodeReviewDaemonOptions.MaxPrsPerPage"/>, clamped to GitHub's ceiling.</summary>
+    internal int PageSize { get; }
+
+    /// <summary>GitHub's documented maximum for <c>per_page</c>.</summary>
+    private const int GitHubMaxPageSize = 100;
 
     public async Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
     {
@@ -47,10 +77,11 @@ internal sealed class GitHubPrProvider : IPrProvider
         string? highWaterMark = null;
 
         // Follow GitHub's Link rel="next" pagination (M5): the first page fixes the query, each subsequent
-        // page URL comes verbatim from the previous response's Link header. Bounded by MaxPages per poll.
-        var url = $"{BaseUrl}/repos/{owner}/{repo}/pulls?state=open&sort=updated&direction=desc&per_page=100";
+        // page URL comes verbatim from the previous response's Link header. Bounded by MaxPagesPerPoll.
+        var url = $"{BaseUrl}/repos/{owner}/{repo}/pulls"
+            + $"?state=open&sort=updated&direction=desc&per_page={PageSize.ToString(CultureInfo.InvariantCulture)}";
         var pages = 0;
-        while (url is not null && pages < MaxPages)
+        while (url is not null && pages < MaxPagesPerPoll)
         {
             cancellationToken.ThrowIfCancellationRequested();
             pages++;
@@ -96,6 +127,19 @@ internal sealed class GitHubPrProvider : IPrProvider
             }
 
             url = NextPageUrl(response);
+        }
+
+        // Stopping with a rel="next" still on offer means the list is incomplete. Less damaging here than on
+        // ADO — this query is sorted `updated desc`, so what gets dropped is the LEAST recently touched, which
+        // is what the recency filter would discard anyway — but it is still a coverage limit, and an unspoken
+        // limit is the one nobody raises.
+        if (url is not null)
+        {
+            _logger.LogWarning(
+                "GitHub poll of {Owner}/{Repo} stopped after {Pages} page(s) of {PageSize} with more results "
+                    + "still available; {Count} PR(s) were enumerated and the rest were NOT seen this poll. "
+                    + "Raise CodeReviewDaemon:MaxPagesPerPoll if this repeats.",
+                owner, repo, pages, PageSize, pullRequests.Count);
         }
 
         _logger.LogDebug(

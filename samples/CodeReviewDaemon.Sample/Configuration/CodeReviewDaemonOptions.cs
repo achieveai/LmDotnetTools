@@ -271,12 +271,56 @@ internal sealed class CodeReviewDaemonOptions
     /// </summary>
     public SandboxLimits Limits { get; init; } = new();
 
+    /// <summary>Default for <see cref="MaxPagesPerPoll"/>, and the value both PR providers fall back to
+    /// when the configured one is not a usable page count.</summary>
+    public const int DefaultMaxPagesPerPoll = 10;
+
+    /// <summary>Default for <see cref="MaxPrsPerPage"/>. Each provider additionally clamps it to its own
+    /// API's ceiling (GitHub 100, Azure DevOps 1000).</summary>
+    public const int DefaultMaxPrsPerPage = 200;
+
     /// <summary>
     /// Maximum number of provider pages a single poll fetches before stopping (PR #121 M5). Bounds the
     /// work one poll cycle does when a repo has many open PRs; the next poll resumes from the advanced
-    /// cursor. Default 10.
+    /// cursor. Default <see cref="DefaultMaxPagesPerPoll"/> (10).
+    /// <para>
+    /// <b>Semantics of 0 / absent / negative.</b> Absent leaves this initializer's 10. An explicitly
+    /// configured <c>0</c> or a negative value is <b>not</b> "fetch nothing" and is <b>never</b>
+    /// "unbounded" — both providers normalize any value <c>&lt;= 0</c> back to
+    /// <see cref="DefaultMaxPagesPerPoll"/>. Zero pages would poll a repo into looking permanently empty,
+    /// and an unbounded poll is the failure this bound exists to prevent; treating a nonsensical value as
+    /// "unset" is the only reading that is safe in both directions. Every poll is therefore bounded by
+    /// <c>MaxPagesPerPoll × MaxPrsPerPage</c> PRs, and a poll that stops with more still available says so
+    /// at <c>Warning</c>.
+    /// </para>
+    /// <para>
+    /// This was declared with <b>zero readers</b> until issue #537 — both providers carried their own
+    /// <c>private const int MaxPages = 10</c>, so the knob documented a control that did not exist. It is
+    /// now the value both of them use (wired in <c>Program.cs</c> at provider registration).
+    /// </para>
     /// </summary>
-    public int MaxPagesPerPoll { get; init; } = 10;
+    public int MaxPagesPerPoll { get; init; } = DefaultMaxPagesPerPoll;
+
+    /// <summary>
+    /// How many pull requests a single provider page asks for. Default
+    /// <see cref="DefaultMaxPrsPerPage"/> (200); a value <c>&lt;= 0</c> is normalized to that default, and
+    /// each provider then clamps to its own API ceiling (GitHub's documented <c>per_page</c> max of 100,
+    /// Azure DevOps' <c>$top</c> max of 1000).
+    /// <para>
+    /// This exists because leaving the page size to the server was measurably losing PRs. The ADO request
+    /// set no <c>$top</c> at all, so it took ADO's documented default of 101 — and the endpoint returns no
+    /// <c>x-ms-continuationtoken</c>, so the "while token" loop could never iterate and
+    /// <see cref="MaxPagesPerPoll"/> on its own would still enumerate one page. Measured on a repo with 711
+    /// active PRs: 101 seen per poll. Downstream filters can only ever filter what the page returned, so the
+    /// unseen remainder was invisible rather than skipped.
+    /// </para>
+    /// <para>
+    /// 200 rather than ADO's 1000 maximum: every PR older than the recency window costs one bounded
+    /// <c>/pushes</c> lookup, so the page size trades round trips against how much work one page commits to.
+    /// Combined with <see cref="MaxPagesPerPoll"/> the defaults cover 2,000 open PRs per repo per poll.
+    /// </para>
+    /// </summary>
+    public int MaxPrsPerPage { get; init; } = DefaultMaxPrsPerPage;
 
     /// <summary>
     /// When &gt; 0, the poller only reviews PRs whose recency signal falls within this many days: GitHub
