@@ -108,6 +108,24 @@ public sealed class ReviewNotesArtifactBuilderTests
             Template = "reviewer",
         };
 
+    /// <summary>
+    /// A roster node whose host DID report model routing. The default <see cref="Node"/> deliberately leaves
+    /// all three null — that is the old-host shape and the one the artifact must not paper over — so a test
+    /// about a recorded model has to say so explicitly.
+    /// </summary>
+    private static ReviewSubAgentNode NodeOnModel(
+        string agentId,
+        string name,
+        string? model,
+        int? tier = null,
+        string? source = null) =>
+        Node(agentId, name) with
+        {
+            EffectiveModelId = model,
+            EffectiveModelIntelligence = tier,
+            ModelSelectionSource = source,
+        };
+
     private static ReviewNotesArtifactContext NewContext(params ReviewSubAgentNode[] nodes) =>
         new(
             ReviewRound: 1,
@@ -1215,5 +1233,73 @@ public sealed class ReviewNotesArtifactBuilderTests
         // answer stops being obvious the day the infra-narration filter splits the posted comment from the
         // stored prose.
         built.Findings.DerivedFrom.Should().Be("reviewer-transcripts-via-reconciler");
+    }
+
+    // ── Which model ran which sub-agent (#552) ────────────────────────────────────────────────────
+    // The value was already computed by the host and already carried by two DTOs; it was dropped in the
+    // middle of the chain, so the context file showed one Model row for the whole run and the per-agent
+    // rows showed only Template / Status / Depth / Agent id — leaving "did the fan-out run on the model
+    // the run did?" unanswerable from the artifacts.
+
+    [Fact]
+    public async Task A_sub_agent_whose_model_the_host_reported_has_it_in_both_tables()
+    {
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", "finding")]));
+
+        var files = await BuildAsync(
+            builder,
+            NewContext(NodeOnModel("agent-1", "architecture", "gpt-5.6-sol", tier: 3, source: "template-tier")));
+
+        var findings = files.Single(f => f.RelativePath.Contains("_01_architecture", StringComparison.Ordinal));
+        findings.Content.Should().Contain("| Model | gpt-5.6-sol |");
+        findings.Content.Should().Contain("| Model tier | 3 |");
+        findings.Content.Should().Contain(
+            "| Model source | template-tier |",
+            "the model id alone cannot tell a tier that resolved to it from a caller that named it outright");
+
+        var contextFile = files.Single(f => f.RelativePath.EndsWith("PR_Context_01.md", StringComparison.Ordinal));
+        contextFile.Content.Should().Contain("| # | Agent | Model | Template | Status | Findings file |");
+        contextFile.Content.Should().Contain("gpt-5.6-sol");
+    }
+
+    [Fact]
+    public async Task A_sub_agent_with_no_recorded_model_says_unrecorded_and_never_borrows_the_runs_model()
+    {
+        // The whole point of the column. A host that predates the field omits it, and a fallback to the
+        // run-level model would render a guess in the same cell as a measurement — which would answer
+        // "did the fan-out run on the run's model?" with "yes" by construction, for every run, forever.
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", "finding")]));
+
+        var files = await BuildAsync(builder, NewContext(Node("agent-1", "architecture")));
+
+        var findings = files.Single(f => f.RelativePath.Contains("_01_architecture", StringComparison.Ordinal));
+        findings.Content.Should().Contain("| Model | (unrecorded) |");
+        findings.Content.Should().NotContain(
+            "| Model | test-model |", "test-model is the RUN's model and this agent's is not recorded");
+        findings.Content.Should().Contain("| Model tier | (unrecorded) |");
+        findings.Content.Should().Contain("| Model source | (unrecorded) |");
+
+        var contextFile = files.Single(f => f.RelativePath.EndsWith("PR_Context_01.md", StringComparison.Ordinal));
+        contextFile.Content.Should().Contain("| 1 | architecture | (unrecorded) | reviewer |");
+    }
+
+    [Fact]
+    public async Task A_recorded_model_and_the_runs_model_being_equal_is_still_reported_as_recorded()
+    {
+        // The measurement the owner is actually after: sub-agents matching the run's model is a FINDING, and
+        // it has to be distinguishable from the artifact having nothing to say. Same rendered string in both
+        // cases would make the answer unreadable in exactly the case it matters.
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", "finding")]));
+
+        var files = await BuildAsync(
+            builder,
+            NewContext(NodeOnModel("agent-1", "architecture", "test-model", source: "parent")));
+
+        var findings = files.Single(f => f.RelativePath.Contains("_01_architecture", StringComparison.Ordinal));
+        findings.Content.Should().Contain("| Model | test-model |");
+        findings.Content.Should().NotContain("| Model | (unrecorded) |");
+        findings.Content.Should().Contain(
+            "| Model source | parent |",
+            "'parent' against every node is what says the fan-out inherited and no per-agent routing ran");
     }
 }
