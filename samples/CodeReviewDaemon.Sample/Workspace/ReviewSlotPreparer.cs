@@ -4,7 +4,18 @@ using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Workspace;
 
-internal sealed record PreparedCheckout(string StoreRoot, string TargetDir, string NotesDir, string Branch);
+/// <summary>
+/// A prepared review checkout. <see cref="MergeBase"/> carries what preparation established about
+/// <c>base...head</c>, and defaults to <see cref="MergeBaseOutcome.Resolved"/> so a caller that never sets
+/// it keeps the pre-existing behaviour — the diff runs and a failure throws. That default is deliberately the
+/// loud one: an unset value can never cause a degraded verdict to be posted to a pull request.
+/// </summary>
+internal sealed record PreparedCheckout(
+    string StoreRoot,
+    string TargetDir,
+    string NotesDir,
+    string Branch,
+    MergeBaseOutcome MergeBase = MergeBaseOutcome.Resolved);
 
 internal interface IReviewSlotPreparer
 {
@@ -318,6 +329,16 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 "fetching the PR commits",
                 cancellationToken)
             .ConfigureAwait(false);
+
+        // Deliberately AFTER the PR-commit fetch and BEFORE the head checkout: the fetch is what gives head
+        // its history, and the resolver's whole job is to find out whether base has any to meet it with. The
+        // outcome is threaded onto the returned checkout rather than thrown on, because "no merge base" has
+        // several causes and only one of them is a fact about the pull request — see
+        // <see cref="MergeBaseOutcome"/>. Preparation is not the place that decides what to tell an author.
+        var mergeBase = await new MergeBaseResolver(_git, _logger)
+            .ResolveAsync(targetDir, run, cancellationToken)
+            .ConfigureAwait(false);
+
         await RunGitOrThrowAsync(
                 ["-C", targetDir, "checkout", "--force", run.HeadSha],
                 targetDir,
@@ -344,7 +365,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             storeRoot,
             targetDir,
             PosixJoin(storeRoot, notesRelPath),
-            branch);
+            branch,
+            mergeBase);
     }
 
     private async Task RunGitOrThrowAsync(

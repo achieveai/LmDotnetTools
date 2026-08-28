@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
@@ -39,8 +40,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>Artifact kind for the persisted PR diff/context.</summary>
     public const string ContextArtifactKind = "review-context";
 
-    /// <summary>Schema version of the <c>review-context</c> payload (append-compatible).</summary>
-    public const int ContextArtifactSchemaVersion = 1;
+    /// <summary>
+    /// Schema version of the <c>review-context</c> payload (append-compatible).
+    /// <para>
+    /// v2 adds <see cref="ContextArtifactPayload.UncomparableReason"/>, and the bump is worth its cost
+    /// because the version answers a question the field's absence cannot. A v2 row with no reason is a run
+    /// whose commits were comparable. A v1 row with no reason says nothing of the kind: before v2 a
+    /// merge-base failure threw at ContextReady and no artifact was written at all, so the runs that would
+    /// have carried a reason are exactly the ones missing from the v1 record entirely. Anything counting
+    /// uncomparable pull requests must therefore treat v1 as "not measured" rather than as "none" — the same
+    /// shape as the <c>JudgeArtifactSchemaVersion</c> 1-to-2 bump, where a v1 row's absent value is
+    /// permanently unknown rather than a zero.
+    /// </para>
+    /// </summary>
+    public const int ContextArtifactSchemaVersion = 2;
 
     /// <summary>Artifact kind for the primary review output.</summary>
     public const string ReviewArtifactKind = "review";
@@ -946,17 +959,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 .RunAsync(["-C", prepared.TargetDir, "diff", $"{run.BaseSha}...{run.HeadSha}"],
                     prepared.TargetDir, cancellationToken)
                 .ConfigureAwait(false);
-            if (!diff.Succeeded)
-            {
-                throw new InvalidOperationException(
-                    $"Fetching the diff for run {run.Id} failed (exit {diff.ExitCode}): {diff.Stderr}");
-            }
+            var uncomparableReason = diff.Succeeded
+                ? null
+                : DescribeUncomparableOrThrow(run, prepared, diff);
 
-            var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
+            var boundedDiff = _options.Limits.CapArtifactPayload(diff.Succeeded ? diff.Stdout : string.Empty);
             var fileManifest = await BuildFileManifestAsync(sdkGit, prepared.TargetDir, cancellationToken)
                 .ConfigureAwait(false);
-            var changedPaths = await BuildChangedPathsAsync(sdkGit, prepared.TargetDir, run, cancellationToken)
-                .ConfigureAwait(false);
+            // Skipped rather than attempted-and-degraded when the commits are uncomparable: the listing is the
+            // same symmetric difference, so it fails the same way, and its warning ("ranking falls back to the
+            // bounded diff headers") would describe a fallback onto a diff that does not exist.
+            var changedPaths = uncomparableReason is null
+                ? await BuildChangedPathsAsync(sdkGit, prepared.TargetDir, run, cancellationToken)
+                    .ConfigureAwait(false)
+                : string.Empty;
             var notesDirSandbox = PosixJoin(StoreRoot, notesRelPath);
 
             _ = _store.AddArtifact(new ReviewArtifact
@@ -967,7 +983,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 Provider = provider,
                 Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
                     run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest,
-                    prepared.TargetDir, StoreRoot, changedPaths)),
+                    prepared.TargetDir, StoreRoot, changedPaths, uncomparableReason)),
             });
 
             if (!_leasedReviews.TryAdd(
@@ -1049,17 +1065,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 ["-C", prepared.TargetDir, "diff", $"{run.BaseSha}...{run.HeadSha}"],
                 prepared.TargetDir, cancellationToken)
             .ConfigureAwait(false);
-        if (!diff.Succeeded)
-        {
-            throw new InvalidOperationException(
-                $"Fetching the diff for run {run.Id} failed (exit {diff.ExitCode}): {diff.Stderr}");
-        }
+        var uncomparableReason = diff.Succeeded
+            ? null
+            : DescribeUncomparableOrThrow(run, prepared, diff);
 
-        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
+        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Succeeded ? diff.Stdout : string.Empty);
         var fileManifest = await BuildFileManifestAsync(hostGit, prepared.TargetDir, cancellationToken)
             .ConfigureAwait(false);
-        var changedPaths = await BuildChangedPathsAsync(hostGit, prepared.TargetDir, run, cancellationToken)
-            .ConfigureAwait(false);
+        // See the sibling site in TryPooledFetchContextAsync: the listing is the same symmetric difference and
+        // fails the same way, so on an uncomparable pair it is skipped rather than attempted-and-degraded.
+        var changedPaths = uncomparableReason is null
+            ? await BuildChangedPathsAsync(hostGit, prepared.TargetDir, run, cancellationToken)
+                .ConfigureAwait(false)
+            : string.Empty;
         var notesDirSandbox = PosixJoin(StoreRoot, notesRelPath);
         var scratchDirSandbox = $"{SandboxWorkspaceRoot}/{_options.ScratchDirName}";
         _ = _store.AddArtifact(new ReviewArtifact
@@ -1070,7 +1088,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             Provider = provider,
             Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
                 run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest,
-                PosixJoin(StoreRoot, submoduleRelPath), StoreRoot, changedPaths)),
+                PosixJoin(StoreRoot, submoduleRelPath), StoreRoot, changedPaths, uncomparableReason)),
         });
         if (!_leasedReviews.TryAdd(
             run.Id,
@@ -1489,6 +1507,73 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string.IsNullOrWhiteSpace(manifest)
             ? 0
             : manifest.Count(c => c == '\n') + 1;
+
+    /// <summary>
+    /// Decides what a failed <c>git diff base...head</c> means, and is the ONLY place allowed to turn one into
+    /// a stated verdict instead of a failure.
+    /// <para>
+    /// Exactly one merge-base outcome earns that: <see cref="MergeBaseOutcome.UnrelatedHistories"/>, where
+    /// <see cref="MergeBaseResolver"/> walked BOTH histories to real root commits and established that the two
+    /// commits share no ancestor. That is a property of the commit pair — nothing the daemon chose, nothing an
+    /// operator can widen, nothing a retry can change — so the diff was always going to fail and saying so is
+    /// simply reporting what is true. Without this, the run throws here, burns its whole retry budget
+    /// re-deriving the same permanent fact, and leaves the pull request with no verdict at all.
+    /// </para>
+    /// <para>
+    /// Every other outcome keeps throwing, and the asymmetry is the entire point.
+    /// <see cref="MergeBaseOutcome.DepthCeilingReached"/> is recoverable by widening a bound this code picked;
+    /// <see cref="MergeBaseOutcome.DeepenFailed"/> means a fetch broke, so NOTHING was learned about the
+    /// commits; <see cref="MergeBaseOutcome.Indeterminate"/> means a probe the search depends on was killed
+    /// or failed, which is the same "nothing was learned" arriving one step earlier;
+    /// <see cref="MergeBaseOutcome.Resolved"/> means a merge base was found, which makes a diff failure an
+    /// ordinary transient git error. Converting any of those into "these commits cannot be compared" would
+    /// take our own configuration limit or a network blip and hand it to a PR author as a fact about their
+    /// branch — and would stop the run retrying, which is precisely what would have fixed it. A transient git
+    /// error must never become a permanent verdict on a real pull request.
+    /// </para>
+    /// </summary>
+    /// <returns>The author-facing reason the commits are uncomparable.</returns>
+    /// <exception cref="InvalidOperationException">On every merge-base outcome except
+    /// <see cref="MergeBaseOutcome.UnrelatedHistories"/> — the diff failure is not (yet) known to be
+    /// permanent, so it stays a failure and the stage retries.</exception>
+    private string DescribeUncomparableOrThrow(
+        ReviewRun run, PreparedCheckout prepared, SandboxCommandResult diff)
+    {
+        if (prepared.MergeBase != MergeBaseOutcome.UnrelatedHistories)
+        {
+            throw new InvalidOperationException(
+                $"Fetching the diff for run {run.Id} failed (exit {diff.ExitCode}): {diff.Stderr}");
+        }
+
+        // Warning, and carrying the merge-base outcome explicitly: this is the log line that distinguishes
+        // "the daemon decided the commits are uncomparable" from "the diff blew up and the daemon threw",
+        // which are one keystroke apart in this method and produce completely different run outcomes.
+        _logger.LogWarning(
+            "Run {RunId}: git could not diff {BaseSha}...{HeadSha} (exit {ExitCode}: {Stderr}) and the merge "
+                + "base search ended in {MergeBase}, so the two commits provably share no ancestor. Recording "
+                + "an uncomparable-commits verdict instead of failing the stage — no fetch depth and no retry "
+                + "can create an ancestor that does not exist.",
+            run.Id, run.BaseSha, run.HeadSha, diff.ExitCode, FirstLine(diff.Stderr), prepared.MergeBase);
+
+        return $"`{run.BaseSha}` and `{run.HeadSha}` share no common ancestor. The daemon walked both "
+            + "histories back to their root commits and found no merge base, so there is no `base...head` "
+            + $"range for git to diff (it reported: `{FirstLine(diff.Stderr)}`).";
+    }
+
+    /// <summary>The first line of a git stderr, for the places that quote it into a log line or a PR-facing
+    /// verdict — git writes advice paragraphs after the failure itself, and only the first line is the
+    /// failure.</summary>
+    private static string FirstLine(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "no error output";
+        }
+
+        var trimmed = text.Trim();
+        var newline = trimmed.IndexOf('\n');
+        return newline < 0 ? trimmed : trimmed[..newline].TrimEnd('\r');
+    }
 
     /// <summary>
     /// Builds the per-run submodule allow-list for the cross-repo <c>AchieveAiReviews</c> store checkout
@@ -4871,9 +4956,47 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// head, plus the changed-path listing. That listing is one line per file, so it survives the payload cap on
     /// a PR one or two orders of magnitude larger than the patch does.
     /// </para>
+    /// <para>
+    /// The same reasoning is why <see cref="ContextArtifactPayload.UncomparableReason"/> is read here and read
+    /// FIRST: "there is no range" is a fact about the range, it is established at ContextReady and nowhere
+    /// else, and a reviewer that is not told it will not conclude it — it will pick a range of its own.
+    /// </para>
     /// </summary>
     private string BuildReviewInput(ReviewRun run, RepoIdentity repo, ContextArtifactPayload context)
     {
+        // Checked BEFORE the degraded arm below, because an uncomparable pair arrives here looking exactly
+        // like an older artifact. ContextReady writes ChangedPaths as "" on that path deliberately — the
+        // listing is the same symmetric difference and fails the same way — so the IsNullOrWhiteSpace branch
+        // would log "no changed-path listing ... falling back to the inlined diff (0 chars)": a false cause,
+        // and a promised fallback onto a diff that does not exist. The reviewer would then get a brief with
+        // no patch, no file list, and no hint that the range is undiffable.
+        //
+        // That is not a review that stops; it is a review that invents a range. Run 32 did exactly what an
+        // agent with tools and no diff does — it diffed a local commit against its parent and reviewed THAT,
+        // opening "Review basis: Local commit b531b302…, compared with parent 0d11c184…", a fluent review of
+        // a range nobody asked for, delivered with the same confidence as a real one. Whether the commits are
+        // comparable at all is the one thing the reviewer cannot establish for itself, so it is exactly what
+        // the brief has to carry.
+        if (!string.IsNullOrWhiteSpace(context.UncomparableReason))
+        {
+            _logger.LogWarning(
+                "Run {RunId}: the context artifact records {BaseSha}...{HeadSha} as uncomparable, so the "
+                    + "review brief states that instead of a diff. There is no range to read and nothing to "
+                    + "fall back to — this is the recorded condition, not a capture that came up short.",
+                run.Id,
+                run.BaseSha,
+                run.HeadSha);
+
+            return $"Review pull request {repo.DisplayName}#{run.PrId}.\n\n"
+                + $"  base:     {run.BaseSha}\n"
+                + $"  head:     {run.HeadSha}\n\n"
+                + $"THESE COMMITS CANNOT BE COMPARED. {context.UncomparableReason}\n\n"
+                + "There is no diff to review and none can be produced: no fetch depth and no retry can "
+                + "create an ancestor that does not exist. Do NOT substitute another range — diffing the head "
+                + "against its parent, or against the default branch, reviews changes this pull request did "
+                + "not make and reports them as this author's. Report the condition above and stop.";
+        }
+
         // Trimmed of line terminators ONLY: these are records the reviewer is told to use as exact paths, and a
         // blanket Trim() would rewrite the first and last of them into paths git never reported.
         var changed = context.ChangedPaths?.Trim('\n', '\r');
@@ -5055,6 +5178,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 /// the patch and the tree from the checkout instead. Both are still persisted here because they are the run's
 /// record of what was reviewed and are what the Knowledge Base ranking reads, and <see cref="Diff"/> remains
 /// the degraded brief when a resumed older artifact carries no <see cref="ChangedPaths"/>.
+/// </para>
+/// <para>
+/// <see cref="UncomparableReason"/> is written only on the one run shape that has one — a pair of commits
+/// preparation established share no ancestor at all — and is omitted from the JSON entirely when null, so an
+/// ordinary artifact serializes to exactly the bytes it did before the property existed. It is what makes a
+/// v2 row distinguishable from a v1 one: see <c>DaemonReviewStageExecutor.ContextArtifactSchemaVersion</c>.
 /// </para></summary>
 internal sealed record ContextArtifactPayload(
     string PrId,
@@ -5064,7 +5193,9 @@ internal sealed record ContextArtifactPayload(
     string? FileManifest = null,
     string? CheckoutRoot = null,
     string? StoreRoot = null,
-    string? ChangedPaths = null);
+    string? ChangedPaths = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? UncomparableReason = null);
 
 /// <summary>The persisted primary review output (kind <c>review</c>). <see cref="ThreadId"/> is the conversation
 /// thread the review ran on — on the S2S path the LmStreaming-minted id the Posted stage turns into the posted

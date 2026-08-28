@@ -12,6 +12,7 @@ using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -158,6 +159,158 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Pool.ReturnCount.Should().Be(0,
             "returning is what recycles the address — the test above pins that an ordinary prepare failure DOES "
                 + "return, so this zero is a routing decision and not an unreached path");
+    }
+
+    /// <summary>
+    /// The one merge-base outcome licensed to become a stated fact about someone's pull request. Preparation
+    /// walked BOTH histories to real root commits and established that the commits share no ancestor, so the
+    /// diff was always going to fail: throwing here burns the whole retry budget re-deriving a permanent fact
+    /// and leaves the PR with no verdict at all. The reason is recorded on the artifact instead.
+    /// </summary>
+    [Fact]
+    public async Task ContextReady_records_an_uncomparable_reason_instead_of_failing_when_the_histories_are_unrelated()
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.Preparer.MergeBase = MergeBaseOutcome.UnrelatedHistories;
+        _ = fixture.HostRunner.OnArgvContainsFirst(
+            "diff",
+            new SandboxCommandResult(
+                128, string.Empty, "fatal: refusing to merge unrelated histories\nhint: see git-merge(1)"));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var payload = JsonDocument.Parse(artifact.Payload).RootElement;
+        var reason = payload.GetProperty("UncomparableReason").GetString();
+        reason.Should().Contain(
+            "share no common ancestor",
+            "the stage's whole job on this outcome is to leave the record saying WHY, in the author's terms");
+        reason.Should().Contain(
+            "refusing to merge unrelated histories",
+            "quoted from git's own first stderr line — the claim has to carry the evidence it rests on");
+        reason.Should().NotContain(
+            "hint: see git-merge(1)",
+            "only the first line of a git stderr is the failure; the advice paragraphs after it are noise in "
+                + "a sentence a person reads");
+        artifact.ArtifactSchemaVersion.Should().Be(
+            DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
+            "a row that can carry a reason is a v2 row — a v1 row's silence means 'not measured', because "
+                + "before v2 this run wrote no artifact at all");
+    }
+
+    /// <summary>
+    /// The negative that the whole three-state probe exists for, stated at the level the author reads. A
+    /// merge-base probe that was killed or failed established NOTHING about anyone's branch, so it may not
+    /// reach the one outcome whose verdict tells a pull-request author to re-target or rebase.
+    /// <para>
+    /// Asserted on the persisted text rather than only on the exception type: if a later change gives
+    /// Indeterminate a verdict of its own, that verdict has to be checked here rather than silently
+    /// inheriting the wording that blames the branch.
+    /// </para>
+    /// </summary>
+    /// <summary>
+    /// The record is not the deliverable — the brief is. Recording `UncomparableReason` and then not reading
+    /// it is worse than not recording it: ContextReady writes `ChangedPaths` as `""` on this path, which is
+    /// indistinguishable from the older-artifact shape `BuildReviewInput`'s degraded arm exists for, so the
+    /// run would log "no changed-path listing … falling back to the inlined diff (0 chars)" — naming a cause
+    /// that is false and a fallback onto a diff that does not exist — and then fan a full review out against
+    /// nothing, with no line anywhere telling the reviewer the range is undiffable.
+    /// <para>
+    /// Both halves are asserted on the SAME run, because either alone passes on the broken code: the brief
+    /// could carry the reason while the false warning still fires, and the warning could be silenced while
+    /// the brief stays empty.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_tells_the_reviewer_the_commits_are_uncomparable_instead_of_a_false_diff_fallback()
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.Preparer.MergeBase = MergeBaseOutcome.UnrelatedHistories;
+        _ = fixture.HostRunner.OnArgvContainsFirst(
+            "diff",
+            new SandboxCommandResult(
+                128, string.Empty, "fatal: refusing to merge unrelated histories\nhint: see git-merge(1)"));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var brief = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        brief.Should().Contain(
+            "share no common ancestor",
+            "the reason ContextReady established is the one thing about this range the reviewer cannot work "
+                + "out for itself");
+        brief.Should().Contain(
+            "Do NOT substitute another range",
+            "an agent with tools and no diff picks a range of its own — that is the failure this brief exists "
+                + "to pre-empt, not a hypothetical one");
+
+        fixture.Logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().NotContain(
+            m => m.Contains("falling back to the inlined diff", StringComparison.Ordinal),
+            "that line names a cause that is false here and promises a fallback onto a diff that does not "
+                + "exist; the uncomparable branch has to be taken BEFORE the degraded arm, not alongside it");
+    }
+
+    [Fact]
+    public async Task ContextReady_never_tells_an_author_to_rebase_when_our_own_probe_was_the_thing_that_failed()
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.Preparer.MergeBase = MergeBaseOutcome.Indeterminate;
+        _ = fixture.HostRunner.OnArgvContainsFirst(
+            "diff",
+            new SandboxCommandResult(
+                124, string.Empty, "git diff produced no output for 300s (idle timeout) and was killed"));
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>(
+            "nothing was learned about these commits, so the stage stays a failure and the run retries — "
+                + "which is precisely what would have fixed it");
+        var written = string.Join('\n', fixture.Store.GetArtifacts(run.Id).Select(a => a.Payload));
+        written.Should().NotContain(
+            "share no common ancestor",
+            "that sentence is a statement about the author's branch, and nothing about their branch was "
+                + "established — our own git command was killed");
+    }
+
+    /// <summary>
+    /// The asymmetry, enumerated. Every outcome except <c>UnrelatedHistories</c> is either recoverable by
+    /// widening a bound this daemon chose, or a step that broke before it could learn anything — so each one
+    /// keeps throwing. Converting any of them into "these commits cannot be compared" takes our own
+    /// configuration limit or a network blip and hands it to a PR author as a fact about their branch.
+    /// </summary>
+    [Fact]
+    public Task ContextReady_still_fails_when_the_diff_fails_and_a_merge_base_was_found() =>
+        AssertDiffFailureStillFails(MergeBaseOutcome.Resolved);
+
+    [Fact]
+    public Task ContextReady_still_fails_when_the_diff_fails_and_the_depth_ceiling_was_reached() =>
+        AssertDiffFailureStillFails(MergeBaseOutcome.DepthCeilingReached);
+
+    [Fact]
+    public Task ContextReady_still_fails_when_the_diff_fails_and_a_deepening_fetch_broke() =>
+        AssertDiffFailureStillFails(MergeBaseOutcome.DeepenFailed);
+
+    [Fact]
+    public Task ContextReady_still_fails_when_the_diff_fails_and_a_merge_base_probe_never_answered() =>
+        AssertDiffFailureStillFails(MergeBaseOutcome.Indeterminate);
+
+    private static async Task AssertDiffFailureStillFails(MergeBaseOutcome outcome)
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.Preparer.MergeBase = outcome;
+        _ = fixture.HostRunner.OnArgvContainsFirst(
+            "diff", new SandboxCommandResult(128, string.Empty, "fatal: bad object base-sha"));
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        fixture.Store.GetArtifacts(run.Id).Should().BeEmpty(
+            "a stage that failed leaves no partial record behind for a resumed run to mistake for a capture");
     }
 
     [Fact]
@@ -2356,12 +2509,22 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 BootFileSystem,
                 _options,
                 [Publisher],
-                NullLoggerFactory.Instance,
+                Logs,
                 provisioner: Provisioner,
                 slotWorkspace: _slotWorkspace,
                 preparer: _s2sPreparer);
 
         public ReviewStore Store { get; }
+
+        /// <summary>
+        /// Everything the executor logged, shared by every executor this fixture builds (including the one a
+        /// restart test builds second). Present because one guarantee here is about a line that must NOT be
+        /// written: the uncomparable brief exists precisely so the degraded arm's "falling back to the inlined
+        /// diff" warning — a false cause, promising a fallback onto a diff that does not exist — is never
+        /// reached, and an absence cannot be asserted through a null sink.
+        /// </summary>
+        public CapturingLoggerFactory Logs { get; } = new();
+
         public FakeReviewAgentLoopFactory Factory { get; } = new();
         public FakeReviewCommentPublisher Publisher { get; } = new("github");
         public RecordingProvisioner Provisioner { get; } = new();
@@ -2549,6 +2712,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// reviews were prepared into two different slot stores and two different notes dirs.</summary>
         public List<PreparedCheckout> Prepared { get; } = [];
 
+        /// <summary>
+        /// What preparation "established" about <c>base...head</c>, stamped onto every checkout this fake
+        /// hands back. Defaults to the same loud value production defaults to, so the tests that predate the
+        /// merge-base outcome keep exercising the arm where a failed diff is simply a failure.
+        /// </summary>
+        public MergeBaseOutcome MergeBase { get; set; } = MergeBaseOutcome.Resolved;
+
         public Task EnsureStoreAsync(
             string storeRoot,
             string storeUrl,
@@ -2620,7 +2790,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 LastNotesRelPath = notesRelPath;
                 LastDefaultBranch = defaultBranch;
                 checkout = new PreparedCheckout(
-                    storeRoot, $"{storeRoot}/{submoduleRelPath}", $"{storeRoot}/{notesRelPath}", branch);
+                    storeRoot, $"{storeRoot}/{submoduleRelPath}", $"{storeRoot}/{notesRelPath}", branch,
+                    MergeBase);
                 Prepared.Add(checkout);
             }
 
