@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using Scriban;
@@ -35,6 +37,49 @@ internal static class DaemonAgentFactory
 
     private static readonly IPromptReader Prompts = new PromptReader(
         typeof(DaemonAgentFactory).Assembly, "CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml");
+
+    /// <summary>
+    /// Identifies the prompt TEMPLATES this build reviews with — a digest over the <c>review</c> and
+    /// <c>synthesis</c> texts taken together, because a review is the pair: the first turn poses the question
+    /// and the synthesis turn writes and delivers the answer, so an edit to either changes what the model was
+    /// actually asked. This is the value written to <c>review_run.prompt_template_hash</c> at dispatch.
+    /// <para>
+    /// UNRENDERED on purpose. Hashing what a run was HANDED would fold in that run's PR number, shas, round
+    /// number and container paths, giving every run a value of its own — and a column that cannot group two
+    /// runs cannot attribute a prompt change to the reviews it altered, which is the only job it has. This
+    /// value is therefore constant for a build and changes exactly when <c>daemon-prompts.yaml</c> does.
+    /// </para>
+    /// <para>
+    /// Sixteen hex characters (64 bits), matching the short-digest idiom used elsewhere in the daemon. It is a
+    /// provenance label compared for equality against other rows of the same store, not a security boundary,
+    /// and a full digest buys nothing at that job.
+    /// </para>
+    /// </summary>
+    public static string ReviewPromptTemplateHash { get; } = ComputeTemplateHash(
+        Prompts.GetPrompt("review").Value, Prompts.GetPrompt("synthesis").Value);
+
+    /// <summary>
+    /// The digest itself, over the raw template texts in the order given. Kept separate from
+    /// <see cref="ReviewPromptTemplateHash"/> so its framing can be pinned against inputs a test controls —
+    /// the property's own inputs are embedded resources, which a test cannot vary and therefore cannot use to
+    /// show that the value moves when a template does.
+    /// </summary>
+    internal static string ComputeTemplateHash(params string[] templates)
+    {
+        ArgumentNullException.ThrowIfNull(templates);
+
+        // Length-prefixed and unit-separated, so no two distinct template sets can flatten to the same
+        // subject. Without the framing, moving a paragraph from the end of the review template to the start
+        // of the synthesis one — a real change to what each turn is told — would hash identically.
+        var subject = new StringBuilder();
+        foreach (var template in templates)
+        {
+            _ = subject.Append(template.Length).Append(':').Append(template).Append('\u001F');
+        }
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(subject.ToString())))
+            .ToLowerInvariant()[..16];
+    }
 
     /// <summary>
     /// Builds the review-agent profile with no run-specific workspace variables — the templated

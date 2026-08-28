@@ -2752,6 +2752,18 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             "Run {RunId}: review input {Chars} chars (~{Tokens} tokens est), tool-assisted={ToolAssisted}, model={Model}.",
             run.Id, reviewInput.Length, reviewInput.Length / 4, toolContext is not null, run.ModelId ?? "(default)");
 
+        // Provenance, recorded HERE — the moment the review is dispatched — and deliberately not at creation.
+        // prompt_template_hash has existed since v1 of the schema and had never been written: every row in the
+        // live store carried NULL, so no prompt change the daemon has ever shipped could be attributed to the
+        // reviews it changed. Creation cannot supply it. The INSERT runs in the POLLER at discovery, before any
+        // prompt is rendered, and on an identity match CreateOrGetReviewRun returns the existing row untouched
+        // — so a run discovered under one prompt and dispatched under another after a deploy (the ordinary fate
+        // of everything sitting in RetryPending) would be filed under a prompt it never ran. The dispatch is
+        // the event worth recording, and this is it: every review of a run reaches the model through this
+        // method, including the A/B variant arm, which ReviewAsync runs only after this one and under the same
+        // templates.
+        _store.RecordRunProvenance(run.Id, DaemonAgentFactory.ReviewPromptTemplateHash);
+
         ReviewAgentResult result;
         // ONE absolute budget for the whole stage, resumed from the checkpoint of an interrupted lifecycle or
         // started fresh. It is computed once HERE rather than per attempt: the escalation ladder below can run

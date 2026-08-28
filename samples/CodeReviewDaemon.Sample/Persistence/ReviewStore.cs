@@ -297,6 +297,42 @@ internal sealed class ReviewStore : IDisposable
         return results;
     }
 
+    /// <summary>
+    /// Records the prompt-template digest the review was actually DISPATCHED under.
+    /// <c>prompt_template_hash</c> has existed since v1 of the schema and, until this method, nothing wrote
+    /// it — every row carried NULL, so no prompt change the daemon shipped could be attributed to the reviews
+    /// it altered, and the eval corpus that already ships the column (<c>DaemonCorpusReader</c>) shipped an
+    /// empty string for every candidate.
+    /// <para>
+    /// Written at dispatch rather than at creation, because creation is the wrong moment for it. The INSERT
+    /// in <see cref="CreateOrGetReviewRun"/> runs in the POLLER, at discovery, before any prompt is rendered;
+    /// and on an identity match that method returns the existing row untouched, so a run discovered under one
+    /// prompt and dispatched under another after a deploy — the ordinary fate of everything left in
+    /// <see cref="WorkflowStatus.RetryPending"/> — would keep the first build's hash and be filed under a
+    /// prompt it never ran. Last dispatch wins, because the last dispatch is what produced the review of
+    /// record.
+    /// </para>
+    /// <para>
+    /// A null argument leaves the column alone (COALESCE on the parameter), so a caller that cannot establish
+    /// the hash says so by passing null rather than by erasing what a previous dispatch knew.
+    /// </para>
+    /// </summary>
+    public void RecordRunProvenance(long id, string? promptTemplateHash)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run
+            SET prompt_template_hash = COALESCE($promptHash, prompt_template_hash),
+                updated_at = $now
+            WHERE id = $id;
+            """;
+        _ = command.Parameters.AddWithValue("$promptHash", (object?)promptTemplateHash ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$id", id);
+        _ = command.ExecuteNonQuery();
+    }
+
     /// <summary>Advances the three resume axes for a run (orchestrator step completion).</summary>
     public void UpdateReviewRunState(long id, ReviewStage stage, WorkflowStatus workflowStatus, PrLifecycleState prLifecycleState)
     {
