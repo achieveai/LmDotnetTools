@@ -652,6 +652,33 @@ public sealed class InfraNarrationFilterTests
     }
 
     [Fact]
+    public void Filter_TaggedFindingUnderAProcessHeading_SurvivesOnItsOwnTagAlone()
+    {
+        // The heading here is a process heading, so heading scoping does NOT exempt this section — the
+        // sandbox bullet beside it proves that, by still being rewritten. The finding survives on its own
+        // [HIGH] tag and nothing else. Without this case the segment-level check is only distinguished by
+        // the no-heading test: every other tagged fixture also sits under a findings heading, so either
+        // mechanism alone keeps them green and neither is pinned independently.
+        const string Body =
+            "### Verification\n\n"
+            + "- **[HIGH]** `build/pack.ps1:12` The packaging step could not be run on Linux agents because "
+            + "`msbuild` is not available there.\n"
+            + "- Focused tests could not be run because the sandbox does not have `dotnet` installed.";
+
+        var (filtered, moved) = InfraNarrationFilter.Filter(Body);
+
+        filtered.Should().Contain(
+            "- **[HIGH]** `build/pack.ps1:12` The packaging step could not be run on Linux agents because "
+                + "`msbuild` is not available there.",
+            "the tag in the bullet's own text is the only thing protecting it — the heading is not exempt");
+        filtered.Should().Contain(
+            "Local build/test execution was not possible",
+            "the untagged sandbox bullet beside it is still rewritten, which is what proves the heading "
+                + "really is unprotected here");
+        moved.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Filter_MediumFindingAboutOutboxPostingState_IsNotMovedToTheOperatorLog()
     {
         // A review OF THIS DAEMON. "no comments were posted" is the defect being reported, and moving it to

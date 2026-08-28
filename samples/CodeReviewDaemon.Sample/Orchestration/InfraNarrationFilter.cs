@@ -19,8 +19,15 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// <c>test</c>) has no such boundary and silently eats real findings that merely share vocabulary — an
 /// author's own retry-policy bug ("429 responses recurse into another retry"), a breaking-change finding
 /// ("existing consumers... can fail to compile"), a controller test-coverage gap phrased around HTTP 403/422.
-/// This filter never runs against a segment under a finding heading, so those are structurally unreachable
-/// here regardless of what words they contain.
+/// This filter never runs against a segment under a finding heading, nor against one that names a severity in
+/// its OWN text, so those are structurally unreachable here regardless of what words they contain.
+/// </para>
+/// <para>
+/// The segment-level exemption is not a refinement of the heading one; it covers a case the corpus does not
+/// contain and the heading rule cannot see. The daemon reviews .NET repositories, so <c>dotnet</c>,
+/// <c>msbuild</c>, "the toolchain is not installed" and "no comments were posted" are the AUTHOR's domain
+/// vocabulary as often as ours — a review OF THIS DAEMON says all four about the code under review — and such
+/// a finding may sit under a process heading, or under none at all.
 /// </para>
 /// <para>
 /// Filtering happens at BULLET or SENTENCE granularity, never a whole section and never the whole review.
