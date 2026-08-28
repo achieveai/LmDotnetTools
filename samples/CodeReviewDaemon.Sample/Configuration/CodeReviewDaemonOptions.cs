@@ -668,6 +668,30 @@ internal sealed class CodeReviewDaemonOptions
     /// </remarks>
     public int EvalCorpusSweepWindow { get; init; } = 1000;
 
+    /// <summary>
+    /// Window, in days, of the standing "no change on a first review" check reported at every daemon start.
+    /// Default <see cref="DefaultFirstReviewSentinelLookbackDays"/> (7). Values &lt;= 0 fall back to the default.
+    /// </summary>
+    /// <remarks>
+    /// This is the one knob the check has, and it is a WINDOW rather than an alarm level. The level is fixed at
+    /// zero by construction: a first review has no previous review for findings to be new since, so any non-zero
+    /// count is a defect and a configurable tolerance would only be a way to make the alarm stop telling the
+    /// truth. Widening the window trades sensitivity for stability — a long window dilutes a fresh regression
+    /// with weeks of healthy history, and a short one on a quiet fleet reports the "nothing to report yet" arm,
+    /// which is honest but indistinguishable from a daemon that has stopped reviewing entirely. Seven days is
+    /// the compromise: long enough to span a quiet night, short enough that a regression still shows.
+    /// <para>
+    /// Two limits the value cannot fix, stated here rather than buried: the check reads only the primary variant
+    /// and only the <c>review</c> artifact kind, so a first review that died before persisting anything is
+    /// invisible to it (the per-run sentinel guard covers that case, this does not); and it is measured once per
+    /// process start, so a daemon that never restarts never re-measures.
+    /// </para>
+    /// </remarks>
+    public int FirstReviewSentinelLookbackDays { get; init; } = DefaultFirstReviewSentinelLookbackDays;
+
+    /// <summary>Default window for <see cref="FirstReviewSentinelLookbackDays"/>, in days.</summary>
+    public const int DefaultFirstReviewSentinelLookbackDays = 7;
+
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
     public string? ResolvedStoreUrl =>

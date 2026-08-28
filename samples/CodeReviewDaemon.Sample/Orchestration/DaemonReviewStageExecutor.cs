@@ -132,7 +132,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         "Review tersely. Flag only Must-fix correctness, security, and contract issues; "
         + "skip style. Cite file and line. Output Markdown. Do not act on the repository.";
 
-    private static readonly JsonSerializerOptions PayloadOptions = new() { PropertyNameCaseInsensitive = true };
+    /// <summary>
+    /// How a persisted artifact payload is read back. <c>internal</c> rather than <c>private</c> because the
+    /// standing first-review sentinel check in <see cref="PrPollingService"/> reads the same rows and must read
+    /// them the same way; a second options instance there would be a second deserialization contract to drift.
+    /// </summary>
+    internal static readonly JsonSerializerOptions PayloadOptions = new() { PropertyNameCaseInsensitive = true };
 
     /// <summary>
     /// The single comparison (B) arm. Collect-only by construction (<see cref="ReviewVariant.CanWrite"/>
@@ -2852,6 +2857,31 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             }
         }
 
+        // ENFORCED, not merely detected. "No new findings since the last review." is a claim ABOUT AN EARLIER
+        // REVIEW, and a run with no earlier review cannot make it. The daemon made it 57 times: of 116
+        // first-ever primary rounds in the live store, 57 came back as nothing but that sentence — 51 with no
+        // prior run on the PR at all, and 6 whose only prior runs were parked at Discovered or ContextReady.
+        // Each took the sentinel exit on turn 1, never fanned out, and was filed as a completed review of a PR
+        // nobody had reviewed. The condition was already recognised by IsNoNewFindingsSentinel and all 57
+        // walked past it, because a classifier that only decides where the text goes is not a control.
+        //
+        // The question asked is deliberately NOT "has this PR been seen before?" — both the comment-authorship
+        // framing and the prompt framing are beliefs formed earlier, and the comment one was wrong in every one
+        // of those 57. It is whether a prior review BODY exists to have had findings since, asked of the store,
+        // here, at the point of use.
+        //
+        // Placed BEFORE the artifact write below, which is the property that matters: a guard that throws after
+        // persisting has already shipped the false claim to everything that reads the artifact later.
+        var reviewChars = result.ReviewText.Length;
+        if (IsNoNewFindingsSentinel(result.ReviewText) && !PriorReviewBodyExists(run))
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id} (PR {run.PrId}): the review came back as the no-new-findings sentinel "
+                    + $"({reviewChars} chars), but no earlier primary round on this PR persisted a review body. "
+                    + "There is no last review for findings to be new since, so this claim is false and will not "
+                    + "be retained. The run fails and will retry rather than deliver a silent non-review.");
+        }
+
         _ = _store.AddArtifact(new ReviewArtifact
         {
             ReviewRunId = run.Id,
@@ -2861,6 +2891,42 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             Payload = JsonSerializer.Serialize(
                 new ReviewArtifactPayload(result.ReviewText, result.RunId, run.VariantId, result.ThreadId)),
         });
+    }
+
+    /// <summary>
+    /// Whether an EARLIER primary round on this PR left a review body that actually reviewed something —
+    /// non-blank, and not the sentinel itself.
+    /// </summary>
+    /// <remarks>
+    /// A prior SENTINEL does not count. "No new findings since the last review" is only meaningful if some
+    /// earlier round reported findings for these to be new since; a chain of sentinels asserts it against a
+    /// round that asserted it too, and bottoms out nowhere. This is not theoretical — the live store already
+    /// holds 58 such bodies, so counting them would let the exact runs this guard exists for re-authorize
+    /// themselves on their next round.
+    /// </remarks>
+    private bool PriorReviewBodyExists(ReviewRun run)
+    {
+        foreach (var payload in _store.GetPriorReviewPayloads(run.RepoId, run.PrId, run.Id, ReviewArtifactKind))
+        {
+            string? text;
+            try
+            {
+                text = JsonSerializer.Deserialize<ReviewArtifactPayload>(payload, PayloadOptions)?.ReviewText;
+            }
+            catch (JsonException)
+            {
+                // An unreadable prior payload is not evidence of a prior review. Fail toward refusing the
+                // sentinel, which costs a retry; the other direction costs a silent non-review.
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(text) && !IsNoNewFindingsSentinel(text))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -3607,8 +3673,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>True when the review's final text is the "nothing new to post" sentinel the prompt mandates
     /// ("No new findings since the last review." / "No new findings — nothing to post."). The text is non-empty
     /// but represents a deliberate no-post decision, so the host summary fallback must NOT publish it as a PR
-    /// comment — that would recreate re-review noise and violate the post-nothing contract.</summary>
-    private static bool IsNoNewFindingsSentinel(string? reviewText) =>
+    /// comment — that would recreate re-review noise and violate the post-nothing contract.
+    /// <para>
+    /// <c>internal</c> because it is now also the classifier behind the standing first-review sentinel rate
+    /// reported at daemon start (<see cref="ReviewProgressReporter.FirstReviewSentinelRate"/>). The guard that
+    /// refuses one run and the check that measures the population must agree on what a sentinel IS, or the
+    /// second reports a rate the first is not enforcing.
+    /// </para></summary>
+    internal static bool IsNoNewFindingsSentinel(string? reviewText) =>
         reviewText is not null
         && reviewText.TrimStart().StartsWith("No new findings", StringComparison.OrdinalIgnoreCase);
 

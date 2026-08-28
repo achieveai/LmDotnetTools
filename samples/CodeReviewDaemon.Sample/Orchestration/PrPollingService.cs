@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Text.Json;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 
@@ -57,6 +60,8 @@ internal sealed class PrPollingService : BackgroundService
     private readonly TimeSpan _pollInterval;
     private readonly Func<CancellationToken, Task>? _sweepAsync;
     private readonly TimeProvider _timeProvider;
+    private readonly ReviewProgressReporter? _progress;
+    private readonly int _firstReviewLookbackDays;
 
     public PrPollingService(
         IEnumerable<PrPollTarget> targets,
@@ -66,7 +71,9 @@ internal sealed class PrPollingService : BackgroundService
         ILogger<PrPollingService> logger,
         TimeSpan? pollInterval = null,
         Func<CancellationToken, Task>? sweepAsync = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        ReviewProgressReporter? progress = null,
+        int? firstReviewLookbackDays = null)
     {
         _targets = [.. targets];
         _providers = [.. providers];
@@ -76,10 +83,16 @@ internal sealed class PrPollingService : BackgroundService
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(30);
         _sweepAsync = sweepAsync;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _progress = progress;
+        _firstReviewLookbackDays = firstReviewLookbackDays is > 0
+            ? firstReviewLookbackDays.Value
+            : CodeReviewDaemonOptions.DefaultFirstReviewSentinelLookbackDays;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        ReportFirstReviewSentinelRate();
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -108,6 +121,56 @@ internal sealed class PrPollingService : BackgroundService
             {
                 break;
             }
+        }
+    }
+
+    /// <summary>
+    /// Measures, once per start, how many recent first-ever reviews claimed there was nothing new since a
+    /// review that never happened. Startup is the moment worth measuring: a deploy is when this defect
+    /// entered the fleet, and — since its repair is not in the record — a deploy is when it could return.
+    /// </summary>
+    /// <remarks>
+    /// Never allowed to stop the daemon. A detector that can take the poll loop down with it is worse than the
+    /// blind spot it closes, so the whole thing is best-effort and a failure is reported and dropped. It is
+    /// inert when no reporter was supplied, because the line's whole value is that it reaches the ONE logger
+    /// category the console keeps at Information — logged anywhere else it is a line nobody reads.
+    /// </remarks>
+    private void ReportFirstReviewSentinelRate()
+    {
+        if (_progress is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var since = _timeProvider.GetUtcNow()
+                .AddDays(-_firstReviewLookbackDays)
+                .ToString("O", CultureInfo.InvariantCulture);
+            var payloads = _store.GetFirstReviewPayloadsSince(
+                since, DaemonReviewStageExecutor.ReviewArtifactKind);
+            var sentinels = payloads.Count(static p =>
+                DaemonReviewStageExecutor.IsNoNewFindingsSentinel(ReadReviewText(p)));
+            _progress.FirstReviewSentinelRate(payloads.Count, sentinels, _firstReviewLookbackDays);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex, "Could not measure the no-change-on-a-first-review rate; polling continues regardless.");
+        }
+    }
+
+    private static string? ReadReviewText(string payload)
+    {
+        try
+        {
+            return JsonSerializer
+                .Deserialize<ReviewArtifactPayload>(payload, DaemonReviewStageExecutor.PayloadOptions)?
+                .ReviewText;
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 
