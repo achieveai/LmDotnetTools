@@ -3999,7 +3999,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <see cref="ReviewPoster"/>, whose 3-tier check (outbox replay → provider backstop scan → post) guarantees
     /// exactly-once across re-polls and restarts. The body is prefixed with the configured bot name; when
     /// <paramref name="deepLink"/> is set (the S2S path) a single "Full review conversation" line is appended so
-    /// the reader can open the hosted conversation + its sub-agent tree. Requires a publisher for
+    /// the reader can open the hosted conversation + its sub-agent tree. The body is first run through
+    /// <see cref="InfraNarrationFilter"/> (#113) so daemon-infrastructure narration never reaches the author;
+    /// what that filter moves is logged to the operator channel here, and the persisted <c>review.md</c>/DB
+    /// artifact keeps the raw unfiltered text. Returns <c>null</c> — no post attempted, no outbox row, the
+    /// same disposition as the no-new-findings sentinel — when the filtered body is empty, which means the
+    /// review said nothing but infrastructure narration. Requires a publisher for
     /// <paramref name="provider"/> to be registered; throws if none matches so a misconfiguration is loud, not a
     /// silent no-post. Returns the <see cref="PostOutcome"/> so the caller can hold the terminal stage open when
     /// a post-mode review demonstrably never reached the PR.
@@ -4010,7 +4015,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// suppressed while the gate still demanded proof of it.
     /// </para>
     /// </summary>
-    private async Task<PostOutcome> PostReviewCommentHostSideAsync(
+    private async Task<PostOutcome?> PostReviewCommentHostSideAsync(
         ReviewRun run, RepoIdentity repo, string provider, string reviewText, string? deepLink,
         bool dedupContextLost,
         CancellationToken cancellationToken)
@@ -4019,9 +4024,57 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ?? throw new InvalidOperationException(
                 $"No review-comment publisher registered for provider '{provider}'; cannot post the review for run {run.Id}.");
         var poster = new ReviewPoster(publisher, _store, _loggerFactory.CreateLogger<ReviewPoster>());
-        var postedBody = string.IsNullOrWhiteSpace(deepLink)
-            ? $"[{_options.BotName}]\n\n{reviewText}"
-            : $"[{_options.BotName}]\n\n{reviewText}\n\n🔎 Full review conversation: {deepLink}";
+
+        // Structural, composition-time filter (#113): strips/relocates daemon-infrastructure narration (sandbox
+        // tooling gaps, provider/HTTP failures, posting-state noise) that measured 0/48 under a severity-tagged
+        // finding heading in the live store — none of it is a review finding, and the PR author has no channel to
+        // act on it. Main only ASKS the model not to narrate via prompt text; this makes it structural.
+        // Deliberately placed HERE rather than on the caller's `reviewText` local: that same local is what
+        // CommitPooledNotesAsync/PublishToReviewBotAsync write to review.md, and the persisted artifact must stay
+        // the raw, unfiltered audit trail. This method is the only site the author-visible string is composed, so
+        // filtering here covers every posted body and nothing else. It also sits strictly downstream of the
+        // IsNoNewFindingsSentinel gate, which classifies the unfiltered text, so it cannot change that outcome.
+        var (authorVisibleText, movedNotes) = InfraNarrationFilter.Filter(reviewText);
+        foreach (var note in movedNotes)
+        {
+            _logger.LogInformation(
+                "Run {RunId}: held back {SubTag} infra narration from the posted comment (heading {Heading}): {Text}",
+                run.Id,
+                note.SubTag,
+                note.Heading ?? "(none)",
+                note.Text);
+        }
+
+        // A review that was ENTIRELY infra narration filters down to its section headings and nothing else.
+        // Posting it anyway delivered a comment whose whole content was the bot-name prefix, a bare heading,
+        // and (on the live profiles) a deep link — and it looked like a successful delivery all the way down,
+        // because the caller's `hasContent` reads the RAW text and ReviewPoster's null/whitespace guard sees
+        // the prefix, not the review. Emptiness therefore has to be judged on what the AUTHOR can read rather
+        // than on whitespace, which is what HasAuthorFacingContent decides. The outbox row
+        // then went terminal Posted, so the empty comment was never retried or corrected. Treat it as the
+        // deliberate no-post it is: the same disposition as the no-new-findings sentinel, which returns no
+        // outcome at all, leaves no outbox row to misread as evidence, and lets the run complete as a success.
+        // The withheld text is already on the operator log above, so nothing is lost — only the author is
+        // spared an empty comment.
+        if (!InfraNarrationFilter.HasAuthorFacingContent(authorVisibleText))
+        {
+            _logger.LogInformation(
+                "Run {RunId}: the review was entirely daemon-infrastructure narration and filtered down to "
+                    + "nothing, so no {Provider} comment was posted; the withheld text is on this log above.",
+                run.Id,
+                provider);
+            return null;
+        }
+
+        // One reference to the filtered text, deliberately. Composing the two arms separately meant the
+        // deep-link arm — the one every live profile actually takes — could be reverted to the raw text on
+        // its own and no test would notice.
+        var postedBody = $"[{_options.BotName}]\n\n{authorVisibleText}";
+        if (!string.IsNullOrWhiteSpace(deepLink))
+        {
+            postedBody += $"\n\n🔎 Full review conversation: {deepLink}";
+        }
+
         var key = new IdempotencyKeyComponents(
             Provider: provider,
             OrgOrOwner: repo.OrgOrOwner,

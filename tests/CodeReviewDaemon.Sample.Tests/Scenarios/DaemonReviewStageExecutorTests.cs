@@ -2167,6 +2167,146 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 "no delivery was attempted, so there is no comment outbox row to misread as evidence");
     }
 
+    // ── #113: daemon-infrastructure narration is filtered where the posted comment is composed ───────
+    // End-to-end proof of what InfraNarrationFilterTests exercises in isolation: real sandbox/tooling
+    // narration (run 41) is rewritten generically on the posted body, real posting-state narration (run 17)
+    // is held back entirely and reaches only the operator-facing log line, and the author's own finding is
+    // untouched by either disposition. Main previously only ASKED the model not to narrate via prompt text.
+
+    /// <summary>
+    /// Live runs 41 and 17, combined into one review, posted end to end through the production stage
+    /// pipeline. The reader-facing assertions pin what the AUTHOR sees: the blocker survives, the internal
+    /// "sandbox does not have dotnet" detail is gone, and the posting-state sentence is gone with nothing
+    /// substituted for it (it carries zero value to the author). The operator-facing assertion pins the other
+    /// half of the contract: the withheld posting-state text is not simply discarded — it is logged, with the
+    /// run id and sub-tag a human grepping the operator log needs, ON THE SAME LINE. An absence-only
+    /// assertion would pass just as well for a filter that dropped the text on the floor.
+    /// </summary>
+    [Fact]
+    public async Task Posted_rewrites_sandbox_tooling_narration_and_moves_posting_state_narration_to_the_operator_log()
+    {
+        // The opening line deliberately avoids the "No new findings" prefix: IsNoNewFindingsSentinel makes
+        // that an unconditional no-post, and a review that never posts cannot exercise a filter that runs at
+        // composition time. (The source branch's fixture opened that way and still posted, because the
+        // sentinel there was escapable via `|| carried.Rounds > 0`; main dropped that term.)
+        const string Body =
+            "Nothing further on the files I flagged last round.\n\n"
+            + "The new migration is a different matter:\n\n"
+            + "- [BLOCKER] `AddTenantId` adds a NOT NULL column with no default against a populated table.\n\n"
+            + "### Verification\n\n"
+            + "Focused tests could not be run because the sandbox does not have `dotnet` installed.\n\n"
+            + "### Posting status\n\n"
+            + "No comments were posted.";
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.Ado(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                UseS2SReviewAgent = true,
+                EnableCommentPosting = true,
+                EnableHostSummaryFallback = true,
+            });
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = Body;
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
+
+        await RunAllStagesAsync(fixture, run);
+
+        var posted = fixture.AdoPublisher!.PostedBodies.Should().ContainSingle().Subject;
+        posted.Should().Contain(
+            "[BLOCKER]", "the author's own finding is never touched by this filter, whatever else it removes");
+        posted.Should().NotContain(
+            "dotnet", "the internal sandbox/tooling cause is stripped from what the author sees");
+        posted.Should().NotContain(
+            "No comments were posted",
+            "posting-state narration carries zero value to the author and is not substituted");
+        posted.Should().Contain(
+            "Local build/test execution was not possible for this review; no results from running the code "
+                + "are reflected in this assessment.",
+            "sandbox/tooling narration is REWRITTEN, never deleted outright — the author still learns tests "
+                + "could not be run, just not why in daemon-internal terms");
+
+        var line = logs.Capturing.MessagesAtLevel(LogLevel.Information)
+            .Should().ContainSingle(
+                m => m.Contains("posting_state", StringComparison.Ordinal),
+                "the withheld text must actually reach the operator channel, not just vanish from the posted body")
+            .Subject;
+        line.Should().Contain($"Run {run.Id}:", "an operator grepping this log needs the run id, not just the text");
+        line.Should().Contain(
+            "No comments were posted.", "the operator channel receives the exact text the PR author never saw");
+    }
+
+    /// <summary>
+    /// A review that is ENTIRELY infra narration filters down to nothing, and an empty review is not a
+    /// comment worth posting. Before this guard the daemon posted the bot-name prefix and nothing else: the
+    /// caller's emptiness check reads the RAW text, and <c>ReviewPoster</c>'s whitespace guard sees the
+    /// prefix, so every layer thought it had content. The outbox row then went terminal <c>Posted</c>, so
+    /// the empty comment was never retried or corrected. The withheld text must still reach the operator —
+    /// suppressing the comment may not also suppress the record of what was suppressed.
+    /// </summary>
+    [Fact]
+    public async Task Posted_posts_nothing_when_the_review_is_entirely_infra_narration_but_still_tells_the_operator()
+    {
+        const string Body = "### Posting status\n\nNo comments were posted.";
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.Ado(
+            logs,
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = Body;
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.AdoPublisher!.PostedBodies.Should().BeEmpty(
+            "a review that filtered down to nothing must not be delivered as a bot-name prefix with no review "
+                + "under it");
+        fixture.Store.GetOutboxForRun(run.Id)
+            .Should().NotContain(
+                o => o.Operation == ReviewPoster.PostReviewCommentOperation,
+                "no delivery was attempted, so there is no terminal outbox row to misread as a real delivery");
+        logs.Capturing.MessagesAtLevel(LogLevel.Information)
+            .Should().ContainSingle(
+                m => m.Contains("posting_state", StringComparison.Ordinal)
+                    && m.Contains("No comments were posted.", StringComparison.Ordinal),
+                "suppressing the comment must not also suppress the operator's record of what was withheld");
+    }
+
+    /// <summary>
+    /// The deep-link profile is the one every live daemon profile actually runs (S2S posting carries a
+    /// hosted-conversation link), so the filter has to be pinned on THAT composition and not only on the
+    /// plain one. The body is composed from the filtered text exactly once and the link is appended to it,
+    /// so there is no second arm that could be reverted to the raw review on its own.
+    /// </summary>
+    [Fact]
+    public async Task Posted_filters_infra_narration_on_the_deep_link_profile_too()
+    {
+        const string Body =
+            "The new migration is a different matter:\n\n"
+            + "- [BLOCKER] `AddTenantId` adds a NOT NULL column with no default against a populated table.\n\n"
+            + "### Verification\n\n"
+            + "Focused tests could not be run because the sandbox does not have `dotnet` installed.";
+        using var fixture = Fixture.Ado(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                UseS2SReviewAgent = true,
+                LmStreamingBaseUrl = "http://localhost:5051",
+                EnableCommentPosting = true,
+            });
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = Body;
+
+        await RunAllStagesAsync(fixture, run);
+
+        var hostedThreadId = $"hosted-{DaemonReviewStageExecutor.ThreadId(run, run.VariantId)}";
+        var posted = fixture.AdoPublisher!.PostedBodies.Should().ContainSingle().Subject;
+        posted.Should().Contain(
+            $"🔎 Full review conversation: http://localhost:5051/?threadId={hostedThreadId}&focus=1",
+            "this is the deep-link profile — if the link is absent the test is not exercising the arm it claims");
+        posted.Should().NotContain(
+            "dotnet", "the deployed profile filters infra narration exactly like the plain one");
+        posted.Should().Contain("[BLOCKER]", "the author's finding survives on this profile too");
+    }
+
     /// <summary>
     /// Seeds the review-comment outbox row the executor would find on replay, already terminal
     /// <see cref="OutboxStatus.Posted"/> but WITHOUT a provider response id — a row that claims closure and
