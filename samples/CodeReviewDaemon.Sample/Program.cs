@@ -413,7 +413,11 @@ builder.Services.AddSingleton<PolicyEnforcedHttpClientFactory>();
 builder.Services.AddSingleton<IPrProvider>(sp => new GitHubPrProvider(
     sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
     sp.GetRequiredService<GitHubOAuthProvider>(),
-    sp.GetRequiredService<ILogger<GitHubPrProvider>>()));
+    sp.GetRequiredService<ILogger<GitHubPrProvider>>(),
+    // The per-poll coverage bounds (issue #537). Both were declared-but-unread before this: the provider
+    // carried its own private const, so an operator raising MaxPagesPerPoll changed nothing.
+    daemonOptions.MaxPagesPerPoll,
+    daemonOptions.MaxPrsPerPage));
 
 // GitHub review posting is host-side (like ADO below). Agent-owned posting via code-reviewer:post-pr-review was
 // abandoned — the agent loaded the skill but never actually posted — so DaemonReviewStageExecutor.PostAsync posts
@@ -428,7 +432,12 @@ if (daemonOptions.EnableAdoProvider)
     builder.Services.AddSingleton<IPrProvider>(sp => new AdoPrProvider(
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
-        sp.GetRequiredService<ILogger<AdoPrProvider>>()));
+        sp.GetRequiredService<ILogger<AdoPrProvider>>(),
+        // Same per-poll coverage bounds as GitHub above (issue #537). On ADO these matter most: with no
+        // $top the endpoint returns its own default of 101 and no continuation token, so the page loop
+        // could never iterate however high MaxPagesPerPoll was set.
+        daemonOptions.MaxPagesPerPoll,
+        daemonOptions.MaxPrsPerPage));
 
     // ADO review posting is host-side (like GitHub above): DaemonReviewStageExecutor.PostAsync posts ADO
     // reviews through this publisher. Resolve the CONCRETE AdoOAuthProvider, not IOAuthTokenProvider, which is

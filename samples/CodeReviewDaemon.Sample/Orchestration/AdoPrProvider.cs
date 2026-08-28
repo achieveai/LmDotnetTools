@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
 
@@ -25,17 +26,58 @@ internal sealed class AdoPrProvider : IPrProvider
     private readonly IOAuthTokenProvider _tokenProvider;
     private readonly ILogger<AdoPrProvider> _logger;
 
-    public AdoPrProvider(HttpClient httpClient, IOAuthTokenProvider tokenProvider, ILogger<AdoPrProvider> logger)
+    public AdoPrProvider(
+        HttpClient httpClient,
+        IOAuthTokenProvider tokenProvider,
+        ILogger<AdoPrProvider> logger,
+        int maxPagesPerPoll = CodeReviewDaemonOptions.DefaultMaxPagesPerPoll,
+        int maxPrsPerPage = CodeReviewDaemonOptions.DefaultMaxPrsPerPage)
     {
         _httpClient = httpClient;
         _tokenProvider = tokenProvider;
         _logger = logger;
+
+        // Normalized rather than validated: a nonsensical bound must not stop the daemon polling, and it
+        // must not silently become "no pages" (a repo that looks permanently empty) or "no limit". Both fall
+        // back to the documented default — see CodeReviewDaemonOptions.MaxPagesPerPoll.
+        MaxPagesPerPoll = maxPagesPerPoll > 0 ? maxPagesPerPoll : CodeReviewDaemonOptions.DefaultMaxPagesPerPoll;
+        // ADO rejects a $top above 1000 outright.
+        PageSize = Math.Min(
+            maxPrsPerPage > 0 ? maxPrsPerPage : CodeReviewDaemonOptions.DefaultMaxPrsPerPage,
+            AdoMaxPageSize);
     }
 
     public string Provider => "ado";
 
-    /// <summary>Bounded pages per poll (PR #121 M5) so one poll can't spin unboundedly on a huge repo.</summary>
-    private const int MaxPages = 10;
+    /// <summary>
+    /// Bounded pages per poll (PR #121 M5) so one poll can't spin unboundedly on a huge repo. This is the
+    /// operator's <see cref="CodeReviewDaemonOptions.MaxPagesPerPoll"/>, carried in by <c>Program.cs</c> at
+    /// registration and normalized in the constructor. It is a property rather than a field so the effective
+    /// bound the loop below reads is the same value a wiring test can observe on a provider resolved out of
+    /// the real host — the knob had no reader at all before issue #537, and a reader nothing can see is how
+    /// that recurs.
+    /// </summary>
+    internal int MaxPagesPerPoll { get; }
+
+    /// <summary>The effective <c>$top</c>: the operator's
+    /// <see cref="CodeReviewDaemonOptions.MaxPrsPerPage"/>, clamped to ADO's ceiling.</summary>
+    internal int PageSize { get; }
+
+    /// <summary>Azure DevOps' documented maximum for <c>$top</c> on the PR-list endpoint.</summary>
+    private const int AdoMaxPageSize = 1000;
+
+    /// <summary>
+    /// Whether the listing might not be finished. True when ADO handed back a continuation token, or when
+    /// the last page came back exactly full — a full page is indistinguishable from a truncated one, so it
+    /// has to be treated as "maybe more" until a short page proves otherwise.
+    /// <para>
+    /// Used for BOTH the loop condition and the truncation warning, deliberately: the previous version
+    /// tested the token in the loop and the token in the warning, so the case that actually truncates —
+    /// full page, no token — exited the loop quietly and then failed to warn about it.
+    /// </para>
+    /// </summary>
+    private static bool MoreMayRemain(string? continuationToken, int lastPageCount, int pageSize) =>
+        !string.IsNullOrEmpty(continuationToken) || lastPageCount >= pageSize;
 
     /// <summary>Max concurrent ADO <c>/pushes</c> recency lookups per poll — bounds the fan-out so a page full
     /// of old PRs doesn't serialize into minutes of round trips or trip ADO throttling.</summary>
@@ -62,26 +104,42 @@ internal sealed class AdoPrProvider : IPrProvider
         // A future provider with laxer naming rules could not inherit the safety claim: it would need the
         // segments encoded up front (as GitRemoteUrl.RepoPathFor does for the git/allow-list side), because
         // nothing on the store-fed route would stop them.
+        // $top is EXPLICIT. Omitting it does not mean "no limit" — ADO applies its own default of 101, which
+        // is indistinguishable in the response from a repo that simply has 101 open PRs. Measured on a repo
+        // with 711 active pull requests, of which one poll could see 101 (issue #537 / M7).
         var baseUrl =
             $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repo}/pullrequests"
-            + $"?searchCriteria.status=active&api-version={ApiVersion}";
+            + $"?searchCriteria.status=active&$top={PageSize.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+            + $"&api-version={ApiVersion}";
 
         var pullRequests = new List<PullRequestDescriptor>();
         var highWaterMark = 0L;
 
-        // Follow ADO's continuation-token pagination (M5): each response may carry an
-        // x-ms-continuationtoken header, which is passed back as &continuationToken= on the next page.
-        // Bounded by MaxPages per poll.
+        // Paging is $skip-based, with continuation-token support kept for the case ADO does send one.
+        //
+        // The token alone does NOT work here, and that was measured rather than reasoned: with $top=200 a
+        // poll of a repo holding 552 active PRs returned exactly 200 across ONE page and no continuation
+        // header. Exactly-the-page-size is a cap signature, not a count — the same tell that hid the original
+        // 101. Because the loop's exit condition was "no token", stopping early was also SILENT: the
+        // truncation warning could not fire on the very case that truncates.
+        //
+        // So the end of the list is inferred the only way this endpoint allows: a page that comes back
+        // SHORTER than $top is the last one. A full final page costs one extra empty request, which is the
+        // price of proving termination instead of assuming it. Bounded by MaxPagesPerPoll.
         string? continuationToken = null;
         var pages = 0;
+        var skip = 0;
+        var lastPageCount = 0;
         do
         {
             cancellationToken.ThrowIfCancellationRequested();
             pages++;
 
-            var url = continuationToken is null
-                ? baseUrl
-                : $"{baseUrl}&continuationToken={Uri.EscapeDataString(continuationToken)}";
+            var url = continuationToken is not null
+                ? $"{baseUrl}&continuationToken={Uri.EscapeDataString(continuationToken)}"
+                : skip > 0
+                    ? $"{baseUrl}&$skip={skip.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+                    : baseUrl;
 
             using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
                 .WithOperation(SandboxOperation.ReadProviderMetadata);
@@ -152,13 +210,29 @@ internal sealed class AdoPrProvider : IPrProvider
                         highWaterMark = raw.PrId;
                     }
                 }
+
+                lastPageCount = rawPrs.Count;
+                skip += lastPageCount;
             }
 
             continuationToken = response.Headers.TryGetValues("x-ms-continuationtoken", out var values)
                 ? values.FirstOrDefault()
                 : null;
         }
-        while (!string.IsNullOrEmpty(continuationToken) && pages < MaxPages);
+        while (MoreMayRemain(continuationToken, lastPageCount, PageSize) && pages < MaxPagesPerPoll);
+
+        // A poll that stops while more may remain has NOT seen the repo's open PRs, and every downstream
+        // filter — recency above all — can only ever filter what this list contained. Said out loud at
+        // Warning because the failure it describes is invisible by construction: a truncated page and a
+        // complete one are the same shape, which is how a 101-PR cap survived unnoticed on a repo with 711.
+        if (MoreMayRemain(continuationToken, lastPageCount, PageSize))
+        {
+            _logger.LogWarning(
+                "ADO poll of {Org}/{Project}/{Repo} stopped after {Pages} page(s) of {PageSize} with more "
+                    + "results still available; {Count} PR(s) were enumerated and the rest were NOT seen this "
+                    + "poll. Raise CodeReviewDaemon:MaxPagesPerPoll or MaxPrsPerPage if this repeats.",
+                org, project, repo, pages, PageSize, pullRequests.Count);
+        }
 
         _logger.LogDebug(
             "ADO poll of {Org}/{Project}/{Repo} returned {Count} active PR(s) across {Pages} page(s).",

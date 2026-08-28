@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -297,5 +298,115 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         var state = await Provider(handler).GetPrStateAsync(Repo, "7", CancellationToken.None);
 
         state.Should().Be(PrLifecycle.Abandoned);
+    }
+
+    // ---- Issue #537: MaxPagesPerPoll is the bound, and it must be able to exceed the old hardcoded 10 ----
+
+    private GitHubPrProvider Provider(FakeHttpMessageHandler handler, int maxPagesPerPoll, int maxPrsPerPage = 100) =>
+        new(
+            new HttpClient(handler),
+            new FakeOAuthTokenProvider("github", "gh-token-xyz"),
+            LoggerFactory.CreateLogger<GitHubPrProvider>(),
+            maxPagesPerPoll,
+            maxPrsPerPage);
+
+    /// <summary>
+    /// Serves <paramref name="totalPages"/> pages of one PR each, chained by <c>Link rel="next"</c>. Pages
+    /// are handed out in call order (the provider walks them strictly sequentially), so the PR number on a
+    /// response is also the 1-based index of the page it came from: PR <c>13</c> can only have been read on
+    /// page 13.
+    /// </summary>
+    private static FakeHttpMessageHandler PagedRepo(int totalPages)
+    {
+        var served = 0;
+        return new FakeHttpMessageHandler().On(
+            req => req.RequestUri!.AbsolutePath.EndsWith("/pulls", StringComparison.Ordinal),
+            _ =>
+            {
+                var page = ++served;
+                var json = $$"""
+                    [ { "number": {{page}}, "state": "open", "merged_at": null,
+                        "updated_at": "2026-06-01T10:00:00Z",
+                        "head": { "sha": "head-{{page}}" }, "base": { "sha": "base-{{page}}" } } ]
+                    """;
+                return page < totalPages
+                    ? JsonResponse(
+                        json,
+                        ("Link",
+                            $"<https://api.github.com/repos/acme/widgets/pulls?state=open&page={page + 1}>; rel=\"next\""))
+                    : JsonResponse(json);
+            });
+    }
+
+    /// <summary>
+    /// AC#3 — the repo has more pages than the old hardcoded ceiling of 10, and a configured
+    /// <c>MaxPagesPerPoll</c> above it must actually enumerate past page 10. PR 11 through 14 exist only on
+    /// pages 11 through 14, so their presence is the proof; restoring the old <c>pages &lt; 10</c> bound
+    /// stops the walk at PR 10 and fails here.
+    /// </summary>
+    [Fact]
+    public async Task ListOpenPullRequests_enumerates_past_page_ten_when_configured_to()
+    {
+        var handler = PagedRepo(totalPages: 14);
+
+        var page = await Provider(handler, maxPagesPerPoll: 14)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        handler.CountRequests("/pulls").Should().Be(14, "the configured bound allows all 14 pages");
+        page.PullRequests.Select(p => p.PrId).Should().Contain(
+            ["11", "12", "13", "14"], "these PRs exist only on pages past the old hardcoded ceiling of 10");
+        page.PullRequests.Should().HaveCount(14);
+    }
+
+    /// <summary>
+    /// The bound is the CONFIGURED value in both directions: below the old constant it must also bind, so a
+    /// test cannot pass merely because 10 happens to be the number in play.
+    /// </summary>
+    [Theory]
+    [InlineData(3)]
+    [InlineData(12)]
+    public async Task ListOpenPullRequests_fetches_exactly_the_configured_number_of_pages(int maxPages)
+    {
+        var handler = PagedRepo(totalPages: 30);
+
+        var page = await Provider(handler, maxPagesPerPoll: maxPages)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        handler.CountRequests("/pulls").Should().Be(maxPages);
+        page.PullRequests.Should().HaveCount(maxPages);
+    }
+
+    /// <summary>A page bound that cannot be a page count is treated as unset, never as zero pages (which
+    /// would make the repo read as empty) and never as unbounded.</summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public async Task A_nonsensical_page_bound_polls_the_documented_default_number_of_pages(int configured)
+    {
+        var handler = PagedRepo(totalPages: 30);
+
+        _ = await Provider(handler, maxPagesPerPoll: configured)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        handler.CountRequests("/pulls").Should().Be(
+            CodeReviewDaemonOptions.DefaultMaxPagesPerPoll, "a nonsensical bound degrades to the default, not to 0");
+    }
+
+    /// <summary>
+    /// <c>per_page</c> carries the configured page size, clamped to GitHub's documented maximum of 100 —
+    /// asking for more is silently ignored by GitHub, so a configured 500 would read as honoured.
+    /// </summary>
+    [Theory]
+    [InlineData(25, "per_page=25")]
+    [InlineData(500, "per_page=100")]
+    [InlineData(0, "per_page=100")]
+    public async Task The_page_size_is_sent_and_clamped_to_githubs_maximum(int configured, string expected)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls", "[]");
+
+        _ = await Provider(handler, maxPagesPerPoll: 10, maxPrsPerPage: configured)
+            .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        handler.Requests.Should().ContainSingle().Which.Uri.Query.Should().Contain(expected);
     }
 }
