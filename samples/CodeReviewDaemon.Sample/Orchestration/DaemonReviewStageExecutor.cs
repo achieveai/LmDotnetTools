@@ -1989,7 +1989,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             .ConfigureAwait(false);
         reviewInput = await PrependRepoGuidanceAsync(reviewInput, run.Id, context.CheckoutRoot, cancellationToken)
             .ConfigureAwait(false);
-        reviewInput = await PrependExistingCommentsAsync(reviewInput, run, repo, provider, cancellationToken)
+        (reviewInput, var commentFetch) = await PrependExistingCommentsAsync(
+                reviewInput,
+                run,
+                repo,
+                provider,
+                cancellationToken
+            )
             .ConfigureAwait(false);
 
         // LAST in the chain, so it lands FIRST in the assembled brief. The reviewer cannot establish any of
@@ -2005,6 +2011,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 reviewInput,
                 context.CheckoutRoot,
                 context.StoreRoot,
+                commentFetch,
                 cancellationToken
             )
             .ConfigureAwait(false);
@@ -3020,8 +3027,18 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// (GitHub is always registered; ADO when enabled) so the awareness is deterministic rather than relying on
     /// the agent to fetch. A fetch failure, a missing publisher, or a PR with no prior comments leaves the input
     /// unchanged — this must never block a review.
+    /// <para>
+    /// The returned <see cref="CommentFetchOutcome"/> is what makes that "unchanged input" readable afterwards
+    /// (issue #576). All three degraded exits used to return <paramref name="reviewInput"/> untouched, so a run
+    /// with no comment block was four states at once — clean PR, empty success, failed fetch, unwired publisher
+    /// — and the caller's <c>existing-comments</c> signal collapsed them into one number that could not be read
+    /// back apart. Two of the four (<see cref="CommentFetchOutcome.Failed"/>,
+    /// <see cref="CommentFetchOutcome.NoPublisher"/>) are defects worth counting; the other two are health. The
+    /// dangerous-half behavior — <see cref="ReviewStore.MarkDedupContextLost"/> plus declining to post a blind
+    /// re-review on a fetch failure — is unchanged; this only adds visibility on top of it.
+    /// </para>
     /// </summary>
-    private async Task<string> PrependExistingCommentsAsync(
+    private async Task<(string ReviewInput, CommentFetchOutcome Outcome)> PrependExistingCommentsAsync(
         string reviewInput,
         ReviewRun run,
         RepoIdentity repo,
@@ -3032,7 +3049,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var publisher = _publishers.FirstOrDefault(p => string.Equals(p.Provider, provider, StringComparison.Ordinal));
         if (publisher is null)
         {
-            return reviewInput;
+            // A wiring state, not a PR state: it holds for every run against this provider until someone changes
+            // the daemon's registration, so an operator who can see it once can fix it for the whole fleet.
+            _logger.LogWarning(
+                "Run {RunId}: no comment reader is registered for provider {Provider} ({Registered} registered), "
+                    + "so this PR's existing comments could not be read at all; the reviewer proceeds without a "
+                    + "dedup list.",
+                run.Id,
+                provider,
+                _publishers.Count == 0 ? "none" : string.Join(", ", _publishers.Select(p => p.Provider))
+            );
+            return (reviewInput, CommentFetchOutcome.NoPublisher);
         }
 
         IReadOnlyList<ExistingReviewComment> existing;
@@ -3078,12 +3105,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 );
             }
 
-            return reviewInput;
+            return (reviewInput, CommentFetchOutcome.Failed);
         }
 
         if (existing.Count == 0)
         {
-            return reviewInput;
+            // The healthy zero, said out loud. Reported at Information because it is not a defect — but it is
+            // what makes the two warnings above readable: without a positive record of the benign case, a fleet
+            // with no failure warnings and a fleet where nobody looks would emit the same log.
+            _logger.LogInformation(
+                "Run {RunId}: this PR has no existing review comments (the fetch succeeded and returned an "
+                    + "empty list).",
+                run.Id
+            );
+            return (reviewInput, CommentFetchOutcome.Empty);
         }
 
         // Cutoff for "new since the last review": the latest moment the bot is known to have spoken on this PR.
@@ -3161,12 +3196,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             )
         );
 
-        return ExistingCommentsGuidance
-            + past
-            + "\n\n### New comments since your last review — focus here\n"
-            + fresh
-            + "\n\n"
-            + reviewInput;
+        return (
+            ExistingCommentsGuidance
+                + past
+                + "\n\n### New comments since your last review — focus here\n"
+                + fresh
+                + "\n\n"
+                + reviewInput,
+            CommentFetchOutcome.Ok
+        );
     }
 
     /// <summary>True when a comment was posted by the review bot itself — its body carries a bot prefix such as
@@ -3558,6 +3596,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string reviewInput,
         string? checkoutRoot,
         string? storeRoot,
+        CommentFetchOutcome commentFetch,
         CancellationToken cancellationToken
     )
     {
@@ -3743,7 +3782,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 ArtifactKind = ReviewArtifactKind,
                 Provider = provider,
                 Payload = JsonSerializer.Serialize(
-                    new ReviewArtifactPayload(result.ReviewText, result.RunId, run.VariantId, result.ThreadId)
+                    new ReviewArtifactPayload(
+                        result.ReviewText,
+                        result.RunId,
+                        run.VariantId,
+                        result.ThreadId,
+                        CommentFetch: commentFetch
+                    )
                 ),
             }
         );
@@ -5938,8 +5983,43 @@ internal sealed record ReviewArtifactPayload(
     DateTimeOffset? ReviewedStartedAtUtc = null,
     DateTimeOffset? ReviewedDeadlineUtc = null,
     ReviewLifecycleIdentity? Lifecycle = null,
-    bool ProvisionalComplete = false
+    bool ProvisionalComplete = false,
+    CommentFetchOutcome? CommentFetch = null
 );
+
+/// <summary>
+/// How the existing-comment lookup ended for one run — the four exits
+/// <see cref="DaemonReviewStageExecutor.PrependExistingCommentsAsync"/> can return, kept apart because on main
+/// three of them used to collapse into the same brief and the same <c>existing-comments=0</c> signal: a
+/// genuinely clean PR, a provider fetch that threw, and a provider with no publisher wired all left
+/// <c>reviewInput</c> byte-identical and nothing downstream could tell them apart (issue #576).
+/// <para>
+/// <see cref="Ok"/> and <see cref="Empty"/> are both healthy; <see cref="Failed"/> and <see cref="NoPublisher"/>
+/// are both defects, and different ones — the first points at the provider, the second at the daemon's own
+/// wiring. Collapsed together, the rate of either is unmeasurable: a fleet where the fetch never fails and a
+/// fleet where nobody looks produce identical numbers.
+/// </para>
+/// <para>
+/// Serialized BY NAME (<see cref="JsonStringEnumConverter{TEnum}"/>) rather than by ordinal, because the
+/// consumer is a person opening a stored artifact months later. <c>"commentFetch": 2</c> tells them nothing and
+/// silently re-points if a member is ever inserted; <c>"commentFetch": "Failed"</c> survives both.
+/// </para>
+/// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter<CommentFetchOutcome>))]
+internal enum CommentFetchOutcome
+{
+    /// <summary>The fetch succeeded and returned at least one comment; the brief carries the thread list.</summary>
+    Ok,
+
+    /// <summary>The fetch succeeded and returned nothing — a genuinely comment-free PR. Healthy.</summary>
+    Empty,
+
+    /// <summary>The provider call threw. The review proceeded without a dedup list and was told so.</summary>
+    Failed,
+
+    /// <summary>No comment reader is registered for the run's provider, so no lookup was attempted.</summary>
+    NoPublisher,
+}
 
 /// <summary>
 /// Everything about a Reviewed lifecycle that must still hold for a checkpoint of it to be resumable: WHERE it

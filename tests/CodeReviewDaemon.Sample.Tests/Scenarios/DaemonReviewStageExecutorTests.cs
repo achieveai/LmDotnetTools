@@ -2571,6 +2571,102 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*ado*");
     }
 
+    // ── issue #576: CommentFetchOutcome persisted on the review artifact ────────────────────────────
+
+    [Fact]
+    public async Task Reviewed_persists_Ok_when_the_existing_comment_fetch_returns_at_least_one_comment()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        fixture.GitHubPublisher.ExistingComments.Add(
+            new ExistingReviewComment(
+                "src/Foo.cs",
+                "10",
+                "[Revobot] Must: null check missing.",
+                "revobot",
+                IsActive: true,
+                PublishedAt: DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture),
+                ThreadId: "th-1"
+            )
+        );
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.GitHubPublisher.ListCallCount.Should().BeGreaterThan(0, "the listing must actually have run");
+        PayloadOf<ReviewArtifactPayload>(fixture, run, DaemonReviewStageExecutor.ReviewArtifactKind)
+            .CommentFetch.Should()
+            .Be(CommentFetchOutcome.Ok, "the fetch succeeded and returned a comment, so the brief carried the list");
+    }
+
+    [Fact]
+    public async Task Reviewed_persists_Empty_when_the_existing_comment_fetch_succeeds_with_nothing()
+    {
+        // No comments seeded: the fetch succeeds and returns an empty list — a genuinely clean PR, not a defect.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.GitHubPublisher.ListCallCount.Should().BeGreaterThan(0, "the listing must actually have run");
+        PayloadOf<ReviewArtifactPayload>(fixture, run, DaemonReviewStageExecutor.ReviewArtifactKind)
+            .CommentFetch.Should()
+            .Be(CommentFetchOutcome.Empty, "the fetch succeeded but the PR genuinely has no prior comments");
+    }
+
+    [Fact]
+    public async Task Reviewed_persists_Failed_when_the_existing_comment_listing_throws()
+    {
+        // Non-vacuity: a failed request is not a negative result. This must prove the fetch FAILED (the
+        // listing was attempted and threw) and that the FAILED outcome specifically was recorded — not merely
+        // that no comments ended up in the brief, which Empty and NoPublisher would also produce.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        fixture.GitHubPublisher.ListFailure = new HttpRequestException("the provider is having a moment");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.GitHubPublisher.ListCallCount.Should().BeGreaterThan(0, "the listing was attempted and it threw");
+        PayloadOf<ReviewArtifactPayload>(fixture, run, DaemonReviewStageExecutor.ReviewArtifactKind)
+            .CommentFetch.Should()
+            .Be(CommentFetchOutcome.Failed, "the provider call threw, which is a defect distinct from a clean PR");
+    }
+
+    [Fact]
+    public async Task Reviewed_persists_NoPublisher_when_no_publisher_matches_the_run_provider()
+    {
+        // An ado run but only a 'github' publisher registered — a wiring defect, distinct from a fetch failure:
+        // the listing is never even attempted because no reader exists for this provider at all.
+        using var fixture = Fixture.Ado(LoggerFactory, publishersOverride: [new FakeReviewCommentPublisher("github")]);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.GitHubPublisher.ListCallCount.Should().Be(0, "no publisher matched, so no listing was even attempted");
+        PayloadOf<ReviewArtifactPayload>(fixture, run, DaemonReviewStageExecutor.ReviewArtifactKind)
+            .CommentFetch.Should()
+            .Be(CommentFetchOutcome.NoPublisher, "no comment reader is registered for this run's provider");
+    }
+
+    [Fact]
+    public void ReviewArtifactPayload_deserializes_CommentFetch_as_null_when_the_field_is_absent()
+    {
+        // Backward compatibility: an artifact persisted before this field existed must still deserialize,
+        // with CommentFetch reading as "not recorded" rather than throwing or silently defaulting to a real
+        // outcome value.
+        const string preExistingFieldPayload =
+            """{"ReviewText":"## Review\nLooks good.","RunId":"run-1","VariantId":"primary","ThreadId":null}""";
+
+        var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(preExistingFieldPayload);
+
+        payload.Should().NotBeNull();
+        payload!.CommentFetch.Should().BeNull("the field did not exist when this artifact was written");
+        payload.ReviewText.Should().Be("## Review\nLooks good.", "the pre-existing fields must still round-trip");
+    }
+
     [Fact]
     public async Task Posted_does_not_post_a_comment_when_the_review_is_empty()
     {
