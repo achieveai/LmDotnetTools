@@ -208,7 +208,8 @@ public class ToolCallExecutor
             "ExecuteToolCallAsync entry: FunctionName={FunctionName}, ToolCallId={ToolCallId}, ArgsLength={ArgsLength}",
             functionName,
             toolCall.ToolCallId,
-            functionArgs?.Length ?? 0);
+            functionArgs?.Length ?? 0
+        );
 
         if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
         {
@@ -229,13 +230,11 @@ public class ToolCallExecutor
 
             try
             {
-                var ctx = new ToolCallContext
-                {
-                    ToolCallId = toolCall.ToolCallId,
-                };
-                var result = prepared == null
-                    ? await func(functionArgs ?? "{}", ctx, cancellationToken)
-                    : await preparer.InvokeAsync(prepared, func, ctx, cancellationToken);
+                var ctx = new ToolCallContext { ToolCallId = toolCall.ToolCallId };
+                var result =
+                    prepared == null
+                        ? await func(functionArgs ?? "{}", ctx, cancellationToken)
+                        : await preparer.InvokeAsync(prepared, func, ctx, cancellationToken);
                 var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
 
                 var imageBlockCount = result.ContentBlocks?.OfType<ImageToolResultBlock>().Count() ?? 0;
@@ -261,11 +260,7 @@ public class ToolCallExecutor
 
                 if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
                 {
-                    await resultCallback.OnToolResultAvailableAsync(
-                        toolCall.ToolCallId,
-                        stamped,
-                        cancellationToken
-                    );
+                    await resultCallback.OnToolResultAvailableAsync(toolCall.ToolCallId, stamped, cancellationToken);
                 }
 
                 return stamped;
@@ -317,7 +312,8 @@ public class ToolCallExecutor
 
         // Unavailable function — return error so the LLM can self-correct.
         var availableFunctions = string.Join(", ", functionMap.Keys);
-        var unavailableMessage = $"Function '{functionName}' is not available. Available functions: {availableFunctions}";
+        var unavailableMessage =
+            $"Function '{functionName}' is not available. Available functions: {availableFunctions}";
 
         logger.LogError(
             "Function mapping error: Unavailable function '{FunctionName}' requested, ToolCallId={ToolCallId}, AvailableFunctions=[{AvailableFunctions}]",

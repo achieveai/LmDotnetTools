@@ -39,13 +39,7 @@ public static class JudgeReplyParser
     /// <param name="judgeId">Identity to stamp on the ballot.</param>
     /// <param name="modelId">Model to stamp on the ballot.</param>
     /// <param name="modelFamily">Model family to stamp on the ballot.</param>
-    public static Ballot Parse(
-        string reply,
-        Rubric rubric,
-        string judgeId,
-        string modelId,
-        string modelFamily
-    )
+    public static Ballot Parse(string reply, Rubric rubric, string judgeId, string modelId, string modelFamily)
     {
         ArgumentNullException.ThrowIfNull(reply);
         ArgumentNullException.ThrowIfNull(rubric);
@@ -78,8 +72,7 @@ public static class JudgeReplyParser
             // The reasoning falls back to the raw text, which is what makes the abstain path
             // reproduce the legacy rationale exactly: a reply carrying a rationale but no score
             // keeps its rationale, and a reply carrying neither keeps the raw text.
-            var reasoning =
-                ReadString(root, "reasoning") ?? ReadString(root, "rationale") ?? raw;
+            var reasoning = ReadString(root, "reasoning") ?? ReadString(root, "rationale") ?? raw;
 
             if (root.TryGetProperty("abstain", out var abstain) && abstain.ValueKind == JsonValueKind.True)
             {
@@ -136,11 +129,7 @@ public static class JudgeReplyParser
     /// whole ballot invalid — a partially-answered ballot is a schema violation, and admitting it
     /// with the gaps zeroed would enter a real worst-case score the judge never gave.
     /// </summary>
-    private static bool TryReadScores(
-        JsonElement root,
-        Rubric rubric,
-        out IReadOnlyDictionary<string, int> scores
-    )
+    private static bool TryReadScores(JsonElement root, Rubric rubric, out IReadOnlyDictionary<string, int> scores)
     {
         scores = new Dictionary<string, int>();
 
@@ -166,7 +155,11 @@ public static class JudgeReplyParser
 
         // The flat single-criterion form. On a multi-criterion rubric a scalar does not name the
         // dimension it scored, so it is refused rather than assigned to the first criterion.
-        if (rubric.Criteria.Count == 1 && root.TryGetProperty("score", out var flat) && TryReadInt(flat, out var flatScore))
+        if (
+            rubric.Criteria.Count == 1
+            && root.TryGetProperty("score", out var flat)
+            && TryReadInt(flat, out var flatScore)
+        )
         {
             scores = new Dictionary<string, int>(StringComparer.Ordinal)
             {

@@ -20,14 +20,13 @@ internal sealed class DrainingLedgerStore(
     IRunLedgerStore inner,
     string drainedThreadId,
     string drainedInputId,
-    string drainedRunId) : IRunLedgerStore
+    string drainedRunId
+) : IRunLedgerStore
 {
     private int _lookups;
 
     /// <inheritdoc />
-    public async Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(string threadId, CancellationToken ct = default)
     {
         var accepted = await inner.ListAcceptedInputIdsAsync(threadId, ct);
         await DrainOnFirstLookupAsync(ct);
@@ -35,9 +34,7 @@ internal sealed class DrainingLedgerStore(
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(string threadId, CancellationToken ct = default)
     {
         var entries = await inner.ListRunLedgerAsync(threadId, ct);
         await DrainOnFirstLookupAsync(ct);
@@ -58,7 +55,8 @@ internal sealed class DrainingLedgerStore(
         var now = DateTimeOffset.UtcNow;
         await inner.UpsertRunLedgerAsync(
             new RunLedgerEntry(drainedThreadId, drainedRunId, RunStatus.InProgress, [drainedInputId], now, now),
-            ct);
+            ct
+        );
         await inner.RemoveAcceptedInputAsync(drainedThreadId, drainedInputId, ct);
     }
 
@@ -75,8 +73,8 @@ internal sealed class DrainingLedgerStore(
         string threadId,
         string inputId,
         DateTimeOffset acceptedAt,
-        CancellationToken ct = default) =>
-        inner.RecordAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
+        CancellationToken ct = default
+    ) => inner.RecordAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
 
     /// <inheritdoc />
     public Task RemoveAcceptedInputAsync(string threadId, string inputId, CancellationToken ct = default) =>

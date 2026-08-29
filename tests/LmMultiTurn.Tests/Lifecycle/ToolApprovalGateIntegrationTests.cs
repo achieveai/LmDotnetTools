@@ -40,7 +40,8 @@ public class ToolApprovalGateIntegrationTests
             {
                 invocations++;
                 return "deleted everything";
-            });
+            }
+        );
 
         invocations.Should().Be(0, "a refusal must block execution, not merely annotate it");
 
@@ -67,14 +68,11 @@ public class ToolApprovalGateIntegrationTests
             {
                 handlerSaw = args;
                 return "ok";
-            });
+            }
+        );
 
         var approved = gate.Requests.Should().ContainSingle().Subject;
-        handlerSaw
-            .Should()
-            .Be(
-                approved.Arguments.Json,
-                "what was decided and what executed must not diverge");
+        handlerSaw.Should().Be(approved.Arguments.Json, "what was decided and what executed must not diverge");
     }
 
     [Fact]
@@ -88,7 +86,8 @@ public class ToolApprovalGateIntegrationTests
             {
                 handlerSaw = args;
                 return "ok";
-            });
+            }
+        );
 
         handlerSaw.Should().Be(Arguments);
         var result = messages.OfType<ToolCallResultMessage>().Should().ContainSingle().Subject;
@@ -104,24 +103,16 @@ public class ToolApprovalGateIntegrationTests
         // on a call that was already going to fail.
         var gate = RecordingToolApprovalGate.Allowing();
 
-        var messages = await RunOneToolCallAsync(
-            Bundle(gate),
-            _ => "ok",
-            calledToolName: "no_such_tool");
+        var messages = await RunOneToolCallAsync(Bundle(gate), _ => "ok", calledToolName: "no_such_tool");
 
         gate.WasConsulted.Should().BeFalse();
-        messages.OfType<ToolCallResultMessage>().Should().ContainSingle().Which.IsError
-            .Should()
-            .BeTrue();
+        messages.OfType<ToolCallResultMessage>().Should().ContainSingle().Which.IsError.Should().BeTrue();
     }
 
     private const string Arguments = """{"target":"/"}""";
 
     private static MultiTurnLifecycleServices Bundle(IToolApprovalGate gate) =>
-        new()
-        {
-            Approval = new ToolInvocationPreparer(new ToolApprovalOptions { Gates = [gate] }),
-        };
+        new() { Approval = new ToolInvocationPreparer(new ToolApprovalOptions { Gates = [gate] }) };
 
     /// <summary>
     /// Drives one turn that calls <see cref="ToolName"/> (or <paramref name="calledToolName"/>) and
@@ -130,7 +121,8 @@ public class ToolApprovalGateIntegrationTests
     private static async Task<List<IMessage>> RunOneToolCallAsync(
         MultiTurnLifecycleServices? lifecycleServices,
         Func<string, string> handler,
-        string? calledToolName = null)
+        string? calledToolName = null
+    )
     {
         var toolCall = new ToolCallMessage
         {
@@ -143,14 +135,20 @@ public class ToolApprovalGateIntegrationTests
         var agent = new Mock<IStreamingAgent>();
         var turn = 0;
         _ = agent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(() => Task.FromResult(
-                ++turn == 1
-                    ? ToAsyncEnumerable([toolCall])
-                    : ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }])));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(() =>
+                Task.FromResult(
+                    ++turn == 1
+                        ? ToAsyncEnumerable([toolCall])
+                        : ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }])
+                )
+            );
 
         var registry = new FunctionRegistry();
         _ = registry.AddFunction(
@@ -160,14 +158,15 @@ public class ToolApprovalGateIntegrationTests
                 Description = "A tool a host would want gated.",
                 Parameters = [],
             },
-            (args, _, _) => Task.FromResult<ToolHandlerResult>(
-                ToolHandlerResult.FromText(handler(args))));
+            (args, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(handler(args)))
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             agent.Object,
             registry,
             "approval-thread",
-            lifecycleServices: lifecycleServices);
+            lifecycleServices: lifecycleServices
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -185,7 +184,8 @@ public class ToolApprovalGateIntegrationTests
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var message in messages)
         {

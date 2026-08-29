@@ -23,10 +23,9 @@ public sealed class RouteExposureTests
         using var factory = new DaemonWebAppFactory();
 
         // Accessing Services forces the host to build and the endpoints to be composed.
-        var endpoints = factory.Services
-            .GetRequiredService<EndpointDataSource>()
-            .Endpoints
-            .OfType<RouteEndpoint>()
+        var endpoints = factory
+            .Services.GetRequiredService<EndpointDataSource>()
+            .Endpoints.OfType<RouteEndpoint>()
             .ToList();
 
         endpoints.Should().NotBeEmpty("the gateway callback routes must be mapped");
@@ -46,17 +45,12 @@ public sealed class RouteExposureTests
     {
         using var factory = new DaemonWebAppFactory();
 
-        var route = factory.Services
-            .GetRequiredService<EndpointDataSource>()
-            .Endpoints
-            .OfType<RouteEndpoint>()
-            .Single(e => string.Equals(
-                e.RoutePattern.RawText,
-                pattern,
-                StringComparison.OrdinalIgnoreCase));
+        var route = factory
+            .Services.GetRequiredService<EndpointDataSource>()
+            .Endpoints.OfType<RouteEndpoint>()
+            .Single(e => string.Equals(e.RoutePattern.RawText, pattern, StringComparison.OrdinalIgnoreCase));
 
-        var httpMethods = route.Metadata
-            .GetMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>();
+        var httpMethods = route.Metadata.GetMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>();
 
         httpMethods.Should().NotBeNull();
         httpMethods!.HttpMethods.Should().BeEquivalentTo(["POST"]);

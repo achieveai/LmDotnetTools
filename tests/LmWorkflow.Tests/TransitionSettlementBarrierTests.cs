@@ -56,7 +56,9 @@ public class TransitionSettlementBarrierTests
         response.Should().NotBeNull();
 
         var results = runtime.Result!["results"]!.AsArray();
-        results.Should().HaveCount(2, "the transition must not capture a result that is missing an answer it was already owed");
+        results
+            .Should()
+            .HaveCount(2, "the transition must not capture a result that is missing an answer it was already owed");
         results.Select(r => r!.GetValue<string>()).Should().BeEquivalentTo(["alpha-done", "beta-done"]);
 
         elapsed
@@ -185,11 +187,7 @@ public class TransitionSettlementBarrierTests
         new()
         {
             FunctionName = WorkflowToolProvider.SetCurrentNodeToolName,
-            FunctionArgs = new JsonObject
-            {
-                ["completedNodeId"] = "fan",
-                ["nextNodeId"] = "done",
-            }.ToJsonString(),
+            FunctionArgs = new JsonObject { ["completedNodeId"] = "fan", ["nextNodeId"] = "done" }.ToJsonString(),
             ToolCallId = toolCallId,
             Role = Role.Assistant,
         };
@@ -210,11 +208,7 @@ public class TransitionSettlementBarrierTests
         string toolCallId
     ) =>
         (ToolHandlerResult.Resolved)
-            await tool.Handler(
-                argsJson,
-                new ToolCallContext { ToolCallId = toolCallId },
-                CancellationToken.None
-            );
+            await tool.Handler(argsJson, new ToolCallContext { ToolCallId = toolCallId }, CancellationToken.None);
 
     // start → fan (forEach over 2 items, each appending to state.results) → done, whose resultTemplate reads
     // that appended array. Deliberately no finalOutputSchema: a short result must surface as a SHORT ARRAY,

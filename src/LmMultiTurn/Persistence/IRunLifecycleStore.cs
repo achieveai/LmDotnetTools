@@ -55,9 +55,7 @@ public interface IRunLifecycleStore
     /// <param name="threadId">The thread identifier.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The thread's runs, or an empty list when it has none.</returns>
-    Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
-        string threadId,
-        CancellationToken ct = default);
+    Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(string threadId, CancellationToken ct = default);
 
     /// <summary>
     /// Lists the runs of a thread that started but never reached a terminal boundary.
@@ -70,9 +68,7 @@ public interface IRunLifecycleStore
     /// is terminalized as interrupted — a run that started must complete, or a subscriber is left
     /// holding an unpaired start forever.
     /// </remarks>
-    Task<IReadOnlyList<RunLifecycleState>> ListNonTerminalRunsAsync(
-        string threadId,
-        CancellationToken ct = default);
+    Task<IReadOnlyList<RunLifecycleState>> ListNonTerminalRunsAsync(string threadId, CancellationToken ct = default);
 
     /// <summary>
     /// Atomically moves a run to <see cref="RunLifecyclePhase.Terminal"/>, if it is not there
@@ -97,7 +93,8 @@ public interface IRunLifecycleStore
         string outcome,
         int turnCount,
         DateTimeOffset terminalAt,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Records that a tool call in <paramref name="runId"/> has deferred, assigning it its ordinal.
@@ -116,7 +113,8 @@ public interface IRunLifecycleStore
     Task<DeferredToolCallRecord> RecordDeferredToolCallAsync(
         string runId,
         DeferredToolCallRecord record,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Atomically resolves a deferred tool call anywhere on a thread.
@@ -145,7 +143,8 @@ public interface IRunLifecycleStore
         string resolutionFingerprint,
         string? childRunId,
         DateTimeOffset resolvedAt,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Atomically names the child run of an already-resolved call, unless one is already named.
@@ -190,9 +189,11 @@ public interface IRunLifecycleStore
         string toolCallId,
         string childRunId,
         DateTimeOffset attachedAt,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         throw new NotSupportedException(
             $"{GetType().Name} does not implement AttachDeferredChildRunAsync, so a delayed tool "
                 + "result that resolves as its requesting run parks cannot be given a durable child "
-                + "run. Implement it to support recoverable delayed-result continuations.");
+                + "run. Implement it to support recoverable delayed-result continuations."
+        );
 }

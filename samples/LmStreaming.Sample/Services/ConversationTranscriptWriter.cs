@@ -472,11 +472,7 @@ public sealed class ConversationTranscriptWriter
     ///     drift between the parameters.
     /// </summary>
     private static string GuardLine(string parameter) =>
-        "guard \""
-        + parameter
-        + "\" || exit "
-        + UnsafePathExitCode.ToString(CultureInfo.InvariantCulture)
-        + "\n";
+        "guard \"" + parameter + "\" || exit " + UnsafePathExitCode.ToString(CultureInfo.InvariantCulture) + "\n";
 
     /// <summary>
     ///     One <c>solo</c> invocation for the given positional parameter, reporting
@@ -485,11 +481,7 @@ public sealed class ConversationTranscriptWriter
     ///     leaf a fact about somebody else's file, so "not redirected" has to be settled first.
     /// </summary>
     private static string SoloLine(string parameter) =>
-        "solo \""
-        + parameter
-        + "\" || exit "
-        + AliasedPathExitCode.ToString(CultureInfo.InvariantCulture)
-        + "\n";
+        "solo \"" + parameter + "\" || exit " + AliasedPathExitCode.ToString(CultureInfo.InvariantCulture) + "\n";
 
     /// <summary>
     ///     The guards on their own, for the three writes that reach the workspace WITHOUT a shell — the
@@ -505,8 +497,7 @@ public sealed class ConversationTranscriptWriter
     ///     file's content, so an aliased path does not append to a tracked file, it REPLACES one with
     ///     <c>*</c>.
     /// </remarks>
-    private static readonly string PathGuardScript =
-        PathGuardPreamble + GuardLine("$1") + SoloLine("$1");
+    private static readonly string PathGuardScript = PathGuardPreamble + GuardLine("$1") + SoloLine("$1");
 
     /// <summary>
     ///     THE one shell call site that writes. Built from concatenated literals rather than a raw string
@@ -770,7 +761,8 @@ public sealed class ConversationTranscriptWriter
         ConversationDescendantScanner descendants,
         ILogger<ConversationTranscriptWriter> logger,
         TimeSpan? readSettleDelay = null,
-        int maxSubAgentFilesPerFlush = DefaultMaxSubAgentFilesPerFlush)
+        int maxSubAgentFilesPerFlush = DefaultMaxSubAgentFilesPerFlush
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
         ArgumentNullException.ThrowIfNull(store);
@@ -888,13 +880,14 @@ public sealed class ConversationTranscriptWriter
         }
 
         var mainResult = await AppendAsync(
-            sessionId,
-            TranscriptDirectory,
-            $"{TranscriptDirectory}/{leaf}{TranscriptExtension}",
-            ThreadId,
-            lines,
-            ct
-        ).ConfigureAwait(false);
+                sessionId,
+                TranscriptDirectory,
+                $"{TranscriptDirectory}/{leaf}{TranscriptExtension}",
+                ThreadId,
+                lines,
+                ct
+            )
+            .ConfigureAwait(false);
 
         if (mainResult == AppendResult.Failed)
         {
@@ -909,8 +902,8 @@ public sealed class ConversationTranscriptWriter
         }
 
         var wrote = mainResult == AppendResult.Appended;
-        var (agentsWrote, agentsDeferred, agentsProgressing) =
-            await FlushSubAgentsAsync(sessionId, leaf, ct).ConfigureAwait(false);
+        var (agentsWrote, agentsDeferred, agentsProgressing) = await FlushSubAgentsAsync(sessionId, leaf, ct)
+            .ConfigureAwait(false);
         wrote = wrote || agentsWrote;
 
         // Deferred outranks Progressing: a failure has to be retried under a bound whether or not the
@@ -1016,7 +1009,11 @@ public sealed class ConversationTranscriptWriter
         {
             // The gateway could not recreate an idle-evicted session. Expected background weather, not an
             // error the operator needs to see once per turn.
-            _logger.LogDebug(ex, "Sandbox session unavailable for thread {ThreadId}; transcript flush skipped", ThreadId);
+            _logger.LogDebug(
+                ex,
+                "Sandbox session unavailable for thread {ThreadId}; transcript flush skipped",
+                ThreadId
+            );
             return null;
         }
         catch (SandboxException ex)
@@ -1156,8 +1153,7 @@ public sealed class ConversationTranscriptWriter
             return true;
         }
 
-        if (await MoveLeafAsync(sessionId, _leaf, leaf, _agentsDirectoryTouched, ct)
-            .ConfigureAwait(false))
+        if (await MoveLeafAsync(sessionId, _leaf, leaf, _agentsDirectoryTouched, ct).ConfigureAwait(false))
         {
             _leaf = leaf;
         }
@@ -1210,7 +1206,8 @@ public sealed class ConversationTranscriptWriter
     private async Task<(bool Listed, string? Leaf)> AdoptExistingLeafAsync(
         string sessionId,
         string leaf,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         IReadOnlyList<SandboxDirectoryEntry> entries;
         try
@@ -1248,7 +1245,8 @@ public sealed class ConversationTranscriptWriter
             || entries.Any(entry =>
                 entry.Type == SandboxEntryType.Directory
                 && IsAddressableName(entry)
-                && string.Equals(entry.Name, subject + AgentsDirectorySuffix, StringComparison.Ordinal));
+                && string.Equals(entry.Name, subject + AgentsDirectorySuffix, StringComparison.Ordinal)
+            );
 
         // Deliberately no equivalent for the sidecar directory (#254): a retitle never moves it, so there
         // is no flag for a cold start to recover. Its references name the leaf they were written under
@@ -1263,14 +1261,15 @@ public sealed class ConversationTranscriptWriter
             "Adopting the transcript of thread {ThreadId} left under {Stale} as {Leaf}",
             ThreadId,
             stale,
-            leaf);
+            leaf
+        );
 
         return (
             true,
-            await MoveLeafAsync(sessionId, stale, leaf, _agentsDirectoryTouched, ct)
-                .ConfigureAwait(false)
+            await MoveLeafAsync(sessionId, stale, leaf, _agentsDirectoryTouched, ct).ConfigureAwait(false)
                 ? leaf
-                : stale);
+                : stale
+        );
     }
 
     /// <summary>
@@ -1360,25 +1359,32 @@ public sealed class ConversationTranscriptWriter
         string from,
         string to,
         bool moveAgents,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
-        if (!await TryMoveAsync(
-                sessionId,
-                $"{TranscriptDirectory}/{from}{TranscriptExtension}",
-                $"{TranscriptDirectory}/{to}{TranscriptExtension}",
-                ct
-            ).ConfigureAwait(false))
+        if (
+            !await TryMoveAsync(
+                    sessionId,
+                    $"{TranscriptDirectory}/{from}{TranscriptExtension}",
+                    $"{TranscriptDirectory}/{to}{TranscriptExtension}",
+                    ct
+                )
+                .ConfigureAwait(false)
+        )
         {
             return false;
         }
 
-        if (moveAgents
+        if (
+            moveAgents
             && !await TryMoveAsync(
-                sessionId,
-                $"{TranscriptDirectory}/{from}{AgentsDirectorySuffix}",
-                $"{TranscriptDirectory}/{to}{AgentsDirectorySuffix}",
-                ct
-            ).ConfigureAwait(false))
+                    sessionId,
+                    $"{TranscriptDirectory}/{from}{AgentsDirectorySuffix}",
+                    $"{TranscriptDirectory}/{to}{AgentsDirectorySuffix}",
+                    ct
+                )
+                .ConfigureAwait(false)
+        )
         {
             DropSubAgentState();
         }
@@ -1460,7 +1466,8 @@ public sealed class ConversationTranscriptWriter
     private async Task<(bool Wrote, bool Deferred, bool Progressing)> FlushSubAgentsAsync(
         string sessionId,
         string leaf,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (Interlocked.Exchange(ref _sawSubAgentActivity, 0) == 1)
         {
@@ -1504,7 +1511,8 @@ public sealed class ConversationTranscriptWriter
                 continue;
             }
 
-            var path = $"{directory}/{WorkspaceTranscriptLine.AgentFileLeaf(agent.Name, WorkspaceTranscriptLine.ShortId(agent.AgentId))}{TranscriptExtension}";
+            var path =
+                $"{directory}/{WorkspaceTranscriptLine.AgentFileLeaf(agent.Name, WorkspaceTranscriptLine.ShortId(agent.AgentId))}{TranscriptExtension}";
             var lines = WorkspaceTranscriptLine.ChainMessages(messages, agent.Name, RootParentUidFor(agent.ThreadId));
 
             var result = await AppendAsync(sessionId, directory, path, agent.ThreadId, lines, ct).ConfigureAwait(false);
@@ -1635,12 +1643,15 @@ public sealed class ConversationTranscriptWriter
     private async Task<WorkspaceTranscriptLine> ExternalizeIfOversizedAsync(
         string sessionId,
         WorkspaceTranscriptLine line,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
-        if (line.MessageJson is not { } content
+        if (
+            line.MessageJson is not { } content
             || line.MessageType is not { } messageType
             || !ExternalizableMessageTypes.Contains(messageType)
-            || Encoding.UTF8.GetByteCount(content) < ToolResultSidecarThresholdBytes)
+            || Encoding.UTF8.GetByteCount(content) < ToolResultSidecarThresholdBytes
+        )
         {
             return line;
         }
@@ -1669,11 +1680,16 @@ public sealed class ConversationTranscriptWriter
                 ex,
                 "Writing the transcript sidecar {Path} for thread {ThreadId} failed; the payload is inlined instead",
                 path,
-                ThreadId);
+                ThreadId
+            );
             return line;
         }
 
-        return line with { MessageJson = null, MessageJsonRef = reference };
+        return line with
+        {
+            MessageJson = null,
+            MessageJsonRef = reference,
+        };
     }
 
     private async Task<AppendResult> AppendAsync(
@@ -1682,15 +1698,15 @@ public sealed class ConversationTranscriptWriter
         string path,
         string watermarkKey,
         IReadOnlyList<WorkspaceTranscriptLine> lines,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (lines.Count == 0)
         {
             return AppendResult.UpToDate;
         }
 
-        var resolved = await ResolveStartIndexAsync(sessionId, path, watermarkKey, lines, ct)
-            .ConfigureAwait(false);
+        var resolved = await ResolveStartIndexAsync(sessionId, path, watermarkKey, lines, ct).ConfigureAwait(false);
         if (resolved is not { } start)
         {
             // The destination could not be INSPECTED, which is not the same as finding nothing in it.
@@ -1794,7 +1810,8 @@ public sealed class ConversationTranscriptWriter
         string path,
         string watermarkKey,
         IReadOnlyList<WorkspaceTranscriptLine> lines,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (!_watermarks.TryGetValue(watermarkKey, out var watermark))
         {
@@ -1842,24 +1859,22 @@ public sealed class ConversationTranscriptWriter
     ///     line, so an individual multi-megabyte row cannot make this call itself unanswerable — see
     ///     <see cref="WatermarkTailChars"/>.
     /// </remarks>
-    private async Task<WatermarkProbe> RecoverWatermarkAsync(
-        string sessionId,
-        string path,
-        CancellationToken ct)
+    private async Task<WatermarkProbe> RecoverWatermarkAsync(string sessionId, string path, CancellationToken ct)
     {
         var tailed = await RunAsync(
-            sessionId,
-            [
-                "sh",
-                "-c",
-                WatermarkProbeScript,
-                "sh",
-                path,
-                WatermarkTailLines.ToString(CultureInfo.InvariantCulture),
-                WatermarkTailChars.ToString(CultureInfo.InvariantCulture),
-            ],
-            ct
-        ).ConfigureAwait(false);
+                sessionId,
+                [
+                    "sh",
+                    "-c",
+                    WatermarkProbeScript,
+                    "sh",
+                    path,
+                    WatermarkTailLines.ToString(CultureInfo.InvariantCulture),
+                    WatermarkTailChars.ToString(CultureInfo.InvariantCulture),
+                ],
+                ct
+            )
+            .ConfigureAwait(false);
 
         if (tailed is null)
         {
@@ -2068,8 +2083,7 @@ public sealed class ConversationTranscriptWriter
     /// </remarks>
     private async Task<bool> IsPathSafeAsync(string sessionId, string path, CancellationToken ct)
     {
-        var guarded = await RunAsync(sessionId, ["sh", "-c", PathGuardScript, "sh", path], ct)
-            .ConfigureAwait(false);
+        var guarded = await RunAsync(sessionId, ["sh", "-c", PathGuardScript, "sh", path], ct).ConfigureAwait(false);
 
         if (guarded is { ExitCode: 0 })
         {
@@ -2125,8 +2139,7 @@ public sealed class ConversationTranscriptWriter
 
     private async Task<bool> TryMoveAsync(string sessionId, string from, string to, CancellationToken ct)
     {
-        var result = await RunAsync(sessionId, ["sh", "-c", MoveScript, "sh", from, to], ct)
-            .ConfigureAwait(false);
+        var result = await RunAsync(sessionId, ["sh", "-c", MoveScript, "sh", from, to], ct).ConfigureAwait(false);
         if (result is { ExitCode: 0 })
         {
             return true;
@@ -2161,7 +2174,8 @@ public sealed class ConversationTranscriptWriter
     private async Task<SandboxCommandResult?> RunAsync(
         string sessionId,
         IReadOnlyList<string> arguments,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         try
         {
@@ -2186,8 +2200,7 @@ public sealed class ConversationTranscriptWriter
     private static string? ReadWorkspaceId(ThreadMetadata? metadata) =>
         ReadStringProperty(metadata, MultiTurnAgentPool.WorkspacePropertyKey);
 
-    private static string? ReadTitle(ThreadMetadata? metadata) =>
-        ReadStringProperty(metadata, TitlePropertyKey);
+    private static string? ReadTitle(ThreadMetadata? metadata) => ReadStringProperty(metadata, TitlePropertyKey);
 
     private static string? ReadStringProperty(ThreadMetadata? metadata, string key)
     {

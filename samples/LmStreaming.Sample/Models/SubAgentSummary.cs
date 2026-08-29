@@ -315,7 +315,7 @@ public sealed record SubAgentSummary
     ///     </para>
     /// </remarks>
     public static IReadOnlyList<string> AgentOwnedThreadIdPrefixes { get; } =
-        [SubAgentThreadPrefix, WorkflowThreadPrefix];
+    [SubAgentThreadPrefix, WorkflowThreadPrefix];
 
     /// <summary>
     ///     True when <paramref name="threadId"/> is a thread an AGENT owns rather than a conversation a
@@ -332,17 +332,14 @@ public sealed record SubAgentSummary
     /// </remarks>
     public static bool IsAgentOwnedThreadId(string? threadId) =>
         threadId is not null
-        && AgentOwnedThreadIdPrefixes.Any(
-            prefix => threadId.StartsWith(prefix, StringComparison.Ordinal));
+        && AgentOwnedThreadIdPrefixes.Any(prefix => threadId.StartsWith(prefix, StringComparison.Ordinal));
 
     /// <summary>
     ///     The thread a hierarchy node's transcript lives under, following the ids the rest of the sample
     ///     already forms (<c>subagent-{id}</c> for agents, <c>workflow-*</c> for controllers).
     /// </summary>
     private static string ThreadIdFor(AgentDirectoryEntry entry) =>
-        entry.Kind == CollaborationAgentKind.Root
-            ? entry.AgentId
-            : $"{SubAgentThreadPrefix}{entry.AgentId}";
+        entry.Kind == CollaborationAgentKind.Root ? entry.AgentId : $"{SubAgentThreadPrefix}{entry.AgentId}";
 }
 
 /// <summary>Versioned recursive descendant graph response.</summary>

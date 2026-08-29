@@ -63,7 +63,8 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
         LmStreamingS2SClient client,
         CodeReviewDaemonOptions options,
         ILoggerFactory loggerFactory,
-        Action<string, string?>? onConversationMinted = null)
+        Action<string, string?>? onConversationMinted = null
+    )
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -85,16 +86,13 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// may legitimately want the two split — but it can no longer happen quietly. Logged once, at singleton
     /// construction (daemon boot).
     /// </summary>
-    private static void WarnIfReviewModelDisagreesWithProvider(
-        CodeReviewDaemonOptions options,
-        ILogger logger)
+    private static void WarnIfReviewModelDisagreesWithProvider(CodeReviewDaemonOptions options, ILogger logger)
     {
-        if (string.IsNullOrWhiteSpace(options.ReviewModelId)
+        if (
+            string.IsNullOrWhiteSpace(options.ReviewModelId)
             || string.IsNullOrWhiteSpace(options.LmStreamingProviderId)
-            || string.Equals(
-                options.ReviewModelId,
-                options.LmStreamingProviderId,
-                StringComparison.OrdinalIgnoreCase))
+            || string.Equals(options.ReviewModelId, options.LmStreamingProviderId, StringComparison.OrdinalIgnoreCase)
+        )
         {
             return;
         }
@@ -106,7 +104,8 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
                 + "LmStreamingProviderId is only the fallback when a run names no model. Set them to the "
                 + "same id unless the split is deliberate.",
             options.ReviewModelId,
-            options.LmStreamingProviderId);
+            options.LmStreamingProviderId
+        );
     }
 
     public IMultiTurnAgent Create(
@@ -116,7 +115,8 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
         PreparedReviewWorkspace? reviewWorkspace = null,
-        string? resumeHostedThreadId = null)
+        string? resumeHostedThreadId = null
+    )
     {
         ArgumentNullException.ThrowIfNull(profile);
 
@@ -128,23 +128,26 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
         {
             throw new ArgumentException(
                 "S2SReviewAgentLoopFactory requires a prepared review workspace; it was not prepared for this run.",
-                nameof(reviewWorkspace));
+                nameof(reviewWorkspace)
+            );
         }
 
         if (string.IsNullOrWhiteSpace(_options.LmStreamingProviderId))
         {
             throw new InvalidOperationException(
                 "UseS2SReviewAgent is on but LmStreamingProviderId is not configured; set it to a review-host "
-                + "provider that resolves the intended review model.");
+                    + "provider that resolves the intended review model."
+            );
         }
 
         if (string.IsNullOrWhiteSpace(profile.SystemPrompt))
         {
             throw new ArgumentException(
                 "The review profile carries no system prompt; the hosted conversation would run the review "
-                + "under a generic workspace-agent prompt with no methodology, sub-agent dispatch or output "
-                + "contract.",
-                nameof(profile));
+                    + "under a generic workspace-agent prompt with no methodology, sub-agent dispatch or output "
+                    + "contract.",
+                nameof(profile)
+            );
         }
 
         var title = BuildTitle(profile, reviewWorkspace);
@@ -171,7 +174,8 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
             // The operator's configured model for the review sub-agents (#529). Conversation-scoped, so it
             // only takes effect on a conversation this call actually provisions; a RESUMED review keeps
             // whatever the original provision set, which is correct — its sub-agent tree already exists.
-            subAgentModelId: _options.SubAgentModelId);
+            subAgentModelId: _options.SubAgentModelId
+        );
     }
 
     /// <summary>

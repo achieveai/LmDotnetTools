@@ -21,8 +21,10 @@ internal static class BuiltInSubAgentTemplates
     /// Scaled to the host like the workflow engine: <c>min(16, cores - 2)</c>, floored at 1 so a
     /// low-core/CI host can never produce an invalid <c>SemaphoreSlim(0)</c>. On a 16-core box = 14.
     /// </summary>
-    internal static readonly int DefaultMaxConcurrentSubAgents =
-        Math.Max(1, Math.Min(16, Environment.ProcessorCount - 2));
+    internal static readonly int DefaultMaxConcurrentSubAgents = Math.Max(
+        1,
+        Math.Min(16, Environment.ProcessorCount - 2)
+    );
 
     /// <summary>
     /// Builds a fresh dictionary of the built-in templates. Each template reuses
@@ -115,11 +117,8 @@ internal static class BuiltInSubAgentTemplates
 
         return enrichedCatalog.ToDictionary(
             entry => entry.Key,
-            entry => entry.Value with
-            {
-                AgentFactory = providerAgentFactory,
-                CharacteristicsAgentFactory = null,
-            },
-            StringComparer.Ordinal);
+            entry => entry.Value with { AgentFactory = providerAgentFactory, CharacteristicsAgentFactory = null },
+            StringComparer.Ordinal
+        );
     }
 }

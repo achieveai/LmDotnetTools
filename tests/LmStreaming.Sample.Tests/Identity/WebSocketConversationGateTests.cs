@@ -52,8 +52,7 @@ public sealed class WebSocketConversationGateTests
         // The ONLY difference the two bodies are permitted is the id the caller supplied themselves.
         // Substituting it must make them identical - a distinct code, a different phrasing, even a
         // different field order would reopen the oracle.
-        _ = refused.Body.Replace(AlicesThread, NeverMinted, StringComparison.Ordinal)
-            .Should().Be(absent.Body);
+        _ = refused.Body.Replace(AlicesThread, NeverMinted, StringComparison.Ordinal).Should().Be(absent.Body);
     }
 
     /// <summary>
@@ -79,7 +78,8 @@ public sealed class WebSocketConversationGateTests
             .CreateController(
                 new InMemoryConversationStore(),
                 pool,
-                ConversationsControllerTests.ModeStoreResolvingSystemModes())
+                ConversationsControllerTests.ModeStoreResolvingSystemModes()
+            )
             .SendMessage(ThreadId, new SendMessageRequest { Text = "probe" }, CancellationToken.None);
 
         var restBody = JsonSerializer.Serialize(Assert.IsType<NotFoundObjectResult>(rest).Value);
@@ -87,10 +87,13 @@ public sealed class WebSocketConversationGateTests
         // Serialised through the same call the gate makes, so what is compared is the two payloads and
         // not two pipelines' encoder settings. Field order is included on purpose: it survives into the
         // bytes, and a different order alone is enough to tell the two surfaces apart.
-        _ = refused.Body.Should().Be(
-            restBody,
-            "a caller who can distinguish the socket's 404 from the REST route's has learned which of "
-                + "the two refused, and from that whether the id names anything");
+        _ = refused
+            .Body.Should()
+            .Be(
+                restBody,
+                "a caller who can distinguish the socket's 404 from the REST route's has learned which of "
+                    + "the two refused, and from that whether the id names anything"
+            );
     }
 
     /// <summary>
@@ -107,15 +110,17 @@ public sealed class WebSocketConversationGateTests
         await SaveOwnedAsync(store, ThreadId, TenantA, Alice);
 
         var grants = new InMemoryResourceGrantStore();
-        await grants.GrantAsync(new ResourceGrant
-        {
-            TenantId = TenantA,
-            Resource = ConversationAuthorizer.ConversationRef(ThreadId),
-            SubjectId = Bob,
-            Role = GrantRole.Viewer,
-            GrantedBy = Alice,
-            GrantedAt = DateTimeOffset.UtcNow,
-        });
+        await grants.GrantAsync(
+            new ResourceGrant
+            {
+                TenantId = TenantA,
+                Resource = ConversationAuthorizer.ConversationRef(ThreadId),
+                SubjectId = Bob,
+                Role = GrantRole.Viewer,
+                GrantedBy = Alice,
+                GrantedAt = DateTimeOffset.UtcNow,
+            }
+        );
 
         // A VIEWER grantee: entitled to read the conversation, and therefore not someone the refusal
         // needs to hide it from - but /ws confers write, so the socket is still not theirs.
@@ -123,10 +128,13 @@ public sealed class WebSocketConversationGateTests
 
         _ = refused.Status.Should().Be(StatusCodes.Status403Forbidden);
         _ = refused.Status.Should().NotBe(StatusCodes.Status401Unauthorized);
-        _ = refused.RefusalCode.Should().NotBe(
-            "unknown_thread",
-            "hiding existence from someone the host has already shown the conversation to buys "
-                + "nothing and misdescribes the refusal");
+        _ = refused
+            .RefusalCode.Should()
+            .NotBe(
+                "unknown_thread",
+                "hiding existence from someone the host has already shown the conversation to buys "
+                    + "nothing and misdescribes the refusal"
+            );
         _ = refused.Body.Should().Contain("\"error\":\"forbidden\"");
     }
 
@@ -139,8 +147,8 @@ public sealed class WebSocketConversationGateTests
         await SaveOwnedAsync(store, ThreadId, TenantA, Alice);
 
         var context = NewContext();
-        var admitted = await NewGate(store, AsAlice()).AdmitAsync(
-            context, ThreadId, AccessAction.Write, CancellationToken.None);
+        var admitted = await NewGate(store, AsAlice())
+            .AdmitAsync(context, ThreadId, AccessAction.Write, CancellationToken.None);
 
         _ = admitted.Should().BeTrue();
         _ = BodyOf(context).Should().BeEmpty("an admitted handshake must write no refusal at all");
@@ -159,10 +167,15 @@ public sealed class WebSocketConversationGateTests
         var gate = new WebSocketConversationGate(
             TestAuthorizers.Disabled(),
             new InMemoryConversationStore(),
-            NullLogger<WebSocketConversationGate>.Instance);
+            NullLogger<WebSocketConversationGate>.Instance
+        );
 
         var admitted = await gate.AdmitAsync(
-            context, "thread-never-minted", AccessAction.Write, CancellationToken.None);
+            context,
+            "thread-never-minted",
+            AccessAction.Write,
+            CancellationToken.None
+        );
 
         _ = admitted.Should().BeTrue();
         _ = BodyOf(context).Should().BeEmpty();
@@ -180,16 +193,17 @@ public sealed class WebSocketConversationGateTests
         await SaveChildAsync(store, AgentId, AlicesParent);
 
         var context = NewContext();
-        var admission = await NewGate(store, AsBob()).AdmitSubAgentAsync(
-            context, BobsParent, AgentId, CancellationToken.None);
+        var admission = await NewGate(store, AsBob())
+            .AdmitSubAgentAsync(context, BobsParent, AgentId, CancellationToken.None);
 
         // Admitted, deliberately. Refusing the handshake would make "not your child" answer
         // differently from "no such child", which accepts the socket and reports
         // subagent_unavailable - and the difference is an oracle over sub-agent ids.
         _ = admission.Admitted.Should().BeTrue();
         _ = BodyOf(context).Should().BeEmpty();
-        _ = admission.MayReplayPersistedTranscript.Should().BeFalse(
-            "the caller is entitled to the parent they named, not to another parent's child");
+        _ = admission
+            .MayReplayPersistedTranscript.Should()
+            .BeFalse("the caller is entitled to the parent they named, not to another parent's child");
     }
 
     [Fact]
@@ -202,8 +216,8 @@ public sealed class WebSocketConversationGateTests
         await SaveOwnedAsync(store, AlicesParent, TenantA, Alice);
         await SaveChildAsync(store, AgentId, AlicesParent);
 
-        var admission = await NewGate(store, AsAlice()).AdmitSubAgentAsync(
-            NewContext(), AlicesParent, AgentId, CancellationToken.None);
+        var admission = await NewGate(store, AsAlice())
+            .AdmitSubAgentAsync(NewContext(), AlicesParent, AgentId, CancellationToken.None);
 
         _ = admission.Admitted.Should().BeTrue();
         _ = admission.MayReplayPersistedTranscript.Should().BeTrue();
@@ -225,14 +239,15 @@ public sealed class WebSocketConversationGateTests
         await SaveOwnedAsync(store, AlicesParent, TenantA, Alice);
 
         var context = NewContext();
-        var admission = await NewGate(store, AsAlice()).AdmitSubAgentAsync(
-            context, AlicesParent, "brand-new-child", CancellationToken.None);
+        var admission = await NewGate(store, AsAlice())
+            .AdmitSubAgentAsync(context, AlicesParent, "brand-new-child", CancellationToken.None);
 
         // Still admitted: the handshake must not be where the difference shows up.
         _ = admission.Admitted.Should().BeTrue();
         _ = BodyOf(context).Should().BeEmpty();
-        _ = admission.MayReplayPersistedTranscript.Should().BeFalse(
-            "a missing row means the provenance could not be checked, not that nothing was persisted");
+        _ = admission
+            .MayReplayPersistedTranscript.Should()
+            .BeFalse("a missing row means the provenance could not be checked, not that nothing was persisted");
     }
 
     [Fact]
@@ -244,8 +259,8 @@ public sealed class WebSocketConversationGateTests
         await SaveOwnedAsync(store, AlicesParent, TenantA, Alice);
 
         var context = NewContext();
-        var admission = await NewGate(store, AsBob()).AdmitSubAgentAsync(
-            context, AlicesParent, "any-agent", CancellationToken.None);
+        var admission = await NewGate(store, AsBob())
+            .AdmitSubAgentAsync(context, AlicesParent, "any-agent", CancellationToken.None);
 
         _ = admission.Admitted.Should().BeFalse();
         _ = context.Response.StatusCode.Should().Be(StatusCodes.Status404NotFound);
@@ -259,18 +274,18 @@ public sealed class WebSocketConversationGateTests
         IConversationStore store,
         string threadId,
         Principal principal,
-        IResourceGrantStore? grants = null)
+        IResourceGrantStore? grants = null
+    )
     {
         var context = NewContext();
-        var admitted = await NewGate(store, principal, grants).AdmitAsync(
-            context, threadId, AccessAction.Write, CancellationToken.None);
+        var admitted = await NewGate(store, principal, grants)
+            .AdmitAsync(context, threadId, AccessAction.Write, CancellationToken.None);
 
         // Non-vacuity for every caller: a "refusal" that actually admitted would make every byte
         // assertion below compare two empty strings.
         _ = admitted.Should().BeFalse("this helper exists to capture a refusal");
 
-        var code = context.Response.Headers.TryGetValue(
-            IdentityMiddleware.RefusalCodeHeader, out var values)
+        var code = context.Response.Headers.TryGetValue(IdentityMiddleware.RefusalCodeHeader, out var values)
             ? values.ToString()
             : null;
 
@@ -280,14 +295,10 @@ public sealed class WebSocketConversationGateTests
     private static WebSocketConversationGate NewGate(
         IConversationStore store,
         Principal principal,
-        IResourceGrantStore? grants = null) =>
-        new(
-            TestAuthorizers.Enforcing(principal, grants),
-            store,
-            NullLogger<WebSocketConversationGate>.Instance);
+        IResourceGrantStore? grants = null
+    ) => new(TestAuthorizers.Enforcing(principal, grants), store, NullLogger<WebSocketConversationGate>.Instance);
 
-    private static DefaultHttpContext NewContext() =>
-        new() { Response = { Body = new MemoryStream() } };
+    private static DefaultHttpContext NewContext() => new() { Response = { Body = new MemoryStream() } };
 
     private static string BodyOf(HttpContext context)
     {
@@ -313,7 +324,8 @@ public sealed class WebSocketConversationGateTests
         IConversationStore store,
         string threadId,
         string tenantId,
-        string ownerUserId) =>
+        string ownerUserId
+    ) =>
         store.SaveMetadataAsync(
             threadId,
             new ThreadMetadata
@@ -323,7 +335,8 @@ public sealed class WebSocketConversationGateTests
                 TenantId = tenantId,
                 OwnerUserId = ownerUserId,
                 Visibility = Visibility.Private,
-            });
+            }
+        );
 
     private static Task SaveChildAsync(IConversationStore store, string agentId, string parentThreadId)
     {
@@ -338,6 +351,7 @@ public sealed class WebSocketConversationGateTests
                 OwnerUserId = Alice,
                 Visibility = Visibility.Private,
                 Properties = SubAgentProvenance.Build(parentThreadId, snapshot: null),
-            });
+            }
+        );
     }
 }

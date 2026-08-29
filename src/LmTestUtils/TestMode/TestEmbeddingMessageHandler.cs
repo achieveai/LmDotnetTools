@@ -18,7 +18,10 @@ public class TestEmbeddingMessageHandler : HttpMessageHandler
     public string Model { get; set; } = "test-model";
     public TimeSpan? Delay { get; set; }
 
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken
+    )
     {
         _logger.LogTrace("SendAsync called - Method: {Method}, URI: {Uri}", request.Method, request.RequestUri);
 
@@ -32,7 +35,7 @@ public class TestEmbeddingMessageHandler : HttpMessageHandler
         _logger.LogTrace("Returning embedding response with {EmbeddingSize} dimensions", EmbeddingSize);
         var response = new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StringContent(responseJson, System.Text.Encoding.UTF8, "application/json")
+            Content = new StringContent(responseJson, System.Text.Encoding.UTF8, "application/json"),
         };
         return response;
     }
@@ -50,10 +53,15 @@ public class TestEmbeddingMessageHandler : HttpMessageHandler
         {
             Embeddings = new[]
             {
-                new { Vector = vector, Index = 0, Text = "test_input" }
+                new
+                {
+                    Vector = vector,
+                    Index = 0,
+                    Text = "test_input",
+                },
             },
             Model = model,
-            Usage = new { PromptTokens = 10, TotalTokens = 10 }
+            Usage = new { PromptTokens = 10, TotalTokens = 10 },
         };
 
         return JsonSerializer.Serialize(response);

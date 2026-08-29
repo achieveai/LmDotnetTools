@@ -101,7 +101,8 @@ public class FunctionCollisionDetectorTests
                 ClassName = providerName,
                 Description = $"Test function {functionName}",
             },
-            Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"Result from {functionName}")),
+            Handler = (_, _, _) =>
+                Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"Result from {functionName}")),
             ProviderName = providerName,
         };
     }

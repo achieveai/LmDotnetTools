@@ -45,7 +45,11 @@ public sealed class SandboxAuthProvider
         ArgumentException.ThrowIfNullOrWhiteSpace(gatewayAuth);
         if (cacheTtlSeconds < 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(cacheTtlSeconds), cacheTtlSeconds, "Cache TTL must not be negative.");
+            throw new ArgumentOutOfRangeException(
+                nameof(cacheTtlSeconds),
+                cacheTtlSeconds,
+                "Cache TTL must not be negative."
+            );
         }
 
         Id = id;
@@ -62,5 +66,5 @@ public sealed class SandboxAuthProvider
     /// <summary>Redacted rendering — never prints <see cref="GatewayAuth"/>.</summary>
     public override string ToString() =>
         $"SandboxAuthProvider {{ Id = {Id}, Type = {Type}, Endpoint = {Endpoint}, "
-            + $"GatewayAuth = [REDACTED], CacheTtlSeconds = {CacheTtlSeconds} }}";
+        + $"GatewayAuth = [REDACTED], CacheTtlSeconds = {CacheTtlSeconds} }}";
 }

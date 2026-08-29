@@ -13,12 +13,15 @@ public sealed class StageMachineTests
     [Fact]
     public void Order_is_the_fixed_linear_pipeline()
     {
-        StageMachine.Order.Should().Equal(
-            ReviewStage.Discovered,
-            ReviewStage.ContextReady,
-            ReviewStage.Reviewed,
-            ReviewStage.Judged,
-            ReviewStage.Posted);
+        StageMachine
+            .Order.Should()
+            .Equal(
+                ReviewStage.Discovered,
+                ReviewStage.ContextReady,
+                ReviewStage.Reviewed,
+                ReviewStage.Judged,
+                ReviewStage.Posted
+            );
     }
 
     [Fact]
@@ -47,15 +50,12 @@ public sealed class StageMachineTests
     [Fact]
     public void Remaining_stages_are_everything_strictly_after_the_last_completed()
     {
-        StageMachine.RemainingStages(ReviewStage.Discovered).Should().Equal(
-            ReviewStage.ContextReady,
-            ReviewStage.Reviewed,
-            ReviewStage.Judged,
-            ReviewStage.Posted);
+        StageMachine
+            .RemainingStages(ReviewStage.Discovered)
+            .Should()
+            .Equal(ReviewStage.ContextReady, ReviewStage.Reviewed, ReviewStage.Judged, ReviewStage.Posted);
 
-        StageMachine.RemainingStages(ReviewStage.Reviewed).Should().Equal(
-            ReviewStage.Judged,
-            ReviewStage.Posted);
+        StageMachine.RemainingStages(ReviewStage.Reviewed).Should().Equal(ReviewStage.Judged, ReviewStage.Posted);
     }
 
     [Fact]

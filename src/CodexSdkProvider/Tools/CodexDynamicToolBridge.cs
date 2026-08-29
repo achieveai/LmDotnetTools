@@ -19,7 +19,8 @@ public sealed class CodexDynamicToolBridge
         IEnumerable<FunctionContract> contracts,
         IDictionary<string, Func<string, Task<string>>> handlers,
         CodexToolPolicyEngine toolPolicy,
-        ILogger<CodexDynamicToolBridge>? logger = null)
+        ILogger<CodexDynamicToolBridge>? logger = null
+    )
     {
         _contractsByName = (contracts ?? throw new ArgumentNullException(nameof(contracts)))
             .Where(static c => !string.IsNullOrWhiteSpace(c.Name))
@@ -28,7 +29,8 @@ public sealed class CodexDynamicToolBridge
 
         _handlersByName = new Dictionary<string, Func<string, Task<string>>>(
             handlers ?? throw new ArgumentNullException(nameof(handlers)),
-            StringComparer.OrdinalIgnoreCase);
+            StringComparer.OrdinalIgnoreCase
+        );
         _toolPolicy = toolPolicy ?? throw new ArgumentNullException(nameof(toolPolicy));
         _logger = logger;
         _json = JsonSerializerOptionsFactory.CreateForProduction();
@@ -52,7 +54,8 @@ public sealed class CodexDynamicToolBridge
                     Name = toolName,
                     Description = contract.Description,
                     InputSchema = schemaElement,
-                });
+                }
+            );
         }
 
         return specs;
@@ -60,7 +63,8 @@ public sealed class CodexDynamicToolBridge
 
     public async Task<CodexDynamicToolCallResponse> ExecuteAsync(
         CodexDynamicToolCallRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
         var start = DateTimeOffset.UtcNow;
@@ -72,7 +76,8 @@ public sealed class CodexDynamicToolBridge
                 "codex.dynamic_tool.execution",
                 "denied",
                 request.Tool,
-                (DateTimeOffset.UtcNow - start).TotalMilliseconds);
+                (DateTimeOffset.UtcNow - start).TotalMilliseconds
+            );
             return Failure($"Tool '{request.Tool}' is not enabled for this session.");
         }
 
@@ -83,7 +88,8 @@ public sealed class CodexDynamicToolBridge
                 "codex.dynamic_tool.execution",
                 "failed",
                 request.Tool,
-                (DateTimeOffset.UtcNow - start).TotalMilliseconds);
+                (DateTimeOffset.UtcNow - start).TotalMilliseconds
+            );
             return Failure($"Tool '{request.Tool}' is not registered.");
         }
 
@@ -97,7 +103,8 @@ public sealed class CodexDynamicToolBridge
                 "codex.dynamic_tool.execution",
                 "completed",
                 request.Tool,
-                (DateTimeOffset.UtcNow - start).TotalMilliseconds);
+                (DateTimeOffset.UtcNow - start).TotalMilliseconds
+            );
             return Success(result);
         }
         catch (OperationCanceledException)
@@ -111,7 +118,8 @@ public sealed class CodexDynamicToolBridge
                 "{event_type} {event_status} {tool_name}",
                 "codex.dynamic_tool.execution",
                 "failed",
-                request.Tool);
+                request.Tool
+            );
             return Failure(ex.Message);
         }
     }
@@ -121,14 +129,7 @@ public sealed class CodexDynamicToolBridge
         return new CodexDynamicToolCallResponse
         {
             Success = true,
-            ContentItems =
-            [
-                new CodexDynamicToolContentItem
-                {
-                    Type = "input_text",
-                    Text = text,
-                },
-            ],
+            ContentItems = [new CodexDynamicToolContentItem { Type = "input_text", Text = text }],
         };
     }
 
@@ -137,14 +138,7 @@ public sealed class CodexDynamicToolBridge
         return new CodexDynamicToolCallResponse
         {
             Success = false,
-            ContentItems =
-            [
-                new CodexDynamicToolContentItem
-                {
-                    Type = "input_text",
-                    Text = message,
-                },
-            ],
+            ContentItems = [new CodexDynamicToolContentItem { Type = "input_text", Text = message }],
         };
     }
 }

@@ -130,10 +130,7 @@ public static class AgentDirectoryFailureCodes
 /// <param name="FailureCode">
 /// A code from <see cref="AgentDirectoryFailureCodes"/> when admission failed, otherwise null.
 /// </param>
-public readonly record struct AgentRegistrationResult(
-    AgentDirectoryEntry? Entry,
-    string? FailureCode = null
-)
+public readonly record struct AgentRegistrationResult(AgentDirectoryEntry? Entry, string? FailureCode = null)
 {
     /// <summary>Whether the agent was admitted.</summary>
     public bool Succeeded => Entry is not null;
@@ -144,10 +141,7 @@ public readonly record struct AgentRegistrationResult(
 /// <param name="FailureCode">
 /// A code from <see cref="AgentDirectoryFailureCodes"/> when resolution failed, otherwise null.
 /// </param>
-public readonly record struct AgentResolution(
-    AgentDirectoryEntry? Entry,
-    string? FailureCode = null
-)
+public readonly record struct AgentResolution(AgentDirectoryEntry? Entry, string? FailureCode = null)
 {
     /// <summary>Whether an agent was resolved.</summary>
     public bool Succeeded => Entry is not null;
@@ -171,16 +165,12 @@ public readonly record struct AgentResolution(
 /// </remarks>
 public sealed class AgentCollaborationDirectory
 {
-    private readonly ConcurrentDictionary<string, Registration> _byAgentId = new(
-        StringComparer.Ordinal
-    );
+    private readonly ConcurrentDictionary<string, Registration> _byAgentId = new(StringComparer.Ordinal);
 
     // Name is not an identity. A name maps to one agent or, once two agents have claimed it, to
     // permanent ambiguity — never to "the most recent one", because silently retargeting an alias
     // would send a reply to a different agent than the one the sender was talking to.
-    private readonly ConcurrentDictionary<string, NameBinding> _byName = new(
-        StringComparer.Ordinal
-    );
+    private readonly ConcurrentDictionary<string, NameBinding> _byName = new(StringComparer.Ordinal);
 
     private readonly AgentCollaborationOptions _options;
 
@@ -381,9 +371,7 @@ public sealed class AgentCollaborationDirectory
     /// </summary>
     internal IAgentWriteEndpoint? GetWriteEndpoint(string agentId)
     {
-        return _byAgentId.TryGetValue(agentId, out var registration)
-            ? registration.WriteEndpoint
-            : null;
+        return _byAgentId.TryGetValue(agentId, out var registration) ? registration.WriteEndpoint : null;
     }
 
     /// <summary>
@@ -392,16 +380,10 @@ public sealed class AgentCollaborationDirectory
     /// </summary>
     internal IAgentReadEndpoint? GetReadEndpoint(string agentId)
     {
-        return _byAgentId.TryGetValue(agentId, out var registration)
-            ? registration.ReadEndpoint
-            : null;
+        return _byAgentId.TryGetValue(agentId, out var registration) ? registration.ReadEndpoint : null;
     }
 
-    private string? ValidateRegistration(
-        AgentCollaborationContext context,
-        string name,
-        string status
-    )
+    private string? ValidateRegistration(AgentCollaborationContext context, string name, string status)
     {
         if (!string.Equals(context.CollaborationId, CollaborationId, StringComparison.Ordinal))
         {
@@ -447,9 +429,7 @@ public sealed class AgentCollaborationDirectory
             return AgentDirectoryFailureCodes.UnknownParent;
         }
 
-        return _byAgentId.ContainsKey(context.AgentId)
-            ? AgentDirectoryFailureCodes.DuplicateAgentId
-            : null;
+        return _byAgentId.ContainsKey(context.AgentId) ? AgentDirectoryFailureCodes.DuplicateAgentId : null;
     }
 
     private void BindName(string name, string agentId)

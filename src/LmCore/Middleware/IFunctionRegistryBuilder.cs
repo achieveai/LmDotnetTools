@@ -32,11 +32,7 @@ public interface IFunctionRegistryBuilder
     /// resolved later via <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.</param>
     /// <param name="providerName">Optional provider name for the function</param>
     /// <returns>The builder for method chaining</returns>
-    IFunctionRegistryBuilder AddFunction(
-        FunctionContract contract,
-        ToolHandler handler,
-        string? providerName = null
-    );
+    IFunctionRegistryBuilder AddFunction(FunctionContract contract, ToolHandler handler, string? providerName = null);
 
     /// <summary>
     ///     Sets the logger for the registry.

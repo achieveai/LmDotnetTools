@@ -37,11 +37,7 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
         // than helpful.
         var auth = new AuthOptions
         {
-            M365 = new M365AuthOptions
-            {
-                ClientId = "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c",
-                ClientSecret = null,
-            },
+            M365 = new M365AuthOptions { ClientId = "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c", ClientSecret = null },
         };
 
         await using var registry = CreateRegistry(auth);
@@ -54,11 +50,7 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
     {
         var auth = new AuthOptions
         {
-            M365 = new M365AuthOptions
-            {
-                ClientId = null,
-                ClientSecret = "shh",
-            },
+            M365 = new M365AuthOptions { ClientId = null, ClientSecret = "shh" },
         };
 
         await using var registry = CreateRegistry(auth);
@@ -72,11 +64,7 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
         // Whitespace must be treated the same as missing — appsettings can ship a placeholder.
         var auth = new AuthOptions
         {
-            M365 = new M365AuthOptions
-            {
-                ClientId = "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c",
-                ClientSecret = "   ",
-            },
+            M365 = new M365AuthOptions { ClientId = "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c", ClientSecret = "   " },
         };
 
         await using var registry = CreateRegistry(auth);
@@ -117,9 +105,9 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
 
         var egressRule = network.Should().ContainSingle(r => r.Id == "github-egress").Subject;
         egressRule.AuthProvider.Should().BeNull(); // network-only: no token injection
-        egressRule.Hosts.Should().BeEquivalentTo(
-            "results-receiver.actions.githubusercontent.com",
-            "*.blob.core.windows.net");
+        egressRule
+            .Hosts.Should()
+            .BeEquivalentTo("results-receiver.actions.githubusercontent.com", "*.blob.core.windows.net");
         egressRule.Ports.Should().Equal(443);
 
         // Defense-in-depth: the webhook host gate must also refuse GitHub-token injection to the
@@ -135,14 +123,21 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
         var dir = Directory.CreateTempSubdirectory("egr-bap");
         try
         {
-            var keys = new PredefinedKeyRegistry(dir.FullName, new NoopTokenStore(), new HttpClient(), NullLoggerFactory.Instance);
-            await keys.UpsertAsync(new PredefinedKeyEntry
-            {
-                Id = "e1",
-                Host = "api.internal.example.com",
-                Kind = PredefinedKeyKind.CustomHeaders,
-                Headers = [new PredefinedHeader("X-Key", "v")],
-            });
+            var keys = new PredefinedKeyRegistry(
+                dir.FullName,
+                new NoopTokenStore(),
+                new HttpClient(),
+                NullLoggerFactory.Instance
+            );
+            await keys.UpsertAsync(
+                new PredefinedKeyEntry
+                {
+                    Id = "e1",
+                    Host = "api.internal.example.com",
+                    Kind = PredefinedKeyKind.CustomHeaders,
+                    Headers = [new PredefinedHeader("X-Key", "v")],
+                }
+            );
 
             await using var registry = CreateRegistry(new AuthOptions(), keys);
 
@@ -195,7 +190,8 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(Unused)));
+            new HttpClient(new StubHandler(Unused))
+        );
 
         return new SandboxSessionRegistry(
             gateway,
@@ -205,15 +201,17 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
             auth,
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance),
-            predefinedKeys);
+                NullLogger<SessionSecretStore>.Instance
+            ),
+            predefinedKeys
+        );
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(respond(request));
+            CancellationToken cancellationToken
+        ) => Task.FromResult(respond(request));
     }
 }

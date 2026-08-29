@@ -118,11 +118,7 @@ public class ToolHandlerResultTests
     {
         var initial = new ToolCallResult("tc_1", string.Empty);
 
-        var deferred = initial with
-        {
-            IsDeferred = true,
-            DeferredAt = 1_700_000_000_000,
-        };
+        var deferred = initial with { IsDeferred = true, DeferredAt = 1_700_000_000_000 };
 
         deferred.IsDeferred.Should().BeTrue();
         deferred.DeferredAt.Should().Be(1_700_000_000_000);
@@ -145,11 +141,7 @@ public class ToolHandlerResultTests
     [Fact]
     public void ToolCallResult_Struct_JsonRoundTrip_PreservesDeferredFields()
     {
-        var original = new ToolCallResult("tc_3", string.Empty)
-        {
-            IsDeferred = true,
-            DeferredAt = 1_700_000_000_000,
-        };
+        var original = new ToolCallResult("tc_3", string.Empty) { IsDeferred = true, DeferredAt = 1_700_000_000_000 };
 
         var json = JsonSerializer.Serialize(original);
         json.Should().Contain("\"is_deferred\":true");

@@ -76,8 +76,7 @@ internal sealed class JudgeAgent
                     [0] = "no finding is correct, or the review restates the diff without judgement",
                     [5] = "some findings are correct and actionable; others are wrong or vague",
                     [10] =
-                        "every finding is correct, cites where it applies, and is stated once "
-                        + "without repetition",
+                        "every finding is correct, cites where it applies, and is stated once " + "without repetition",
                 },
             },
         ],
@@ -118,8 +117,7 @@ internal sealed class JudgeAgent
             .CollectAsync(_agent, request.JudgingInput, cancellationToken)
             .ConfigureAwait(false);
 
-        var verdict = await ScoreAsync(request, collected.Text, cancellationToken)
-            .ConfigureAwait(false);
+        var verdict = await ScoreAsync(request, collected.Text, cancellationToken).ConfigureAwait(false);
 
         // At most one ballot exists: the transport below is an already-completed task over text
         // collected above, so the judge cannot fault today. That ballot is COUNTED when the harness
@@ -153,9 +151,7 @@ internal sealed class JudgeAgent
             );
         }
 
-        int? score = verdict.Score is { } weighted
-            ? (int)Math.Round(weighted, MidpointRounding.AwayFromZero)
-            : null;
+        int? score = verdict.Score is { } weighted ? (int)Math.Round(weighted, MidpointRounding.AwayFromZero) : null;
 
         // The raw reply is the fallback rationale for the ballot-less verdict guarded above; the
         // parser already falls back to it for every reply it could read but not score.
@@ -174,14 +170,16 @@ internal sealed class JudgeAgent
             SelfGraded(request),
             verdict.Ballots.Count
         );
-        var artifact = _store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = request.ReviewRunId,
-            ArtifactSchemaVersion = JudgeArtifactSchemaVersion,
-            ArtifactKind = JudgeArtifactKind,
-            Provider = request.Provider,
-            Payload = JsonSerializer.Serialize(payload),
-        });
+        var artifact = _store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = request.ReviewRunId,
+                ArtifactSchemaVersion = JudgeArtifactSchemaVersion,
+                ArtifactKind = JudgeArtifactKind,
+                Provider = request.Provider,
+                Payload = JsonSerializer.Serialize(payload),
+            }
+        );
 
         _logger.LogInformation(
             "Judge run {RunId} graded variant '{Variant}' as {Score}; persisted judge artifact {ArtifactId}.",
@@ -246,9 +244,7 @@ internal sealed class JudgeAgent
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        return string.IsNullOrWhiteSpace(request.JudgeModelId)
-            ? UnrecordedModelId
-            : request.JudgeModelId;
+        return string.IsNullOrWhiteSpace(request.JudgeModelId) ? UnrecordedModelId : request.JudgeModelId;
     }
 
     /// <summary>
@@ -272,11 +268,7 @@ internal sealed class JudgeAgent
     /// asserted here as a property the harness would then act on (#322).
     /// </para>
     /// </summary>
-    private static Task<Verdict> ScoreAsync(
-        JudgeRequest request,
-        string reply,
-        CancellationToken cancellationToken
-    )
+    private static Task<Verdict> ScoreAsync(JudgeRequest request, string reply, CancellationToken cancellationToken)
     {
         var candidate = new Candidate
         {
@@ -313,11 +305,7 @@ internal sealed class JudgeAgent
 /// The material to judge and the run it belongs to. <see cref="VariantId"/> identifies which review
 /// variant is being graded (e.g. <c>primary</c> or <c>b</c>) and is recorded verbatim in the artifact.
 /// </summary>
-internal sealed record JudgeRequest(
-    long ReviewRunId,
-    string Provider,
-    string VariantId,
-    string JudgingInput)
+internal sealed record JudgeRequest(long ReviewRunId, string Provider, string VariantId, string JudgingInput)
 {
     /// <summary>
     /// The model the judge turn ran on. Recorded in the artifact so the self-preference axis is
@@ -382,4 +370,5 @@ internal sealed record JudgeArtifactPayload(
     string? JudgeModelId,
     string? GeneratorModelId,
     bool? SelfGraded,
-    int BallotCount);
+    int BallotCount
+);

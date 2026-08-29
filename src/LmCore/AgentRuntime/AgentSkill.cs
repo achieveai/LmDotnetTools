@@ -30,12 +30,12 @@ public sealed record AgentSkill
     /// <summary>
     ///     Sugar for inline-markdown skills.
     /// </summary>
-    public static AgentSkill Inline(string name, string markdown)
-        => new() { Name = name, Source = new ContentSource.FromInline(markdown) };
+    public static AgentSkill Inline(string name, string markdown) =>
+        new() { Name = name, Source = new ContentSource.FromInline(markdown) };
 
     /// <summary>
     ///     Sugar for path-sourced skills.
     /// </summary>
-    public static AgentSkill FromPath(string name, string path)
-        => new() { Name = name, Source = new ContentSource.FromPath(path) };
+    public static AgentSkill FromPath(string name, string path) =>
+        new() { Name = name, Source = new ContentSource.FromPath(path) };
 }

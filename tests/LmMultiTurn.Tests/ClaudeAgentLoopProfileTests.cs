@@ -23,12 +23,10 @@ public class ClaudeAgentLoopProfileTests
         };
 
         await using var loop = new ClaudeAgentLoop(
-            new ClaudeAgentSdkOptions
-            {
-                Profile = new AgentRuntimeProfile { McpServers = profileMcp },
-            },
+            new ClaudeAgentSdkOptions { Profile = new AgentRuntimeProfile { McpServers = profileMcp } },
             mcpServers: hostMcp,
-            threadId: "thread-claude-profile-1");
+            threadId: "thread-claude-profile-1"
+        );
 
         var request = loop.BuildClaudeAgentSdkRequest();
 
@@ -49,7 +47,8 @@ public class ClaudeAgentLoopProfileTests
         await using var loop = new ClaudeAgentLoop(
             new ClaudeAgentSdkOptions(),
             mcpServers: hostMcp,
-            threadId: "thread-claude-profile-2");
+            threadId: "thread-claude-profile-2"
+        );
 
         var request = loop.BuildClaudeAgentSdkRequest();
 
@@ -62,13 +61,11 @@ public class ClaudeAgentLoopProfileTests
     public async Task BuildRequest_ProfileSystemPrompt_OverridesOptionsSystemPrompt()
     {
         await using var loop = new ClaudeAgentLoop(
-            new ClaudeAgentSdkOptions
-            {
-                Profile = new AgentRuntimeProfile { SystemPrompt = "profile-wins" },
-            },
+            new ClaudeAgentSdkOptions { Profile = new AgentRuntimeProfile { SystemPrompt = "profile-wins" } },
             mcpServers: null,
             threadId: "thread-claude-profile-3",
-            systemPrompt: "ctor-prompt");
+            systemPrompt: "ctor-prompt"
+        );
 
         var request = loop.BuildClaudeAgentSdkRequest();
 
@@ -78,15 +75,13 @@ public class ClaudeAgentLoopProfileTests
     [Fact]
     public async Task BuildRequest_ProfileWithInlineSkill_SetsStagingDirectory()
     {
-        var profile = new AgentRuntimeProfile
-        {
-            Skills = [AgentSkill.Inline("skill-1", "# body")],
-        };
+        var profile = new AgentRuntimeProfile { Skills = [AgentSkill.Inline("skill-1", "# body")] };
 
         await using var loop = new ClaudeAgentLoop(
             new ClaudeAgentSdkOptions { Profile = profile },
             mcpServers: null,
-            threadId: "thread-claude-profile-4");
+            threadId: "thread-claude-profile-4"
+        );
 
         var request = loop.BuildClaudeAgentSdkRequest();
 

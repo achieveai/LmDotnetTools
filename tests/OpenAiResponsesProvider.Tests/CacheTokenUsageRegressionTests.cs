@@ -45,9 +45,7 @@ public sealed class CacheTokenUsageRegressionTests
         var completed = ResponseEventParser.Parse(CompletedEventJson);
         using var agent = new OpenAiResponsesAgent("test-agent", new StubResponsesClient(completed));
 
-        var stream = await agent.GenerateReplyStreamingAsync(
-            [new TextMessage { Role = Role.User, Text = "hi" }]
-        );
+        var stream = await agent.GenerateReplyStreamingAsync([new TextMessage { Role = Role.User, Text = "hi" }]);
 
         UsageMessage? usage = null;
         await foreach (var m in stream)
@@ -66,14 +64,12 @@ public sealed class CacheTokenUsageRegressionTests
         usage.Usage.TotalTokens.Should().Be(15107);
 
         // The bug: the nested *_tokens_details objects are dropped, so cache/reasoning read 0.
-        usage.Usage.TotalCachedTokens.Should().Be(
-            13696,
-            "the Responses API reported 13696 cached input tokens in input_tokens_details.cached_tokens"
-        );
-        usage.Usage.TotalReasoningTokens.Should().Be(
-            64,
-            "the Responses API reported 64 reasoning tokens in output_tokens_details.reasoning_tokens"
-        );
+        usage
+            .Usage.TotalCachedTokens.Should()
+            .Be(13696, "the Responses API reported 13696 cached input tokens in input_tokens_details.cached_tokens");
+        usage
+            .Usage.TotalReasoningTokens.Should()
+            .Be(64, "the Responses API reported 64 reasoning tokens in output_tokens_details.reasoning_tokens");
     }
 
     /// <summary>Minimal <see cref="IOpenAiResponsesClient"/> that replays a fixed event sequence.</summary>

@@ -14,7 +14,9 @@ public class SandboxClientTransportTests
         // original request is ever sent (the Location is not chased).
         var (client, handler) = TestSupport.CreateBorrowedClient();
         handler.On(
-            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal),
             _ =>
             {
                 var redirect = new HttpResponseMessage(HttpStatusCode.Found);
@@ -147,7 +149,9 @@ public class SandboxClientTransportTests
         // combine it with a null BaseAddress. The SDK must never depend on the borrowed client's
         // BaseAddress at all — every request is resolved against the validated
         // SandboxClientOptions.ServerAddress regardless.
-        var (client, handler, serverAddress) = TestSupport.CreateBorrowedClientWithBaseAddress(httpClientBaseAddress: null);
+        var (client, handler, serverAddress) = TestSupport.CreateBorrowedClientWithBaseAddress(
+            httpClientBaseAddress: null
+        );
         handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", """{"session_id":"sess-1"}""");
 
         var info = await client.CreateAsync(new SandboxCreateRequest("ws"));
@@ -181,7 +185,9 @@ public class SandboxClientTransportTests
     [Fact]
     public async Task IsHealthyAsync_BorrowedClientWithNullBaseAddress_StillReachesConfiguredServerAddress()
     {
-        var (client, handler, serverAddress) = TestSupport.CreateBorrowedClientWithBaseAddress(httpClientBaseAddress: null);
+        var (client, handler, serverAddress) = TestSupport.CreateBorrowedClientWithBaseAddress(
+            httpClientBaseAddress: null
+        );
         handler.OnStatus(HttpMethod.Get, "/health", HttpStatusCode.OK);
 
         var healthy = await client.IsHealthyAsync();

@@ -38,9 +38,9 @@ internal sealed record RepoIdentity
             '/',
             new[] { Provider, OrgOrOwner, Project, RepoName }
                 .Where(static p => !string.IsNullOrEmpty(p))
-                .Select(static p => p!.ToLowerInvariant()));
+                .Select(static p => p!.ToLowerInvariant())
+        );
 
     /// <summary>Human-facing identity with original casing preserved (never used as a durable key).</summary>
-    public string DisplayName =>
-        Project is null ? $"{OrgOrOwner}/{RepoName}" : $"{OrgOrOwner}/{Project}/{RepoName}";
+    public string DisplayName => Project is null ? $"{OrgOrOwner}/{RepoName}" : $"{OrgOrOwner}/{Project}/{RepoName}";
 }

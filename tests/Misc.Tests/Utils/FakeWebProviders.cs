@@ -70,7 +70,11 @@ public sealed class FakeWebSearchProvider : IWebSearchProvider
     public Exception? Exception { get; set; }
 
     /// <inheritdoc />
-    public Task<WebSearchResult> SearchAsync(string query, WebSearchOptions options, CancellationToken cancellationToken)
+    public Task<WebSearchResult> SearchAsync(
+        string query,
+        WebSearchOptions options,
+        CancellationToken cancellationToken
+    )
     {
         Called = true;
         ReceivedQuery = query;

@@ -185,10 +185,7 @@ public static class WorkflowCollaboration
     {
         var objective = definition?.Objective;
         return string.IsNullOrWhiteSpace(objective)
-            ? Truncate(
-                $"Workflow controller for '{workflowId}'.",
-                AgentCollaborationContext.MaxDescriptionLength
-            )
+            ? Truncate($"Workflow controller for '{workflowId}'.", AgentCollaborationContext.MaxDescriptionLength)
             : Truncate(objective.Trim(), AgentCollaborationContext.MaxDescriptionLength);
     }
 

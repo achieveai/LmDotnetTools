@@ -89,9 +89,5 @@ public interface ILifecycleSubscriptionRegistry
     /// <c>true</c> when the subscription exists <em>and</em> belongs to <paramref name="owner"/>;
     /// otherwise <c>false</c>, with no distinction between "absent" and "someone else's".
     /// </returns>
-    bool TryGet(
-        LifecycleOwnerKey owner,
-        string subscriptionId,
-        out LifecycleSubscription? subscription
-    );
+    bool TryGet(LifecycleOwnerKey owner, string subscriptionId, out LifecycleSubscription? subscription);
 }

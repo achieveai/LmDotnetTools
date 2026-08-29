@@ -29,18 +29,18 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
             RepoName = "widgets",
             RepoStableId = "repo-guid-1",
         },
-        "7");
+        "7"
+    );
 
     public AdoReviewCommentPublisherTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private AdoReviewCommentPublisher Publisher(FakeHttpMessageHandler handler) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            LoggerFactory.CreateLogger<AdoReviewCommentPublisher>());
+            LoggerFactory.CreateLogger<AdoReviewCommentPublisher>()
+        );
 
     [Fact]
     public void Provider_id_is_ado()
@@ -52,14 +52,21 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
     public async Task PostReviewComment_creates_a_thread_embedding_the_marker()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Post, "/pullRequests/7/threads", """{"id":555}""", HttpStatusCode.Created);
+            HttpMethod.Post,
+            "/pullRequests/7/threads",
+            """{"id":555}""",
+            HttpStatusCode.Created
+        );
 
-        var posted = await Publisher(handler).PostReviewCommentAsync(Target, Key, "## Review\nLGTM", CancellationToken.None);
+        var posted = await Publisher(handler)
+            .PostReviewCommentAsync(Target, Key, "## Review\nLGTM", CancellationToken.None);
 
         posted.ProviderResponseId.Should().Be("555");
         var request = handler.Requests.Should().ContainSingle().Subject;
         request.Method.Should().Be(HttpMethod.Post);
-        request.Uri.ToString().Should()
+        request
+            .Uri.ToString()
+            .Should()
             .StartWith("https://dev.azure.com/contoso/Platform/_apis/git/repositories/widgets/pullRequests/7/threads");
         request.Uri.Query.Should().Contain("api-version=7.1");
         request.Authorization.Should().StartWith("Basic ", "ADO PATs/bearer tokens are sent via basic auth");
@@ -73,14 +80,20 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
     [Fact]
     public async Task FindPostedComment_returns_the_thread_carrying_the_marker()
     {
-        var listJson = JsonSerializer.Serialize(new
-        {
-            value = new[]
+        var listJson = JsonSerializer.Serialize(
+            new
             {
-                new { id = 100, comments = new[] { new { content = "unrelated thread" } } },
-                new { id = 200, comments = new[] { new { content = $"## Review\nLGTM\n\n<!-- idempotency-key:{Key} -->" } } },
-            },
-        });
+                value = new[]
+                {
+                    new { id = 100, comments = new[] { new { content = "unrelated thread" } } },
+                    new
+                    {
+                        id = 200,
+                        comments = new[] { new { content = $"## Review\nLGTM\n\n<!-- idempotency-key:{Key} -->" } },
+                    },
+                },
+            }
+        );
         var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", listJson);
 
         var found = await Publisher(handler).FindPostedCommentAsync(Target, Key, CancellationToken.None);
@@ -92,10 +105,9 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
     [Fact]
     public async Task FindPostedComment_returns_null_when_no_thread_carries_the_marker()
     {
-        var listJson = JsonSerializer.Serialize(new
-        {
-            value = new[] { new { id = 100, comments = new[] { new { content = "nothing here" } } } },
-        });
+        var listJson = JsonSerializer.Serialize(
+            new { value = new[] { new { id = 100, comments = new[] { new { content = "nothing here" } } } } }
+        );
         var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", listJson);
 
         var found = await Publisher(handler).FindPostedCommentAsync(Target, Key, CancellationToken.None);
@@ -107,7 +119,11 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
     public async Task PostReviewComment_throws_on_a_non_success_status()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Post, "/pullRequests/7/threads", """{"message":"forbidden"}""", HttpStatusCode.Forbidden);
+            HttpMethod.Post,
+            "/pullRequests/7/threads",
+            """{"message":"forbidden"}""",
+            HttpStatusCode.Forbidden
+        );
 
         var act = () => Publisher(handler).PostReviewCommentAsync(Target, Key, "body", CancellationToken.None);
 
@@ -117,33 +133,41 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
     [Fact]
     public async Task ListExisting_returns_thread_comments_with_file_line_and_author()
     {
-        var threads = JsonSerializer.Serialize(new
-        {
-            value = new object[]
+        var threads = JsonSerializer.Serialize(
+            new
             {
-                new
+                value = new object[]
                 {
-                    threadContext = new { filePath = "/src/Foo.cs", rightFileStart = new { line = 42 } },
-                    comments = new object[] { new { content = "Must — null deref here", author = new { displayName = "Revobot" } } },
-                },
-                new
-                {
-                    // no thread context (PR-level) + one blank comment that must be skipped
-                    comments = new object[]
+                    new
                     {
-                        new { content = "General note", author = new { displayName = "Alice" } },
-                        new { content = "   ", author = new { displayName = "Revobot" } },
+                        threadContext = new { filePath = "/src/Foo.cs", rightFileStart = new { line = 42 } },
+                        comments = new object[]
+                        {
+                            new { content = "Must — null deref here", author = new { displayName = "Revobot" } },
+                        },
+                    },
+                    new
+                    {
+                        // no thread context (PR-level) + one blank comment that must be skipped
+                        comments = new object[]
+                        {
+                            new { content = "General note", author = new { displayName = "Alice" } },
+                            new { content = "   ", author = new { displayName = "Revobot" } },
+                        },
                     },
                 },
-            },
-        });
+            }
+        );
         var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", threads);
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
         existing.Should().HaveCount(2, "one inline finding + one PR-level note; the blank comment is skipped");
-        existing.Should().ContainSingle(e =>
-            e.Path == "/src/Foo.cs" && e.Line == "42" && e.Body.Contains("null deref") && e.Author == "Revobot");
+        existing
+            .Should()
+            .ContainSingle(e =>
+                e.Path == "/src/Foo.cs" && e.Line == "42" && e.Body.Contains("null deref") && e.Author == "Revobot"
+            );
         existing.Should().ContainSingle(e => e.Path == null && e.Body.Contains("General note") && e.Author == "Alice");
     }
 
@@ -153,28 +177,40 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
         // The sibling of the GitHub suite's test of the same name, asserting the same numbers. The point of the
         // pair is the drift the two private copies of this cap invited (#225 item 4): a change made in one
         // publisher alone cannot leave both files green.
-        var threads = JsonSerializer.Serialize(new
-        {
-            value = new object[]
+        var threads = JsonSerializer.Serialize(
+            new
             {
-                new { status = "active", comments = new object[]
+                value = new object[]
                 {
-                    new { content = "HEAD-" + new string('a', 1_400), author = new { displayName = "alice" } },
-                    new { content = "LONG-" + new string('b', 4_000), author = new { displayName = "alice" } },
-                } },
-            },
-        });
+                    new
+                    {
+                        status = "active",
+                        comments = new object[]
+                        {
+                            new { content = "HEAD-" + new string('a', 1_400), author = new { displayName = "alice" } },
+                            new { content = "LONG-" + new string('b', 4_000), author = new { displayName = "alice" } },
+                        },
+                    },
+                },
+            }
+        );
         var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", threads);
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
         // A body well past the OLD 280-char cap survives whole — the resolution signal that settles a thread sits
         // at the end of a conversation, and cutting it off is how a settled thread gets re-raised.
-        existing.Should().ContainSingle(e => e.Body.StartsWith("HEAD-", StringComparison.Ordinal))
-            .Which.Body.Length.Should().Be(1_405, "a body under the shared cap is carried verbatim");
+        existing
+            .Should()
+            .ContainSingle(e => e.Body.StartsWith("HEAD-", StringComparison.Ordinal))
+            .Which.Body.Length.Should()
+            .Be(1_405, "a body under the shared cap is carried verbatim");
 
         // …and the cap is still a real cap.
-        var capped = existing.Should().ContainSingle(e => e.Body.StartsWith("LONG-", StringComparison.Ordinal)).Which.Body;
+        var capped = existing
+            .Should()
+            .ContainSingle(e => e.Body.StartsWith("LONG-", StringComparison.Ordinal))
+            .Which.Body;
         capped.Length.Should().Be(2_001, "2,000 characters plus the ellipsis that marks the cut");
         capped.Should().EndWith("…", "a truncated comment must be distinguishable from a terse one");
     }
@@ -186,15 +222,37 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
         // RESOLVED one if the issue persists — so the publisher reports each thread's status. ADO returns
         // 'status' as a string; 'active'/'pending' are open, 'fixed'/'closed'/'wontFix'/'byDesign' are resolved,
         // and a thread with NO status is treated as active (conservative — never re-post a possibly-open one).
-        var threads = JsonSerializer.Serialize(new
-        {
-            value = new object[]
+        var threads = JsonSerializer.Serialize(
+            new
             {
-                new { status = "active", comments = new object[] { new { content = "still open", author = new { displayName = "Revobot" } } } },
-                new { status = "fixed", comments = new object[] { new { content = "already fixed", author = new { displayName = "Revobot" } } } },
-                new { comments = new object[] { new { content = "no status field", author = new { displayName = "Revobot" } } } },
-            },
-        });
+                value = new object[]
+                {
+                    new
+                    {
+                        status = "active",
+                        comments = new object[]
+                        {
+                            new { content = "still open", author = new { displayName = "Revobot" } },
+                        },
+                    },
+                    new
+                    {
+                        status = "fixed",
+                        comments = new object[]
+                        {
+                            new { content = "already fixed", author = new { displayName = "Revobot" } },
+                        },
+                    },
+                    new
+                    {
+                        comments = new object[]
+                        {
+                            new { content = "no status field", author = new { displayName = "Revobot" } },
+                        },
+                    },
+                },
+            }
+        );
         var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", threads);
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
@@ -210,18 +268,40 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
         // ADO threads also carry non-discussion entries: system activity (merges/votes/reviewer updates all use
         // commentType "system") and deleted comments. Those are non-blank but not review discussion, so they must
         // not consume the bounded existing-comment budget and displace real findings/questions.
-        var threads = JsonSerializer.Serialize(new
-        {
-            value = new object[]
+        var threads = JsonSerializer.Serialize(
+            new
             {
-                new { status = "active", comments = new object[]
+                value = new object[]
                 {
-                    new { content = "REAL-FINDING here", commentType = "text", author = new { displayName = "Revobot" } },
-                    new { content = "Gautam voted -5", commentType = "system", author = new { displayName = "Azure DevOps" } },
-                    new { content = "DELETED-BODY", commentType = "text", isDeleted = true, author = new { displayName = "alice" } },
-                } },
-            },
-        });
+                    new
+                    {
+                        status = "active",
+                        comments = new object[]
+                        {
+                            new
+                            {
+                                content = "REAL-FINDING here",
+                                commentType = "text",
+                                author = new { displayName = "Revobot" },
+                            },
+                            new
+                            {
+                                content = "Gautam voted -5",
+                                commentType = "system",
+                                author = new { displayName = "Azure DevOps" },
+                            },
+                            new
+                            {
+                                content = "DELETED-BODY",
+                                commentType = "text",
+                                isDeleted = true,
+                                author = new { displayName = "alice" },
+                            },
+                        },
+                    },
+                },
+            }
+        );
         var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", threads);
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);

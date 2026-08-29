@@ -76,9 +76,12 @@ public sealed class SubAgentFocusEndpointTests
         using var childFrames = await childClient.CollectUntilDoneAsync(TimeSpan.FromSeconds(15));
 
         var errorFrame = childFrames.SingleOrDefault(IsSubAgentUnavailableError);
-        errorFrame.Should().NotBeNull(
-            "the route must invoke HandleSubAgentConnectionAsync, which answers an unknown agentId "
-            + "with a structured subagent_unavailable error");
+        errorFrame
+            .Should()
+            .NotBeNull(
+                "the route must invoke HandleSubAgentConnectionAsync, which answers an unknown agentId "
+                    + "with a structured subagent_unavailable error"
+            );
 
         var root = errorFrame!.RootElement;
         root.GetProperty("$type").GetString().Should().Be("error");
@@ -118,7 +121,8 @@ public sealed class SubAgentFocusEndpointTests
         var persisted = MessagePersistenceConverter.ToPersistedMessage(
             new TextMessage { Role = Role.Assistant, Text = "persisted-child-answer" },
             persistedThreadId,
-            runId: "run-1");
+            runId: "run-1"
+        );
         await store.AppendMessagesAsync(persistedThreadId, [persisted]);
 
         var childSocket = await factory.ConnectSubAgentWebSocketAsync(parentThreadId, completedAgentId);
@@ -129,11 +133,19 @@ public sealed class SubAgentFocusEndpointTests
         // WS content is streamed, there is no merge-key / duplicate-pill risk.
         using var childFrames = await childClient.CollectUntilDoneAsync(TimeSpan.FromSeconds(15));
 
-        childFrames.Any(IsSubAgentUnavailableError).Should().BeFalse(
-            "a completed sub-agent WITH persisted history must replay, not answer with the scary "
-            + "subagent_unavailable error");
-        childFrames.OfMessageType("done").Should().ContainSingle(
-            "the handler settles the focused-streaming client with the done sentinel so it stops spinning");
+        childFrames
+            .Any(IsSubAgentUnavailableError)
+            .Should()
+            .BeFalse(
+                "a completed sub-agent WITH persisted history must replay, not answer with the scary "
+                    + "subagent_unavailable error"
+            );
+        childFrames
+            .OfMessageType("done")
+            .Should()
+            .ContainSingle(
+                "the handler settles the focused-streaming client with the done sentinel so it stops spinning"
+            );
 
         // Read-only replay holds the socket OPEN (mirroring a completed shared-provider tab); only the
         // genuinely-missing-agent path closes it. This distinguishes replay from the unavailable-error case.
@@ -162,15 +174,17 @@ public sealed class SubAgentFocusEndpointTests
         }.Uri;
 
         Func<Task> connectMissingAgentId = () => wsClient.ConnectAsync(uri, CancellationToken.None);
-        await connectMissingAgentId.Should().ThrowAsync<Exception>(
-            "the route rejects a WebSocket upgrade missing the required agentId query param");
+        await connectMissingAgentId
+            .Should()
+            .ThrowAsync<Exception>("the route rejects a WebSocket upgrade missing the required agentId query param");
     }
 
     private static E2EWebAppFactory CreateFactory()
     {
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.Text("Parent ready."))
+            .Turn(t => t.Text("Parent ready."))
             .Build();
 
         // Give the parent a SubAgentManager (a template) so it is a fully-formed focus-capable parent,
@@ -178,20 +192,22 @@ public sealed class SubAgentFocusEndpointTests
         // simply absent from that manager.
         var builder = new ScriptedBuilder(
             responder,
-            subAgentFactory: (_, providerAgentFactory) => new SubAgentOptions
-            {
-                Templates = new Dictionary<string, SubAgentTemplate>
+            subAgentFactory: (_, providerAgentFactory) =>
+                new SubAgentOptions
                 {
-                    ["worker"] = new SubAgentTemplate
+                    Templates = new Dictionary<string, SubAgentTemplate>
                     {
-                        Name = "FocusWorker",
-                        SystemPrompt = WorkerMarker,
-                        AgentFactory = providerAgentFactory,
-                        MaxTurnsPerRun = 5,
+                        ["worker"] = new SubAgentTemplate
+                        {
+                            Name = "FocusWorker",
+                            SystemPrompt = WorkerMarker,
+                            AgentFactory = providerAgentFactory,
+                            MaxTurnsPerRun = 5,
+                        },
                     },
-                },
-                MaxConcurrentSubAgents = 5,
-            });
+                    MaxConcurrentSubAgents = 5,
+                }
+        );
 
         return new E2EWebAppFactory("test", builder);
     }

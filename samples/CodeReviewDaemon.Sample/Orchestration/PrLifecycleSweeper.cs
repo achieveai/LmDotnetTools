@@ -36,7 +36,8 @@ internal static class PrLifecycleSweepSeam
             provider,
             row.PrId,
             ReviewBranchManager.BuildReviewBranchName(row.Repo, prNumber),
-            row.Author);
+            row.Author
+        );
     }
 
     /// <summary>
@@ -51,7 +52,10 @@ internal static class PrLifecycleSweepSeam
     /// PR's (mapped) provider, throwing when none is registered — the <c>getPrLifecycleAsync</c> seam.
     /// </summary>
     public static Task<PrLifecycle> ResolveLifecycleAsync(
-        IReadOnlyList<IPrProvider> providers, ReviewedPr pr, CancellationToken cancellationToken)
+        IReadOnlyList<IPrProvider> providers,
+        ReviewedPr pr,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(pr);
         return ResolveLifecycleAsync(providers, pr.Repo, pr.Provider, pr.PrId, cancellationToken);
@@ -67,13 +71,14 @@ internal static class PrLifecycleSweepSeam
         RepoIdentity repo,
         string provider,
         string prId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(providers);
         ArgumentNullException.ThrowIfNull(repo);
 
-        var prProvider = providers.FirstOrDefault(p =>
-            string.Equals(p.Provider, provider, StringComparison.OrdinalIgnoreCase))
+        var prProvider =
+            providers.FirstOrDefault(p => string.Equals(p.Provider, provider, StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidOperationException($"No IPrProvider registered for '{provider}'.");
         return prProvider.GetPrStateAsync(repo, prId, cancellationToken);
     }
@@ -86,7 +91,13 @@ internal static class PrLifecycleSweepSeam
 /// (precomputed by the caller — the <c>ReviewStore</c> query supplies the rows and the caller derives the
 /// branch name via the <c>listReviewedPrsAsync</c> seam so this type stays test-constructible).
 /// </summary>
-internal sealed record ReviewedPr(RepoIdentity Repo, string Provider, string PrId, string Branch, string? Author = null);
+internal sealed record ReviewedPr(
+    RepoIdentity Repo,
+    string Provider,
+    string PrId,
+    string Branch,
+    string? Author = null
+);
 
 /// <summary>
 /// Resolves each reviewed PR's persistent notes branch (<c>review/{repo}-{pr}</c>,
@@ -189,7 +200,8 @@ internal sealed class PrLifecycleSweeper
                     ex,
                     "PR-lifecycle sweep failed for {Provider} PR {PrId}; will retry on the next sweep.",
                     pr.Provider,
-                    pr.PrId);
+                    pr.PrId
+                );
             }
         }
     }
@@ -218,13 +230,13 @@ internal sealed class PrLifecycleSweeper
                 break;
 
             case PrLifecycle.Abandoned:
-                await _branchManager.DeleteBranchAsync(_repoRoot, pr.Branch, cancellationToken)
-                    .ConfigureAwait(false);
+                await _branchManager.DeleteBranchAsync(_repoRoot, pr.Branch, cancellationToken).ConfigureAwait(false);
                 _logger.LogInformation(
                     "PR-lifecycle sweep deleted notes branch '{Branch}' for abandoned {Provider} PR {PrId}.",
                     pr.Branch,
                     pr.Provider,
-                    pr.PrId);
+                    pr.PrId
+                );
                 _terminallyResolved.Add(pr.Branch);
                 break;
 
@@ -247,13 +259,17 @@ internal sealed class PrLifecycleSweeper
                 "PR-lifecycle sweep left notes branch '{Branch}' for merged {Provider} PR {PrId} (merge-on-close disabled).",
                 pr.Branch,
                 pr.Provider,
-                pr.PrId);
+                pr.PrId
+            );
             return true;
         }
 
         // Layer-2 (design §1): distill durable knowledge from the PR's accumulated notes BEFORE the notes
         // branch merges into the default branch, so the same merge carries the new/updated entry into main.
-        if (_extractKnowledgeAsync is not null && !await TryExtractKnowledgeAsync(pr, cancellationToken).ConfigureAwait(false))
+        if (
+            _extractKnowledgeAsync is not null
+            && !await TryExtractKnowledgeAsync(pr, cancellationToken).ConfigureAwait(false)
+        )
         {
             // Extraction failed with attempts left. Returning false leaves the branch uncached AND unmerged, so
             // the next sweep retries against notes that still exist — merging here would delete the only input
@@ -270,7 +286,8 @@ internal sealed class PrLifecycleSweeper
             pr.Provider,
             pr.PrId,
             _defaultBranch,
-            merged);
+            merged
+        );
         if (merged)
         {
             _extractionAttempts.Remove(pr.Branch);
@@ -298,7 +315,8 @@ internal sealed class PrLifecycleSweeper
                 ex,
                 "PR-lifecycle sweep knowledge extraction threw for merged {Provider} PR {PrId}.",
                 pr.Provider,
-                pr.PrId);
+                pr.PrId
+            );
             outcome = KnowledgeExtractionOutcome.Failed;
         }
 
@@ -318,7 +336,8 @@ internal sealed class PrLifecycleSweeper
                 pr.PrId,
                 attempts,
                 MaxExtractionAttempts,
-                pr.Branch);
+                pr.Branch
+            );
             return false;
         }
 
@@ -330,7 +349,8 @@ internal sealed class PrLifecycleSweeper
             pr.Provider,
             pr.PrId,
             MaxExtractionAttempts,
-            pr.Branch);
+            pr.Branch
+        );
         return true;
     }
 }

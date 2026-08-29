@@ -26,7 +26,11 @@ public static class SimpleWorkflowSchema
                     + "via {{state.<saveAs>}} instead of re-deriving it per step. See the worked example in the "
                     + "system prompt."
             )
-            .WithProperty("objective", JsonSchemaObject.String("The high-level objective the workflow pursues."), required: true)
+            .WithProperty(
+                "objective",
+                JsonSchemaObject.String("The high-level objective the workflow pursues."),
+                required: true
+            )
             .WithProperty("steps", JsonSchemaObject.Array(Step(), "The workflow steps."), required: true)
             .AllowAdditionalProperties(false)
             .Build();
@@ -104,9 +108,15 @@ public static class SimpleWorkflowSchema
             )
             .WithProperty(
                 "agents",
-                JsonSchemaObject.Array(Agent(), "parallel steps: the sub-agents to run concurrently, each its own lane; the step joins when all finish. This is how you fan work out to several specialists at once — give each lane a distinct 'agent'/'prompt' (and 'saveAs' to capture its result).")
+                JsonSchemaObject.Array(
+                    Agent(),
+                    "parallel steps: the sub-agents to run concurrently, each its own lane; the step joins when all finish. This is how you fan work out to several specialists at once — give each lane a distinct 'agent'/'prompt' (and 'saveAs' to capture its result)."
+                )
             )
-            .WithProperty("branches", JsonSchemaObject.Array(Branch(), "branch steps: ordered conditions; the first that holds wins."))
+            .WithProperty(
+                "branches",
+                JsonSchemaObject.Array(Branch(), "branch steps: ordered conditions; the first that holds wins.")
+            )
             .WithProperty(
                 "else",
                 JsonSchemaObject.String(
@@ -114,8 +124,14 @@ public static class SimpleWorkflowSchema
                         + "fall-through rule as 'next'."
                 )
             )
-            .WithProperty("maxVisits", JsonSchemaObject.Integer("optional loop cap: the maximum times this step may be entered."))
-            .WithProperty("onMaxVisits", JsonSchemaObject.String("optional loop escape: the step id to go to once maxVisits is exceeded."))
+            .WithProperty(
+                "maxVisits",
+                JsonSchemaObject.Integer("optional loop cap: the maximum times this step may be entered.")
+            )
+            .WithProperty(
+                "onMaxVisits",
+                JsonSchemaObject.String("optional loop escape: the step id to go to once maxVisits is exceeded.")
+            )
             .AllowAdditionalProperties(false)
             .Build();
 
@@ -124,9 +140,7 @@ public static class SimpleWorkflowSchema
             .Create("object")
             .WithProperty(
                 "agent",
-                JsonSchemaObject.String(
-                    "The sub-agent type to delegate to. OPTIONAL — defaults to 'general-purpose'."
-                )
+                JsonSchemaObject.String("The sub-agent type to delegate to. OPTIONAL — defaults to 'general-purpose'.")
             )
             .WithProperty("prompt", JsonSchemaObject.String("The prompt for the sub-agent."), required: true)
             .WithProperty(
@@ -135,14 +149,21 @@ public static class SimpleWorkflowSchema
                     "optional capability tier forwarded to Agent.modelIntelligence; omit to keep the agent default."
                 )
             )
-            .WithProperty("saveAs", JsonSchemaObject.String("optional: capture this agent's output into state.<saveAs>."))
+            .WithProperty(
+                "saveAs",
+                JsonSchemaObject.String("optional: capture this agent's output into state.<saveAs>.")
+            )
             .AllowAdditionalProperties(false)
             .Build();
 
     private static JsonSchemaObject Branch() =>
         JsonSchemaObject
             .Create("object")
-            .WithProperty("when", JsonSchemaObject.String("The (prose) condition that selects this branch."), required: true)
+            .WithProperty(
+                "when",
+                JsonSchemaObject.String("The (prose) condition that selects this branch."),
+                required: true
+            )
             .WithProperty("goto", JsonSchemaObject.String("The step id to go to when 'when' holds."), required: true)
             .AllowAdditionalProperties(false)
             .Build();

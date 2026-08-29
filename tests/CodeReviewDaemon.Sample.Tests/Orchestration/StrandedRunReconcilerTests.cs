@@ -1,3 +1,4 @@
+using System.Net;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -5,7 +6,6 @@ using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
-using System.Net;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 
@@ -33,9 +33,13 @@ public sealed class StrandedRunReconcilerTests
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Resumed.Should().ContainSingle(
-            "the poll can no longer reach this run, so the reconciler is the only thing that can retry it")
-            .Which.Id.Should().Be(11);
+        harness
+            .Resumed.Should()
+            .ContainSingle(
+                "the poll can no longer reach this run, so the reconciler is the only thing that can retry it"
+            )
+            .Which.Id.Should()
+            .Be(11);
         harness.Retired.Should().BeEmpty("an open PR's run is resumed, not written off");
     }
 
@@ -48,11 +52,15 @@ public sealed class StrandedRunReconcilerTests
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Resumed.Should().ContainSingle()
-            .Which.PrLifecycleState.Should().Be(
+        harness
+            .Resumed.Should()
+            .ContainSingle()
+            .Which.PrLifecycleState.Should()
+            .Be(
                 PrLifecycleState.Open,
                 "the orchestrator halts any run it is handed with a non-open lifecycle, so a stale persisted "
-                    + "state would silently turn every resume into a no-op");
+                    + "state would silently turn every resume into a no-op"
+            );
     }
 
     [Fact]
@@ -66,17 +74,20 @@ public sealed class StrandedRunReconcilerTests
     // Takes the internal enums, so it cannot be a public [Theory] — the two facts above supply the cases.
     private static async Task AssertClosedPrIsRetired(PrLifecycle lifecycle, PrLifecycleState expected)
     {
-        var harness = new Harness()
-            .WithRows(Row(id: 11, stage: ReviewStage.Reviewed))
-            .WithLifecycle(lifecycle);
+        var harness = new Harness().WithRows(Row(id: 11, stage: ReviewStage.Reviewed)).WithLifecycle(lifecycle);
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
         harness.Resumed.Should().BeEmpty("there is nothing left to review on a PR that has closed");
-        harness.Retired.Should().ContainSingle().Which.Should().Be(
-            (11L, ReviewStage.Reviewed, WorkflowStatus.Completed, expected),
-            "this is the same rule PrOrchestrator applies to a PR it observes as no longer open: stop working "
-                + "the run, at the stage it reached, without marking it failed");
+        harness
+            .Retired.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(
+                (11L, ReviewStage.Reviewed, WorkflowStatus.Completed, expected),
+                "this is the same rule PrOrchestrator applies to a PR it observes as no longer open: stop working "
+                    + "the run, at the stage it reached, without marking it failed"
+            );
     }
 
     // ── the safety rail: a superseded run must never be resumed ───────────────────────────────────
@@ -88,9 +99,12 @@ public sealed class StrandedRunReconcilerTests
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Resumed.Should().BeEmpty(
-            "a later run has already reviewed a newer head; resuming this one would review — and on a posting "
-                + "daemon publish — a diff that no longer stands");
+        harness
+            .Resumed.Should()
+            .BeEmpty(
+                "a later run has already reviewed a newer head; resuming this one would review — and on a posting "
+                    + "daemon publish — a diff that no longer stands"
+            );
         harness.LifecycleLookups.Should().Be(0, "supersession is decided from the store alone");
         harness.Retired.Should().ContainSingle().Which.Item3.Should().Be(WorkflowStatus.Completed);
     }
@@ -131,16 +145,18 @@ public sealed class StrandedRunReconcilerTests
     [Fact]
     public async Task A_run_the_orchestrator_resolved_to_a_different_row_is_retired_so_it_cannot_be_re_picked()
     {
-        var harness = new Harness()
-            .WithRows(Row(id: 11))
-            .WithResumeResolvingTo(runId: 48);
+        var harness = new Harness().WithRows(Row(id: 11)).WithResumeResolvingTo(runId: 48);
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Retired.Should().ContainSingle(
-            "the orchestrator resolves a run by identity tuple, so it can settle a further-progressed sibling "
-                + "at the same head instead — leaving this row stranded and re-picked on every later pass")
-            .Which.Item1.Should().Be(11L);
+        harness
+            .Retired.Should()
+            .ContainSingle(
+                "the orchestrator resolves a run by identity tuple, so it can settle a further-progressed sibling "
+                    + "at the same head instead — leaving this row stranded and re-picked on every later pass"
+            )
+            .Which.Item1.Should()
+            .Be(11L);
     }
 
     // ── the cap: a weeks-old backlog must not release all at once ─────────────────────────────────
@@ -148,17 +164,20 @@ public sealed class StrandedRunReconcilerTests
     [Fact]
     public async Task The_resume_cap_bounds_one_pass_and_the_rest_are_deferred_not_dropped()
     {
-        var harness = new Harness()
-            .WithRows(Row(11), Row(12), Row(13), Row(14))
-            .WithMaxResumes(2);
+        var harness = new Harness().WithRows(Row(11), Row(12), Row(13), Row(14)).WithMaxResumes(2);
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
         harness.Resumed.Select(r => r.Id).Should().Equal([11L, 12L], "the cap is two per pass, oldest first");
         harness.Retired.Should().BeEmpty("a deferred run is still open work — it must not be written off");
-        harness.Log.Should().Contain(
-            e => e.Contains("deferred", StringComparison.OrdinalIgnoreCase) && e.Contains("13", StringComparison.Ordinal),
-            "a cap that silently shortens the pass reads as 'nothing left to do'");
+        harness
+            .Log.Should()
+            .Contain(
+                e =>
+                    e.Contains("deferred", StringComparison.OrdinalIgnoreCase)
+                    && e.Contains("13", StringComparison.Ordinal),
+                "a cap that silently shortens the pass reads as 'nothing left to do'"
+            );
     }
 
     [Fact]
@@ -170,8 +189,10 @@ public sealed class StrandedRunReconcilerTests
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Resumed.Select(r => r.Id).Should().Equal(
-            [13L], "bookkeeping costs nothing, so it must not crowd out the one run that needed real work");
+        harness
+            .Resumed.Select(r => r.Id)
+            .Should()
+            .Equal([13L], "bookkeeping costs nothing, so it must not crowd out the one run that needed real work");
     }
 
     [Fact]
@@ -184,20 +205,24 @@ public sealed class StrandedRunReconcilerTests
         // and it is the one the reconciler hits, because a run reaches this listing by having gone wrong once
         // already. Nothing else brakes this path either: PrOrchestrator.ReconcileAsync resets the retry
         // governor for the run it is handed, so the cap is the only limit on how much a single pass can spend.
-        var harness = new Harness()
-            .WithRows(Row(11), Row(12))
-            .WithMaxResumes(1)
-            .WithResumeThrowingFor(runId: 11);
+        var harness = new Harness().WithRows(Row(11), Row(12)).WithMaxResumes(1).WithResumeThrowingFor(runId: 11);
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Order.Should().Equal(
-            ["write:11", "resume:11"],
-            "run 11 spent the pass's one slot the moment it was claimed, so run 12 must not be touched at all");
-        harness.Log.Should().Contain(
-            e => e.Contains("deferred", StringComparison.OrdinalIgnoreCase)
-                && e.Contains("12", StringComparison.Ordinal),
-            "run 12 is deferred rather than dropped — the next pass is where it gets its turn");
+        harness
+            .Order.Should()
+            .Equal(
+                ["write:11", "resume:11"],
+                "run 11 spent the pass's one slot the moment it was claimed, so run 12 must not be touched at all"
+            );
+        harness
+            .Log.Should()
+            .Contain(
+                e =>
+                    e.Contains("deferred", StringComparison.OrdinalIgnoreCase)
+                    && e.Contains("12", StringComparison.Ordinal),
+                "run 12 is deferred rather than dropped — the next pass is where it gets its turn"
+            );
     }
 
     // ── isolation: one bad run never aborts the pass ──────────────────────────────────────────────
@@ -211,10 +236,14 @@ public sealed class StrandedRunReconcilerTests
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Retired.Should().ContainSingle(
-            "the daemon's own store holds a run seeded against a number that is not a PR; without this the "
-                + "lookup throws on every pass and the run stays stranded, one level further out")
-            .Which.Should().Be((141L, ReviewStage.Discovered, WorkflowStatus.Completed, PrLifecycleState.Abandoned));
+        harness
+            .Retired.Should()
+            .ContainSingle(
+                "the daemon's own store holds a run seeded against a number that is not a PR; without this the "
+                    + "lookup throws on every pass and the run stays stranded, one level further out"
+            )
+            .Which.Should()
+            .Be((141L, ReviewStage.Discovered, WorkflowStatus.Completed, PrLifecycleState.Abandoned));
         harness.Log.Should().NotContain(e => e.Contains("failed to settle", StringComparison.Ordinal));
     }
 
@@ -224,42 +253,57 @@ public sealed class StrandedRunReconcilerTests
         var harness = new Harness()
             .WithRows(Row(id: 11))
             .WithLifecycleThrowingFor(
-                11, new HttpRequestException("Bad gateway", null, HttpStatusCode.ServiceUnavailable));
+                11,
+                new HttpRequestException("Bad gateway", null, HttpStatusCode.ServiceUnavailable)
+            );
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Retired.Should().BeEmpty(
-            "a 5xx, a 401 or a timeout says nothing about the PR's state — writing the run off on one would "
-                + "discard live work over a blip");
-        harness.StateWrites.Should().ContainSingle(
-            "the failure still has to be written down somewhere: `updated_at` is the only thing short of a "
-                + "terminal status that takes a row out of the stranded listing, so a run settled by writing "
-                + "nothing at all stays eligible and is re-read and re-failed on every single pass")
-            .Which.Should().Be(
+        harness
+            .Retired.Should()
+            .BeEmpty(
+                "a 5xx, a 401 or a timeout says nothing about the PR's state — writing the run off on one would "
+                    + "discard live work over a blip"
+            );
+        harness
+            .StateWrites.Should()
+            .ContainSingle(
+                "the failure still has to be written down somewhere: `updated_at` is the only thing short of a "
+                    + "terminal status that takes a row out of the stranded listing, so a run settled by writing "
+                    + "nothing at all stays eligible and is re-read and re-failed on every single pass"
+            )
+            .Which.Should()
+            .Be(
                 (11L, ReviewStage.Discovered, WorkflowStatus.RetryPending, PrLifecycleState.Open),
                 "the backoff re-writes the state the row already had — it buys a grace period, it decides "
-                    + "nothing about the run");
-        harness.Log.Should().Contain(
-            e => e.Contains("could not reach the github provider for run 11", StringComparison.Ordinal));
+                    + "nothing about the run"
+            );
+        harness
+            .Log.Should()
+            .Contain(e => e.Contains("could not reach the github provider for run 11", StringComparison.Ordinal));
     }
 
     [Fact]
     public async Task A_run_whose_provider_lookup_throws_is_backed_off_and_the_pass_continues()
     {
-        var harness = new Harness()
-            .WithRows(Row(11), Row(12))
-            .WithLifecycleThrowingFor(runId: 11);
+        var harness = new Harness().WithRows(Row(11), Row(12)).WithLifecycleThrowingFor(runId: 11);
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Resumed.Select(r => r.Id).Should().Equal(
-            [12L], "one unreachable provider must not strand the rest of the backlog all over again");
-        harness.Log.Should().Contain(
-            e => e.Contains("could not reach the github provider for run 11", StringComparison.Ordinal));
-        harness.Log.Should().NotContain(
-            e => e.Contains("failed to settle run 11", StringComparison.Ordinal),
-            "the lookup failure is settled where it happens; reaching the pass-level catch would mean nothing "
-                + "was written for the run, which is the state that makes it eligible again immediately");
+        harness
+            .Resumed.Select(r => r.Id)
+            .Should()
+            .Equal([12L], "one unreachable provider must not strand the rest of the backlog all over again");
+        harness
+            .Log.Should()
+            .Contain(e => e.Contains("could not reach the github provider for run 11", StringComparison.Ordinal));
+        harness
+            .Log.Should()
+            .NotContain(
+                e => e.Contains("failed to settle run 11", StringComparison.Ordinal),
+                "the lookup failure is settled where it happens; reaching the pass-level catch would mean nothing "
+                    + "was written for the run, which is the state that makes it eligible again immediately"
+            );
     }
 
     [Fact]
@@ -268,18 +312,23 @@ public sealed class StrandedRunReconcilerTests
         // The cap notice explains deferrals by one cause — the resume cap — and an operator sizes the cap from
         // its number. A backed-off run never reached the cap check and cost no slot, so folding it in would
         // report the wrong cause and argue for raising a cap that was never the constraint.
-        var harness = new Harness()
-            .WithRows(Row(11), Row(12))
-            .WithLifecycleThrowingFor(runId: 11)
-            .WithMaxResumes(1);
+        var harness = new Harness().WithRows(Row(11), Row(12)).WithLifecycleThrowingFor(runId: 11).WithMaxResumes(1);
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Resumed.Select(r => r.Id).Should().Equal(
-            [12L], "the unreachable run spent no slot, so the one slot this pass had was still there for run 12");
-        harness.Log.Should().NotContain(
-            e => e.Contains("deferred", StringComparison.OrdinalIgnoreCase),
-            "nothing was held back by the cap on this pass");
+        harness
+            .Resumed.Select(r => r.Id)
+            .Should()
+            .Equal(
+                [12L],
+                "the unreachable run spent no slot, so the one slot this pass had was still there for run 12"
+            );
+        harness
+            .Log.Should()
+            .NotContain(
+                e => e.Contains("deferred", StringComparison.OrdinalIgnoreCase),
+                "nothing was held back by the cap on this pass"
+            );
     }
 
     [Fact]
@@ -294,13 +343,19 @@ public sealed class StrandedRunReconcilerTests
             .WithLifecycleThrowingFor(
                 11,
                 new TaskCanceledException(
-                    "The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing."));
+                    "The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing."
+                )
+            );
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
         harness.Resumed.Select(r => r.Id).Should().Equal([12L], "the pass must survive one slow provider call");
-        harness.StateWrites.Should().Contain(
-            w => w.Item1 == 11L, "a timed-out lookup is backed off exactly like any other unreachable provider");
+        harness
+            .StateWrites.Should()
+            .Contain(
+                w => w.Item1 == 11L,
+                "a timed-out lookup is backed off exactly like any other unreachable provider"
+            );
     }
 
     [Fact]
@@ -309,14 +364,20 @@ public sealed class StrandedRunReconcilerTests
         var harness = new Harness()
             .WithRows(Row(11), Row(12))
             .WithResumeThrowingFor(
-                11, new TaskCanceledException("HttpClient.Timeout elapsed while the review was posting"));
+                11,
+                new TaskCanceledException("HttpClient.Timeout elapsed while the review was posting")
+            );
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Resumed.Select(r => r.Id).Should().Equal(
-            [12L],
-            "a resume runs the review's whole remaining pipeline, so a timeout inside it is ordinary — and it "
-                + "arrives as a TaskCanceledException, which the pass must not mistake for its own shutdown");
+        harness
+            .Resumed.Select(r => r.Id)
+            .Should()
+            .Equal(
+                [12L],
+                "a resume runs the review's whole remaining pipeline, so a timeout inside it is ordinary — and it "
+                    + "arrives as a TaskCanceledException, which the pass must not mistake for its own shutdown"
+            );
     }
 
     [Fact]
@@ -330,12 +391,18 @@ public sealed class StrandedRunReconcilerTests
         var harness = new Harness()
             .WithRows(Row(11), Row(12))
             .WithLifecycleThrowingFor(
-                11, new OperationCanceledException("the daemon is shutting down"), before: cts.Cancel);
+                11,
+                new OperationCanceledException("the daemon is shutting down"),
+                before: cts.Cancel
+            );
 
         var sweep = async () => await harness.Reconciler().SweepAsync(cts.Token);
 
-        await sweep.Should().ThrowAsync<OperationCanceledException>(
-            "a shutdown is not a provider problem and is not this class's to swallow");
+        await sweep
+            .Should()
+            .ThrowAsync<OperationCanceledException>(
+                "a shutdown is not a provider problem and is not this class's to swallow"
+            );
         harness.Resumed.Should().BeEmpty("the pass stops where it was cancelled");
         harness.StateWrites.Should().BeEmpty("a shutdown must never be recorded as a run's backoff");
     }
@@ -343,19 +410,25 @@ public sealed class StrandedRunReconcilerTests
     [Fact]
     public async Task A_run_whose_resume_throws_is_logged_and_the_next_run_is_still_settled()
     {
-        var harness = new Harness()
-            .WithRows(Row(11), Row(12))
-            .WithResumeThrowingFor(runId: 11);
+        var harness = new Harness().WithRows(Row(11), Row(12)).WithResumeThrowingFor(runId: 11);
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Resumed.Select(r => r.Id).Should().Equal(
-            [12L], "a resume runs the review's remaining stages, so it fails for far more reasons than the "
-                + "lifecycle lookup does — one failing review must not re-strand the rest of the backlog");
+        harness
+            .Resumed.Select(r => r.Id)
+            .Should()
+            .Equal(
+                [12L],
+                "a resume runs the review's remaining stages, so it fails for far more reasons than the "
+                    + "lifecycle lookup does — one failing review must not re-strand the rest of the backlog"
+            );
         harness.Log.Should().Contain(e => e.Contains("failed to settle run 11", StringComparison.Ordinal));
-        harness.Retired.Should().BeEmpty(
-            "the run is still open work: leaving it non-terminal is what lets it come back once it has been "
-                + "untouched for the grace period again");
+        harness
+            .Retired.Should()
+            .BeEmpty(
+                "the run is still open work: leaving it non-terminal is what lets it come back once it has been "
+                    + "untouched for the grace period again"
+            );
     }
 
     [Fact]
@@ -372,30 +445,42 @@ public sealed class StrandedRunReconcilerTests
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Order.Should().Equal(
-            ["write:11", "resume:11"], "the claim is what makes the takeover survive a resume that does nothing");
-        harness.StateWrites.Should().ContainSingle().Which.Should().Be(
-            (11L, ReviewStage.Judged, WorkflowStatus.RetryPending, PrLifecycleState.Open),
-            "the claim re-writes the state the row already had — it advances the timestamp, it does not decide "
-                + "anything about the run");
+        harness
+            .Order.Should()
+            .Equal(
+                ["write:11", "resume:11"],
+                "the claim is what makes the takeover survive a resume that does nothing"
+            );
+        harness
+            .StateWrites.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(
+                (11L, ReviewStage.Judged, WorkflowStatus.RetryPending, PrLifecycleState.Open),
+                "the claim re-writes the state the row already had — it advances the timestamp, it does not decide "
+                    + "anything about the run"
+            );
         harness.Retired.Should().BeEmpty("an open PR's run is claimed, not written off");
     }
 
     [Fact]
     public async Task A_run_whose_resume_throws_is_still_left_claimed()
     {
-        var harness = new Harness()
-            .WithRows(Row(id: 11, stage: ReviewStage.Judged))
-            .WithResumeThrowingFor(runId: 11);
+        var harness = new Harness().WithRows(Row(id: 11, stage: ReviewStage.Judged)).WithResumeThrowingFor(runId: 11);
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.StateWrites.Should().ContainSingle(
-            "a failing resume is the case that most needs the claim: it writes nothing itself, so this row would "
-                + "otherwise be re-picked and re-failed on every pass with nothing in the store to show for it")
-            .Which.Item3.Should().Be(
+        harness
+            .StateWrites.Should()
+            .ContainSingle(
+                "a failing resume is the case that most needs the claim: it writes nothing itself, so this row would "
+                    + "otherwise be re-picked and re-failed on every pass with nothing in the store to show for it"
+            )
+            .Which.Item3.Should()
+            .Be(
                 WorkflowStatus.RetryPending,
-                "the run is still open work — the claim holds it for a grace period, it does not retire it");
+                "the run is still open work — the claim holds it for a grace period, it does not retire it"
+            );
     }
 
     [Fact]
@@ -445,16 +530,14 @@ public sealed class StrandedRunReconcilerTests
         // becoming a burst of concurrent reviews — and, on a posting daemon, a burst of comments. A second
         // listing that carried a budget of its own would silently double that burst the day it was added,
         // while the configured number stayed the same and told an operator otherwise.
-        var harness = new Harness()
-            .WithRetryPendingRows(Row(11), Row(12))
-            .WithRows(Row(13), Row(14))
-            .WithMaxResumes(2);
+        var harness = new Harness().WithRetryPendingRows(Row(11), Row(12)).WithRows(Row(13), Row(14)).WithMaxResumes(2);
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Resumed.Select(r => r.Id).Should().Equal(
-            [11L, 12L],
-            "two slots, spent on the runs that are owed a retry — not two slots per listing");
+        harness
+            .Resumed.Select(r => r.Id)
+            .Should()
+            .Equal([11L, 12L], "two slots, spent on the runs that are owed a retry — not two slots per listing");
         harness.Retired.Should().BeEmpty("a deferred run is still open work");
     }
 
@@ -463,10 +546,7 @@ public sealed class StrandedRunReconcilerTests
     {
         // Ordering is the whole point of the path: when the pass cannot resume everything, the slots must go to
         // the runs the orchestrator explicitly asked to retry, not to the ones that merely aged out.
-        var harness = new Harness()
-            .WithRows(Row(13))
-            .WithRetryPendingRows(Row(11))
-            .WithMaxResumes(1);
+        var harness = new Harness().WithRows(Row(13)).WithRetryPendingRows(Row(11)).WithMaxResumes(1);
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
@@ -479,16 +559,17 @@ public sealed class StrandedRunReconcilerTests
         // Not an edge case: a RetryPending run that keeps failing eventually satisfies BOTH predicates, and
         // that is the steady state of the runs this pass sees. Settled twice it would be handed to the
         // orchestrator twice concurrently and charge two of the pass's slots for one run.
-        var harness = new Harness()
-            .WithRetryPendingRows(Row(11))
-            .WithRows(Row(11), Row(12))
-            .WithMaxResumes(2);
+        var harness = new Harness().WithRetryPendingRows(Row(11)).WithRows(Row(11), Row(12)).WithMaxResumes(2);
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
-        harness.Resumed.Select(r => r.Id).Should().Equal(
-            [11L, 12L],
-            "run 11 is one run however many listings name it, so the second slot was still there for run 12");
+        harness
+            .Resumed.Select(r => r.Id)
+            .Should()
+            .Equal(
+                [11L, 12L],
+                "run 11 is one run however many listings name it, so the second slot was still there for run 12"
+            );
         harness.LifecycleLookups.Should().Be(2, "settling run 11 twice would ask the provider about it twice");
     }
 
@@ -497,9 +578,7 @@ public sealed class StrandedRunReconcilerTests
     {
         // The zeroed-knob shape. The fast listing is never read, so a RetryPending run reaches the pass only by
         // the abandonment listing — exactly the behaviour before #429, which is what "off" has to mean.
-        var harness = new Harness()
-            .WithoutFastPath()
-            .WithRetryPendingRows(Row(11));
+        var harness = new Harness().WithoutFastPath().WithRetryPendingRows(Row(11));
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
 
@@ -513,18 +592,20 @@ public sealed class StrandedRunReconcilerTests
         // A "fast" path slower than the slow one is a misconfiguration that reads, in appsettings, as the
         // feature working. Refusing at construction turns it into a boot failure an operator can see rather
         // than a knob that quietly does the opposite of its name.
-        var construct = () => new StrandedRunReconciler(
-            listStrandedRuns: (_, _) => [],
-            getPrLifecycleAsync: (_, _) => Task.FromResult(PrLifecycle.Open),
-            resumeAsync: (run, _) => Task.FromResult(run),
-            updateRunState: (_, _, _, _) => { },
-            timeProvider: new FakeTimeProvider(Now),
-            grace: Grace,
-            scanLimit: 50,
-            maxResumesPerPass: 2,
-            logger: new CapturingLogger<StrandedRunReconciler>([]),
-            listRetryPendingRuns: (_, _) => [],
-            retryPendingGrace: Grace);
+        var construct = () =>
+            new StrandedRunReconciler(
+                listStrandedRuns: (_, _) => [],
+                getPrLifecycleAsync: (_, _) => Task.FromResult(PrLifecycle.Open),
+                resumeAsync: (run, _) => Task.FromResult(run),
+                updateRunState: (_, _, _, _) => { },
+                timeProvider: new FakeTimeProvider(Now),
+                grace: Grace,
+                scanLimit: 50,
+                maxResumesPerPass: 2,
+                logger: new CapturingLogger<StrandedRunReconciler>([]),
+                listRetryPendingRuns: (_, _) => [],
+                retryPendingGrace: Grace
+            );
 
         construct.Should().Throw<ArgumentOutOfRangeException>();
     }
@@ -556,9 +637,13 @@ public sealed class StrandedRunReconcilerTests
     [Fact]
     public void A_retry_window_inside_the_abandonment_window_is_taken_exactly_as_configured()
     {
-        StrandedRunReconciler.ResolveRetryPendingGrace(45, Grace).Should().Be(
-            TimeSpan.FromMinutes(45),
-            "the ordinary case must pass through untouched, or the clamp is silently rewriting good config");
+        StrandedRunReconciler
+            .ResolveRetryPendingGrace(45, Grace)
+            .Should()
+            .Be(
+                TimeSpan.FromMinutes(45),
+                "the ordinary case must pass through untouched, or the clamp is silently rewriting good config"
+            );
     }
 
     [Theory]
@@ -579,21 +664,24 @@ public sealed class StrandedRunReconcilerTests
     {
         // The join. The clamp is only worth anything if its output satisfies the rule it was clamping toward,
         // so this drives the resolved value straight into the constructor that refuses a slow "fast" path.
-        var construct = () => new StrandedRunReconciler(
-            listStrandedRuns: (_, _) => [],
-            getPrLifecycleAsync: (_, _) => Task.FromResult(PrLifecycle.Open),
-            resumeAsync: (run, _) => Task.FromResult(run),
-            updateRunState: (_, _, _, _) => { },
-            timeProvider: new FakeTimeProvider(Now),
-            grace: Grace,
-            scanLimit: 50,
-            maxResumesPerPass: 2,
-            logger: new CapturingLogger<StrandedRunReconciler>([]),
-            listRetryPendingRuns: (_, _) => [],
-            retryPendingGrace: StrandedRunReconciler.ResolveRetryPendingGrace(600, Grace));
+        var construct = () =>
+            new StrandedRunReconciler(
+                listStrandedRuns: (_, _) => [],
+                getPrLifecycleAsync: (_, _) => Task.FromResult(PrLifecycle.Open),
+                resumeAsync: (run, _) => Task.FromResult(run),
+                updateRunState: (_, _, _, _) => { },
+                timeProvider: new FakeTimeProvider(Now),
+                grace: Grace,
+                scanLimit: 50,
+                maxResumesPerPass: 2,
+                logger: new CapturingLogger<StrandedRunReconciler>([]),
+                listRetryPendingRuns: (_, _) => [],
+                retryPendingGrace: StrandedRunReconciler.ResolveRetryPendingGrace(600, Grace)
+            );
 
-        construct.Should().NotThrow(
-            "a window the host clamped must be one this constructor takes, or the clamp bought nothing");
+        construct
+            .Should()
+            .NotThrow("a window the host clamped must be one this constructor takes, or the clamp bought nothing");
     }
 
     [Fact]
@@ -625,11 +713,15 @@ public sealed class StrandedRunReconcilerTests
 
         var stranded = store.ListStrandedRuns(Now - Grace, limit: 50);
 
-        stranded.Select(s => s.Run.Id).Should().Equal(
-            [stale.Id],
-            "a completed run needs no route back, and a run inside the grace period is still the poll's to "
-                + "work — a healthy run stamps updated_at at every stage boundary (run {0} is fresh)",
-            fresh.Id);
+        stranded
+            .Select(s => s.Run.Id)
+            .Should()
+            .Equal(
+                [stale.Id],
+                "a completed run needs no route back, and a run inside the grace period is still the poll's to "
+                    + "work — a healthy run stamps updated_at at every stage boundary (run {0} is fresh)",
+                fresh.Id
+            );
     }
 
     [Fact]
@@ -650,11 +742,15 @@ public sealed class StrandedRunReconcilerTests
         var stranded = store.ListStrandedRuns(Now - Grace, limit: 50);
 
         stranded.Should().HaveCount(3);
-        stranded.Single(s => s.Run.Id == older.Id).Superseded.Should().BeTrue(
-            "run {0} reviewed a later head of the same PR", newer.Id);
+        stranded
+            .Single(s => s.Run.Id == older.Id)
+            .Superseded.Should()
+            .BeTrue("run {0} reviewed a later head of the same PR", newer.Id);
         stranded.Single(s => s.Run.Id == newer.Id).Superseded.Should().BeFalse();
-        stranded.Single(s => s.Run.Id == only.Id).Superseded.Should().BeFalse(
-            "supersession is per PR — another PR's runs say nothing about this one");
+        stranded
+            .Single(s => s.Run.Id == only.Id)
+            .Superseded.Should()
+            .BeFalse("supersession is per PR — another PR's runs say nothing about this one");
     }
 
     [Fact]
@@ -666,7 +762,11 @@ public sealed class StrandedRunReconcilerTests
 
         var retrying = store.CreateOrGetReviewRun(SampleRun(repoId, "101"));
         var running = store.CreateOrGetReviewRun(
-            SampleRun(repoId, "102") with { WorkflowStatus = WorkflowStatus.Running });
+            SampleRun(repoId, "102") with
+            {
+                WorkflowStatus = WorkflowStatus.Running,
+            }
+        );
         var finished = store.CreateOrGetReviewRun(SampleRun(repoId, "103"));
         store.UpdateReviewRunState(finished.Id, ReviewStage.Posted, WorkflowStatus.Completed, PrLifecycleState.Open);
         var justFailed = store.CreateOrGetReviewRun(SampleRun(repoId, "104"));
@@ -679,14 +779,17 @@ public sealed class StrandedRunReconcilerTests
 
         var fast = store.ListRetryPendingRuns(Now - RetryGrace, limit: 50);
 
-        fast.Select(s => s.Run.Id).Should().Equal(
-            [retrying.Id],
-            "RetryPending is the one status written as a DECISION to retry. Run {0} is Running and run {1} is "
-                + "Completed — for those, age is the only evidence there is, which is the abandonment window's "
-                + "question, not this one's. Run {2} failed a minute ago and has not yet waited its window.",
-            running.Id,
-            finished.Id,
-            justFailed.Id);
+        fast.Select(s => s.Run.Id)
+            .Should()
+            .Equal(
+                [retrying.Id],
+                "RetryPending is the one status written as a DECISION to retry. Run {0} is Running and run {1} is "
+                    + "Completed — for those, age is the only evidence there is, which is the abandonment window's "
+                    + "question, not this one's. Run {2} failed a minute ago and has not yet waited its window.",
+                running.Id,
+                finished.Id,
+                justFailed.Id
+            );
     }
 
     [Fact]
@@ -709,8 +812,9 @@ public sealed class StrandedRunReconcilerTests
         var fast = store.ListRetryPendingRuns(Now - RetryGrace, limit: 50);
 
         fast.Should().HaveCount(2);
-        fast.Single(s => s.Run.Id == older.Id).Superseded.Should().BeTrue(
-            "run {0} reviewed a later head of the same PR", newer.Id);
+        fast.Single(s => s.Run.Id == older.Id)
+            .Superseded.Should()
+            .BeTrue("run {0} reviewed a later head of the same PR", newer.Id);
         fast.Single(s => s.Run.Id == newer.Id).Superseded.Should().BeFalse();
     }
 
@@ -745,7 +849,8 @@ public sealed class StrandedRunReconcilerTests
             maxResumesPerPass: 5,
             logger: new CapturingLogger<StrandedRunReconciler>([]),
             listRetryPendingRuns: store.ListRetryPendingRuns,
-            retryPendingGrace: RetryGrace);
+            retryPendingGrace: RetryGrace
+        );
 
         await reconciler.SweepAsync(CancellationToken.None);
 
@@ -754,14 +859,21 @@ public sealed class StrandedRunReconcilerTests
         clock.Advance(TimeSpan.FromMinutes(6));
         await reconciler.SweepAsync(CancellationToken.None);
 
-        attempts.Should().Equal(
-            [run.Id],
-            "the run crossed the {0} fast window; before #429 it would have sat until the {1} abandonment one",
-            RetryGrace,
-            Grace);
-        clock.GetUtcNow().Should().BeBefore(
-            DateTimeOffset.UtcNow + Grace,
-            "the whole point is that no part of this waited an abandonment window");
+        attempts
+            .Should()
+            .Equal(
+                [run.Id],
+                "the run crossed the {0} fast window; before #429 it would have sat until the {1} abandonment one",
+                RetryGrace,
+                Grace
+            );
+        clock
+            .GetUtcNow()
+            .Should()
+            .BeBefore(
+                DateTimeOffset.UtcNow + Grace,
+                "the whole point is that no part of this waited an abandonment window"
+            );
     }
 
     [Fact]
@@ -796,22 +908,29 @@ public sealed class StrandedRunReconcilerTests
             grace: Grace,
             scanLimit: 50,
             maxResumesPerPass: 5,
-            logger: new CapturingLogger<StrandedRunReconciler>([]));
+            logger: new CapturingLogger<StrandedRunReconciler>([])
+        );
 
         await reconciler.SweepAsync(CancellationToken.None);
         await reconciler.SweepAsync(CancellationToken.None);
 
-        attempts.Should().Equal(
-            [run.Id],
-            "the claim advanced updated_at, so the next pass's listing no longer sees the row — without it a "
-                + "run that fails forever is resumed on every cycle, at the cost of a lease, a clone and an LLM "
-                + "call each time");
+        attempts
+            .Should()
+            .Equal(
+                [run.Id],
+                "the claim advanced updated_at, so the next pass's listing no longer sees the row — without it a "
+                    + "run that fails forever is resumed on every cycle, at the cost of a lease, a clone and an LLM "
+                    + "call each time"
+            );
         clock.Advance(Grace + TimeSpan.FromMinutes(1));
         await reconciler.SweepAsync(CancellationToken.None);
 
-        attempts.Should().Equal(
-            [run.Id, run.Id],
-            "the claim delays the retry by one grace period; it must never remove the route back altogether");
+        attempts
+            .Should()
+            .Equal(
+                [run.Id, run.Id],
+                "the claim delays the retry by one grace period; it must never remove the route back altogether"
+            );
     }
 
     [Fact]
@@ -844,23 +963,32 @@ public sealed class StrandedRunReconcilerTests
             grace: Grace,
             scanLimit: 50,
             maxResumesPerPass: 5,
-            logger: new CapturingLogger<StrandedRunReconciler>([]));
+            logger: new CapturingLogger<StrandedRunReconciler>([])
+        );
 
         await reconciler.SweepAsync(CancellationToken.None);
         await reconciler.SweepAsync(CancellationToken.None);
 
-        lookups.Should().Equal(
-            [run.Id],
-            "the backoff stamp advanced updated_at, so the second pass's listing no longer sees the row at all");
+        lookups
+            .Should()
+            .Equal(
+                [run.Id],
+                "the backoff stamp advanced updated_at, so the second pass's listing no longer sees the row at all"
+            );
         clock.Advance(Grace + TimeSpan.FromMinutes(1));
         await reconciler.SweepAsync(CancellationToken.None);
 
-        lookups.Should().Equal(
-            [run.Id, run.Id],
-            "the stamp delays the retry by one grace period; a provider blip must never cost a run its only "
-                + "route back, which is what a retirement here would do");
-        store.GetReviewRun(run.Id)!.WorkflowStatus.Should().Be(
-            WorkflowStatus.RetryPending, "the run is still open work — nothing about a 5xx retires it");
+        lookups
+            .Should()
+            .Equal(
+                [run.Id, run.Id],
+                "the stamp delays the retry by one grace period; a provider blip must never cost a run its only "
+                    + "route back, which is what a retirement here would do"
+            );
+        store
+            .GetReviewRun(run.Id)!
+            .WorkflowStatus.Should()
+            .Be(WorkflowStatus.RetryPending, "the run is still open work — nothing about a 5xx retires it");
     }
 
     [Theory]
@@ -874,17 +1002,27 @@ public sealed class StrandedRunReconcilerTests
 
         var stranded = store.CreateOrGetReviewRun(SampleRun(repoId, "101") with { HeadSha = "head-1" });
         var unrelated = store.CreateOrGetReviewRun(
-            SampleRun(repoId, "101") with { HeadSha = "head-2", VariantId = variantId, ReviewKind = kind });
+            SampleRun(repoId, "101") with
+            {
+                HeadSha = "head-2",
+                VariantId = variantId,
+                ReviewKind = kind,
+            }
+        );
         foreach (var id in new[] { stranded.Id, unrelated.Id })
         {
             Backdate(db, id, Now - TimeSpan.FromDays(9));
         }
 
-        store.ListStrandedRuns(Now - Grace, limit: 50).Single(s => s.Run.Id == stranded.Id)
-            .Superseded.Should().BeFalse(
+        store
+            .ListStrandedRuns(Now - Grace, limit: 50)
+            .Single(s => s.Run.Id == stranded.Id)
+            .Superseded.Should()
+            .BeFalse(
                 "run {0} never produced the review this run owes; retiring on it would drop that review "
                     + "silently and forever, because this listing is the run's only remaining route back",
-                unrelated.Id);
+                unrelated.Id
+            );
     }
 
     [Fact]
@@ -904,11 +1042,15 @@ public sealed class StrandedRunReconcilerTests
             Backdate(db, id, Now - TimeSpan.FromDays(9));
         }
 
-        store.ListStrandedRuns(Now - Grace, limit: 50).Single(s => s.Run.Id == stranded.Id)
-            .Superseded.Should().BeFalse(
+        store
+            .ListStrandedRuns(Now - Grace, limit: 50)
+            .Single(s => s.Run.Id == stranded.Id)
+            .Superseded.Should()
+            .BeFalse(
                 "retirement is justified by a newer head making this diff stale, and run {0} sits at the same "
                     + "head — a higher row id on its own is not evidence that anything went stale",
-                duplicateId);
+                duplicateId
+            );
     }
 
     [Fact]
@@ -924,19 +1066,33 @@ public sealed class StrandedRunReconcilerTests
         // posting daemon, publish them. base_sha is part of the identity tuple for the same reason, so these are
         // two legitimately distinct runs and the later one is the current one.
         var stranded = store.CreateOrGetReviewRun(
-            SampleRun(repoId, "101") with { HeadSha = "head-1", BaseSha = "base-1" });
+            SampleRun(repoId, "101") with
+            {
+                HeadSha = "head-1",
+                BaseSha = "base-1",
+            }
+        );
         var newer = store.CreateOrGetReviewRun(
-            SampleRun(repoId, "101") with { HeadSha = "head-1", BaseSha = "base-2" });
+            SampleRun(repoId, "101") with
+            {
+                HeadSha = "head-1",
+                BaseSha = "base-2",
+            }
+        );
         newer.Id.Should().NotBe(stranded.Id, "a moved base is a different identity, not the same run");
         foreach (var id in new[] { stranded.Id, newer.Id })
         {
             Backdate(db, id, Now - TimeSpan.FromDays(9));
         }
 
-        store.ListStrandedRuns(Now - Grace, limit: 50).Single(s => s.Run.Id == stranded.Id)
-            .Superseded.Should().BeTrue(
+        store
+            .ListStrandedRuns(Now - Grace, limit: 50)
+            .Single(s => s.Run.Id == stranded.Id)
+            .Superseded.Should()
+            .BeTrue(
                 "run {0} reviewed the same head against the current base, so this run's diff is the stale one",
-                newer.Id);
+                newer.Id
+            );
     }
 
     [Fact]
@@ -947,19 +1103,22 @@ public sealed class StrandedRunReconcilerTests
         var repoId = store.EnsureRepo(SampleRepo());
 
         var stranded = store.CreateOrGetReviewRun(SampleRun(repoId, "101") with { HeadSha = "head-1" });
-        var newer = store.CreateOrGetReviewRun(
-            SampleRun(repoId, "101") with { HeadSha = "head-2", Mode = "post" });
+        var newer = store.CreateOrGetReviewRun(SampleRun(repoId, "101") with { HeadSha = "head-2", Mode = "post" });
         foreach (var id in new[] { stranded.Id, newer.Id })
         {
             Backdate(db, id, Now - TimeSpan.FromDays(9));
         }
 
-        store.ListStrandedRuns(Now - Grace, limit: 50).Single(s => s.Run.Id == stranded.Id)
-            .Superseded.Should().BeTrue(
+        store
+            .ListStrandedRuns(Now - Grace, limit: 50)
+            .Single(s => s.Run.Id == stranded.Id)
+            .Superseded.Should()
+            .BeTrue(
                 "mode is an authorization decision made at post time, not part of what the review is (see "
                     + "CreateOrGetReviewRun) — toggling posting between the two runs does not make run {0}'s "
                     + "newer head any less of a replacement for this one's diff",
-                newer.Id);
+                newer.Id
+            );
     }
 
     [Fact]
@@ -979,11 +1138,20 @@ public sealed class StrandedRunReconcilerTests
 
         var stranded = store.ListStrandedRuns(Now - Grace, limit: 2);
 
-        stranded.Select(s => s.Run.Id).Should().Equal(
-            ids.Take(2), "the cap takes the oldest rows by id, in one query — never a second page by offset "
-                + "over a predicate the caller is mutating as it works");
-        stranded.Should().AllSatisfy(s => s.Repo.RepoName.Should().Be(SampleRepo().RepoName),
-            "the caller needs the repo identity to ask the provider what became of the PR");
+        stranded
+            .Select(s => s.Run.Id)
+            .Should()
+            .Equal(
+                ids.Take(2),
+                "the cap takes the oldest rows by id, in one query — never a second page by offset "
+                    + "over a predicate the caller is mutating as it works"
+            );
+        stranded
+            .Should()
+            .AllSatisfy(
+                s => s.Repo.RepoName.Should().Be(SampleRepo().RepoName),
+                "the caller needs the repo identity to ask the provider what became of the PR"
+            );
     }
 
     // ── harness ───────────────────────────────────────────────────────────────────────────────────
@@ -1026,33 +1194,36 @@ public sealed class StrandedRunReconcilerTests
         return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static RepoIdentity SampleRepo() => new()
-    {
-        Provider = "github",
-        OrgOrOwner = "achieveai",
-        RepoName = "LmDotnetTools",
-    };
+    private static RepoIdentity SampleRepo() =>
+        new()
+        {
+            Provider = "github",
+            OrgOrOwner = "achieveai",
+            RepoName = "LmDotnetTools",
+        };
 
-    private static ReviewRun SampleRun(long repoId, string prId) => new()
-    {
-        RepoId = repoId,
-        PrId = prId,
-        HeadSha = "head-sha",
-        BaseSha = "base-sha",
-        TriggerWatermark = "wm-1",
-        ReviewKind = "full",
-        VariantId = "primary",
-        Mode = "collect-only",
-        Stage = ReviewStage.Discovered,
-        WorkflowStatus = WorkflowStatus.RetryPending,
-        PrLifecycleState = PrLifecycleState.Open,
-    };
+    private static ReviewRun SampleRun(long repoId, string prId) =>
+        new()
+        {
+            RepoId = repoId,
+            PrId = prId,
+            HeadSha = "head-sha",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "collect-only",
+            Stage = ReviewStage.Discovered,
+            WorkflowStatus = WorkflowStatus.RetryPending,
+            PrLifecycleState = PrLifecycleState.Open,
+        };
 
     private static StrandedRunRow Row(
         long id,
         ReviewStage stage = ReviewStage.Discovered,
         bool superseded = false,
-        PrLifecycleState lifecycle = PrLifecycleState.Open) =>
+        PrLifecycleState lifecycle = PrLifecycleState.Open
+    ) =>
         new(
             new ReviewRun
             {
@@ -1070,7 +1241,8 @@ public sealed class StrandedRunReconcilerTests
                 PrLifecycleState = lifecycle,
             },
             SampleRepo(),
-            superseded);
+            superseded
+        );
 
     private sealed class Harness
     {
@@ -1170,60 +1342,65 @@ public sealed class StrandedRunReconcilerTests
             {
                 fastListing = (staleBefore, limit) =>
                 {
-                    staleBefore.Should().Be(
-                        Now - RetryGrace,
-                        "the fast window, not the abandonment one, decides which retry-pending rows are read");
+                    staleBefore
+                        .Should()
+                        .Be(
+                            Now - RetryGrace,
+                            "the fast window, not the abandonment one, decides which retry-pending rows are read"
+                        );
                     return [.. _retryRows.Take(limit)];
                 };
             }
 
             return new StrandedRunReconciler(
-            listStrandedRuns: (staleBefore, limit) =>
-            {
-                staleBefore.Should().Be(Now - Grace, "the grace period is subtracted from the current time");
-                return [.. _rows.Take(limit)];
-            },
-            getPrLifecycleAsync: (row, _) =>
-            {
-                LifecycleLookups++;
-                if (row.Run.Id != _throwFor)
+                listStrandedRuns: (staleBefore, limit) =>
                 {
-                    return Task.FromResult(_lifecycle);
-                }
-
-                _beforeLifecycleThrow?.Invoke();
-                throw _failure;
-            },
-            resumeAsync: (run, _) =>
-            {
-                Order.Add($"resume:{run.Id}");
-                if (run.Id == _resumeThrowsFor)
+                    staleBefore.Should().Be(Now - Grace, "the grace period is subtracted from the current time");
+                    return [.. _rows.Take(limit)];
+                },
+                getPrLifecycleAsync: (row, _) =>
                 {
-                    throw _resumeFailure;
-                }
+                    LifecycleLookups++;
+                    if (row.Run.Id != _throwFor)
+                    {
+                        return Task.FromResult(_lifecycle);
+                    }
 
-                Resumed.Add(run);
-                return Task.FromResult(_resolvesTo is { } id ? run with { Id = id } : run);
-            },
-            updateRunState: (id, stage, status, state) =>
-            {
-                Order.Add($"write:{id}");
-                StateWrites.Add((id, stage, status, state));
-            },
-            timeProvider: new FakeTimeProvider(Now),
-            grace: Grace,
-            scanLimit: 50,
-            maxResumesPerPass: _maxResumes,
-            logger: new CapturingLogger<StrandedRunReconciler>(Log),
-            listRetryPendingRuns: fastListing,
-            retryPendingGrace: _fastPath ? RetryGrace : default);
+                    _beforeLifecycleThrow?.Invoke();
+                    throw _failure;
+                },
+                resumeAsync: (run, _) =>
+                {
+                    Order.Add($"resume:{run.Id}");
+                    if (run.Id == _resumeThrowsFor)
+                    {
+                        throw _resumeFailure;
+                    }
+
+                    Resumed.Add(run);
+                    return Task.FromResult(_resolvesTo is { } id ? run with { Id = id } : run);
+                },
+                updateRunState: (id, stage, status, state) =>
+                {
+                    Order.Add($"write:{id}");
+                    StateWrites.Add((id, stage, status, state));
+                },
+                timeProvider: new FakeTimeProvider(Now),
+                grace: Grace,
+                scanLimit: 50,
+                maxResumesPerPass: _maxResumes,
+                logger: new CapturingLogger<StrandedRunReconciler>(Log),
+                listRetryPendingRuns: fastListing,
+                retryPendingGrace: _fastPath ? RetryGrace : default
+            );
         }
     }
 
     /// <summary>Records the formatted message of every log entry so the deferral notices can be asserted.</summary>
     private sealed class CapturingLogger<T>(List<string> sink) : ILogger<T>
     {
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
 
         public bool IsEnabled(LogLevel logLevel) => true;
 
@@ -1232,7 +1409,8 @@ public sealed class StrandedRunReconcilerTests
             EventId eventId,
             TState state,
             Exception? exception,
-            Func<TState, Exception?, string> formatter) => sink.Add(formatter(state, exception));
+            Func<TState, Exception?, string> formatter
+        ) => sink.Add(formatter(state, exception));
 
         private sealed class NullScope : IDisposable
         {

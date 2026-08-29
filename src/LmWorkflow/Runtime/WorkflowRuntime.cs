@@ -41,9 +41,7 @@ public sealed class WorkflowRuntime
     private readonly object _lock = new();
     private readonly WorkflowValidator _validator = new();
     private readonly IJsonSchemaValidator _schemaValidator;
-    private readonly TaskCompletionSource _completion = new(
-        TaskCreationOptions.RunContinuationsAsynchronously
-    );
+    private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     // The authored-task lifecycle (compose / spawn correlation / result recording) and the per-task
     // status/attempt/error bookkeeping are owned by the coordinator. It holds no lock of its own: the runtime
@@ -56,8 +54,9 @@ public sealed class WorkflowRuntime
     // tool-call id until the spawn name is parseable. Dropped as soon as the args parse, capped for a stream
     // that never parses, and cleared on the tool result — so it cannot leak in a long-lived conversation.
     private const int MaxSpawnArgBufferChars = 256 * 1024;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _spawnArgBuffers =
-        new(StringComparer.Ordinal);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _spawnArgBuffers = new(
+        StringComparer.Ordinal
+    );
 
     // ---- Route-away observation barrier -------------------------------------------------------------
     // A transition (AdvanceTo) runs INLINE on the controller loop's thread, but the sub-agent results that
@@ -81,8 +80,7 @@ public sealed class WorkflowRuntime
     private readonly object _observationLock = new();
     private readonly HashSet<string> _observedToolCallIds = new(StringComparer.Ordinal);
     private readonly Queue<string> _observedToolCallOrder = new();
-    private readonly Dictionary<string, TaskCompletionSource<bool>> _observationWaiters =
-        new(StringComparer.Ordinal);
+    private readonly Dictionary<string, TaskCompletionSource<bool>> _observationWaiters = new(StringComparer.Ordinal);
     private bool _orderedObserverAttached;
     private bool _observationBarrierDisabled;
 
@@ -410,12 +408,13 @@ public sealed class WorkflowRuntime
                 var successor = nextNodeId;
                 if (string.IsNullOrEmpty(successor))
                 {
-                    successor = previousNext.Count == 1
-                        ? previousNext[0]
-                        : throw new InvalidOperationException(
-                            $"Node '{previousNodeId}' has {previousNext.Count} successors; provide 'nextNodeId' "
-                                + "to select the edge the new node should displace."
-                        );
+                    successor =
+                        previousNext.Count == 1
+                            ? previousNext[0]
+                            : throw new InvalidOperationException(
+                                $"Node '{previousNodeId}' has {previousNext.Count} successors; provide 'nextNodeId' "
+                                    + "to select the edge the new node should displace."
+                            );
                 }
                 else if (!previousNext.Contains(successor))
                 {
@@ -468,10 +467,16 @@ public sealed class WorkflowRuntime
         {
             StartNode start => start.Next.Contains(nextNodeId)
                 ? start
-                : start with { Next = [.. start.Next, nextNodeId] },
+                : start with
+                {
+                    Next = [.. start.Next, nextNodeId],
+                },
             ProceduralNode procedural => procedural.Next.Contains(nextNodeId)
                 ? procedural
-                : procedural with { Next = [.. procedural.Next, nextNodeId] },
+                : procedural with
+                {
+                    Next = [.. procedural.Next, nextNodeId],
+                },
             _ => throw new InvalidOperationException(
                 $"'{node.Id}' is a {node.Type} node; automatic successor wiring is only supported for "
                     + "start/procedural nodes. Fully specify branches/else on conditional nodes."
@@ -514,8 +519,7 @@ public sealed class WorkflowRuntime
             }
 
             var node =
-                FindNodeNoLock(nodeId)
-                ?? throw new InvalidOperationException($"Node '{nodeId}' does not exist.");
+                FindNodeNoLock(nodeId) ?? throw new InvalidOperationException($"Node '{nodeId}' does not exist.");
 
             if (nodeId == CurrentNodeId)
             {
@@ -550,12 +554,7 @@ public sealed class WorkflowRuntime
     private static WorkflowNode NeuterNode(WorkflowNode node) =>
         node switch
         {
-            ProceduralNode procedural => procedural with
-            {
-                TaskList = [],
-                OnFailure = null,
-                MaxParallel = null,
-            },
+            ProceduralNode procedural => procedural with { TaskList = [], OnFailure = null, MaxParallel = null },
             ConditionalNode conditional => new ProceduralNode
             {
                 Id = conditional.Id,
@@ -583,9 +582,7 @@ public sealed class WorkflowRuntime
     /// </summary>
     private static string FirstConditionalTarget(ConditionalNode conditional)
     {
-        var firstBranch = conditional
-            .Branches?.FirstOrDefault(b => !string.IsNullOrEmpty(b.To))
-            ?.To;
+        var firstBranch = conditional.Branches?.FirstOrDefault(b => !string.IsNullOrEmpty(b.To))?.To;
         return !string.IsNullOrEmpty(firstBranch) ? firstBranch : conditional.Else;
     }
 
@@ -692,10 +689,9 @@ public sealed class WorkflowRuntime
             // lifecycle status, via ActiveUnits — NOT Compose()'s pending-only view) so the controller can
             // re-issue the exact name. A node that composes no units at all (start/terminal/conditional, or a
             // non-authored procedural node) is routed by the controller, not spawned into — steer it there.
-            var activeNames =
-                CurrentNodeId is { } nodeId
-                    ? _coordinator.ActiveUnits(nodeId).Select(u => u.Name).ToList()
-                    : [];
+            var activeNames = CurrentNodeId is { } nodeId
+                ? _coordinator.ActiveUnits(nodeId).Select(u => u.Name).ToList()
+                : [];
             if (activeNames.Count == 0)
             {
                 return "The current workflow node has no sub-agent units to spawn. Advance the workflow with "
@@ -956,11 +952,7 @@ public sealed class WorkflowRuntime
         TaskCompletionSource<bool> waiter;
         lock (_observationLock)
         {
-            if (
-                !_orderedObserverAttached
-                || _observationBarrierDisabled
-                || _observedToolCallIds.Contains(toolCallId)
-            )
+            if (!_orderedObserverAttached || _observationBarrierDisabled || _observedToolCallIds.Contains(toolCallId))
             {
                 return;
             }
@@ -1015,9 +1007,7 @@ public sealed class WorkflowRuntime
         try
         {
             using var timeout = new CancellationTokenSource(TransitionBarrierTimeoutMs);
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-                timeout.Token,
-                cancellationToken);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancellationToken);
 
             while (true)
             {
@@ -1039,7 +1029,8 @@ public sealed class WorkflowRuntime
                     cancellationToken.ThrowIfCancellationRequested();
                     throw new TimeoutException(
                         $"Workflow units for node '{CurrentNodeId}' did not settle within "
-                            + $"{TransitionBarrierTimeoutMs}ms.");
+                            + $"{TransitionBarrierTimeoutMs}ms."
+                    );
                 }
             }
         }
@@ -1062,8 +1053,7 @@ public sealed class WorkflowRuntime
         var statuses = _coordinator.Statuses;
         foreach (var unit in _coordinator.ActiveUnits(nodeId))
         {
-            if (statuses.TryGetValue(unit.Name, out var status)
-                && status is WorkflowTaskStatus.InFlight)
+            if (statuses.TryGetValue(unit.Name, out var status) && status is WorkflowTaskStatus.InFlight)
             {
                 return false;
             }
@@ -1148,11 +1138,7 @@ public sealed class WorkflowRuntime
             return;
         }
 
-        var buffer = _spawnArgBuffers.AddOrUpdate(
-            toolCallId,
-            fragment,
-            (_, existing) => existing + fragment
-        );
+        var buffer = _spawnArgBuffers.AddOrUpdate(toolCallId, fragment, (_, existing) => existing + fragment);
 
         if (TryReadSpawnName(buffer) is { } name)
         {
@@ -1181,8 +1167,7 @@ public sealed class WorkflowRuntime
         try
         {
             using var doc = JsonDocument.Parse(functionArgs);
-            return doc.RootElement.TryGetProperty("name", out var name)
-                && name.ValueKind == JsonValueKind.String
+            return doc.RootElement.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String
                 ? name.GetString()
                 : null;
         }
@@ -1279,10 +1264,7 @@ public sealed class WorkflowRuntime
                     result
                     ?? (
                         terminal.ResultTemplate is { } template
-                            ? TemplateNodeRenderer.Render(
-                                template,
-                                BuildContextNoLock(null, null, null)
-                            )
+                            ? TemplateNodeRenderer.Render(template, BuildContextNoLock(null, null, null))
                             : null
                     );
 
@@ -1298,8 +1280,7 @@ public sealed class WorkflowRuntime
                         if (!validation.IsValid)
                         {
                             throw new InvalidOperationException(
-                                "Final result failed schema validation: "
-                                    + string.Join("; ", validation.Errors)
+                                "Final result failed schema validation: " + string.Join("; ", validation.Errors)
                             );
                         }
                     }
@@ -1323,8 +1304,7 @@ public sealed class WorkflowRuntime
                 // sub-agent write can be applied on the drive task AFTER the controller pump reaches here).
                 // Remember a template-composed terminal so SignalCompletion re-renders it from the drained
                 // final state; an explicit result needs no refresh.
-                _pendingTemplateTerminal =
-                    result is null && terminal.ResultTemplate is not null ? terminal : null;
+                _pendingTemplateTerminal = result is null && terminal.ResultTemplate is not null ? terminal : null;
 
                 IsComplete = true;
             }
@@ -1402,10 +1382,7 @@ public sealed class WorkflowRuntime
     ///     synchronously by the renderer under the lock (the visit ceiling's <c>maxVisits</c>/<c>onMaxVisits</c>
     ///     are pre-resolved here so the node-policy lookup stays in one place, shared with <c>AdvanceTo</c>).
     /// </summary>
-    private ProjectionInputs BuildProjectionInputsNoLock(
-        IReadOnlyList<SpawnUnit> nextActions,
-        string? projection
-    )
+    private ProjectionInputs BuildProjectionInputsNoLock(IReadOnlyList<SpawnUnit> nextActions, string? projection)
     {
         var activeNode = CurrentNodeId is { } nodeId ? FindNodeNoLock(nodeId) : null;
         IReadOnlyList<ProjectionActiveUnit> activeUnits = [];
@@ -1457,10 +1434,7 @@ public sealed class WorkflowRuntime
                 _pendingTemplateTerminal = null;
                 try
                 {
-                    var composed = TemplateNodeRenderer.Render(
-                        template,
-                        BuildContextNoLock(null, null, null)
-                    );
+                    var composed = TemplateNodeRenderer.Render(template, BuildContextNoLock(null, null, null));
                     if (composed is not null)
                     {
                         var schema = terminal.FinalOutputSchema ?? Definition?.FinalOutputSchema;
@@ -1473,8 +1447,7 @@ public sealed class WorkflowRuntime
                             if (!validation.IsValid)
                             {
                                 throw new InvalidOperationException(
-                                    "Final result failed schema validation: "
-                                        + string.Join("; ", validation.Errors)
+                                    "Final result failed schema validation: " + string.Join("; ", validation.Errors)
                                 );
                             }
                         }
@@ -1646,12 +1619,7 @@ public sealed class WorkflowRuntime
     ///     <see cref="BuildContext"/> passes <paramref name="clone"/> = <c>true</c> so its returned context is
     ///     isolated from later runtime mutation.
     /// </summary>
-    private BindingContext BuildContextNoLock(
-        JsonNode? item,
-        int? index,
-        int? count,
-        bool clone = false
-    ) =>
+    private BindingContext BuildContextNoLock(JsonNode? item, int? index, int? count, bool clone = false) =>
         new()
         {
             Inputs = clone ? CloneObject(_inputs) : _inputs,
@@ -1672,13 +1640,11 @@ public sealed class WorkflowRuntime
         FindNodeNoLock(from) switch
         {
             StartNode start => start.Next.Contains(to),
-            ProceduralNode procedural =>
-                procedural.Next.Contains(to)
+            ProceduralNode procedural => procedural.Next.Contains(to)
                 || procedural.OnFailure == to
                 || procedural.OnMaxVisits == to
                 || (procedural.TaskList?.Any(t => t.OnFailure == to) ?? false),
-            ConditionalNode conditional =>
-                (conditional.Branches?.Any(b => b.To == to) ?? false)
+            ConditionalNode conditional => (conditional.Branches?.Any(b => b.To == to) ?? false)
                 || conditional.Else == to
                 || conditional.OnMaxVisits == to,
             _ => false,
@@ -1723,8 +1689,7 @@ public sealed class WorkflowRuntime
             _ => null,
         };
 
-    private static JsonObject CloneObject(JsonObject? source) =>
-        source?.DeepClone() as JsonObject ?? [];
+    private static JsonObject CloneObject(JsonObject? source) => source?.DeepClone() as JsonObject ?? [];
 
     private static WriteMode ParseWriteMode(string? mode) =>
         mode?.Trim().ToLowerInvariant() switch
@@ -1750,7 +1715,8 @@ public sealed class WorkflowRuntime
             _ = Interlocked.CompareExchange(
                 ref _pulse,
                 new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
-                current);
+                current
+            );
             _ = current.TrySetResult();
         }
     }

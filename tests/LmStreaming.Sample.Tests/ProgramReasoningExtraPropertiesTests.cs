@@ -22,20 +22,18 @@ public sealed class ProgramReasoningExtraPropertiesTests
     private static ImmutableDictionary<string, object?> Build(
         string normalizedProviderId,
         CopilotModelTransport? copilotTransport = null,
-        bool copilotSupportsAdaptiveThinking = false)
+        bool copilotSupportsAdaptiveThinking = false
+    )
     {
-        var programType = typeof(LmStreaming.Sample.Controllers.DiagnosticsController)
-            .Assembly.GetType("Program");
+        var programType = typeof(LmStreaming.Sample.Controllers.DiagnosticsController).Assembly.GetType("Program");
         programType.Should().NotBeNull();
         var method = programType!.GetMethod(
             "BuildReasoningExtraProperties",
             BindingFlags.NonPublic | BindingFlags.Static
         );
         method.Should().NotBeNull("Program must expose the provider→reasoning extra-properties helper");
-        return (ImmutableDictionary<string, object?>)method!.Invoke(
-            null,
-            [normalizedProviderId, copilotTransport, copilotSupportsAdaptiveThinking]
-        )!;
+        return (ImmutableDictionary<string, object?>)
+            method!.Invoke(null, [normalizedProviderId, copilotTransport, copilotSupportsAdaptiveThinking])!;
     }
 
     [Theory]
@@ -99,20 +97,18 @@ public sealed class ProgramReasoningExtraPropertiesTests
         ProviderRegistry providerRegistry,
         string copilotModelKey,
         string fallbackProviderId,
-        ReasoningEffort effort = ReasoningEffort.High)
+        ReasoningEffort effort = ReasoningEffort.High
+    )
     {
-        var programType = typeof(LmStreaming.Sample.Controllers.DiagnosticsController)
-            .Assembly.GetType("Program");
+        var programType = typeof(LmStreaming.Sample.Controllers.DiagnosticsController).Assembly.GetType("Program");
         programType.Should().NotBeNull();
         var method = programType!.GetMethod(
             "BuildControllerReasoningExtraProperties",
             BindingFlags.NonPublic | BindingFlags.Static
         );
         method.Should().NotBeNull("Program must expose the controller reasoning shaping helper");
-        return (ImmutableDictionary<string, object?>)method!.Invoke(
-            null,
-            [providerRegistry, copilotModelKey, fallbackProviderId, effort]
-        )!;
+        return (ImmutableDictionary<string, object?>)
+            method!.Invoke(null, [providerRegistry, copilotModelKey, fallbackProviderId, effort])!;
     }
 
     private static ProviderRegistry RegistryWith(params CopilotModelInfo[] copilotModels) =>

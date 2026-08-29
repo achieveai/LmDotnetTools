@@ -92,8 +92,12 @@ public sealed class ContextDiscoveryDiagnosticsControllerTests
     private static ContextDiscoveryDiagnosticsResponse GetResponse(ContextDiscoveryDiagnosticsController controller)
     {
         var result = controller.Get();
-        return result.Should().BeOfType<OkObjectResult>()
-            .Which.Value.Should().BeOfType<ContextDiscoveryDiagnosticsResponse>().Subject;
+        return result
+            .Should()
+            .BeOfType<OkObjectResult>()
+            .Which.Value.Should()
+            .BeOfType<ContextDiscoveryDiagnosticsResponse>()
+            .Subject;
     }
 
     private static SandboxSessionRegistry CreateRegistry(string? publicBaseUrl = null)
@@ -109,7 +113,8 @@ public sealed class ContextDiscoveryDiagnosticsControllerTests
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(Unused)));
+            new HttpClient(new StubHandler(Unused))
+        );
 
         return new SandboxSessionRegistry(
             gateway,
@@ -119,14 +124,17 @@ public sealed class ContextDiscoveryDiagnosticsControllerTests
             authOptions,
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(respond(request));
         }

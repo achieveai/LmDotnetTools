@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>

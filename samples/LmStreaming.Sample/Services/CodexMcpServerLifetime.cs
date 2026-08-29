@@ -19,9 +19,7 @@ public sealed class CodexMcpServerLifetime : IAsyncDisposable
     private readonly ILogger<CodexMcpServerLifetime> _logger;
     private readonly Lazy<Task<string>> _start;
 
-    public CodexMcpServerLifetime(
-        McpFunctionProviderServer server,
-        ILogger<CodexMcpServerLifetime> logger)
+    public CodexMcpServerLifetime(McpFunctionProviderServer server, ILogger<CodexMcpServerLifetime> logger)
     {
         _server = server ?? throw new ArgumentNullException(nameof(server));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -31,9 +29,7 @@ public sealed class CodexMcpServerLifetime : IAsyncDisposable
 
     // Test-only constructor: supplies a custom startup delegate so tests can verify the
     // lazy start-once / cached-failure semantics without spinning up a real MCP server.
-    internal CodexMcpServerLifetime(
-        Func<Task<string>> startupDelegate,
-        ILogger<CodexMcpServerLifetime> logger)
+    internal CodexMcpServerLifetime(Func<Task<string>> startupDelegate, ILogger<CodexMcpServerLifetime> logger)
     {
         _server = null;
         _startupDelegate = startupDelegate ?? throw new ArgumentNullException(nameof(startupDelegate));
@@ -57,7 +53,8 @@ public sealed class CodexMcpServerLifetime : IAsyncDisposable
     {
         _logger.LogInformation("Starting codex MCP server on demand");
         await _server!.StartAsync().ConfigureAwait(false);
-        var endpoint = _server.McpEndpointUrl
+        var endpoint =
+            _server.McpEndpointUrl
             ?? throw new InvalidOperationException("MCP server started without an endpoint URL.");
         _logger.LogInformation("Codex MCP server started. Endpoint: {Endpoint}", endpoint);
         return endpoint;

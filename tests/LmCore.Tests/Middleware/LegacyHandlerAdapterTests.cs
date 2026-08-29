@@ -7,8 +7,7 @@ public class LegacyHandlerAdapterTests
     [Fact]
     public async Task ToLegacyHandler_Resolved_ReturnsPayloadText()
     {
-        ToolHandler handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-            ToolHandlerResult.FromText("hello"));
+        ToolHandler handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("hello"));
 
         var legacy = LegacyHandlerAdapter.ToLegacyHandler(handler, toolKey: "echo");
 
@@ -23,8 +22,7 @@ public class LegacyHandlerAdapterTests
         // is the responsibility of MultiTurnAgentLoop, which uses ToolHandler directly.
         // Adapters that bridge into the legacy shape (e.g., MCP server) must surface
         // misuse loudly. This is the only guardrail.
-        ToolHandler handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-            new ToolHandlerResult.Deferred());
+        ToolHandler handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred());
 
         var legacy = LegacyHandlerAdapter.ToLegacyHandler(handler, toolKey: "wait_for_human");
 
@@ -40,10 +38,8 @@ public class LegacyHandlerAdapterTests
         // NotSupportedException only fires at invocation time, when a tool is actually called.
         var source = new Dictionary<string, ToolHandler>
         {
-            ["safe"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                ToolHandlerResult.FromText("ok")),
-            ["bad"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred()),
+            ["safe"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")),
+            ["bad"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()),
         };
 
         var wrapped = LegacyHandlerAdapter.WrapToLegacyHandlers(source);
@@ -52,8 +48,7 @@ public class LegacyHandlerAdapterTests
         (await wrapped["safe"]("{}")).Should().Be("ok");
 
         var act = async () => await wrapped["bad"]("{}");
-        await act.Should().ThrowAsync<NotSupportedException>()
-            .WithMessage("*bad*");
+        await act.Should().ThrowAsync<NotSupportedException>().WithMessage("*bad*");
     }
 
     [Fact]
@@ -75,19 +70,15 @@ public class LegacyHandlerAdapterTests
         // adapter must project all four into ToolHandlerResultPayload; framework-controlled
         // fields (tool_call_id, IsDeferred, timestamps) on the legacy result are dropped —
         // the builder downstream is the only thing that should set them.
-        var blocks = new List<ToolResultContentBlock>
-        {
-            new TextToolResultBlock { Text = "rich" },
-        };
-        Func<string, Task<ToolCallResult>> legacy = _ => Task.FromResult(
-            new ToolCallResult(
-                toolCallId: "should-be-dropped",
-                result: "the-text",
-                contentBlocks: blocks)
-            {
-                IsError = true,
-                ErrorCode = "E_LEGACY",
-            });
+        var blocks = new List<ToolResultContentBlock> { new TextToolResultBlock { Text = "rich" } };
+        Func<string, Task<ToolCallResult>> legacy = _ =>
+            Task.FromResult(
+                new ToolCallResult(toolCallId: "should-be-dropped", result: "the-text", contentBlocks: blocks)
+                {
+                    IsError = true,
+                    ErrorCode = "E_LEGACY",
+                }
+            );
 
         var handler = LegacyHandlerAdapter.ToNewHandler(legacy);
 

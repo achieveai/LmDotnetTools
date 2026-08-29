@@ -95,10 +95,7 @@ public sealed class RemoteToolApprovalGateTests
 
         _ = await harness.Gate.RequestApprovalAsync(Call(), CancellationToken.None);
 
-        harness
-            .Publisher.Published.Select(p => p.Subscriber.SubscriptionId)
-            .Should()
-            .Equal("sub-approver");
+        harness.Publisher.Published.Select(p => p.Subscriber.SubscriptionId).Should().Equal("sub-approver");
     }
 
     [Fact]
@@ -121,9 +118,7 @@ public sealed class RemoteToolApprovalGateTests
         var hashOnly = harness.Published("sub-hash-only");
         full.Arguments.Should().Be(ArgumentsJson);
         hashOnly.Arguments.Should().BeNull();
-        hashOnly
-            .ArgumentsHash.Should()
-            .Be(full.ArgumentsHash, "both approvers are deciding about the same bytes");
+        hashOnly.ArgumentsHash.Should().Be(full.ArgumentsHash, "both approvers are deciding about the same bytes");
     }
 
     // ---- Everyone who was asked has to agree ----------------------------------------------------
@@ -224,11 +219,7 @@ public sealed class RemoteToolApprovalGateTests
             o.MaxPendingPerOwner = 1;
             o.MaxPendingTotal = 1;
         });
-        using var wedged = harness.Store.TryRegister(
-            LifecycleOwnerKey.ForAppId(AppA),
-            Call(),
-            ["sub-approver"]
-        );
+        using var wedged = harness.Store.TryRegister(LifecycleOwnerKey.ForAppId(AppA), Call(), ["sub-approver"]);
 
         var verdict = await harness.Gate.RequestApprovalAsync(Call(), CancellationToken.None);
 
@@ -436,16 +427,11 @@ public sealed class RemoteToolApprovalGateTests
             var fault =
                 Fault
                 ?? (
-                    string.Equals(
-                        subscriber.SubscriptionId,
-                        UnreachableSubscriptionId,
-                        StringComparison.Ordinal
-                    )
+                    string.Equals(subscriber.SubscriptionId, UnreachableSubscriptionId, StringComparison.Ordinal)
                         ? new InvalidOperationException("callback unreachable")
                         : null
                 );
-            return fault is not null ? throw fault
-                : OnPublish?.Invoke(request) ?? ValueTask.CompletedTask;
+            return fault is not null ? throw fault : OnPublish?.Invoke(request) ?? ValueTask.CompletedTask;
         }
     }
 
@@ -486,11 +472,7 @@ public sealed class RemoteToolApprovalGateTests
         private readonly List<LifecycleSubscription> _subscriptions = [.. subscriptions];
 
         public IReadOnlyList<LifecycleSubscription> ForOwner(LifecycleOwnerKey owner) =>
-            [
-                .. _subscriptions.Where(s =>
-                    string.Equals(s.Owner.Value, owner.Value, StringComparison.Ordinal)
-                ),
-            ];
+            [.. _subscriptions.Where(s => string.Equals(s.Owner.Value, owner.Value, StringComparison.Ordinal))];
 
         public LifecycleSubscriptionGrant Register(
             LifecycleOwnerKey owner,
@@ -504,13 +486,9 @@ public sealed class RemoteToolApprovalGateTests
         public void RevokePreviousKey(LifecycleOwnerKey owner, string subscriptionId) =>
             throw new NotSupportedException();
 
-        public void Unregister(LifecycleOwnerKey owner, string subscriptionId) =>
-            throw new NotSupportedException();
+        public void Unregister(LifecycleOwnerKey owner, string subscriptionId) => throw new NotSupportedException();
 
-        public bool TryGet(
-            LifecycleOwnerKey owner,
-            string subscriptionId,
-            out LifecycleSubscription? subscription
-        ) => throw new NotSupportedException();
+        public bool TryGet(LifecycleOwnerKey owner, string subscriptionId, out LifecycleSubscription? subscription) =>
+            throw new NotSupportedException();
     }
 }

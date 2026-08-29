@@ -79,10 +79,17 @@ public sealed class AgentTranscriptAccessTests
 
         var routeResult = await CreateController(pool, registry, store).GetAgentTranscript(RootThread, "a-1");
         var toolResult = await InvokeToolAsync(
-            pool, registry, store, RootThread, JsonSerializer.Serialize(new { agent_id = "a-1" }));
+            pool,
+            registry,
+            store,
+            RootThread,
+            JsonSerializer.Serialize(new { agent_id = "a-1" })
+        );
 
-        JsonSerializer.Serialize(Assert.IsType<NotFoundObjectResult>(routeResult).Value)
-            .Should().Contain(AgentTranscriptReasons.UnknownThread);
+        JsonSerializer
+            .Serialize(Assert.IsType<NotFoundObjectResult>(routeResult).Value)
+            .Should()
+            .Contain(AgentTranscriptReasons.UnknownThread);
         toolResult.Payload.IsError.Should().BeTrue();
         toolResult.Payload.ErrorCode.Should().Be(AgentTranscriptReasons.UnknownThread);
     }
@@ -100,13 +107,21 @@ public sealed class AgentTranscriptAccessTests
 
         var routeResult = await CreateController(pool, registry, store).GetAgentTranscript(RootThread, agentId);
         var toolResult = await InvokeToolAsync(
-            pool, registry, store, RootThread, JsonSerializer.Serialize(new { agent_id = agentId }));
+            pool,
+            registry,
+            store,
+            RootThread,
+            JsonSerializer.Serialize(new { agent_id = agentId })
+        );
 
-        JsonSerializer.Serialize(Assert.IsType<NotFoundObjectResult>(routeResult).Value)
-            .Should().Contain(AgentTranscriptReasons.CollaborationUnavailable);
+        JsonSerializer
+            .Serialize(Assert.IsType<NotFoundObjectResult>(routeResult).Value)
+            .Should()
+            .Contain(AgentTranscriptReasons.CollaborationUnavailable);
         toolResult.Payload.ErrorCode.Should().Be(AgentTranscriptReasons.CollaborationUnavailable);
-        toolResult.Payload.Text.Should().NotContain(
-            agentId, "an unavailable hierarchy says nothing about who was asked for");
+        toolResult
+            .Payload.Text.Should()
+            .NotContain(agentId, "an unavailable hierarchy says nothing about who was asked for");
     }
 
     [Fact]
@@ -176,8 +191,11 @@ public sealed class AgentTranscriptAccessTests
         rows.Single(r => r.AgentId == alphaId).IsCurrent.Should().BeTrue();
         rows.Single(r => r.AgentId == alphaId).IsReadable.Should().BeTrue();
         rows.Single(r => r.AgentId == betaId).IsReadable.Should().BeFalse();
-        rows.Should().OnlyContain(r => r.ParentAgentId == RootThread,
-            "both children hang off the root the loop registered itself as");
+        rows.Should()
+            .OnlyContain(
+                r => r.ParentAgentId == RootThread,
+                "both children hang off the root the loop registered itself as"
+            );
     }
 
     [Fact]
@@ -196,7 +214,8 @@ public sealed class AgentTranscriptAccessTests
                 Persisted("m1", new ReasoningMessage { Reasoning = "private deliberation" }),
                 Persisted("m2", new TextMessage { Text = "the finding", Role = Role.Assistant }),
                 Persisted("m3", new ReasoningUpdateMessage { Reasoning = "more deliberation" }),
-            ]);
+            ]
+        );
 
         var controller = CreateController(pool, new WorkflowRunRegistry(), store);
 
@@ -204,9 +223,10 @@ public sealed class AgentTranscriptAccessTests
         var ok = Assert.IsType<OkObjectResult>(await controller.GetAgentTranscript(RootThread, alphaId));
         var messages = Assert.IsAssignableFrom<IReadOnlyCollection<PersistedMessage>>(ok.Value).ToList();
 
-        messages.Select(m => m.Id).Should().Equal(
-            ["m2"],
-            "reasoning is excluded from every cross-agent read, in both its finalized and delta forms");
+        messages
+            .Select(m => m.Id)
+            .Should()
+            .Equal(["m2"], "reasoning is excluded from every cross-agent read, in both its finalized and delta forms");
         JsonSerializer.Serialize(messages).Should().NotContain("deliberation");
     }
 
@@ -219,7 +239,10 @@ public sealed class AgentTranscriptAccessTests
     [InlineData(null, "alpha", true)]
     [InlineData("alpha", "beta", false)]
     public async Task ToolAndRoute_AgreeForTheSameViewerAndTarget(
-        string? viewerName, string targetName, bool expectAllowed)
+        string? viewerName,
+        string targetName,
+        bool expectAllowed
+    )
     {
         await using var loop = CreateLoop(CreateRootCollaboration());
         await using var pool = CreatePoolReturning(loop);
@@ -236,13 +259,18 @@ public sealed class AgentTranscriptAccessTests
         var registry = new WorkflowRunRegistry();
         var store = new InMemoryConversationStore();
         await store.AppendMessagesAsync(
-            $"subagent-{target}", [Persisted("m1", new TextMessage { Text = "the finding", Role = Role.Assistant })]);
+            $"subagent-{target}",
+            [Persisted("m1", new TextMessage { Text = "the finding", Role = Role.Assistant })]
+        );
 
-        var routeResult = await CreateController(pool, registry, store)
-            .GetAgentTranscript(RootThread, target, viewer);
+        var routeResult = await CreateController(pool, registry, store).GetAgentTranscript(RootThread, target, viewer);
         var toolResult = await InvokeToolAsync(
-            pool, registry, store, viewer ?? RootThread,
-            JsonSerializer.Serialize(new { agent_id = target }));
+            pool,
+            registry,
+            store,
+            viewer ?? RootThread,
+            JsonSerializer.Serialize(new { agent_id = target })
+        );
 
         if (expectAllowed)
         {
@@ -255,8 +283,12 @@ public sealed class AgentTranscriptAccessTests
             var denied = Assert.IsType<ObjectResult>(routeResult);
             denied.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
             toolResult.Payload.IsError.Should().BeTrue();
-            toolResult.Payload.ErrorCode.Should().Be(TranscriptAccessReasons.NotAnAncestor,
-                "the tool reports the very code the route puts in its 403 body");
+            toolResult
+                .Payload.ErrorCode.Should()
+                .Be(
+                    TranscriptAccessReasons.NotAnAncestor,
+                    "the tool reports the very code the route puts in its 403 body"
+                );
             JsonSerializer.Serialize(denied.Value).Should().Contain(toolResult.Payload.ErrorCode);
         }
     }
@@ -279,7 +311,8 @@ public sealed class AgentTranscriptAccessTests
             new WorkflowRunRegistry(),
             new InMemoryConversationStore(),
             viewerAgentId: alphaId,
-            argsJson: JsonSerializer.Serialize(new { agent_id = betaId, viewer = RootThread }));
+            argsJson: JsonSerializer.Serialize(new { agent_id = betaId, viewer = RootThread })
+        );
 
         result.Payload.IsError.Should().BeTrue();
         result.Payload.ErrorCode.Should().Be(TranscriptAccessReasons.NotAnAncestor);
@@ -301,21 +334,24 @@ public sealed class AgentTranscriptAccessTests
                 Persisted("m1", new TextMessage { Text = "the early finding", Role = Role.Assistant }),
                 Persisted("m2", new ReasoningMessage { Reasoning = "private deliberation" }),
                 Persisted("m3", new TextMessage { Text = "the late finding", Role = Role.Assistant }),
-            ]);
+            ]
+        );
 
         var result = await InvokeToolAsync(
             pool,
             new WorkflowRunRegistry(),
             store,
             viewerAgentId: RootThread,
-            argsJson: JsonSerializer.Serialize(new { agent_id = alphaId, limit = 1 }));
+            argsJson: JsonSerializer.Serialize(new { agent_id = alphaId, limit = 1 })
+        );
 
         result.Payload.IsError.Should().BeFalse();
         result.Payload.Text.Should().Contain("the late finding");
         result.Payload.Text.Should().NotContain("the early finding", "limit keeps only the recent tail");
         result.Payload.Text.Should().NotContain("deliberation", "reasoning is excluded from every read");
-        result.Payload.Text.Should().Contain("omitted_older_messages",
-            "a truncated read says so, so the reader knows there is more");
+        result
+            .Payload.Text.Should()
+            .Contain("omitted_older_messages", "a truncated read says so, so the reader knows there is more");
     }
 
     [Fact]
@@ -326,7 +362,12 @@ public sealed class AgentTranscriptAccessTests
         _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
         var result = await InvokeToolAsync(
-            pool, new WorkflowRunRegistry(), new InMemoryConversationStore(), RootThread, argsJson: "{}");
+            pool,
+            new WorkflowRunRegistry(),
+            new InMemoryConversationStore(),
+            RootThread,
+            argsJson: "{}"
+        );
 
         result.Payload.IsError.Should().BeTrue();
         result.Payload.ErrorCode.Should().Be("invalid_args");
@@ -354,24 +395,34 @@ public sealed class AgentTranscriptAccessTests
                 new WorkflowRunRegistry(),
                 new InMemoryConversationStore(),
                 NullLogger<AgentHierarchyService>.Instance,
-                new SubAgentScanCoverageCache()),
+                new SubAgentScanCoverageCache()
+            ),
             RootThread,
-            RootThread);
+            RootThread
+        );
 
-        registry.BuildContracts().Select(c => c.Name).Should()
+        registry
+            .BuildContracts()
+            .Select(c => c.Name)
+            .Should()
             .Contain(AgentTranscriptToolProvider.GetAgentTranscriptToolName);
-        options!.NonInheritedToolNames.Should().Contain(
-            AgentTranscriptToolProvider.GetAgentTranscriptToolName);
-        options.NonInheritedToolNames.Should().Contain(
-            "SomethingTheHostAlreadyExcluded",
-            "existing exclusions are unioned, never replaced");
+        options!.NonInheritedToolNames.Should().Contain(AgentTranscriptToolProvider.GetAgentTranscriptToolName);
+        options
+            .NonInheritedToolNames.Should()
+            .Contain("SomethingTheHostAlreadyExcluded", "existing exclusions are unioned, never replaced");
 
         // Excluding it from inheritance would otherwise leave every deeper agent with no transcript tool
         // at all, so the same call must also say how a deeper agent gets its OWN instance.
-        options.ChildToolProviderFactory.Should().NotBeNull(
-            "the exclusion is only safe because each participant is handed a fresh, self-bound instance");
-        options.ChildToolProviderFactory!("a-child").Should().BeOfType<AgentTranscriptToolProvider>()
-            .Which.GetFunctions().Select(f => f.Contract.Name).Should()
+        options
+            .ChildToolProviderFactory.Should()
+            .NotBeNull("the exclusion is only safe because each participant is handed a fresh, self-bound instance");
+        options
+            .ChildToolProviderFactory!("a-child")
+            .Should()
+            .BeOfType<AgentTranscriptToolProvider>()
+            .Which.GetFunctions()
+            .Select(f => f.Contract.Name)
+            .Should()
             .Equal([AgentTranscriptToolProvider.GetAgentTranscriptToolName]);
     }
 
@@ -389,12 +440,17 @@ public sealed class AgentTranscriptAccessTests
                 new WorkflowRunRegistry(),
                 new InMemoryConversationStore(),
                 NullLogger<AgentHierarchyService>.Instance,
-                new SubAgentScanCoverageCache()),
+                new SubAgentScanCoverageCache()
+            ),
             RootThread,
-            RootThread);
+            RootThread
+        );
 
         options.Should().BeNull("a conversation with no sub-agent options has nothing to exclude from");
-        registry.BuildContracts().Select(c => c.Name).Should()
+        registry
+            .BuildContracts()
+            .Select(c => c.Name)
+            .Should()
             .Contain(AgentTranscriptToolProvider.GetAgentTranscriptToolName);
     }
 
@@ -413,7 +469,8 @@ public sealed class AgentTranscriptAccessTests
         MultiTurnAgentLoop? root = null;
         await using var pool = new MultiTurnAgentPool(
             (_, _, _) => new MultiTurnAgentPool.AgentCreationResult(root!),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var registry = new FunctionRegistry();
         var options = global::Program.RegisterAgentTranscriptTool(
@@ -424,16 +481,19 @@ public sealed class AgentTranscriptAccessTests
                 new WorkflowRunRegistry(),
                 store,
                 NullLogger<AgentHierarchyService>.Instance,
-                new SubAgentScanCoverageCache()),
+                new SubAgentScanCoverageCache()
+            ),
             RootThread,
-            RootThread);
+            RootThread
+        );
 
         root = new MultiTurnAgentLoop(
             BlockingProvider(),
             registry,
             threadId: RootThread,
             subAgentOptions: options,
-            collaboration: CreateRootCollaboration(new AgentCollaborationOptions { MaxDelegationDepth = 2 }));
+            collaboration: CreateRootCollaboration(new AgentCollaborationOptions { MaxDelegationDepth = 2 })
+        );
         await using var rootLifetime = root;
         _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
@@ -445,32 +505,46 @@ public sealed class AgentTranscriptAccessTests
         var alphasChildId = await SpawnAsync(alphaLoop, "alpha-child");
         await store.AppendMessagesAsync(
             $"subagent-{alphasChildId}",
-            [Persisted("m1", new TextMessage { Text = "the deep finding", Role = Role.Assistant })]);
+            [Persisted("m1", new TextMessage { Text = "the deep finding", Role = Role.Assistant })]
+        );
 
-        alphaLoop.RegisteredToolNames.Should().Contain(
-            AgentTranscriptToolProvider.GetAgentTranscriptToolName,
-            "a participant that can spawn must be able to read what it spawned");
+        alphaLoop
+            .RegisteredToolNames.Should()
+            .Contain(
+                AgentTranscriptToolProvider.GetAgentTranscriptToolName,
+                "a participant that can spawn must be able to read what it spawned"
+            );
 
         // The handler map is what the loop actually resolves a tool call against, so invoking through it
         // exercises the instance the host bound to alpha — not one this test chose.
         var snapshot = alphaLoop.SubAgentManager!.GetInheritableToolSnapshot();
-        snapshot.Contracts.Select(c => c.Name).Should().NotContain(
-            AgentTranscriptToolProvider.GetAgentTranscriptToolName,
-            "alpha's own instance is still never handed down; its child is given a fresh one instead");
+        snapshot
+            .Contracts.Select(c => c.Name)
+            .Should()
+            .NotContain(
+                AgentTranscriptToolProvider.GetAgentTranscriptToolName,
+                "alpha's own instance is still never handed down; its child is given a fresh one instead"
+            );
 
         var handler = snapshot.Handlers[AgentTranscriptToolProvider.GetAgentTranscriptToolName];
 
-        var allowed = Assert.IsType<ToolHandlerResult.Resolved>(await handler(
-            JsonSerializer.Serialize(new { agent_id = alphasChildId }),
-            new ToolCallContext(),
-            CancellationToken.None));
+        var allowed = Assert.IsType<ToolHandlerResult.Resolved>(
+            await handler(
+                JsonSerializer.Serialize(new { agent_id = alphasChildId }),
+                new ToolCallContext(),
+                CancellationToken.None
+            )
+        );
         allowed.Payload.IsError.Should().BeFalse(allowed.Payload.Text);
         allowed.Payload.Text.Should().Contain("the deep finding");
 
-        var denied = Assert.IsType<ToolHandlerResult.Resolved>(await handler(
-            JsonSerializer.Serialize(new { agent_id = betaId }),
-            new ToolCallContext(),
-            CancellationToken.None));
+        var denied = Assert.IsType<ToolHandlerResult.Resolved>(
+            await handler(
+                JsonSerializer.Serialize(new { agent_id = betaId }),
+                new ToolCallContext(),
+                CancellationToken.None
+            )
+        );
         denied.Payload.IsError.Should().BeTrue("reaching deeper never widens who a reader may look at");
         denied.Payload.ErrorCode.Should().Be(TranscriptAccessReasons.NotAnAncestor);
     }
@@ -494,20 +568,21 @@ public sealed class AgentTranscriptAccessTests
             var registryBeforeRestart = new WorkflowRunRegistry(indexDir);
             await using var loopBeforeRestart = CreateLoop(CreateRootCollaboration());
             await using var poolBeforeRestart = CreatePoolReturning(loopBeforeRestart);
-            _ = poolBeforeRestart.GetOrCreateAgent(
-                RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+            _ = poolBeforeRestart.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
             var alphaId = await SpawnAsync(loopBeforeRestart, "alpha");
             await store.AppendMessagesAsync(
                 $"subagent-{alphaId}",
-                [Persisted("m1", new TextMessage { Text = "alpha's finding", Role = Role.Assistant })]);
+                [Persisted("m1", new TextMessage { Text = "alpha's finding", Role = Role.Assistant })]
+            );
 
             var serviceBeforeRestart = new AgentHierarchyService(
                 poolBeforeRestart,
                 registryBeforeRestart,
                 store,
                 NullLogger<AgentHierarchyService>.Instance,
-                new SubAgentScanCoverageCache());
+                new SubAgentScanCoverageCache()
+            );
             _ = await serviceBeforeRestart.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
 
             // --- Restart: a brand-new loop with a FRESH collaboration directory (root only, no memory of
@@ -516,8 +591,7 @@ public sealed class AgentTranscriptAccessTests
             var registryAfterRestart = new WorkflowRunRegistry(indexDir);
             await using var loopAfterRestart = CreateLoop(CreateRootCollaboration());
             await using var poolAfterRestart = CreatePoolReturning(loopAfterRestart);
-            _ = poolAfterRestart.GetOrCreateAgent(
-                RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+            _ = poolAfterRestart.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
             var controller = CreateController(poolAfterRestart, registryAfterRestart, store);
             var result = await controller.GetAgentTranscript(RootThread, alphaId);
@@ -549,20 +623,25 @@ public sealed class AgentTranscriptAccessTests
         // loop?.Collaboration, so the collaboration is null purely because the loop is gone, and the route
         // used to answer collaboration_unavailable for a hierarchy that is sitting on disk, fully
         // persisted, right next to the transcript it is refusing.
-        await WithRetainedRootAsync(async (store, registry, alphaId) =>
-        {
-            await using var coldPool = CreateFakeAgentPool();
-            var result = await CreateController(coldPool, registry, store)
-                .GetAgentTranscript(RootThread, alphaId);
+        await WithRetainedRootAsync(
+            async (store, registry, alphaId) =>
+            {
+                await using var coldPool = CreateFakeAgentPool();
+                var result = await CreateController(coldPool, registry, store).GetAgentTranscript(RootThread, alphaId);
 
-            var ok = Assert.IsType<OkObjectResult>(result);
-            var messages = Assert.IsAssignableFrom<IReadOnlyCollection<PersistedMessage>>(ok.Value).ToList();
+                var ok = Assert.IsType<OkObjectResult>(result);
+                var messages = Assert.IsAssignableFrom<IReadOnlyCollection<PersistedMessage>>(ok.Value).ToList();
 
-            messages.Select(m => m.Id).Should().Equal(
-                ["m2"],
-                "a retained read is the same read, so reasoning is excluded exactly as it is when live");
-            JsonSerializer.Serialize(messages).Should().NotContain("deliberation");
-        });
+                messages
+                    .Select(m => m.Id)
+                    .Should()
+                    .Equal(
+                        ["m2"],
+                        "a retained read is the same read, so reasoning is excluded exactly as it is when live"
+                    );
+                JsonSerializer.Serialize(messages).Should().NotContain("deliberation");
+            }
+        );
     }
 
     [Fact]
@@ -574,16 +653,20 @@ public sealed class AgentTranscriptAccessTests
         // genuinely different question — cross-collaboration, ancestry and the configured mode all matter,
         // and the mode is not persisted — so it must keep saying the hierarchy is unavailable rather than
         // guess. This is also what keeps the in-agent tool, which always names its reader, untouched.
-        await WithRetainedRootAsync(async (store, registry, alphaId) =>
-        {
-            await using var coldPool = CreateFakeAgentPool();
-            var result = await CreateController(coldPool, registry, store)
-                .GetAgentTranscript(RootThread, alphaId, viewer: "some-other-agent");
+        await WithRetainedRootAsync(
+            async (store, registry, alphaId) =>
+            {
+                await using var coldPool = CreateFakeAgentPool();
+                var result = await CreateController(coldPool, registry, store)
+                    .GetAgentTranscript(RootThread, alphaId, viewer: "some-other-agent");
 
-            var notFound = Assert.IsType<NotFoundObjectResult>(result);
-            JsonSerializer.Serialize(notFound.Value).Should()
-                .Contain(AgentTranscriptReasons.CollaborationUnavailable);
-        });
+                var notFound = Assert.IsType<NotFoundObjectResult>(result);
+                JsonSerializer
+                    .Serialize(notFound.Value)
+                    .Should()
+                    .Contain(AgentTranscriptReasons.CollaborationUnavailable);
+            }
+        );
     }
 
     [Fact]
@@ -608,20 +691,20 @@ public sealed class AgentTranscriptAccessTests
                         Status = "completed",
                         ThreadId = "subagent-plain-1",
                     },
-                ]);
+                ]
+            );
 
             var store = new InMemoryConversationStore();
             await store.AppendMessagesAsync(
                 "subagent-plain-1",
-                [Persisted("m1", new TextMessage { Text = "the finding", Role = Role.Assistant })]);
+                [Persisted("m1", new TextMessage { Text = "the finding", Role = Role.Assistant })]
+            );
 
             await using var coldPool = CreateFakeAgentPool();
-            var result = await CreateController(coldPool, registry, store)
-                .GetAgentTranscript(RootThread, "plain-1");
+            var result = await CreateController(coldPool, registry, store).GetAgentTranscript(RootThread, "plain-1");
 
             var notFound = Assert.IsType<NotFoundObjectResult>(result);
-            JsonSerializer.Serialize(notFound.Value).Should()
-                .Contain(AgentTranscriptReasons.CollaborationUnavailable);
+            JsonSerializer.Serialize(notFound.Value).Should().Contain(AgentTranscriptReasons.CollaborationUnavailable);
         }
         finally
         {
@@ -635,14 +718,16 @@ public sealed class AgentTranscriptAccessTests
         // A retained conversation that does have a hierarchy still owes the same content-free answer for
         // an agent it has never heard of — the retained path must not become the one place a 404/403 split
         // tells a caller which agent ids are real.
-        await WithRetainedRootAsync(async (store, registry, _) =>
-        {
-            await using var coldPool = CreateFakeAgentPool();
-            var result = await CreateController(coldPool, registry, store)
-                .GetAgentTranscript(RootThread, "agent-that-never-existed");
+        await WithRetainedRootAsync(
+            async (store, registry, _) =>
+            {
+                await using var coldPool = CreateFakeAgentPool();
+                var result = await CreateController(coldPool, registry, store)
+                    .GetAgentTranscript(RootThread, "agent-that-never-existed");
 
-            AssertDenied(result, TranscriptAccessReasons.UnknownTarget);
-        });
+                AssertDenied(result, TranscriptAccessReasons.UnknownTarget);
+            }
+        );
     }
 
     /// <summary>
@@ -652,8 +737,7 @@ public sealed class AgentTranscriptAccessTests
     /// handed the store, a registry over the same on-disk index, and the child's id — with no live agent
     /// anywhere, exactly as the daemon finds the host after a review terminates.
     /// </summary>
-    private static async Task WithRetainedRootAsync(
-        Func<IConversationStore, WorkflowRunRegistry, string, Task> assert)
+    private static async Task WithRetainedRootAsync(Func<IConversationStore, WorkflowRunRegistry, string, Task> assert)
     {
         var indexDir = NewIndexDir();
         try
@@ -672,15 +756,16 @@ public sealed class AgentTranscriptAccessTests
                     [
                         Persisted("m1", new ReasoningMessage { Reasoning = "private deliberation" }),
                         Persisted("m2", new TextMessage { Text = "the finding", Role = Role.Assistant }),
-                    ]);
+                    ]
+                );
 
                 _ = await new AgentHierarchyService(
-                        pool,
-                        registryWhileLive,
-                        store,
-                        NullLogger<AgentHierarchyService>.Instance,
-                        new SubAgentScanCoverageCache())
-                    .BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+                    pool,
+                    registryWhileLive,
+                    store,
+                    NullLogger<AgentHierarchyService>.Instance,
+                    new SubAgentScanCoverageCache()
+                ).BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
             }
 
             // A fresh registry over the same index, and below this the caller brings a pool that never
@@ -714,13 +799,20 @@ public sealed class AgentTranscriptAccessTests
         WorkflowRunRegistry registry,
         IConversationStore store,
         string viewerAgentId,
-        string argsJson)
+        string argsJson
+    )
     {
         var provider = new AgentTranscriptToolProvider(
             new AgentHierarchyService(
-                pool, registry, store, NullLogger<AgentHierarchyService>.Instance, new SubAgentScanCoverageCache()),
+                pool,
+                registry,
+                store,
+                NullLogger<AgentHierarchyService>.Instance,
+                new SubAgentScanCoverageCache()
+            ),
             RootThread,
-            viewerAgentId);
+            viewerAgentId
+        );
 
         var descriptor = provider.GetFunctions().Single();
         descriptor.Contract.Name.Should().Be(AgentTranscriptToolProvider.GetAgentTranscriptToolName);
@@ -751,13 +843,13 @@ public sealed class AgentTranscriptAccessTests
             MessageJson = JsonSerializer.Serialize(message, message.GetType(), MessageJson),
         };
 
-    private static AgentCollaborationSetup CreateRootCollaboration(
-        AgentCollaborationOptions? options = null) =>
+    private static AgentCollaborationSetup CreateRootCollaboration(AgentCollaborationOptions? options = null) =>
         AgentCollaborationSetup.CreateRoot(
             options ?? new AgentCollaborationOptions(),
             collaborationId: RootThread,
             agentId: RootThread,
-            name: "root");
+            name: "root"
+        );
 
     /// <summary>
     /// The one sub-agent template every test here spawns from. Its provider blocks, so a spawned child
@@ -784,10 +876,10 @@ public sealed class AgentTranscriptAccessTests
             new FunctionRegistry(),
             threadId: RootThread,
             subAgentOptions: WorkerOptions(),
-            collaboration: collaboration);
+            collaboration: collaboration
+        );
 
-    private static async Task<string> SpawnAsync(
-        MultiTurnAgentLoop loop, string name, bool collaborating = true)
+    private static async Task<string> SpawnAsync(MultiTurnAgentLoop loop, string name, bool collaborating = true)
     {
         var json = await loop.SubAgentManager!.SpawnAsync(
             "worker",
@@ -795,7 +887,8 @@ public sealed class AgentTranscriptAccessTests
             name: name,
             runInBackground: true,
             role: collaborating ? $"{name}'s role" : null,
-            description: collaborating ? $"contact {name} about its role" : null);
+            description: collaborating ? $"contact {name} about its role" : null
+        );
 
         using var doc = JsonDocument.Parse(json);
         return doc.RootElement.GetProperty("agent_id").GetString()!;
@@ -805,7 +898,8 @@ public sealed class AgentTranscriptAccessTests
         MultiTurnAgentPool pool,
         WorkflowRunRegistry workflowRunRegistry,
         IConversationStore store,
-        SubAgentScanCoverageCache? scanCoverageCache = null) =>
+        SubAgentScanCoverageCache? scanCoverageCache = null
+    ) =>
         new(
             store,
             pool,
@@ -819,12 +913,14 @@ public sealed class AgentTranscriptAccessTests
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             scanCoverageCache ?? new SubAgentScanCoverageCache(),
-            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance));
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance)
+        );
 
     private static MultiTurnAgentPool CreateFakeAgentPool() =>
         new(
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
     private static MultiTurnAgentPool CreatePoolReturning(IMultiTurnAgent agent) =>
         new((_, _, _) => new MultiTurnAgentPool.AgentCreationResult(agent), NullLogger<MultiTurnAgentPool>.Instance);
@@ -837,17 +933,21 @@ public sealed class AgentTranscriptAccessTests
     {
         var provider = new Mock<IStreamingAgent>();
         provider
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns((IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken ct) =>
-                Task.FromResult(BlockingStream(ct)));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                (IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken ct) =>
+                    Task.FromResult(BlockingStream(ct))
+            );
         return provider.Object;
     }
 
-    private static async IAsyncEnumerable<IMessage> BlockingStream(
-        [EnumeratorCancellation] CancellationToken ct)
+    private static async IAsyncEnumerable<IMessage> BlockingStream([EnumeratorCancellation] CancellationToken ct)
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         yield break;

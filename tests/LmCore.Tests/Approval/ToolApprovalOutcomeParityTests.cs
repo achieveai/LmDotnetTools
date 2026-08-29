@@ -28,7 +28,10 @@ public class ToolApprovalOutcomeParityTests
         var wire = ConstantsOf(typeof(WireOutcomes));
 
         Assert.NotEmpty(core);
-        Assert.Equal(wire.Keys.OrderBy(k => k, StringComparer.Ordinal), core.Keys.OrderBy(k => k, StringComparer.Ordinal));
+        Assert.Equal(
+            wire.Keys.OrderBy(k => k, StringComparer.Ordinal),
+            core.Keys.OrderBy(k => k, StringComparer.Ordinal)
+        );
         foreach (var (name, value) in wire)
         {
             Assert.Equal(value, core[name]);

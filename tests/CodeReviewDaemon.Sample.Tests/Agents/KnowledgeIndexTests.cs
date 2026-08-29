@@ -47,10 +47,8 @@ public class KnowledgeIndexTests
     [Fact]
     public void RenderIndex_TwoEntries_RendersSortedJsonLinesWithStableKeyOrder()
     {
-        var beta = new KnowledgeEntryMeta(
-            "system/beta.md", "Beta", ["t1"], "system", ["pr/2"], "2026-07-06");
-        var alpha = new KnowledgeEntryMeta(
-            "system/alpha.md", "Alpha", ["t2", "t3"], "system", ["pr/1"], "2026-07-05");
+        var beta = new KnowledgeEntryMeta("system/beta.md", "Beta", ["t1"], "system", ["pr/2"], "2026-07-06");
+        var alpha = new KnowledgeEntryMeta("system/alpha.md", "Alpha", ["t2", "t3"], "system", ["pr/1"], "2026-07-05");
 
         // Pass beta first to prove RenderIndex sorts by File ordinal (alpha < beta).
         var index = KnowledgeIndex.RenderIndex([beta, alpha]);
@@ -109,7 +107,8 @@ public class KnowledgeIndexTests
             "not json at all",
             """{"title":"No file key","tags":[],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}""",
             "",
-            """{"file":"system/good2.md","title":"Good 2","tags":["b","c"],"scope":"system","sourcePrs":["pr/9"],"updated":"2026-07-06"}""");
+            """{"file":"system/good2.md","title":"Good 2","tags":["b","c"],"scope":"system","sourcePrs":["pr/9"],"updated":"2026-07-06"}"""
+        );
 
         var parsed = KnowledgeIndex.ParseIndex(jsonl);
 
@@ -140,7 +139,8 @@ public class KnowledgeIndexTests
         // SIZE by the same code that establishes it must not be trusted for its CONTENT.
         var jsonl = string.Join(
             '\n',
-            Enumerable.Range(0, 50).Select(i => $$"""{"file":"system/e{{i}}.md","title":"E{{i}}"}"""));
+            Enumerable.Range(0, 50).Select(i => $$"""{"file":"system/e{{i}}.md","title":"E{{i}}"}""")
+        );
 
         var parsed = KnowledgeIndex.ParseIndex(jsonl, maxRecords: 10, out var truncated);
 
@@ -174,7 +174,8 @@ public class KnowledgeIndexTests
         var jsonl = string.Join(
             '\n',
             $$"""{"file":"system/huge.md","title":"{{huge}}"}""",
-            """{"file":"system/ok.md","title":"OK"}""");
+            """{"file":"system/ok.md","title":"OK"}"""
+        );
 
         var parsed = KnowledgeIndex.ParseIndex(jsonl);
 
@@ -189,7 +190,8 @@ public class KnowledgeIndexTests
         // looking for a broken extraction that is not there.
         var jsonl = string.Join(
             '\n',
-            Enumerable.Range(0, 10).Select(i => $$"""{"file":"system/e{{i}}.md","title":"E{{i}}"}"""));
+            Enumerable.Range(0, 10).Select(i => $$"""{"file":"system/e{{i}}.md","title":"E{{i}}"}""")
+        );
 
         var parsed = KnowledgeIndex.ParseIndex(jsonl, maxRecords: 10, out var truncated);
 
@@ -210,7 +212,8 @@ public class KnowledgeIndexTests
             lineEnding,
             """{"file":"system/a.md","title":"A"}""",
             """{"file":"system/b.md","title":"B"}""",
-            """{"file":"system/c.md","title":"C"}""");
+            """{"file":"system/c.md","title":"C"}"""
+        );
 
         var parsed = KnowledgeIndex.ParseIndex(jsonl);
 

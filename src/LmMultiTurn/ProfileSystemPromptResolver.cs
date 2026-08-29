@@ -29,10 +29,7 @@ internal static class ProfileSystemPromptResolver
     /// <param name="developerInstructions">
     ///     Provider option fallback (e.g. <c>CodexSdkOptions.DeveloperInstructions</c>).
     /// </param>
-    public static string? Resolve(
-        AgentRuntimeProfile? profile,
-        string? systemPrompt,
-        string? developerInstructions)
+    public static string? Resolve(AgentRuntimeProfile? profile, string? systemPrompt, string? developerInstructions)
     {
         var profileSystemPrompt = profile?.SystemPrompt;
         if (!string.IsNullOrWhiteSpace(profileSystemPrompt))

@@ -40,12 +40,16 @@ public sealed class SubAgentCompletionTriggerSource : ITriggerSource
 
     /// <inheritdoc />
     public ValueTask<IArmedTrigger> ArmAsync(
-        TriggerArmRequest request, ITriggerEventSink eventSink, CancellationToken cancellationToken)
+        TriggerArmRequest request,
+        ITriggerEventSink eventSink,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(eventSink);
 
-        var manager = _managerAccessor()
+        var manager =
+            _managerAccessor()
             ?? throw new ArgumentException("subagent waits require a sub-agent-enabled conversation.");
 
         var agentId = ParseAgentId(request.ArgsJson);
@@ -59,7 +63,8 @@ public sealed class SubAgentCompletionTriggerSource : ITriggerSource
         {
             throw new ArgumentException(
                 $"sub-agent '{agentId}' has already completed and its result was already relayed to "
-                + "this conversation; there is nothing left to wait for.");
+                    + "this conversation; there is nothing left to wait for."
+            );
         }
 
         var handle = new SubAgentArmedTrigger(request.WaitId, agentId, manager, eventSink);
@@ -86,9 +91,10 @@ public sealed class SubAgentCompletionTriggerSource : ITriggerSource
                 throw new ArgumentException("subagent args must be a JSON object.");
             }
 
-            var id = root.TryGetProperty("agentId", out var el) && el.ValueKind == JsonValueKind.String
-                ? el.GetString()
-                : null;
+            var id =
+                root.TryGetProperty("agentId", out var el) && el.ValueKind == JsonValueKind.String
+                    ? el.GetString()
+                    : null;
             if (string.IsNullOrWhiteSpace(id))
             {
                 throw new ArgumentException("subagent requires an 'agentId'.");

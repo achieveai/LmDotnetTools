@@ -53,7 +53,8 @@ public sealed class M365OAuthProvider : OAuthProviderBase
         string tokenCacheFilePath,
         ILogger<M365OAuthProvider> logger,
         TimeProvider? time = null,
-        IMsalHttpClientFactory? msalHttpClientFactory = null)
+        IMsalHttpClientFactory? msalHttpClientFactory = null
+    )
         : base(logger)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -110,7 +111,15 @@ public sealed class M365OAuthProvider : OAuthProviderBase
                 return;
             }
 
-            SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, account.Username, _options.Scopes, ExpiresAtUtc: null, Error: null));
+            SetStatus(
+                new OAuthStatus(
+                    OAuthSignInState.SignedIn,
+                    account.Username,
+                    _options.Scopes,
+                    ExpiresAtUtc: null,
+                    Error: null
+                )
+            );
             Logger.LogInformation("Restored persisted M365 sign-in (account {Account}).", account.Username);
         }
         catch (Exception ex)
@@ -134,7 +143,14 @@ public sealed class M365OAuthProvider : OAuthProviderBase
         var state = PkceHelper.CreateState();
 
         var redirectUri = BuildRedirectUri();
-        var authorizeUrl = BuildAuthorizeUrl(_options.ClientId!, _options.TenantId, redirectUri, _scopes, state, challenge);
+        var authorizeUrl = BuildAuthorizeUrl(
+            _options.ClientId!,
+            _options.TenantId,
+            redirectUri,
+            _scopes,
+            state,
+            challenge
+        );
 
         // Single-use, time-bounded. AddOrUpdate isn't needed since state is RNG-derived (collisions
         // are vanishingly improbable) — TryAdd is enough and surfaces the unexpected collision case.
@@ -144,9 +160,14 @@ public sealed class M365OAuthProvider : OAuthProviderBase
             throw new InvalidOperationException("Failed to register pending M365 sign-in (state collision).");
         }
 
-        SetStatus(new OAuthStatus(OAuthSignInState.Pending, Account: null, _options.Scopes, ExpiresAtUtc: null, Error: null));
+        SetStatus(
+            new OAuthStatus(OAuthSignInState.Pending, Account: null, _options.Scopes, ExpiresAtUtc: null, Error: null)
+        );
         var launched = OpenBrowser(authorizeUrl);
-        Logger.LogInformation("M365 sign-in started (browser launched: {Launched}); awaiting app-hosted callback.", launched);
+        Logger.LogInformation(
+            "M365 sign-in started (browser launched: {Launched}); awaiting app-hosted callback.",
+            launched
+        );
 
         // Without a deadline, an abandoned browser tab leaves status Pending forever: the callback
         // simply never arrives. Mirror GitHub's pattern — schedule a background timer that flips to
@@ -172,7 +193,10 @@ public sealed class M365OAuthProvider : OAuthProviderBase
         if (_pending.TryRemove(state, out _) && Status.State == OAuthSignInState.Pending)
         {
             SetFailed("sign_in_timeout");
-            Logger.LogWarning("M365 sign-in timed out after {Timeout:c} awaiting the app-hosted callback.", PendingSignInTtl);
+            Logger.LogWarning(
+                "M365 sign-in timed out after {Timeout:c} awaiting the app-hosted callback.",
+                PendingSignInTtl
+            );
         }
     }
 
@@ -204,15 +228,21 @@ public sealed class M365OAuthProvider : OAuthProviderBase
             }
         }
 
-        SetStatus(new OAuthStatus(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null));
+        SetStatus(
+            new OAuthStatus(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null)
+        );
         Logger.LogInformation("Signed out of M365.");
     }
 
     /// <inheritdoc />
-    public override async Task<OAuthAccessToken> GetAccessTokenAsync(IReadOnlyList<string>? scopes = null, CancellationToken ct = default)
+    public override async Task<OAuthAccessToken> GetAccessTokenAsync(
+        IReadOnlyList<string>? scopes = null,
+        CancellationToken ct = default
+    )
     {
         var app = _app ?? throw new InvalidOperationException("M365 provider is not signed in.");
-        var account = await GetAccountAsync().ConfigureAwait(false)
+        var account =
+            await GetAccountAsync().ConfigureAwait(false)
             ?? throw new InvalidOperationException("M365 provider is not signed in.");
 
         try
@@ -274,8 +304,7 @@ public sealed class M365OAuthProvider : OAuthProviderBase
         {
             // Redirect URI is fixed on the confidential client at app-build time (the MSAL builder
             // call); the auth-code request reuses it implicitly.
-            var result = await _app
-                .AcquireTokenByAuthorizationCode(_scopes, code)
+            var result = await _app.AcquireTokenByAuthorizationCode(_scopes, code)
                 .WithPkceCodeVerifier(pending.Verifier)
                 .ExecuteAsync(ct)
                 .ConfigureAwait(false);
@@ -284,8 +313,20 @@ public sealed class M365OAuthProvider : OAuthProviderBase
             // this reflects what the token can do and dodges the config-binder's append-onto-array
             // duplication that would surface in the UI-facing status.
             var grantedScopes = result.Scopes?.ToArray() ?? [];
-            SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, result.Account.Username, grantedScopes, result.ExpiresOn, Error: null));
-            Logger.LogInformation("Signed in to M365 as {Account} (expires {ExpiresAt:o}).", result.Account.Username, result.ExpiresOn);
+            SetStatus(
+                new OAuthStatus(
+                    OAuthSignInState.SignedIn,
+                    result.Account.Username,
+                    grantedScopes,
+                    result.ExpiresOn,
+                    Error: null
+                )
+            );
+            Logger.LogInformation(
+                "Signed in to M365 as {Account} (expires {ExpiresAt:o}).",
+                result.Account.Username,
+                result.ExpiresOn
+            );
             return null;
         }
         catch (MsalServiceException ex)
@@ -319,23 +360,33 @@ public sealed class M365OAuthProvider : OAuthProviderBase
         string redirectUri,
         IReadOnlyList<string> scopes,
         string state,
-        string codeChallenge)
+        string codeChallenge
+    )
     {
         var endpoint = $"https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/authorize";
         // offline_access is reserved on MSAL.Acquire* calls but REQUIRED on the authorize URL
         // request to make Entra issue a refresh token; carry it through unconditionally.
-        var scopeJoined = string.Join(' ', scopes.Where(s => !string.IsNullOrEmpty(s)).Append("offline_access").Distinct(StringComparer.OrdinalIgnoreCase));
-        return QueryHelpers.AddQueryString(endpoint, new Dictionary<string, string?>
-        {
-            ["client_id"] = clientId,
-            ["response_type"] = "code",
-            ["redirect_uri"] = redirectUri,
-            ["response_mode"] = "query",
-            ["scope"] = scopeJoined,
-            ["state"] = state,
-            ["code_challenge"] = codeChallenge,
-            ["code_challenge_method"] = "S256",
-        });
+        var scopeJoined = string.Join(
+            ' ',
+            scopes
+                .Where(s => !string.IsNullOrEmpty(s))
+                .Append("offline_access")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+        );
+        return QueryHelpers.AddQueryString(
+            endpoint,
+            new Dictionary<string, string?>
+            {
+                ["client_id"] = clientId,
+                ["response_type"] = "code",
+                ["redirect_uri"] = redirectUri,
+                ["response_mode"] = "query",
+                ["scope"] = scopeJoined,
+                ["state"] = state,
+                ["code_challenge"] = codeChallenge,
+                ["code_challenge_method"] = "S256",
+            }
+        );
     }
 
     private string BuildRedirectUri()

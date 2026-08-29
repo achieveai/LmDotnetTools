@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -6,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -69,12 +69,17 @@ public class SubAgentModelOverrideValidationTests : IAsyncLifetime
         // sub-agent must fall back to the parent's model rather than sending the bogus id.
         var (manager, capture) = CreateManager(
             parentModelId: "parent-model",
-            modelOverrideValidator: model => model == "good-model");
+            modelOverrideValidator: model => model == "good-model"
+        );
 
         _ = await manager.SpawnAsync("worker", "do work", model: "bogus-model", name: "a", runInBackground: false);
 
-        capture.ModelId.Should().Be("parent-model",
-            "an override the host cannot resolve is ignored and the sub-agent inherits the parent model");
+        capture
+            .ModelId.Should()
+            .Be(
+                "parent-model",
+                "an override the host cannot resolve is ignored and the sub-agent inherits the parent model"
+            );
         capture.ModelId.Should().NotBe("bogus-model", "the invalid override must never reach the provider");
     }
 
@@ -84,7 +89,8 @@ public class SubAgentModelOverrideValidationTests : IAsyncLifetime
         // A recognized override is honored exactly as before.
         var (manager, capture) = CreateManager(
             parentModelId: "parent-model",
-            modelOverrideValidator: model => model == "good-model");
+            modelOverrideValidator: model => model == "good-model"
+        );
 
         _ = await manager.SpawnAsync("worker", "do work", model: "good-model", name: "b", runInBackground: false);
 
@@ -95,14 +101,13 @@ public class SubAgentModelOverrideValidationTests : IAsyncLifetime
     public async Task SpawnAsync_NoValidator_PassesOverrideThrough()
     {
         // Default behavior (no host validator) is preserved: the override passes through unchanged.
-        var (manager, capture) = CreateManager(
-            parentModelId: "parent-model",
-            modelOverrideValidator: null);
+        var (manager, capture) = CreateManager(parentModelId: "parent-model", modelOverrideValidator: null);
 
         _ = await manager.SpawnAsync("worker", "do work", model: "bogus-model", name: "c", runInBackground: false);
 
-        capture.ModelId.Should().Be("bogus-model",
-            "without a validator the manager keeps its previous pass-through behavior");
+        capture
+            .ModelId.Should()
+            .Be("bogus-model", "without a validator the manager keeps its previous pass-through behavior");
     }
 
     [Fact]
@@ -116,14 +121,19 @@ public class SubAgentModelOverrideValidationTests : IAsyncLifetime
         var (manager, capture) = CreateManager(
             parentModelId: "parent-model",
             modelOverrideValidator: model => model == "good-model",
-            wireTierAgentFactory: true);
+            wireTierAgentFactory: true
+        );
 
         _ = await manager.SpawnAsync("worker", "do work", model: "good-model", name: "d", runInBackground: false);
 
-        capture.TierFactoryModelIds.Should().ContainSingle().Which.Should().Be("good-model",
-            "the validated override is built through the transport-correct tier agent factory");
-        capture.TemplateFactoryUsed.Should().BeFalse(
-            "the parent/template provider (wrong transport for a cross-transport override) must not be used");
+        capture
+            .TierFactoryModelIds.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("good-model", "the validated override is built through the transport-correct tier agent factory");
+        capture
+            .TemplateFactoryUsed.Should()
+            .BeFalse("the parent/template provider (wrong transport for a cross-transport override) must not be used");
         capture.ModelId.Should().Be("good-model", "the override still reaches the provider as the request model");
     }
 
@@ -135,7 +145,8 @@ public class SubAgentModelOverrideValidationTests : IAsyncLifetime
         var (manager, capture) = CreateManager(
             parentModelId: "parent-model",
             modelOverrideValidator: model => model == "good-model",
-            wireTierAgentFactory: true);
+            wireTierAgentFactory: true
+        );
 
         _ = await manager.SpawnAsync("worker", "do work", model: "bogus-model", name: "e", runInBackground: false);
 
@@ -158,7 +169,8 @@ public class SubAgentModelOverrideValidationTests : IAsyncLifetime
     private (SubAgentManager Manager, ModelCapture Capture) CreateManager(
         string? parentModelId,
         Func<string, bool>? modelOverrideValidator,
-        bool wireTierAgentFactory = false)
+        bool wireTierAgentFactory = false
+    )
     {
         var capture = new ModelCapture();
 
@@ -168,29 +180,37 @@ public class SubAgentModelOverrideValidationTests : IAsyncLifetime
         {
             var provider = new Mock<IStreamingAgent>();
             provider
-                .Setup(a => a.GenerateReplyStreamingAsync(
-                    It.IsAny<IEnumerable<IMessage>>(),
-                    It.IsAny<GenerateReplyOptions>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns((IEnumerable<IMessage> _, GenerateReplyOptions? options, CancellationToken _) =>
-                {
-                    if (!string.IsNullOrWhiteSpace(options?.ModelId))
+                .Setup(a =>
+                    a.GenerateReplyStreamingAsync(
+                        It.IsAny<IEnumerable<IMessage>>(),
+                        It.IsAny<GenerateReplyOptions>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .Returns(
+                    (IEnumerable<IMessage> _, GenerateReplyOptions? options, CancellationToken _) =>
                     {
-                        capture.ModelId = options.ModelId;
+                        if (!string.IsNullOrWhiteSpace(options?.ModelId))
+                        {
+                            capture.ModelId = options.ModelId;
+                        }
+                        return Task.FromResult(SingleMessage(new TextMessage { Text = "done", Role = Role.Assistant }));
                     }
-                    return Task.FromResult(SingleMessage(new TextMessage { Text = "done", Role = Role.Assistant }));
-                });
+                );
             return provider.Object;
         }
 
         var parentMock = new Mock<IMultiTurnAgent>();
         parentMock.Setup(p => p.ThreadId).Returns("thread-parent");
         parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         var options = new SubAgentOptions
@@ -215,7 +235,7 @@ public class SubAgentModelOverrideValidationTests : IAsyncLifetime
                     capture.TierFactoryModelIds.Add(modelId);
                     return BuildRecordingProvider();
                 }
-            : null,
+                : null,
         };
 
         var manager = new SubAgentManager(
@@ -224,7 +244,8 @@ public class SubAgentModelOverrideValidationTests : IAsyncLifetime
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
             source: new MutableSubAgentTemplateSource(options.Templates),
-            parentModelId: parentModelId);
+            parentModelId: parentModelId
+        );
         _managers.Add(manager);
         return (manager, capture);
     }

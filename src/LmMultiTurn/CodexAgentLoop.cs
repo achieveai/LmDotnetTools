@@ -66,7 +66,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         ILoggerFactory? loggerFactory = null,
         Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
         bool persistRunLedger = false,
-        MultiTurnLifecycleServices? lifecycleServices = null)
+        MultiTurnLifecycleServices? lifecycleServices = null
+    )
         : this(
             options,
             mcpServers,
@@ -82,9 +83,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             loggerFactory,
             clientFactory,
             persistRunLedger: persistRunLedger,
-            lifecycleServices: lifecycleServices)
-    {
-    }
+            lifecycleServices: lifecycleServices
+        ) { }
 
     /// <summary>
     /// Creates a new CodexAgentLoop.
@@ -124,7 +124,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         ILoggerFactory? loggerFactory = null,
         Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
         bool persistRunLedger = false,
-        MultiTurnLifecycleServices? lifecycleServices = null)
+        MultiTurnLifecycleServices? lifecycleServices = null
+    )
         : base(
             threadId,
             systemPrompt,
@@ -138,7 +139,9 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             lifecycleServices: MultiTurnLifecycleServices.ForAgent(
                 lifecycleServices,
                 LifecycleAgentKinds.Codex,
-                options?.Model))
+                options?.Model
+            )
+        )
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _mcpServers = mcpServers ?? new Dictionary<string, CodexMcpServerConfig>();
@@ -155,8 +158,14 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         }
 
         IReadOnlyList<FunctionContract> dynamicContracts = [];
-        IDictionary<string, Func<string, Task<string>>> dynamicHandlers = new Dictionary<string, Func<string, Task<string>>>(StringComparer.OrdinalIgnoreCase);
-        if (functionRegistry != null && _options.ToolBridgeMode is CodexToolBridgeMode.Dynamic or CodexToolBridgeMode.Hybrid)
+        IDictionary<string, Func<string, Task<string>>> dynamicHandlers = new Dictionary<
+            string,
+            Func<string, Task<string>>
+        >(StringComparer.OrdinalIgnoreCase);
+        if (
+            functionRegistry != null
+            && _options.ToolBridgeMode is CodexToolBridgeMode.Dynamic or CodexToolBridgeMode.Hybrid
+        )
         {
             var (contracts, handlers) = functionRegistry.Build();
             dynamicContracts = [.. contracts.Where(static c => !string.IsNullOrWhiteSpace(c.Name))];
@@ -166,24 +175,22 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             dynamicHandlers = LegacyHandlerAdapter.WrapToLegacyHandlers(handlers, StringComparer.OrdinalIgnoreCase);
         }
 
-        _toolPolicy = new CodexToolPolicyEngine(
-            _mcpServers,
-            dynamicContracts.Select(static c => c.Name),
-            enabledTools);
+        _toolPolicy = new CodexToolPolicyEngine(_mcpServers, dynamicContracts.Select(static c => c.Name), enabledTools);
 
-        if (dynamicContracts.Count > 0 && _options.ToolBridgeMode is CodexToolBridgeMode.Dynamic or CodexToolBridgeMode.Hybrid)
+        if (
+            dynamicContracts.Count > 0
+            && _options.ToolBridgeMode is CodexToolBridgeMode.Dynamic or CodexToolBridgeMode.Hybrid
+        )
         {
             _dynamicToolBridge = new CodexDynamicToolBridge(
                 dynamicContracts,
                 dynamicHandlers,
                 _toolPolicy,
-                _loggerFactory?.CreateLogger<CodexDynamicToolBridge>());
+                _loggerFactory?.CreateLogger<CodexDynamicToolBridge>()
+            );
         }
 
-        _translator = new CodexEventTranslator(_options, logger)
-        {
-            ThreadId = threadId,
-        };
+        _translator = new CodexEventTranslator(_options, logger) { ThreadId = threadId };
     }
 
     protected override async Task OnBeforeRunAsync()
@@ -199,9 +206,10 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             _client = null;
         }
 
-        _client = _clientFactory != null
-            ? _clientFactory(_options, _loggerFactory?.CreateLogger<CodexSdkClient>())
-            : new CodexSdkClient(_options, _loggerFactory?.CreateLogger<CodexSdkClient>());
+        _client =
+            _clientFactory != null
+                ? _clientFactory(_options, _loggerFactory?.CreateLogger<CodexSdkClient>())
+                : new CodexSdkClient(_options, _loggerFactory?.CreateLogger<CodexSdkClient>());
 
         if (_dynamicToolBridge != null)
         {
@@ -213,16 +221,14 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         }
 
         var (baseInstructions, developerInstructions, modelInstructionsFile) = ResolveInstructions();
-        var effectiveWebSearchMode = _toolPolicy.IsBuiltInAllowed("web_search")
-            ? _options.WebSearchMode
-            : "disabled";
+        var effectiveWebSearchMode = _toolPolicy.IsBuiltInAllowed("web_search") ? _options.WebSearchMode : "disabled";
         var effectiveMcpServers = ApplyProfile(
             _options.ToolBridgeMode == CodexToolBridgeMode.Dynamic
                 ? new Dictionary<string, CodexMcpServerConfig>()
-                : _mcpServers);
-        var dynamicTools = _options.ToolBridgeMode == CodexToolBridgeMode.Mcp
-            ? null
-            : _dynamicToolBridge?.GetToolSpecs();
+                : _mcpServers
+        );
+        var dynamicTools =
+            _options.ToolBridgeMode == CodexToolBridgeMode.Mcp ? null : _dynamicToolBridge?.GetToolSpecs();
 
         await _client.StartOrResumeThreadAsync(
             new CodexBridgeInitOptions
@@ -244,7 +250,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 ApiKey = _options.ApiKey,
                 ThreadId = _codexThreadId,
                 ReasoningEffort = _options.ReasoningEffort,
-            });
+            }
+        );
 
         Logger.LogInformation(
             "{event_type} {event_status} {provider} {provider_mode} {thread_id} {codex_thread_id}",
@@ -253,11 +260,13 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             _options.Provider,
             _options.ProviderMode,
             ThreadId,
-            _codexThreadId);
+            _codexThreadId
+        );
     }
 
     private IReadOnlyDictionary<string, CodexMcpServerConfig> ApplyProfile(
-        IReadOnlyDictionary<string, CodexMcpServerConfig> baseServers)
+        IReadOnlyDictionary<string, CodexMcpServerConfig> baseServers
+    )
     {
         var profile = _options.Profile;
         if (profile is null)
@@ -265,8 +274,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             return baseServers;
         }
 
-        if (!_profileUnsupportedWarningLogged
-            && (profile.Skills.Count > 0 || profile.SubAgents.Count > 0))
+        if (!_profileUnsupportedWarningLogged && (profile.Skills.Count > 0 || profile.SubAgents.Count > 0))
         {
             Logger.LogWarning(
                 "{event_type} {event_status} {provider} {provider_mode} {thread_id} {skill_count} {sub_agent_count}",
@@ -276,7 +284,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 _options.ProviderMode,
                 ThreadId,
                 profile.Skills.Count,
-                profile.SubAgents.Count);
+                profile.SubAgents.Count
+            );
             _profileUnsupportedWarningLogged = true;
         }
 
@@ -338,11 +347,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
             var assignment = await StartRunAsync(batch, batchParent, ct, wasForked: isExplicitFork);
             var queueDepth = InputReader.CanCount ? InputReader.Count : -1;
-            await PublishToAllAsync(new RunAssignmentMessage
-            {
-                Assignment = assignment,
-                ThreadId = ThreadId,
-            }, ct);
+            await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
             Logger.LogInformation(
                 "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {input_id}",
@@ -353,7 +358,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 ThreadId,
                 assignment.RunId,
                 assignment.GenerationId,
-                string.Join(",", assignment.InputIds ?? []));
+                string.Join(",", assignment.InputIds ?? [])
+            );
 
             Logger.LogInformation(
                 "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {batch_input_count} {queued_input_count}",
@@ -365,7 +371,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 assignment.RunId,
                 assignment.GenerationId,
                 batch.Count,
-                queueDepth);
+                queueDepth
+            );
 
             foreach (var input in batch)
             {
@@ -395,7 +402,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                     forkedToRunId: isExplicitFork ? assignment.RunId : null,
                     pendingMessageCount: 0,
                     isError: false,
-                    ct: ct);
+                    ct: ct
+                );
 
                 Logger.LogInformation(
                     "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {bridge_event_count} {item_updated_count} {item_completed_count}",
@@ -408,7 +416,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                     assignment.GenerationId,
                     streamMetrics.BridgeEventCount,
                     streamMetrics.ItemUpdatedCount,
-                    streamMetrics.ItemCompletedCount);
+                    streamMetrics.ItemCompletedCount
+                );
 
                 Logger.LogInformation(
                     "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {run_age_ms}",
@@ -419,7 +428,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                     ThreadId,
                     assignment.RunId,
                     assignment.GenerationId,
-                    runTimer.ElapsedMilliseconds);
+                    runTimer.ElapsedMilliseconds
+                );
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -437,7 +447,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                     streamMetrics.ItemUpdatedCount,
                     streamMetrics.ItemCompletedCount,
                     "turn_failed",
-                    ex.GetType().Name);
+                    ex.GetType().Name
+                );
 
                 Logger.LogWarning(
                     "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {run_age_ms}",
@@ -448,7 +459,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                     ThreadId,
                     assignment.RunId,
                     assignment.GenerationId,
-                    runTimer.ElapsedMilliseconds);
+                    runTimer.ElapsedMilliseconds
+                );
 
                 await CompleteRunAsync(
                     assignment.RunId,
@@ -457,7 +469,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                     forkedToRunId: isExplicitFork ? assignment.RunId : null,
                     isError: true,
                     errorMessage: ex.Message,
-                    ct: ct);
+                    ct: ct
+                );
             }
         }
     }
@@ -467,7 +480,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         string runId,
         string generationId,
         RunStreamMetrics streamMetrics,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (_client == null)
         {
@@ -494,15 +508,19 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 eventSequence++;
                 var bridgeEventType = CodexEventTranslator.ExtractEventType(envelope.Event);
                 streamMetrics.BridgeEventCount = eventSequence;
-                if (string.Equals(bridgeEventType, "item.updated", StringComparison.Ordinal)
+                if (
+                    string.Equals(bridgeEventType, "item.updated", StringComparison.Ordinal)
                     || string.Equals(bridgeEventType, "item/agentMessage/delta", StringComparison.Ordinal)
                     || string.Equals(bridgeEventType, "item/reasoning/textDelta", StringComparison.Ordinal)
-                    || string.Equals(bridgeEventType, "item/reasoning/summaryTextDelta", StringComparison.Ordinal))
+                    || string.Equals(bridgeEventType, "item/reasoning/summaryTextDelta", StringComparison.Ordinal)
+                )
                 {
                     streamMetrics.ItemUpdatedCount++;
                 }
-                else if (string.Equals(bridgeEventType, "item.completed", StringComparison.Ordinal)
-                         || string.Equals(bridgeEventType, "item/completed", StringComparison.Ordinal))
+                else if (
+                    string.Equals(bridgeEventType, "item.completed", StringComparison.Ordinal)
+                    || string.Equals(bridgeEventType, "item/completed", StringComparison.Ordinal)
+                )
                 {
                     streamMetrics.ItemCompletedCount++;
                 }
@@ -523,7 +541,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                     runStopwatch.ElapsedMilliseconds,
                     eventSequence,
                     bridgeEventType,
-                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                );
 
                 var messages = _translator.ConvertEventToMessages(envelope.Event, runId, generationId);
 
@@ -545,7 +564,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                         envelope.RequestId,
                         envelope.ThreadId,
                         runStopwatch.ElapsedMilliseconds,
-                        eventSequence);
+                        eventSequence
+                    );
                 }
             }
         }
@@ -572,7 +592,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         string bridgeRequestId,
         string? codexThreadId,
         long latencyMs,
-        int eventSequence)
+        int eventSequence
+    )
     {
         if (message is TextUpdateMessage textUpdate)
         {
@@ -593,7 +614,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 eventSequence,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 textUpdate.Text?.Length ?? 0,
-                textUpdate.MessageOrderIdx);
+                textUpdate.MessageOrderIdx
+            );
             return;
         }
 
@@ -616,26 +638,32 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 eventSequence,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 textMessage.Text?.Length ?? 0,
-                textMessage.MessageOrderIdx);
+                textMessage.MessageOrderIdx
+            );
         }
     }
 
-    private (string? BaseInstructions, string? DeveloperInstructions, string? ModelInstructionsFile) ResolveInstructions()
+    private (
+        string? BaseInstructions,
+        string? DeveloperInstructions,
+        string? ModelInstructionsFile
+    ) ResolveInstructions()
     {
-        var baseInstructions = string.IsNullOrWhiteSpace(_options.BaseInstructions)
-            ? null
-            : _options.BaseInstructions;
+        var baseInstructions = string.IsNullOrWhiteSpace(_options.BaseInstructions) ? null : _options.BaseInstructions;
         var developerInstructions = ProfileSystemPromptResolver.Resolve(
             _options.Profile,
             SystemPrompt,
-            _options.DeveloperInstructions);
+            _options.DeveloperInstructions
+        );
         var modelInstructionsFile = string.IsNullOrWhiteSpace(_options.ModelInstructionsFile)
             ? null
             : _options.ModelInstructionsFile;
 
-        if (string.IsNullOrWhiteSpace(modelInstructionsFile)
+        if (
+            string.IsNullOrWhiteSpace(modelInstructionsFile)
             && !string.IsNullOrWhiteSpace(developerInstructions)
-            && developerInstructions.Length > _options.UseModelInstructionsFileThresholdChars)
+            && developerInstructions.Length > _options.UseModelInstructionsFileThresholdChars
+        )
         {
             _generatedModelInstructionsFile ??= CodexEventTranslator.CreateModelInstructionsFile(developerInstructions);
             modelInstructionsFile = _generatedModelInstructionsFile;
@@ -662,8 +690,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 return;
             }
 
-            var properties = metadata.Properties?.ToBuilder()
-                ?? ImmutableDictionary.CreateBuilder<string, object>();
+            var properties = metadata.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
             if (!string.IsNullOrWhiteSpace(_codexThreadId))
             {
@@ -685,7 +712,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 _options.Provider,
                 _options.ProviderMode,
                 ThreadId,
-                _codexThreadId);
+                _codexThreadId
+            );
         }
         catch (Exception ex)
         {
@@ -698,7 +726,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 _options.ProviderMode,
                 ThreadId,
                 "metadata_save_failed",
-                ex.GetType().Name);
+                ex.GetType().Name
+            );
         }
     }
 

@@ -19,7 +19,8 @@ public static class LmStreamingServiceCollectionExtensions
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection AddLmStreaming(
         this IServiceCollection services,
-        Action<LmStreamingOptions>? configure = null)
+        Action<LmStreamingOptions>? configure = null
+    )
     {
         // Configure options
         var options = new LmStreamingOptions();

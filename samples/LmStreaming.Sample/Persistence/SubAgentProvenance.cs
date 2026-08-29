@@ -126,17 +126,18 @@ public static class SubAgentProvenance
     /// (rather than duplicated at each call site) so a future addition to
     /// <see cref="SubAgentStatus"/> cannot silently omit the timestamp stamp.
     /// </summary>
-    private static readonly ImmutableHashSet<SubAgentStatus> TerminalStatuses =
-        ImmutableHashSet.Create(SubAgentStatus.Completed, SubAgentStatus.Error, SubAgentStatus.Stopped);
+    private static readonly ImmutableHashSet<SubAgentStatus> TerminalStatuses = ImmutableHashSet.Create(
+        SubAgentStatus.Completed,
+        SubAgentStatus.Error,
+        SubAgentStatus.Stopped
+    );
 
     /// <summary>
     /// Builds the properties to stamp onto a child's metadata. <paramref name="snapshot"/> is the
     /// live manager's view of that child when it is still registered; the parent link is stamped
     /// unconditionally, so the roster survives even if identity could not be resolved.
     /// </summary>
-    public static ImmutableDictionary<string, object> Build(
-        string parentThreadId,
-        SubAgentSnapshot? snapshot)
+    public static ImmutableDictionary<string, object> Build(string parentThreadId, SubAgentSnapshot? snapshot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(parentThreadId);
 
@@ -274,9 +275,7 @@ public static class SubAgentProvenance
     /// shapes (the same read the conversation-list projection uses).
     /// </summary>
     private static string? ReadString(ThreadMetadata metadata, string key) =>
-        metadata.Properties?.TryGetValue(key, out var value) == true
-            ? value?.ToString()
-            : null;
+        metadata.Properties?.TryGetValue(key, out var value) == true ? value?.ToString() : null;
 
     /// <summary>
     /// Reads a 32-bit integer property from the bag, tolerating the same numeric-JSON round-trip
@@ -316,10 +315,10 @@ public static class SubAgentProvenance
         {
             long l => DateTimeOffset.FromUnixTimeMilliseconds(l),
             int i => DateTimeOffset.FromUnixTimeMilliseconds(i),
-            System.Text.Json.JsonElement je when je.TryGetInt64(out var ms) =>
-                DateTimeOffset.FromUnixTimeMilliseconds(ms),
+            System.Text.Json.JsonElement je when je.TryGetInt64(out var ms) => DateTimeOffset.FromUnixTimeMilliseconds(
+                ms
+            ),
             _ => null,
         };
     }
 }
-

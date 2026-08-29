@@ -83,8 +83,7 @@ public class SubAgentMarkdownParserTests
     {
         // Verifies IgnoreUnmatchedProperties — additions in the gateway's frontmatter contract
         // must not break older builds.
-        var md =
-            "---\nname: echo-agent\ndescription: Echo.\ntags: [demo, test]\nfuture_field: 42\n---\nBody.";
+        var md = "---\nname: echo-agent\ndescription: Echo.\ntags: [demo, test]\nfuture_field: 42\n---\nBody.";
 
         var parsed = SubAgentMarkdownParser.Parse(md, "echo-agent");
 
@@ -115,9 +114,7 @@ public class SubAgentMarkdownParserTests
         parsed!.ModelIntelligence.Should().BeNull();
         parsed
             .Diagnostics.Should()
-            .ContainSingle(diagnostic =>
-                diagnostic.Contains("modelintelligence", StringComparison.OrdinalIgnoreCase)
-            );
+            .ContainSingle(diagnostic => diagnostic.Contains("modelintelligence", StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
@@ -134,9 +131,7 @@ public class SubAgentMarkdownParserTests
         parsed.Effort.Should().BeNull();
         parsed
             .Diagnostics.Should()
-            .ContainSingle(diagnostic =>
-                diagnostic.Contains(fieldName, StringComparison.OrdinalIgnoreCase)
-            );
+            .ContainSingle(diagnostic => diagnostic.Contains(fieldName, StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
@@ -155,9 +150,7 @@ public class SubAgentMarkdownParserTests
         parsed!.ModelIntelligence.Should().BeNull();
         parsed
             .Diagnostics.Should()
-            .ContainSingle(diagnostic =>
-                diagnostic.Contains("modelintelligence", StringComparison.OrdinalIgnoreCase)
-            );
+            .ContainSingle(diagnostic => diagnostic.Contains("modelintelligence", StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
@@ -190,9 +183,7 @@ public class SubAgentMarkdownParserTests
         parsed!.Effort.Should().BeNull();
         parsed
             .Diagnostics.Should()
-            .ContainSingle(diagnostic =>
-                diagnostic.Contains("effort", StringComparison.OrdinalIgnoreCase)
-            );
+            .ContainSingle(diagnostic => diagnostic.Contains("effort", StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
@@ -200,16 +191,13 @@ public class SubAgentMarkdownParserTests
     [InlineData("modelintelligence")]
     public void Parse_EmptyCharacteristic_IsInvalidWhileAbsenceRemainsUnset(string fieldName)
     {
-        var empty = SubAgentMarkdownParser.Parse(
-            $"---\nname: echo-agent\n{fieldName}:\n---\nBody.",
-            "echo-agent");
-        var absent = SubAgentMarkdownParser.Parse(
-            "---\nname: echo-agent\n---\nBody.",
-            "echo-agent");
+        var empty = SubAgentMarkdownParser.Parse($"---\nname: echo-agent\n{fieldName}:\n---\nBody.", "echo-agent");
+        var absent = SubAgentMarkdownParser.Parse("---\nname: echo-agent\n---\nBody.", "echo-agent");
 
         empty.Should().NotBeNull();
-        empty!.Diagnostics.Should().ContainSingle(diagnostic =>
-            diagnostic.Contains(fieldName, StringComparison.OrdinalIgnoreCase));
+        empty!
+            .Diagnostics.Should()
+            .ContainSingle(diagnostic => diagnostic.Contains(fieldName, StringComparison.OrdinalIgnoreCase));
         absent.Should().NotBeNull();
         absent!.ModelIntelligence.Should().BeNull();
         absent.Effort.Should().BeNull();

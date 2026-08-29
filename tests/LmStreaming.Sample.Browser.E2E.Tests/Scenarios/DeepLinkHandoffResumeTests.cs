@@ -166,9 +166,13 @@ public sealed class DeepLinkHandoffResumeTests
                 "the expanded Agent tool result is the sub-agent's final text from the nested chain, resumed live"
             );
 
-        responder.RemainingTurns["parent"]
+        responder
+            .RemainingTurns["parent"]
             .Should()
-            .Be(0, "the full scripted plan ran to completion server-side across the headless-start → deep-link handoff");
+            .Be(
+                0,
+                "the full scripted plan ran to completion server-side across the headless-start → deep-link handoff"
+            );
 
         await session.SaveSuccessScreenshotAsync("DeepLinkHandoffResume.sub_agent_live");
     }
@@ -189,7 +193,8 @@ public sealed class DeepLinkHandoffResumeTests
                 if (!res.ok) throw new Error(`provision failed: ${res.status}`);
                 const data = await res.json();
                 return data.threadId;
-            }");
+            }"
+        );
     }
 
     /// <summary>
@@ -208,7 +213,8 @@ public sealed class DeepLinkHandoffResumeTests
                 });
                 if (!res.ok) throw new Error(`send failed: ${res.status}`);
             }",
-            threadId);
+            threadId
+        );
     }
 
     /// <summary>
@@ -219,7 +225,8 @@ public sealed class DeepLinkHandoffResumeTests
     {
         return page.EvaluateAsync<string>(
             "async (tid) => { const r = await fetch(`${location.origin}/api/conversations/${encodeURIComponent(tid)}/run-state`, { headers: { 'Accept': 'application/json' } }); return await r.text(); }",
-            threadId);
+            threadId
+        );
     }
 
     private static SubAgentOptions BuildSubAgentOptions(ILoggerFactory loggerFactory)
@@ -246,16 +253,13 @@ public sealed class DeepLinkHandoffResumeTests
     // agent construction. Anthropic-only, matching this test's test-anthropic provider.
     private static IStreamingAgent BuildEmbeddedChainAgent(ILoggerFactory loggerFactory)
     {
-        var handler = new AnthropicTestSseMessageHandler(
-            loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>());
+        var handler = new AnthropicTestSseMessageHandler(loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>());
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://test-mode/v1") };
         var anthropicClient = new AnthropicClient(
             httpClient,
             baseUrl: "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<AnthropicClient>());
-        return new AnthropicAgent(
-            "MockAnthropicSub",
-            anthropicClient,
-            loggerFactory.CreateLogger<AnthropicAgent>());
+            logger: loggerFactory.CreateLogger<AnthropicClient>()
+        );
+        return new AnthropicAgent("MockAnthropicSub", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
     }
 }

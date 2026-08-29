@@ -190,7 +190,8 @@ internal static partial class EgressHostMatcher
     // starting/ending with a hyphen. Anchored; case-insensitive.
     [GeneratedRegex(
         @"^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$",
-        RegexOptions.CultureInvariant)]
+        RegexOptions.CultureInvariant
+    )]
     private static partial Regex HostLabelsRegex();
 
     // RFC 7230 token: one or more tchar. tchar = "!#$%&'*+-.^_`|~" / DIGIT / ALPHA.

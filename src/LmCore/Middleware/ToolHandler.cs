@@ -12,7 +12,8 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 public delegate Task<ToolHandlerResult> ToolHandler(
     string argsJson,
     ToolCallContext context,
-    CancellationToken cancellationToken);
+    CancellationToken cancellationToken
+);
 
 /// <summary>
 /// Post-adapter shape produced by <see cref="FunctionCallMiddleware"/> and consumed by
@@ -25,4 +26,5 @@ public delegate Task<ToolHandlerResult> ToolHandler(
 public delegate Task<ToolCallResult> ToolCallResultHandler(
     string argsJson,
     ToolCallContext context,
-    CancellationToken cancellationToken);
+    CancellationToken cancellationToken
+);

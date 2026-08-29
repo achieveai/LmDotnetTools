@@ -76,9 +76,7 @@ public static class RubricPromptRenderer
     {
         var scores = string.Join(
             ", ",
-            rubric.Criteria.Select(c =>
-                $"\"{c.CriterionId}\": <int {rubric.MinScore}-{rubric.MaxScore}>"
-            )
+            rubric.Criteria.Select(c => $"\"{c.CriterionId}\": <int {rubric.MinScore}-{rubric.MaxScore}>")
         );
         var scoresField = $"\"scores\": {{{scores}}}";
         const string ReasoningField = "\"reasoning\": \"<why, in one or two sentences>\"";

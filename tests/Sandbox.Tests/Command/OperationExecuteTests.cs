@@ -18,25 +18,36 @@ public sealed class OperationExecuteTests
 {
     private static void RegisterWorkspaceMount(FakeGatewayHandler handler, string sessionId, long mountId) =>
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/sandboxes/{sessionId}", StringComparison.Ordinal),
-            _ => Json(
-                "{\"session_id\":\""
-                    + sessionId
-                    + "\",\"container_id\":null,\"volumes\":{\"workspace\":{\"container_path\":\"/workspace\",\"read_only\":false,\"id\":"
-                    + mountId
-                    + "}}}"
-            )
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/sandboxes/{sessionId}", StringComparison.Ordinal),
+            _ =>
+                Json(
+                    "{\"session_id\":\""
+                        + sessionId
+                        + "\",\"container_id\":null,\"volumes\":{\"workspace\":{\"container_path\":\"/workspace\",\"read_only\":false,\"id\":"
+                        + mountId
+                        + "}}}"
+                )
         );
 
-    private static void RegisterSubmit(FakeGatewayHandler handler, string json, HttpStatusCode status = HttpStatusCode.Accepted) =>
+    private static void RegisterSubmit(
+        FakeGatewayHandler handler,
+        string json,
+        HttpStatusCode status = HttpStatusCode.Accepted
+    ) =>
         handler.On(
-            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
             _ => Json(json, status)
         );
 
     private static void RegisterPoll(FakeGatewayHandler handler, string operationId, string json) =>
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
             _ => Json(json)
         );
 
@@ -49,7 +60,8 @@ public sealed class OperationExecuteTests
     private static HttpResponseMessage Json(string body, HttpStatusCode status = HttpStatusCode.OK) =>
         new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 
-    private static HttpResponseMessage Text(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8) };
+    private static HttpResponseMessage Text(string body) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8) };
 
     [Fact]
     public async Task ExecuteAsync_SubmitAccepted_ThenPollSucceeded_ReturnsExitZeroAndExactOutput()
@@ -102,7 +114,12 @@ public sealed class OperationExecuteTests
         result.StandardOutput.Should().Be("replayed");
         // An idempotent-replay 200 answers the submit with a terminal snapshot directly, so the SDK
         // never issues a follow-up poll GET.
-        handler.Requests.Should().NotContain(r => r.Method == HttpMethod.Get && r.Uri.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal));
+        handler
+            .Requests.Should()
+            .NotContain(r =>
+                r.Method == HttpMethod.Get
+                && r.Uri.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal)
+            );
     }
 
     [Fact]
@@ -136,7 +153,11 @@ public sealed class OperationExecuteTests
         const string sessionId = "sess-4";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         RegisterWorkspaceMount(handler, sessionId, mountId: 1);
-        RegisterSubmit(handler, """{"error":"conflict","error_code":"idempotency_conflict"}""", HttpStatusCode.Conflict);
+        RegisterSubmit(
+            handler,
+            """{"error":"conflict","error_code":"idempotency_conflict"}""",
+            HttpStatusCode.Conflict
+        );
 
         var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: "op-4"));
 
@@ -149,7 +170,11 @@ public sealed class OperationExecuteTests
         const string sessionId = "sess-5";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         RegisterWorkspaceMount(handler, sessionId, mountId: 1);
-        RegisterSubmit(handler, """{"error":"agent too old","error_code":"operation_api_unavailable"}""", HttpStatusCode.FailedDependency);
+        RegisterSubmit(
+            handler,
+            """{"error":"agent too old","error_code":"operation_api_unavailable"}""",
+            HttpStatusCode.FailedDependency
+        );
 
         var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: "op-5"));
 
@@ -162,7 +187,11 @@ public sealed class OperationExecuteTests
         const string sessionId = "sess-6";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         RegisterWorkspaceMount(handler, sessionId, mountId: 1);
-        RegisterSubmit(handler, """{"error":"no writable workspace","error_code":"workspace_required"}""", HttpStatusCode.Conflict);
+        RegisterSubmit(
+            handler,
+            """{"error":"no writable workspace","error_code":"workspace_required"}""",
+            HttpStatusCode.Conflict
+        );
 
         var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: "op-6"));
 
@@ -190,11 +219,17 @@ public sealed class OperationExecuteTests
         const string operationId = "op-8";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         RegisterWorkspaceMount(handler, sessionId, mountId: 1);
-        RegisterSubmit(handler, $$"""{"operation_id":"{{operationId}}","status":"output_limit_exceeded"}""", HttpStatusCode.OK);
+        RegisterSubmit(
+            handler,
+            $$"""{"operation_id":"{{operationId}}","status":"output_limit_exceeded"}""",
+            HttpStatusCode.OK
+        );
 
         var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["yes"], operationId: operationId));
 
-        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.OutputLimitExceeded);
+        (await act.Should().ThrowAsync<SandboxException>())
+            .Which.Kind.Should()
+            .Be(SandboxErrorKind.OutputLimitExceeded);
     }
 
     [Fact]
@@ -204,7 +239,11 @@ public sealed class OperationExecuteTests
         const string operationId = "op-9";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         RegisterWorkspaceMount(handler, sessionId, mountId: 1);
-        RegisterSubmit(handler, $$"""{"operation_id":"{{operationId}}","status":"quantum_superposition"}""", HttpStatusCode.OK);
+        RegisterSubmit(
+            handler,
+            $$"""{"operation_id":"{{operationId}}","status":"quantum_superposition"}""",
+            HttpStatusCode.OK
+        );
 
         var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
 
@@ -233,8 +272,19 @@ public sealed class OperationExecuteTests
         var result = await client.ExecuteAsync(sessionId, command);
 
         result.OperationId.Should().Be(operationId);
-        handler.Requests.Should().Contain(r => r.Method == HttpMethod.Post && r.Body != null && r.Body.Contains($"\"operation_id\":\"{operationId}\"", StringComparison.Ordinal));
-        handler.Requests.Should().Contain(r => r.Method == HttpMethod.Get && r.Uri.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal));
+        handler
+            .Requests.Should()
+            .Contain(r =>
+                r.Method == HttpMethod.Post
+                && r.Body != null
+                && r.Body.Contains($"\"operation_id\":\"{operationId}\"", StringComparison.Ordinal)
+            );
+        handler
+            .Requests.Should()
+            .Contain(r =>
+                r.Method == HttpMethod.Get
+                && r.Uri.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal)
+            );
     }
 
     [Fact]
@@ -325,7 +375,9 @@ public sealed class OperationExecuteTests
         // ArgumentNullException inside Uri.EscapeDataString when the artifact download is attempted.
         RegisterSubmit(
             handler,
-            "{\"operation_id\":\"" + operationId + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":1,\"stdout_path\":null,\"stderr_path\":\"err\"}}",
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":1,\"stdout_path\":null,\"stderr_path\":\"err\"}}",
             HttpStatusCode.OK
         );
 
@@ -345,7 +397,9 @@ public sealed class OperationExecuteTests
         // false exit 0, but surface Protocol.
         RegisterSubmit(
             handler,
-            "{\"operation_id\":\"" + operationId + "\",\"status\":\"succeeded\",\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
             HttpStatusCode.OK
         );
 
@@ -363,7 +417,9 @@ public sealed class OperationExecuteTests
         RegisterWorkspaceMount(handler, sessionId, mountId: 2);
         RegisterSubmit(
             handler,
-            "{\"operation_id\":\"" + operationId + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":2,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":2,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
             HttpStatusCode.OK
         );
         RegisterDownload(handler, "path=out", "");
@@ -383,7 +439,9 @@ public sealed class OperationExecuteTests
 
         result.ExitCode.Should().Be(0);
 
-        var submit = handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
+        var submit = handler.Requests.Single(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+        );
         using var body = JsonDocument.Parse(submit.Body!);
         // The executable is its own field; the remaining tokens are a JSON array, each one an exact,
         // independently-delimited element. Nothing is joined with a space, and no shell is named.
@@ -410,7 +468,9 @@ public sealed class OperationExecuteTests
         RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
         // The operation never terminalizes; the first poll trips the caller's cancellation.
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
             _ =>
             {
                 cts.Cancel();
@@ -418,7 +478,8 @@ public sealed class OperationExecuteTests
             }
         );
 
-        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["sleep", "999"], operationId: operationId), cts.Token);
+        var act = () =>
+            client.ExecuteAsync(sessionId, new SandboxCommand(["sleep", "999"], operationId: operationId), cts.Token);
 
         // ExecuteAsync runs its OWN poll loop (its own Task.Delay and deadline), a different code path
         // from the lifecycle calls — caller cancellation must still surface unwrapped here.
@@ -440,9 +501,13 @@ public sealed class OperationExecuteTests
         );
         RegisterWorkspaceMount(handler, sessionId, mountId: 1);
         RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
-        handler.OnHang(req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal));
+        handler.OnHang(req =>
+            req.Method == HttpMethod.Get
+            && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal)
+        );
 
-        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["make", "release"], operationId: operationId));
+        var act = () =>
+            client.ExecuteAsync(sessionId, new SandboxCommand(["make", "release"], operationId: operationId));
 
         var thrown = await act.Should().ThrowAsync<SandboxException>();
         thrown.Which.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
@@ -451,7 +516,10 @@ public sealed class OperationExecuteTests
         thrown.Which.OperationId.Should().Be(operationId);
         // The load-bearing assertion: a lost poll must never make the SDK re-send the submit. Exactly one
         // POST .../operations left the client, so the command was submitted once.
-        handler.Requests.Count(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal))
+        handler
+            .Requests.Count(r =>
+                r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+            )
             .Should()
             .Be(1);
     }
@@ -464,7 +532,10 @@ public sealed class OperationExecuteTests
         RegisterWorkspaceMount(handler, sessionId, mountId: 1);
         // The submit reaches the gateway but its response never comes back — the genuinely ambiguous case:
         // the command may already be running.
-        handler.OnHang(req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
+        handler.OnHang(req =>
+            req.Method == HttpMethod.Post
+            && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+        );
 
         // Deliberately NO caller-supplied operation id: the SDK generated one and put it on the wire, so the
         // exception is the ONLY place that id is ever surfaced. Without it the caller cannot re-poll and is
@@ -475,8 +546,13 @@ public sealed class OperationExecuteTests
         thrown.Which.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
         thrown.Which.OperationId.Should().NotBeNullOrEmpty();
         // And it is the SAME id that went out on the wire, not a fresh one minted for the message.
-        var submit = handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
-        submit.Body!.Contains($"\"operation_id\":\"{thrown.Which.OperationId}\"", StringComparison.Ordinal).Should().BeTrue();
+        var submit = handler.Requests.Single(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+        );
+        submit
+            .Body!.Contains($"\"operation_id\":\"{thrown.Which.OperationId}\"", StringComparison.Ordinal)
+            .Should()
+            .BeTrue();
     }
 
     [Fact]
@@ -507,7 +583,9 @@ public sealed class OperationExecuteTests
         // the caller's only way to find out. A transport fault is not a response, so this arrives as an
         // HttpRequestException rather than a status code.
         handler.On(
-            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
             _ => throw new HttpRequestException("connection reset by peer")
         );
 
@@ -529,7 +607,9 @@ public sealed class OperationExecuteTests
         // The command IS running by now, so a 5xx on the poll leaves it strictly in flight — losing the id
         // here would strand a command the caller knows exists but can no longer address.
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
             _ => Json("""{"error":"boom","error_code":"internal"}""", HttpStatusCode.InternalServerError)
         );
 
@@ -574,7 +654,9 @@ public sealed class OperationExecuteTests
         RegisterWorkspaceMount(handler, sessionId, mountId: 6);
         RegisterSubmit(
             handler,
-            "{\"operation_id\":\"" + operationId + "\",\"status\":\"failed\",\"exit_code\":1,\"artifacts\":{\"mount_id\":6,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"failed\",\"exit_code\":1,\"artifacts\":{\"mount_id\":6,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
             HttpStatusCode.OK
         );
         RegisterDownload(handler, "path=out", "compiling...\n");
@@ -598,13 +680,18 @@ public sealed class OperationExecuteTests
         // value (had it submitted the untrimmed "  op-canon  ", correlation against this echo would fail).
         RegisterSubmit(
             handler,
-            "{\"operation_id\":\"" + canonical + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":4,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            "{\"operation_id\":\""
+                + canonical
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":4,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
             HttpStatusCode.OK
         );
         RegisterDownload(handler, "path=out", "");
         RegisterDownload(handler, "path=err", "");
 
-        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: "  op-canon  "));
+        var result = await client.ExecuteAsync(
+            sessionId,
+            new SandboxCommand(["echo", "hi"], operationId: "  op-canon  ")
+        );
 
         result.OperationId.Should().Be(canonical);
         handler

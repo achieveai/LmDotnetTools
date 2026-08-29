@@ -23,9 +23,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
     private const string KbDir = RepoRoot + "/KnowledgeBase";
 
     public KnowledgeAgentTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     // ---- Task 4: gated layered extraction (create/update + index) -----------------------------------
 
@@ -41,8 +39,8 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         fs.Files[KbDir + "/_toc.md"] = "seeded-toc";
         var agent = AgentReturning("NO_KNOWLEDGE — this PR yields nothing durable.");
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Declined);
         fs.Writes.Should().BeEmpty();
@@ -72,15 +70,15 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning("NO_KNOWLEDGE");
 
-        _ = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        _ = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
         sent.Should().Contain("distill these notes");
         sent.Should().Contain("NO_KNOWLEDGE");
         sent.Should().Contain("## SCOPE:");
-        sent.Should().Contain(
-            "Do not use tools", "the mode prompt mandates tool use for all operations; this turn must not");
+        sent.Should()
+            .Contain("Do not use tools", "the mode prompt mandates tool use for all operations; this turn must not");
     }
 
     [Fact]
@@ -88,14 +86,17 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
     {
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning(WorkspaceAgentStyleReply)
-            .ThenReplies(Assistant(
-                "## SCOPE: system\n"
-                + "## TITLE: Notes Branch Lifecycle\n"
-                + "## TAGS: daemon, notes\n\n"
-                + "Delete the notes branch only after the extraction pass has run."));
+            .ThenReplies(
+                Assistant(
+                    "## SCOPE: system\n"
+                        + "## TITLE: Notes Branch Lifecycle\n"
+                        + "## TAGS: daemon, notes\n\n"
+                        + "Delete the notes branch only after the extraction pass has run."
+                )
+            );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // The salvage is a SAME-THREAD second turn, not a fresh run: the model keeps the notes it already read.
         agent.ReceivedInputs.Should().HaveCount(2);
@@ -114,8 +115,8 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning(WorkspaceAgentStyleReply).ThenReplies(Assistant("NO_KNOWLEDGE"));
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // Reaching NO_KNOWLEDGE on the second turn is a decline, not a failure — nothing here is retryable.
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Declined);
@@ -129,11 +130,11 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         // Bounded salvage: one corrective turn, then give up. A retry loop against a model locked into the
         // wrong mode would burn the review budget without ever conforming.
         var fs = new FakeSandboxFileSystem();
-        var agent = AgentReturning(WorkspaceAgentStyleReply).ThenReplies(Assistant(
-            "What would you like me to do next — post the review comments or prepare a fix?"));
+        var agent = AgentReturning(WorkspaceAgentStyleReply)
+            .ThenReplies(Assistant("What would you like me to do next — post the review comments or prepare a fix?"));
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // An unusable reply is a LOST extraction, not a decline: the caller must be able to retry it on a
         // later sweep rather than merge the notes away as if the PR had taught nothing (defect D5).
@@ -148,12 +149,13 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning(
             "## SCOPE: system\n"
-            + "## TITLE: Null Checks\n"
-            + "## TAGS: validation, inputs\n\n"
-            + "Always null-check external inputs before dereferencing them.");
+                + "## TITLE: Null Checks\n"
+                + "## TAGS: validation, inputs\n\n"
+                + "Always null-check external inputs before dereferencing them."
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/null-checks.md");
@@ -198,18 +200,23 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             + "Some pre-existing lesson.\n";
         var agent = AgentReturning(
             "## SCOPE: system\n"
-            + "## TITLE: Null Checks\n\n"
-            + "Always null-check external inputs before dereferencing them.");
+                + "## TITLE: Null Checks\n\n"
+                + "Always null-check external inputs before dereferencing them."
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
-        fs.Files[KbDir + "/_toc.md"].Should().Contain(
-            "- [system/blank-title.md](system/blank-title.md)",
-            "a blank frontmatter title must fall back to the path rather than render an empty link label");
-        fs.Files[KbDir + "/_toc.md"].Should().NotContain(
-            "- [](system/blank-title.md)", "an empty link label gives the reader nothing to read");
+        fs.Files[KbDir + "/_toc.md"]
+            .Should()
+            .Contain(
+                "- [system/blank-title.md](system/blank-title.md)",
+                "a blank frontmatter title must fall back to the path rather than render an empty link label"
+            );
+        fs.Files[KbDir + "/_toc.md"]
+            .Should()
+            .NotContain("- [](system/blank-title.md)", "an empty link label gives the reader nothing to read");
     }
 
     [Fact]
@@ -227,21 +234,27 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             + "---\n\n# X Invariant\noriginal body";
         var agent = AgentReturning(
             "## SCOPE: system\n"
-            + "## TITLE: X Invariant\n"
-            + "## TAGS: alpha\n"
-            + "## UPDATES: system/x.md\n\n"
-            + "refined body with more detail");
+                + "## TITLE: X Invariant\n"
+                + "## TAGS: alpha\n"
+                + "## UPDATES: system/x.md\n\n"
+                + "refined body with more detail"
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/x.md");
 
         // The existing entry is rewritten in place — no near-duplicate second file.
-        fs.Files.Keys
-            .Where(key => key.StartsWith(KbDir + "/system/", StringComparison.Ordinal) && key.EndsWith(".md", StringComparison.Ordinal))
-            .Should().ContainSingle().Which.Should().Be(KbDir + "/system/x.md");
+        fs.Files.Keys.Where(key =>
+                key.StartsWith(KbDir + "/system/", StringComparison.Ordinal)
+                && key.EndsWith(".md", StringComparison.Ordinal)
+            )
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(KbDir + "/system/x.md");
 
         var meta = KnowledgeIndex.ParseFrontmatter("system/x.md", fs.Files[KbDir + "/system/x.md"]);
         meta.Should().NotBeNull();
@@ -251,9 +264,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         fs.Files[KbDir + "/system/x.md"].Should().NotContain("original body");
 
         // The regenerated index carries exactly one entry.
-        fs.Files[KbDir + "/_index.jsonl"]
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Should().ContainSingle();
+        fs.Files[KbDir + "/_index.jsonl"].Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().ContainSingle();
     }
 
     /// <summary>
@@ -282,29 +293,37 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         // Both segments re-cased by the model: the scope directory AND the entry's file name.
         var agent = AgentReturning(
             "## SCOPE: MCQdbDEV\n"
-            + "## TITLE: X Invariant\n"
-            + "## TAGS: alpha\n"
-            + "## UPDATES: MCQdbDEV/Legacy-Slug.md\n\n"
-            + "refined body with more detail");
+                + "## TITLE: X Invariant\n"
+                + "## TAGS: alpha\n"
+                + "## UPDATES: MCQdbDEV/Legacy-Slug.md\n\n"
+                + "refined body with more detail"
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result.EntryFileName.Should().Be("mcqdbdev/legacy-slug.md");
 
         // The merge actually happened: ONE entry file, carrying both source PRs and the refined body — no
         // near-duplicate "mcqdbdev/x-invariant.md" created beside it.
-        fs.Files.Keys
-            .Where(key => key.EndsWith(".md", StringComparison.Ordinal)
+        fs.Files.Keys.Where(key =>
+                key.EndsWith(".md", StringComparison.Ordinal)
                 && key.StartsWith(KbDir + "/", StringComparison.Ordinal)
-                && !key.EndsWith("/_toc.md", StringComparison.Ordinal))
-            .Should().ContainSingle().Which.Should().Be(KbDir + "/mcqdbdev/legacy-slug.md");
+                && !key.EndsWith("/_toc.md", StringComparison.Ordinal)
+            )
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(KbDir + "/mcqdbdev/legacy-slug.md");
 
         var meta = KnowledgeIndex.ParseFrontmatter(
-            "mcqdbdev/legacy-slug.md", fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"]);
-        meta!.SourcePrs.Should().Equal(
-            ["old", "github/o-r/99"], "an explicit UPDATES must merge, not start a second entry");
+            "mcqdbdev/legacy-slug.md",
+            fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"]
+        );
+        meta!
+            .SourcePrs.Should()
+            .Equal(["old", "github/o-r/99"], "an explicit UPDATES must merge, not start a second entry");
         fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"].Should().Contain("refined body with more detail");
     }
 
@@ -328,16 +347,17 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             "---\ntitle: Lower Variant\nscope: mcqdbdev\nsourcePrs: [\"lower\"]\nupdated: 2026-07-01\n---\n\n# Lower\nlower body";
         var agent = AgentReturning(
             "## SCOPE: mcqdbdev\n"
-            + "## TITLE: Lower Variant\n"
-            + "## UPDATES: mcqdbdev/legacy-slug.md\n\n"
-            + "refined lower body");
+                + "## TITLE: Lower Variant\n"
+                + "## UPDATES: mcqdbdev/legacy-slug.md\n\n"
+                + "refined lower body"
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
-        result.EntryFileName
-            .Should()
+        result
+            .EntryFileName.Should()
             .Be("mcqdbdev/legacy-slug.md", "an exact name is the model's answer, not a near-miss to be corrected");
 
         fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"].Should().Contain("refined lower body");
@@ -361,12 +381,13 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             "---\ntitle: Lower Entry\nscope: mcqdbdev\nsourcePrs: [\"lower\"]\nupdated: 2026-07-01\n---\n\n# Lower\nlower body";
         var agent = AgentReturning(
             "## SCOPE: mcqdbdev\n"
-            + "## TITLE: Lower Entry\n"
-            + "## UPDATES: mcqdbdev/lower-entry.md\n\n"
-            + "refined lower body");
+                + "## TITLE: Lower Entry\n"
+                + "## UPDATES: mcqdbdev/lower-entry.md\n\n"
+                + "refined lower body"
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result.EntryFileName.Should().Be("mcqdbdev/lower-entry.md");
@@ -384,13 +405,11 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         fs.Files[KbDir + "/system/x.md"] =
             "---\ntitle: X\nscope: system\nsourcePrs: [\"old\"]\nupdated: 2026-07-01\n---\n\n# X\nbody";
         var agent = AgentReturning(
-            "## SCOPE: system\n"
-            + "## TITLE: Brand New\n"
-            + "## UPDATES: system/brand-new.md\n\n"
-            + "new body");
+            "## SCOPE: system\n" + "## TITLE: Brand New\n" + "## UPDATES: system/brand-new.md\n\n" + "new body"
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result.EntryFileName.Should().Be("system/brand-new.md");
@@ -403,13 +422,10 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
     public async Task TryExtractAsync_refuses_a_traversal_scope_and_writes_nothing_outside_the_KB()
     {
         var fs = new FakeSandboxFileSystem();
-        var agent = AgentReturning(
-            "## SCOPE: ../../etc\n"
-            + "## TITLE: Evil\n\n"
-            + "malicious body");
+        var agent = AgentReturning("## SCOPE: ../../etc\n" + "## TITLE: Evil\n\n" + "malicious body");
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // A "../../" scope must escape NOTHING: the write is refused outright (gate), not redirected.
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
@@ -421,13 +437,10 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
     public async Task TryExtractAsync_refuses_a_scope_that_contains_a_separator()
     {
         var fs = new FakeSandboxFileSystem();
-        var agent = AgentReturning(
-            "## SCOPE: system/nested\n"
-            + "## TITLE: Split Scope\n\n"
-            + "body");
+        var agent = AgentReturning("## SCOPE: system/nested\n" + "## TITLE: Split Scope\n\n" + "body");
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // Scope must be ONE ref-safe segment; a scope carrying a path separator is refused, not split.
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
@@ -443,12 +456,13 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         fs.Files[escapePath] = "#!/bin/sh\necho pwned";
         var agent = AgentReturning(
             "## UPDATES: ../../.git/hooks/pre-commit.md\n"
-            + "## SCOPE: system\n"
-            + "## TITLE: Innocent Looking\n\n"
-            + "body");
+                + "## SCOPE: system\n"
+                + "## TITLE: Innocent Looking\n\n"
+                + "body"
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // The traversal UPDATES is refused and the create falls back to the safe scope+slug INSIDE the KB;
         // the planted escape file is never touched, and every write stays under KnowledgeBase/.
@@ -466,13 +480,11 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         // target a bookkeeping file even though it validates as a KB-relative path AND exists.
         fs.Files[KbDir + "/_toc.md"] = "# Table of Contents\n\n- [Old Entry](system/old.md)\n";
         var agent = AgentReturning(
-            "## UPDATES: _toc.md\n"
-            + "## SCOPE: system\n"
-            + "## TITLE: Not The Toc\n\n"
-            + "body");
+            "## UPDATES: _toc.md\n" + "## SCOPE: system\n" + "## TITLE: Not The Toc\n\n" + "body"
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // The bookkeeping UPDATES is refused; the create falls back to the safe scope+slug path instead.
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
@@ -489,12 +501,13 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning(
             "## SCOPE: acme-widgets\n"
-            + "## TITLE: Repo Rule\n"
-            + "## TAGS: repo\n\n"
-            + "A repo-scoped rule worth keeping.");
+                + "## TITLE: Repo Rule\n"
+                + "## TAGS: repo\n\n"
+                + "A repo-scoped rule worth keeping."
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         result.EntryFileName.Should().Be("acme-widgets/repo-rule.md");
         // The one-level regen walk indexes the single-segment scope entry into BOTH bookkeeping files.
@@ -510,13 +523,14 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning(
             "Here is the distilled entry:\n"
-            + "## SCOPE: system\n"
-            + "## TITLE: Null Checks\n"
-            + "## TAGS: validation\n\n"
-            + "Always null-check external inputs.");
+                + "## SCOPE: system\n"
+                + "## TITLE: Null Checks\n"
+                + "## TAGS: validation\n\n"
+                + "Always null-check external inputs."
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/null-checks.md");
@@ -536,14 +550,15 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning(
             "## SCOPE: system\n"
-            + "## TITLE: Marker Syntax Guide\n"
-            + "## TAGS: docs\n\n"
-            + "The agent emits markers like:\n"
-            + "## TAGS: a, b\n"
-            + "Keep them at the top.");
+                + "## TITLE: Marker Syntax Guide\n"
+                + "## TAGS: docs\n\n"
+                + "The agent emits markers like:\n"
+                + "## TAGS: a, b\n"
+                + "Keep them at the top."
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/marker-syntax-guide.md");
@@ -568,20 +583,24 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         fs.Files[KbDir + "/mcqdbdev/existing-lesson.md"] =
             "---\ntitle: Existing\ntags: []\nscope: mcqdbdev\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-07-01\n---\nbody";
-        var agent = AgentReturning(
-            "## SCOPE: MCQdbDEV\n## TITLE: New Lesson\n## TAGS: a\n\nA newly distilled lesson.");
+        var agent = AgentReturning("## SCOPE: MCQdbDEV\n## TITLE: New Lesson\n## TAGS: a\n\nA newly distilled lesson.");
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
-        result!.EntryFileName.Should().Be(
-            "mcqdbdev/new-lesson.md", "the new entry reuses the existing scope directory's case");
+        result!
+            .EntryFileName.Should()
+            .Be("mcqdbdev/new-lesson.md", "the new entry reuses the existing scope directory's case");
         fs.Files.Should().ContainKey(KbDir + "/mcqdbdev/new-lesson.md");
         fs.Files.Keys.Where(k => k.Contains("/MCQdbDEV/", StringComparison.Ordinal))
-            .Should().BeEmpty("a second case-variant scope directory collides on a case-insensitive checkout");
+            .Should()
+            .BeEmpty("a second case-variant scope directory collides on a case-insensitive checkout");
         // The daemon-injected frontmatter scope matches the reconciled directory, not the model's casing.
-        var meta = KnowledgeIndex.ParseFrontmatter("mcqdbdev/new-lesson.md", fs.Files[KbDir + "/mcqdbdev/new-lesson.md"]);
+        var meta = KnowledgeIndex.ParseFrontmatter(
+            "mcqdbdev/new-lesson.md",
+            fs.Files[KbDir + "/mcqdbdev/new-lesson.md"]
+        );
         meta!.Scope.Should().Be("mcqdbdev");
     }
 
@@ -591,7 +610,10 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
     private static string IndexRecord(int ordinal)
     {
         var id = ordinal.ToString("D4", CultureInfo.InvariantCulture);
-        return "{\"file\":\"system/entry-" + id + ".md\",\"title\":\"Entry " + id
+        return "{\"file\":\"system/entry-"
+            + id
+            + ".md\",\"title\":\"Entry "
+            + id
             + "\",\"tags\":[\"padding\",\"listing\"],\"scope\":\"system\",\"updated\":\"2026-07-06\"}";
     }
 
@@ -612,33 +634,44 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         // listing that quietly loses its tail therefore does not merely shrink a prompt — it manufactures
         // duplicate Knowledge Base entries, because the agent still believes it has seen the whole store.
         var fs = new FakeSandboxFileSystem();
-        fs.Files[KbDir + "/_index.jsonl"] =
-            string.Join("\n", Enumerable.Range(0, 400).Select(IndexRecord));
+        fs.Files[KbDir + "/_index.jsonl"] = string.Join("\n", Enumerable.Range(0, 400).Select(IndexRecord));
         var logger = new CapturingLogger<KnowledgeAgent>();
         var agent = AgentReturning("NO_KNOWLEDGE");
 
-        _ = await Knowledge(agent, fs, logger).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        _ = await Knowledge(agent, fs, logger)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
         var listing = Section(sent, "## Existing Knowledge Base index (_index.jsonl)\n");
-        listing.Should().Contain(
-            "This listing is PARTIAL",
-            "the cap has to be visible to the AGENT, not only to our logs — the log cannot stop a duplicate");
-        listing.Should().Contain(
-            "not in this list",
-            "the agent must be told the one inference it must not draw from a shortened listing");
+        listing
+            .Should()
+            .Contain(
+                "This listing is PARTIAL",
+                "the cap has to be visible to the AGENT, not only to our logs — the log cannot stop a duplicate"
+            );
+        listing
+            .Should()
+            .Contain(
+                "not in this list",
+                "the agent must be told the one inference it must not draw from a shortened listing"
+            );
 
         // What SURVIVED still has to be usable: whole records, in order, starting at the top of the store.
         var shown = listing[..listing.IndexOf("**This listing is PARTIAL", StringComparison.Ordinal)].Trim();
         shown.Should().Contain(IndexRecord(0), "the surviving head of the listing must still be readable");
-        shown.Split('\n').Should().OnlyContain(
-            line => line.EndsWith('}'),
-            "cutting mid-record would hand the agent a torn entry it could misread as a real one");
+        shown
+            .Split('\n')
+            .Should()
+            .OnlyContain(
+                line => line.EndsWith('}'),
+                "cutting mid-record would hand the agent a torn entry it could misread as a real one"
+            );
         sent.Should().NotContain("system/entry-0399.md", "the tail is what did not fit");
 
-        logger.CountAtLevel(LogLevel.Warning, "_index.jsonl").Should().Be(
-            1, "operators need to know the store outgrew the prompt even though the agent was told too");
+        logger
+            .CountAtLevel(LogLevel.Warning, "_index.jsonl")
+            .Should()
+            .Be(1, "operators need to know the store outgrew the prompt even though the agent was told too");
     }
 
     [Fact]
@@ -649,14 +682,21 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         fs.Files[KbDir + "/_toc.md"] = string.Join(
             "\n",
-            Enumerable.Range(0, 400).Select(i =>
-                "- [Entry " + i.ToString("D4", CultureInfo.InvariantCulture) + "](system/entry-"
-                + i.ToString("D4", CultureInfo.InvariantCulture) + ".md) — padding padding padding padding"));
+            Enumerable
+                .Range(0, 400)
+                .Select(i =>
+                    "- [Entry "
+                    + i.ToString("D4", CultureInfo.InvariantCulture)
+                    + "](system/entry-"
+                    + i.ToString("D4", CultureInfo.InvariantCulture)
+                    + ".md) — padding padding padding padding"
+                )
+        );
         var logger = new CapturingLogger<KnowledgeAgent>();
         var agent = AgentReturning("NO_KNOWLEDGE");
 
-        _ = await Knowledge(agent, fs, logger).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        _ = await Knowledge(agent, fs, logger)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
         var listing = Section(sent, "## Existing Knowledge Base table of contents (_toc.md)\n");
@@ -677,8 +717,8 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var logger = new CapturingLogger<KnowledgeAgent>();
         var agent = AgentReturning("NO_KNOWLEDGE");
 
-        _ = await Knowledge(agent, fs, logger).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        _ = await Knowledge(agent, fs, logger)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
         sent.Should().NotContain("This listing is PARTIAL");
@@ -705,22 +745,30 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var logger = new CapturingLogger<KnowledgeAgent>();
         var agent = AgentReturning("NO_KNOWLEDGE");
 
-        _ = await Knowledge(agent, fs, logger).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        _ = await Knowledge(agent, fs, logger)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
         var listing = Section(sent, "## Existing Knowledge Base index (_index.jsonl)\n");
-        listing.Should().Contain(
-            "could NOT be read",
-            "the agent has to know the silence below it is an unread store, not an empty one");
+        listing
+            .Should()
+            .Contain(
+                "could NOT be read",
+                "the agent has to know the silence below it is an unread store, not an empty one"
+            );
         listing.Should().Contain("The store is not empty; it is unread.");
-        listing.Should().NotContain(
-            "(empty)",
-            "'(empty)' is the MISSING-file rendering; reusing it for a refusal is the lie this exists to stop");
+        listing
+            .Should()
+            .NotContain(
+                "(empty)",
+                "'(empty)' is the MISSING-file rendering; reusing it for a refusal is the lie this exists to stop"
+            );
         sent.Should().NotContain("xxxxxxxxxx", "the refused bytes must not reach the prompt");
 
-        logger.CountAtLevel(LogLevel.Warning, "_index.jsonl").Should().Be(
-            1, "operators are the only ones who can trim the listing at the source");
+        logger
+            .CountAtLevel(LogLevel.Warning, "_index.jsonl")
+            .Should()
+            .Be(1, "operators are the only ones who can trim the listing at the source");
     }
 
     [Fact]
@@ -735,22 +783,31 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var logger = new CapturingLogger<KnowledgeAgent>();
         var agent = AgentReturning(
             "## SCOPE: system\n"
-            + "## TITLE: X Invariant\n"
-            + "## UPDATES: system/x.md\n\n"
-            + "refined body with more detail");
+                + "## TITLE: X Invariant\n"
+                + "## UPDATES: system/x.md\n\n"
+                + "refined body with more detail"
+        );
 
-        var result = await Knowledge(agent, fs, logger).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs, logger)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result.Outcome.Should().Be(
-            KnowledgeExtractionOutcome.Failed,
-            "a run that cannot read its target has not declined — it is retryable once the entry is trimmed");
-        fs.Files[entryPath].Should().Be(
-            OverLimit(SandboxReadLimits.KnowledgeEntryBytes), "the entry we could not read is left untouched");
-        fs.Writes.Should().BeEmpty(
-            "not even the regen may run: it would rewrite both listings off a store we failed halfway through");
-        logger.CountAtLevel(LogLevel.Error, "refusing").Should().Be(
-            1, "destroying a durable entry is the failure this refuses, and it is an operator-visible one");
+        result
+            .Outcome.Should()
+            .Be(
+                KnowledgeExtractionOutcome.Failed,
+                "a run that cannot read its target has not declined — it is retryable once the entry is trimmed"
+            );
+        fs.Files[entryPath]
+            .Should()
+            .Be(OverLimit(SandboxReadLimits.KnowledgeEntryBytes), "the entry we could not read is left untouched");
+        fs.Writes.Should()
+            .BeEmpty(
+                "not even the regen may run: it would rewrite both listings off a store we failed halfway through"
+            );
+        logger
+            .CountAtLevel(LogLevel.Error, "refusing")
+            .Should()
+            .Be(1, "destroying a durable entry is the failure this refuses, and it is an operator-visible one");
     }
 
     [Fact]
@@ -764,23 +821,30 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var logger = new CapturingLogger<KnowledgeAgent>();
         var agent = AgentReturning(
             "## SCOPE: system\n"
-            + "## TITLE: Null Checks\n\n"
-            + "Always null-check external inputs before dereferencing them.");
+                + "## TITLE: Null Checks\n\n"
+                + "Always null-check external inputs before dereferencing them."
+        );
 
-        var result = await Knowledge(agent, fs, logger).TryExtractAsync(
-            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs, logger)
+            .TryExtractAsync(RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
-        fs.Files[KbDir + "/_toc.md"].Should().Contain(
-            "(system/huge-lesson.md)", "the link still resolves, and it is the only route left to that file");
+        fs.Files[KbDir + "/_toc.md"]
+            .Should()
+            .Contain("(system/huge-lesson.md)", "the link still resolves, and it is the only route left to that file");
         fs.Files[KbDir + "/_index.jsonl"].Should().Contain("\"file\":\"system/huge-lesson.md\"");
-        fs.Files[KbDir + "/_toc.md"].Should().Contain(
-            "too large to index",
-            "listed under a path-derived title is honest about what is unknown; a fabricated one is not");
-        fs.Files[KbDir + "/_toc.md"].Should().Contain(
-            "(system/null-checks.md)", "the entry this run wrote is listed beside it as usual");
-        fs.Files[KbDir + "/_index.jsonl"].Should().NotContain(
-            "xxxxxxxxxx", "the refused bytes are not read, so nothing from them can leak into a listing");
+        fs.Files[KbDir + "/_toc.md"]
+            .Should()
+            .Contain(
+                "too large to index",
+                "listed under a path-derived title is honest about what is unknown; a fabricated one is not"
+            );
+        fs.Files[KbDir + "/_toc.md"]
+            .Should()
+            .Contain("(system/null-checks.md)", "the entry this run wrote is listed beside it as usual");
+        fs.Files[KbDir + "/_index.jsonl"]
+            .Should()
+            .NotContain("xxxxxxxxxx", "the refused bytes are not read, so nothing from them can leak into a listing");
         logger.CountAtLevel(LogLevel.Warning, "huge-lesson.md").Should().Be(1);
     }
 
@@ -800,14 +864,15 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         fs.Files[KbDir + "/developers/octocat.reviewfeedbacks.md"] = DeveloperRecord;
         var agent = AgentReturning("## SCOPE: system\n## TITLE: A Lesson\n## TAGS: a\n\nBody.");
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         fs.Files[KbDir + "/_index.jsonl"].Should().NotContain("reviewfeedbacks");
         fs.Files[KbDir + "/_toc.md"].Should().NotContain("reviewfeedbacks");
-        fs.Files[KbDir + "/developers/octocat.reviewfeedbacks.md"].Should().Be(
-            DeveloperRecord, "the regen never rewrites a record it does not own");
+        fs.Files[KbDir + "/developers/octocat.reviewfeedbacks.md"]
+            .Should()
+            .Be(DeveloperRecord, "the regen never rewrites a record it does not own");
     }
 
     [Fact]
@@ -819,8 +884,8 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning("## SCOPE: Developers\n## TITLE: octocat\n## TAGS: a\n\nBody.");
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
         fs.Writes.Should().BeEmpty();
@@ -835,10 +900,11 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         fs.Files[KbDir + "/developers/octocat.reviewfeedbacks.md"] = DeveloperRecord;
         var agent = AgentReturning(
             "## SCOPE: system\n## TITLE: A Lesson\n## TAGS: a\n"
-            + "## UPDATES: developers/octocat.reviewfeedbacks.md\n\nBody.");
+                + "## UPDATES: developers/octocat.reviewfeedbacks.md\n\nBody."
+        );
 
-        var result = await Knowledge(agent, fs).TryExtractAsync(
-            RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
+        var result = await Knowledge(agent, fs)
+            .TryExtractAsync(RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
 
         // Refused, then written as an ordinary create — the entry is not lost, just kept out of the namespace.
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
@@ -848,9 +914,13 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
 
     private static FakeMultiTurnAgent AgentReturning(string text) => new(RunId, Assistant(text));
 
-
     private static TextMessage Assistant(string text) =>
-        new() { Text = text, Role = Role.Assistant, RunId = RunId };
+        new()
+        {
+            Text = text,
+            Role = Role.Assistant,
+            RunId = RunId,
+        };
 
     /// <summary>The prose the daemon actually sent on a turn (the agent's single user message).</summary>
     private static string InputText(UserInput input) =>

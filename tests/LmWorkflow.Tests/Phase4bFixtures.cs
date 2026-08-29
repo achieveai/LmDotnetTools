@@ -159,8 +159,6 @@ internal static class Phase4bFixtures
     public static string ResultTemplateWorkflow(bool schemaFail = false) =>
         ResultTemplateTemplate.Replace(
             "__REQUIRED__",
-            schemaFail
-                ? "[\"curriculum\", \"authored\", \"missing\"]"
-                : "[\"curriculum\", \"authored\"]"
+            schemaFail ? "[\"curriculum\", \"authored\", \"missing\"]" : "[\"curriculum\", \"authored\"]"
         );
 }

@@ -26,14 +26,9 @@ public static class DomAssertions
             return await locator.CountAsync().ConfigureAwait(false);
         }
 
-        await locator.Nth(minCount - 1)
-            .WaitForAsync(
-                new LocatorWaitForOptions
-                {
-                    State = WaitForSelectorState.Attached,
-                    Timeout = timeoutMs,
-                }
-            )
+        await locator
+            .Nth(minCount - 1)
+            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached, Timeout = timeoutMs })
             .ConfigureAwait(false);
 
         return await locator.CountAsync().ConfigureAwait(false);
@@ -43,15 +38,14 @@ public static class DomAssertions
     /// Waits until the locator's innerText contains <paramref name="substring"/> (case-insensitive).
     /// Uses Playwright's auto-waiting <c>ToContainTextAsync</c>.
     /// </summary>
-    public static async Task WaitForTextContainsAsync(
-        this ILocator locator,
-        string substring,
-        float timeoutMs = 10_000
-    )
+    public static async Task WaitForTextContainsAsync(this ILocator locator, string substring, float timeoutMs = 10_000)
     {
         await Assertions
             .Expect(locator.First)
-            .ToContainTextAsync(substring, new LocatorAssertionsToContainTextOptions { Timeout = timeoutMs, IgnoreCase = true })
+            .ToContainTextAsync(
+                substring,
+                new LocatorAssertionsToContainTextOptions { Timeout = timeoutMs, IgnoreCase = true }
+            )
             .ConfigureAwait(false);
     }
 

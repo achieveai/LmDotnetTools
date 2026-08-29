@@ -59,10 +59,7 @@ public sealed class AgentTranscriptToolProvider : IFunctionProvider
     ///     The collaboration id of the agent this instance reads AS. Never taken from tool arguments.
     /// </param>
     /// <exception cref="ArgumentNullException">Any argument is null.</exception>
-    public AgentTranscriptToolProvider(
-        AgentHierarchyService hierarchy,
-        string threadId,
-        string viewerAgentId)
+    public AgentTranscriptToolProvider(AgentHierarchyService hierarchy, string threadId, string viewerAgentId)
     {
         ArgumentNullException.ThrowIfNull(hierarchy);
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
@@ -124,7 +121,8 @@ public sealed class AgentTranscriptToolProvider : IFunctionProvider
     private async Task<ToolHandlerResult> HandleGetAgentTranscriptAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         JsonDocument doc;
         try
@@ -133,9 +131,7 @@ public sealed class AgentTranscriptToolProvider : IFunctionProvider
         }
         catch (JsonException ex)
         {
-            return ToolHandlerResult.FromError(
-                $"Tool arguments are not valid JSON: {ex.Message}",
-                "invalid_args");
+            return ToolHandlerResult.FromError($"Tool arguments are not valid JSON: {ex.Message}", "invalid_args");
         }
 
         string? agentId;
@@ -163,18 +159,21 @@ public sealed class AgentTranscriptToolProvider : IFunctionProvider
             // exists. The stable reason code is enough for the model to stop asking.
             AgentTranscriptOutcome.Denied => ToolHandlerResult.FromError(
                 "You cannot read that agent's transcript.",
-                result.DenialCode),
+                result.DenialCode
+            ),
 
             // The hierarchy this tool reads is missing entirely (the conversation is gone, or
             // collaboration is off), which is a host-state problem rather than a refusal. Reported with
             // the SAME codes the HTTP route uses, so one denial vocabulary covers both surfaces.
             AgentTranscriptOutcome.UnknownThread => ToolHandlerResult.FromError(
                 "This conversation's agent hierarchy is not available.",
-                AgentTranscriptReasons.UnknownThread),
+                AgentTranscriptReasons.UnknownThread
+            ),
 
             _ => ToolHandlerResult.FromError(
                 "This conversation's agent hierarchy is not available.",
-                AgentTranscriptReasons.CollaborationUnavailable),
+                AgentTranscriptReasons.CollaborationUnavailable
+            ),
         };
     }
 
@@ -200,7 +199,8 @@ public sealed class AgentTranscriptToolProvider : IFunctionProvider
                 OmittedOlderMessages = skipped == 0 ? (int?)null : skipped,
                 Messages = result.Messages.Skip(skipped).Select(RenderMessage).ToList(),
             },
-            ResultJson);
+            ResultJson
+        );
     }
 
     /// <summary>
@@ -213,11 +213,17 @@ public sealed class AgentTranscriptToolProvider : IFunctionProvider
         var message = TranscriptProjection.TryDeserialize(persisted);
         if (message is null)
         {
-            return new { persisted.Role, Type = persisted.MessageType, Unreadable = true };
+            return new
+            {
+                persisted.Role,
+                Type = persisted.MessageType,
+                Unreadable = true,
+            };
         }
 
-        var toolCalls = (message as ICanGetToolCalls)?.GetToolCalls()?
-            .Select(c => new { Name = c.FunctionName, Arguments = c.FunctionArgs })
+        var toolCalls = (message as ICanGetToolCalls)
+            ?.GetToolCalls()
+            ?.Select(c => new { Name = c.FunctionName, Arguments = c.FunctionArgs })
             .ToList();
 
         return new
@@ -230,9 +236,7 @@ public sealed class AgentTranscriptToolProvider : IFunctionProvider
     }
 
     private static string? ReadString(JsonElement root, string name) =>
-        root.TryGetProperty(name, out var prop) && prop.ValueKind == JsonValueKind.String
-            ? prop.GetString()
-            : null;
+        root.TryGetProperty(name, out var prop) && prop.ValueKind == JsonValueKind.String ? prop.GetString() : null;
 
     /// <summary>
     ///     Reads the optional message limit. An absent, unusable, or out-of-range value falls back to the

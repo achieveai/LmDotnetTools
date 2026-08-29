@@ -56,13 +56,21 @@ internal sealed class CopilotEventTranslator
             return [];
         }
 
-        if (!eventElement.TryGetProperty("sessionId", out var sessionIdProp)
-            || sessionIdProp.ValueKind != JsonValueKind.String)
+        if (
+            !eventElement.TryGetProperty("sessionId", out var sessionIdProp)
+            || sessionIdProp.ValueKind != JsonValueKind.String
+        )
         {
             // Some payloads wrap session fields inside "params".
-            if (eventElement.TryGetProperty("params", out var paramsProp) && paramsProp.ValueKind == JsonValueKind.Object)
+            if (
+                eventElement.TryGetProperty("params", out var paramsProp)
+                && paramsProp.ValueKind == JsonValueKind.Object
+            )
             {
-                if (paramsProp.TryGetProperty("sessionId", out var nestedSessionId) && nestedSessionId.ValueKind == JsonValueKind.String)
+                if (
+                    paramsProp.TryGetProperty("sessionId", out var nestedSessionId)
+                    && nestedSessionId.ValueKind == JsonValueKind.String
+                )
                 {
                     LastExtractedCopilotSessionId = nestedSessionId.GetString();
                 }
@@ -104,16 +112,18 @@ internal sealed class CopilotEventTranslator
                     "dropped",
                     _options.Provider,
                     _options.ProviderMode,
-                    kind);
+                    kind
+                );
                 return [];
         }
     }
 
     public static string ExtractEventType(JsonElement eventElement)
     {
-        return eventElement.ValueKind == JsonValueKind.Object
-               && eventElement.TryGetProperty("type", out var typeProp)
-               && typeProp.ValueKind == JsonValueKind.String
+        return
+            eventElement.ValueKind == JsonValueKind.Object
+            && eventElement.TryGetProperty("type", out var typeProp)
+            && typeProp.ValueKind == JsonValueKind.String
             ? typeProp.GetString() ?? string.Empty
             : string.Empty;
     }
@@ -141,7 +151,8 @@ internal sealed class CopilotEventTranslator
                         "{event_type} {event_status} {message_type}",
                         "copilot.prompt.unsupported_message_type",
                         "skipped",
-                        message.GetType().Name);
+                        message.GetType().Name
+                    );
                 }
             }
         }
@@ -151,9 +162,7 @@ internal sealed class CopilotEventTranslator
 
     public static string CreateModelInstructionsFile(string developerInstructions)
     {
-        var tempFilePath = Path.Combine(
-            Path.GetTempPath(),
-            $"copilot-model-instructions-{Guid.NewGuid():N}.txt");
+        var tempFilePath = Path.Combine(Path.GetTempPath(), $"copilot-model-instructions-{Guid.NewGuid():N}.txt");
         File.WriteAllText(tempFilePath, developerInstructions);
         return tempFilePath;
     }
@@ -166,10 +175,12 @@ internal sealed class CopilotEventTranslator
             return true;
         }
 
-        if (eventElement.TryGetProperty("params", out var paramsProp)
+        if (
+            eventElement.TryGetProperty("params", out var paramsProp)
             && paramsProp.ValueKind == JsonValueKind.Object
             && paramsProp.TryGetProperty("update", out var nested)
-            && nested.ValueKind == JsonValueKind.Object)
+            && nested.ValueKind == JsonValueKind.Object
+        )
         {
             update = nested;
             return true;
@@ -190,7 +201,9 @@ internal sealed class CopilotEventTranslator
         _ = contentType;
         var key = "agent_message";
         var orderIdx = GetOrCreateMessageOrderIdx($"agent:{key}");
-        var existing = _agentMessageAccumulator.TryGetValue(key, out var currentSnapshot) ? currentSnapshot : string.Empty;
+        var existing = _agentMessageAccumulator.TryGetValue(key, out var currentSnapshot)
+            ? currentSnapshot
+            : string.Empty;
         _agentMessageAccumulator[key] = existing + text;
 
         return
@@ -239,11 +252,10 @@ internal sealed class CopilotEventTranslator
     {
         var toolCallId = TryGetString(update, "toolCallId") ?? TryGetString(update, "id");
         var toolName = TryGetString(update, "title") ?? TryGetString(update, "name") ?? TryGetString(update, "kind");
-        var rawInput = update.TryGetProperty("rawInput", out var rawInputProp)
-            ? rawInputProp.GetRawText()
-            : update.TryGetProperty("input", out var inputProp)
-                ? inputProp.GetRawText()
-                : "{}";
+        var rawInput =
+            update.TryGetProperty("rawInput", out var rawInputProp) ? rawInputProp.GetRawText()
+            : update.TryGetProperty("input", out var inputProp) ? inputProp.GetRawText()
+            : "{}";
         var toolKey = $"tool:{toolCallId ?? toolName ?? "unknown"}";
         var orderIdx = GetOrCreateMessageOrderIdx(toolKey);
 
@@ -268,8 +280,10 @@ internal sealed class CopilotEventTranslator
     private List<IMessage> ConvertToolCallUpdate(JsonElement update, string runId, string generationId)
     {
         var status = TryGetString(update, "status");
-        if (!string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+        if (
+            !string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
+        )
         {
             return [];
         }
@@ -350,38 +364,46 @@ internal sealed class CopilotEventTranslator
         var messages = new List<IMessage>();
 
         // Emit the final consolidated agent message if we accumulated deltas.
-        if (_agentMessageAccumulator.TryGetValue("agent_message", out var accumulatedAgentText)
-            && !string.IsNullOrEmpty(accumulatedAgentText))
+        if (
+            _agentMessageAccumulator.TryGetValue("agent_message", out var accumulatedAgentText)
+            && !string.IsNullOrEmpty(accumulatedAgentText)
+        )
         {
             var orderIdx = GetOrCreateMessageOrderIdx("agent:agent_message");
-            messages.Add(new TextMessage
-            {
-                Role = Role.Assistant,
-                ThreadId = ThreadId,
-                RunId = runId,
-                GenerationId = generationId,
-                MessageOrderIdx = orderIdx,
-                Text = accumulatedAgentText,
-            });
+            messages.Add(
+                new TextMessage
+                {
+                    Role = Role.Assistant,
+                    ThreadId = ThreadId,
+                    RunId = runId,
+                    GenerationId = generationId,
+                    MessageOrderIdx = orderIdx,
+                    Text = accumulatedAgentText,
+                }
+            );
             ReleaseMessageOrderIdx("agent:agent_message");
             _ = _agentMessageAccumulator.Remove("agent_message");
         }
 
         // Emit a final reasoning message if we accumulated thought chunks.
-        if (_reasoningAccumulator.TryGetValue("reasoning", out var accumulatedReasoning)
-            && !string.IsNullOrEmpty(accumulatedReasoning))
+        if (
+            _reasoningAccumulator.TryGetValue("reasoning", out var accumulatedReasoning)
+            && !string.IsNullOrEmpty(accumulatedReasoning)
+        )
         {
             var orderIdx = GetOrCreateMessageOrderIdx("reasoning:reasoning");
-            messages.Add(new ReasoningMessage
-            {
-                Role = Role.Assistant,
-                ThreadId = ThreadId,
-                RunId = runId,
-                GenerationId = generationId,
-                MessageOrderIdx = orderIdx,
-                Visibility = ReasoningVisibility.Summary,
-                Reasoning = accumulatedReasoning,
-            });
+            messages.Add(
+                new ReasoningMessage
+                {
+                    Role = Role.Assistant,
+                    ThreadId = ThreadId,
+                    RunId = runId,
+                    GenerationId = generationId,
+                    MessageOrderIdx = orderIdx,
+                    Visibility = ReasoningVisibility.Summary,
+                    Reasoning = accumulatedReasoning,
+                }
+            );
             ReleaseMessageOrderIdx("reasoning:reasoning");
             _ = _reasoningAccumulator.Remove("reasoning");
         }
@@ -390,14 +412,27 @@ internal sealed class CopilotEventTranslator
         return messages;
     }
 
-    private UsageMessage CreateUsageMessage(JsonElement eventElement, string runId, string generationId, int messageOrderIdx)
+    private UsageMessage CreateUsageMessage(
+        JsonElement eventElement,
+        string runId,
+        string generationId,
+        int messageOrderIdx
+    )
     {
         var usage = new Usage();
-        if (eventElement.TryGetProperty("usage", out var usageElement) && usageElement.ValueKind == JsonValueKind.Object)
+        if (
+            eventElement.TryGetProperty("usage", out var usageElement)
+            && usageElement.ValueKind == JsonValueKind.Object
+        )
         {
             var inputTokens = GetInt32(usageElement, "inputTokens", "input_tokens", "prompt_tokens");
             var outputTokens = GetInt32(usageElement, "outputTokens", "output_tokens", "completion_tokens");
-            var cachedTokens = GetInt32(usageElement, "cachedInputTokens", "cached_input_tokens", "prompt_cache_hit_tokens");
+            var cachedTokens = GetInt32(
+                usageElement,
+                "cachedInputTokens",
+                "cached_input_tokens",
+                "prompt_cache_hit_tokens"
+            );
             usage = new Usage
             {
                 PromptTokens = inputTokens,
@@ -473,16 +508,15 @@ internal sealed class CopilotEventTranslator
             return content.GetRawText();
         }
 
-        return update.TryGetProperty("rawOutput", out var rawOutput)
-            ? rawOutput.GetRawText()
-            : "{}";
+        return update.TryGetProperty("rawOutput", out var rawOutput) ? rawOutput.GetRawText() : "{}";
     }
 
     private static string? TryGetString(JsonElement obj, string propertyName)
     {
-        return obj.ValueKind == JsonValueKind.Object
-               && obj.TryGetProperty(propertyName, out var value)
-               && value.ValueKind == JsonValueKind.String
+        return
+            obj.ValueKind == JsonValueKind.Object
+            && obj.TryGetProperty(propertyName, out var value)
+            && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
     }
@@ -491,9 +525,11 @@ internal sealed class CopilotEventTranslator
     {
         foreach (var name in propertyNames)
         {
-            if (obj.TryGetProperty(name, out var value)
+            if (
+                obj.TryGetProperty(name, out var value)
                 && value.ValueKind == JsonValueKind.Number
-                && value.TryGetInt32(out var result))
+                && value.TryGetInt32(out var result)
+            )
             {
                 return result;
             }

@@ -59,11 +59,8 @@ public class McpClientFunctionProviderPrefixTests
             Assert.Contains("Add", handlers.Keys);
 
             // Dispatch still routes the bare name to the sandbox client's tool.
-            var result = await handlers["Add"](
-                JsonSerializer.Serialize(new { a = 5.0, b = 3.0 }),
-                new ToolCallContext(),
-                CancellationToken.None
-            );
+            var result = await handlers["Add"]
+                (JsonSerializer.Serialize(new { a = 5.0, b = 3.0 }), new ToolCallContext(), CancellationToken.None);
             Assert.Contains("8", result.ResultText); // 5 + 3 = 8
         }
         finally

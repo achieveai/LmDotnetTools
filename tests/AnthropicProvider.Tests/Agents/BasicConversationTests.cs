@@ -9,9 +9,8 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class BasicConversationTests : LoggingTestBase
 {
-    public BasicConversationTests(ITestOutputHelper output) : base(output)
-    {
-    }
+    public BasicConversationTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Fact]
     public async Task SimpleConversation_ShouldCreateProperRequest()
@@ -20,7 +19,11 @@ public class BasicConversationTests : LoggingTestBase
 
         // Arrange - Using Anthropic test-mode handler with request capture
         var requestCapture = new RequestCapture();
-        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, requestCapture, chunkDelayMs: 0);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
+        );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         Logger.LogTrace("Created agent with test-mode HTTP handler and request capture");
@@ -36,7 +39,12 @@ public class BasicConversationTests : LoggingTestBase
         Logger.LogTrace("Created messages array with {MessageCount} messages", messages.Length);
         foreach (var msg in messages)
         {
-            Logger.LogTrace("Message - Role: {Role}, Type: {MessageType}, Text: {Text}", msg.Role, msg.GetType().Name, msg?.Text ?? "null");
+            Logger.LogTrace(
+                "Message - Role: {Role}, Type: {MessageType}, Text: {Text}",
+                msg.Role,
+                msg.GetType().Name,
+                msg?.Text ?? "null"
+            );
         }
 
         var options = new GenerateReplyOptions { ModelId = "claude-3-7-sonnet-20250219" };
@@ -172,10 +180,7 @@ public class BasicConversationTests : LoggingTestBase
             new TextMessage { Role = Role.User, Text = userMessage },
         };
 
-        var options = new GenerateReplyOptions
-        {
-            ModelId = "claude-3-sonnet-20240229",
-        };
+        var options = new GenerateReplyOptions { ModelId = "claude-3-sonnet-20240229" };
 
         Logger.LogDebug("Created messages with instruction chain");
 
@@ -242,7 +247,11 @@ public class BasicConversationTests : LoggingTestBase
 
         try
         {
-            var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0, wordsPerChunk: 2);
+            var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+                LoggerFactory,
+                chunkDelayMs: 0,
+                wordsPerChunk: 2
+            );
             var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
             var agent = new AnthropicAgent("TestAgent", anthropicClient);
 
@@ -267,7 +276,9 @@ public class BasicConversationTests : LoggingTestBase
 
             Assert.True(File.Exists(requestPath));
             Assert.True(File.Exists(responsePath));
-            var lines = (await File.ReadAllLinesAsync(responsePath)).Where(line => !string.IsNullOrWhiteSpace(line)).ToList();
+            var lines = (await File.ReadAllLinesAsync(responsePath))
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .ToList();
             Assert.True(lines.Count > 1);
         }
         finally

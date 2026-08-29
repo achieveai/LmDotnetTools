@@ -21,9 +21,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
     private const string Scope = "achieveai/lmdotnettools:open-prs";
 
     public PrPollingServiceTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     [Fact]
     public async Task First_poll_resyncs_discovers_prs_creates_runs_and_advances_the_cursor()
@@ -97,20 +95,25 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         var provider = new MockPrProvider(
             Provider,
             [DescribedDescriptor("118", "Rank knowledge on what the PR says", "Siblings share no path token.")],
-            NextCursor());
+            NextCursor()
+        );
         var poller = BuildPoller(store, provider);
 
         await poller.PollOnceAsync(CancellationToken.None);
 
         var repoId = store.EnsureRepo(SampleRepo());
         var run = store.CreateOrGetReviewRun(SeedFor(repoId, "118"));
-        run.PrTitle.Should().Be(
-            "Rank knowledge on what the PR says",
-            "the title is captured at poll time because the Reviewed stage runs after the poll page is gone, "
-                + "and possibly in a different process");
-        run.PrDescription.Should().Be(
-            "Siblings share no path token.",
-            "the description is the other half of the same retrieval key and rides the same hop");
+        run.PrTitle.Should()
+            .Be(
+                "Rank knowledge on what the PR says",
+                "the title is captured at poll time because the Reviewed stage runs after the poll page is gone, "
+                    + "and possibly in a different process"
+            );
+        run.PrDescription.Should()
+            .Be(
+                "Siblings share no path token.",
+                "the description is the other half of the same retrieval key and rides the same hop"
+            );
     }
 
     [Fact]
@@ -118,12 +121,26 @@ public sealed class PrPollingServiceTests : LoggingTestBase
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
-        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
         // Provider registered for "github" but the target asks for "azure-devops".
         var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
-        var target = new PrPollTarget { Provider = "azure-devops", Repo = SampleRepo(), Scope = Scope };
+        var target = new PrPollTarget
+        {
+            Provider = "azure-devops",
+            Repo = SampleRepo(),
+            Scope = Scope,
+        };
         var poller = new PrPollingService(
-            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+            [target],
+            [provider],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>()
+        );
 
         var act = async () => await poller.PollOnceAsync(CancellationToken.None);
 
@@ -139,17 +156,35 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         var provider = new MockPrProvider(Provider, [PrDescriptor("118"), PrDescriptor("119")], NextCursor());
         // PR 118's orchestration throws; 119 must still be processed to completion.
         var orchestrator = new PrOrchestrator(
-            store, new RecordingStageExecutor(throwForPrId: "118"), LoggerFactory.CreateLogger<PrOrchestrator>());
-        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
+            store,
+            new RecordingStageExecutor(throwForPrId: "118"),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var target = new PrPollTarget
+        {
+            Provider = Provider,
+            Repo = SampleRepo(),
+            Scope = Scope,
+        };
         var poller = new PrPollingService(
-            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+            [target],
+            [provider],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>()
+        );
 
         var act = async () => await poller.PollOnceAsync(CancellationToken.None);
 
         await act.Should().NotThrowAsync("one poison PR must not abort the poll cycle");
         var repoId = store.EnsureRepo(SampleRepo());
-        store.CreateOrGetReviewRun(SeedFor(repoId, "119")).Stage.Should().Be(ReviewStage.Posted, "the healthy PR completed");
-        store.CreateOrGetReviewRun(SeedFor(repoId, "118")).WorkflowStatus.Should()
+        store
+            .CreateOrGetReviewRun(SeedFor(repoId, "119"))
+            .Stage.Should()
+            .Be(ReviewStage.Posted, "the healthy PR completed");
+        store
+            .CreateOrGetReviewRun(SeedFor(repoId, "118"))
+            .WorkflowStatus.Should()
             .Be(WorkflowStatus.RetryPending, "the failed PR is left for reconcile, not lost");
     }
 
@@ -160,20 +195,41 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         using var store = new ReviewStore(db.ConnectionString);
         var poison = new ThrowingPrProvider("azure-devops");
         var healthy = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
-        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
         var targets = new[]
         {
-            new PrPollTarget { Provider = "azure-devops", Repo = SampleRepo(), Scope = "ado:active" },
-            new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope },
+            new PrPollTarget
+            {
+                Provider = "azure-devops",
+                Repo = SampleRepo(),
+                Scope = "ado:active",
+            },
+            new PrPollTarget
+            {
+                Provider = Provider,
+                Repo = SampleRepo(),
+                Scope = Scope,
+            },
         };
         var poller = new PrPollingService(
-            targets, [poison, healthy], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+            targets,
+            [poison, healthy],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>()
+        );
 
         var act = async () => await poller.PollOnceAsync(CancellationToken.None);
 
         await act.Should().NotThrowAsync("a failing target must not abort the whole cycle");
         var repoId = store.EnsureRepo(SampleRepo());
-        store.CreateOrGetReviewRun(SeedFor(repoId, "118")).Stage.Should()
+        store
+            .CreateOrGetReviewRun(SeedFor(repoId, "118"))
+            .Stage.Should()
             .Be(ReviewStage.Posted, "the healthy target's PR was still processed");
     }
 
@@ -182,15 +238,19 @@ public sealed class PrPollingServiceTests : LoggingTestBase
     {
         public string Provider { get; } = provider;
 
-        public Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("simulated provider failure");
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(
+            PrPollRequest request,
+            CancellationToken cancellationToken
+        ) => throw new InvalidOperationException("simulated provider failure");
 
         public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("simulated provider failure");
 
         public Task<string?> GetCurrentHeadShaAsync(
-            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("simulated provider failure");
+            RepoIdentity repo,
+            string prId,
+            CancellationToken cancellationToken
+        ) => throw new InvalidOperationException("simulated provider failure");
     }
 
     [Fact]
@@ -206,21 +266,44 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         var undated = DatedDescriptor("202", updatedAt: null);
         var provider = new MockPrProvider(Provider, [recent, stale, undated], NextCursor());
         var orchestrator = new PrOrchestrator(
-            store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
-        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope, MaxPrAgeDays = 7 };
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var target = new PrPollTarget
+        {
+            Provider = Provider,
+            Repo = SampleRepo(),
+            Scope = Scope,
+            MaxPrAgeDays = 7,
+        };
         var poller = new PrPollingService(
-            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>(),
-            timeProvider: new FixedTimeProvider(now));
+            [target],
+            [provider],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>(),
+            timeProvider: new FixedTimeProvider(now)
+        );
 
         await poller.PollOnceAsync(CancellationToken.None);
 
         var repoId = store.EnsureRepo(SampleRepo());
-        store.CreateOrGetReviewRun(SeedFor(repoId, "200")).Stage.Should()
+        store
+            .CreateOrGetReviewRun(SeedFor(repoId, "200"))
+            .Stage.Should()
             .Be(ReviewStage.Posted, "the recent PR is inside the window and was reviewed");
-        store.CreateOrGetReviewRun(SeedFor(repoId, "202")).Stage.Should()
+        store
+            .CreateOrGetReviewRun(SeedFor(repoId, "202"))
+            .Stage.Should()
             .Be(ReviewStage.Posted, "an undated PR is kept — the filter never silently drops a PR it can't date");
-        store.CreateOrGetReviewRun(SeedFor(repoId, "201")).Stage.Should()
-            .Be(ReviewStage.Discovered, "the stale PR was filtered out before orchestration, so this call just created it fresh");
+        store
+            .CreateOrGetReviewRun(SeedFor(repoId, "201"))
+            .Stage.Should()
+            .Be(
+                ReviewStage.Discovered,
+                "the stale PR was filtered out before orchestration, so this call just created it fresh"
+            );
     }
 
     [Fact]
@@ -233,16 +316,32 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         var ancient = DatedDescriptor("201", updatedAt: now.AddDays(-365));
         var provider = new MockPrProvider(Provider, [ancient], NextCursor());
         var orchestrator = new PrOrchestrator(
-            store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
-        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope, MaxPrAgeDays = 0 };
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var target = new PrPollTarget
+        {
+            Provider = Provider,
+            Repo = SampleRepo(),
+            Scope = Scope,
+            MaxPrAgeDays = 0,
+        };
         var poller = new PrPollingService(
-            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>(),
-            timeProvider: new FixedTimeProvider(now));
+            [target],
+            [provider],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>(),
+            timeProvider: new FixedTimeProvider(now)
+        );
 
         await poller.PollOnceAsync(CancellationToken.None);
 
         var repoId = store.EnsureRepo(SampleRepo());
-        store.CreateOrGetReviewRun(SeedFor(repoId, "201")).Stage.Should()
+        store
+            .CreateOrGetReviewRun(SeedFor(repoId, "201"))
+            .Stage.Should()
             .Be(ReviewStage.Posted, "with the filter off (0), even a year-old PR is reviewed");
     }
 
@@ -255,16 +354,34 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         var now = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
         var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
         var orchestrator = new PrOrchestrator(
-            store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
-        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope, MaxPrAgeDays = 7 };
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var target = new PrPollTarget
+        {
+            Provider = Provider,
+            Repo = SampleRepo(),
+            Scope = Scope,
+            MaxPrAgeDays = 7,
+        };
         var poller = new PrPollingService(
-            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>(),
-            timeProvider: new FixedTimeProvider(now));
+            [target],
+            [provider],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>(),
+            timeProvider: new FixedTimeProvider(now)
+        );
 
         await poller.PollOnceAsync(CancellationToken.None);
 
-        provider.LastRecencyCutoff.Should()
-            .Be(now - TimeSpan.FromDays(7), "the poller hands the provider the window cutoff to resolve a last-activity signal");
+        provider
+            .LastRecencyCutoff.Should()
+            .Be(
+                now - TimeSpan.FromDays(7),
+                "the poller hands the provider the window cutoff to resolve a last-activity signal"
+            );
     }
 
     [Fact]
@@ -275,10 +392,23 @@ public sealed class PrPollingServiceTests : LoggingTestBase
 
         var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
         var orchestrator = new PrOrchestrator(
-            store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
-        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var target = new PrPollTarget
+        {
+            Provider = Provider,
+            Repo = SampleRepo(),
+            Scope = Scope,
+        };
         var poller = new PrPollingService(
-            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+            [target],
+            [provider],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>()
+        );
 
         await poller.PollOnceAsync(CancellationToken.None);
 
@@ -310,15 +440,13 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             store,
             new MockPrProvider(Provider, [], NextCursor()),
             logger,
-            _ => throw new MaintenanceSweepException("eval-corpus", new IOException("the store is gone")));
+            _ => throw new MaintenanceSweepException("eval-corpus", new IOException("the store is gone"))
+        );
 
         var kept = await poller.RunMaintenanceSweepAsync(CancellationToken.None);
 
         kept.Should().BeTrue("a failed sweep is logged, never a reason to stop the poller");
-        logger
-            .CountAtLevel(LogLevel.Error, "The eval-corpus maintenance sweep failed")
-            .Should()
-            .Be(1);
+        logger.CountAtLevel(LogLevel.Error, "The eval-corpus maintenance sweep failed").Should().Be(1);
         logger
             .CountAtLevel(LogLevel.Error, "PR-lifecycle")
             .Should()
@@ -343,7 +471,8 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             store,
             new MockPrProvider(Provider, [], NextCursor()),
             logger,
-            _ => throw new InvalidOperationException("raw"));
+            _ => throw new InvalidOperationException("raw")
+        );
 
         (await poller.RunMaintenanceSweepAsync(CancellationToken.None)).Should().BeTrue();
 
@@ -368,7 +497,8 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             store,
             new MockPrProvider(Provider, [], NextCursor()),
             logger,
-            ct => throw new OperationCanceledException(ct));
+            ct => throw new OperationCanceledException(ct)
+        );
 
         var kept = await poller.RunMaintenanceSweepAsync(stopping.Token);
 
@@ -390,13 +520,19 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         using var store = new ReviewStore(db.ConnectionString);
         SeedFirstReview(store, "No new findings since the last review.");
         var progress = new CapturingLogger<ReviewProgressReporter>();
-        var poller = BuildPoller(store, new MockPrProvider(Provider, [], NextCursor()), new ReviewProgressReporter(progress));
+        var poller = BuildPoller(
+            store,
+            new MockPrProvider(Provider, [], NextCursor()),
+            new ReviewProgressReporter(progress)
+        );
 
         await poller.StartAsync(CancellationToken.None);
         await poller.StopAsync(CancellationToken.None);
 
-        progress.CountAtLevel(LogLevel.Warning, "on a PR that had no last review").Should().Be(
-            1, "a first-ever review cannot have findings to be new since, so a non-zero count is the alarm");
+        progress
+            .CountAtLevel(LogLevel.Warning, "on a PR that had no last review")
+            .Should()
+            .Be(1, "a first-ever review cannot have findings to be new since, so a non-zero count is the alarm");
     }
 
     [Fact]
@@ -406,14 +542,20 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         using var store = new ReviewStore(db.ConnectionString);
         SeedFirstReview(store, "## Review\nMust: null check missing in Foo.cs:10.");
         var progress = new CapturingLogger<ReviewProgressReporter>();
-        var poller = BuildPoller(store, new MockPrProvider(Provider, [], NextCursor()), new ReviewProgressReporter(progress));
+        var poller = BuildPoller(
+            store,
+            new MockPrProvider(Provider, [], NextCursor()),
+            new ReviewProgressReporter(progress)
+        );
 
         await poller.StartAsync(CancellationToken.None);
         await poller.StopAsync(CancellationToken.None);
 
         progress.CountAtLevel(LogLevel.Information, "That is the healthy value.").Should().Be(1);
-        progress.CountAtLevel(LogLevel.Warning, "on a PR that had no last review").Should().Be(
-            0, "a real review is not the sentinel and must not be counted as one");
+        progress
+            .CountAtLevel(LogLevel.Warning, "on a PR that had no last review")
+            .Should()
+            .Be(0, "a real review is not the sentinel and must not be counted as one");
     }
 
     /// <summary>
@@ -431,16 +573,24 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         var clock = new FakeTimeProvider(DateTimeOffset.UtcNow.AddDays(2));
         var progress = new CapturingLogger<ReviewProgressReporter>();
         var poller = BuildPoller(
-            store, new MockPrProvider(Provider, [], NextCursor()), new ReviewProgressReporter(progress),
-            timeProvider: clock, lookbackDays: 1);
+            store,
+            new MockPrProvider(Provider, [], NextCursor()),
+            new ReviewProgressReporter(progress),
+            timeProvider: clock,
+            lookbackDays: 1
+        );
 
         await poller.StartAsync(CancellationToken.None);
         await poller.StopAsync(CancellationToken.None);
 
-        progress.CountAtLevel(LogLevel.Warning, "on a PR that had no last review").Should().Be(
-            0, "a sentinel from before the window is history, not a statement about the fleet now");
-        progress.CountAtLevel(LogLevel.Information, "nothing to report yet").Should().Be(
-            1, "and the empty window says so rather than reporting a healthy count it did not measure");
+        progress
+            .CountAtLevel(LogLevel.Warning, "on a PR that had no last review")
+            .Should()
+            .Be(0, "a sentinel from before the window is history, not a statement about the fleet now");
+        progress
+            .CountAtLevel(LogLevel.Information, "nothing to report yet")
+            .Should()
+            .Be(1, "and the empty window says so rather than reporting a healthy count it did not measure");
     }
 
     /// <summary>A PR whose one and only review carries <paramref name="reviewText"/>, on the primary variant,
@@ -449,14 +599,16 @@ public sealed class PrPollingServiceTests : LoggingTestBase
     {
         var repoId = store.EnsureRepo(SampleRepo());
         var run = store.CreateOrGetReviewRun(SeedFor(repoId, "118"));
-        _ = store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
-            Provider = Provider,
-            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(reviewText, "run-1", "primary")),
-        });
+        _ = store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Provider = Provider,
+                Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(reviewText, "run-1", "primary")),
+            }
+        );
     }
 
     private PrPollingService BuildPoller(
@@ -464,56 +616,98 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         IPrProvider provider,
         ReviewProgressReporter progress,
         TimeProvider? timeProvider = null,
-        int? lookbackDays = null)
+        int? lookbackDays = null
+    )
     {
-        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
-        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var target = new PrPollTarget
+        {
+            Provider = Provider,
+            Repo = SampleRepo(),
+            Scope = Scope,
+        };
         return new PrPollingService(
-            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>(),
-            timeProvider: timeProvider, progress: progress, firstReviewLookbackDays: lookbackDays);
+            [target],
+            [provider],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>(),
+            timeProvider: timeProvider,
+            progress: progress,
+            firstReviewLookbackDays: lookbackDays
+        );
     }
 
     private PrPollingService BuildPoller(
         ReviewStore store,
         IPrProvider provider,
         ILogger<PrPollingService> logger,
-        Func<CancellationToken, Task> sweepAsync)
+        Func<CancellationToken, Task> sweepAsync
+    )
     {
-        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
-        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
-        return new PrPollingService(
-            [target], [provider], store, orchestrator, logger, sweepAsync: sweepAsync);
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var target = new PrPollTarget
+        {
+            Provider = Provider,
+            Repo = SampleRepo(),
+            Scope = Scope,
+        };
+        return new PrPollingService([target], [provider], store, orchestrator, logger, sweepAsync: sweepAsync);
     }
 
     private PrPollingService BuildPoller(ReviewStore store, IPrProvider provider)
     {
-        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
-        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var target = new PrPollTarget
+        {
+            Provider = Provider,
+            Repo = SampleRepo(),
+            Scope = Scope,
+        };
         return new PrPollingService(
-            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+            [target],
+            [provider],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>()
+        );
     }
 
-    private static OpaqueCursor NextCursor() => new()
-    {
-        Provider = Provider,
-        Scope = Scope,
-        CursorVersion = PrPollingService.CursorVersion,
-        CursorPayload = "{\"page\":2}",
-        HighWaterMark = "2026-06-01T00:00:00Z",
-    };
+    private static OpaqueCursor NextCursor() =>
+        new()
+        {
+            Provider = Provider,
+            Scope = Scope,
+            CursorVersion = PrPollingService.CursorVersion,
+            CursorPayload = "{\"page\":2}",
+            HighWaterMark = "2026-06-01T00:00:00Z",
+        };
 
-    private static PullRequestDescriptor PrDescriptor(string prId) => new()
-    {
-        PrId = prId,
-        HeadSha = $"head-{prId}",
-        BaseSha = "base-sha",
-        TriggerWatermark = "wm-1",
-        LifecycleState = PrLifecycleState.Open,
-    };
+    private static PullRequestDescriptor PrDescriptor(string prId) =>
+        new()
+        {
+            PrId = prId,
+            HeadSha = $"head-{prId}",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            LifecycleState = PrLifecycleState.Open,
+        };
 
     /// <summary>A discovered PR carrying the author's prose — the ranking input schema v7 persists.</summary>
-    private static PullRequestDescriptor DescribedDescriptor(
-        string prId, string? title, string? description) => new()
+    private static PullRequestDescriptor DescribedDescriptor(string prId, string? title, string? description) =>
+        new()
         {
             PrId = prId,
             HeadSha = $"head-{prId}",
@@ -525,7 +719,11 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         };
 
     private static PullRequestDescriptor DatedDescriptor(
-        string prId, DateTimeOffset? updatedAt, DateTimeOffset? createdAt = null) => new()
+        string prId,
+        DateTimeOffset? updatedAt,
+        DateTimeOffset? createdAt = null
+    ) =>
+        new()
         {
             PrId = prId,
             HeadSha = $"head-{prId}",
@@ -536,26 +734,28 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             UpdatedAt = updatedAt,
         };
 
-    private static RepoIdentity SampleRepo() => new()
-    {
-        Provider = Provider,
-        OrgOrOwner = "achieveai",
-        RepoName = "LmDotnetTools",
-        RepoStableId = "R_node_123",
-    };
+    private static RepoIdentity SampleRepo() =>
+        new()
+        {
+            Provider = Provider,
+            OrgOrOwner = "achieveai",
+            RepoName = "LmDotnetTools",
+            RepoStableId = "R_node_123",
+        };
 
-    private static ReviewRun SeedFor(long repoId, string prId) => new()
-    {
-        RepoId = repoId,
-        PrId = prId,
-        HeadSha = $"head-{prId}",
-        BaseSha = "base-sha",
-        TriggerWatermark = "wm-1",
-        ReviewKind = "full",
-        VariantId = "primary",
-        Mode = "collect-only",
-        Stage = ReviewStage.Discovered,
-        WorkflowStatus = WorkflowStatus.Pending,
-        PrLifecycleState = PrLifecycleState.Open,
-    };
+    private static ReviewRun SeedFor(long repoId, string prId) =>
+        new()
+        {
+            RepoId = repoId,
+            PrId = prId,
+            HeadSha = $"head-{prId}",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "collect-only",
+            Stage = ReviewStage.Discovered,
+            WorkflowStatus = WorkflowStatus.Pending,
+            PrLifecycleState = PrLifecycleState.Open,
+        };
 }

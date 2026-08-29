@@ -42,9 +42,7 @@ public class HttpHeaderContextResolver : IToolDescriptionContextResolver
     /// </summary>
     /// <param name="httpContextAccessor">The HTTP context accessor.</param>
     public HttpHeaderContextResolver(IHttpContextAccessor httpContextAccessor)
-        : this(httpContextAccessor, DefaultHeaderName)
-    {
-    }
+        : this(httpContextAccessor, DefaultHeaderName) { }
 
     /// <summary>
     /// Initializes a new instance with a custom header name.
@@ -67,7 +65,6 @@ public class HttpHeaderContextResolver : IToolDescriptionContextResolver
         }
 
         // Try header first, then fall back to query parameter (for clients that don't support HTTP headers, e.g. Codex MCP)
-        return request.Headers[HeaderName].FirstOrDefault()
-            ?? request.Query[HeaderName].FirstOrDefault();
+        return request.Headers[HeaderName].FirstOrDefault() ?? request.Query[HeaderName].FirstOrDefault();
     }
 }

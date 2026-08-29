@@ -62,7 +62,11 @@ public class JsonFragmentUpdateMiddlewareTests
     )
     {
         // Arrange
-        TestContextLogger.LogDebug("Testing function call parse. FunctionName: {FunctionName}, FunctionArgs: {FunctionArgs}", functionName, functionArgs);
+        TestContextLogger.LogDebug(
+            "Testing function call parse. FunctionName: {FunctionName}, FunctionArgs: {FunctionArgs}",
+            functionName,
+            functionArgs
+        );
 
         var middleware = new JsonFragmentUpdateMiddleware();
         var toolCallUpdate = new ToolCallUpdate
@@ -101,7 +105,10 @@ public class JsonFragmentUpdateMiddlewareTests
             Assert.NotNull(processedUpdate.JsonFragmentUpdates);
             Assert.NotEmpty(processedUpdate.JsonFragmentUpdates);
 
-            TestContextLogger.LogDebug("JsonFragmentUpdates count: {UpdateCount}", processedUpdate.JsonFragmentUpdates.Count);
+            TestContextLogger.LogDebug(
+                "JsonFragmentUpdates count: {UpdateCount}",
+                processedUpdate.JsonFragmentUpdates.Count
+            );
             foreach (var update in processedUpdate.JsonFragmentUpdates)
             {
                 TestContextLogger.LogDebug(
@@ -176,7 +183,10 @@ public class JsonFragmentUpdateMiddlewareTests
             var processedUpdate = processedMessage.ToolCallUpdates[0];
             Assert.NotNull(processedUpdate.JsonFragmentUpdates);
 
-            TestContextLogger.LogDebug("Message has fragment updates. Count: {UpdateCount}", processedUpdate.JsonFragmentUpdates.Count);
+            TestContextLogger.LogDebug(
+                "Message has fragment updates. Count: {UpdateCount}",
+                processedUpdate.JsonFragmentUpdates.Count
+            );
             foreach (var update in processedUpdate.JsonFragmentUpdates)
             {
                 TestContextLogger.LogDebug(
@@ -367,7 +377,9 @@ public class JsonFragmentUpdateMiddlewareTests
     [Fact]
     public void ProcessAsync_WithCompleteJsonToolCall_IncludesJsonCompleteEvent()
     {
-        TestContextLogger.LogDebugMessage("Testing ProcessAsync with complete JSON tool call includes JsonComplete event");
+        TestContextLogger.LogDebugMessage(
+            "Testing ProcessAsync with complete JSON tool call includes JsonComplete event"
+        );
 
         var middleware = new JsonFragmentUpdateMiddleware();
 
@@ -405,7 +417,10 @@ public class JsonFragmentUpdateMiddlewareTests
         Assert.Equal("{\"message\": \"Hello World\"}", completeEvent.TextValue);
 
         TestContextLogger.LogDebug("JsonComplete event found. Value: {JsonValue}", completeEvent.TextValue);
-        TestContextLogger.LogDebug("Total fragment updates: {UpdateCount}", processedToolCall.JsonFragmentUpdates.Count);
+        TestContextLogger.LogDebug(
+            "Total fragment updates: {UpdateCount}",
+            processedToolCall.JsonFragmentUpdates.Count
+        );
     }
 
     /// <summary>
@@ -460,7 +475,11 @@ public class JsonFragmentUpdateMiddlewareTests
     )
     {
         // Arrange
-        TestContextLogger.LogDebug("Testing singular parse. FunctionName: {FunctionName}, FunctionArgs: {FunctionArgs}", functionName, functionArgs);
+        TestContextLogger.LogDebug(
+            "Testing singular parse. FunctionName: {FunctionName}, FunctionArgs: {FunctionArgs}",
+            functionName,
+            functionArgs
+        );
 
         var middleware = new JsonFragmentUpdateMiddleware();
         var toolCallUpdateMessage = new ToolCallUpdateMessage
@@ -714,13 +733,14 @@ public class JsonFragmentUpdateMiddlewareTests
             new ToolsCallUpdateMessage
             {
                 Role = Role.Assistant,
-                ToolCallUpdates = [
+                ToolCallUpdates =
+                [
                     new ToolCallUpdate
                     {
                         ToolCallId = "plural-call",
                         FunctionName = "plural_function",
                         FunctionArgs = "{\"type\":\"plural\"}",
-                    }
+                    },
                 ],
             },
         };

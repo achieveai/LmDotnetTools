@@ -620,9 +620,8 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
     private static Role ParseRoleProperty(JsonElement element, Role defaultRole)
     {
         return !element.TryGetProperty("role", out var roleProperty) || roleProperty.ValueKind != JsonValueKind.String
-            ? defaultRole
-            : Enum.TryParse<Role>(roleProperty.GetString(), ignoreCase: true, out var parsedRole)
-            ? parsedRole
+                ? defaultRole
+            : Enum.TryParse<Role>(roleProperty.GetString(), ignoreCase: true, out var parsedRole) ? parsedRole
             : defaultRole;
     }
 }

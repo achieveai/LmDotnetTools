@@ -106,13 +106,7 @@ public sealed class RubricPromptRendererTests
     [Fact]
     public void Turning_reasoning_first_off_flips_the_schema_order()
     {
-        var prompt = Render(
-            HarnessFixtures.Candidate(),
-            Rubric with
-            {
-                RequireReasoningBeforeScore = false,
-            }
-        );
+        var prompt = Render(HarnessFixtures.Candidate(), Rubric with { RequireReasoningBeforeScore = false });
 
         prompt
             .IndexOf("\"scores\"", StringComparison.Ordinal)

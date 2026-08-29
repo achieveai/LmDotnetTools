@@ -171,7 +171,8 @@ internal sealed class AdoWorkItemContextReader
     public AdoWorkItemContextReader(
         HttpClient httpClient,
         IOAuthTokenProvider tokenProvider,
-        ILogger<AdoWorkItemContextReader> logger)
+        ILogger<AdoWorkItemContextReader> logger
+    )
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _tokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
@@ -189,10 +190,7 @@ internal sealed class AdoWorkItemContextReader
     /// <see cref="AdoWorkItemContext.Failed"/> when the ask could not be completed, and never an exception for
     /// a failed read.
     /// </returns>
-    public async Task<AdoWorkItemContext> ReadAsync(
-        RepoIdentity repo,
-        string prId,
-        CancellationToken cancellationToken)
+    public async Task<AdoWorkItemContext> ReadAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(repo);
         ArgumentException.ThrowIfNullOrEmpty(prId);
@@ -218,7 +216,10 @@ internal sealed class AdoWorkItemContextReader
             {
                 _logger.LogDebug(
                     "ADO PR {PrId} on {Org}/{Project} links no work item; the brief says so explicitly.",
-                    prId, repo.OrgOrOwner, repo.Project);
+                    prId,
+                    repo.OrgOrOwner,
+                    repo.Project
+                );
                 return AdoWorkItemContext.NoneLinked;
             }
 
@@ -238,7 +239,8 @@ internal sealed class AdoWorkItemContextReader
                 context.Items.Count == 0 ? 0 : context.Items.Max(static i => i.Depth) + 1,
                 context.OmittedItems,
                 context.DepthCapReached,
-                string.Join(", ", context.Items.Select(static i => i.WorkItemType ?? "(untyped)").Distinct()));
+                string.Join(", ", context.Items.Select(static i => i.WorkItemType ?? "(untyped)").Distinct())
+            );
 
             return context;
         }
@@ -259,7 +261,8 @@ internal sealed class AdoWorkItemContextReader
                 "ADO work-item read for {Org}/{Project} PR {PrId} failed; the brief will say the lookup failed.",
                 repo.OrgOrOwner,
                 repo.Project,
-                prId);
+                prId
+            );
             return AdoWorkItemContext.Failed;
         }
     }
@@ -273,7 +276,8 @@ internal sealed class AdoWorkItemContextReader
     private async Task<IReadOnlyList<int>?> ReadLinkedWorkItemIdsAsync(
         RepoIdentity repo,
         string prId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var url =
             $"{BaseUrl}/{repo.OrgOrOwner}/{repo.Project}/_apis/git/repositories/{repo.RepoName}"
@@ -282,9 +286,11 @@ internal sealed class AdoWorkItemContextReader
 
         using var document = await GetJsonAsync(url, "pull request work items", cancellationToken)
             .ConfigureAwait(false);
-        if (document is null
+        if (
+            document is null
             || !document.RootElement.TryGetProperty("value", out var refs)
-            || refs.ValueKind is not JsonValueKind.Array)
+            || refs.ValueKind is not JsonValueKind.Array
+        )
         {
             return null;
         }
@@ -319,7 +325,8 @@ internal sealed class AdoWorkItemContextReader
         RepoIdentity repo,
         string prId,
         IReadOnlyList<int> linkedIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var items = new List<AdoWorkItem>();
         var seen = new HashSet<int>();
@@ -398,7 +405,8 @@ internal sealed class AdoWorkItemContextReader
         IReadOnlyList<int> candidates,
         HashSet<int> seen,
         int alreadyCollected,
-        ref int omitted)
+        ref int omitted
+    )
     {
         var admitted = new List<int>();
         foreach (var id in candidates)
@@ -427,7 +435,8 @@ internal sealed class AdoWorkItemContextReader
     private async Task<IReadOnlyList<(AdoWorkItem Item, int? ParentId)>?> ReadWorkItemsAsync(
         RepoIdentity repo,
         IReadOnlyList<int> ids,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var url =
             $"{BaseUrl}/{repo.OrgOrOwner}/{repo.Project}/_apis/wit/workitems"
@@ -436,9 +445,11 @@ internal sealed class AdoWorkItemContextReader
             + $"&api-version={ApiVersion}";
 
         using var document = await GetJsonAsync(url, "work items", cancellationToken).ConfigureAwait(false);
-        if (document is null
+        if (
+            document is null
             || !document.RootElement.TryGetProperty("value", out var values)
-            || values.ValueKind is not JsonValueKind.Array)
+            || values.ValueKind is not JsonValueKind.Array
+        )
         {
             return null;
         }
@@ -452,28 +463,31 @@ internal sealed class AdoWorkItemContextReader
             }
 
             var parentId = ParentIdOf(value);
-            parsed.Add((
-                new AdoWorkItem
-                {
-                    Id = id,
-                    // ALL THREE are condensed, not just the title. Type and state are conventionally short
-                    // words, which is a convention of how the tracker is used and not a rule the API enforces:
-                    // on ADO the pull request author can edit the linked work item, and a type carrying line
-                    // endings forges list entries and notices in a block whose structure the reviewer reads as
-                    // the daemon's own. Condensing here rather than at the render also keeps the newlines out
-                    // of the structured log line below, which joins these types raw.
-                    WorkItemType = Condense(FieldOf(value, "System.WorkItemType")),
-                    Title = Condense(FieldOf(value, "System.Title")),
-                    State = Condense(FieldOf(value, "System.State")),
-                    ParentId = parentId,
+            parsed.Add(
+                (
+                    new AdoWorkItem
+                    {
+                        Id = id,
+                        // ALL THREE are condensed, not just the title. Type and state are conventionally short
+                        // words, which is a convention of how the tracker is used and not a rule the API enforces:
+                        // on ADO the pull request author can edit the linked work item, and a type carrying line
+                        // endings forges list entries and notices in a block whose structure the reviewer reads as
+                        // the daemon's own. Condensing here rather than at the render also keeps the newlines out
+                        // of the structured log line below, which joins these types raw.
+                        WorkItemType = Condense(FieldOf(value, "System.WorkItemType")),
+                        Title = Condense(FieldOf(value, "System.Title")),
+                        State = Condense(FieldOf(value, "System.State")),
+                        ParentId = parentId,
 
-                    // Overwritten by the caller, which is the only place that knows the level. Required
-                    // members have to be set somewhere, and a wrong-but-unused 0 here would be a value the
-                    // caller could forget to correct — so the caller's `with { Depth = depth }` is the single
-                    // assignment that counts.
-                    Depth = 0,
-                },
-                parentId));
+                        // Overwritten by the caller, which is the only place that knows the level. Required
+                        // members have to be set somewhere, and a wrong-but-unused 0 here would be a value the
+                        // caller could forget to correct — so the caller's `with { Depth = depth }` is the single
+                        // assignment that counts.
+                        Depth = 0,
+                    },
+                    parentId
+                )
+            );
         }
 
         return parsed;
@@ -491,18 +505,20 @@ internal sealed class AdoWorkItemContextReader
     /// </summary>
     private static int? ParentIdOf(JsonElement workItem)
     {
-        if (!workItem.TryGetProperty("relations", out var relations)
-            || relations.ValueKind is not JsonValueKind.Array)
+        if (!workItem.TryGetProperty("relations", out var relations) || relations.ValueKind is not JsonValueKind.Array)
         {
             return null;
         }
 
         foreach (var relation in relations.EnumerateArray())
         {
-            if (!string.Equals(
+            if (
+                !string.Equals(
                     StringOf(relation, "rel"),
                     "System.LinkTypes.Hierarchy-Reverse",
-                    StringComparison.OrdinalIgnoreCase))
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
             {
                 continue;
             }
@@ -549,8 +565,7 @@ internal sealed class AdoWorkItemContextReader
     /// <summary>An id property that ADO sends as a number on one route and a string on the other.</summary>
     private static int? IdOf(JsonElement element, string property)
     {
-        if (element.ValueKind is not JsonValueKind.Object
-            || !element.TryGetProperty(property, out var value))
+        if (element.ValueKind is not JsonValueKind.Object || !element.TryGetProperty(property, out var value))
         {
             return null;
         }
@@ -558,8 +573,8 @@ internal sealed class AdoWorkItemContextReader
         return value.ValueKind switch
         {
             JsonValueKind.Number when value.TryGetInt32(out var id) => id,
-            JsonValueKind.String when int.TryParse(
-                value.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out var id) => id,
+            JsonValueKind.String
+                when int.TryParse(value.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out var id) => id,
             _ => null,
         };
     }
@@ -577,8 +592,9 @@ internal sealed class AdoWorkItemContextReader
     /// </summary>
     private async Task<JsonDocument?> GetJsonAsync(string url, string label, CancellationToken cancellationToken)
     {
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-            .WithOperation(SandboxOperation.ReadProviderMetadata);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
         var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
@@ -590,7 +606,8 @@ internal sealed class AdoWorkItemContextReader
             _logger.LogDebug(
                 "ADO work-item {Label} fetch returned {Status}; that part of the lookup stays unread.",
                 label,
-                (int)response.StatusCode);
+                (int)response.StatusCode
+            );
             return null;
         }
 

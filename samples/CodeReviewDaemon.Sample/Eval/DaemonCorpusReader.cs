@@ -91,18 +91,12 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     )
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
-        _familyResolver =
-            familyResolver ?? throw new ArgumentNullException(nameof(familyResolver));
+        _familyResolver = familyResolver ?? throw new ArgumentNullException(nameof(familyResolver));
         _logger = logger;
     }
 
     /// <inheritdoc />
-    public Task<CorpusPage> LoadAsync(
-        string corpusId,
-        long afterCursor,
-        int limit,
-        CancellationToken cancellationToken
-    )
+    public Task<CorpusPage> LoadAsync(string corpusId, long afterCursor, int limit, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(corpusId);
         ArgumentOutOfRangeException.ThrowIfNegative(afterCursor);
@@ -134,10 +128,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
 
             var artifacts = _store.GetArtifacts(run.Id);
 
-            var context = Latest<ContextArtifactPayload>(
-                artifacts,
-                DaemonReviewStageExecutor.ContextArtifactKind
-            );
+            var context = Latest<ContextArtifactPayload>(artifacts, DaemonReviewStageExecutor.ContextArtifactKind);
 
             if (context is null || string.IsNullOrWhiteSpace(context.Diff))
             {
@@ -152,10 +143,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                 continue;
             }
 
-            var review = Latest<ReviewArtifactPayload>(
-                artifacts,
-                DaemonReviewStageExecutor.ReviewArtifactKind
-            );
+            var review = Latest<ReviewArtifactPayload>(artifacts, DaemonReviewStageExecutor.ReviewArtifactKind);
 
             if (review is not null && !string.IsNullOrWhiteSpace(review.ReviewText))
             {
@@ -163,8 +151,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                     Build(
                         run,
                         context.Diff,
-                        variantId: Blank(review.VariantId) ?? Blank(run.VariantId)
-                            ?? PrimaryVariantFallback,
+                        variantId: Blank(review.VariantId) ?? Blank(run.VariantId) ?? PrimaryVariantFallback,
                         modelId: EffectiveGeneratorModelId(artifacts, run),
                         content: review.ReviewText,
                         // The primary arm is the one the recorded hash describes: it is what
@@ -174,10 +161,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                 );
             }
 
-            var variant = Latest<VariantReviewArtifactPayload>(
-                artifacts,
-                VariantReviewer.VariantReviewArtifactKind
-            );
+            var variant = Latest<VariantReviewArtifactPayload>(artifacts, VariantReviewer.VariantReviewArtifactKind);
 
             if (variant is not null && !string.IsNullOrWhiteSpace(variant.ReviewText))
             {
@@ -244,9 +228,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                 // because an empty denominator makes every rate over it undefined rather than zero,
                 // and a window in which nothing new was recorded is the normal outcome of a
                 // scheduled sweep rather than an error.
-                Snapshot = candidates.Count > 0
-                    ? CorpusSnapshot.Create(corpusId, candidates)
-                    : null,
+                Snapshot = candidates.Count > 0 ? CorpusSnapshot.Create(corpusId, candidates) : null,
                 NextCursor = nextCursor,
                 Truncated = truncated,
             }
@@ -284,9 +266,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
             GeneratorFamily = _familyResolver(modelId),
             Metadata = new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                [ReviewRunIdMetadataKey] = run.Id.ToString(
-                    System.Globalization.CultureInfo.InvariantCulture
-                ),
+                [ReviewRunIdMetadataKey] = run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["prId"] = run.PrId,
                 ["headSha"] = run.HeadSha,
                 ["baseSha"] = run.BaseSha,
@@ -390,10 +370,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     /// <c>b-variant-review</c> artifact, which is where the B candidate above reads it from.
     /// </para>
     /// </summary>
-    private string? EffectiveGeneratorModelId(
-        IReadOnlyList<ReviewArtifact> artifacts,
-        ReviewRun run
-    )
+    private string? EffectiveGeneratorModelId(IReadOnlyList<ReviewArtifact> artifacts, ReviewRun run)
     {
         var provisional = Latest<ReviewArtifactPayload>(
             artifacts,
@@ -403,6 +380,5 @@ internal sealed class DaemonCorpusReader : ICorpusReader
         return Blank(provisional?.Lifecycle?.ModelId) ?? run.ModelId;
     }
 
-    private static string? Blank(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value;
+    private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 }

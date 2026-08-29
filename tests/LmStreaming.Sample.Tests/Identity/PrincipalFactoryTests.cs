@@ -44,30 +44,33 @@ internal sealed class UnavailableTenantStore : ITenantStore
     public Task<TenantRecord?> FindByEntraTenantIdAsync(string entraTenantId, CancellationToken ct = default) =>
         throw Fail();
 
-    public Task<TenantRecord?> FindByTenantIdAsync(string tenantId, CancellationToken ct = default) =>
-        throw Fail();
+    public Task<TenantRecord?> FindByTenantIdAsync(string tenantId, CancellationToken ct = default) => throw Fail();
 
     public Task<TenantProvisionOutcome> ProvisionAsync(
         TenantRecord tenant,
         string firstAdminUpn,
-        CancellationToken ct = default) => throw Fail();
+        CancellationToken ct = default
+    ) => throw Fail();
 
     public Task<bool> TryBindFirstAdminAsync(
         string tenantId,
         string upn,
         string userId,
         DateTimeOffset boundAt,
-        CancellationToken ct = default) => throw Fail();
+        CancellationToken ct = default
+    ) => throw Fail();
 
     public Task<bool> IsTenantAdminAsync(string tenantId, string userId, CancellationToken ct = default) =>
         throw Fail();
 
-    public Task<EntraTenantNormalizationResult> NormalizeEntraTenantIdsAsync(CancellationToken ct = default) => throw Fail();
+    public Task<EntraTenantNormalizationResult> NormalizeEntraTenantIdsAsync(CancellationToken ct = default) =>
+        throw Fail();
 
     public Task<bool> TryEnsureQuarantineTenantAsync(
         string tenantId,
         DateTimeOffset createdAt,
-        CancellationToken ct = default) => throw Fail();
+        CancellationToken ct = default
+    ) => throw Fail();
 }
 
 /// <summary>Captures log entries so a test can assert on an operator-visible warning.</summary>
@@ -85,7 +88,8 @@ internal sealed class CapturingLogger<T> : ILogger<T>
         EventId eventId,
         TState state,
         Exception? exception,
-        Func<TState, Exception?, string> formatter)
+        Func<TState, Exception?, string> formatter
+    )
     {
         ArgumentNullException.ThrowIfNull(formatter);
         Entries.Add((logLevel, formatter(state, exception)));
@@ -160,8 +164,7 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
         }
     }
 
-    private PrincipalFactory CreateFactory(IdentityOptions? options = null) =>
-        CreateFactory(_store, options);
+    private PrincipalFactory CreateFactory(IdentityOptions? options = null) => CreateFactory(_store, options);
 
     private PrincipalFactory CreateFactory(ITenantStore store, IdentityOptions? options = null) =>
         new(
@@ -169,21 +172,18 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
             _audit,
             Options.Create(options ?? new IdentityOptions()),
             _time,
-            NullLogger<PrincipalFactory>.Instance);
+            NullLogger<PrincipalFactory>.Instance
+        );
 
     private PrincipalFactory CreateFactory(ILogger<PrincipalFactory> logger, IdentityOptions? options = null) =>
-        new(
-            _store,
-            _audit,
-            Options.Create(options ?? new IdentityOptions()),
-            _time,
-            logger);
+        new(_store, _audit, Options.Create(options ?? new IdentityOptions()), _time, logger);
 
     private static ClaimsPrincipal Token(
         string? tid = EntraTenant,
         string? oid = ObjectId,
         string? upn = AdminUpn,
-        string? jti = "jti-1")
+        string? jti = "jti-1"
+    )
     {
         List<Claim> claims = [];
         if (tid is not null)
@@ -211,7 +211,8 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
 
     private Task<TenantProvisionOutcome> ProvisionAsync(
         TenantStatus status = TenantStatus.Active,
-        string firstAdminUpn = AdminUpn) =>
+        string firstAdminUpn = AdminUpn
+    ) =>
         _store.ProvisionAsync(
             new TenantRecord
             {
@@ -222,7 +223,8 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
                 CreatedAt = T0,
                 CreatedBy = "operator",
             },
-            firstAdminUpn);
+            firstAdminUpn
+        );
 
     /// <summary>Counts tenant rows straight from SQL, so the assertion does not depend on the store's API.</summary>
     private async Task<long> CountTenantsAsync()
@@ -342,9 +344,7 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
     [InlineData(null, ObjectId)]
     [InlineData(EntraTenant, null)]
     [InlineData(null, null)]
-    public async Task ATokenMissingEitherHalfOfTheUserKey_IsRefusedAsInvalidAndMayBeRetried(
-        string? tid,
-        string? oid)
+    public async Task ATokenMissingEitherHalfOfTheUserKey_IsRefusedAsInvalidAndMayBeRetried(string? tid, string? oid)
     {
         _ = await ProvisionAsync();
 
@@ -409,10 +409,12 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
     [Fact]
     public async Task ADifferentRefusalReason_IsNotSuppressedByAnEarlierOne()
     {
-        var factory = CreateFactory(new IdentityOptions
-        {
-            Audit = new IdentityAuditOptions { RejectionDeduplicationWindow = TimeSpan.FromMinutes(5) },
-        });
+        var factory = CreateFactory(
+            new IdentityOptions
+            {
+                Audit = new IdentityAuditOptions { RejectionDeduplicationWindow = TimeSpan.FromMinutes(5) },
+            }
+        );
 
         _ = await factory.ResolveInteractiveAsync(Token(), "corr-a");
         _ = await ProvisionAsync(TenantStatus.Suspended);
@@ -421,15 +423,16 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
         // Two different reasons from the same directory inside one window. Keying the throttle on
         // the tenant alone would hide the second, which is the transition an operator most needs
         // to see.
-        _ = _audit.Authentications.Select(r => r.Reason).Should().BeEquivalentTo(
-            [PrincipalResolution.TenantNotProvisioned, PrincipalResolution.TenantSuspended]);
+        _ = _audit
+            .Authentications.Select(r => r.Reason)
+            .Should()
+            .BeEquivalentTo([PrincipalResolution.TenantNotProvisioned, PrincipalResolution.TenantSuspended]);
     }
 
     [Fact]
     public void TheDevelopmentPrincipal_CarriesTheLegacyTenantAndIsInteractive()
     {
-        var principal = CreateFactory(new IdentityOptions { LegacyTenantId = "legacy" })
-            .CreateDevelopmentPrincipal();
+        var principal = CreateFactory(new IdentityOptions { LegacyTenantId = "legacy" }).CreateDevelopmentPrincipal();
 
         _ = principal.TenantId.Should().Be("legacy");
         _ = principal.Source.Should().Be(PrincipalSource.Interactive);
@@ -546,15 +549,10 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
         // The narrowing applies to BINDING, not to the audit trail. An operator diagnosing a
         // refusal needs a human-readable identifier, and that value authorizes nothing - so the
         // wide claim set stays wide exactly here, and nowhere else.
-        var factory = CreateFactory(new IdentityOptions
-        {
-            Audit = new IdentityAuditOptions { IncludeUpn = true },
-        });
+        var factory = CreateFactory(new IdentityOptions { Audit = new IdentityAuditOptions { IncludeUpn = true } });
 
         // No tenant provisioned, so this rejects with tenant_not_provisioned.
-        _ = await factory.ResolveInteractiveAsync(
-            TokenWithIdentifierClaim(ClaimTypes.Email, AdminUpn),
-            "corr-349c");
+        _ = await factory.ResolveInteractiveAsync(TokenWithIdentifierClaim(ClaimTypes.Email, AdminUpn), "corr-349c");
 
         _ = _audit.Authentications.Should().ContainSingle().Subject.ClaimedUpn.Should().Be(AdminUpn);
     }
@@ -579,6 +577,7 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
         var value = await command.ExecuteScalarAsync();
         return value is null or DBNull ? null : Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
+
     [Fact]
     public async Task AnUnreachableTenantStore_IsRefusedAsUnavailableRatherThanAsABadToken()
     {
@@ -616,13 +615,15 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
         // controllers read nothing else — so this assertion and those two controller bodies are the
         // two ends of one wire. Asserting on ClaimTypes.NameIdentifier instead would have passed
         // before the fix and after it, because a human's token populates that claim too.
-        var principal = PrincipalFactory.ToClaimsPrincipalOrNull(new Principal
-        {
-            TenantId = InternalTenant,
-            Actor = new PrincipalRef(PrincipalKind.App, "review-daemon"),
-            AppId = "review-daemon",
-            Source = PrincipalSource.AppOnly,
-        });
+        var principal = PrincipalFactory.ToClaimsPrincipalOrNull(
+            new Principal
+            {
+                TenantId = InternalTenant,
+                Actor = new PrincipalRef(PrincipalKind.App, "review-daemon"),
+                AppId = "review-daemon",
+                Source = PrincipalSource.AppOnly,
+            }
+        );
 
         _ = principal.Should().NotBeNull();
         _ = principal!.FindFirstValue(LifecycleAppIdentity.AppIdClaimType).Should().Be("review-daemon");

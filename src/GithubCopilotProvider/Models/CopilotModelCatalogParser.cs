@@ -72,12 +72,14 @@ public static class CopilotModelCatalogParser
 
     private static IReadOnlyList<string> GetReasoningEfforts(JsonElement item)
     {
-        if (!item.TryGetProperty("capabilities", out var capabilities)
+        if (
+            !item.TryGetProperty("capabilities", out var capabilities)
             || capabilities.ValueKind != JsonValueKind.Object
             || !capabilities.TryGetProperty("supports", out var supports)
             || supports.ValueKind != JsonValueKind.Object
             || !supports.TryGetProperty("reasoning_effort", out var reasoningEffort)
-            || reasoningEffort.ValueKind != JsonValueKind.Array)
+            || reasoningEffort.ValueKind != JsonValueKind.Array
+        )
         {
             return [];
         }
@@ -128,8 +130,10 @@ public static class CopilotModelCatalogParser
             return true;
         }
 
-        if (trimmed.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Equals("Azure OpenAI", StringComparison.OrdinalIgnoreCase))
+        if (
+            trimmed.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Equals("Azure OpenAI", StringComparison.OrdinalIgnoreCase)
+        )
         {
             normalized = CopilotModelVendor.OpenAI;
             return true;
@@ -151,8 +155,10 @@ public static class CopilotModelCatalogParser
             return CopilotModelTransport.Anthropic;
         }
 
-        if (CopilotModelsResponse.SupportsEndpoint(item, CopilotModelsResponse.ResponsesEndpoint)
-            || CopilotModelsResponse.SupportsEndpoint(item, CopilotModelsResponse.ResponsesWebSocketEndpoint))
+        if (
+            CopilotModelsResponse.SupportsEndpoint(item, CopilotModelsResponse.ResponsesEndpoint)
+            || CopilotModelsResponse.SupportsEndpoint(item, CopilotModelsResponse.ResponsesWebSocketEndpoint)
+        )
         {
             return CopilotModelTransport.Responses;
         }

@@ -25,8 +25,10 @@ public sealed class SandboxSessionRegistryDiscoveryWebhookContractTests
 
         HttpResponseMessage Respond(HttpRequestMessage req)
         {
-            if (req.Method == HttpMethod.Post
-                && req.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal))
+            if (
+                req.Method == HttpMethod.Post
+                && req.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal)
+            )
             {
                 capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
                 return new HttpResponseMessage(HttpStatusCode.OK)
@@ -34,7 +36,8 @@ public sealed class SandboxSessionRegistryDiscoveryWebhookContractTests
                     Content = new StringContent(
                         "{\"session_id\":\"sess-contract\",\"volumes\":{\"workspace\":{\"container_path\":\"/workspace\",\"read_only\":false}}}",
                         Encoding.UTF8,
-                        "application/json"),
+                        "application/json"
+                    ),
                 };
             }
 
@@ -48,21 +51,17 @@ public sealed class SandboxSessionRegistryDiscoveryWebhookContractTests
             WorkspaceBasePath = baseDir.Path,
             Workspace = DefaultLeaf,
         };
-        var authOptions = new AuthOptions
-        {
-            Webhook = new WebhookOptions
-            {
-                PublicBaseUrl = "http://127.0.0.1:5000",
-            },
-        };
+        var authOptions = new AuthOptions { Webhook = new WebhookOptions { PublicBaseUrl = "http://127.0.0.1:5000" } };
         var sessionSecretStore = new SessionSecretStore(
             Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-            NullLogger<SessionSecretStore>.Instance);
+            NullLogger<SessionSecretStore>.Instance
+        );
 
         var gateway = new SandboxGatewayLifetime(
             options,
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(Respond)));
+            new HttpClient(new StubHandler(Respond))
+        );
 
         await using var registry = new SandboxSessionRegistry(
             gateway,
@@ -70,7 +69,8 @@ public sealed class SandboxSessionRegistryDiscoveryWebhookContractTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new StubHandler(Respond)),
             authOptions,
-            sessionSecretStore);
+            sessionSecretStore
+        );
 
         var session = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1", "projA"));
 
@@ -78,14 +78,20 @@ public sealed class SandboxSessionRegistryDiscoveryWebhookContractTests
         using var doc = JsonDocument.Parse(capturedBody!);
         var webhook = doc.RootElement.GetProperty("discovery").GetProperty("webhook");
 
-        webhook.GetProperty("url").GetString()
-            .Should().EndWith("/api/discovery/context_discovery");
+        webhook.GetProperty("url").GetString().Should().EndWith("/api/discovery/context_discovery");
         var sentSecret = webhook.GetProperty("auth_header").GetString();
-        sentSecret.Should().NotBeNullOrEmpty("the gateway reads the secret from `auth_header` and sends it verbatim as Authorization");
+        sentSecret
+            .Should()
+            .NotBeNullOrEmpty("the gateway reads the secret from `auth_header` and sends it verbatim as Authorization");
         (await sessionSecretStore.MatchesAsync(session.SessionId, sentSecret))
-            .Should().BeTrue("the value sent under `auth_header` must be this session's own saved secret");
-        webhook.TryGetProperty("auth", out _)
-            .Should().BeFalse("the legacy `auth` field name is ignored by the gateway → it would send no Authorization header → 401");
+            .Should()
+            .BeTrue("the value sent under `auth_header` must be this session's own saved secret");
+        webhook
+            .TryGetProperty("auth", out _)
+            .Should()
+            .BeFalse(
+                "the legacy `auth` field name is ignored by the gateway → it would send no Authorization header → 401"
+            );
     }
 
     private sealed class TempWorkspaceBase : IDisposable
@@ -115,7 +121,8 @@ public sealed class SandboxSessionRegistryDiscoveryWebhookContractTests
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(respond(request));
         }

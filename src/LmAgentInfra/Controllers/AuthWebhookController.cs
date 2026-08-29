@@ -26,7 +26,8 @@ public sealed class AuthWebhookController(
     IAuthWebhookForwarder authWebhookForwarder,
     AuthOptions authOptions,
     ILogger<AuthWebhookController> logger,
-    PredefinedKeyRegistry? predefinedKeys = null) : ControllerBase
+    PredefinedKeyRegistry? predefinedKeys = null
+) : ControllerBase
 {
     /// <summary>
     /// Gateway callback: returns an allow decision (with a <c>Bearer</c> Authorization header and the
@@ -40,7 +41,8 @@ public sealed class AuthWebhookController(
     public async Task<IActionResult> Evaluate(
         string provider,
         [FromBody] AuthWebhookRequest body,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (body is null || string.IsNullOrEmpty(body.SessionId))
         {
@@ -61,7 +63,8 @@ public sealed class AuthWebhookController(
             logger.LogWarning(
                 "Auth-webhook deny for unknown provider {Provider} (host {DestinationHost}).",
                 provider,
-                body.DestinationHost);
+                body.DestinationHost
+            );
             return Ok(AuthWebhookResponse.Deny("unknown provider"));
         }
 
@@ -74,8 +77,11 @@ public sealed class AuthWebhookController(
             logger.LogWarning(
                 "Auth-webhook deny for provider {ProviderId}: destination host {DestinationHost} is not in the provider's allowlist.",
                 tokenProvider.ProviderId,
-                body.DestinationHost);
-            return Ok(AuthWebhookResponse.Deny($"destination host not allowed for provider '{tokenProvider.ProviderId}'"));
+                body.DestinationHost
+            );
+            return Ok(
+                AuthWebhookResponse.Deny($"destination host not allowed for provider '{tokenProvider.ProviderId}'")
+            );
         }
 
         // First attempt: a token may already be available (signed in / refreshable). Only the
@@ -91,7 +97,8 @@ public sealed class AuthWebhookController(
             logger.LogInformation(
                 "Auth-webhook allow for provider {ProviderId} (host {DestinationHost}).",
                 tokenProvider.ProviderId,
-                body.DestinationHost);
+                body.DestinationHost
+            );
             return Ok(BuildAllow(tokenProvider, body.DestinationHost, token));
         }
         catch (InvalidOperationException ex)
@@ -103,7 +110,8 @@ public sealed class AuthWebhookController(
                 ex,
                 "Auth-webhook found no valid token for provider {ProviderId} (host {DestinationHost}); applying auth-resolution policy.",
                 tokenProvider.ProviderId,
-                body.DestinationHost);
+                body.DestinationHost
+            );
             defer = true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -120,7 +128,8 @@ public sealed class AuthWebhookController(
                 ex,
                 "Auth-webhook unexpected failure for provider {ProviderId} (host {DestinationHost}); denying.",
                 tokenProvider.ProviderId,
-                body.DestinationHost);
+                body.DestinationHost
+            );
             return Ok(AuthWebhookResponse.Deny($"token acquisition failed for provider '{tokenProvider.ProviderId}'"));
         }
 
@@ -128,7 +137,9 @@ public sealed class AuthWebhookController(
         {
             // Unreachable in practice (every branch above returns or sets defer), but keeps the
             // compiler's definite-assignment analysis happy without a throw.
-            return Ok(AuthWebhookResponse.Deny($"no valid token for provider '{tokenProvider.ProviderId}'; sign in required"));
+            return Ok(
+                AuthWebhookResponse.Deny($"no valid token for provider '{tokenProvider.ProviderId}'; sign in required")
+            );
         }
 
         // No immediately-available token: defer to the host's auth-resolution policy. The attended
@@ -150,7 +161,8 @@ public sealed class AuthWebhookController(
                 logger.LogInformation(
                     "Auth-webhook allow for provider {ProviderId} (host {DestinationHost}) after policy resolution.",
                     tokenProvider.ProviderId,
-                    body.DestinationHost);
+                    body.DestinationHost
+                );
                 await TryNotifyAuthCompletedAsync(capturedTarget, tokenProvider.ProviderId);
                 return Ok(BuildAllow(tokenProvider, body.DestinationHost, resolved));
             }
@@ -158,9 +170,16 @@ public sealed class AuthWebhookController(
             logger.LogInformation(
                 "Auth-webhook deny for provider {ProviderId} (host {DestinationHost}).",
                 tokenProvider.ProviderId,
-                body.DestinationHost);
-            await TryNotifyAuthDeniedAsync(capturedTarget, tokenProvider.ProviderId, "no valid token; sign in required");
-            return Ok(AuthWebhookResponse.Deny($"no valid token for provider '{tokenProvider.ProviderId}'; sign in required"));
+                body.DestinationHost
+            );
+            await TryNotifyAuthDeniedAsync(
+                capturedTarget,
+                tokenProvider.ProviderId,
+                "no valid token; sign in required"
+            );
+            return Ok(
+                AuthWebhookResponse.Deny($"no valid token for provider '{tokenProvider.ProviderId}'; sign in required")
+            );
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -175,7 +194,8 @@ public sealed class AuthWebhookController(
                 ex,
                 "Auth-webhook policy-resolution failure for provider {ProviderId} (host {DestinationHost}); denying.",
                 tokenProvider.ProviderId,
-                body.DestinationHost);
+                body.DestinationHost
+            );
             await TryNotifyAuthDeniedAsync(capturedTarget, tokenProvider.ProviderId, "token acquisition failed");
             return Ok(AuthWebhookResponse.Deny($"token acquisition failed for provider '{tokenProvider.ProviderId}'"));
         }
@@ -197,7 +217,8 @@ public sealed class AuthWebhookController(
                     providerId,
                     AuthSigninUrls.BuildAbsoluteSigninUrl(authOptions.Webhook.CallbackBaseUrl, providerId),
                     AuthSigninUrls.BuildReason(providerId),
-                    ct);
+                    ct
+                );
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -209,7 +230,8 @@ public sealed class AuthWebhookController(
                 logger.LogWarning(
                     ex,
                     "Auth-webhook forwarder failed on auth-required for provider {ProviderId}; continuing without a forwarding target.",
-                    providerId);
+                    providerId
+                );
                 return null;
             }
         }
@@ -231,7 +253,11 @@ public sealed class AuthWebhookController(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Auth-webhook forwarder failed on auth-completed for provider {ProviderId}.", providerId);
+                logger.LogWarning(
+                    ex,
+                    "Auth-webhook forwarder failed on auth-completed for provider {ProviderId}.",
+                    providerId
+                );
             }
         }
 
@@ -252,7 +278,11 @@ public sealed class AuthWebhookController(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Auth-webhook forwarder failed on auth-denied for provider {ProviderId}.", providerId);
+                logger.LogWarning(
+                    ex,
+                    "Auth-webhook forwarder failed on auth-denied for provider {ProviderId}.",
+                    providerId
+                );
             }
         }
     }
@@ -271,7 +301,11 @@ public sealed class AuthWebhookController(
     /// not extract the credential for the same host on another (cleartext) port. Managed OAuth providers
     /// gate on their compile-time host allowlist.
     /// </summary>
-    private static bool IsDestinationAllowed(IOAuthTokenProvider provider, string? destinationHost, int destinationPort) =>
+    private static bool IsDestinationAllowed(
+        IOAuthTokenProvider provider,
+        string? destinationHost,
+        int destinationPort
+    ) =>
         provider is PredefinedKeyProvider pk
             ? destinationPort == 443 && EgressHostMatcher.IsAllowed(pk.Hosts, destinationHost)
             : OAuthProviderHosts.IsAllowed(provider.ProviderId, destinationHost);
@@ -281,7 +315,11 @@ public sealed class AuthWebhookController(
     /// <c>Bearer</c> token, with the token's real expiry); a managed OAuth provider injects the
     /// <c>Authorization</c> header as before.
     /// </summary>
-    private static AuthWebhookResponse BuildAllow(IOAuthTokenProvider provider, string? destinationHost, OAuthAccessToken token) =>
+    private static AuthWebhookResponse BuildAllow(
+        IOAuthTokenProvider provider,
+        string? destinationHost,
+        OAuthAccessToken token
+    ) =>
         provider is PredefinedKeyProvider pk
             ? AuthWebhookResponse.AllowCustom(pk.BuildHeaders(token), pk.IncludeExpiry ? token.ExpiresAtUtc : null)
             : AuthWebhookResponse.Allow(provider.ProviderId, destinationHost, token);
@@ -351,12 +389,16 @@ public sealed record AuthWebhookResponse
     /// (<c>github.com</c>) rejects Bearer with 401 and requires HTTP Basic — so git operations get
     /// <c>Basic base64("x-access-token:&lt;token&gt;")</c> instead. See <see cref="BuildAuthorizationHeaderValue"/>.
     /// </summary>
-    internal static AuthWebhookResponse Allow(string providerId, string? destinationHost, OAuthAccessToken token) => new()
-    {
-        Decision = "allow",
-        Headers = [["Authorization", BuildAuthorizationHeaderValue(providerId, destinationHost, token)]],
-        ExpiresAt = token.ExpiresAtUtc,
-    };
+    internal static AuthWebhookResponse Allow(string providerId, string? destinationHost, OAuthAccessToken token) =>
+        new()
+        {
+            Decision = "allow",
+            Headers =
+            [
+                ["Authorization", BuildAuthorizationHeaderValue(providerId, destinationHost, token)],
+            ],
+            ExpiresAt = token.ExpiresAtUtc,
+        };
 
     /// <summary>
     /// Builds an allow decision that injects an explicit list of <c>[name, value]</c> headers (used by
@@ -366,7 +408,9 @@ public sealed record AuthWebhookResponse
     /// </summary>
     internal static AuthWebhookResponse AllowCustom(
         IReadOnlyList<KeyValuePair<string, string>> headers,
-        DateTimeOffset? expiresAt) => new()
+        DateTimeOffset? expiresAt
+    ) =>
+        new()
         {
             Decision = "allow",
             Headers = [.. headers.Select(h => new[] { h.Key, h.Value })],
@@ -380,7 +424,11 @@ public sealed record AuthWebhookResponse
     /// with username <c>x-access-token</c> and the token as the password. Everything else (the GitHub
     /// REST API, Azure DevOps, …) keeps <c>Bearer</c>.
     /// </summary>
-    internal static string BuildAuthorizationHeaderValue(string providerId, string? destinationHost, OAuthAccessToken token)
+    internal static string BuildAuthorizationHeaderValue(
+        string providerId,
+        string? destinationHost,
+        OAuthAccessToken token
+    )
     {
         if (IsGitHubGitHost(providerId, destinationHost))
         {
@@ -397,9 +445,5 @@ public sealed record AuthWebhookResponse
         && string.Equals(destinationHost, "github.com", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Builds a deny decision carrying a (token-free) reason.</summary>
-    internal static AuthWebhookResponse Deny(string reason) => new()
-    {
-        Decision = "deny",
-        Reason = reason,
-    };
+    internal static AuthWebhookResponse Deny(string reason) => new() { Decision = "deny", Reason = reason };
 }

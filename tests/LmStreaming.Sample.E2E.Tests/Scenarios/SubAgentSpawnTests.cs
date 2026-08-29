@@ -21,25 +21,22 @@ public sealed class SubAgentSpawnTests
     {
         const string ResearcherPromptMarker = "You are the research sub-agent";
 
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("researcher", ctx => ctx.SystemPromptContains(ResearcherPromptMarker))
-                .Turn(t => t.Text("Found three fresh AI papers today."))
+            .Turn(t => t.Text("Found three fresh AI papers today."))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.ToolCall(
-                    "Agent",
-                    new { subagent_type = "researcher", prompt = "Find AI papers" }))
-                .Turn(t => t.Text("Summary: researcher surfaced three AI papers."))
+            .Turn(t => t.ToolCall("Agent", new { subagent_type = "researcher", prompt = "Find AI papers" }))
+            .Turn(t => t.Text("Summary: researcher surfaced three AI papers."))
             .Build();
 
-        var handler = providerMode == "test-anthropic"
-            ? responder.AsAnthropicHandler()
-            : responder.AsOpenAiHandler();
+        var handler = providerMode == "test-anthropic" ? responder.AsAnthropicHandler() : responder.AsOpenAiHandler();
 
         var builder = new ScriptedBuilder(
             handler,
-            subAgentFactory: (_, providerAgentFactory) => BuildSubAgentOptions(
-                ResearcherPromptMarker,
-                providerAgentFactory));
+            subAgentFactory: (_, providerAgentFactory) =>
+                BuildSubAgentOptions(ResearcherPromptMarker, providerAgentFactory)
+        );
 
         using var factory = new E2EWebAppFactory(providerMode, builder);
 
@@ -56,9 +53,12 @@ public sealed class SubAgentSpawnTests
         // Synchronous Agent: the sub-agent's final text comes back as the tool result
         // (not a JSON spawn receipt), proving the parent blocked on completion.
         var toolResults = frames.ToolCallResults();
-        toolResults.Should().Contain(
-            r => r.Contains("Found three fresh AI papers today.", StringComparison.Ordinal),
-            "the Agent tool result is the sub-agent's final answer");
+        toolResults
+            .Should()
+            .Contain(
+                r => r.Contains("Found three fresh AI papers today.", StringComparison.Ordinal),
+                "the Agent tool result is the sub-agent's final answer"
+            );
 
         var streamedText = frames.ConcatText();
         streamedText.Should().Contain("Summary: researcher surfaced three AI papers");
@@ -69,7 +69,8 @@ public sealed class SubAgentSpawnTests
 
     private static SubAgentOptions BuildSubAgentOptions(
         string researcherPrompt,
-        Func<IStreamingAgent> providerAgentFactory)
+        Func<IStreamingAgent> providerAgentFactory
+    )
     {
         var templates = new Dictionary<string, SubAgentTemplate>
         {
@@ -82,10 +83,6 @@ public sealed class SubAgentSpawnTests
             },
         };
 
-        return new SubAgentOptions
-        {
-            Templates = templates,
-            MaxConcurrentSubAgents = 5,
-        };
+        return new SubAgentOptions { Templates = templates, MaxConcurrentSubAgents = 5 };
     }
 }

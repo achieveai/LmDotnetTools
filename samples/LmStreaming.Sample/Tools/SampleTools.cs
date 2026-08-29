@@ -16,8 +16,7 @@ public static class SampleTools
     /// Get current weather for a location.
     /// </summary>
     [Function("get_weather", "Get current weather conditions for a specific location")]
-    public static string GetWeather(
-        [Description("City name, e.g., 'New York', 'London', 'Tokyo'")] string location)
+    public static string GetWeather([Description("City name, e.g., 'New York', 'London', 'Tokyo'")] string location)
     {
         // Mock weather data
         var conditions = new[] { "Sunny", "Cloudy", "Partly Cloudy", "Rainy", "Clear" };
@@ -29,7 +28,7 @@ public static class SampleTools
             condition = conditions[Random.Next(conditions.Length)],
             humidity = Random.Next(30, 80),
             windSpeed = Random.Next(5, 25),
-            windUnit = "mph"
+            windUnit = "mph",
         };
 
         return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
@@ -42,7 +41,8 @@ public static class SampleTools
     public static string Calculate(
         [Description("First number")] double a,
         [Description("Operation: 'add', 'subtract', 'multiply', or 'divide'")] string operation,
-        [Description("Second number")] double b)
+        [Description("Second number")] double b
+    )
     {
         ArgumentNullException.ThrowIfNull(operation);
         var result = operation.ToLowerInvariant() switch
@@ -52,7 +52,9 @@ public static class SampleTools
             "multiply" or "*" => a * b,
             "divide" or "/" when b != 0 => a / b,
             "divide" or "/" => double.NaN,
-            _ => throw new ArgumentException($"Unknown operation: {operation}. Use 'add', 'subtract', 'multiply', or 'divide'.")
+            _ => throw new ArgumentException(
+                $"Unknown operation: {operation}. Use 'add', 'subtract', 'multiply', or 'divide'."
+            ),
         };
 
         var response = new
@@ -61,10 +63,9 @@ public static class SampleTools
             result,
             operation,
             a,
-            b
+            b,
         };
 
         return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
     }
-
 }

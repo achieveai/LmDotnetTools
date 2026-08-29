@@ -37,7 +37,8 @@ public sealed class TenantSeedHostedService : IHostedService
         ITenantStore tenantStore,
         IOptions<IdentityOptions> options,
         TimeProvider timeProvider,
-        ILogger<TenantSeedHostedService> logger)
+        ILogger<TenantSeedHostedService> logger
+    )
     {
         ArgumentNullException.ThrowIfNull(tenantStore);
         ArgumentNullException.ThrowIfNull(options);
@@ -65,7 +66,8 @@ public sealed class TenantSeedHostedService : IHostedService
             _logger.LogWarning(
                 "Ignoring {SeedCount} configured Identity:SeedTenants because Identity:Enforce is "
                     + "true. Provision tenants through POST /api/admin/tenants instead.",
-                options.SeedTenants.Count);
+                options.SeedTenants.Count
+            );
             return;
         }
 
@@ -97,9 +99,9 @@ public sealed class TenantSeedHostedService : IHostedService
                 // timeout inside store code - is excluded on the same rule and escapes StartAsync.
                 _logger.LogError(
                     ex,
-                    "Failed to apply the Identity:SeedTenants entry for {TenantId}; startup "
-                        + "continues without it.",
-                    seed.TenantId);
+                    "Failed to apply the Identity:SeedTenants entry for {TenantId}; startup " + "continues without it.",
+                    seed.TenantId
+                );
             }
         }
     }
@@ -109,16 +111,19 @@ public sealed class TenantSeedHostedService : IHostedService
 
     private async Task ApplyAsync(SeedTenantOptions seed, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(seed.TenantId)
+        if (
+            string.IsNullOrWhiteSpace(seed.TenantId)
             || string.IsNullOrWhiteSpace(seed.EntraTenantId)
-            || string.IsNullOrWhiteSpace(seed.FirstAdminUpn))
+            || string.IsNullOrWhiteSpace(seed.FirstAdminUpn)
+        )
         {
             // Logged rather than thrown: a malformed entry must not stop the host from starting,
             // and a silent skip would leave an operator wondering why their tenant never appeared.
             _logger.LogError(
                 "Skipping an Identity:SeedTenants entry for {TenantId}: TenantId, EntraTenantId and "
                     + "FirstAdminUpn are all required.",
-                seed.TenantId);
+                seed.TenantId
+            );
             return;
         }
 
@@ -136,13 +141,15 @@ public sealed class TenantSeedHostedService : IHostedService
                     CreatedBy = "seed",
                 },
                 seed.FirstAdminUpn.Trim(),
-                ct)
+                ct
+            )
             .ConfigureAwait(false);
 
         _logger.LogInformation(
             "Seed tenant {TenantId} ({EntraTenantId}): {Outcome}.",
             seed.TenantId,
             seed.EntraTenantId,
-            outcome);
+            outcome
+        );
     }
 }

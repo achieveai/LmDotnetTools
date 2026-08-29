@@ -52,7 +52,8 @@ public static class ConversationSubAgentModel
     public static async Task<string?> ReadAsync(
         IConversationStore store,
         string threadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(store);
 
@@ -62,8 +63,7 @@ public static class ConversationSubAgentModel
         }
 
         var metadata = await store.LoadMetadataAsync(threadId, ct).ConfigureAwait(false);
-        if (metadata?.Properties is not { } properties
-            || !properties.TryGetValue(PropertyKey, out var raw))
+        if (metadata?.Properties is not { } properties || !properties.TryGetValue(PropertyKey, out var raw))
         {
             return null;
         }

@@ -15,8 +15,7 @@ public class HostGitCredentialEnvTests
         env["GIT_TERMINAL_PROMPT"].Should().Be("0");
 
         var expected =
-            "Authorization: Basic "
-            + Convert.ToBase64String(Encoding.UTF8.GetBytes("x-access-token:ghs_secretTOKEN"));
+            "Authorization: Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("x-access-token:ghs_secretTOKEN"));
         env["GIT_CONFIG_VALUE_0"].Should().Be(expected);
     }
 
@@ -30,8 +29,10 @@ public class HostGitCredentialEnvTests
     [Fact]
     public void Build_EmitsPerProviderExtraHeaders_ForGithubAndAdo()
     {
-        var env = HostGitCredentialEnv.Build(
-            [new GitProviderToken("github", "gh"), new GitProviderToken("ado", "ado-tok")]);
+        var env = HostGitCredentialEnv.Build([
+            new GitProviderToken("github", "gh"),
+            new GitProviderToken("ado", "ado-tok"),
+        ]);
 
         env["GIT_CONFIG_COUNT"].Should().Be("2");
         env["GIT_TERMINAL_PROMPT"].Should().Be("0");
@@ -39,10 +40,12 @@ public class HostGitCredentialEnvTests
         // GitHub keeps its documented x-access-token scheme; ADO sends the Entra token in the password
         // field with an empty username (mirrors AdoPrProvider/AdoReviewCommentPublisher's Basic ":{token}").
         var headers = ExtraHeadersByHost(env);
-        headers["http.https://github.com/.extraHeader"].Should().Be(
-            "Authorization: Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("x-access-token:gh")));
-        headers["http.https://dev.azure.com/.extraHeader"].Should().Be(
-            "Authorization: Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(":ado-tok")));
+        headers["http.https://github.com/.extraHeader"]
+            .Should()
+            .Be("Authorization: Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("x-access-token:gh")));
+        headers["http.https://dev.azure.com/.extraHeader"]
+            .Should()
+            .Be("Authorization: Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(":ado-tok")));
     }
 
     [Fact]
@@ -68,17 +71,18 @@ public class HostGitCredentialEnvTests
     [Fact]
     public void Build_EmitsLegacyToModernInsteadOfRewrite_ForConfiguredAdoOrg()
     {
-        var env = HostGitCredentialEnv.Build(
-            [new GitProviderToken("ado", "ado-tok")],
-            adoOrgs: ["mcqdbdev"]);
+        var env = HostGitCredentialEnv.Build([new GitProviderToken("ado", "ado-tok")], adoOrgs: ["mcqdbdev"]);
 
         // One ADO credential header + one legacy→modern insteadOf rewrite.
         env["GIT_CONFIG_COUNT"].Should().Be("2");
 
         var config = ExtraHeadersByHost(env);
-        config["url.https://dev.azure.com/mcqdbdev/.insteadOf"].Should().Be(
-            "https://mcqdbdev.visualstudio.com/",
-            "a git submodule fetch against the legacy host is rewritten to dev.azure.com so the ADO credential applies");
+        config["url.https://dev.azure.com/mcqdbdev/.insteadOf"]
+            .Should()
+            .Be(
+                "https://mcqdbdev.visualstudio.com/",
+                "a git submodule fetch against the legacy host is rewritten to dev.azure.com so the ADO credential applies"
+            );
     }
 
     [Fact]

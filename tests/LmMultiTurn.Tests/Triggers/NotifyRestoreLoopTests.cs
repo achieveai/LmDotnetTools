@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -9,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -47,27 +47,33 @@ public class NotifyRestoreLoopTests
         // notify wait with no messages at all (e.g. armed on the very first turn), so recovery of
         // the wait must not be gated on persisted messages being non-empty.
         var convStore = new InMemoryConversationStore();
-        await convStore.SaveMetadataAsync(threadId, new ThreadMetadata
-        {
-            ThreadId = threadId,
-            LatestRunId = runId,
-            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        });
+        await convStore.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
 
         // Seed an active, restorable notify row as if a previous process armed it and the
         // process then restarted before it fired.
         var notifyStore = new InMemoryNotifyWaitStore();
-        await notifyStore.SaveAsync(new NotifyWaitRecord(
-            waitId,
-            threadId,
-            "manual-restorable",
-            "{}",
-            null,
-            null,
-            0,
-            DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds(),
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            "active"));
+        await notifyStore.SaveAsync(
+            new NotifyWaitRecord(
+                waitId,
+                threadId,
+                "manual-restorable",
+                "{}",
+                null,
+                null,
+                0,
+                DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds(),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                "active"
+            )
+        );
 
         var manual = new ManualTriggerSource();
         var options = new TriggerOptions
@@ -81,7 +87,11 @@ public class NotifyRestoreLoopTests
                     Kind = "manual-restorable",
                     Description = "test notify source (restorable)",
                     ArgsSchema = "{}",
-                    Capabilities = new TriggerCapabilities(SupportsBlock: true, SupportsNotify: true, SupportsRestore: true),
+                    Capabilities = new TriggerCapabilities(
+                        SupportsBlock: true,
+                        SupportsNotify: true,
+                        SupportsRestore: true
+                    ),
                     Source = manual,
                 },
             ],
@@ -89,12 +99,16 @@ public class NotifyRestoreLoopTests
 
         var finalText = new TextMessage { Text = "handled the fire", Role = Role.Assistant };
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (_, _, _) => Task.FromResult(ToAsyncEnumerable([finalText])));
+                (_, _, _) => Task.FromResult(ToAsyncEnumerable([finalText]))
+            );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
@@ -102,7 +116,8 @@ public class NotifyRestoreLoopTests
             threadId,
             store: convStore,
             logger: _loggerMock.Object,
-            triggerOptions: options);
+            triggerOptions: options
+        );
 
         // Act: drive the restore path directly (mirrors DeferredToolExecutionTests' pattern of
         // calling RecoverAsync without ever starting RunAsync first). With zero persisted
@@ -149,17 +164,20 @@ public class NotifyRestoreLoopTests
             async () =>
             {
                 history = MessagePersistenceConverter.FromPersistedMessages(
-                    await convStore.LoadMessagesAsync(threadId));
-                return history.OfType<TextMessage>().Any(
-                    m => m.Role == Role.User && m.Text.Contains("<trigger>"));
+                    await convStore.LoadMessagesAsync(threadId)
+                );
+                return history.OfType<TextMessage>().Any(m => m.Role == Role.User && m.Text.Contains("<trigger>"));
             },
             "the fire-and-forget AddToHistory write put the restored loop's <trigger> envelope into "
                 + "persisted history",
             TimeSpan.FromSeconds(5),
-            TimeSpan.FromMilliseconds(50));
+            TimeSpan.FromMilliseconds(50)
+        );
 
-        history.OfType<TextMessage>().Should().Contain(
-            m => m.Role == Role.User && m.Text.Contains("<trigger>") && m.Text.Contains("fire-after-restore"));
+        history
+            .OfType<TextMessage>()
+            .Should()
+            .Contain(m => m.Role == Role.User && m.Text.Contains("<trigger>") && m.Text.Contains("fire-after-restore"));
     }
 
     /// <summary>
@@ -170,7 +188,8 @@ public class NotifyRestoreLoopTests
     /// </summary>
     private static async Task<bool> DrainToRunCompletedAsync(
         IAsyncEnumerator<IMessage> subscription,
-        ValueTask<bool> firstMove)
+        ValueTask<bool> firstMove
+    )
     {
         for (var move = firstMove; await move; move = subscription.MoveNextAsync())
         {
@@ -185,7 +204,8 @@ public class NotifyRestoreLoopTests
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {
@@ -217,12 +237,15 @@ public class NotifyRestoreLoopTests
         const int channelCapacity = 1; // smaller than terminalRowCount by design
 
         var convStore = new InMemoryConversationStore();
-        await convStore.SaveMetadataAsync(threadId, new ThreadMetadata
-        {
-            ThreadId = threadId,
-            LatestRunId = "run_prev",
-            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        });
+        await convStore.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = "run_prev",
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
 
         // Seed more terminal (unregistered-kind) notify_waits rows than the input channel can
         // hold. Each is non-restorable, so RestoreNotifyWaitsAsync attempts to deliver one
@@ -230,24 +253,23 @@ public class NotifyRestoreLoopTests
         var notifyStore = new InMemoryNotifyWaitStore();
         for (var i = 0; i < terminalRowCount; i++)
         {
-            await notifyStore.SaveAsync(new NotifyWaitRecord(
-                $"w{i}",
-                threadId,
-                "no-such-kind", // deliberately unregistered -> always non-restorable/terminal
-                "{}",
-                null,
-                null,
-                0,
-                DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds(),
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                "active"));
+            await notifyStore.SaveAsync(
+                new NotifyWaitRecord(
+                    $"w{i}",
+                    threadId,
+                    "no-such-kind", // deliberately unregistered -> always non-restorable/terminal
+                    "{}",
+                    null,
+                    null,
+                    0,
+                    DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds(),
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    "active"
+                )
+            );
         }
 
-        var options = new TriggerOptions
-        {
-            NotifyWaitStore = notifyStore,
-            ThreadId = threadId,
-        };
+        var options = new TriggerOptions { NotifyWaitStore = notifyStore, ThreadId = threadId };
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
@@ -256,7 +278,8 @@ public class NotifyRestoreLoopTests
             store: convStore,
             logger: _loggerMock.Object,
             inputChannelCapacity: channelCapacity,
-            triggerOptions: options);
+            triggerOptions: options
+        );
 
         // Act: drive recovery directly WITHOUT ever starting RunAsync, so nothing drains the
         // bounded input channel while RestoreNotifyWaitsAsync is delivering terminal envelopes.
@@ -269,9 +292,12 @@ public class NotifyRestoreLoopTests
         // Exactly `channelCapacity` envelopes fit and were accepted -> those rows are deleted.
         // The rest could not be enqueued without blocking, so they must be retained for
         // redelivery on the next recovery rather than silently lost.
-        remainingRows.Should().HaveCount(
-            terminalRowCount - channelCapacity,
-            "rows whose envelope could not be enqueued without blocking must be retained, not dropped");
+        remainingRows
+            .Should()
+            .HaveCount(
+                terminalRowCount - channelCapacity,
+                "rows whose envelope could not be enqueued without blocking must be retained, not dropped"
+            );
     }
 
     /// <summary>Simple in-memory <see cref="INotifyWaitStore"/> test double — no SQLite needed here.</summary>
@@ -294,7 +320,9 @@ public class NotifyRestoreLoopTests
         public Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(string threadId, CancellationToken ct = default)
         {
             IReadOnlyList<NotifyWaitRecord> result =
-                [.. _rows.Values.Where(r => r.ThreadId == threadId && r.Status == "active")];
+            [
+                .. _rows.Values.Where(r => r.ThreadId == threadId && r.Status == "active"),
+            ];
             return Task.FromResult(result);
         }
     }

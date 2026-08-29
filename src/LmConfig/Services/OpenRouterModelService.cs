@@ -1486,7 +1486,8 @@ public class OpenRouterModelService
             IsPreview =
                 GetStringValue(modelNode, "name")
                     ?.ToLowerInvariant()
-                    .Contains("preview", StringComparison.InvariantCultureIgnoreCase) ?? false,
+                    .Contains("preview", StringComparison.InvariantCultureIgnoreCase)
+                ?? false,
             IsDeprecated = !string.IsNullOrEmpty(GetStringValue(modelNode, "warning_message")),
         };
     }
@@ -1682,7 +1683,8 @@ public class OpenRouterModelService
                 ?.Select(x => x?.GetValue<string>())
                 .Where(x => !string.IsNullOrEmpty(x))
                 .Cast<string>()
-                .ToArray() ?? [];
+                .ToArray()
+            ?? [];
     }
 
     /// <summary>

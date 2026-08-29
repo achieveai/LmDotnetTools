@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -9,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -37,11 +37,14 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
     public Task InitializeAsync()
     {
         _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         return Task.CompletedTask;
@@ -63,36 +66,44 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         // one whose provider blocks (Running, no completed turn), so the snapshot must reflect both
         // lifecycle states at once.
         var finisherProvider = new Mock<IStreamingAgent>();
-        SetupStreamingResponse(finisherProvider, (_, _) => ToAsyncEnumerable(
-            new TextMessage { Text = "done", Role = Role.Assistant }));
+        SetupStreamingResponse(
+            finisherProvider,
+            (_, _) => ToAsyncEnumerable(new TextMessage { Text = "done", Role = Role.Assistant })
+        );
 
         var runnerProvider = new Mock<IStreamingAgent>();
         SetupStreamingResponse(runnerProvider, (_, ct) => BlockingStream(ct));
 
-        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
-        {
-            ["finisher"] = TemplateFor(finisherProvider.Object),
-            ["runner"] = TemplateFor(runnerProvider.Object),
-        });
+        var manager = CreateManager(
+            new Dictionary<string, SubAgentTemplate>
+            {
+                ["finisher"] = TemplateFor(finisherProvider.Object),
+                ["runner"] = TemplateFor(runnerProvider.Object),
+            }
+        );
 
         var finisherJson = await manager.SpawnAsync(
-            "finisher", "finish the report", name: "fin", runInBackground: true);
+            "finisher",
+            "finish the report",
+            name: "fin",
+            runInBackground: true
+        );
         var finisherId = ParseAgentId(finisherJson);
 
         // Block until the finisher genuinely reaches its terminal completion, so its snapshot status
         // is deterministic rather than a timing race.
         _ = await manager.ObserveCompletionAsync(finisherId, CancellationToken.None);
 
-        var runnerJson = await manager.SpawnAsync(
-            "runner", "keep running", name: "run", runInBackground: true);
+        var runnerJson = await manager.SpawnAsync("runner", "keep running", name: "run", runInBackground: true);
         var runnerId = ParseAgentId(runnerJson);
 
         var snapshots = manager.ListAgents();
         foreach (var s in snapshots)
         {
             _output.WriteLine(
-                $"snapshot id={s.AgentId} name={s.Name} template={s.TemplateName} " +
-                $"task={s.Task} status={s.Status} thread={s.ThreadId} last={s.LastActivityUtc:o}");
+                $"snapshot id={s.AgentId} name={s.Name} template={s.TemplateName} "
+                    + $"task={s.Task} status={s.Status} thread={s.ThreadId} last={s.LastActivityUtc:o}"
+            );
         }
 
         snapshots.Should().HaveCount(2);
@@ -103,8 +114,9 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         finisher.Task.Should().Be("finish the report");
         finisher.Status.Should().Be(SubAgentStatus.Completed);
         finisher.ThreadId.Should().Be($"subagent-{finisherId}");
-        finisher.LastActivityUtc.Should().NotBeNull(
-            "the finisher produced an assistant turn, so its turn buffer is non-empty");
+        finisher
+            .LastActivityUtc.Should()
+            .NotBeNull("the finisher produced an assistant turn, so its turn buffer is non-empty");
 
         var runner = snapshots.Single(s => s.AgentId == runnerId);
         runner.Name.Should().Be("run");
@@ -118,16 +130,16 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
     public async Task TryGetAgent_ResolvesByIdAndByName_ReturnsFalseForUnknown()
     {
         var provider = new Mock<IStreamingAgent>();
-        SetupStreamingResponse(provider, (_, _) => ToAsyncEnumerable(
-            new TextMessage { Text = "done", Role = Role.Assistant }));
+        SetupStreamingResponse(
+            provider,
+            (_, _) => ToAsyncEnumerable(new TextMessage { Text = "done", Role = Role.Assistant })
+        );
 
-        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
-        {
-            ["worker"] = TemplateFor(provider.Object),
-        });
+        var manager = CreateManager(
+            new Dictionary<string, SubAgentTemplate> { ["worker"] = TemplateFor(provider.Object) }
+        );
 
-        var spawnJson = await manager.SpawnAsync(
-            "worker", "do work", name: "alpha", runInBackground: true);
+        var spawnJson = await manager.SpawnAsync("worker", "do work", name: "alpha", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
 
         manager.TryGetAgent(agentId, out var byId).Should().BeTrue();
@@ -136,8 +148,7 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
 
         manager.TryGetAgent("alpha", out var byName).Should().BeTrue();
         byName.Should().NotBeNull();
-        ReferenceEquals(byId, byName).Should().BeTrue(
-            "resolving by id and by name must return the same live instance");
+        ReferenceEquals(byId, byName).Should().BeTrue("resolving by id and by name must return the same live instance");
 
         manager.TryGetAgent("does-not-exist", out var missing).Should().BeFalse();
         missing.Should().BeNull();
@@ -152,10 +163,7 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         var createdAgents = new List<FakeMultiTurnAgent>();
         var agentCallCount = 0;
 
-        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        });
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") });
 
         manager.TestAgentFactoryOverride = (agentId, _) =>
         {
@@ -163,9 +171,10 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             var agent = new FakeMultiTurnAgent
             {
                 ThreadId = $"subagent-{agentId}",
-                SubscribeImpl = (_, ct) => idx == 1
-                    ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
-                    : FakeMultiTurnAgent.WaitForeverStream(ct),
+                SubscribeImpl = (_, ct) =>
+                    idx == 1
+                        ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
+                        : FakeMultiTurnAgent.WaitForeverStream(ct),
             };
             lock (createdAgents)
             {
@@ -184,11 +193,18 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         await Wait.UntilAsync(
             () =>
             {
-                try { return manager.Peek(agentId).Contains("\"completed\""); }
-                catch { return false; }
+                try
+                {
+                    return manager.Peek(agentId).Contains("\"completed\"");
+                }
+                catch
+                {
+                    return false;
+                }
             },
             "the sub-agent reported completed",
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
 
         manager.TryGetAgent(agentId, out var beforeRestart).Should().BeTrue();
         FakeMultiTurnAgent first;
@@ -197,8 +213,9 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             first = createdAgents[0];
         }
 
-        ReferenceEquals(beforeRestart, first).Should().BeTrue(
-            "before the restart the resolved instance is the original spawn instance");
+        ReferenceEquals(beforeRestart, first)
+            .Should()
+            .BeTrue("before the restart the resolved instance is the original spawn instance");
 
         // Act: send to the finished agent -> restart with a fresh instance.
         _ = await manager.SendMessageAsync(agentId, "continue", runInBackground: true);
@@ -211,13 +228,16 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         }
 
         manager.TryGetAgent(agentId, out var afterRestart).Should().BeTrue();
-        ReferenceEquals(afterRestart, second).Should().BeTrue(
-            "TryGetAgent must return the current post-restart instance");
-        ReferenceEquals(afterRestart, first).Should().BeFalse(
-            "TryGetAgent must not return the stale pre-restart instance");
+        ReferenceEquals(afterRestart, second)
+            .Should()
+            .BeTrue("TryGetAgent must return the current post-restart instance");
+        ReferenceEquals(afterRestart, first)
+            .Should()
+            .BeFalse("TryGetAgent must not return the stale pre-restart instance");
         _output.WriteLine(
-            $"first={first.ThreadId}#{first.GetHashCode()} second={second.ThreadId}#{second.GetHashCode()} " +
-            $"resolved=#{afterRestart!.GetHashCode()}");
+            $"first={first.ThreadId}#{first.GetHashCode()} second={second.ThreadId}#{second.GetHashCode()} "
+                + $"resolved=#{afterRestart!.GetHashCode()}"
+        );
     }
 
     [Fact]
@@ -227,36 +247,43 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         // sub-agent reached its terminal transition, not just THAT it did, so the timestamp can be
         // stamped durably and never drifts on a later idempotent refresh.
         var finisherProvider = new Mock<IStreamingAgent>();
-        SetupStreamingResponse(finisherProvider, (_, _) => ToAsyncEnumerable(
-            new TextMessage { Text = "done", Role = Role.Assistant }));
+        SetupStreamingResponse(
+            finisherProvider,
+            (_, _) => ToAsyncEnumerable(new TextMessage { Text = "done", Role = Role.Assistant })
+        );
 
         var runnerProvider = new Mock<IStreamingAgent>();
         SetupStreamingResponse(runnerProvider, (_, ct) => BlockingStream(ct));
 
-        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
-        {
-            ["finisher"] = TemplateFor(finisherProvider.Object),
-            ["runner"] = TemplateFor(runnerProvider.Object),
-        });
+        var manager = CreateManager(
+            new Dictionary<string, SubAgentTemplate>
+            {
+                ["finisher"] = TemplateFor(finisherProvider.Object),
+                ["runner"] = TemplateFor(runnerProvider.Object),
+            }
+        );
 
         var finisherJson = await manager.SpawnAsync(
-            "finisher", "finish the report", name: "fin", runInBackground: true);
+            "finisher",
+            "finish the report",
+            name: "fin",
+            runInBackground: true
+        );
         var finisherId = ParseAgentId(finisherJson);
         _ = await manager.ObserveCompletionAsync(finisherId, CancellationToken.None);
 
-        var runnerJson = await manager.SpawnAsync(
-            "runner", "keep running", name: "run", runInBackground: true);
+        var runnerJson = await manager.SpawnAsync("runner", "keep running", name: "run", runInBackground: true);
         var runnerId = ParseAgentId(runnerJson);
 
         var snapshots = manager.ListAgents();
 
         var finisher = snapshots.Single(s => s.AgentId == finisherId);
-        finisher.TerminalAtUtc.Should().NotBeNull(
-            "the finisher reached a terminal completion, so its terminal timestamp must be recorded");
+        finisher
+            .TerminalAtUtc.Should()
+            .NotBeNull("the finisher reached a terminal completion, so its terminal timestamp must be recorded");
 
         var runner = snapshots.Single(s => s.AgentId == runnerId);
-        runner.TerminalAtUtc.Should().BeNull(
-            "a still-running sub-agent has not reached a terminal transition yet");
+        runner.TerminalAtUtc.Should().BeNull("a still-running sub-agent has not reached a terminal transition yet");
     }
 
     [Fact]
@@ -271,45 +298,51 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         // itself pushed the terminal transition through the child's own store, independent of
         // whatever the child's existing post-run behavior already does.
         var provider = new Mock<IStreamingAgent>();
-        SetupStreamingResponse(provider, (_, _) => ToAsyncEnumerable(
-            new TextMessage { Text = "done", Role = Role.Assistant }));
+        SetupStreamingResponse(
+            provider,
+            (_, _) => ToAsyncEnumerable(new TextMessage { Text = "done", Role = Role.Assistant })
+        );
 
         var storeMock = new Mock<IConversationStore>();
         storeMock
-            .Setup(s => s.SaveMetadataAsync(
-                It.IsAny<string>(), It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>()))
+            .Setup(s =>
+                s.SaveMetadataAsync(It.IsAny<string>(), It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>())
+            )
             .Returns(Task.CompletedTask);
         storeMock
             .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((ThreadMetadata?)null);
         storeMock
-            .Setup(s => s.UpdateMetadataAsync(
-                It.IsAny<string>(),
-                It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(s =>
+                s.UpdateMetadataAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.CompletedTask);
 
         var manager = CreateManager(
-            new Dictionary<string, SubAgentTemplate>
-            {
-                ["worker"] = TemplateFor(provider.Object),
-            },
-            storeFactory: _ => storeMock.Object);
+            new Dictionary<string, SubAgentTemplate> { ["worker"] = TemplateFor(provider.Object) },
+            storeFactory: _ => storeMock.Object
+        );
 
-        var spawnJson = await manager.SpawnAsync(
-            "worker", "do work", name: "alpha", runInBackground: true);
+        var spawnJson = await manager.SpawnAsync("worker", "do work", name: "alpha", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
 
         _ = await manager.ObserveCompletionAsync(agentId, CancellationToken.None);
 
         storeMock.Verify(
-            s => s.UpdateMetadataAsync(
-                $"subagent-{agentId}",
-                It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
-                It.IsAny<CancellationToken>()),
+            s =>
+                s.UpdateMetadataAsync(
+                    $"subagent-{agentId}",
+                    It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                    It.IsAny<CancellationToken>()
+                ),
             Times.AtLeastOnce,
-            "the manager must actively push the terminal transition through the child's own " +
-            "store, not rely solely on the child's next metadata write");
+            "the manager must actively push the terminal transition through the child's own "
+                + "store, not rely solely on the child's next metadata write"
+        );
     }
 
     [Fact]
@@ -325,55 +358,59 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         // still-active agent.
         var storeMock = new Mock<IConversationStore>();
         storeMock
-            .Setup(s => s.SaveMetadataAsync(
-                It.IsAny<string>(), It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>()))
+            .Setup(s =>
+                s.SaveMetadataAsync(It.IsAny<string>(), It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>())
+            )
             .Returns(Task.CompletedTask);
         storeMock
             .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((ThreadMetadata?)null);
         storeMock
-            .Setup(s => s.UpdateMetadataAsync(
-                It.IsAny<string>(),
-                It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(s =>
+                s.UpdateMetadataAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.CompletedTask);
 
-        var manager = CreateManager(
-            new Dictionary<string, SubAgentTemplate>
-            {
-                ["broken"] = DummyTemplate("broken"),
-            });
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate> { ["broken"] = DummyTemplate("broken") });
 
         var thrown = new InvalidOperationException("subscribe blew up");
         // TestAgentFactoryOverride's fake loop always gets a null Store by default (it bypasses the
         // real CreateSubAgentAsync store-creation path entirely); TestConversationStoreOverride is the
         // companion hook that supplies a controllable one so this test can verify the causal push.
         manager.TestConversationStoreOverride = (_, _) => storeMock.Object;
-        manager.TestAgentFactoryOverride = (agentId, _) => new FakeMultiTurnAgent
-        {
-            // Mirrors the real subagent-{agentId} thread-id convention (PersistTerminalStateAsync
-            // reads it straight off state.Agent.ThreadId); the fake's default "fake-thread" would
-            // otherwise mismatch the id the manager registers this state under.
-            ThreadId = $"subagent-{agentId}",
-            SubscribeImpl = (_, _) => FakeMultiTurnAgent.ThrowingStream(thrown),
-        };
+        manager.TestAgentFactoryOverride = (agentId, _) =>
+            new FakeMultiTurnAgent
+            {
+                // Mirrors the real subagent-{agentId} thread-id convention (PersistTerminalStateAsync
+                // reads it straight off state.Agent.ThreadId); the fake's default "fake-thread" would
+                // otherwise mismatch the id the manager registers this state under.
+                ThreadId = $"subagent-{agentId}",
+                SubscribeImpl = (_, _) => FakeMultiTurnAgent.ThrowingStream(thrown),
+            };
 
         var spawnJson = await manager.SpawnAsync("broken", "task", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
 
-        var act = () => manager.ObserveCompletionAsync(agentId, CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(5));
+        var act = () =>
+            manager.ObserveCompletionAsync(agentId, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("subscribe blew up");
 
         storeMock.Verify(
-            s => s.UpdateMetadataAsync(
-                $"subagent-{agentId}",
-                It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
-                It.IsAny<CancellationToken>()),
+            s =>
+                s.UpdateMetadataAsync(
+                    $"subagent-{agentId}",
+                    It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                    It.IsAny<CancellationToken>()
+                ),
             Times.AtLeastOnce,
-            "a monitor-fault terminal transition must also push causally through the child's own " +
-            "store, exactly like a graceful terminal completion, even though the child itself " +
-            "will never write metadata again");
+            "a monitor-fault terminal transition must also push causally through the child's own "
+                + "store, exactly like a graceful terminal completion, even though the child itself "
+                + "will never write metadata again"
+        );
     }
 
     [Fact]
@@ -383,10 +420,9 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         // timestamp when a restarted child returns to Running — otherwise a restarted agent's
         // snapshot keeps reporting the PRIOR run's terminal instant, violating "Running has no
         // terminal timestamp" (SubAgentSnapshot.TerminalAtUtc's contract).
-        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
-        {
-            ["restartable"] = DummyTemplate("restartable"),
-        });
+        var manager = CreateManager(
+            new Dictionary<string, SubAgentTemplate> { ["restartable"] = DummyTemplate("restartable") }
+        );
 
         // A completed run's owned-provider agent is not recreated on restart (only disposed/faulted
         // ones are), so the SAME instance's SubscribeAsync is invoked again for the restarted
@@ -394,9 +430,10 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         // mirroring SubAgentManagerGateReleaseRegressionTests' established fake-agent pattern.
         var fake = new FakeMultiTurnAgent
         {
-            SubscribeImpl = (callIndex, ct) => callIndex == 1
-                ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
-                : FakeMultiTurnAgent.WaitForeverStream(ct),
+            SubscribeImpl = (callIndex, ct) =>
+                callIndex == 1
+                    ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
+                    : FakeMultiTurnAgent.WaitForeverStream(ct),
         };
         manager.TestAgentFactoryOverride = (_, _) => fake;
 
@@ -406,21 +443,25 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         await Wait.UntilAsync(
             () => manager.ListAgents().Single(s => s.AgentId == agentId).TerminalAtUtc is not null,
             "the completed sub-agent recorded a terminal instant to be cleared",
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
 
         // Act: restart the completed agent.
         _ = await manager.SendMessageAsync(agentId, "continue", runInBackground: true);
 
         await Wait.UntilAsync(
-            () => manager.ListAgents().Single(s => s.AgentId == agentId).Status
-                == SubAgentStatus.Running,
+            () => manager.ListAgents().Single(s => s.AgentId == agentId).Status == SubAgentStatus.Running,
             "the restarted sub-agent reported running",
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
 
         var afterRestart = manager.ListAgents().Single(s => s.AgentId == agentId);
-        afterRestart.TerminalAtUtc.Should().BeNull(
-            "a restarted, currently-running child must not still report a stale terminal " +
-            "instant from its prior run");
+        afterRestart
+            .TerminalAtUtc.Should()
+            .BeNull(
+                "a restarted, currently-running child must not still report a stale terminal "
+                    + "instant from its prior run"
+            );
     }
 
     [Theory]
@@ -430,7 +471,8 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
     [InlineData(SubAgentStatus.Running, false)]
     public void IsTerminal_ClassifiesEveryStatus_CompletedErrorStoppedTerminal_RunningNot(
         SubAgentStatus status,
-        bool expectedTerminal)
+        bool expectedTerminal
+    )
     {
         // Task 4 (daemon-recursive-review-completion-barrier): a single canonical classification of
         // which SubAgentStatus values are terminal, so callers reading ListAgents() snapshots (e.g. the
@@ -443,7 +485,8 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
     private SubAgentManager CreateManager(
         IReadOnlyDictionary<string, SubAgentTemplate> templates,
         int maxConcurrent = 5,
-        Func<string, IConversationStore>? storeFactory = null)
+        Func<string, IConversationStore>? storeFactory = null
+    )
     {
         var options = new SubAgentOptions
         {
@@ -457,18 +500,15 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: new MutableSubAgentTemplateSource(options.Templates));
+            source: new MutableSubAgentTemplateSource(options.Templates)
+        );
         _manager = manager;
         return manager;
     }
 
     private static SubAgentTemplate TemplateFor(IStreamingAgent provider)
     {
-        return new SubAgentTemplate
-        {
-            SystemPrompt = "You are a test agent.",
-            AgentFactory = () => provider,
-        };
+        return new SubAgentTemplate { SystemPrompt = "You are a test agent.", AgentFactory = () => provider };
     }
 
     /// <summary>
@@ -481,22 +521,28 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         {
             Name = name,
             SystemPrompt = "You are a test agent.",
-            AgentFactory = () => throw new NotSupportedException(
-                "Bypassed by TestAgentFactoryOverride; should never be invoked."),
+            AgentFactory = () =>
+                throw new NotSupportedException("Bypassed by TestAgentFactoryOverride; should never be invoked."),
         };
     }
 
     private static void SetupStreamingResponse(
         Mock<IStreamingAgent> provider,
-        Func<GenerateReplyOptions?, CancellationToken, IAsyncEnumerable<IMessage>> streamFactory)
+        Func<GenerateReplyOptions?, CancellationToken, IAsyncEnumerable<IMessage>> streamFactory
+    )
     {
         provider
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns((IEnumerable<IMessage> _, GenerateReplyOptions? options, CancellationToken ct) =>
-                Task.FromResult(streamFactory(options, ct)));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                (IEnumerable<IMessage> _, GenerateReplyOptions? options, CancellationToken ct) =>
+                    Task.FromResult(streamFactory(options, ct))
+            );
     }
 
     private static string ParseAgentId(string spawnJson)
@@ -518,13 +564,11 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
     /// A provider stream that never yields and only unwinds on cancellation — keeps the sub-agent's
     /// run in progress (Running) deterministically without any timing dependence.
     /// </summary>
-    private static async IAsyncEnumerable<IMessage> BlockingStream(
-        [EnumeratorCancellation] CancellationToken ct)
+    private static async IAsyncEnumerable<IMessage> BlockingStream([EnumeratorCancellation] CancellationToken ct)
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         yield break;
     }
-
 
     #endregion
 }

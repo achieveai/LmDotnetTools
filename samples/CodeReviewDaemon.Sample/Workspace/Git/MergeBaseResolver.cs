@@ -95,11 +95,13 @@ internal sealed class MergeBaseResolver
 
     private readonly GitRunner _git;
     private readonly ILogger _logger;
+    private readonly bool _enableObjectStoreMaintenance;
 
-    public MergeBaseResolver(GitRunner git, ILogger logger)
+    public MergeBaseResolver(GitRunner git, ILogger logger, bool enableObjectStoreMaintenance = false)
     {
         _git = git ?? throw new ArgumentNullException(nameof(git));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _enableObjectStoreMaintenance = enableObjectStoreMaintenance;
     }
 
     /// <summary>
@@ -148,7 +150,10 @@ internal sealed class MergeBaseResolver
     /// </para>
     /// </remarks>
     public async Task<MergeBaseOutcome> ResolveAsync(
-        string repoRoot, ReviewRun run, CancellationToken cancellationToken)
+        string repoRoot,
+        ReviewRun run,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
         ArgumentNullException.ThrowIfNull(run);
@@ -189,7 +194,8 @@ internal sealed class MergeBaseResolver
                 run.Id,
                 repoRoot,
                 run.BaseSha,
-                run.HeadSha);
+                run.HeadSha
+            );
             return MergeBaseOutcome.UnrelatedHistories;
         }
 
@@ -207,9 +213,7 @@ internal sealed class MergeBaseResolver
         var lastReach = new Dictionary<string, int>(StringComparer.Ordinal);
         var everFetched = false;
 
-        for (var depth = MergeBaseFirstDepth;
-            depth <= MergeBaseDepthCeiling;
-            depth *= MergeBaseDepthMultiplier)
+        for (var depth = MergeBaseFirstDepth; depth <= MergeBaseDepthCeiling; depth *= MergeBaseDepthMultiplier)
         {
             var targets = new List<string>();
             var grew = false;
@@ -268,7 +272,8 @@ internal sealed class MergeBaseResolver
                         run.Id,
                         repoRoot,
                         run.BaseSha,
-                        run.HeadSha);
+                        run.HeadSha
+                    );
                     return MergeBaseOutcome.Indeterminate;
                 }
 
@@ -280,7 +285,8 @@ internal sealed class MergeBaseResolver
                     run.Id,
                     repoRoot,
                     run.BaseSha,
-                    run.HeadSha);
+                    run.HeadSha
+                );
                 return MergeBaseOutcome.UnrelatedHistories;
             }
 
@@ -292,11 +298,11 @@ internal sealed class MergeBaseResolver
                 continue;
             }
 
-            var deepen = await _git
-                .RunAsync(
+            var deepen = await _git.RunAsync(
                     ["-C", repoRoot, "fetch", $"--depth={depth}", "origin", .. targets],
                     repoRoot,
-                    cancellationToken)
+                    cancellationToken
+                )
                 .ConfigureAwait(false);
             if (!deepen.Succeeded)
             {
@@ -306,11 +312,17 @@ internal sealed class MergeBaseResolver
                     repoRoot,
                     depth,
                     deepen.ExitCode,
-                    deepen.Stderr);
+                    deepen.Stderr
+                );
                 return MergeBaseOutcome.DeepenFailed;
             }
 
             everFetched = true;
+
+            // Collapse the near-copy this round just landed, BEFORE the next round lands another. Doing it
+            // here rather than once at the end is what bounds the peak: the climb can issue four fetches, and
+            // on the live NOVA store that meant four packs of 7.2-7.7 GB coexisting.
+            await CompactObjectStoreAsync(repoRoot, run, depth, cancellationToken).ConfigureAwait(false);
 
             var answer = await MergeBaseAnswerAsync(repoRoot, run, cancellationToken).ConfigureAwait(false);
             if (answer == GitAnswer.Unknown)
@@ -329,7 +341,8 @@ internal sealed class MergeBaseResolver
                     repoRoot,
                     depth,
                     run.BaseSha,
-                    run.HeadSha);
+                    run.HeadSha
+                );
                 return MergeBaseOutcome.Resolved;
             }
         }
@@ -343,9 +356,78 @@ internal sealed class MergeBaseResolver
             repoRoot,
             run.BaseSha,
             run.HeadSha,
-            MergeBaseDepthCeiling);
+            MergeBaseDepthCeiling
+        );
 
         return MergeBaseOutcome.DepthCeilingReached;
+    }
+
+    /// <summary>
+    /// Collapses the near-duplicate pack the round that just finished wrote, before the next round writes
+    /// another. Best-effort: a failure here leaves the store larger and the review proceeds.
+    /// </summary>
+    /// <remarks>
+    /// A <c>--depth</c> fetch re-asks from the TIP rather than from the current boundary, so each round of the
+    /// climb brings down the tip's tree closure again instead of only the boundary commits it still lacks —
+    /// and that closure, not the extra depth, is the bulk. The fingerprint is unambiguous on the live NOVA
+    /// store: four packs of 7.2-7.7 GB holding 4,967,095 objects between them but only 1,034,930 distinct
+    /// ones, i.e. the same object set roughly four times over, 30 GB of the store's 31.
+    /// <para>
+    /// <c>--keep-unreachable</c> is not tidiness — it is required for correctness, and a plain
+    /// <c>repack -a -d</c> here would break every review. The PR's base and head arrive by raw SHA, so nothing
+    /// but <c>FETCH_HEAD</c> points at them, and repack's reachability walk does not treat FETCH_HEAD as a
+    /// root. Measured on a lab repo built to this shape: <c>repack -a -d</c> left the store at 144 KB with the
+    /// base commit DROPPED, discarding the deepening that had just been paid for; the same repack with
+    /// <c>--keep-unreachable</c> kept base and head, preserved the merge base and the shallow boundary, left
+    /// the reviewed worktree's HEAD resolvable, passed <c>fsck</c>, and still collapsed four packs into one
+    /// for a 53% saving. Deepening the store again afterwards still worked.
+    /// </para>
+    /// <para>
+    /// Gated off by default. See <c>CodeReviewDaemonOptions.EnableObjectStoreMaintenance</c> — what the flag
+    /// governs is not whether this work is correct but whether it is ours to do.
+    /// </para>
+    /// </remarks>
+    private async Task CompactObjectStoreAsync(
+        string repoRoot,
+        ReviewRun run,
+        int depth,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!_enableObjectStoreMaintenance)
+        {
+            // The store keeps the duplicate pack this round just wrote. That is the accepted cost of the
+            // instruction not to touch local packs — see CodeReviewDaemonOptions.EnableObjectStoreMaintenance.
+            return;
+        }
+
+        var repack = await _git.RunAsync(
+                ["-C", repoRoot, "repack", "-a", "-d", "--keep-unreachable"],
+                repoRoot,
+                cancellationToken
+            )
+            .ConfigureAwait(false);
+        if (!repack.Succeeded)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: repacking '{Repo}' after the depth {Depth} fetch failed (exit {Exit}): "
+                    + "{Stderr}. The review proceeds; the near-duplicate pack this round wrote stays on disk.",
+                run.Id,
+                repoRoot,
+                depth,
+                repack.ExitCode,
+                repack.Stderr
+            );
+            return;
+        }
+
+        _logger.LogInformation(
+            "Run {RunId}: repacked '{Repo}' after deepening to {Depth}, collapsing the pack that fetch "
+                + "duplicated.",
+            run.Id,
+            repoRoot,
+            depth
+        );
     }
 
     /// <summary>
@@ -359,11 +441,9 @@ internal sealed class MergeBaseResolver
     /// precisely the fix — but reading it as "this round bought no history" is how a killed <c>rev-list</c>
     /// turns into a pull-request comment telling the author to rebase.
     /// </remarks>
-    private async Task<int?> ReachableCountAsync(
-        string repoRoot, string sha, CancellationToken cancellationToken)
+    private async Task<int?> ReachableCountAsync(string repoRoot, string sha, CancellationToken cancellationToken)
     {
-        var result = await _git
-            .RunAsync(["-C", repoRoot, "rev-list", "--count", sha], repoRoot, cancellationToken)
+        var result = await _git.RunAsync(["-C", repoRoot, "rev-list", "--count", sha], repoRoot, cancellationToken)
             .ConfigureAwait(false);
         return result.Succeeded && int.TryParse(result.Stdout.Trim(), out var count) ? count : null;
     }
@@ -383,11 +463,16 @@ internal sealed class MergeBaseResolver
     /// </para>
     /// </remarks>
     private async Task<GitAnswer> MergeBaseAnswerAsync(
-        string repoRoot, ReviewRun run, CancellationToken cancellationToken)
+        string repoRoot,
+        ReviewRun run,
+        CancellationToken cancellationToken
+    )
     {
-        var result = await _git
-            .RunAsync(
-                ["-C", repoRoot, "merge-base", run.BaseSha, run.HeadSha], repoRoot, cancellationToken)
+        var result = await _git.RunAsync(
+                ["-C", repoRoot, "merge-base", run.BaseSha, run.HeadSha],
+                repoRoot,
+                cancellationToken
+            )
             .ConfigureAwait(false);
         if (result.Succeeded && !string.IsNullOrWhiteSpace(result.Stdout))
         {
@@ -409,7 +494,8 @@ internal sealed class MergeBaseResolver
             run.HeadSha,
             repoRoot,
             result.ExitCode,
-            result.Stderr);
+            result.Stderr
+        );
         return GitAnswer.Unknown;
     }
 
@@ -423,10 +509,16 @@ internal sealed class MergeBaseResolver
     /// must be reachable only by git actually saying <c>false</c>.
     /// </remarks>
     private async Task<GitAnswer> IsShallowAnswerAsync(
-        string repoRoot, ReviewRun run, CancellationToken cancellationToken)
+        string repoRoot,
+        ReviewRun run,
+        CancellationToken cancellationToken
+    )
     {
-        var result = await _git
-            .RunAsync(["-C", repoRoot, "rev-parse", "--is-shallow-repository"], repoRoot, cancellationToken)
+        var result = await _git.RunAsync(
+                ["-C", repoRoot, "rev-parse", "--is-shallow-repository"],
+                repoRoot,
+                cancellationToken
+            )
             .ConfigureAwait(false);
         if (result.Succeeded)
         {
@@ -450,7 +542,8 @@ internal sealed class MergeBaseResolver
             run.Id,
             repoRoot,
             result.ExitCode,
-            result.Stderr);
+            result.Stderr
+        );
         return GitAnswer.Unknown;
     }
 }

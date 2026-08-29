@@ -17,7 +17,8 @@ namespace LmMultiTurn.Tests;
 
 public class CodexAgentLoopProfileTests : LoggingTestBase
 {
-    public CodexAgentLoopProfileTests(ITestOutputHelper output) : base(output) { }
+    public CodexAgentLoopProfileTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Fact]
     public async Task Profile_SystemPrompt_OverridesDeveloperInstructions()
@@ -35,7 +36,8 @@ public class CodexAgentLoopProfileTests : LoggingTestBase
             enabledTools: null,
             threadId: "thread-profile-1",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+        );
 
         await RunOneTurnAsync(loop);
 
@@ -61,16 +63,14 @@ public class CodexAgentLoopProfileTests : LoggingTestBase
         };
 
         await using var loop = new CodexAgentLoop(
-            new CodexSdkOptions
-            {
-                Profile = new AgentRuntimeProfile { McpServers = profileMcp },
-            },
+            new CodexSdkOptions { Profile = new AgentRuntimeProfile { McpServers = profileMcp } },
             hostMcp,
             functionRegistry: null,
             enabledTools: null,
             threadId: "thread-profile-2",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+        );
 
         await RunOneTurnAsync(loop);
 
@@ -86,17 +86,15 @@ public class CodexAgentLoopProfileTests : LoggingTestBase
         var fakeClient = new RecordingCodexClient(SuccessfulTurnEvents());
 
         await using var loop = new CodexAgentLoop(
-            new CodexSdkOptions
-            {
-                Profile = new AgentRuntimeProfile { SystemPrompt = "profile-wins" },
-            },
+            new CodexSdkOptions { Profile = new AgentRuntimeProfile { SystemPrompt = "profile-wins" } },
             new Dictionary<string, CodexMcpServerConfig>(),
             functionRegistry: null,
             enabledTools: null,
             threadId: "thread-profile-precedence-1",
             systemPrompt: "ctor-prompt",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+        );
 
         await RunOneTurnAsync(loop);
 
@@ -116,7 +114,8 @@ public class CodexAgentLoopProfileTests : LoggingTestBase
             threadId: "thread-profile-precedence-2",
             systemPrompt: "ctor-prompt",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+        );
 
         await RunOneTurnAsync(loop);
 
@@ -130,19 +129,14 @@ public class CodexAgentLoopProfileTests : LoggingTestBase
         var capture = new CapturingLogger<CodexAgentLoop>();
 
         await using var loop = new CodexAgentLoop(
-            new CodexSdkOptions
-            {
-                Profile = new AgentRuntimeProfile
-                {
-                    Skills = [AgentSkill.Inline("s", "body")],
-                },
-            },
+            new CodexSdkOptions { Profile = new AgentRuntimeProfile { Skills = [AgentSkill.Inline("s", "body")] } },
             new Dictionary<string, CodexMcpServerConfig>(),
             functionRegistry: null,
             enabledTools: null,
             threadId: "thread-codex-warning-once",
             clientFactory: (_, _) => fakeClient,
-            logger: capture);
+            logger: capture
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -173,7 +167,8 @@ public class CodexAgentLoopProfileTests : LoggingTestBase
             enabledTools: null,
             threadId: "thread-profile-3",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+        );
 
         await RunOneTurnAsync(loop);
 
@@ -186,9 +181,7 @@ public class CodexAgentLoopProfileTests : LoggingTestBase
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
         var input = new UserInput([new TextMessage { Role = Role.User, Text = "hi" }]);
-        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token))
-        {
-        }
+        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token)) { }
         await cts.CancelAsync();
     }
 
@@ -197,7 +190,10 @@ public class CodexAgentLoopProfileTests : LoggingTestBase
         return
         [
             Event("thread.started", """{"type":"thread.started","thread_id":"t1"}"""),
-            Event("turn.completed", """{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}"""),
+            Event(
+                "turn.completed",
+                """{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}"""
+            ),
         ];
     }
 
@@ -233,9 +229,8 @@ public class CodexAgentLoopProfileTests : LoggingTestBase
         public string DependencyState => "ready";
 
         public void ConfigureDynamicToolExecutor(
-            Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor)
-        {
-        }
+            Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor
+        ) { }
 
         public Task StartOrResumeThreadAsync(CodexBridgeInitOptions options, CancellationToken ct = default)
         {
@@ -245,12 +240,13 @@ public class CodexAgentLoopProfileTests : LoggingTestBase
             return Task.CompletedTask;
         }
 
-        public Task EnsureStartedAsync(CodexBridgeInitOptions options, CancellationToken ct = default)
-            => StartOrResumeThreadAsync(options, ct);
+        public Task EnsureStartedAsync(CodexBridgeInitOptions options, CancellationToken ct = default) =>
+            StartOrResumeThreadAsync(options, ct);
 
         public async IAsyncEnumerable<CodexTurnEventEnvelope> RunStreamingAsync(
             string input,
-            [EnumeratorCancellation] CancellationToken ct = default)
+            [EnumeratorCancellation] CancellationToken ct = default
+        )
         {
             foreach (var item in _events)
             {

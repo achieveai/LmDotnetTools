@@ -42,22 +42,25 @@ internal sealed class ReviewPoster
         var key = IdempotencyKey.Build(request.Key);
 
         // First guard: idempotent enqueue. A replay re-finds the existing row with its current status.
-        var entry = _store.EnqueueOutbox(new OutboxEntry
-        {
-            IdempotencyKey = key,
-            Provider = request.Key.Provider,
-            ReviewRunId = request.ReviewRunId,
-            Operation = PostReviewCommentOperation,
-            ArtifactKind = request.Key.ArtifactKind,
-            Status = OutboxStatus.Pending,
-        });
+        var entry = _store.EnqueueOutbox(
+            new OutboxEntry
+            {
+                IdempotencyKey = key,
+                Provider = request.Key.Provider,
+                ReviewRunId = request.ReviewRunId,
+                Operation = PostReviewCommentOperation,
+                ArtifactKind = request.Key.ArtifactKind,
+                Status = OutboxStatus.Pending,
+            }
+        );
 
         // Terminal replay — the side effect (or the deliberate decision not to act) already happened. Posted is
         // terminal unconditionally (the comment exists). Collected is terminal only for another UNAUTHORIZED
         // replay: it records "we chose not to act", and that choice is the caller's to revise. Once a later
         // attempt IS authorized to post live, treating the Collected row as terminal would silently swallow the
         // delivery forever — the run would complete having posted nothing while its outbox claimed closure.
-        var terminal = entry.Status is OutboxStatus.Posted
+        var terminal =
+            entry.Status is OutboxStatus.Posted
             || (entry.Status is OutboxStatus.Collected && !request.LivePostingAuthorized);
         if (terminal)
         {
@@ -130,7 +133,8 @@ internal sealed record PostReviewRequest(
     IdempotencyKeyComponents Key,
     ReviewCommentTarget Target,
     string Body,
-    bool LivePostingAuthorized = false);
+    bool LivePostingAuthorized = false
+);
 
 /// <summary>How a <see cref="ReviewPoster.PostReviewAsync"/> call resolved.</summary>
 internal enum PostOutcomeKind

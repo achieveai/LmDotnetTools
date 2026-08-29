@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -7,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -39,11 +39,14 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
     public Task InitializeAsync()
     {
         _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         return Task.CompletedTask;
@@ -81,14 +84,16 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
             source: new MutableSubAgentTemplateSource(options.Templates),
-            logger: _logger);
+            logger: _logger
+        );
         _manager = manager;
 
-        manager.TestAgentFactoryOverride = (agentId, _) => new ObservableFakeAgent
-        {
-            ThreadId = $"subagent-{agentId}",
-            RunMessages = [new TextMessage { Text = "ack", Role = Role.Assistant }],
-        };
+        manager.TestAgentFactoryOverride = (agentId, _) =>
+            new ObservableFakeAgent
+            {
+                ThreadId = $"subagent-{agentId}",
+                RunMessages = [new TextMessage { Text = "ack", Role = Role.Assistant }],
+            };
 
         // Background spawn carries the (secret) task text; the relayed follow-up carries the (secret) prompt.
         var spawnJson = await manager.SpawnAsync("worker", SecretTask, runInBackground: true);
@@ -97,12 +102,18 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
 
         var allLogs = _logger.Snapshot();
         allLogs.Should().NotBeEmpty("the manager logs lifecycle events (so the guard is meaningful)");
-        allLogs.Should().NotContain(
-            line => line.Contains(SecretTask, StringComparison.Ordinal),
-            "the spawn task is user/model content and must never be logged");
-        allLogs.Should().NotContain(
-            line => line.Contains(SecretPrompt, StringComparison.Ordinal),
-            "the relayed prompt is user EUII and must never be logged");
+        allLogs
+            .Should()
+            .NotContain(
+                line => line.Contains(SecretTask, StringComparison.Ordinal),
+                "the spawn task is user/model content and must never be logged"
+            );
+        allLogs
+            .Should()
+            .NotContain(
+                line => line.Contains(SecretPrompt, StringComparison.Ordinal),
+                "the relayed prompt is user EUII and must never be logged"
+            );
     }
 
     [Fact]
@@ -131,20 +142,24 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
             source: new MutableSubAgentTemplateSource(options.Templates),
-            logger: _logger);
+            logger: _logger
+        );
         _manager = manager;
-        manager.TestAgentFactoryOverride = (agentId, _) => new ObservableFakeAgent
-        {
-            ThreadId = $"subagent-{agentId}",
-            RunMessages = [new TextMessage { Text = "ack", Role = Role.Assistant }],
-        };
+        manager.TestAgentFactoryOverride = (agentId, _) =>
+            new ObservableFakeAgent
+            {
+                ThreadId = $"subagent-{agentId}",
+                RunMessages = [new TextMessage { Text = "ack", Role = Role.Assistant }],
+            };
 
-        _ = await manager.SpawnAsync(
-            "worker", SecretTask, name: "workflow:1:task", runInBackground: true);
+        _ = await manager.SpawnAsync("worker", SecretTask, name: "workflow:1:task", runInBackground: true);
 
-        var routing = _logger.StructuredSnapshot()
-            .Single(entry => entry.TryGetValue("RoutingSelectionSource", out var source)
-                && string.Equals(source?.ToString(), "template-tier", StringComparison.Ordinal));
+        var routing = _logger
+            .StructuredSnapshot()
+            .Single(entry =>
+                entry.TryGetValue("RoutingSelectionSource", out var source)
+                && string.Equals(source?.ToString(), "template-tier", StringComparison.Ordinal)
+            );
         routing["TemplateName"].Should().Be("worker");
         routing["SpawnName"].Should().Be("workflow:1:task");
         routing["RequestedModelIntelligence"].Should().BeNull();
@@ -196,16 +211,18 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
             options: options,
             source: source,
             logger: _logger,
-            collaboration: root);
+            collaboration: root
+        );
         _manager = manager;
 
         // The reply is the sub-agent's transcript: it is model output relayed to the parent, and the
         // manager sees all of it on the way through.
-        manager.TestAgentFactoryOverride = (agentId, _) => new ObservableFakeAgent
-        {
-            ThreadId = $"subagent-{agentId}",
-            RunMessages = [new TextMessage { Text = SecretTranscript, Role = Role.Assistant }],
-        };
+        manager.TestAgentFactoryOverride = (agentId, _) =>
+            new ObservableFakeAgent
+            {
+                ThreadId = $"subagent-{agentId}",
+                RunMessages = [new TextMessage { Text = SecretTranscript, Role = Role.Assistant }],
+            };
 
         var spawnJson = await manager.SpawnAsync(
             "worker",
@@ -213,7 +230,8 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
             name: "helper",
             runInBackground: true,
             role: SecretRole,
-            description: SecretDescription);
+            description: SecretDescription
+        );
         var agentId = ParseAgentId(spawnJson);
 
         // The guard is only worth anything if the role and description actually reached the system, so
@@ -228,11 +246,22 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
             .GetFunctions()
             .First(f => f.Contract.Name == "SendMessage");
         var delivery = await send.Handler(
-            JsonSerializer.Serialize(new { target = agentId, content = SecretBody, msg_type = "steer" }),
+            JsonSerializer.Serialize(
+                new
+                {
+                    target = agentId,
+                    content = SecretBody,
+                    msg_type = "steer",
+                }
+            ),
             new ToolCallContext(),
-            CancellationToken.None);
-        delivery.Should().BeOfType<ToolHandlerResult.Resolved>()
-            .Which.Payload.IsError.Should().BeFalse("the message must really be delivered");
+            CancellationToken.None
+        );
+        delivery
+            .Should()
+            .BeOfType<ToolHandlerResult.Resolved>()
+            .Which.Payload.IsError.Should()
+            .BeFalse("the message must really be delivered");
 
         AssertNoSentinelWasLogged();
     }
@@ -243,25 +272,33 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
     /// </summary>
     private void AssertNoSentinelWasLogged()
     {
-        string[] sentinels =
-            [SecretTask, SecretPrompt, SecretRole, SecretDescription, SecretBody, SecretTranscript];
+        string[] sentinels = [SecretTask, SecretPrompt, SecretRole, SecretDescription, SecretBody, SecretTranscript];
 
         var lines = _logger.Snapshot();
         lines.Should().NotBeEmpty("the manager logs lifecycle events (so the guard is meaningful)");
 
-        var values = _logger.StructuredSnapshot()
+        var values = _logger
+            .StructuredSnapshot()
             .SelectMany(entry => entry.Values)
             .Select(value => value?.ToString() ?? string.Empty)
             .ToList();
 
         foreach (var sentinel in sentinels)
         {
-            lines.Should().NotContain(
-                line => line.Contains(sentinel, StringComparison.Ordinal),
-                "content must never be rendered into a log line (sentinel {0})", sentinel);
-            values.Should().NotContain(
-                value => value.Contains(sentinel, StringComparison.Ordinal),
-                "content must never be attached as a log property (sentinel {0})", sentinel);
+            lines
+                .Should()
+                .NotContain(
+                    line => line.Contains(sentinel, StringComparison.Ordinal),
+                    "content must never be rendered into a log line (sentinel {0})",
+                    sentinel
+                );
+            values
+                .Should()
+                .NotContain(
+                    value => value.Contains(sentinel, StringComparison.Ordinal),
+                    "content must never be attached as a log property (sentinel {0})",
+                    sentinel
+                );
         }
     }
 
@@ -294,7 +331,8 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
             }
         }
 
-        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
 
         public bool IsEnabled(LogLevel logLevel) => true;
 
@@ -303,7 +341,8 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
             EventId eventId,
             TState state,
             Exception? exception,
-            Func<TState, Exception?, string> formatter)
+            Func<TState, Exception?, string> formatter
+        )
         {
             var line = formatter(state, exception);
             var properties = state is IEnumerable<KeyValuePair<string, object?>> values
@@ -320,9 +359,7 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
         {
             public static readonly NullScope Instance = new();
 
-            public void Dispose()
-            {
-            }
+            public void Dispose() { }
         }
     }
 }

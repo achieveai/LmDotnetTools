@@ -27,5 +27,6 @@ public sealed class SandboxDiscoverySettings
     }
 
     /// <summary>Redacted rendering — never prints <see cref="WebhookAuth"/>.</summary>
-    public override string ToString() => $"SandboxDiscoverySettings {{ WebhookUrl = {WebhookUrl}, WebhookAuth = [REDACTED] }}";
+    public override string ToString() =>
+        $"SandboxDiscoverySettings {{ WebhookUrl = {WebhookUrl}, WebhookAuth = [REDACTED] }}";
 }

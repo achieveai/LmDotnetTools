@@ -28,10 +28,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
     private readonly ConcurrentDictionary<long, PendingRequest> _pendingRequests = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
-    private readonly JsonSerializerOptions _json = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-    };
+    private readonly JsonSerializerOptions _json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
     private IProcessHandle? _process;
     private StreamWriter? _stdin;
@@ -65,16 +62,10 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         string? baseUrl,
         Func<string, JsonElement?, CancellationToken, Task<JsonElement>> requestHandler,
         Action<string, JsonElement?> notificationHandler,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
-        return StartAsync(
-            workingDirectory,
-            apiKey,
-            baseUrl,
-            mcpServers: null,
-            requestHandler,
-            notificationHandler,
-            ct);
+        return StartAsync(workingDirectory, apiKey, baseUrl, mcpServers: null, requestHandler, notificationHandler, ct);
     }
 
     public async Task StartAsync(
@@ -84,7 +75,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         IReadOnlyDictionary<string, McpServerConfig>? mcpServers,
         Func<string, JsonElement?, CancellationToken, Task<JsonElement>> requestHandler,
         Action<string, JsonElement?> notificationHandler,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
         ArgumentNullException.ThrowIfNull(requestHandler);
@@ -105,7 +97,11 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
 
             if (_options.EnableRpcTrace && !string.IsNullOrWhiteSpace(_options.RpcTraceFilePath))
             {
-                _rpcTraceWriter = new CopilotRpcTraceWriter(_options.RpcTraceFilePath, _options.CopilotSessionId, _logger);
+                _rpcTraceWriter = new CopilotRpcTraceWriter(
+                    _options.RpcTraceFilePath,
+                    _options.CopilotSessionId,
+                    _logger
+                );
                 _logger?.LogInformation(
                     "{event_type} {event_status} {provider} {provider_mode} {copilot_session_id} {trace_file}",
                     "copilot.rpc_trace",
@@ -113,7 +109,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                     _options.Provider,
                     _options.ProviderMode,
                     _options.CopilotSessionId ?? string.Empty,
-                    _options.RpcTraceFilePath);
+                    _options.RpcTraceFilePath
+                );
             }
 
             var envOverrides = new Dictionary<string, string?>(StringComparer.Ordinal);
@@ -133,10 +130,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
             // wire shape is stdio-hostile, so all MCP routing flows through the
             // CLI's own config-file loader instead).
             var arguments = BuildCliArguments(_options);
-            var hostPaths = new List<HostPathReference>
-            {
-                new(workingDirectory, HostPathKind.WorkingDirectory),
-            };
+            var hostPaths = new List<HostPathReference> { new(workingDirectory, HostPathKind.WorkingDirectory) };
 
             var mcpConfigPath = TryWriteMcpConfigFile(mcpServers);
             if (mcpConfigPath != null)
@@ -167,20 +161,19 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 CleanupMcpConfigTempFile();
                 throw new InvalidOperationException(
                     $"Failed to start Copilot CLI (configured as '{_options.CopilotCliPath}'). Ensure Copilot CLI is installed and accessible.",
-                    ex);
+                    ex
+                );
             }
             catch (Exception ex)
             {
                 CleanupMcpConfigTempFile();
                 throw new InvalidOperationException(
                     $"Failed to start Copilot CLI (configured as '{_options.CopilotCliPath}'). Ensure Copilot CLI is installed and accessible.",
-                    ex);
+                    ex
+                );
             }
 
-            _stdin = new StreamWriter(_process.StandardInput.BaseStream, new UTF8Encoding(false))
-            {
-                AutoFlush = true,
-            };
+            _stdin = new StreamWriter(_process.StandardInput.BaseStream, new UTF8Encoding(false)) { AutoFlush = true };
             _stdout = _process.StandardOutput;
             _stderr = _process.StandardError;
 
@@ -199,7 +192,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         string method,
         object? parameters,
         CancellationToken ct,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(method);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -218,20 +212,23 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
 
         try
         {
-            await WriteJsonLineAsync(writer =>
-            {
-                writer.WriteStartObject();
-                writer.WriteString("jsonrpc", "2.0");
-                writer.WriteNumber("id", id);
-                writer.WriteString("method", method);
-                if (parameters != null)
+            await WriteJsonLineAsync(
+                writer =>
                 {
-                    writer.WritePropertyName("params");
-                    WriteArbitraryValue(writer, parameters, _json);
-                }
+                    writer.WriteStartObject();
+                    writer.WriteString("jsonrpc", "2.0");
+                    writer.WriteNumber("id", id);
+                    writer.WriteString("method", method);
+                    if (parameters != null)
+                    {
+                        writer.WritePropertyName("params");
+                        WriteArbitraryValue(writer, parameters, _json);
+                    }
 
-                writer.WriteEndObject();
-            }, ct);
+                    writer.WriteEndObject();
+                },
+                ct
+            );
         }
         catch
         {
@@ -262,19 +259,22 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(method);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
-        return WriteJsonLineAsync(writer =>
-        {
-            writer.WriteStartObject();
-            writer.WriteString("jsonrpc", "2.0");
-            writer.WriteString("method", method);
-            if (parameters != null)
+        return WriteJsonLineAsync(
+            writer =>
             {
-                writer.WritePropertyName("params");
-                WriteArbitraryValue(writer, parameters, _json);
-            }
+                writer.WriteStartObject();
+                writer.WriteString("jsonrpc", "2.0");
+                writer.WriteString("method", method);
+                if (parameters != null)
+                {
+                    writer.WritePropertyName("params");
+                    WriteArbitraryValue(writer, parameters, _json);
+                }
 
-            writer.WriteEndObject();
-        }, ct);
+                writer.WriteEndObject();
+            },
+            ct
+        );
     }
 
     public async Task StopAsync(TimeSpan? timeout = null, CancellationToken ct = default)
@@ -449,7 +449,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                     "observed",
                     _options.Provider,
                     _options.ProviderMode,
-                    line);
+                    line
+                );
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -464,7 +465,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 "copilot.acp_server.stderr_loop",
                 "failed",
                 _options.Provider,
-                _options.ProviderMode);
+                _options.ProviderMode
+            );
         }
     }
 
@@ -492,23 +494,22 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 _options.Provider,
                 _options.ProviderMode,
                 "invalid_json",
-                line);
+                line
+            );
             return;
         }
 
         using (doc)
         {
             var root = doc.RootElement;
-            var hasMethod = root.TryGetProperty("method", out var methodProp)
-                            && methodProp.ValueKind == JsonValueKind.String;
+            var hasMethod =
+                root.TryGetProperty("method", out var methodProp) && methodProp.ValueKind == JsonValueKind.String;
             var hasId = root.TryGetProperty("id", out var idProp);
 
             if (hasMethod && hasId)
             {
                 var method = methodProp.GetString() ?? string.Empty;
-                JsonElement? parameters = root.TryGetProperty("params", out var paramsProp)
-                    ? paramsProp.Clone()
-                    : null;
+                JsonElement? parameters = root.TryGetProperty("params", out var paramsProp) ? paramsProp.Clone() : null;
                 await DispatchServerRequest(idProp.Clone(), method, parameters, ct);
                 return;
             }
@@ -516,9 +517,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
             if (hasMethod)
             {
                 var method = methodProp.GetString() ?? string.Empty;
-                JsonElement? parameters = root.TryGetProperty("params", out var paramsProp)
-                    ? paramsProp.Clone()
-                    : null;
+                JsonElement? parameters = root.TryGetProperty("params", out var paramsProp) ? paramsProp.Clone() : null;
                 var handler = _notificationHandler;
                 if (handler != null)
                 {
@@ -536,7 +535,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                             _options.Provider,
                             _options.ProviderMode,
                             "notification_handler_failed",
-                            method);
+                            method
+                        );
                     }
                 }
 
@@ -555,10 +555,11 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
 
             if (root.TryGetProperty("error", out var errorProp) && errorProp.ValueKind == JsonValueKind.Object)
             {
-                var message = errorProp.TryGetProperty("message", out var messageProp)
+                var message =
+                    errorProp.TryGetProperty("message", out var messageProp)
                     && messageProp.ValueKind == JsonValueKind.String
-                    ? messageProp.GetString()
-                    : "Unknown RPC error";
+                        ? messageProp.GetString()
+                        : "Unknown RPC error";
                 pending.TrySetException(new InvalidOperationException(message));
                 return;
             }
@@ -590,11 +591,14 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         JsonElement requestId,
         string method,
         JsonElement? parameters,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var dispatcher = _serverRequests;
-        if (dispatcher != null
-            && dispatcher.TryDispatch(token => HandleServerRequestAsync(requestId, method, parameters, token), ct))
+        if (
+            dispatcher != null
+            && dispatcher.TryDispatch(token => HandleServerRequestAsync(requestId, method, parameters, token), ct)
+        )
         {
             return Task.CompletedTask;
         }
@@ -606,24 +610,22 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
             _options.Provider,
             _options.ProviderMode,
             dispatcher == null ? "transport_stopped" : "dispatcher_saturated",
-            method);
+            method
+        );
 
         // Answering is still ours to do — an agent waiting on a response that never comes would
         // hang the turn rather than fail it. Written from here rather than dispatched, because the
         // dispatcher is what just refused. A write waits only on the outbound lock, which is held
         // for one line at a time, so this cannot reintroduce the stall above.
-        return SendErrorAsync(
-            requestId,
-            -32000,
-            "Copilot ACP request was refused: too many concurrent requests.",
-            ct);
+        return SendErrorAsync(requestId, -32000, "Copilot ACP request was refused: too many concurrent requests.", ct);
     }
 
     private async Task HandleServerRequestAsync(
         JsonElement requestId,
         string method,
         JsonElement? parameters,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var handler = _requestHandler;
         if (handler == null)
@@ -646,49 +648,56 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 "failed",
                 _options.Provider,
                 _options.ProviderMode,
-                method);
+                method
+            );
             await SendErrorAsync(requestId, -32000, ex.Message, ct);
         }
     }
 
     private Task SendResultAsync(JsonElement requestId, JsonElement response, CancellationToken ct)
     {
-        return WriteJsonLineAsync(writer =>
-        {
-            writer.WriteStartObject();
-            writer.WriteString("jsonrpc", "2.0");
-            writer.WritePropertyName("id");
-            requestId.WriteTo(writer);
-            writer.WritePropertyName("result");
-            if (response.ValueKind == JsonValueKind.Undefined)
+        return WriteJsonLineAsync(
+            writer =>
             {
                 writer.WriteStartObject();
-                writer.WriteEndObject();
-            }
-            else
-            {
-                response.WriteTo(writer);
-            }
+                writer.WriteString("jsonrpc", "2.0");
+                writer.WritePropertyName("id");
+                requestId.WriteTo(writer);
+                writer.WritePropertyName("result");
+                if (response.ValueKind == JsonValueKind.Undefined)
+                {
+                    writer.WriteStartObject();
+                    writer.WriteEndObject();
+                }
+                else
+                {
+                    response.WriteTo(writer);
+                }
 
-            writer.WriteEndObject();
-        }, ct);
+                writer.WriteEndObject();
+            },
+            ct
+        );
     }
 
     private Task SendErrorAsync(JsonElement requestId, int code, string message, CancellationToken ct)
     {
-        return WriteJsonLineAsync(writer =>
-        {
-            writer.WriteStartObject();
-            writer.WriteString("jsonrpc", "2.0");
-            writer.WritePropertyName("id");
-            requestId.WriteTo(writer);
-            writer.WritePropertyName("error");
-            writer.WriteStartObject();
-            writer.WriteNumber("code", code);
-            writer.WriteString("message", message);
-            writer.WriteEndObject();
-            writer.WriteEndObject();
-        }, ct);
+        return WriteJsonLineAsync(
+            writer =>
+            {
+                writer.WriteStartObject();
+                writer.WriteString("jsonrpc", "2.0");
+                writer.WritePropertyName("id");
+                requestId.WriteTo(writer);
+                writer.WritePropertyName("error");
+                writer.WriteStartObject();
+                writer.WriteNumber("code", code);
+                writer.WriteString("message", message);
+                writer.WriteEndObject();
+                writer.WriteEndObject();
+            },
+            ct
+        );
     }
 
     private async Task WriteJsonLineAsync(Action<Utf8JsonWriter> writeAction, CancellationToken ct)
@@ -746,7 +755,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 "failed",
                 _options.Provider,
                 _options.ProviderMode,
-                "trace_write_failed");
+                "trace_write_failed"
+            );
         }
     }
 
@@ -832,7 +842,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
             _options.Provider,
             _options.ProviderMode,
             mcpServers?.Count ?? 0,
-            path);
+            path
+        );
 
         return path;
     }
@@ -861,18 +872,18 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                     "copilot.mcp.server.skip",
                     "skipped",
                     name ?? "<null>",
-                    "name_or_config_null");
+                    "name_or_config_null"
+                );
                 continue;
             }
 
             var transport = string.IsNullOrWhiteSpace(config.Type) ? "stdio" : config.Type;
-            var entry = new Dictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["type"] = transport,
-            };
+            var entry = new Dictionary<string, object?>(StringComparer.Ordinal) { ["type"] = transport };
 
-            if (string.Equals(transport, "http", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(transport, "sse", StringComparison.OrdinalIgnoreCase))
+            if (
+                string.Equals(transport, "http", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(transport, "sse", StringComparison.OrdinalIgnoreCase)
+            )
             {
                 if (string.IsNullOrWhiteSpace(config.Url))
                 {
@@ -881,7 +892,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                         "copilot.mcp.server.skip",
                         "skipped",
                         name,
-                        "http_missing_url");
+                        "http_missing_url"
+                    );
                     continue;
                 }
 
@@ -900,7 +912,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                         "copilot.mcp.server.skip",
                         "skipped",
                         name,
-                        "stdio_missing_command");
+                        "stdio_missing_command"
+                    );
                     continue;
                 }
 
@@ -952,7 +965,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 "failed",
                 _options.Provider,
                 _options.ProviderMode,
-                path);
+                path
+            );
         }
     }
 
@@ -975,8 +989,9 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
 
     private sealed class PendingRequest
     {
-        private readonly TaskCompletionSource<JsonElement> _tcs =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<JsonElement> _tcs = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
 
         public PendingRequest(string method)
         {

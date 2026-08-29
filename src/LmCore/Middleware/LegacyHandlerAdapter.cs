@@ -24,9 +24,7 @@ public static class LegacyHandlerAdapter
     /// a default <see cref="ToolCallContext"/>. Throws <see cref="NotSupportedException"/>
     /// at invocation time on <see cref="ToolHandlerResult.Deferred"/>.
     /// </summary>
-    public static Func<string, Task<string>> ToLegacyHandler(
-        ToolHandler handler,
-        string toolKey = "<unknown>")
+    public static Func<string, Task<string>> ToLegacyHandler(ToolHandler handler, string toolKey = "<unknown>")
     {
         ArgumentNullException.ThrowIfNull(handler);
         return async args =>
@@ -37,7 +35,7 @@ public static class LegacyHandlerAdapter
                 ToolHandlerResult.Resolved r => r.Payload.Text,
                 ToolHandlerResult.Deferred => throw new NotSupportedException(
                     $"Tool '{toolKey}' returned a deferred result. Deferred tool execution is "
-                    + "only supported when handlers are dispatched by MultiTurnAgentLoop."
+                        + "only supported when handlers are dispatched by MultiTurnAgentLoop."
                 ),
                 _ => throw new InvalidOperationException(
                     $"Unknown ToolHandlerResult variant '{result.GetType().Name}' for tool '{toolKey}'."
@@ -54,12 +52,14 @@ public static class LegacyHandlerAdapter
     /// </summary>
     public static IDictionary<string, Func<string, Task<string>>> WrapToLegacyHandlers(
         IDictionary<string, ToolHandler> source,
-        IEqualityComparer<string>? keyComparer = null)
+        IEqualityComparer<string>? keyComparer = null
+    )
     {
         ArgumentNullException.ThrowIfNull(source);
         var wrapped = new Dictionary<string, Func<string, Task<string>>>(
             source.Count,
-            keyComparer ?? StringComparer.Ordinal);
+            keyComparer ?? StringComparer.Ordinal
+        );
 
         foreach (var kvp in source)
         {
@@ -74,8 +74,7 @@ public static class LegacyHandlerAdapter
     /// <see cref="ToolHandlerResult"/> shape. Always returns
     /// <see cref="ToolHandlerResult.FromText(string)"/>; legacy handlers cannot signal deferral.
     /// </summary>
-    public static ToolHandler ToNewHandler(
-        Func<string, Task<string>> legacy)
+    public static ToolHandler ToNewHandler(Func<string, Task<string>> legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
         return async (args, _, _) => ToolHandlerResult.FromText(await legacy(args));
@@ -88,18 +87,20 @@ public static class LegacyHandlerAdapter
     /// framework-controlled fields on the legacy result (tool call id, deferral flags) are
     /// dropped — those are stamped in by <see cref="ToolCallResultBuilder"/> downstream.
     /// </summary>
-    public static ToolHandler ToNewHandler(
-        Func<string, Task<ToolCallResult>> legacy)
+    public static ToolHandler ToNewHandler(Func<string, Task<ToolCallResult>> legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
         return async (args, _, _) =>
         {
             var tcr = await legacy(args);
-            return new ToolHandlerResult.Resolved(new ToolHandlerResultPayload(
-                Text: tcr.Result,
-                ContentBlocks: tcr.ContentBlocks,
-                IsError: tcr.IsError,
-                ErrorCode: tcr.ErrorCode));
+            return new ToolHandlerResult.Resolved(
+                new ToolHandlerResultPayload(
+                    Text: tcr.Result,
+                    ContentBlocks: tcr.ContentBlocks,
+                    IsError: tcr.IsError,
+                    ErrorCode: tcr.ErrorCode
+                )
+            );
         };
     }
 
@@ -110,12 +111,11 @@ public static class LegacyHandlerAdapter
     /// </summary>
     public static IDictionary<string, ToolHandler> WrapToNewHandlers(
         IDictionary<string, Func<string, Task<string>>> source,
-        IEqualityComparer<string>? keyComparer = null)
+        IEqualityComparer<string>? keyComparer = null
+    )
     {
         ArgumentNullException.ThrowIfNull(source);
-        var wrapped = new Dictionary<string, ToolHandler>(
-            source.Count,
-            keyComparer ?? StringComparer.Ordinal);
+        var wrapped = new Dictionary<string, ToolHandler>(source.Count, keyComparer ?? StringComparer.Ordinal);
 
         foreach (var kvp in source)
         {

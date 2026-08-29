@@ -19,7 +19,8 @@ public class UnifiedAgentTests
         services.AddSingleton(Options.Create(config));
         services.AddSingleton<
             AchieveAi.LmDotnetTools.LmConfig.Http.IHttpHandlerBuilder,
-            AchieveAi.LmDotnetTools.LmConfig.Http.HandlerBuilder>();
+            AchieveAi.LmDotnetTools.LmConfig.Http.HandlerBuilder
+        >();
         return services;
     }
 
@@ -166,11 +167,7 @@ public class UnifiedAgentTests
     public async Task ModelResolver_ShouldReturnNullForUnknownModel()
     {
         // Arrange
-        var config = new AppConfig
-        {
-            Models = [],
-            ProviderRegistry = new Dictionary<string, ProviderConnectionInfo>(),
-        };
+        var config = new AppConfig { Models = [], ProviderRegistry = new Dictionary<string, ProviderConnectionInfo>() };
 
         var services = CreateServices(config);
         services.AddSingleton<IModelResolver, ModelResolver>();
@@ -267,11 +264,7 @@ public class UnifiedAgentTests
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
                 (messages, options, ct) => capturedOptions = options
             )
-            .ReturnsAsync(
-                [
-                    new TextMessage { Role = Role.Assistant, Text = "Test response" },
-                ]
-            );
+            .ReturnsAsync([new TextMessage { Role = Role.Assistant, Text = "Test response" }]);
 
         mockAgentFactory.Setup(f => f.CreateAgent(It.IsAny<ProviderResolution>())).Returns(mockAgent.Object);
 
@@ -521,11 +514,7 @@ public class UnifiedAgentTests
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
                 (messages, options, ct) => capturedOptions = options
             )
-            .ReturnsAsync(
-                [
-                    new TextMessage { Role = Role.Assistant, Text = "Test response" },
-                ]
-            );
+            .ReturnsAsync([new TextMessage { Role = Role.Assistant, Text = "Test response" }]);
 
         mockAgentFactory.Setup(f => f.CreateAgent(It.IsAny<ProviderResolution>())).Returns(mockAgent.Object);
 

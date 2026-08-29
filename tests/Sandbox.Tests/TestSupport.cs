@@ -56,7 +56,11 @@ internal static class TestSupport
     /// resolved from the validated <see cref="SandboxClientOptions.ServerAddress"/>, never from the
     /// borrowed client's own (untrusted) <see cref="HttpClient.BaseAddress"/>.
     /// </summary>
-    public static (SandboxClient Client, FakeGatewayHandler Handler, Uri ServerAddress) CreateBorrowedClientWithBaseAddress(
+    public static (
+        SandboxClient Client,
+        FakeGatewayHandler Handler,
+        Uri ServerAddress
+    ) CreateBorrowedClientWithBaseAddress(
         Uri? httpClientBaseAddress,
         TimeSpan? transportTimeout = null,
         string appId = "app-1",

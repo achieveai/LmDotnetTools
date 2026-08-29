@@ -70,12 +70,16 @@ public class ProcessTriggerSourceTests
             Interlocked.Increment(ref _observeCount);
             var tcs = _pending.GetOrAdd(
                 handle,
-                _ => new TaskCompletionSource<ProcessExit>(TaskCreationOptions.RunContinuationsAsynchronously));
+                _ => new TaskCompletionSource<ProcessExit>(TaskCreationOptions.RunContinuationsAsynchronously)
+            );
             // Register the cancellation callback BEFORE signaling "observing" so a test that awaits
             // WaitUntilObservingAsync is guaranteed the callback is already in place before it acts.
             ct.Register(() => tcs.TrySetCanceled(ct));
             _observing
-                .GetOrAdd(handle, _ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously))
+                .GetOrAdd(
+                    handle,
+                    _ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
+                )
                 .TrySetResult(true);
             return tcs.Task;
         }
@@ -84,13 +88,17 @@ public class ProcessTriggerSourceTests
         {
             var tcs = _pending.GetOrAdd(
                 handle,
-                _ => new TaskCompletionSource<ProcessExit>(TaskCreationOptions.RunContinuationsAsynchronously));
+                _ => new TaskCompletionSource<ProcessExit>(TaskCreationOptions.RunContinuationsAsynchronously)
+            );
             tcs.TrySetResult(new ProcessExit(exitCode, stdout));
         }
 
         public Task WaitUntilObservingAsync(string handle) =>
             _observing
-                .GetOrAdd(handle, _ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously))
+                .GetOrAdd(
+                    handle,
+                    _ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
+                )
                 .Task;
     }
 
@@ -148,13 +156,15 @@ public class ProcessTriggerSourceTests
         {
             // ArmAsync returns an already-completed ValueTask, so this await does not itself post to
             // the pump; the only thing parked there is the watch loop's own Task.Yield().
-            handle = await src.ArmAsync(
-                ArmReq("""{"handle":"h1","expectExitCode":0}"""), sink, CancellationToken.None);
+            handle = await src.ArmAsync(ArmReq("""{"handle":"h1","expectExitCode":0}"""), sink, CancellationToken.None);
 
-            observer.ObserveCount.Should().Be(
-                1,
-                "the exit observation must be registered synchronously within ArmAsync, not on the "
-                    + "post-yield continuation, so no exit can land in the arm window unobserved");
+            observer
+                .ObserveCount.Should()
+                .Be(
+                    1,
+                    "the exit observation must be registered synchronously within ArmAsync, not on the "
+                        + "post-yield continuation, so no exit can land in the arm window unobserved"
+                );
         }
         finally
         {
@@ -181,7 +191,10 @@ public class ProcessTriggerSourceTests
         var sink = new CompletingSink(fired);
 
         await using var handle = await src.ArmAsync(
-            ArmReq("""{"handle":"h1","expectExitCode":0}"""), sink, CancellationToken.None);
+            ArmReq("""{"handle":"h1","expectExitCode":0}"""),
+            sink,
+            CancellationToken.None
+        );
 
         observer.SignalExit("h1", exitCode: 0, stdout: "ok");
 
@@ -201,7 +214,10 @@ public class ProcessTriggerSourceTests
         var sink = new CompletingSink(fired);
 
         await using var handle = await src.ArmAsync(
-            ArmReq("""{"handle":"h1","expectExitCode":0}"""), sink, CancellationToken.None);
+            ArmReq("""{"handle":"h1","expectExitCode":0}"""),
+            sink,
+            CancellationToken.None
+        );
 
         observer.SignalExit("h1", exitCode: 0, stdout: "super-secret-token-xyz");
 
@@ -221,7 +237,10 @@ public class ProcessTriggerSourceTests
         var sink = new CompletingSink(fired);
 
         await using var handle = await src.ArmAsync(
-            ArmReq("""{"handle":"h1","stdoutPattern":"^DONE$"}"""), sink, CancellationToken.None);
+            ArmReq("""{"handle":"h1","stdoutPattern":"^DONE$"}"""),
+            sink,
+            CancellationToken.None
+        );
 
         observer.SignalExit("h1", exitCode: 0, stdout: "DONE");
 
@@ -239,7 +258,10 @@ public class ProcessTriggerSourceTests
         var sink = new CountingSink(() => Interlocked.Increment(ref fireCount));
 
         await using var handle = await src.ArmAsync(
-            ArmReq("""{"handle":"h1","expectExitCode":0}"""), sink, CancellationToken.None);
+            ArmReq("""{"handle":"h1","expectExitCode":0}"""),
+            sink,
+            CancellationToken.None
+        );
 
         observer.SignalExit("h1", exitCode: 1, stdout: "boom");
         await Task.Delay(TimeSpan.FromMilliseconds(500));
@@ -256,7 +278,10 @@ public class ProcessTriggerSourceTests
         var sink = new CountingSink(() => Interlocked.Increment(ref fireCount));
 
         await using var handle = await src.ArmAsync(
-            ArmReq("""{"handle":"h1","stdoutPattern":"DONE"}"""), sink, CancellationToken.None);
+            ArmReq("""{"handle":"h1","stdoutPattern":"DONE"}"""),
+            sink,
+            CancellationToken.None
+        );
 
         observer.SignalExit("h1", exitCode: 0, stdout: "still running");
         await Task.Delay(TimeSpan.FromMilliseconds(500));
@@ -273,7 +298,10 @@ public class ProcessTriggerSourceTests
         var sink = new CompletingSink(fired);
 
         await using var handle = await src.ArmAsync(
-            ArmReq("""{"handle":"h1","stdoutPattern":"^DONE$"}"""), sink, CancellationToken.None);
+            ArmReq("""{"handle":"h1","stdoutPattern":"^DONE$"}"""),
+            sink,
+            CancellationToken.None
+        );
 
         observer.SignalExit("h1", exitCode: 3, stdout: "DONE");
 
@@ -300,8 +328,9 @@ public class ProcessTriggerSourceTests
         // arm time with a clear reason (maps to the runtime's invalid_args rejection).
         var src = new ProcessTriggerSource(NoopProcessExitObserver.Instance);
 
-        var act = () => src.ArmAsync(
-            ArmReq("""{"handle":"h1","expectExitCode":0}"""), NoopSinkInstance, CancellationToken.None).AsTask();
+        var act = () =>
+            src.ArmAsync(ArmReq("""{"handle":"h1","expectExitCode":0}"""), NoopSinkInstance, CancellationToken.None)
+                .AsTask();
 
         await act.Should().ThrowAsync<ArgumentException>();
     }
@@ -314,8 +343,7 @@ public class ProcessTriggerSourceTests
         var fireCount = 0;
         var sink = new CountingSink(() => Interlocked.Increment(ref fireCount));
 
-        var handle = await src.ArmAsync(
-            ArmReq("""{"handle":"h1","expectExitCode":0}"""), sink, CancellationToken.None);
+        var handle = await src.ArmAsync(ArmReq("""{"handle":"h1","expectExitCode":0}"""), sink, CancellationToken.None);
         // Wait until the source has actually started observing before disposing, so dispose is
         // guaranteed to win the race against a subsequent SignalExit (see FakeProcessObserver docs).
         await observer.WaitUntilObservingAsync("h1").WaitAsync(TimeSpan.FromSeconds(5));

@@ -37,9 +37,7 @@ public sealed class OpenAiResponsesAgentToolCallTests
     private static async Task<List<ToolsCallMessage>> RunAsync(IReadOnlyList<ResponseEvent> events)
     {
         using var agent = new OpenAiResponsesAgent("test", new ScriptedClient(events));
-        var stream = await agent.GenerateReplyStreamingAsync(
-            [new TextMessage { Role = Role.User, Text = "go" }]
-        );
+        var stream = await agent.GenerateReplyStreamingAsync([new TextMessage { Role = Role.User, Text = "go" }]);
 
         var calls = new List<ToolsCallMessage>();
         await foreach (var message in stream)
@@ -61,22 +59,42 @@ public sealed class OpenAiResponsesAgentToolCallTests
         // complete function_call — exactly one ToolsCallMessage must result (not zero, not two).
         var events = new ResponseEvent[]
         {
-            new ResponseLifecycleEvent { Type = ResponseEventTypes.ResponseCreated, Response = El("{\"id\":\"resp_1\"}") },
+            new ResponseLifecycleEvent
+            {
+                Type = ResponseEventTypes.ResponseCreated,
+                Response = El("{\"id\":\"resp_1\"}"),
+            },
             new ResponseOutputItemEvent
             {
                 Type = ResponseEventTypes.OutputItemAdded,
                 OutputIndex = 0,
                 Item = El("{\"type\":\"function_call\",\"id\":\"item-A\",\"call_id\":\"call_1\",\"name\":\"add\"}"),
             },
-            new ResponseFunctionCallArgumentsDeltaEvent { Type = ResponseEventTypes.FunctionCallArgumentsDelta, ItemId = "rotated-1", Delta = "{\"a\":1" },
-            new ResponseFunctionCallArgumentsDoneEvent { Type = ResponseEventTypes.FunctionCallArgumentsDone, ItemId = "rotated-2", Arguments = "{\"a\":1,\"b\":2}" },
+            new ResponseFunctionCallArgumentsDeltaEvent
+            {
+                Type = ResponseEventTypes.FunctionCallArgumentsDelta,
+                ItemId = "rotated-1",
+                Delta = "{\"a\":1",
+            },
+            new ResponseFunctionCallArgumentsDoneEvent
+            {
+                Type = ResponseEventTypes.FunctionCallArgumentsDone,
+                ItemId = "rotated-2",
+                Arguments = "{\"a\":1,\"b\":2}",
+            },
             new ResponseOutputItemEvent
             {
                 Type = ResponseEventTypes.OutputItemDone,
                 OutputIndex = 0,
-                Item = El("{\"type\":\"function_call\",\"id\":\"item-Z\",\"call_id\":\"call_1\",\"name\":\"add\",\"arguments\":\"{\\\"a\\\":1,\\\"b\\\":2}\"}"),
+                Item = El(
+                    "{\"type\":\"function_call\",\"id\":\"item-Z\",\"call_id\":\"call_1\",\"name\":\"add\",\"arguments\":\"{\\\"a\\\":1,\\\"b\\\":2}\"}"
+                ),
             },
-            new ResponseLifecycleEvent { Type = ResponseEventTypes.ResponseCompleted, Response = El("{\"id\":\"resp_1\"}") },
+            new ResponseLifecycleEvent
+            {
+                Type = ResponseEventTypes.ResponseCompleted,
+                Response = El("{\"id\":\"resp_1\"}"),
+            },
         };
 
         var calls = await RunAsync(events);
@@ -101,12 +119,19 @@ public sealed class OpenAiResponsesAgentToolCallTests
                 OutputIndex = 0,
                 Item = El("{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call_9\",\"name\":\"mul\"}"),
             },
-            new ResponseFunctionCallArgumentsDoneEvent { Type = ResponseEventTypes.FunctionCallArgumentsDone, ItemId = "item-1", Arguments = "{\"x\":3}" },
+            new ResponseFunctionCallArgumentsDoneEvent
+            {
+                Type = ResponseEventTypes.FunctionCallArgumentsDone,
+                ItemId = "item-1",
+                Arguments = "{\"x\":3}",
+            },
             new ResponseOutputItemEvent
             {
                 Type = ResponseEventTypes.OutputItemDone,
                 OutputIndex = 0,
-                Item = El("{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call_9\",\"name\":\"mul\",\"arguments\":\"{\\\"x\\\":3}\"}"),
+                Item = El(
+                    "{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call_9\",\"name\":\"mul\",\"arguments\":\"{\\\"x\\\":3}\"}"
+                ),
             },
         };
 

@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class NaturalToolUseMiddlewareTests
@@ -43,8 +44,13 @@ public class NaturalToolUseMiddlewareTests
 
         _functionMap = new Dictionary<string, ToolHandler>
         {
-            { "GetWeather", (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                ToolHandlerResult.FromText("{\"temperature\": 72, \"conditions\": \"sunny\"}")) },
+            {
+                "GetWeather",
+                (_, _, _) =>
+                    Task.FromResult<ToolHandlerResult>(
+                        ToolHandlerResult.FromText("{\"temperature\": 72, \"conditions\": \"sunny\"}")
+                    )
+            },
         };
 
         // Initialize default context

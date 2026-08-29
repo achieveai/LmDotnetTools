@@ -46,9 +46,12 @@ public class SandboxSessionLivenessFreshnessTests
 
         second.SessionId.Should().Be("sess-1", "the live session is reused, not recreated");
         third.SessionId.Should().Be("sess-1");
-        gateway.LivenessGets.Should().Equal(
-            ["sess-1"],
-            "back-to-back turns inside the freshness window must cost no further gateway round-trip");
+        gateway
+            .LivenessGets.Should()
+            .Equal(
+                ["sess-1"],
+                "back-to-back turns inside the freshness window must cost no further gateway round-trip"
+            );
         gateway.Creates.Should().Be(1, "skipping the probe must not be confused with skipping the cache");
     }
 
@@ -66,23 +69,26 @@ public class SandboxSessionLivenessFreshnessTests
         var afterExpiry = await registry.GetOrCreateLiveSessionAsync();
 
         afterExpiry.SessionId.Should().Be("sess-1");
-        gateway.LivenessGets.Should().Equal(
-            ["sess-1", "sess-1"],
-            "an expired window must put the probe back on the acquisition");
+        gateway
+            .LivenessGets.Should()
+            .Equal(["sess-1", "sess-1"], "an expired window must put the probe back on the acquisition");
 
         // That probe's success is itself a confirmation, so it reopens the window rather than leaving
         // every subsequent turn probing forever.
         clock.Advance(InsideTheWindow);
         _ = await registry.GetOrCreateLiveSessionAsync();
-        gateway.LivenessGets.Should().Equal(
-            ["sess-1", "sess-1"],
-            "a successful probe re-verifies the session, so the next turn inside the window skips again");
+        gateway
+            .LivenessGets.Should()
+            .Equal(
+                ["sess-1", "sess-1"],
+                "a successful probe re-verifies the session, so the next turn inside the window skips again"
+            );
 
         clock.Advance(PastTheWindow);
         _ = await registry.GetOrCreateLiveSessionAsync();
-        gateway.LivenessGets.Should().Equal(
-            ["sess-1", "sess-1", "sess-1"],
-            "and the reopened window expires on the same terms as the first");
+        gateway
+            .LivenessGets.Should()
+            .Equal(["sess-1", "sess-1", "sess-1"], "and the reopened window expires on the same terms as the first");
     }
 
     [Fact]
@@ -99,10 +105,13 @@ public class SandboxSessionLivenessFreshnessTests
 
         var recreated = await registry.GetOrCreateLiveSessionAsync();
 
-        recreated.SessionId.Should().Be(
-            "sess-2",
-            "the freshness window may only suppress a probe whose answer is already known; a probe that "
-                + "does run and finds the session gone must invalidate it as immediately as before");
+        recreated
+            .SessionId.Should()
+            .Be(
+                "sess-2",
+                "the freshness window may only suppress a probe whose answer is already known; a probe that "
+                    + "does run and finds the session gone must invalidate it as immediately as before"
+            );
         gateway.Creates.Should().Be(2);
         gateway.LivenessGets.Should().Equal(["sess-1", "sess-1"]);
 
@@ -110,15 +119,18 @@ public class SandboxSessionLivenessFreshnessTests
         // is what opens a window for it.
         var next = await registry.GetOrCreateLiveSessionAsync();
         next.SessionId.Should().Be("sess-2");
-        gateway.LivenessGets.Should().Equal(
-            ["sess-1", "sess-1", "sess-2"],
-            "the recreated session earns its own window rather than inheriting the evicted one's");
+        gateway
+            .LivenessGets.Should()
+            .Equal(
+                ["sess-1", "sess-1", "sess-2"],
+                "the recreated session earns its own window rather than inheriting the evicted one's"
+            );
 
         clock.Advance(InsideTheWindow);
         _ = await registry.GetOrCreateLiveSessionAsync();
-        gateway.LivenessGets.Should().Equal(
-            ["sess-1", "sess-1", "sess-2"],
-            "and once opened, that window behaves like any other");
+        gateway
+            .LivenessGets.Should()
+            .Equal(["sess-1", "sess-1", "sess-2"], "and once opened, that window behaves like any other");
     }
 
     /// <summary>

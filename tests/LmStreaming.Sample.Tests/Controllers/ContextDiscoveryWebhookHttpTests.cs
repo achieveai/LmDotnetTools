@@ -62,8 +62,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var message = app.Agent.SentMessages.Should().ContainSingle().Which
-            .Should().BeOfType<NotifyMessage>().Subject;
+        var message = app.Agent.SentMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>().Subject;
         message.Role.Should().Be(Role.User);
         message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
         message.Label.Should().Be("CLAUDE.md");
@@ -75,8 +74,11 @@ public sealed class ContextDiscoveryWebhookHttpTests
         var root = doc.RootElement;
         root.GetProperty("discoveryEnabled").GetBoolean().Should().BeTrue();
         root.GetProperty("webhookUrl").GetString().Should().EndWith("/api/discovery/context_discovery");
-        var session = root.GetProperty("sessions").EnumerateArray()
-            .Should().ContainSingle(s => s.GetProperty("sessionId").GetString() == SessionId).Subject;
+        var session = root.GetProperty("sessions")
+            .EnumerateArray()
+            .Should()
+            .ContainSingle(s => s.GetProperty("sessionId").GetString() == SessionId)
+            .Subject;
         session.GetProperty("receivedCount").GetInt64().Should().Be(1);
         session.GetProperty("lastPath").GetString().Should().Be("CLAUDE.md");
     }
@@ -91,9 +93,10 @@ public sealed class ContextDiscoveryWebhookHttpTests
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/discovery/context_discovery")
         {
             Content = new StringContent(
-                /*lang=json,strict*/ "{\"event\":\"context_discovery\",\"session_id\":\"sess-http\",\"discoveries\":[{\"kind\":\"context_file\",\"path\":\"CLAUDE.md\",\"content\":\"x\"}]}",
+                /*lang=json,strict*/"{\"event\":\"context_discovery\",\"session_id\":\"sess-http\",\"discoveries\":[{\"kind\":\"context_file\",\"path\":\"CLAUDE.md\",\"content\":\"x\"}]}",
                 Encoding.UTF8,
-                "application/json"),
+                "application/json"
+            ),
         };
         request.Headers.TryAddWithoutValidation("Authorization", "wrong-secret");
 
@@ -126,10 +129,12 @@ public sealed class ContextDiscoveryWebhookHttpTests
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(Unused)));
+            new HttpClient(new StubHandler(Unused))
+        );
         var sessionSecretStore = new SessionSecretStore(
             Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-            NullLogger<SessionSecretStore>.Instance);
+            NullLogger<SessionSecretStore>.Instance
+        );
         await sessionSecretStore.SaveAsync(SessionId, Secret);
         var registry = new SandboxSessionRegistry(
             gateway,
@@ -137,23 +142,28 @@ public sealed class ContextDiscoveryWebhookHttpTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new StubHandler(Unused)),
             authOptions,
-            sessionSecretStore);
+            sessionSecretStore
+        );
 
         // The sub-agent's provider BLOCKS on its first turn, so the spawned "ctx-probe" sub-agent stays
         // deterministically Running (no timer) for the whole routed delivery.
         var subAgentBlock = new TaskCompletionSource<bool>();
         var subAgentProvider = new Mock<IStreamingAgent>();
         subAgentProvider
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 async (_, _, ct) =>
                 {
                     await subAgentBlock.Task.WaitAsync(ct);
                     return EmptyMessageStream();
-                });
+                }
+            );
 
         var subAgentOptions = new SubAgentOptions
         {
@@ -181,10 +191,12 @@ public sealed class ContextDiscoveryWebhookHttpTests
                     threadId,
                     store: primaryStore,
                     logger: NullLogger<MultiTurnAgentLoop>.Instance,
-                    subAgentOptions: subAgentOptions);
+                    subAgentOptions: subAgentOptions
+                );
                 return new MultiTurnAgentPool.AgentCreationResult(primaryLoop);
             },
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
         pool.ThreadRemoved += threadId => registry.UnregisterThreadFromAllSessions(threadId);
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
@@ -196,7 +208,11 @@ public sealed class ContextDiscoveryWebhookHttpTests
         // Spawn the live sub-agent under the caller-name "ctx-probe"; the blocking provider holds it
         // Running so the webhook below routes into it deterministically (id-or-name resolution).
         _ = await primaryLoop!.SubAgentManager!.SpawnAsync(
-            "probe", "probe task", name: ProbeAgentId, runInBackground: true);
+            "probe",
+            "probe task",
+            name: ProbeAgentId,
+            runInBackground: true
+        );
 
         var diagnostics = new ContextDiscoveryDiagnostics();
 
@@ -215,9 +231,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
                     services.AddSingleton(new ContextDiscoveryOptions { RouteToOpeningSubAgent = true });
                     services.AddSingleton(diagnostics);
                     services.AddSingleton<ContextDiscoveryInjector>();
-                    services.AddSingleton(
-                        new AgentOutputTokenPolicy(new AgentOutputTokenOptions())
-                    );
+                    services.AddSingleton(new AgentOutputTokenPolicy(new AgentOutputTokenOptions()));
                     services.AddSingleton<WorkspaceSubAgentLoader>();
                 });
                 webBuilder.Configure(appBuilder =>
@@ -256,9 +270,12 @@ public sealed class ContextDiscoveryWebhookHttpTests
 
         // The primary loop's conversation store never received the routed context turn.
         var primaryMessages = await primaryStore.LoadMessagesAsync(ThreadId);
-        primaryMessages.Should().NotContain(
-            m => m.MessageJson.Contains("Sub rules", StringComparison.Ordinal),
-            "a routed delivery reaches the sub-agent's own conversation, never the primary");
+        primaryMessages
+            .Should()
+            .NotContain(
+                m => m.MessageJson.Contains("Sub rules", StringComparison.Ordinal),
+                "a routed delivery reaches the sub-agent's own conversation, never the primary"
+            );
 
         // Cleanup: disposal cancels the still-blocked sub-agent. We deliberately do NOT release the block
         // before disposing — releasing would let the sub-agent complete and relay a NotifyMessage to the
@@ -298,7 +315,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
         {
             var sessionSecretStore = new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance);
+                NullLogger<SessionSecretStore>.Instance
+            );
             await sessionSecretStore.SaveAsync(SessionId, Secret);
 
             var registry = CreateRegistry(sessionSecretStore);
@@ -310,7 +328,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
                     created = new RecordingMultiTurnAgent(threadId);
                     return new MultiTurnAgentPool.AgentCreationResult(created);
                 },
-                NullLogger<MultiTurnAgentPool>.Instance);
+                NullLogger<MultiTurnAgentPool>.Instance
+            );
             pool.ThreadRemoved += threadId => registry.UnregisterThreadFromAllSessions(threadId);
 
             // Seed a live thread so the injection has somewhere to land — mirrors Program.cs:774.
@@ -325,8 +344,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
                     webBuilder.UseTestServer();
                     webBuilder.ConfigureServices(services =>
                     {
-                        services.AddControllers()
-                            .AddApplicationPart(typeof(ContextDiscoveryController).Assembly);
+                        services.AddControllers().AddApplicationPart(typeof(ContextDiscoveryController).Assembly);
 
                         services.AddSingleton(registry);
                         services.AddSingleton(pool);
@@ -334,9 +352,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
                         services.AddSingleton<ContextDiscoveryFormatter>();
                         services.AddSingleton(new ContextDiscoveryOptions());
                         services.AddSingleton<ContextDiscoveryInjector>();
-                        services.AddSingleton(
-                            new AgentOutputTokenPolicy(new AgentOutputTokenOptions())
-                        );
+                        services.AddSingleton(new AgentOutputTokenPolicy(new AgentOutputTokenOptions()));
                         services.AddSingleton<ContextDiscoveryDiagnostics>();
                         services.AddSingleton<WorkspaceSubAgentLoader>();
                     });
@@ -366,7 +382,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
             var gateway = new SandboxGatewayLifetime(
                 new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
                 NullLogger<SandboxGatewayLifetime>.Instance,
-                new HttpClient(new StubHandler(Unused)));
+                new HttpClient(new StubHandler(Unused))
+            );
 
             return new SandboxSessionRegistry(
                 gateway,
@@ -374,7 +391,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
                 NullLogger<SandboxSessionRegistry>.Instance,
                 new HttpClient(new StubHandler(Unused)),
                 authOptions,
-                sessionSecretStore);
+                sessionSecretStore
+            );
         }
     }
 
@@ -382,7 +400,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(respond(request));
         }

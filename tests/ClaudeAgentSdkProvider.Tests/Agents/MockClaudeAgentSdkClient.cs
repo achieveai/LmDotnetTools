@@ -154,7 +154,8 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
     ///     In Interactive mode, this reads continuously until cancellation or process exit.
     /// </summary>
     public async IAsyncEnumerable<IMessage> SubscribeToMessagesAsync(
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
         if (!IsRunning)
         {

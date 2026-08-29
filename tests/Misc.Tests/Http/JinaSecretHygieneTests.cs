@@ -27,12 +27,8 @@ public class JinaSecretHygieneTests
     public async Task WebFetch_UpstreamErrorEchoesSecrets_NeverLeaksToOutputOrLogs()
     {
         // The upstream 500 body deliberately contains both the API key and a content sentinel.
-        var leakyBody =
-            "{\"data\":{\"content\":\"contains " + ApiKey + " and " + BodySentinel + " inline\"}}";
-        var handler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            leakyBody,
-            HttpStatusCode.InternalServerError
-        );
+        var leakyBody = "{\"data\":{\"content\":\"contains " + ApiKey + " and " + BodySentinel + " inline\"}}";
+        var handler = FakeHttpMessageHandler.CreateSimpleJsonHandler(leakyBody, HttpStatusCode.InternalServerError);
 
         var options = new WebToolsOptions { JinaApiKey = ApiKey };
         var provider = new JinaWebProvider(
@@ -84,11 +80,7 @@ public class JinaSecretHygieneTests
     public async Task Provider_UpstreamBodyWithRetryableToken_NeverReachesProviderLogger()
     {
         var leakyBody =
-            "{\"data\":{\"content\":\"contains "
-            + ApiKey
-            + " and "
-            + BodySentinel
-            + " and 500 timeout inline\"}}";
+            "{\"data\":{\"content\":\"contains " + ApiKey + " and " + BodySentinel + " and 500 timeout inline\"}}";
         var handler = FakeHttpMessageHandler.CreateSimpleJsonHandler(leakyBody, HttpStatusCode.Forbidden);
 
         var options = new WebToolsOptions { JinaApiKey = ApiKey };

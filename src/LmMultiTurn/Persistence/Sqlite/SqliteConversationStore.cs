@@ -48,15 +48,14 @@ public sealed class SqliteConversationStore
     /// <param name="databasePath">Path to the SQLite database file.</param>
     /// <param name="maxConnections">Maximum number of concurrent connections.</param>
     public SqliteConversationStore(string databasePath, int maxConnections = 5)
-        : this(new SqliteConnectionFactory(databasePath, maxConnections), ownsFactory: true)
-    {
-    }
+        : this(new SqliteConnectionFactory(databasePath, maxConnections), ownsFactory: true) { }
 
     /// <inheritdoc />
     public async Task AppendMessagesAsync(
         string threadId,
         IReadOnlyList<PersistedMessage> messages,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(messages);
@@ -68,8 +67,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var transaction = connection.BeginTransaction();
 
@@ -94,7 +92,10 @@ public sealed class SqliteConversationStore
                 _ = command.Parameters.AddWithValue("$run_id", message.RunId);
                 _ = command.Parameters.AddWithValue("$parent_run_id", (object?)message.ParentRunId ?? DBNull.Value);
                 _ = command.Parameters.AddWithValue("$generation_id", (object?)message.GenerationId ?? DBNull.Value);
-                _ = command.Parameters.AddWithValue("$message_order_idx", (object?)message.MessageOrderIdx ?? DBNull.Value);
+                _ = command.Parameters.AddWithValue(
+                    "$message_order_idx",
+                    (object?)message.MessageOrderIdx ?? DBNull.Value
+                );
                 _ = command.Parameters.AddWithValue("$timestamp", message.Timestamp);
                 _ = command.Parameters.AddWithValue("$message_type", message.MessageType);
                 _ = command.Parameters.AddWithValue("$role", message.Role);
@@ -114,18 +115,14 @@ public sealed class SqliteConversationStore
     }
 
     /// <inheritdoc />
-    public async Task ReplaceMessageAsync(
-        string threadId,
-        PersistedMessage replacement,
-        CancellationToken ct = default)
+    public async Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(replacement);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         // Preserve the existing timestamp (don't update it on replace) so load ordering stays
         // stable when a deferred placeholder is later resolved.
@@ -157,22 +154,21 @@ public sealed class SqliteConversationStore
         var rows = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         if (rows == 0)
         {
-            throw new InvalidOperationException(
-                $"Message '{replacement.Id}' not found in thread '{threadId}'.");
+            throw new InvalidOperationException($"Message '{replacement.Id}' not found in thread '{threadId}'.");
         }
     }
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
         string threadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -196,18 +192,14 @@ public sealed class SqliteConversationStore
     }
 
     /// <inheritdoc />
-    public async Task SaveMetadataAsync(
-        string threadId,
-        ThreadMetadata metadata,
-        CancellationToken ct = default)
+    public async Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(metadata);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         // Serialize extensible fields to JSON
         var metadataJson = SerializeMetadataExtensions(metadata);
@@ -235,27 +227,21 @@ public sealed class SqliteConversationStore
         _ = command.Parameters.AddWithValue("$last_updated", metadata.LastUpdated);
         _ = command.Parameters.AddWithValue("$metadata_json", (object?)metadataJson ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$tenant_id", (object?)metadata.TenantId ?? DBNull.Value);
-        _ = command.Parameters.AddWithValue(
-            "$owner_user_id", (object?)metadata.OwnerUserId ?? DBNull.Value);
-        _ = command.Parameters.AddWithValue(
-            "$owner_app_id", (object?)metadata.OwnerAppId ?? DBNull.Value);
-        _ = command.Parameters.AddWithValue(
-            "$visibility", (object?)metadata.Visibility?.ToString() ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$owner_user_id", (object?)metadata.OwnerUserId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$owner_app_id", (object?)metadata.OwnerAppId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$visibility", (object?)metadata.Visibility?.ToString() ?? DBNull.Value);
 
         _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public async Task<ThreadMetadata?> LoadMetadataAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -267,16 +253,15 @@ public sealed class SqliteConversationStore
         _ = command.Parameters.AddWithValue("$thread_id", threadId);
 
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        return !await reader.ReadAsync(ct).ConfigureAwait(false)
-            ? null
-            : ReadMetadata(reader);
+        return !await reader.ReadAsync(ct).ConfigureAwait(false) ? null : ReadMetadata(reader);
     }
 
     /// <inheritdoc />
     public async Task UpdateMetadataAsync(
         string threadId,
         Func<ThreadMetadata?, ThreadMetadata> update,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(update);
@@ -303,8 +288,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var transaction = connection.BeginTransaction();
 
@@ -336,15 +320,15 @@ public sealed class SqliteConversationStore
         int limit = 50,
         int offset = 0,
         ConversationListOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var listOptions = options ?? ConversationListOptions.Default;
         RefuseUnsupportedSortOrder(listOptions);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
 
@@ -353,7 +337,8 @@ public sealed class SqliteConversationStore
         // ConversationListOptions for the production failure that a post-pass produced.
         var exclusionClause = BuildPrefixExclusionClause(command, listOptions, "thread_id");
 
-        command.CommandText = FormattableString.Invariant($"""
+        command.CommandText = FormattableString.Invariant(
+            $"""
             SELECT thread_id, current_run_id, last_updated, metadata_json,
                    tenant_id, owner_user_id, owner_app_id, visibility
             FROM thread_metadata
@@ -364,7 +349,8 @@ public sealed class SqliteConversationStore
             -- never comes back at all. Must match ConversationListOptions.Order.
             ORDER BY last_updated DESC, thread_id DESC
             LIMIT $limit OFFSET $offset;
-            """);
+            """
+        );
         _ = command.Parameters.AddWithValue("$limit", limit);
         _ = command.Parameters.AddWithValue("$offset", offset);
 
@@ -385,7 +371,8 @@ public sealed class SqliteConversationStore
         int limit = 50,
         int offset = 0,
         ConversationListOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(scope);
 
@@ -394,8 +381,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         // The grant branch is a bound id list rather than an EXISTS over resource_grants: that
         // table is not guaranteed to live in this database file. See ConversationListScope.
@@ -409,8 +395,7 @@ public sealed class SqliteConversationStore
         // list was the other option and is worse here: LIMIT/OFFSET is applied by this one
         // statement to the fully filtered, fully ordered set, so splitting it would mean paging in
         // memory over a merged result - the short-page bug this whole design exists to avoid.
-        const string grantClause =
-            "($userId IS NOT NULL AND t.thread_id IN (SELECT value FROM json_each($grants)))";
+        const string grantClause = "($userId IS NOT NULL AND t.thread_id IN (SELECT value FROM json_each($grants)))";
 
         using var command = connection.CreateCommand();
 
@@ -424,7 +409,8 @@ public sealed class SqliteConversationStore
         // app-only principal would fall through into the grant branch with a NULL subject. They do
         // NOT protect against a null OWNER - SQL already handles that, because NULL = $userId
         // evaluates to NULL and never satisfies the WHERE.
-        command.CommandText = FormattableString.Invariant($"""
+        command.CommandText = FormattableString.Invariant(
+            $"""
             SELECT thread_id, current_run_id, last_updated, metadata_json,
                    tenant_id, owner_user_id, owner_app_id, visibility
             FROM thread_metadata t
@@ -440,15 +426,15 @@ public sealed class SqliteConversationStore
             -- ConversationListOptions.Order: a scoped listing must not page differently.
             ORDER BY t.last_updated DESC, t.thread_id DESC
             LIMIT $limit OFFSET $offset;
-            """);
+            """
+        );
 
         _ = command.Parameters.AddWithValue("$tenantId", scope.TenantId);
         _ = command.Parameters.AddWithValue("$includeUntenanted", scope.IncludeUntenanted ? 1 : 0);
         _ = command.Parameters.AddWithValue("$userId", (object?)scope.UserId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$appId", (object?)scope.AppId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$isTenantAdmin", scope.IsTenantAdmin ? 1 : 0);
-        _ = command.Parameters.AddWithValue(
-            "$tenantPublished", Visibility.TenantPublished.ToString());
+        _ = command.Parameters.AddWithValue("$tenantPublished", Visibility.TenantPublished.ToString());
         _ = command.Parameters.AddWithValue("$limit", limit);
         _ = command.Parameters.AddWithValue("$offset", offset);
 
@@ -459,7 +445,9 @@ public sealed class SqliteConversationStore
             "$grants",
             JsonSerializer.Serialize(
                 scope.UserId is null ? [] : (IEnumerable<string>)scope.GrantedThreadIds,
-                JsonOptions));
+                JsonOptions
+            )
+        );
 
         var metadataList = new List<ThreadMetadata>();
 
@@ -513,7 +501,8 @@ public sealed class SqliteConversationStore
                 + "has no created_at column, and deriving one in SQL would be a second, silently "
                 + "divergent copy of "
                 + $"{nameof(ConversationListOptions)}.{nameof(ConversationListOptions.CreationTimestampOf)}. "
-                + "Add a backfilled created_at column before enabling this ordering on SQLite.");
+                + "Add a backfilled created_at column before enabling this ordering on SQLite."
+        );
     }
 
     /// <summary>
@@ -545,7 +534,8 @@ public sealed class SqliteConversationStore
     private static string BuildPrefixExclusionClause(
         SqliteCommand command,
         ConversationListOptions options,
-        string threadIdColumn)
+        string threadIdColumn
+    )
     {
         var conjuncts = new List<string>();
         var index = 0;
@@ -562,8 +552,8 @@ public sealed class SqliteConversationStore
 
             _ = command.Parameters.AddWithValue(parameterName, prefix);
             conjuncts.Add(
-                FormattableString.Invariant(
-                    $"substr({threadIdColumn}, 1, length({parameterName})) <> {parameterName}"));
+                FormattableString.Invariant($"substr({threadIdColumn}, 1, length({parameterName})) <> {parameterName}")
+            );
         }
 
         // "1 = 1" rather than an empty string so the caller can interpolate this unconditionally and
@@ -572,20 +562,16 @@ public sealed class SqliteConversationStore
     }
 
     /// <inheritdoc />
-    public async Task<int> StampUnownedThreadsAsync(
-        string quarantineTenantId,
-        CancellationToken ct = default)
+    public async Task<int> StampUnownedThreadsAsync(string quarantineTenantId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(quarantineTenantId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
-        command.CommandText =
-            "UPDATE thread_metadata SET tenant_id = $tenantId WHERE tenant_id IS NULL;";
+        command.CommandText = "UPDATE thread_metadata SET tenant_id = $tenantId WHERE tenant_id IS NULL;";
         _ = command.Parameters.AddWithValue("$tenantId", quarantineTenantId);
 
         return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
@@ -595,19 +581,20 @@ public sealed class SqliteConversationStore
     public async Task<IReadOnlyList<string>> ListThreadIdsByTenantAsync(
         string tenantId,
         IReadOnlyCollection<string>? threadIds,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         var restriction = BuildThreadIdRestriction(command, threadIds);
         command.CommandText = FormattableString.Invariant(
-            $"SELECT thread_id FROM thread_metadata WHERE tenant_id = $tenantId{restriction} ORDER BY thread_id;");
+            $"SELECT thread_id FROM thread_metadata WHERE tenant_id = $tenantId{restriction} ORDER BY thread_id;"
+        );
         _ = command.Parameters.AddWithValue("$tenantId", tenantId);
 
         var ids = new List<string>();
@@ -626,15 +613,15 @@ public sealed class SqliteConversationStore
         string toTenantId,
         string? ownerUserId,
         IReadOnlyCollection<string>? threadIds,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fromTenantId);
         ArgumentException.ThrowIfNullOrWhiteSpace(toTenantId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         var restriction = BuildThreadIdRestriction(command, threadIds);
@@ -642,12 +629,14 @@ public sealed class SqliteConversationStore
         // Selecting on the SOURCE tenant is what makes a repeated call idempotent: a row already
         // adopted into a real tenant no longer matches, so it is never re-stamped. COALESCE keeps
         // an owner already assigned when the second call names none.
-        command.CommandText = FormattableString.Invariant($"""
+        command.CommandText = FormattableString.Invariant(
+            $"""
             UPDATE thread_metadata
                SET tenant_id = $toTenantId,
                    owner_user_id = COALESCE($ownerUserId, owner_user_id)
              WHERE tenant_id = $fromTenantId{restriction};
-            """);
+            """
+        );
         _ = command.Parameters.AddWithValue("$fromTenantId", fromTenantId);
         _ = command.Parameters.AddWithValue("$toTenantId", toTenantId);
         _ = command.Parameters.AddWithValue("$ownerUserId", (object?)ownerUserId ?? DBNull.Value);
@@ -659,9 +648,7 @@ public sealed class SqliteConversationStore
     /// Builds the optional <c>AND thread_id IN (...)</c> restriction and binds its parameters.
     /// Returns an empty string when the caller named no ids, which means "every eligible row".
     /// </summary>
-    private static string BuildThreadIdRestriction(
-        SqliteCommand command,
-        IReadOnlyCollection<string>? threadIds)
+    private static string BuildThreadIdRestriction(SqliteCommand command, IReadOnlyCollection<string>? threadIds)
     {
         if (threadIds is null)
         {
@@ -679,8 +666,7 @@ public sealed class SqliteConversationStore
         // legacy-tenant migration, the exact operation this helper exists for, routinely does -
         // would otherwise exceed SQLITE_MAX_VARIABLE_NUMBER and fail the whole batch rather than
         // adopt fewer rows.
-        _ = command.Parameters.AddWithValue(
-            "$threadIds", JsonSerializer.Serialize(threadIds, JsonOptions));
+        _ = command.Parameters.AddWithValue("$threadIds", JsonSerializer.Serialize(threadIds, JsonOptions));
 
         return " AND thread_id IN (SELECT value FROM json_each($threadIds))";
     }
@@ -692,8 +678,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         var inputIdsJson = JsonSerializer.Serialize(entry.InputIds, JsonOptions);
 
@@ -726,8 +711,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -738,22 +722,17 @@ public sealed class SqliteConversationStore
         _ = command.Parameters.AddWithValue("$run_id", runId);
 
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        return !await reader.ReadAsync(ct).ConfigureAwait(false)
-            ? null
-            : ReadRunLedgerEntry(reader);
+        return !await reader.ReadAsync(ct).ConfigureAwait(false) ? null : ReadRunLedgerEntry(reader);
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(string threadId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -780,15 +759,15 @@ public sealed class SqliteConversationStore
         string threadId,
         string inputId,
         DateTimeOffset acceptedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(inputId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -810,15 +789,15 @@ public sealed class SqliteConversationStore
         string threadId,
         string inputId,
         DateTimeOffset acceptedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(inputId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         // DO NOTHING (rather than the upsert above) is what makes this a reservation: the PRIMARY KEY on
         // (thread_id, input_id) decides the winner inside SQLite, and the affected-row count reports the
@@ -839,18 +818,14 @@ public sealed class SqliteConversationStore
     }
 
     /// <inheritdoc />
-    public async Task RemoveAcceptedInputAsync(
-        string threadId,
-        string inputId,
-        CancellationToken ct = default)
+    public async Task RemoveAcceptedInputAsync(string threadId, string inputId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(inputId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -863,16 +838,13 @@ public sealed class SqliteConversationStore
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(string threadId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -894,7 +866,8 @@ public sealed class SqliteConversationStore
     /// <inheritdoc />
     public async Task<InputAcceptance?> TryReserveAcceptanceAsync(
         InputAcceptance acceptance,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(acceptance);
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
@@ -928,7 +901,8 @@ public sealed class SqliteConversationStore
     public async Task<InputAcceptance?> GetAcceptanceAsync(
         string threadId,
         string inputId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
@@ -936,9 +910,7 @@ public sealed class SqliteConversationStore
     }
 
     /// <inheritdoc />
-    public async Task<bool> TryRecordOutcomeAsync(
-        InputAcceptance acceptance,
-        CancellationToken ct = default)
+    public async Task<bool> TryRecordOutcomeAsync(InputAcceptance acceptance, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(acceptance);
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
@@ -959,7 +931,8 @@ public sealed class SqliteConversationStore
         string threadId,
         string inputId,
         Guid reservationId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
@@ -989,7 +962,8 @@ public sealed class SqliteConversationStore
         SqliteConnection connection,
         string threadId,
         string inputId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -1012,7 +986,8 @@ public sealed class SqliteConversationStore
             Enum.Parse<InputAcceptanceState>(reader.GetString(1)),
             reader.GetInt64(2) != 0,
             reader.GetInt64(3) != 0,
-            Guid.Parse(reader.GetString(4)));
+            Guid.Parse(reader.GetString(4))
+        );
     }
 
     /// <inheritdoc />
@@ -1023,8 +998,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
 
@@ -1060,12 +1034,11 @@ public sealed class SqliteConversationStore
         _ = command.Parameters.AddWithValue("$parent_thread_id", (object?)state.ParentThreadId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue(
             "$spawning_tool_call_id",
-            (object?)state.SpawningToolCallId ?? DBNull.Value);
+            (object?)state.SpawningToolCallId ?? DBNull.Value
+        );
         _ = command.Parameters.AddWithValue("$sub_agent_id", (object?)state.SubAgentId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$cause_kind", state.CauseKind);
-        _ = command.Parameters.AddWithValue(
-            "$cause_tool_call_id",
-            (object?)state.CauseToolCallId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$cause_tool_call_id", (object?)state.CauseToolCallId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$phase", nameof(RunLifecyclePhase.Running));
         _ = command.Parameters.AddWithValue("$running", nameof(RunLifecyclePhase.Running));
         _ = command.Parameters.AddWithValue("$turn_count", state.TurnCount);
@@ -1075,21 +1048,19 @@ public sealed class SqliteConversationStore
         if (affected == 0)
         {
             throw new InvalidOperationException(
-                $"Run '{state.RunId}' already reached a terminal boundary; it cannot be restarted.");
+                $"Run '{state.RunId}' already reached a terminal boundary; it cannot be restarted."
+            );
         }
     }
 
     /// <inheritdoc />
-    public async Task<RunLifecycleState?> LoadRunLifecycleAsync(
-        string runId,
-        CancellationToken ct = default)
+    public async Task<RunLifecycleState?> LoadRunLifecycleAsync(string runId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(runId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         command.CommandText = $"{RunLifecycleSelectSql} WHERE run_id = $run_id;";
@@ -1109,22 +1080,21 @@ public sealed class SqliteConversationStore
             return null;
         }
 
-        var deferrals = await LoadDeferredCallsAsync(connection, [state.RunId], ct)
-            .ConfigureAwait(false);
+        var deferrals = await LoadDeferredCallsAsync(connection, [state.RunId], ct).ConfigureAwait(false);
         return Attach(state, deferrals);
     }
 
     /// <inheritdoc />
     public Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
         string threadId,
-        CancellationToken ct = default) =>
-        ListRunLifecycleCoreAsync(threadId, runningOnly: false, ct);
+        CancellationToken ct = default
+    ) => ListRunLifecycleCoreAsync(threadId, runningOnly: false, ct);
 
     /// <inheritdoc />
     public Task<IReadOnlyList<RunLifecycleState>> ListNonTerminalRunsAsync(
         string threadId,
-        CancellationToken ct = default) =>
-        ListRunLifecycleCoreAsync(threadId, runningOnly: true, ct);
+        CancellationToken ct = default
+    ) => ListRunLifecycleCoreAsync(threadId, runningOnly: true, ct);
 
     /// <inheritdoc />
     public async Task<bool> TryMarkRunTerminalAsync(
@@ -1132,15 +1102,15 @@ public sealed class SqliteConversationStore
         string outcome,
         int turnCount,
         DateTimeOffset terminalAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(runId);
         ArgumentException.ThrowIfNullOrEmpty(outcome);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
 
@@ -1170,35 +1140,34 @@ public sealed class SqliteConversationStore
     public async Task<DeferredToolCallRecord> RecordDeferredToolCallAsync(
         string runId,
         DeferredToolCallRecord record,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(runId);
         ArgumentNullException.ThrowIfNull(record);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var transaction = connection.BeginTransaction();
         try
         {
-            var threadId = await ReadScalarStringAsync(
-                connection,
-                transaction,
-                "SELECT thread_id FROM run_lifecycle WHERE run_id = $run_id;",
-                [("$run_id", runId)],
-                ct).ConfigureAwait(false)
+            var threadId =
+                await ReadScalarStringAsync(
+                        connection,
+                        transaction,
+                        "SELECT thread_id FROM run_lifecycle WHERE run_id = $run_id;",
+                        [("$run_id", runId)],
+                        ct
+                    )
+                    .ConfigureAwait(false)
                 ?? throw new InvalidOperationException(
-                    $"Run '{runId}' was never recorded as started; cannot record deferral "
-                        + $"'{record.ToolCallId}'.");
+                    $"Run '{runId}' was never recorded as started; cannot record deferral " + $"'{record.ToolCallId}'."
+                );
 
-            var existing = await LoadDeferredCallAsync(
-                connection,
-                transaction,
-                threadId,
-                record.ToolCallId,
-                ct).ConfigureAwait(false);
+            var existing = await LoadDeferredCallAsync(connection, transaction, threadId, record.ToolCallId, ct)
+                .ConfigureAwait(false);
             if (existing != null)
             {
                 transaction.Commit();
@@ -1207,12 +1176,13 @@ public sealed class SqliteConversationStore
 
             using var countCommand = connection.CreateCommand();
             countCommand.Transaction = transaction;
-            countCommand.CommandText =
-                "SELECT COUNT(*) FROM run_deferred_calls WHERE run_id = $run_id;";
+            countCommand.CommandText = "SELECT COUNT(*) FROM run_deferred_calls WHERE run_id = $run_id;";
             _ = countCommand.Parameters.AddWithValue("$run_id", runId);
-            var ordinal = Convert.ToInt32(
-                await countCommand.ExecuteScalarAsync(ct).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture) + 1;
+            var ordinal =
+                Convert.ToInt32(
+                    await countCommand.ExecuteScalarAsync(ct).ConfigureAwait(false),
+                    System.Globalization.CultureInfo.InvariantCulture
+                ) + 1;
 
             using var insertCommand = connection.CreateCommand();
             insertCommand.Transaction = transaction;
@@ -1228,17 +1198,12 @@ public sealed class SqliteConversationStore
             _ = insertCommand.Parameters.AddWithValue("$tool_call_id", record.ToolCallId);
             _ = insertCommand.Parameters.AddWithValue("$run_id", runId);
             _ = insertCommand.Parameters.AddWithValue("$tool_name", record.ToolName);
-            _ = insertCommand.Parameters.AddWithValue(
-                "$generation_id",
-                (object?)record.GenerationId ?? DBNull.Value);
+            _ = insertCommand.Parameters.AddWithValue("$generation_id", (object?)record.GenerationId ?? DBNull.Value);
             _ = insertCommand.Parameters.AddWithValue("$ordinal", ordinal);
-            _ = insertCommand.Parameters.AddWithValue(
-                "$deferred_at",
-                record.DeferredAt.ToUnixTimeMilliseconds());
+            _ = insertCommand.Parameters.AddWithValue("$deferred_at", record.DeferredAt.ToUnixTimeMilliseconds());
             _ = await insertCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
-            await TouchRunAsync(connection, transaction, runId, record.DeferredAt, ct)
-                .ConfigureAwait(false);
+            await TouchRunAsync(connection, transaction, runId, record.DeferredAt, ct).ConfigureAwait(false);
 
             transaction.Commit();
             return record with { Ordinal = ordinal };
@@ -1257,7 +1222,8 @@ public sealed class SqliteConversationStore
         string resolutionFingerprint,
         string? childRunId,
         DateTimeOffset resolvedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(toolCallId);
@@ -1265,8 +1231,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var transaction = connection.BeginTransaction();
         try
@@ -1285,13 +1250,9 @@ public sealed class SqliteConversationStore
                   AND tool_call_id = $tool_call_id
                   AND resolved_at IS NULL;
                 """;
-            _ = updateCommand.Parameters.AddWithValue(
-                "$resolved_at",
-                resolvedAt.ToUnixTimeMilliseconds());
+            _ = updateCommand.Parameters.AddWithValue("$resolved_at", resolvedAt.ToUnixTimeMilliseconds());
             _ = updateCommand.Parameters.AddWithValue("$fingerprint", resolutionFingerprint);
-            _ = updateCommand.Parameters.AddWithValue(
-                "$child_run_id",
-                (object?)childRunId ?? DBNull.Value);
+            _ = updateCommand.Parameters.AddWithValue("$child_run_id", (object?)childRunId ?? DBNull.Value);
             _ = updateCommand.Parameters.AddWithValue("$thread_id", threadId);
             _ = updateCommand.Parameters.AddWithValue("$tool_call_id", toolCallId);
 
@@ -1299,39 +1260,33 @@ public sealed class SqliteConversationStore
             if (await updateCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1)
             {
                 var owningRunId = await ReadScalarStringAsync(
-                    connection,
-                    transaction,
-                    """
-                    SELECT run_id FROM run_deferred_calls
-                    WHERE thread_id = $thread_id AND tool_call_id = $tool_call_id;
-                    """,
-                    [("$thread_id", threadId), ("$tool_call_id", toolCallId)],
-                    ct).ConfigureAwait(false);
+                        connection,
+                        transaction,
+                        """
+                        SELECT run_id FROM run_deferred_calls
+                        WHERE thread_id = $thread_id AND tool_call_id = $tool_call_id;
+                        """,
+                        [("$thread_id", threadId), ("$tool_call_id", toolCallId)],
+                        ct
+                    )
+                    .ConfigureAwait(false);
                 if (owningRunId != null)
                 {
-                    await TouchRunAsync(connection, transaction, owningRunId, resolvedAt, ct)
-                        .ConfigureAwait(false);
+                    await TouchRunAsync(connection, transaction, owningRunId, resolvedAt, ct).ConfigureAwait(false);
                 }
 
                 outcome = DeferredResolutionOutcome.Resolved;
             }
             else
             {
-                var committed = await LoadDeferredCallAsync(
-                    connection,
-                    transaction,
-                    threadId,
-                    toolCallId,
-                    ct).ConfigureAwait(false);
+                var committed = await LoadDeferredCallAsync(connection, transaction, threadId, toolCallId, ct)
+                    .ConfigureAwait(false);
 
-                outcome = committed == null
-                    ? DeferredResolutionOutcome.NotFound
-                    : string.Equals(
-                        committed.ResolutionFingerprint,
-                        resolutionFingerprint,
-                        StringComparison.Ordinal)
+                outcome =
+                    committed == null ? DeferredResolutionOutcome.NotFound
+                    : string.Equals(committed.ResolutionFingerprint, resolutionFingerprint, StringComparison.Ordinal)
                         ? DeferredResolutionOutcome.Duplicate
-                        : DeferredResolutionOutcome.Conflict;
+                    : DeferredResolutionOutcome.Conflict;
             }
 
             transaction.Commit();
@@ -1350,7 +1305,8 @@ public sealed class SqliteConversationStore
         string toolCallId,
         string childRunId,
         DateTimeOffset attachedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(toolCallId);
@@ -1358,8 +1314,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var transaction = connection.BeginTransaction();
         try
@@ -1387,34 +1342,32 @@ public sealed class SqliteConversationStore
             if (await updateCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1)
             {
                 var owningRunId = await ReadScalarStringAsync(
-                    connection,
-                    transaction,
-                    """
-                    SELECT run_id FROM run_deferred_calls
-                    WHERE thread_id = $thread_id AND tool_call_id = $tool_call_id;
-                    """,
-                    [("$thread_id", threadId), ("$tool_call_id", toolCallId)],
-                    ct).ConfigureAwait(false);
+                        connection,
+                        transaction,
+                        """
+                        SELECT run_id FROM run_deferred_calls
+                        WHERE thread_id = $thread_id AND tool_call_id = $tool_call_id;
+                        """,
+                        [("$thread_id", threadId), ("$tool_call_id", toolCallId)],
+                        ct
+                    )
+                    .ConfigureAwait(false);
                 if (owningRunId != null)
                 {
-                    await TouchRunAsync(connection, transaction, owningRunId, attachedAt, ct)
-                        .ConfigureAwait(false);
+                    await TouchRunAsync(connection, transaction, owningRunId, attachedAt, ct).ConfigureAwait(false);
                 }
 
                 standing = childRunId;
             }
             else
             {
-                var committed = await LoadDeferredCallAsync(
-                    connection,
-                    transaction,
-                    threadId,
-                    toolCallId,
-                    ct).ConfigureAwait(false);
+                var committed = await LoadDeferredCallAsync(connection, transaction, threadId, toolCallId, ct)
+                    .ConfigureAwait(false);
 
-                standing = committed == null
-                    ? null
-                    : RunLifecycleGuards.ClassifyChildRunAttach(committed, childRunId).Standing;
+                standing =
+                    committed == null
+                        ? null
+                        : RunLifecycleGuards.ClassifyChildRunAttach(committed, childRunId).Standing;
             }
 
             transaction.Commit();
@@ -1460,8 +1413,7 @@ public sealed class SqliteConversationStore
                 return;
             }
 
-            await SqliteSchemaInitializer.InitializeSchemaAsync(_connectionFactory, ct)
-                .ConfigureAwait(false);
+            await SqliteSchemaInitializer.InitializeSchemaAsync(_connectionFactory, ct).ConfigureAwait(false);
             _schemaInitialized = true;
         }
         finally
@@ -1504,14 +1456,14 @@ public sealed class SqliteConversationStore
     private async Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleCoreAsync(
         string threadId,
         bool runningOnly,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         // run_id breaks ties so two runs started in the same millisecond come back in a fixed
@@ -1539,10 +1491,8 @@ public sealed class SqliteConversationStore
             return states;
         }
 
-        var deferrals = await LoadDeferredCallsAsync(
-            connection,
-            [.. states.Select(s => s.RunId)],
-            ct).ConfigureAwait(false);
+        var deferrals = await LoadDeferredCallsAsync(connection, [.. states.Select(s => s.RunId)], ct)
+            .ConfigureAwait(false);
 
         return [.. states.Select(s => Attach(s, deferrals))];
     }
@@ -1557,7 +1507,8 @@ public sealed class SqliteConversationStore
     private static async Task<Dictionary<string, List<DeferredToolCallRecord>>> LoadDeferredCallsAsync(
         SqliteConnection connection,
         IReadOnlyList<string> runIds,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var byRun = new Dictionary<string, List<DeferredToolCallRecord>>(StringComparer.Ordinal);
         if (runIds.Count == 0)
@@ -1597,7 +1548,8 @@ public sealed class SqliteConversationStore
         SqliteTransaction transaction,
         string threadId,
         string toolCallId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -1615,7 +1567,8 @@ public sealed class SqliteConversationStore
         SqliteTransaction transaction,
         string sql,
         IReadOnlyList<(string Name, string Value)> parameters,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -1637,12 +1590,12 @@ public sealed class SqliteConversationStore
         SqliteTransaction transaction,
         string runId,
         DateTimeOffset at,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText =
-            "UPDATE run_lifecycle SET updated_at = $updated_at WHERE run_id = $run_id;";
+        command.CommandText = "UPDATE run_lifecycle SET updated_at = $updated_at WHERE run_id = $run_id;";
         _ = command.Parameters.AddWithValue("$updated_at", at.ToUnixTimeMilliseconds());
         _ = command.Parameters.AddWithValue("$run_id", runId);
 
@@ -1664,10 +1617,8 @@ public sealed class SqliteConversationStore
 
     private static RunLifecycleState Attach(
         RunLifecycleState state,
-        IReadOnlyDictionary<string, List<DeferredToolCallRecord>> deferrals) =>
-        deferrals.TryGetValue(state.RunId, out var records)
-            ? state with { DeferredToolCalls = records }
-            : state;
+        IReadOnlyDictionary<string, List<DeferredToolCallRecord>> deferrals
+    ) => deferrals.TryGetValue(state.RunId, out var records) ? state with { DeferredToolCalls = records } : state;
 
     private static RunLifecycleState ReadRunLifecycle(SqliteDataReader reader) =>
         new()
@@ -1686,9 +1637,7 @@ public sealed class SqliteConversationStore
             TurnCount = reader.GetInt32(11),
             StartedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(12)),
             UpdatedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(13)),
-            TerminalAt = reader.IsDBNull(14)
-                ? null
-                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(14)),
+            TerminalAt = reader.IsDBNull(14) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(14)),
         };
 
     private static DeferredToolCallRecord ReadDeferredCall(SqliteDataReader reader) =>
@@ -1699,9 +1648,7 @@ public sealed class SqliteConversationStore
             GenerationId = reader.IsDBNull(2) ? null : reader.GetString(2),
             Ordinal = reader.GetInt32(3),
             DeferredAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
-            ResolvedAt = reader.IsDBNull(5)
-                ? null
-                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
+            ResolvedAt = reader.IsDBNull(5) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
             ResolutionFingerprint = reader.IsDBNull(6) ? null : reader.GetString(6),
             ChildRunId = reader.IsDBNull(7) ? null : reader.GetString(7),
         };
@@ -1752,9 +1699,7 @@ public sealed class SqliteConversationStore
 
     private static string? SerializeMetadataExtensions(ThreadMetadata metadata)
     {
-        if (metadata.SessionMappings == null &&
-            metadata.LatestRunId == null &&
-            metadata.Properties == null)
+        if (metadata.SessionMappings == null && metadata.LatestRunId == null && metadata.Properties == null)
         {
             return null;
         }
@@ -1769,8 +1714,11 @@ public sealed class SqliteConversationStore
         return JsonSerializer.Serialize(extensionData, JsonOptions);
     }
 
-    private static (IReadOnlyDictionary<string, string>?, string?, ImmutableDictionary<string, object>?)
-        DeserializeMetadataExtensions(string? json)
+    private static (
+        IReadOnlyDictionary<string, string>?,
+        string?,
+        ImmutableDictionary<string, object>?
+    ) DeserializeMetadataExtensions(string? json)
     {
         if (string.IsNullOrEmpty(json))
         {

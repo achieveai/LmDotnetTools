@@ -35,47 +35,74 @@ public class StreamInterruptionRecoveryTests
     {
         // Attempt 1 streams two text fragments and then the connection dies. Nothing was ever
         // finalized, so there is nothing to keep and nothing to continue from.
-        ScriptProvider((attempt, ct) => attempt == 1
-            ? Emit(
-                [
-                    new TextUpdateMessage { Text = "The answer ", Role = Role.Assistant },
-                    new TextUpdateMessage { Text = "is ", Role = Role.Assistant },
-                ],
-                ResponseEnded(),
-                ct)
-            : Emit([new TextMessage { Text = "The answer is 42.", Role = Role.Assistant }], null, ct));
+        ScriptProvider(
+            (attempt, ct) =>
+                attempt == 1
+                    ? Emit(
+                        [
+                            new TextUpdateMessage { Text = "The answer ", Role = Role.Assistant },
+                            new TextUpdateMessage { Text = "is ", Role = Role.Assistant },
+                        ],
+                        ResponseEnded(),
+                        ct
+                    )
+                    : Emit([new TextMessage { Text = "The answer is 42.", Role = Role.Assistant }], null, ct)
+        );
 
         var messages = await RunAsync("fragment-only-thread");
 
         _requests.Should().HaveCount(2, "a fragment-only interruption is retried exactly once");
-        _generations[1].Should().NotBe(_generations[0], "the replacement attempt must not collide with the abandoned one on the client merge key");
+        _generations[1]
+            .Should()
+            .NotBe(
+                _generations[0],
+                "the replacement attempt must not collide with the abandoned one on the client merge key"
+            );
 
         // The retry is the ORIGINAL request: the abandoned attempt contributed nothing to it.
-        _requests[1].Should().BeEquivalentTo(_requests[0], "a retry of an empty attempt reissues the original request");
+        _requests[1]
+            .Should()
+            .BeEquivalentTo(_requests[0], "a retry of an empty attempt reissues the original request");
         _requests[1].OfType<TextUpdateMessage>().Should().BeEmpty();
-        _requests[1].OfType<TextMessage>().Where(m => m.Role == Role.Assistant).Should().BeEmpty(
-            "no partial assistant output may be persisted from an attempt that never finished");
+        _requests[1]
+            .OfType<TextMessage>()
+            .Where(m => m.Role == Role.Assistant)
+            .Should()
+            .BeEmpty("no partial assistant output may be persisted from an attempt that never finished");
 
-        messages.OfType<GenerationAbandonedMessage>().Should().ContainSingle()
-            .Which.GenerationId.Should().Be(_generations[0], "the client is told which generation's unfinalized blocks to drop");
+        messages
+            .OfType<GenerationAbandonedMessage>()
+            .Should()
+            .ContainSingle()
+            .Which.GenerationId.Should()
+            .Be(_generations[0], "the client is told which generation's unfinalized blocks to drop");
 
-        messages.OfType<TextMessage>().Where(m => m.Role == Role.Assistant)
-            .Should().ContainSingle().Which.Text.Should().Be("The answer is 42.");
+        messages
+            .OfType<TextMessage>()
+            .Where(m => m.Role == Role.Assistant)
+            .Should()
+            .ContainSingle()
+            .Which.Text.Should()
+            .Be("The answer is 42.");
         messages.OfType<RunCompletedMessage>().Should().ContainSingle().Which.IsError.Should().BeFalse();
     }
 
     [Fact]
     public async Task InterruptionAfterCompletedOutput_ContinuesInternallyWithoutAVisibleNewInput()
     {
-        ScriptProvider((attempt, ct) => attempt == 1
-            ? Emit(
-                [
-                    new TextMessage { Text = "Step one is done.", Role = Role.Assistant },
-                    new TextUpdateMessage { Text = "Step two ", Role = Role.Assistant },
-                ],
-                ResponseEnded(),
-                ct)
-            : Emit([new TextMessage { Text = "Step two is done.", Role = Role.Assistant }], null, ct));
+        ScriptProvider(
+            (attempt, ct) =>
+                attempt == 1
+                    ? Emit(
+                        [
+                            new TextMessage { Text = "Step one is done.", Role = Role.Assistant },
+                            new TextUpdateMessage { Text = "Step two ", Role = Role.Assistant },
+                        ],
+                        ResponseEnded(),
+                        ct
+                    )
+                    : Emit([new TextMessage { Text = "Step two is done.", Role = Role.Assistant }], null, ct)
+        );
 
         var messages = await RunAsync("continue-thread");
 
@@ -86,15 +113,21 @@ public class StreamInterruptionRecoveryTests
         _requests[1].OfType<TextUpdateMessage>().Should().BeEmpty();
 
         // The provider is told to continue — but only in this request.
-        _requests[1].OfType<TextMessage>()
+        _requests[1]
+            .OfType<TextMessage>()
             .Where(m => m.Text == MultiTurnAgentLoop.InterruptedTurnContinuationInstruction)
-            .Should().ContainSingle("the continuation is instructed internally");
-        _requests[0].OfType<TextMessage>()
+            .Should()
+            .ContainSingle("the continuation is instructed internally");
+        _requests[0]
+            .OfType<TextMessage>()
             .Where(m => m.Text == MultiTurnAgentLoop.InterruptedTurnContinuationInstruction)
-            .Should().BeEmpty();
-        messages.OfType<TextMessage>()
+            .Should()
+            .BeEmpty();
+        messages
+            .OfType<TextMessage>()
             .Where(m => m.Text == MultiTurnAgentLoop.InterruptedTurnContinuationInstruction)
-            .Should().BeEmpty("the instruction is never rendered to the client as a user bubble");
+            .Should()
+            .BeEmpty("the instruction is never rendered to the client as a user bubble");
 
         messages.OfType<RunCompletedMessage>().Should().ContainSingle().Which.IsError.Should().BeFalse();
     }
@@ -112,9 +145,12 @@ public class StreamInterruptionRecoveryTests
 
         // The stream dies AFTER emitting a complete tool call, so its execution is already in flight
         // when recovery begins — the exact shape that can double a side effect if mishandled.
-        ScriptProvider((attempt, ct) => attempt == 1
-            ? Emit([toolCall], ResponseEnded(), ct)
-            : Emit([new TextMessage { Text = "It is 72F in Seattle.", Role = Role.Assistant }], null, ct));
+        ScriptProvider(
+            (attempt, ct) =>
+                attempt == 1
+                    ? Emit([toolCall], ResponseEnded(), ct)
+                    : Emit([new TextMessage { Text = "It is 72F in Seattle.", Role = Role.Assistant }], null, ct)
+        );
 
         var executions = 0;
         var registry = new FunctionRegistry();
@@ -124,13 +160,17 @@ public class StreamInterruptionRecoveryTests
             {
                 Interlocked.Increment(ref executions);
                 return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("{\"temperature\":\"72F\"}"));
-            });
+            }
+        );
 
         var messages = await RunAsync("tool-recovery-thread", registry);
 
         executions.Should().Be(1, "a completed tool effect must never be executed a second time");
-        messages.OfType<ToolCallResultMessage>().Where(m => m.ToolCallId == "call_recovered")
-            .Should().ContainSingle("the visible effect is delivered exactly once");
+        messages
+            .OfType<ToolCallResultMessage>()
+            .Where(m => m.ToolCallId == "call_recovered")
+            .Should()
+            .ContainSingle("the visible effect is delivered exactly once");
 
         // The settled result is carried into the continuation, which is what makes re-issuing the
         // call unnecessary rather than merely discouraged. History stores tool results in aggregate
@@ -150,44 +190,57 @@ public class StreamInterruptionRecoveryTests
         // TextMessage as soon as a different message type follows it, so fragments-then-usage would
         // deliver genuine content and would not test this at all. Trailing fragments are still inside
         // the builder when the stream dies, so they are never built and never delivered.
-        ScriptProvider((attempt, ct) => attempt == 1
-            ? Emit(
-                [
-                    new UsageMessage { Usage = new Usage() },
-                    new TextUpdateMessage { Text = "The answer ", Role = Role.Assistant },
-                ],
-                ResponseEnded(),
-                ct)
-            : Emit([new TextMessage { Text = "The answer is 42.", Role = Role.Assistant }], null, ct));
+        ScriptProvider(
+            (attempt, ct) =>
+                attempt == 1
+                    ? Emit(
+                        [
+                            new UsageMessage { Usage = new Usage() },
+                            new TextUpdateMessage { Text = "The answer ", Role = Role.Assistant },
+                        ],
+                        ResponseEnded(),
+                        ct
+                    )
+                    : Emit([new TextMessage { Text = "The answer is 42.", Role = Role.Assistant }], null, ct)
+        );
 
         var messages = await RunAsync("accounting-only-thread");
 
         _requests.Should().HaveCount(2);
-        _requests[1].OfType<TextMessage>()
+        _requests[1]
+            .OfType<TextMessage>()
             .Where(m => m.Text == MultiTurnAgentLoop.InterruptedTurnContinuationInstruction)
-            .Should().BeEmpty("an attempt that delivered only accounting is retried, not continued");
+            .Should()
+            .BeEmpty("an attempt that delivered only accounting is retried, not continued");
 
-        messages.OfType<TextMessage>().Where(m => m.Role == Role.Assistant)
-            .Should().ContainSingle().Which.Text.Should().Be("The answer is 42.");
+        messages
+            .OfType<TextMessage>()
+            .Where(m => m.Role == Role.Assistant)
+            .Should()
+            .ContainSingle()
+            .Which.Text.Should()
+            .Be("The answer is 42.");
         messages.OfType<RunCompletedMessage>().Should().ContainSingle().Which.IsError.Should().BeFalse();
     }
 
     /// <summary>Every tool call id answered by a result in <paramref name="request"/>, either shape.</summary>
     private static IEnumerable<string?> ToolResultIds(IEnumerable<IMessage> request) =>
-        request.SelectMany(m => m switch
-        {
-            ToolCallResultMessage single => [single.ToolCallId],
-            ToolsCallResultMessage aggregate => aggregate.ToolCallResults.Select(r => r.ToolCallId),
-            _ => [],
-        });
+        request.SelectMany(m =>
+            m switch
+            {
+                ToolCallResultMessage single => [single.ToolCallId],
+                ToolsCallResultMessage aggregate => aggregate.ToolCallResults.Select(r => r.ToolCallId),
+                _ => [],
+            }
+        );
 
     [Fact]
     public async Task SecondInterruption_FailsTheRunWithAStableClassificationInsteadOfRetryingAgain()
     {
-        ScriptProvider((_, ct) => Emit(
-            [new TextUpdateMessage { Text = "never finishes", Role = Role.Assistant }],
-            ResponseEnded(),
-            ct));
+        ScriptProvider(
+            (_, ct) =>
+                Emit([new TextUpdateMessage { Text = "never finishes", Role = Role.Assistant }], ResponseEnded(), ct)
+        );
 
         var messages = await RunAsync("double-interrupt-thread");
 
@@ -208,24 +261,26 @@ public class StreamInterruptionRecoveryTests
         // makes "the drain returns at all" a decisive test of the cancellation guard rather than a
         // test that merely happens to pass because everything downstream throws anyway.
         var registry = new FunctionRegistry();
-        registry.AddFunction(
-            WeatherContract(),
-            (_, _, _) => new TaskCompletionSource<ToolHandlerResult>().Task);
+        registry.AddFunction(WeatherContract(), (_, _, _) => new TaskCompletionSource<ToolHandlerResult>().Task);
 
         // Byte for byte the same transport failure as the recovered cases — the only difference is
         // that the user asked the run to stop first.
-        ScriptProvider((_, ct) => EmitThenCancelAndFail(
-            [
-                new ToolCallMessage
-                {
-                    FunctionName = "get_weather",
-                    FunctionArgs = "{\"location\":\"Seattle\"}",
-                    ToolCallId = "call_hangs",
-                    Role = Role.Assistant,
-                },
-            ],
-            cts,
-            ct));
+        ScriptProvider(
+            (_, ct) =>
+                EmitThenCancelAndFail(
+                    [
+                        new ToolCallMessage
+                        {
+                            FunctionName = "get_weather",
+                            FunctionArgs = "{\"location\":\"Seattle\"}",
+                            ToolCallId = "call_hangs",
+                            Role = Role.Assistant,
+                        },
+                    ],
+                    cts,
+                    ct
+                )
+        );
 
         var drain = RunAsync("cancelled-thread", registry, cts);
         var finished = await Task.WhenAny(drain, Task.Delay(TimeSpan.FromSeconds(30)));
@@ -243,8 +298,13 @@ public class StreamInterruptionRecoveryTests
 
         _requests.Should().HaveCount(1);
         messages.OfType<GenerationAbandonedMessage>().Should().BeEmpty();
-        messages.OfType<TextMessage>().Where(m => m.Role == Role.Assistant)
-            .Should().ContainSingle().Which.Text.Should().Be("Hello.");
+        messages
+            .OfType<TextMessage>()
+            .Where(m => m.Role == Role.Assistant)
+            .Should()
+            .ContainSingle()
+            .Which.Text.Should()
+            .Be("Hello.");
         messages.OfType<RunCompletedMessage>().Should().ContainSingle().Which.IsError.Should().BeFalse();
     }
 
@@ -273,39 +333,45 @@ public class StreamInterruptionRecoveryTests
     private void ScriptProvider(Func<int, CancellationToken, IAsyncEnumerable<IMessage>> attemptScript)
     {
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((sent, options, ct) =>
-            {
-                _requests.Add([.. sent]);
-                _generations.Add(options.GenerationId);
-                return Task.FromResult(attemptScript(_requests.Count, ct));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (sent, options, ct) =>
+                {
+                    _requests.Add([.. sent]);
+                    _generations.Add(options.GenerationId);
+                    return Task.FromResult(attemptScript(_requests.Count, ct));
+                }
+            );
     }
 
     /// <summary>Runs one input to completion and returns everything the subscriber saw.</summary>
     private async Task<List<IMessage>> RunAsync(
         string threadId,
         FunctionRegistry? registry = null,
-        CancellationTokenSource? cancellationSource = null)
+        CancellationTokenSource? cancellationSource = null
+    )
     {
         using var owned = cancellationSource is null ? new CancellationTokenSource() : null;
         var cts = cancellationSource ?? owned!;
 
-        await using var loop = new MultiTurnAgentLoop(
-            _mockAgent.Object,
-            registry ?? new FunctionRegistry(),
-            threadId);
+        await using var loop = new MultiTurnAgentLoop(_mockAgent.Object, registry ?? new FunctionRegistry(), threadId);
         _ = loop.RunAsync(cts.Token);
 
         var messages = new List<IMessage>();
         try
         {
-            await foreach (var msg in loop.ExecuteRunAsync(
-                new UserInput([new TextMessage { Text = "Go", Role = Role.User }]),
-                cts.Token))
+            await foreach (
+                var msg in loop.ExecuteRunAsync(
+                    new UserInput([new TextMessage { Text = "Go", Role = Role.User }]),
+                    cts.Token
+                )
+            )
             {
                 messages.Add(msg);
             }
@@ -326,7 +392,8 @@ public class StreamInterruptionRecoveryTests
     private static async IAsyncEnumerable<IMessage> Emit(
         IEnumerable<IMessage> messages,
         Exception? endWith,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var message in messages)
         {
@@ -344,7 +411,8 @@ public class StreamInterruptionRecoveryTests
     private static async IAsyncEnumerable<IMessage> EmitThenCancelAndFail(
         IEnumerable<IMessage> messages,
         CancellationTokenSource cts,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var message in messages)
         {

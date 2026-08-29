@@ -147,10 +147,7 @@ public static partial class ReviewFindingParser
     /// reads as a measurement, while a coarse one is at least the severity the line leads with.
     /// </para>
     /// </summary>
-    private static string? SeverityFor(
-        List<(int Offset, string Value)> severities,
-        int anchorOffset
-    )
+    private static string? SeverityFor(List<(int Offset, string Value)> severities, int anchorOffset)
     {
         if (severities.Count == 0)
         {

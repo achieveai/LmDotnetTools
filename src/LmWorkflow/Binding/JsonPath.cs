@@ -108,11 +108,7 @@ internal static class JsonPath
     ///     <paramref name="startIndex"/>. Navigating into a non-object/non-array, a missing key, or an
     ///     out-of-range index yields <c>null</c>.
     /// </summary>
-    public static JsonNode? Navigate(
-        JsonNode? node,
-        IReadOnlyList<PathSegment> segments,
-        int startIndex = 0
-    )
+    public static JsonNode? Navigate(JsonNode? node, IReadOnlyList<PathSegment> segments, int startIndex = 0)
     {
         ArgumentNullException.ThrowIfNull(segments);
 
@@ -127,17 +123,11 @@ internal static class JsonPath
             if (segment.IsIndex)
             {
                 var index = segment.Index!.Value;
-                node = node is JsonArray array && index >= 0 && index < array.Count
-                    ? array[index]
-                    : null;
+                node = node is JsonArray array && index >= 0 && index < array.Count ? array[index] : null;
             }
             else
             {
-                node =
-                    node is JsonObject obj
-                    && obj.TryGetPropertyValue(segment.Name!, out var child)
-                        ? child
-                        : null;
+                node = node is JsonObject obj && obj.TryGetPropertyValue(segment.Name!, out var child) ? child : null;
             }
         }
 

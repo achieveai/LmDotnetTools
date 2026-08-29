@@ -20,9 +20,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class GitHubPrProviderTests : LoggingTestBase
 {
     public GitHubPrProviderTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private static readonly RepoIdentity Repo = new()
     {
@@ -53,18 +51,20 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         ]
         """;
 
-    private static PrPollRequest Request(OpaqueCursor? cursor = null) => new()
-    {
-        Repo = Repo,
-        Scope = "acme/widgets:open-prs",
-        Cursor = cursor,
-    };
+    private static PrPollRequest Request(OpaqueCursor? cursor = null) =>
+        new()
+        {
+            Repo = Repo,
+            Scope = "acme/widgets:open-prs",
+            Cursor = cursor,
+        };
 
     private GitHubPrProvider Provider(FakeHttpMessageHandler handler) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
-            LoggerFactory.CreateLogger<GitHubPrProvider>());
+            LoggerFactory.CreateLogger<GitHubPrProvider>()
+        );
 
     [Fact]
     public void Provider_id_is_github()
@@ -148,8 +148,9 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
         page.PullRequests[0].Description.Should().BeNull();
-        page.PullRequests[0].Title.Should().Be(
-            "Remove the stale featureflag entry", "a blank body must not take the title down with it");
+        page.PullRequests[0]
+            .Title.Should()
+            .Be("Remove the stale featureflag entry", "a blank body must not take the title down with it");
     }
 
     [Fact]
@@ -208,7 +209,11 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
     public async Task ListOpenPullRequests_throws_on_a_non_success_status()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/repos/acme/widgets/pulls", """{"message":"Bad credentials"}""", HttpStatusCode.Unauthorized);
+            HttpMethod.Get,
+            "/repos/acme/widgets/pulls",
+            """{"message":"Bad credentials"}""",
+            HttpStatusCode.Unauthorized
+        );
 
         var act = () => Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -231,12 +236,16 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         var handler = new FakeHttpMessageHandler()
             .On(
                 req => req.RequestUri!.ToString().Contains("page=2", StringComparison.Ordinal),
-                _ => JsonResponse(page2))
+                _ => JsonResponse(page2)
+            )
             .On(
                 req => req.RequestUri!.ToString().Contains("per_page=100", StringComparison.Ordinal),
-                _ => JsonResponse(
-                    page1,
-                    ("Link", "<https://api.github.com/repos/acme/widgets/pulls?state=open&page=2>; rel=\"next\"")));
+                _ =>
+                    JsonResponse(
+                        page1,
+                        ("Link", "<https://api.github.com/repos/acme/widgets/pulls?state=open&page=2>; rel=\"next\"")
+                    )
+            );
 
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -293,13 +302,18 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
             "/repos/acme/widgets/pulls/7",
-            """{ "number": 7, "head": { "ref": "feature", "sha": "d34dbeef" } }""");
+            """{ "number": 7, "head": { "ref": "feature", "sha": "d34dbeef" } }"""
+        );
 
         var head = await Provider(handler).GetCurrentHeadShaAsync(Repo, "7", CancellationToken.None);
 
         head.Should().Be("d34dbeef");
-        handler.Requests.Should().ContainSingle().Which.Uri.ToString()
-            .Should().EndWith("/repos/acme/widgets/pulls/7", "the currency check must cost one single-PR read");
+        handler
+            .Requests.Should()
+            .ContainSingle()
+            .Which.Uri.ToString()
+            .Should()
+            .EndWith("/repos/acme/widgets/pulls/7", "the currency check must cost one single-PR read");
     }
 
     [Theory]
@@ -324,10 +338,15 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
     [InlineData(HttpStatusCode.Unauthorized)]
     [InlineData(HttpStatusCode.NotFound)]
     public async Task GetCurrentHeadSha_propagates_a_non_success_response_rather_than_flattening_it_to_null(
-        HttpStatusCode status)
+        HttpStatusCode status
+    )
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/repos/acme/widgets/pulls/7", """{ "message": "nope" }""", status);
+            HttpMethod.Get,
+            "/repos/acme/widgets/pulls/7",
+            """{ "message": "nope" }""",
+            status
+        );
 
         var act = () => Provider(handler).GetCurrentHeadShaAsync(Repo, "7", CancellationToken.None);
 
@@ -370,13 +389,15 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         FakeHttpMessageHandler handler,
         int maxPagesPerPoll,
         int maxPrsPerPage = 100,
-        ILogger<GitHubPrProvider>? logger = null) =>
+        ILogger<GitHubPrProvider>? logger = null
+    ) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
             logger ?? LoggerFactory.CreateLogger<GitHubPrProvider>(),
             maxPagesPerPoll,
-            maxPrsPerPage);
+            maxPrsPerPage
+        );
 
     /// <summary>
     /// Serves <paramref name="totalPages"/> pages of one PR each, chained by <c>Link rel="next"</c>. Pages
@@ -400,10 +421,14 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
                 return page < totalPages
                     ? JsonResponse(
                         json,
-                        ("Link",
-                            $"<https://api.github.com/repos/acme/widgets/pulls?state=open&page={page + 1}>; rel=\"next\""))
+                        (
+                            "Link",
+                            $"<https://api.github.com/repos/acme/widgets/pulls?state=open&page={page + 1}>; rel=\"next\""
+                        )
+                    )
                     : JsonResponse(json);
-            });
+            }
+        );
     }
 
     /// <summary>
@@ -421,8 +446,9 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
             .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
         handler.CountRequests("/pulls").Should().Be(14, "the configured bound allows all 14 pages");
-        page.PullRequests.Select(p => p.PrId).Should().Contain(
-            ["11", "12", "13", "14"], "these PRs exist only on pages past the old hardcoded ceiling of 10");
+        page.PullRequests.Select(p => p.PrId)
+            .Should()
+            .Contain(["11", "12", "13", "14"], "these PRs exist only on pages past the old hardcoded ceiling of 10");
         page.PullRequests.Should().HaveCount(14);
     }
 
@@ -456,8 +482,13 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         _ = await Provider(handler, maxPagesPerPoll: configured)
             .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
-        handler.CountRequests("/pulls").Should().Be(
-            CodeReviewDaemonOptions.DefaultMaxPagesPerPoll, "a nonsensical bound degrades to the default, not to 0");
+        handler
+            .CountRequests("/pulls")
+            .Should()
+            .Be(
+                CodeReviewDaemonOptions.DefaultMaxPagesPerPoll,
+                "a nonsensical bound degrades to the default, not to 0"
+            );
     }
 
     /// <summary>
@@ -495,10 +526,13 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
             .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
         page.PullRequests.Should().HaveCount(10, "10 of the repo's 30 pages were read");
-        logger.CountAtLevel(
+        logger
+            .CountAtLevel(
                 LogLevel.Warning,
-                "stopped after 10 page(s) of 100 with more results still available; 10 PR(s)")
-            .Should().Be(1, "the operator is told the poll was incomplete, and with the real counts");
+                "stopped after 10 page(s) of 100 with more results still available; 10 PR(s)"
+            )
+            .Should()
+            .Be(1, "the operator is told the poll was incomplete, and with the real counts");
     }
 
     /// <summary>
@@ -515,7 +549,9 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         _ = await Provider(handler, maxPagesPerPoll: 10, logger: logger)
             .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
-        logger.CountAtLevel(LogLevel.Warning, "stopped after")
-            .Should().Be(0, "the repo's last page carried no rel=\"next\", so nothing was left unseen");
+        logger
+            .CountAtLevel(LogLevel.Warning, "stopped after")
+            .Should()
+            .Be(0, "the repo's last page carried no rel=\"next\", so nothing was left unseen");
     }
 }

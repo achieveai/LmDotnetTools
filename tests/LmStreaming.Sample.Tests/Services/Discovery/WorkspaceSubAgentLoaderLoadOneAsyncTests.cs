@@ -42,8 +42,7 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         }
     }
 
-    private static readonly string WellFormedMarkdown =
-        """
+    private static readonly string WellFormedMarkdown = """
         ---
         name: echo
         description: Echoes a marker.
@@ -51,11 +50,13 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         You are the echo sub-agent. Respond with the marker the user supplies.
         """;
 
-    private SandboxSession CreateSession(string? hostPathOverride = null) => new(
-        WorkspaceId: "default",
-        SessionId: SessionId,
-        WorkspaceRelPath: "default",
-        HostPath: hostPathOverride ?? _hostPath);
+    private SandboxSession CreateSession(string? hostPathOverride = null) =>
+        new(
+            WorkspaceId: "default",
+            SessionId: SessionId,
+            WorkspaceRelPath: "default",
+            HostPath: hostPathOverride ?? _hostPath
+        );
 
     private WorkspaceSubAgentLoader CreateLoader()
     {
@@ -66,7 +67,8 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(UnusedRespond)));
+            new HttpClient(new StubHandler(UnusedRespond))
+        );
 
         var registry = new SandboxSessionRegistry(
             gateway,
@@ -76,14 +78,20 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
 
         return new WorkspaceSubAgentLoader(registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
     }
 
     private static SandboxSessionRegistry.DiscoveredItem Item(
-        string kind, string name, string path, string? content = null, string? qualifiedName = null) =>
-        new(kind, name, $"{name} description", path, content, qualifiedName);
+        string kind,
+        string name,
+        string path,
+        string? content = null,
+        string? qualifiedName = null
+    ) => new(kind, name, $"{name} description", path, content, qualifiedName);
 
     [Fact]
     public async Task LoadOneAsync_HappyPath_ReturnsMappedTemplate()
@@ -92,10 +100,7 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(_hostPath, relPath), WellFormedMarkdown);
         var loader = CreateLoader();
 
-        var template = await loader.LoadOneAsync(
-            CreateSession(),
-            Item("subagent", "echo", relPath),
-            AgentFactory);
+        var template = await loader.LoadOneAsync(CreateSession(), Item("subagent", "echo", relPath), AgentFactory);
 
         template.Should().NotBeNull();
         template!.Name.Should().Be("echo");
@@ -111,8 +116,12 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         // A /marketplaces/... path has no workspace file; the inline content must be parsed directly.
         var loader = CreateLoader();
         var item = Item(
-            "subagent", "architecture-review", "/marketplaces/gb-plugins/agents/architecture-review.md",
-            content: WellFormedMarkdown, qualifiedName: "code-reviewer:architecture-review");
+            "subagent",
+            "architecture-review",
+            "/marketplaces/gb-plugins/agents/architecture-review.md",
+            content: WellFormedMarkdown,
+            qualifiedName: "code-reviewer:architecture-review"
+        );
 
         var template = await loader.LoadOneAsync(CreateSession(), item, AgentFactory);
 
@@ -130,7 +139,8 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         var template = await loader.LoadOneAsync(
             CreateSession(),
             Item("skill", "review", ".claude/skills/review.md"),
-            AgentFactory);
+            AgentFactory
+        );
 
         template.Should().BeNull();
     }
@@ -145,7 +155,8 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         var template = await loader.LoadOneAsync(
             CreateSession(),
             Item("subagent", "escape", "../outside.md"),
-            AgentFactory);
+            AgentFactory
+        );
 
         template.Should().BeNull();
     }
@@ -158,7 +169,8 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         var template = await loader.LoadOneAsync(
             CreateSession(),
             Item("subagent", "ghost", ".claude/agents/ghost.md"),
-            AgentFactory);
+            AgentFactory
+        );
 
         template.Should().BeNull();
     }
@@ -170,10 +182,7 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(_hostPath, relPath), "no frontmatter at all\n");
         var loader = CreateLoader();
 
-        var template = await loader.LoadOneAsync(
-            CreateSession(),
-            Item("subagent", "bad", relPath),
-            AgentFactory);
+        var template = await loader.LoadOneAsync(CreateSession(), Item("subagent", "bad", relPath), AgentFactory);
 
         template.Should().BeNull();
     }
@@ -188,7 +197,8 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         var template = await loader.LoadOneAsync(
             CreateSession(hostPathOverride: ""),
             Item("subagent", "echo", ".claude/agents/echo.md"),
-            AgentFactory);
+            AgentFactory
+        );
 
         template.Should().BeNull();
     }
@@ -199,12 +209,11 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         var loader = CreateLoader();
         var item = Item("subagent", "echo", ".claude/agents/echo.md");
 
-        await Assert.ThrowsAsync<ArgumentNullException>(
-            () => loader.LoadOneAsync(null!, item, AgentFactory));
-        await Assert.ThrowsAsync<ArgumentNullException>(
-            () => loader.LoadOneAsync(CreateSession(), null!, AgentFactory));
-        await Assert.ThrowsAsync<ArgumentNullException>(
-            () => loader.LoadOneAsync(CreateSession(), item, null!));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => loader.LoadOneAsync(null!, item, AgentFactory));
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            loader.LoadOneAsync(CreateSession(), null!, AgentFactory)
+        );
+        await Assert.ThrowsAsync<ArgumentNullException>(() => loader.LoadOneAsync(CreateSession(), item, null!));
     }
 
     [Fact]
@@ -218,11 +227,8 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var act = () => loader.LoadOneAsync(
-            CreateSession(),
-            Item("subagent", "echo", relPath),
-            AgentFactory,
-            cts.Token);
+        var act = () =>
+            loader.LoadOneAsync(CreateSession(), Item("subagent", "echo", relPath), AgentFactory, cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
@@ -238,7 +244,8 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(_respond(request));
         }

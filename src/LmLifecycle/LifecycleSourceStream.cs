@@ -90,10 +90,7 @@ public static class LifecycleSourceStream
     {
         if (string.IsNullOrWhiteSpace(id))
         {
-            throw new ArgumentException(
-                "A source-stream subject id must be non-empty.",
-                parameterName
-            );
+            throw new ArgumentException("A source-stream subject id must be non-empty.", parameterName);
         }
 
         return string.Concat(kind, Separator.ToString(), id);

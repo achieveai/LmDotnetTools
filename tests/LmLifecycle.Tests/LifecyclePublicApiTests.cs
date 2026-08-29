@@ -44,9 +44,7 @@ public class LifecyclePublicApiTests
         var shippedPath = Path.Combine(AppContext.BaseDirectory, ShippedFileName);
         var receivedPath = Path.Combine(AppContext.BaseDirectory, ReceivedFileName);
 
-        File.Exists(shippedPath)
-            .Should()
-            .BeTrue("the baseline is the gate; without it this test proves nothing");
+        File.Exists(shippedPath).Should().BeTrue("the baseline is the gate; without it this test proves nothing");
 
         var actual = DescribeSurface();
         File.WriteAllText(receivedPath, string.Join("\n", actual) + "\n");
@@ -105,10 +103,7 @@ public class LifecyclePublicApiTests
             lines.Add(DescribeType(type));
 
             const BindingFlags Declared =
-                BindingFlags.Public
-                | BindingFlags.Instance
-                | BindingFlags.Static
-                | BindingFlags.DeclaredOnly;
+                BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
 
             foreach (var member in type.GetMembers(Declared))
             {
@@ -151,11 +146,7 @@ public class LifecyclePublicApiTests
             case MethodInfo method
                 when method.IsSpecialName
                     || method.Name.StartsWith('<')
-                    || method.Name
-                        is nameof(Equals)
-                            or nameof(GetHashCode)
-                            or nameof(ToString)
-                            or "PrintMembers":
+                    || method.Name is nameof(Equals) or nameof(GetHashCode) or nameof(ToString) or "PrintMembers":
                 return null;
 
             case MethodInfo method:
@@ -174,15 +165,13 @@ public class LifecyclePublicApiTests
                     + $"{property.Name} : {TypeName(property.PropertyType)} {{ {accessors}}}{Required(property)}";
 
             case FieldInfo field when field.IsLiteral:
-                return prefix
-                    + $"{field.Name} : {TypeName(field.FieldType)} = {Literal(field.GetRawConstantValue())}";
+                return prefix + $"{field.Name} : {TypeName(field.FieldType)} = {Literal(field.GetRawConstantValue())}";
 
             case FieldInfo field:
                 return prefix + $"{field.Name} : {TypeName(field.FieldType)}{Required(field)}";
 
             case EventInfo declaredEvent:
-                return prefix
-                    + $"event {declaredEvent.Name} : {TypeName(declaredEvent.EventHandlerType!)}";
+                return prefix + $"event {declaredEvent.Name} : {TypeName(declaredEvent.EventHandlerType!)}";
 
             default:
                 return prefix + member.Name;
@@ -201,7 +190,11 @@ public class LifecyclePublicApiTests
         string.Join(
             ", ",
             parameters.Select(p =>
-                (p.IsOut ? "out " : p.ParameterType.IsByRef ? "ref " : string.Empty)
+                (
+                    p.IsOut ? "out "
+                    : p.ParameterType.IsByRef ? "ref "
+                    : string.Empty
+                )
                 + TypeName(p.ParameterType)
                 + (p.HasDefaultValue ? " = " + Literal(p.RawDefaultValue) : string.Empty)
             )
@@ -249,9 +242,7 @@ public class LifecyclePublicApiTests
     private static string Shorten(string fullName)
     {
         const string OwnNamespace = "AchieveAi.LmDotnetTools.LmLifecycle.";
-        return fullName.StartsWith(OwnNamespace, StringComparison.Ordinal)
-            ? fullName[OwnNamespace.Length..]
-            : fullName;
+        return fullName.StartsWith(OwnNamespace, StringComparison.Ordinal) ? fullName[OwnNamespace.Length..] : fullName;
     }
 
     private static readonly Dictionary<Type, string> Aliases = new()

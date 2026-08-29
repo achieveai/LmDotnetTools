@@ -73,20 +73,29 @@ public sealed class SubAgentHierarchyRenderTests
     [Theory]
     [InlineData("test")]
     [InlineData("test-anthropic")]
-    public async Task Hierarchy_renders_its_depths_and_refuses_a_machine_read_of_a_raw_thread(
-        string providerMode)
+    public async Task Hierarchy_renders_its_depths_and_refuses_a_machine_read_of_a_raw_thread(string providerMode)
     {
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("helper", ctx => ctx.SystemPromptContains(HelperMarker))
-                // Addressing the root BY NAME is what makes this scriptable at all, and it is also the
-                // claim collaboration makes that plain nesting does not: these two are not parent and
-                // child, they are two members of one hierarchy.
-                .Turn(t => t.ToolCall(
+            // Addressing the root BY NAME is what makes this scriptable at all, and it is also the
+            // claim collaboration makes that plain nesting does not: these two are not parent and
+            // child, they are two members of one hierarchy.
+            .Turn(t =>
+                t.ToolCall(
                     "SendMessage",
-                    new { target = RootName, content = HelperQuestion, msg_type = "question" }))
-                .Turn(t => t.Text(HelperAnswer))
+                    new
+                    {
+                        target = RootName,
+                        content = HelperQuestion,
+                        msg_type = "question",
+                    }
+                )
+            )
+            .Turn(t => t.Text(HelperAnswer))
             .ForRole("lead", ctx => ctx.SystemPromptContains(LeadMarker))
-                .Turn(t => t.ToolCall(
+            .Turn(t =>
+                t.ToolCall(
                     "Agent",
                     new
                     {
@@ -95,10 +104,13 @@ public sealed class SubAgentHierarchyRenderTests
                         name = "helper",
                         role = HelperRole,
                         description = HelperDescription,
-                    }))
-                .Turn(t => t.Text(LeadAnswer))
+                    }
+                )
+            )
+            .Turn(t => t.Text(LeadAnswer))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.ToolCall(
+            .Turn(t =>
+                t.ToolCall(
                     "Agent",
                     new
                     {
@@ -107,22 +119,25 @@ public sealed class SubAgentHierarchyRenderTests
                         name = "lead",
                         role = LeadRole,
                         description = "Owns the auth migration review and delegates repositories.",
-                    }))
-                .Turn(t => t.Text(ParentAnswer))
+                    }
+                )
+            )
+            .Turn(t => t.Text(ParentAnswer))
             .Build();
 
         await using var session = await _fixture.OpenAsync(
             providerMode,
             responder.HandlerFor(providerMode),
-            subAgentFactory: (_, providerAgentFactory) => new SubAgentOptions
-            {
-                Templates = new Dictionary<string, SubAgentTemplate>
+            subAgentFactory: (_, providerAgentFactory) =>
+                new SubAgentOptions
                 {
-                    ["lead"] = Template("Lead", LeadMarker, providerAgentFactory),
-                    ["helper"] = Template("Helper", HelperMarker, providerAgentFactory),
+                    Templates = new Dictionary<string, SubAgentTemplate>
+                    {
+                        ["lead"] = Template("Lead", LeadMarker, providerAgentFactory),
+                        ["helper"] = Template("Helper", HelperMarker, providerAgentFactory),
+                    },
+                    MaxConcurrentSubAgents = 5,
                 },
-                MaxConcurrentSubAgents = 5,
-            },
             settings: CollaborationEnabled()
         );
         var page = session.Page;
@@ -144,13 +159,18 @@ public sealed class SubAgentHierarchyRenderTests
         lead.StructuralDepth.Should().Be(1);
         lead.DelegationDepth.Should().Be(1);
         helper.StructuralDepth.Should().Be(2);
-        helper.DelegationDepth.Should().Be(
-            2, "the helper is a SECOND delegation hop, which only exists under collaboration");
+        helper
+            .DelegationDepth.Should()
+            .Be(2, "the helper is a SECOND delegation hop, which only exists under collaboration");
 
         lead.Badge.Should().Be("· L1/D1");
         helper.Badge.Should().Be("· L2/D2");
-        helper.PaddingLeft.Should().BeGreaterThan(
-            lead.PaddingLeft, "a deeper agent is indented further, which is what makes the tree readable");
+        helper
+            .PaddingLeft.Should()
+            .BeGreaterThan(
+                lead.PaddingLeft,
+                "a deeper agent is indented further, which is what makes the tree readable"
+            );
 
         // A row for an agent this conversation does not own has no task of its own, so the panel shows
         // the ROLE its parent published for it — the only place a human ever reads that text.
@@ -163,13 +183,22 @@ public sealed class SubAgentHierarchyRenderTests
 
         // --- The raw-thread guard, from the client that would be used to bypass it -----------------
         var refusal = await FetchAsync(
-            page, $"/api/conversations/subagent-{helper.AgentId}/messages?viewer={helper.AgentId}");
+            page,
+            $"/api/conversations/subagent-{helper.AgentId}/messages?viewer={helper.AgentId}"
+        );
 
-        refusal.Status.Should().Be(
-            403, "a caller naming the agent it reads as is a machine, and raw agent threads are closed to machines");
-        refusal.Body.Should().NotContainAny(
-            [HelperRole, HelperDescription, HelperAnswer, HelperQuestion],
-            "a refusal must not disclose the name, task, or content of what it refuses");
+        refusal
+            .Status.Should()
+            .Be(
+                403,
+                "a caller naming the agent it reads as is a machine, and raw agent threads are closed to machines"
+            );
+        refusal
+            .Body.Should()
+            .NotContainAny(
+                [HelperRole, HelperDescription, HelperAnswer, HelperQuestion],
+                "a refusal must not disclose the name, task, or content of what it refuses"
+            );
 
         // Control: the SAME url without the machine identity keeps its legacy behaviour, which proves
         // the refusal above is about who asked rather than about the route being broken.
@@ -186,7 +215,8 @@ public sealed class SubAgentHierarchyRenderTests
               const list = await (await fetch('/api/conversations?limit=50')).json();
               return list.length === 1 ? list[0].threadId : '';
             }
-            """);
+            """
+        );
         threadId.Should().NotBeEmpty("exactly one non-agent conversation exists in this session");
 
         // Persisted, never streamed (see the class remarks), so it is waited FOR over HTTP and then
@@ -200,11 +230,11 @@ public sealed class SubAgentHierarchyRenderTests
 
         var pillText = await agentPills.First.InnerTextAsync();
         pillText.Should().Contain("Agent asked", "the pill names what the sender was doing");
-        pillText.Should().Contain(
-            "helper", "delivery is attributed to the grandchild itself, not to the parent that relayed it");
+        pillText
+            .Should()
+            .Contain("helper", "delivery is attributed to the grandchild itself, not to the parent that relayed it");
 
-        await session.SaveSuccessScreenshotAsync(
-            $"SubAgentHierarchyRender.Depths_and_raw_thread_guard_{providerMode}");
+        await session.SaveSuccessScreenshotAsync($"SubAgentHierarchyRender.Depths_and_raw_thread_guard_{providerMode}");
     }
 
     /// <summary>One rendered sub-agent row, as the browser actually laid it out.</summary>
@@ -221,7 +251,8 @@ public sealed class SubAgentHierarchyRenderTests
         string Structural,
         string Delegation,
         string Readable,
-        double PaddingLeft)
+        double PaddingLeft
+    )
     {
         public int StructuralDepth => Depth(Structural, nameof(Structural));
 
@@ -230,8 +261,7 @@ public sealed class SubAgentHierarchyRenderTests
         private int Depth(string raw, string which) =>
             int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var depth)
                 ? depth
-                : throw new InvalidOperationException(
-                    $"Row '{Name}' published no usable {which} depth (was '{raw}').");
+                : throw new InvalidOperationException($"Row '{Name}' published no usable {which} depth (was '{raw}').");
     }
 
     /// <summary>
@@ -256,20 +286,24 @@ public sealed class SubAgentHierarchyRenderTests
                   paddingLeft: row ? parseFloat(getComputedStyle(row).paddingLeft) : 0,
                 };
               }))
-            """);
+            """
+        );
 
         using var doc = JsonDocument.Parse(json);
         return
         [
-            .. doc.RootElement.EnumerateArray().Select(e => new PanelRow(
-                e.GetProperty("agentId").GetString()!,
-                e.GetProperty("name").GetString()!,
-                e.GetProperty("task").GetString()!,
-                e.GetProperty("badge").GetString()!,
-                e.GetProperty("structural").GetString()!,
-                e.GetProperty("delegation").GetString()!,
-                e.GetProperty("readable").GetString()!,
-                e.GetProperty("paddingLeft").GetDouble()))
+            .. doc
+                .RootElement.EnumerateArray()
+                .Select(e => new PanelRow(
+                    e.GetProperty("agentId").GetString()!,
+                    e.GetProperty("name").GetString()!,
+                    e.GetProperty("task").GetString()!,
+                    e.GetProperty("badge").GetString()!,
+                    e.GetProperty("structural").GetString()!,
+                    e.GetProperty("delegation").GetString()!,
+                    e.GetProperty("readable").GetString()!,
+                    e.GetProperty("paddingLeft").GetDouble()
+                )),
         ];
     }
 
@@ -278,10 +312,12 @@ public sealed class SubAgentHierarchyRenderTests
     {
         var row = rows.FirstOrDefault(r => r.Name.StartsWith(name, StringComparison.Ordinal));
 
-        row.Should().NotBeNull(
-            "'{0}' must be rendered; the panel showed: {1}",
-            name,
-            string.Join(" | ", rows.Select(r => $"{r.Name}/{r.Structural}/{r.Delegation}")));
+        row.Should()
+            .NotBeNull(
+                "'{0}' must be rendered; the panel showed: {1}",
+                name,
+                string.Join(" | ", rows.Select(r => $"{r.Name}/{r.Structural}/{r.Delegation}"))
+            );
 
         return row!;
     }
@@ -298,12 +334,14 @@ public sealed class SubAgentHierarchyRenderTests
               return JSON.stringify({ status: response.status, body: await response.text() });
             }
             """,
-            url);
+            url
+        );
 
         using var doc = JsonDocument.Parse(json);
         return new FetchResult(
             doc.RootElement.GetProperty("status").GetInt32(),
-            doc.RootElement.GetProperty("body").GetString()!);
+            doc.RootElement.GetProperty("body").GetString()!
+        );
     }
 
     /// <summary>
@@ -312,8 +350,7 @@ public sealed class SubAgentHierarchyRenderTests
     /// arrival cannot be pinned to an instant — but it can be waited FOR. Each attempt is a real awaited
     /// request; the timeout is a safety net, not a sleep.
     /// </summary>
-    private static async Task WaitForPersistedAgentMessageAsync(
-        IPage page, string threadId, TimeSpan timeout)
+    private static async Task WaitForPersistedAgentMessageAsync(IPage page, string threadId, TimeSpan timeout)
     {
         using var cts = new CancellationTokenSource(timeout);
         var last = "<none>";
@@ -331,11 +368,15 @@ public sealed class SubAgentHierarchyRenderTests
         }
 
         throw new TimeoutException(
-            $"No AgentMessage reached the root conversation within {timeout}. Last body: {last}");
+            $"No AgentMessage reached the root conversation within {timeout}. Last body: {last}"
+        );
     }
 
     private static SubAgentTemplate Template(
-        string name, string systemPrompt, Func<IStreamingAgent> providerAgentFactory) =>
+        string name,
+        string systemPrompt,
+        Func<IStreamingAgent> providerAgentFactory
+    ) =>
         new()
         {
             Name = name,

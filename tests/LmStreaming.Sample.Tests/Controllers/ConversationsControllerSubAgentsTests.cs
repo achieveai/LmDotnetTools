@@ -23,7 +23,8 @@ public sealed class ConversationsControllerSubAgentsTests
 
     private static ConversationsController CreateController(
         MultiTurnAgentPool pool,
-        WorkflowRunRegistry workflowRunRegistry)
+        WorkflowRunRegistry workflowRunRegistry
+    )
     {
         return CreateController(pool, workflowRunRegistry, Mock.Of<IConversationStore>());
     }
@@ -31,7 +32,8 @@ public sealed class ConversationsControllerSubAgentsTests
     private static ConversationsController CreateController(
         MultiTurnAgentPool pool,
         WorkflowRunRegistry workflowRunRegistry,
-        IConversationStore store)
+        IConversationStore store
+    )
     {
         return CreateController(pool, workflowRunRegistry, store, new SubAgentScanCoverageCache());
     }
@@ -40,7 +42,8 @@ public sealed class ConversationsControllerSubAgentsTests
         MultiTurnAgentPool pool,
         WorkflowRunRegistry workflowRunRegistry,
         IConversationStore store,
-        SubAgentScanCoverageCache cache)
+        SubAgentScanCoverageCache cache
+    )
     {
         return new ConversationsController(
             store,
@@ -55,21 +58,24 @@ public sealed class ConversationsControllerSubAgentsTests
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             cache,
-            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance));
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance)
+        );
     }
 
     private static MultiTurnAgentPool CreateFakeAgentPool()
     {
         return new MultiTurnAgentPool(
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
     }
 
     private static MultiTurnAgentPool CreatePoolReturning(IMultiTurnAgent agent)
     {
         return new MultiTurnAgentPool(
             (_, _, _) => new MultiTurnAgentPool.AgentCreationResult(agent),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
     }
 
     [Fact]
@@ -94,9 +100,7 @@ public sealed class ConversationsControllerSubAgentsTests
         // 404 — so the client's 3s sub-agent poll doesn't spuriously log "Failed to list sub-agents".
         var threadId = "thread-known-idle";
         var store = new InMemoryConversationStore();
-        await store.SaveMetadataAsync(
-            threadId,
-            new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 });
+        await store.SaveMetadataAsync(threadId, new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 });
 
         await using var pool = CreateFakeAgentPool(); // no live loop for this thread
         var controller = CreateController(pool, new WorkflowRunRegistry(), store);
@@ -119,7 +123,10 @@ public sealed class ConversationsControllerSubAgentsTests
         const string reusedThreadId = "thread-reused-after-delete";
         const string oldChildThreadId = "subagent-old-child";
         var store = new InMemoryConversationStore();
-        await store.SaveMetadataAsync(reusedThreadId, new ThreadMetadata { ThreadId = reusedThreadId, LastUpdated = 0 });
+        await store.SaveMetadataAsync(
+            reusedThreadId,
+            new ThreadMetadata { ThreadId = reusedThreadId, LastUpdated = 0 }
+        );
         await store.SaveMetadataAsync(
             oldChildThreadId,
             new ThreadMetadata
@@ -136,8 +143,11 @@ public sealed class ConversationsControllerSubAgentsTests
                         Status: SubAgentStatus.Completed,
                         ThreadId: oldChildThreadId,
                         LastActivityUtc: DateTimeOffset.UtcNow,
-                        TerminalAtUtc: DateTimeOffset.UtcNow)),
-            });
+                        TerminalAtUtc: DateTimeOffset.UtcNow
+                    )
+                ),
+            }
+        );
         var countingStore = new CountingConversationStore(store);
         var sharedCache = new SubAgentScanCoverageCache();
 
@@ -148,7 +158,8 @@ public sealed class ConversationsControllerSubAgentsTests
 
         var before = await controller.ListSubAgents(reusedThreadId);
         var summariesBefore = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(
-            Assert.IsType<OkObjectResult>(before).Value);
+            Assert.IsType<OkObjectResult>(before).Value
+        );
         summariesBefore.Should().ContainSingle(s => s.AgentId == "old-child");
         countingStore.ListThreadsCallCount.Should().Be(1);
 
@@ -162,19 +173,29 @@ public sealed class ConversationsControllerSubAgentsTests
         await store.DeleteThreadAsync(oldChildThreadId, CancellationToken.None);
 
         // A fresh conversation is provisioned reusing the SAME thread id.
-        await store.SaveMetadataAsync(reusedThreadId, new ThreadMetadata { ThreadId = reusedThreadId, LastUpdated = 0 });
+        await store.SaveMetadataAsync(
+            reusedThreadId,
+            new ThreadMetadata { ThreadId = reusedThreadId, LastUpdated = 0 }
+        );
 
         var after = await controller.ListSubAgents(reusedThreadId);
         var summariesAfter = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(
-            Assert.IsType<OkObjectResult>(after).Value);
+            Assert.IsType<OkObjectResult>(after).Value
+        );
 
-        summariesAfter.Should().BeEmpty(
-            "the deleted conversation's stale recovered child must not resurrect for a thread id reused "
-                + "by a fresh conversation");
-        countingStore.ListThreadsCallCount.Should().Be(
-            2,
-            "Delete must Forget() the cache entry so the reused thread id actually rescans instead of "
-                + "reusing the deleted conversation's cached rows under the same NoLiveManager owner");
+        summariesAfter
+            .Should()
+            .BeEmpty(
+                "the deleted conversation's stale recovered child must not resurrect for a thread id reused "
+                    + "by a fresh conversation"
+            );
+        countingStore
+            .ListThreadsCallCount.Should()
+            .Be(
+                2,
+                "Delete must Forget() the cache entry so the reused thread id actually rescans instead of "
+                    + "reusing the deleted conversation's cached rows under the same NoLiveManager owner"
+            );
     }
 
     [Fact]
@@ -219,16 +240,25 @@ public sealed class ConversationsControllerSubAgentsTests
             BlockingProvider(),
             registry,
             threadId: threadId,
-            subAgentOptions: subAgentOptions);
+            subAgentOptions: subAgentOptions
+        );
 
         await using var pool = CreatePoolReturning(loop);
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         _ = pool.GetOrCreateAgent(threadId, mode);
 
         var alphaJson = await loop.SubAgentManager!.SpawnAsync(
-            "worker", "first task", name: "alpha", runInBackground: true);
+            "worker",
+            "first task",
+            name: "alpha",
+            runInBackground: true
+        );
         var betaJson = await loop.SubAgentManager!.SpawnAsync(
-            "worker", "second task", name: "beta", runInBackground: true);
+            "worker",
+            "second task",
+            name: "beta",
+            runInBackground: true
+        );
 
         var alphaId = ParseAgentId(alphaJson);
         var betaId = ParseAgentId(betaJson);
@@ -247,10 +277,16 @@ public sealed class ConversationsControllerSubAgentsTests
         alpha.Task.Should().Be("first task");
         alpha.Status.Should().Be("running");
         alpha.ThreadId.Should().Be($"subagent-{alphaId}");
-        alpha.GetType().GetProperty("EffectiveModelId")
-            .Should().NotBeNull("the presentation DTO must expose the child model actually selected at spawn");
-        alpha.GetType().GetProperty("ModelSelectionSource")
-            .Should().NotBeNull("the UI must distinguish effective routing from raw controller arguments");
+        alpha
+            .GetType()
+            .GetProperty("EffectiveModelId")
+            .Should()
+            .NotBeNull("the presentation DTO must expose the child model actually selected at spawn");
+        alpha
+            .GetType()
+            .GetProperty("ModelSelectionSource")
+            .Should()
+            .NotBeNull("the UI must distinguish effective routing from raw controller arguments");
 
         var beta = summaries.Single(s => s.AgentId == betaId);
         beta.Name.Should().Be("beta");
@@ -294,7 +330,8 @@ public sealed class ConversationsControllerSubAgentsTests
                         Status = "completed",
                         ThreadId = "subagent-del-1",
                     },
-                ]);
+                ]
+            );
 
             // Pool has NO live loop for this thread (restart evicted it) — TryGet returns false.
             await using var pool = CreateFakeAgentPool();
@@ -350,8 +387,11 @@ public sealed class ConversationsControllerSubAgentsTests
                         Status: SubAgentStatus.Completed,
                         ThreadId: $"subagent-{childId}",
                         LastActivityUtc: DateTimeOffset.UtcNow,
-                        TerminalAtUtc: DateTimeOffset.UtcNow)),
-            });
+                        TerminalAtUtc: DateTimeOffset.UtcNow
+                    )
+                ),
+            }
+        );
 
         // Pool has NO live loop for this thread (restart evicted it) — TryGet returns false, so
         // BuildAsync's only route to this child is the persisted-provenance scan.
@@ -383,17 +423,21 @@ public sealed class ConversationsControllerSubAgentsTests
     {
         var provider = new Mock<IStreamingAgent>();
         provider
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns((IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken ct) =>
-                Task.FromResult(BlockingStream(ct)));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                (IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken ct) =>
+                    Task.FromResult(BlockingStream(ct))
+            );
         return provider.Object;
     }
 
-    private static async IAsyncEnumerable<IMessage> BlockingStream(
-        [EnumeratorCancellation] CancellationToken ct)
+    private static async IAsyncEnumerable<IMessage> BlockingStream([EnumeratorCancellation] CancellationToken ct)
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         yield break;

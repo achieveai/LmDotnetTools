@@ -63,7 +63,8 @@ public sealed class WorkspaceMarketplaceSelectionTests
                 responder.HandlerFor("test-anthropic"),
                 sandboxGatewayHandler: gateway,
                 sandboxOptions: sandboxOptions,
-                catalogClient: FakeMarketplaceCatalogClient.WithAliases("ClaudePlugins", "superpowers"));
+                catalogClient: FakeMarketplaceCatalogClient.WithAliases("ClaudePlugins", "superpowers")
+            );
             var page = session.Page;
 
             // Create a workspace that enables ONLY a specific subset of marketplaces. Same-origin POST,
@@ -84,7 +85,8 @@ public sealed class WorkspaceMarketplaceSelectionTests
                     const ws = await res.json();
                     return ws.id;
                 }
-                """);
+                """
+            );
             workspaceId.Should().NotBeNullOrWhiteSpace();
 
             // Reload so the selector lists the freshly-created workspace, then pick it.

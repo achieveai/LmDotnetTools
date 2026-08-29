@@ -56,9 +56,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
     private readonly ILogger<LifecycleDeliveryPipeline> _logger;
 
     private readonly Channel<LifecycleEventEnvelope> _intake;
-    private readonly ConcurrentDictionary<string, SubscriberQueue> _subscribers = new(
-        StringComparer.Ordinal
-    );
+    private readonly ConcurrentDictionary<string, SubscriberQueue> _subscribers = new(StringComparer.Ordinal);
 
     /// <summary>
     /// When each quarantined destination becomes eligible again, keyed by
@@ -164,10 +162,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
     /// <param name="envelope">The event to deliver.</param>
     /// <param name="cancellationToken">Ignored; see the remarks above.</param>
     /// <returns>A completed task.</returns>
-    public ValueTask PublishAsync(
-        LifecycleEventEnvelope envelope,
-        CancellationToken cancellationToken = default
-    )
+    public ValueTask PublishAsync(LifecycleEventEnvelope envelope, CancellationToken cancellationToken = default)
     {
         // Null and disabled are both silently ignored rather than thrown: this method is on the
         // agent's hot path and its contract is that a lifecycle problem never becomes a run failure.
@@ -223,11 +218,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
 
         if (
             !_subscribers.TryGetValue(subscriptionId, out var queue)
-            || !string.Equals(
-                queue.Subscription.Owner.Value,
-                owner.Value,
-                StringComparison.Ordinal
-            )
+            || !string.Equals(queue.Subscription.Owner.Value, owner.Value, StringComparison.Ordinal)
         )
         {
             return;
@@ -285,11 +276,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
 
         var drain = DrainAsync();
         using var drainWindow = new CancellationTokenSource();
-        var drainDeadline = Task.Delay(
-            _options.ShutdownDrainTimeout,
-            _timeProvider,
-            drainWindow.Token
-        );
+        var drainDeadline = Task.Delay(_options.ShutdownDrainTimeout, _timeProvider, drainWindow.Token);
 
         if (await Task.WhenAny(drain, drainDeadline) != drain)
         {
@@ -354,17 +341,11 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
         {
             // The pump dying silently would look exactly like "no events are happening", which is the
             // hardest failure mode to notice from the outside.
-            _logger.LogError(
-                ex,
-                "Lifecycle delivery pump stopped unexpectedly; no further events will be dispatched"
-            );
+            _logger.LogError(ex, "Lifecycle delivery pump stopped unexpectedly; no further events will be dispatched");
         }
     }
 
-    private async Task DispatchAsync(
-        LifecycleEventEnvelope lifecycleEvent,
-        CancellationToken cancellationToken
-    )
+    private async Task DispatchAsync(LifecycleEventEnvelope lifecycleEvent, CancellationToken cancellationToken)
     {
         LifecycleOwnerKey? owner;
         try
@@ -508,10 +489,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
             queue.Abandon();
         }
 
-        queue.Worker = Task.Run(
-            () => RunSubscriberAsync(queue, _shutdown.Token),
-            CancellationToken.None
-        );
+        queue.Worker = Task.Run(() => RunSubscriberAsync(queue, _shutdown.Token), CancellationToken.None);
         _subscribers[subscription.SubscriptionId] = queue;
 
         if (_subscribers.Count > _options.MaxSubscriptions)
@@ -540,11 +518,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
             bool stillRegistered;
             try
             {
-                stillRegistered = _registry.TryGet(
-                    subscription.Owner,
-                    subscription.SubscriptionId,
-                    out _
-                );
+                stillRegistered = _registry.TryGet(subscription.Owner, subscription.SubscriptionId, out _);
             }
             catch (Exception ex)
             {
@@ -603,11 +577,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
         }
     }
 
-    private async Task DeliverAsync(
-        SubscriberQueue queue,
-        PendingDelivery pending,
-        CancellationToken shutdownToken
-    )
+    private async Task DeliverAsync(SubscriberQueue queue, PendingDelivery pending, CancellationToken shutdownToken)
     {
         var deadline = _timeProvider.GetUtcNow() + _options.DeliveryDeadline;
 
@@ -643,8 +613,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
 
             // The overall deadline is enforced by clamping each attempt to what is left of it, so a
             // long attempt can never overshoot the budget and no second timer is needed to notice.
-            var attemptTimeout =
-                _options.AttemptTimeout < remaining ? _options.AttemptTimeout : remaining;
+            var attemptTimeout = _options.AttemptTimeout < remaining ? _options.AttemptTimeout : remaining;
 
             var result = await AttemptAsync(queue, pending, attemptTimeout, shutdownToken);
             if (result is null)
@@ -706,19 +675,11 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
     )
     {
         using var attemptWindow = new CancellationTokenSource(attemptTimeout, _timeProvider);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-            shutdownToken,
-            attemptWindow.Token
-        );
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(shutdownToken, attemptWindow.Token);
 
         try
         {
-            return await _sender.SendAsync(
-                queue.Subscription,
-                pending.DeliveryId,
-                pending.Body,
-                linked.Token
-            );
+            return await _sender.SendAsync(queue.Subscription, pending.DeliveryId, pending.Body, linked.Token);
         }
         catch (OperationCanceledException) when (!shutdownToken.IsCancellationRequested)
         {
@@ -769,12 +730,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
         return TimeSpan.FromMilliseconds(ceiling * (0.5 + (Random.Shared.NextDouble() * 0.5)));
     }
 
-    private void OnDeliveryFailed(
-        SubscriberQueue queue,
-        PendingDelivery pending,
-        string reason,
-        int attempts
-    )
+    private void OnDeliveryFailed(SubscriberQueue queue, PendingDelivery pending, string reason, int attempts)
     {
         var consecutive = queue.OnDeliveryFailed();
         _logger.LogWarning(
@@ -927,11 +883,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
         private int _consecutiveFailures;
         private volatile bool _abandoned;
 
-        internal SubscriberQueue(
-            LifecycleSubscription subscription,
-            int maxQueuedDeliveries,
-            long maxQueuedBytes
-        )
+        internal SubscriberQueue(LifecycleSubscription subscription, int maxQueuedDeliveries, long maxQueuedBytes)
         {
             _subscription = subscription;
             _maxQueuedBytes = maxQueuedBytes;
@@ -960,8 +912,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
 
         internal Task Worker { get; set; } = Task.CompletedTask;
 
-        internal void Refresh(LifecycleSubscription subscription) =>
-            Volatile.Write(ref _subscription, subscription);
+        internal void Refresh(LifecycleSubscription subscription) => Volatile.Write(ref _subscription, subscription);
 
         internal long NextDeliverySequence() => Interlocked.Increment(ref _deliverySequence);
 
@@ -1025,11 +976,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
             var now = _timeProvider.GetUtcNow().UtcTicks;
             var next = Interlocked.Read(ref _nextReportTicks);
 
-            if (
-                now < next
-                || Interlocked.CompareExchange(ref _nextReportTicks, now + _intervalTicks, next)
-                    != next
-            )
+            if (now < next || Interlocked.CompareExchange(ref _nextReportTicks, now + _intervalTicks, next) != next)
             {
                 _ = Interlocked.Increment(ref _suppressed);
                 suppressedSinceLastReport = 0;

@@ -4,9 +4,10 @@ using McpServer.AspNetCore.Sample.Tools;
 var builder = WebApplication.CreateBuilder(args);
 
 // Parse port from command line arguments (default: 5123)
-var port = args.Contains("--port") && args.Length > Array.IndexOf(args, "--port") + 1
-    ? int.Parse(args[Array.IndexOf(args, "--port") + 1])
-    : 5123;
+var port =
+    args.Contains("--port") && args.Length > Array.IndexOf(args, "--port") + 1
+        ? int.Parse(args[Array.IndexOf(args, "--port") + 1])
+        : 5123;
 
 Console.WriteLine($"🚀 Starting MCP Server on http://localhost:{port}/mcp");
 
@@ -32,9 +33,7 @@ builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.AllowAnyOrigin()
-              .AllowAnyMethod()
-              .AllowAnyHeader();
+        policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
     });
 });
 
@@ -47,17 +46,23 @@ app.UseCors();
 app.MapMcpFunctionProviders();
 
 // Add a health check endpoint
-app.MapGet("/health", () => Results.Ok(new
-{
-    status = "healthy",
-    message = "MCP Server is running",
-    endpoint = $"http://localhost:{port}/mcp",
-    mcp_config = new
-    {
-        command = "npx",
-        args = new[] { "mcp-remote@latest", $"http://localhost:{port}/mcp" }
-    }
-}));
+app.MapGet(
+    "/health",
+    () =>
+        Results.Ok(
+            new
+            {
+                status = "healthy",
+                message = "MCP Server is running",
+                endpoint = $"http://localhost:{port}/mcp",
+                mcp_config = new
+                {
+                    command = "npx",
+                    args = new[] { "mcp-remote@latest", $"http://localhost:{port}/mcp" },
+                },
+            }
+        )
+);
 
 // Display startup information
 app.Lifetime.ApplicationStarted.Register(() =>

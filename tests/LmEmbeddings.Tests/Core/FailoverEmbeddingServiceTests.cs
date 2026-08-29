@@ -21,7 +21,7 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         {
             PrimaryRequestTimeout = TimeSpan.FromSeconds(2),
             RecoveryInterval = TimeSpan.FromMilliseconds(100),
-            FailoverOnHttpError = true
+            FailoverOnHttpError = true,
         };
     }
 
@@ -34,8 +34,12 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
 
     private FailoverEmbeddingService CreateService(FailoverOptions? options = null)
     {
-        return new(_primaryMock.Object, _backupMock.Object, options ?? DefaultOptions(),
-            LoggerFactory.CreateLogger<FailoverEmbeddingService>());
+        return new(
+            _primaryMock.Object,
+            _backupMock.Object,
+            options ?? DefaultOptions(),
+            LoggerFactory.CreateLogger<FailoverEmbeddingService>()
+        );
     }
 
     [Fact]
@@ -43,7 +47,8 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     public async Task GetEmbeddingAsync_PrimarySucceeds_ReturnsPrimaryResult()
     {
         LogTestStart();
-        _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([1.0f, 2.0f]);
 
         var service = CreateService();
@@ -65,17 +70,21 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         {
             PrimaryRequestTimeout = TimeSpan.FromMilliseconds(50),
             RecoveryInterval = TimeSpan.FromMilliseconds(100),
-            FailoverOnHttpError = true
+            FailoverOnHttpError = true,
         };
 
-        _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(async (string s, CancellationToken ct) =>
-            {
-                await Task.Delay(2000, ct);
-                return [1.0f];
-            });
+        _primaryMock
+            .Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(
+                async (string s, CancellationToken ct) =>
+                {
+                    await Task.Delay(2000, ct);
+                    return [1.0f];
+                }
+            );
 
-        _backupMock.Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _backupMock
+            .Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([3.0f, 4.0f]);
 
         var service = CreateService(options);
@@ -92,10 +101,12 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     public async Task GetEmbeddingAsync_PrimaryHttpError_FailsOverToBackup()
     {
         LogTestStart();
-        _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("500 Internal Server Error"));
 
-        _backupMock.Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _backupMock
+            .Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([5.0f]);
 
         var service = CreateService();
@@ -111,10 +122,12 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     public async Task GetEmbeddingAsync_CooldownWindow_RoutesDirectlyToBackup()
     {
         LogTestStart();
-        _primaryMock.SetupSequence(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .SetupSequence(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Throws(new HttpRequestException("Error"));
 
-        _backupMock.Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _backupMock
+            .Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([1.0f]);
 
         var service = CreateService();
@@ -125,7 +138,10 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         await service.GetEmbeddingAsync("test2");
 
         _primaryMock.Verify(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
-        _backupMock.Verify(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _backupMock.Verify(
+            b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2)
+        );
         LogTestEnd();
     }
 
@@ -140,14 +156,16 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
             PrimaryRequestTimeout = TimeSpan.FromSeconds(2),
             RecoveryInterval = TimeSpan.FromMilliseconds(50),
             FailoverOnHttpError = true,
-            TimeProvider = timeProvider
+            TimeProvider = timeProvider,
         };
 
-        _primaryMock.SetupSequence(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .SetupSequence(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Throws(new HttpRequestException("Error"))
             .ReturnsAsync([2.0f]);
 
-        _backupMock.Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _backupMock
+            .Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([1.0f]);
 
         var service = CreateService(options);
@@ -161,7 +179,10 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
 
         LogData("ProbeResult", result);
         Assert.Equal(2.0f, result[0]);
-        _primaryMock.Verify(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _primaryMock.Verify(
+            p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2)
+        );
         LogTestEnd();
     }
 
@@ -170,16 +191,17 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     public async Task GetEmbeddingAsync_BothFail_ThrowsPrimaryBackupFailoverException()
     {
         LogTestStart();
-        _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("Primary Error"));
 
-        _backupMock.Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _backupMock
+            .Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("Backup Error"));
 
         var service = CreateService();
 
-        var ex = await Assert.ThrowsAsync<PrimaryBackupFailoverException>(
-            () => service.GetEmbeddingAsync("test"));
+        var ex = await Assert.ThrowsAsync<PrimaryBackupFailoverException>(() => service.GetEmbeddingAsync("test"));
         Assert.NotNull(ex.PrimaryException);
         Assert.NotNull(ex.BackupException);
         LogData("PrimaryException", ex.PrimaryException.Message);
@@ -192,7 +214,8 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     public async Task GetEmbeddingAsync_CallerCancellation_DoesNotChangeState()
     {
         LogTestStart();
-        _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new OperationCanceledException());
 
         var service = CreateService();
@@ -200,13 +223,14 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         cts.Cancel();
 
         Trace("Calling with already-cancelled token");
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => service.GetEmbeddingAsync("test", cts.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.GetEmbeddingAsync("test", cts.Token));
 
         _backupMock.Verify(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
 
         Trace("Verifying primary is still used after caller cancellation");
-        _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync([1.0f]);
+        _primaryMock
+            .Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([1.0f]);
         await service.GetEmbeddingAsync("test2");
         _primaryMock.Verify(p => p.GetEmbeddingAsync("test2", It.IsAny<CancellationToken>()), Times.Once);
         LogTestEnd();
@@ -221,10 +245,11 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         {
             PrimaryRequestTimeout = TimeSpan.FromSeconds(2),
             RecoveryInterval = TimeSpan.FromMilliseconds(100),
-            FailoverOnHttpError = false
+            FailoverOnHttpError = false,
         };
 
-        _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("500"));
 
         var service = CreateService(options);
@@ -290,17 +315,15 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     public async Task ResetToPrimary_AfterFailover_RestoresPrimary()
     {
         LogTestStart();
-        var options = new FailoverOptions
-        {
-            PrimaryRequestTimeout = TimeSpan.FromSeconds(2),
-            RecoveryInterval = null
-        };
+        var options = new FailoverOptions { PrimaryRequestTimeout = TimeSpan.FromSeconds(2), RecoveryInterval = null };
 
-        _primaryMock.SetupSequence(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .SetupSequence(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Throws(new HttpRequestException("Error"))
             .ReturnsAsync([2.0f]);
 
-        _backupMock.Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _backupMock
+            .Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([1.0f]);
 
         var service = CreateService(options);
@@ -310,7 +333,10 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
 
         Trace("Second call should route to backup (no recovery interval)");
         await service.GetEmbeddingAsync("test2");
-        _backupMock.Verify(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _backupMock.Verify(
+            b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2)
+        );
 
         Trace("Manual reset to primary");
         service.ResetToPrimary();
@@ -319,7 +345,10 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         var result = await service.GetEmbeddingAsync("test3");
         LogData("ResultAfterReset", result);
         Assert.Equal(2.0f, result[0]);
-        _primaryMock.Verify(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _primaryMock.Verify(
+            p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2)
+        );
         LogTestEnd();
     }
 
@@ -334,13 +363,15 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
             PrimaryRequestTimeout = TimeSpan.FromSeconds(2),
             RecoveryInterval = TimeSpan.FromMilliseconds(50),
             FailoverOnHttpError = true,
-            TimeProvider = timeProvider
+            TimeProvider = timeProvider,
         };
 
-        _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("Error"));
 
-        _backupMock.Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _backupMock
+            .Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([1.0f]);
 
         var service = CreateService(options);
@@ -348,18 +379,29 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         Trace("First call triggers failover");
         await service.GetEmbeddingAsync("test1");
 
-        Trace("Advance the fake clock past the cooldown, then probe (which will also fail). "
-            + "Deterministic - no real wait racing the 50ms cooldown against a starved CI runner.");
+        Trace(
+            "Advance the fake clock past the cooldown, then probe (which will also fail). "
+                + "Deterministic - no real wait racing the 50ms cooldown against a starved CI runner."
+        );
         timeProvider.Advance(TimeSpan.FromMilliseconds(100));
         await service.GetEmbeddingAsync("test2");
 
         Trace("Primary was tried twice (initial + probe), both failed");
-        _primaryMock.Verify(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _primaryMock.Verify(
+            p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2)
+        );
 
         Trace("Immediately call again - should route to backup without probing (new cooldown window)");
         await service.GetEmbeddingAsync("test3");
-        _primaryMock.Verify(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
-        _backupMock.Verify(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(3));
+        _primaryMock.Verify(
+            p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2)
+        );
+        _backupMock.Verify(
+            b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(3)
+        );
         LogTestEnd();
     }
 
@@ -368,10 +410,12 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     public async Task GetEmbeddingAsync_PrimaryThrowsTimeoutException_FailsOverToBackup()
     {
         LogTestStart();
-        _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new TimeoutException("Request timed out"));
 
-        _backupMock.Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _backupMock
+            .Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([5.0f]);
 
         var service = CreateService();
@@ -392,13 +436,15 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         {
             PrimaryRequestTimeout = TimeSpan.FromSeconds(2),
             RecoveryInterval = null,
-            FailoverOnHttpError = true
+            FailoverOnHttpError = true,
         };
 
-        _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("Error"));
 
-        _backupMock.Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _backupMock
+            .Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([1.0f]);
 
         var service = CreateService(options);
@@ -412,7 +458,10 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         Trace("Should still route to backup - no automatic recovery");
         await service.GetEmbeddingAsync("test2");
         _primaryMock.Verify(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
-        _backupMock.Verify(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _backupMock.Verify(
+            b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2)
+        );
         LogTestEnd();
     }
 
@@ -421,7 +470,8 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     public async Task GetEmbeddingAsync_NonFailoverException_PropagatesWithoutFailover()
     {
         LogTestStart();
-        _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Deserialization error"));
 
         var service = CreateService();
@@ -431,7 +481,8 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         _backupMock.Verify(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
 
         Trace("Primary should be marked unhealthy, so next call routes to backup");
-        _backupMock.Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _backupMock
+            .Setup(b => b.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([1.0f]);
         await service.GetEmbeddingAsync("test2");
         _backupMock.Verify(b => b.GetEmbeddingAsync("test2", It.IsAny<CancellationToken>()), Times.Once);
@@ -444,7 +495,8 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     {
         LogTestStart();
         var expectedResponse = new EmbeddingResponse { Embeddings = [], Model = "test" };
-        _primaryMock.Setup(p => p.GenerateEmbeddingsAsync(It.IsAny<EmbeddingRequest>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .Setup(p => p.GenerateEmbeddingsAsync(It.IsAny<EmbeddingRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(expectedResponse);
 
         var service = CreateService();
@@ -452,7 +504,10 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         var result = await service.GenerateEmbeddingsAsync(request);
 
         Assert.Equal(expectedResponse, result);
-        _primaryMock.Verify(p => p.GenerateEmbeddingsAsync(It.IsAny<EmbeddingRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+        _primaryMock.Verify(
+            p => p.GenerateEmbeddingsAsync(It.IsAny<EmbeddingRequest>(), It.IsAny<CancellationToken>()),
+            Times.Once
+        );
         LogTestEnd();
     }
 
@@ -462,7 +517,8 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     {
         LogTestStart();
         var expectedResponse = new EmbeddingResponse { Embeddings = [], Model = "test" };
-        _primaryMock.Setup(p => p.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _primaryMock
+            .Setup(p => p.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(expectedResponse);
 
         var service = CreateService();
@@ -479,8 +535,7 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     {
         LogTestStart();
         IReadOnlyList<string> expectedModels = ["model-a", "model-b"];
-        _primaryMock.Setup(p => p.GetAvailableModelsAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(expectedModels);
+        _primaryMock.Setup(p => p.GetAvailableModelsAsync(It.IsAny<CancellationToken>())).ReturnsAsync(expectedModels);
 
         var service = CreateService();
         var result = await service.GetAvailableModelsAsync();

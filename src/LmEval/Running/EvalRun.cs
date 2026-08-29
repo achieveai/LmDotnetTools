@@ -182,8 +182,7 @@ public sealed record EvalRun
     /// Conditional mean over scored items. <b>Null</b> when nothing was scored — not zero, which
     /// would read as a corpus of uniformly worst answers.
     /// </summary>
-    public double? MeanScore =>
-        ScoredScores.Count == 0 ? null : ScoredScores.Average();
+    public double? MeanScore => ScoredScores.Count == 0 ? null : ScoredScores.Average();
 
     /// <summary>
     /// Conditional 10th percentile over scored items, by nearest rank on the ascending order:
@@ -212,16 +211,13 @@ public sealed record EvalRun
     /// still in the denominator.
     /// </summary>
     public double PassRate =>
-        (double)
-            Items.Count(i => i.IsScored && i.Verdict?.Outcome == VerdictOutcome.Pass)
-        / CorpusSize;
+        (double)Items.Count(i => i.IsScored && i.Verdict?.Outcome == VerdictOutcome.Pass) / CorpusSize;
 
     /// <summary>
     /// Items the panel could not decide, over <see cref="CorpusSize"/>. A run where the panel could
     /// not decide on 30% of items is not a clean result even if the remaining 70% look good.
     /// </summary>
-    public int NoDecisionCount =>
-        Items.Count(i => i.Verdict?.Outcome == VerdictOutcome.NoDecision);
+    public int NoDecisionCount => Items.Count(i => i.Verdict?.Outcome == VerdictOutcome.NoDecision);
 
     /// <summary>The no-decision count as a fraction of the corpus.</summary>
     public double NoDecisionRate => (double)NoDecisionCount / CorpusSize;
@@ -236,15 +232,13 @@ public sealed record EvalRun
     /// row that ends up Pass or Fail — is in it.
     /// </para>
     /// </summary>
-    public int StraddleCount =>
-        Items.Count(i => TieBreakRules.IsStraddle(i.Verdict?.TieBreakRule));
+    public int StraddleCount => Items.Count(i => TieBreakRules.IsStraddle(i.Verdict?.TieBreakRule));
 
     /// <summary>The straddle count as a fraction of the corpus.</summary>
     public double StraddleRate => (double)StraddleCount / CorpusSize;
 
     /// <summary>Straddles the arbiter decided.</summary>
-    public int ArbiterResolvedStraddles =>
-        Items.Count(i => TieBreakRules.IsArbiterResolved(i.Verdict?.TieBreakRule));
+    public int ArbiterResolvedStraddles => Items.Count(i => TieBreakRules.IsArbiterResolved(i.Verdict?.TieBreakRule));
 
     /// <summary>Straddles left standing as a split.</summary>
     public int UnresolvedStraddles => StraddleCount - ArbiterResolvedStraddles;
@@ -273,15 +267,13 @@ public sealed record EvalRun
     /// has no verdict at all and is counted by <see cref="FaultedCount"/>, not here.
     /// </para>
     /// </summary>
-    public int DegradedVerdictCount =>
-        Items.Count(i => i.Verdict is { Degradation: not PanelDegradation.None });
+    public int DegradedVerdictCount => Items.Count(i => i.Verdict is { Degradation: not PanelDegradation.None });
 
     /// <summary>
     /// Rows excluded because the candidate declared no generator family, so the generator-exclusion
     /// filter never ran on them.
     /// </summary>
-    public int UnknownGeneratorFamilyCount =>
-        Items.Count(i => i.Exclusion == ScoreExclusion.UnknownGeneratorFamily);
+    public int UnknownGeneratorFamilyCount => Items.Count(i => i.Exclusion == ScoreExclusion.UnknownGeneratorFamily);
 
     /// <summary>Rows a gate short-circuited before any judge ran.</summary>
     public int GateRejectedCount => Items.Count(i => i.Exclusion == ScoreExclusion.GateRejected);
@@ -299,9 +291,7 @@ public sealed record EvalRun
     /// </para>
     /// </summary>
     public int InconclusiveGateCount =>
-        Items.Count(i =>
-            i.Verdict?.GateDecisions.Any(g => g.Outcome == GateOutcome.Inconclusive) == true
-        );
+        Items.Count(i => i.Verdict?.GateDecisions.Any(g => g.Outcome == GateOutcome.Inconclusive) == true);
 
     /// <summary>
     /// The impaired-item count as a fraction of the corpus — the gate path's counterpart to

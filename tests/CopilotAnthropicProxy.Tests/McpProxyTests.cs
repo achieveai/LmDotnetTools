@@ -103,12 +103,7 @@ public sealed class McpProxyTests
         using var response = await client.SendAsync(request);
 
         response.IsSuccessStatusCode.Should().BeTrue();
-        forwarded!
-            .Headers.GetValues("X-MCP-Tools")
-            .Should()
-            .ContainSingle()
-            .Which.Should()
-            .Be("web_search");
+        forwarded!.Headers.GetValues("X-MCP-Tools").Should().ContainSingle().Which.Should().Be("web_search");
         forwarded.Headers.GetValues("X-MCP-Readonly").Should().ContainSingle().Which.Should().Be("true");
         forwarded.Headers.GetValues("X-MCP-Host").Should().ContainSingle().Which.Should().Be("copilot-cli");
     }
@@ -145,10 +140,7 @@ public sealed class McpProxyTests
         forwarded.Headers.UserAgent.ToString().Should().NotContain("inbound-agent");
         // The header is still present (CopilotHeadersHandler sets its own real value when absent), but
         // the spoofed inbound value must never survive.
-        forwarded
-            .Headers.GetValues("copilot-integration-id")
-            .Should()
-            .NotContain("spoofed-integration");
+        forwarded.Headers.GetValues("copilot-integration-id").Should().NotContain("spoofed-integration");
         forwarded.Headers.GetValues("x-interaction-id").Should().NotContain("spoofed-interaction");
         // Everything else still passes through verbatim — no curated allowlist beyond credentials/Copilot headers.
         forwarded.Headers.GetValues("X-Some-Future-Mcp-Header").Should().ContainSingle().Which.Should().Be("anything");
@@ -242,6 +234,7 @@ public sealed class McpProxyTests
 
         response.StatusCode.Should().Be(HttpStatusCode.MethodNotAllowed);
         var body = await response.Content.ReadAsStringAsync();
-        body.Should().Contain("\"jsonrpc\":\"2.0\"", "MCP-origin errors should be JSON-RPC-shaped, not the Anthropic fallback");
+        body.Should()
+            .Contain("\"jsonrpc\":\"2.0\"", "MCP-origin errors should be JSON-RPC-shaped, not the Anthropic fallback");
     }
 }

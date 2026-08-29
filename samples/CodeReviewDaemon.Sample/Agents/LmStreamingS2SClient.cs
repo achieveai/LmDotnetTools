@@ -34,11 +34,7 @@ internal sealed class LmStreamingS2SClient
     private readonly string? _sandboxAppId;
     private readonly string? _sandboxAppKey;
 
-    public LmStreamingS2SClient(
-        HttpClient httpClient,
-        string? s2sSecret,
-        string? sandboxAppId,
-        string? sandboxAppKey)
+    public LmStreamingS2SClient(HttpClient httpClient, string? s2sSecret, string? sandboxAppId, string? sandboxAppKey)
     {
         _httpClient = httpClient;
         _baseUrl = httpClient.BaseAddress?.ToString() ?? "the configured LmStreaming base URL";
@@ -56,8 +52,8 @@ internal sealed class LmStreamingS2SClient
         {
             // Backward compatibility with hosts predating the gateway-catalog envelope.
             JsonValueKind.Array => Deserialize<List<S2SWorkspace>>(body),
-            JsonValueKind.Object when document.RootElement.TryGetProperty("workspaces", out var workspaces)
-                => workspaces.Deserialize<List<S2SWorkspace>>(JsonOptions) ?? [],
+            JsonValueKind.Object when document.RootElement.TryGetProperty("workspaces", out var workspaces) =>
+                workspaces.Deserialize<List<S2SWorkspace>>(JsonOptions) ?? [],
             _ => throw new JsonException("The workspace response was neither an array nor a catalog envelope."),
         };
     }
@@ -72,7 +68,8 @@ internal sealed class LmStreamingS2SClient
         string name,
         string directoryRelPath,
         IReadOnlyList<string> marketplaces,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var body = await SendReadAsync(
             HttpMethod.Post,
@@ -83,7 +80,8 @@ internal sealed class LmStreamingS2SClient
                 DirectoryRelPath = directoryRelPath,
                 Marketplaces = marketplaces,
             },
-            ct);
+            ct
+        );
         return Deserialize<S2SWorkspace>(body);
     }
 
@@ -122,7 +120,8 @@ internal sealed class LmStreamingS2SClient
         string modeId,
         string? systemPromptAppendix,
         string? subAgentModelId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var body = await SendReadAsync(
             HttpMethod.Post,
@@ -132,27 +131,23 @@ internal sealed class LmStreamingS2SClient
                 WorkspaceId = workspaceId,
                 ProviderId = providerId,
                 ModeId = modeId,
-                SystemPromptAppendix = string.IsNullOrWhiteSpace(systemPromptAppendix)
-                    ? null
-                    : systemPromptAppendix,
+                SystemPromptAppendix = string.IsNullOrWhiteSpace(systemPromptAppendix) ? null : systemPromptAppendix,
                 SubAgentModelId = string.IsNullOrWhiteSpace(subAgentModelId) ? null : subAgentModelId,
             },
-            ct);
+            ct
+        );
         return ReadStringProperty(body, "threadId");
     }
 
     /// <summary>Updates a conversation's title/preview metadata (e.g. a human-readable "Review PR #n").</summary>
-    public async Task UpdateMetadataAsync(
-        string threadId,
-        string? title,
-        string? preview,
-        CancellationToken ct)
+    public async Task UpdateMetadataAsync(string threadId, string? title, string? preview, CancellationToken ct)
     {
         await SendAsync(
             HttpMethod.Put,
             $"api/conversations/{Uri.EscapeDataString(threadId)}/metadata",
             new { Title = title, Preview = preview },
-            ct);
+            ct
+        );
     }
 
     /// <summary>
@@ -172,7 +167,8 @@ internal sealed class LmStreamingS2SClient
             HttpMethod.Delete,
             $"api/conversations/{Uri.EscapeDataString(threadId)}",
             body: null,
-            ct);
+            ct
+        );
 
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
@@ -204,11 +200,7 @@ internal sealed class LmStreamingS2SClient
     /// </summary>
     public async Task EnsureHostContractAsync(CancellationToken ct)
     {
-        using var response = await ExecuteAsync(
-            HttpMethod.Get,
-            "api/conversations/capabilities",
-            body: null,
-            ct);
+        using var response = await ExecuteAsync(HttpMethod.Get, "api/conversations/capabilities", body: null, ct);
 
         if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
         {
@@ -216,7 +208,8 @@ internal sealed class LmStreamingS2SClient
                 $"The LmStreaming review host at {_baseUrl} does not advertise conversation capabilities "
                     + $"(GET api/conversations/capabilities returned {(int)response.StatusCode}), so it "
                     + "predates the per-turn spawn suppression and message idempotency contracts this review "
-                    + "requires. Upgrade the review host.");
+                    + "requires. Upgrade the review host."
+            );
         }
 
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -225,7 +218,8 @@ internal sealed class LmStreamingS2SClient
                 $"The LmStreaming review host at {_baseUrl} rejected this daemon's credential on the "
                     + $"capability read (GET api/conversations/capabilities returned "
                     + $"{(int)response.StatusCode}). The inbound S2S secret this daemon presents does not "
-                    + "match the host's; no send would be accepted either. Fix the shared secret.");
+                    + "match the host's; no send would be accepted either. Fix the shared secret."
+            );
         }
 
         _ = response.EnsureSuccessStatusCode();
@@ -247,7 +241,8 @@ internal sealed class LmStreamingS2SClient
             throw new ReviewHostContractException(
                 $"The LmStreaming review host at {_baseUrl} does not support "
                     + $"{string.Join(" and ", missing)}, which this review requires before it may send. "
-                    + $"Body: {body}");
+                    + $"Body: {body}"
+            );
         }
     }
 
@@ -277,7 +272,8 @@ internal sealed class LmStreamingS2SClient
         string text,
         bool suppressSubAgentSpawning,
         string? idempotencyKey,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var body = await SendReadAsync(
             HttpMethod.Post,
@@ -288,14 +284,16 @@ internal sealed class LmStreamingS2SClient
                 SuppressSubAgentSpawning = suppressSubAgentSpawning,
                 IdempotencyKey = idempotencyKey,
             },
-            ct);
+            ct
+        );
 
         if (suppressSubAgentSpawning && !ReadBoolProperty(body, "spawningSuppressed"))
         {
             throw new ReviewHostContractException(
                 "The review host did not acknowledge the requested sub-agent spawn suppression "
                     + "('spawningSuppressed' was absent or false), so this turn cannot be guaranteed free of "
-                    + $"new sub-agents. Upgrade the LmStreaming review host at {_baseUrl}. Body: {body}");
+                    + $"new sub-agents. Upgrade the LmStreaming review host at {_baseUrl}. Body: {body}"
+            );
         }
 
         if (idempotencyKey is not null && !ReadBoolProperty(body, "idempotencyKeyHonored"))
@@ -304,7 +302,8 @@ internal sealed class LmStreamingS2SClient
                 "The review host did not acknowledge the supplied idempotency key "
                     + "('idempotencyKeyHonored' was absent or false), so re-sending this turn after a lost "
                     + $"response would queue a second one. Upgrade the LmStreaming review host at {_baseUrl}. "
-                    + $"Body: {body}");
+                    + $"Body: {body}"
+            );
         }
 
         return ReadStringProperty(body, "inputId");
@@ -316,16 +315,14 @@ internal sealed class LmStreamingS2SClient
     /// final assistant non-thinking <c>TextMessage</c> there (snake_case keys), so
     /// <see cref="S2SStatusResult.ResponseText"/> is its <c>text</c> property.
     /// </summary>
-    public async Task<S2SStatusResult> GetStatusByInputIdAsync(
-        string threadId,
-        string inputId,
-        CancellationToken ct)
+    public async Task<S2SStatusResult> GetStatusByInputIdAsync(string threadId, string inputId, CancellationToken ct)
     {
         var body = await SendReadAsync(
             HttpMethod.Get,
             $"api/conversations/{Uri.EscapeDataString(threadId)}/status?inputId={Uri.EscapeDataString(inputId)}",
             body: null,
-            ct);
+            ct
+        );
         return ParseStatus(body);
     }
 
@@ -353,7 +350,8 @@ internal sealed class LmStreamingS2SClient
             HttpMethod.Get,
             $"api/conversations/{Uri.EscapeDataString(rootThreadId)}/subagents?recursive=true",
             body: null,
-            ct);
+            ct
+        );
         return ParseSubAgentTree(body);
     }
 
@@ -379,14 +377,16 @@ internal sealed class LmStreamingS2SClient
     public async Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetAgentTranscriptAsync(
         string rootThreadId,
         string agentId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var body = await SendReadAsync(
             HttpMethod.Get,
             $"api/conversations/{Uri.EscapeDataString(rootThreadId)}"
                 + $"/agents/{Uri.EscapeDataString(agentId)}/transcript",
             body: null,
-            ct);
+            ct
+        );
         return ParseAgentTranscript(body);
     }
 
@@ -407,13 +407,15 @@ internal sealed class LmStreamingS2SClient
     /// </summary>
     public async Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetConversationTranscriptAsync(
         string threadId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var body = await SendReadAsync(
             HttpMethod.Get,
             $"api/conversations/{Uri.EscapeDataString(threadId)}/messages",
             body: null,
-            ct);
+            ct
+        );
         return ParseAgentTranscript(body);
     }
 
@@ -425,11 +427,7 @@ internal sealed class LmStreamingS2SClient
         _ = response.EnsureSuccessStatusCode();
     }
 
-    private async Task<string> SendReadAsync(
-        HttpMethod method,
-        string path,
-        object? body,
-        CancellationToken ct)
+    private async Task<string> SendReadAsync(HttpMethod method, string path, object? body, CancellationToken ct)
     {
         using var response = await ExecuteAsync(method, path, body, ct);
         _ = response.EnsureSuccessStatusCode();
@@ -440,7 +438,8 @@ internal sealed class LmStreamingS2SClient
         HttpMethod method,
         string path,
         object? body,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         using var request = new HttpRequestMessage(method, path);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -493,21 +492,25 @@ internal sealed class LmStreamingS2SClient
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
 
-        var status = root.TryGetProperty("status", out var s) && s.ValueKind == JsonValueKind.String
-            ? s.GetString()!
-            : throw new InvalidOperationException($"Status response did not contain a 'status' string. Body: {body}");
+        var status =
+            root.TryGetProperty("status", out var s) && s.ValueKind == JsonValueKind.String
+                ? s.GetString()!
+                : throw new InvalidOperationException(
+                    $"Status response did not contain a 'status' string. Body: {body}"
+                );
 
-        string? runId = root.TryGetProperty("runId", out var r) && r.ValueKind == JsonValueKind.String
-            ? r.GetString()
-            : null;
+        string? runId =
+            root.TryGetProperty("runId", out var r) && r.ValueKind == JsonValueKind.String ? r.GetString() : null;
 
         // response is the pre-serialized final assistant message (snake_case keys); the review text is its
         // "text" property. Absent/non-object/non-text ⇒ null (run not terminal yet, or a tool-only run).
         string? responseText = null;
-        if (root.TryGetProperty("response", out var resp)
+        if (
+            root.TryGetProperty("response", out var resp)
             && resp.ValueKind == JsonValueKind.Object
             && resp.TryGetProperty("text", out var t)
-            && t.ValueKind == JsonValueKind.String)
+            && t.ValueKind == JsonValueKind.String
+        )
         {
             responseText = t.GetString();
         }
@@ -518,8 +521,7 @@ internal sealed class LmStreamingS2SClient
     private static string ReadStringProperty(string body, string propertyName)
     {
         using var doc = JsonDocument.Parse(body);
-        if (doc.RootElement.TryGetProperty(propertyName, out var value)
-            && value.ValueKind == JsonValueKind.String)
+        if (doc.RootElement.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String)
         {
             var text = value.GetString();
             if (!string.IsNullOrEmpty(text))
@@ -528,22 +530,21 @@ internal sealed class LmStreamingS2SClient
             }
         }
 
-        throw new InvalidOperationException(
-            $"Server response did not contain a '{propertyName}' string. Body: {body}");
+        throw new InvalidOperationException($"Server response did not contain a '{propertyName}' string. Body: {body}");
     }
 
     private static bool ReadBoolProperty(string body, string propertyName)
     {
         using var doc = JsonDocument.Parse(body);
-        return doc.RootElement.TryGetProperty(propertyName, out var value)
-            && value.ValueKind == JsonValueKind.True;
+        return doc.RootElement.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.True;
     }
 
     private static T Deserialize<T>(string body)
     {
         return JsonSerializer.Deserialize<T>(body, JsonOptions)
             ?? throw new InvalidOperationException(
-                $"Could not parse a {typeof(T).Name} from the server response. Body: {body}");
+                $"Could not parse a {typeof(T).Name} from the server response. Body: {body}"
+            );
     }
 
     private static ReviewSubAgentTreeSnapshot ParseSubAgentTree(string body)
@@ -557,22 +558,27 @@ internal sealed class LmStreamingS2SClient
             // that as an empty, successful schema-v1 tree.
             throw new InvalidOperationException(
                 $"Sub-agent tree response was not a schema-v1 object (got a bare array — the old, "
-                    + $"pre-versioned flat shape?). Body: {body}");
+                    + $"pre-versioned flat shape?). Body: {body}"
+            );
         }
 
-        if (!root.TryGetProperty("schemaVersion", out var versionElement)
+        if (
+            !root.TryGetProperty("schemaVersion", out var versionElement)
             || versionElement.ValueKind != JsonValueKind.Number
-            || versionElement.GetInt32() != 1)
+            || versionElement.GetInt32() != 1
+        )
         {
             throw new InvalidOperationException(
                 $"Sub-agent tree response has a missing or unsupported schemaVersion (only 1 is "
-                    + $"supported). Body: {body}");
+                    + $"supported). Body: {body}"
+            );
         }
 
         if (!root.TryGetProperty("nodes", out var nodesElement) || nodesElement.ValueKind != JsonValueKind.Array)
         {
             throw new InvalidOperationException(
-                $"Sub-agent tree response did not contain a 'nodes' array. Body: {body}");
+                $"Sub-agent tree response did not contain a 'nodes' array. Body: {body}"
+            );
         }
 
         var nodes = new List<ReviewSubAgentNode>(nodesElement.GetArrayLength());
@@ -626,14 +632,16 @@ internal sealed class LmStreamingS2SClient
         }
 
         throw new InvalidOperationException(
-            $"Sub-agent tree node is missing the required '{propertyName}' string field. Body: {fullBody}");
+            $"Sub-agent tree node is missing the required '{propertyName}' string field. Body: {fullBody}"
+        );
     }
 
     private static int RequireInt(JsonElement element, string propertyName, string fullBody) =>
         element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Number
             ? value.GetInt32()
             : throw new InvalidOperationException(
-                $"Sub-agent tree node is missing the required '{propertyName}' number field. Body: {fullBody}");
+                $"Sub-agent tree node is missing the required '{propertyName}' number field. Body: {fullBody}"
+            );
 
     private static string? OptionalString(JsonElement element, string propertyName) =>
         element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
@@ -689,21 +697,25 @@ internal sealed class LmStreamingS2SClient
         {
             throw new InvalidOperationException(
                 "Agent transcript response was not a JSON array — the review host may predate the "
-                    + $"transcript route or returned an error envelope. Body: {body}");
+                    + $"transcript route or returned an error envelope. Body: {body}"
+            );
         }
 
         var messages = new List<ReviewAgentTranscriptEntry>(root.GetArrayLength());
         foreach (var element in root.EnumerateArray())
         {
-            messages.Add(new ReviewAgentTranscriptEntry(
-                MessageType: OptionalString(element, "messageType") ?? string.Empty,
-                Role: OptionalString(element, "role") ?? string.Empty,
-                FromAgent: OptionalString(element, "fromAgent"),
-                TimestampUtc: element.TryGetProperty("timestamp", out var ts)
+            messages.Add(
+                new ReviewAgentTranscriptEntry(
+                    MessageType: OptionalString(element, "messageType") ?? string.Empty,
+                    Role: OptionalString(element, "role") ?? string.Empty,
+                    FromAgent: OptionalString(element, "fromAgent"),
+                    TimestampUtc: element.TryGetProperty("timestamp", out var ts)
                     && ts.ValueKind == JsonValueKind.Number
                         ? DateTimeOffset.FromUnixTimeMilliseconds(ts.GetInt64())
                         : null,
-                Body: ExtractTranscriptBody(OptionalString(element, "messageJson"))));
+                    Body: ExtractTranscriptBody(OptionalString(element, "messageJson"))
+                )
+            );
         }
 
         return messages;
@@ -729,8 +741,7 @@ internal sealed class LmStreamingS2SClient
             {
                 foreach (var name in new[] { "text", "content" })
                 {
-                    if (doc.RootElement.TryGetProperty(name, out var value)
-                        && value.ValueKind == JsonValueKind.String)
+                    if (doc.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
                     {
                         return value.GetString() ?? string.Empty;
                     }
@@ -751,7 +762,8 @@ internal sealed record S2SWorkspace(
     string Id,
     string Name,
     string DirectoryRelPath,
-    IReadOnlyList<string> Marketplaces);
+    IReadOnlyList<string> Marketplaces
+);
 
 /// <summary>
 /// A polled run status: the top-level <c>Status</c> string (one of <c>NotStarted</c>/<c>InProgress</c>/
@@ -782,9 +794,7 @@ internal sealed class ReviewHostContractException(string message) : InvalidOpera
 internal sealed class S2SConnectionException : Exception
 {
     public S2SConnectionException(string message, Exception innerException)
-        : base(message, innerException)
-    {
-    }
+        : base(message, innerException) { }
 
     public static string BuildMessage(string baseUrl) =>
         $"Could not reach the LmStreaming review host at {baseUrl}. "

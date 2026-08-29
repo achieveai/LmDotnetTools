@@ -58,15 +58,9 @@ internal static partial class SubAgentResultParser
     [GeneratedRegex("\\bid\\s*=\\s*\"([^\"]*)\"", RegexOptions.CultureInvariant)]
     private static partial Regex IdAttribute();
 
-    [GeneratedRegex(
-        "\\bResult:[ \\t]?(.*?)\\s*</sub-agent>",
-        RegexOptions.CultureInvariant | RegexOptions.Singleline
-    )]
+    [GeneratedRegex("\\bResult:[ \\t]?(.*?)\\s*</sub-agent>", RegexOptions.CultureInvariant | RegexOptions.Singleline)]
     private static partial Regex ResultPayload();
 
-    [GeneratedRegex(
-        "\\bError:[ \\t]?(.*?)\\s*</sub-agent>",
-        RegexOptions.CultureInvariant | RegexOptions.Singleline
-    )]
+    [GeneratedRegex("\\bError:[ \\t]?(.*?)\\s*</sub-agent>", RegexOptions.CultureInvariant | RegexOptions.Singleline)]
     private static partial Regex ErrorPayload();
 }

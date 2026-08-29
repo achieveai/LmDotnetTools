@@ -48,10 +48,7 @@ public class EvalSweepConfigurationTests
     {
         var resolve = () => EvalSweepConfiguration.Resolve(Options(-5));
 
-        resolve
-            .Should()
-            .Throw<InvalidOperationException>()
-            .WithMessage("*EvalCorpusSweepIntervalMinutes*");
+        resolve.Should().Throw<InvalidOperationException>().WithMessage("*EvalCorpusSweepIntervalMinutes*");
     }
 
     /// <summary>
@@ -67,10 +64,7 @@ public class EvalSweepConfigurationTests
     {
         var resolve = () => EvalSweepConfiguration.Resolve(Options(minutes));
 
-        resolve
-            .Should()
-            .Throw<InvalidOperationException>()
-            .WithMessage("*EvalCorpusSweepIntervalMinutes*");
+        resolve.Should().Throw<InvalidOperationException>().WithMessage("*EvalCorpusSweepIntervalMinutes*");
     }
 
     /// <summary>
@@ -87,10 +81,7 @@ public class EvalSweepConfigurationTests
     {
         var resolve = () => EvalSweepConfiguration.Resolve(Options(minutes));
 
-        resolve
-            .Should()
-            .Throw<InvalidOperationException>()
-            .WithMessage("*EvalCorpusSweepIntervalMinutes*");
+        resolve.Should().Throw<InvalidOperationException>().WithMessage("*EvalCorpusSweepIntervalMinutes*");
     }
 
     /// <summary>
@@ -101,10 +92,7 @@ public class EvalSweepConfigurationTests
     [Fact]
     public void The_largest_representable_interval_is_still_accepted()
     {
-        EvalSweepConfiguration
-            .Resolve(Options(TimeSpan.MaxValue.TotalMinutes))
-            .Should()
-            .NotBeNull();
+        EvalSweepConfiguration.Resolve(Options(TimeSpan.MaxValue.TotalMinutes)).Should().NotBeNull();
     }
 
     [Fact]
@@ -112,10 +100,7 @@ public class EvalSweepConfigurationTests
     {
         var resolve = () => EvalSweepConfiguration.Resolve(Options(90, window: 0));
 
-        resolve
-            .Should()
-            .Throw<InvalidOperationException>()
-            .WithMessage("*EvalCorpusSweepWindow*");
+        resolve.Should().Throw<InvalidOperationException>().WithMessage("*EvalCorpusSweepWindow*");
     }
 
     /// <summary>

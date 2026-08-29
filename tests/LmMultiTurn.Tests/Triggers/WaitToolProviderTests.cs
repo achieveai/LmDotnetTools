@@ -1,8 +1,8 @@
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Xunit;
 
@@ -27,16 +27,19 @@ public class WaitToolProviderTests : IAsyncLifetime
         _runtime = new TriggerRuntime(
             new TriggerOptions(),
             resolve: (_, _, _, _) => Task.CompletedTask,
-            notify: (_, _, _) => Task.CompletedTask);
+            notify: (_, _, _) => Task.CompletedTask
+        );
         _runtime.RegisterBuiltIns();
-        _runtime.Register(new TriggerSourceRegistration
-        {
-            Kind = "manual",
-            Description = "test manual trigger (notify-capable)",
-            ArgsSchema = "{}",
-            Capabilities = ManualTriggerSource.Caps,
-            Source = new ManualTriggerSource(),
-        });
+        _runtime.Register(
+            new TriggerSourceRegistration
+            {
+                Kind = "manual",
+                Description = "test manual trigger (notify-capable)",
+                ArgsSchema = "{}",
+                Capabilities = ManualTriggerSource.Caps,
+                Source = new ManualTriggerSource(),
+            }
+        );
         var provider = new WaitToolProvider(_runtime);
 
         var functions = provider.GetFunctions().ToDictionary(f => f.Contract.Name);
@@ -47,11 +50,17 @@ public class WaitToolProviderTests : IAsyncLifetime
     }
 
     // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
-    public Task DisposeAsync() =>
-        Wait.ForTeardownAsync(_runtime, "the trigger runtime under test");
+    public Task DisposeAsync() => Wait.ForTeardownAsync(_runtime, "the trigger runtime under test");
 
     private static string WaitArgs() =>
-        JsonSerializer.Serialize(new { kind = "timer", args = new { }, timeout = "10m" });
+        JsonSerializer.Serialize(
+            new
+            {
+                kind = "timer",
+                args = new { },
+                timeout = "10m",
+            }
+        );
 
     private async Task<JsonDocument> ListAsync() =>
         JsonDocument.Parse((await _listWaits.Handler("{}", new ToolCallContext(), CancellationToken.None)).ResultText);
@@ -66,7 +75,11 @@ public class WaitToolProviderTests : IAsyncLifetime
     {
         // Arm a long-timeout timer wait directly through the Wait handler; it parks (Deferred) and
         // stays pending for the rest of this test since nothing fires it.
-        var waitResult = await _wait.Handler(WaitArgs(), new ToolCallContext { ToolCallId = "tc_1" }, CancellationToken.None);
+        var waitResult = await _wait.Handler(
+            WaitArgs(),
+            new ToolCallContext { ToolCallId = "tc_1" },
+            CancellationToken.None
+        );
         waitResult.Should().BeOfType<ToolHandlerResult.Deferred>();
 
         using (var listed = await ListAsync())
@@ -78,9 +91,12 @@ public class WaitToolProviderTests : IAsyncLifetime
             waits[0].GetProperty("WaitId").GetString().Should().Be("tc_1");
             waits[0].GetProperty("Kind").GetString().Should().Be("timer");
 
-            listed.RootElement.GetProperty("registeredKinds")
-                .EnumerateArray().Select(e => e.GetString())
-                .Should().Contain("timer");
+            listed
+                .RootElement.GetProperty("registeredKinds")
+                .EnumerateArray()
+                .Select(e => e.GetString())
+                .Should()
+                .Contain("timer");
         }
 
         var cancelArgs = JsonSerializer.Serialize(new { id = "tc_1" });

@@ -83,9 +83,7 @@ public class WorkspacePluginSelectionServiceTests
             _ = await act.Should().ThrowAsync<KeyNotFoundException>();
         }
 
-        h.Service.AllocatedWorkspaceGateCount
-            .Should()
-            .Be(1, "only the workspace that actually exists may hold a gate");
+        h.Service.AllocatedWorkspaceGateCount.Should().Be(1, "only the workspace that actually exists may hold a gate");
     }
 
     /// <summary>
@@ -266,11 +264,9 @@ public class WorkspacePluginSelectionServiceTests
         // survives any create retry the registry might do internally.
         var built = h.Gateway.CreatedSessionIds.Except(originals).ToArray();
         built.Should().NotBeEmpty("the first candidate must have been created before the second failed");
-        h.Gateway
-            .DeletedSessionIds.Should()
+        h.Gateway.DeletedSessionIds.Should()
             .BeEquivalentTo(built, "every candidate built before the failure must be aborted");
-        h.Gateway
-            .DeletedSessionIds.Should()
+        h.Gateway.DeletedSessionIds.Should()
             .NotIntersectWith(originals, "the originals are still serving traffic and must not be touched");
 
         foreach (var original in originals)
@@ -341,8 +337,7 @@ public class WorkspacePluginSelectionServiceTests
         // best-effort teardown logs through its OWN CapturingLogger in this harness (see RegistryLogger
         // below), so this warning has to come from the SERVICE's own catch - the one place able to name
         // which workspace's swap failed.
-        h.Logger
-            .Entries.Where(entry => entry.Level == LogLevel.Warning)
+        h.Logger.Entries.Where(entry => entry.Level == LogLevel.Warning)
             .Select(entry => entry.Message)
             .Should()
             .ContainSingle(message => message.Contains(workspace.Id, StringComparison.Ordinal));
@@ -360,8 +355,7 @@ public class WorkspacePluginSelectionServiceTests
         // used) - a line that can only exist if AbortAllAsync actually invoked the teardown for this
         // candidate.
         var candidate = h.Gateway.CreatedSessionIds.Single(id => id != original.SessionId);
-        h.RegistryLogger
-            .Entries.Where(entry => entry.Level == LogLevel.Warning)
+        h.RegistryLogger.Entries.Where(entry => entry.Level == LogLevel.Warning)
             .Select(entry => entry.Message)
             .Should()
             .Contain(
@@ -405,8 +399,14 @@ public class WorkspacePluginSelectionServiceTests
         // further gateway traffic. Counting creates is what distinguishes "swapped" from "the old
         // entry was merely evicted and lazily recreated".
         var attemptsAfterMigration = h.Gateway.CreateAttempts;
-        var resolvedA = await h.Registry.GetOrCreateSessionAsync(new WorkspaceRef(workspace.Id), credential: credentialA);
-        var resolvedB = await h.Registry.GetOrCreateSessionAsync(new WorkspaceRef(workspace.Id), credential: credentialB);
+        var resolvedA = await h.Registry.GetOrCreateSessionAsync(
+            new WorkspaceRef(workspace.Id),
+            credential: credentialA
+        );
+        var resolvedB = await h.Registry.GetOrCreateSessionAsync(
+            new WorkspaceRef(workspace.Id),
+            credential: credentialB
+        );
 
         new[] { resolvedA.SessionId, resolvedB.SessionId }.Should().BeEquivalentTo(candidates);
         h.Gateway.CreateAttempts.Should().Be(attemptsAfterMigration, "the swapped entries must be served from cache");
@@ -428,10 +428,7 @@ public class WorkspacePluginSelectionServiceTests
         h.Gateway.HoldDeletes();
 
         var updated = await h
-            .Service.ApplyPluginSelectionUpdateAsync(
-                workspace.Id,
-                Update(["official"], [SelectedPlugin], revision: 0)
-            )
+            .Service.ApplyPluginSelectionUpdateAsync(workspace.Id, Update(["official"], [SelectedPlugin], revision: 0))
             .WaitAsync(TimeSpan.FromSeconds(5));
 
         updated.PluginsRevision.Should().Be(1, "the request commits at the swap, ahead of the cleanup");
@@ -470,8 +467,7 @@ public class WorkspacePluginSelectionServiceTests
         updated.PluginsRevision.Should().Be(1);
 
         var candidate = h.Gateway.CreatedSessionIds.Single(id => id != original.SessionId);
-        h.Gateway
-            .DeletedSessionIds.Should()
+        h.Gateway.DeletedSessionIds.Should()
             .Contain(
                 candidate,
                 "a candidate that lost its swap references nothing and leaks a container unless retired"
@@ -636,10 +632,7 @@ public class WorkspacePluginSelectionServiceTests
         IReadOnlyList<string> expectedMarketplaces = ["official"];
         ReadMarketplaces(candidateBody)
             .Should()
-            .Equal(
-                expectedMarketplaces,
-                "an empty workspace list must resolve to the configured default, not to none"
-            );
+            .Equal(expectedMarketplaces, "an empty workspace list must resolve to the configured default, not to none");
         ReadPluginSelection(candidateBody).Should().Equal("official/code-review");
         h.Gateway.DeletedSessionIds.Should().Equal(original.SessionId);
     }
@@ -723,8 +716,7 @@ public class WorkspacePluginSelectionServiceTests
         var thrown = await act.Should().ThrowExactlyAsync<InvalidOperationException>();
         thrown.Which.Message.Should().Be($"Cannot update system-defined workspace '{systemDefined.Id}'.");
 
-        h.Gateway
-            .CallsSince(checkpoint)
+        h.Gateway.CallsSince(checkpoint)
             .Should()
             .BeEmpty("an immutable workspace must be rejected before a single gateway session is touched");
         h.Registry.TryGetSessionById(session.SessionId, out _).Should().BeTrue();
@@ -865,8 +857,7 @@ public class WorkspacePluginSelectionServiceTests
                 "the grace must actually be polling — otherwise the assertion below holds vacuously, "
                     + "for a post-commit phase that never started"
             );
-        h.Gateway
-            .DeletedSessionIds.Should()
+        h.Gateway.DeletedSessionIds.Should()
             .NotContain(
                 original.SessionId,
                 "a superseded session with a live run must not be destroyed under it while the grace holds"
@@ -877,8 +868,7 @@ public class WorkspacePluginSelectionServiceTests
         h.Probe.SetBusyThreads();
         await postCommit.WaitAsync(TimeSpan.FromSeconds(30));
 
-        h.Gateway
-            .DeletedSessionIds.Should()
+        h.Gateway.DeletedSessionIds.Should()
             .Contain(original.SessionId, "once the run finishes the superseded session must be retired");
     }
 
@@ -907,15 +897,13 @@ public class WorkspacePluginSelectionServiceTests
         );
 
         updated.PluginsRevision.Should().Be(1);
-        h.Gateway
-            .DeletedSessionIds.Should()
+        h.Gateway.DeletedSessionIds.Should()
             .Contain(original.SessionId, "an expired grace must still reclaim the container");
 
         // The SPECIFIC id, not merely "something was logged at Warning": a message that reports an
         // expiry without naming the session leaves an operator with a failed run and nothing to tie it
         // to, which is the same position as no log at all.
-        h.Logger
-            .Entries.Where(entry => entry.Level == LogLevel.Warning)
+        h.Logger.Entries.Where(entry => entry.Level == LogLevel.Warning)
             .Select(entry => entry.Message)
             .Should()
             .ContainSingle(message => message.Contains(original.SessionId, StringComparison.Ordinal));
@@ -954,11 +942,9 @@ public class WorkspacePluginSelectionServiceTests
         );
 
         updated.PluginsRevision.Should().Be(1, "the commit precedes the cancellation and stands");
-        h.Probe
-            .Calls.Should()
+        h.Probe.Calls.Should()
             .BeGreaterThan(0, "the grace must have reached the poll the caller's token would have cancelled");
-        h.Gateway
-            .DeletedSessionIds.Should()
+        h.Gateway.DeletedSessionIds.Should()
             .Contain(
                 original.SessionId,
                 "a caller who withdrew after the commit must not be able to leak the superseded container"
@@ -1023,14 +1009,12 @@ public class WorkspacePluginSelectionServiceTests
 
         var reconcileCandidate = h.Gateway.CreatedSessionIds[^1];
         reconcileCandidate.Should().NotBe(lateSession.SessionId, "the reconcile pass built a session of its own");
-        h.Gateway
-            .DeletedSessionIds.Should()
+        h.Gateway.DeletedSessionIds.Should()
             .Contain(
                 reconcileCandidate,
                 "a candidate that lost its swap references nothing and leaks a container unless retired"
             );
-        h.Gateway
-            .DeletedSessionIds.Should()
+        h.Gateway.DeletedSessionIds.Should()
             .NotContain(
                 lateSession.SessionId,
                 "the winner's predecessor belongs to whoever republished the slot, not to this pass"
@@ -1115,13 +1099,11 @@ public class WorkspacePluginSelectionServiceTests
         hooks
             .GetCalls.Should()
             .BeGreaterThan(readsBeforeReconcile, "the reconcile pass must re-read the committed revision");
-        h.Gateway
-            .CallsSince(checkpoint)
+        h.Gateway.CallsSince(checkpoint)
             .Where(call => call.Kind == GatewayCallKind.Create)
             .Should()
             .BeEmpty("a superseded migration must build no replacement for a partition a newer one already owns");
-        h.Gateway
-            .DeletedSessionIds.Should()
+        h.Gateway.DeletedSessionIds.Should()
             .NotContain(currentB.SessionId, "the newer migration's session must survive the older pass");
 
         var resolved = await h.Registry.GetOrCreateSessionAsync(
@@ -1209,10 +1191,10 @@ public class WorkspacePluginSelectionServiceTests
         await Task.Run(deferred!).WaitAsync(TimeSpan.FromSeconds(30));
 
         var built = h.Gateway.CreatedSessionIds.Skip(createsBeforeReconcile).ToArray();
-        built.Should()
+        built
+            .Should()
             .ContainSingle("the pass must build exactly one replacement for the partition that missed the batch");
-        h.Gateway
-            .CallsSince(checkpoint)
+        h.Gateway.CallsSince(checkpoint)
             .Should()
             .Contain(
                 call => call.Kind == GatewayCallKind.Delete && call.SessionId == lateSession.SessionId,
@@ -1320,8 +1302,10 @@ public class WorkspacePluginSelectionServiceTests
     private static IReadOnlyList<string> ReadPluginSelection(string createBody) =>
         JsonDocument.Parse(createBody).RootElement.TryGetProperty("pluginSelection", out var plugins)
         && plugins.ValueKind == JsonValueKind.Array
-            ? [
-                .. plugins.EnumerateArray()
+            ?
+            [
+                .. plugins
+                    .EnumerateArray()
                     .Select(p => $"{p.GetProperty("marketplace").GetString()}/{p.GetProperty("plugin").GetString()}"),
             ]
             : [];
@@ -1451,7 +1435,11 @@ public class WorkspacePluginSelectionServiceTests
                 new HttpClient(gateway),
                 new AuthOptions(),
                 new SessionSecretStore(
-                    Path.Combine(Path.GetTempPath(), "lmstreaming-plugin-selection-tests", Guid.NewGuid().ToString("N")),
+                    Path.Combine(
+                        Path.GetTempPath(),
+                        "lmstreaming-plugin-selection-tests",
+                        Guid.NewGuid().ToString("N")
+                    ),
                     NullLogger<SessionSecretStore>.Instance
                 )
             );
@@ -1790,7 +1778,10 @@ public class WorkspacePluginSelectionServiceTests
         /// return from the request while a delete is held, a background one returns at the swap.
         /// </summary>
         public void HoldDeletes() =>
-            Volatile.Write(ref _deleteGate, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+            Volatile.Write(
+                ref _deleteGate,
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+            );
 
         public void ReleaseDeletes() => Volatile.Read(ref _deleteGate)?.TrySetResult();
 
@@ -1801,7 +1792,10 @@ public class WorkspacePluginSelectionServiceTests
         /// which keeps both usable as "the phase actually finished" signals.
         /// </summary>
         public void HoldCreates() =>
-            Volatile.Write(ref _createGate, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+            Volatile.Write(
+                ref _createGate,
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+            );
 
         /// <summary>Lets every parked create through, and stops holding subsequent ones.</summary>
         public void ReleaseCreates()
@@ -1920,10 +1914,9 @@ public class WorkspacePluginSelectionServiceTests
                 return new HttpResponseMessage(HttpStatusCode.OK);
             }
 
-            var body =
-                request.Content is null
-                    ? string.Empty
-                    : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var body = request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
             // Parked BEFORE anything is recorded or counted, for the same reason the delete gate is:
             // a held create has not happened yet, and every collection on this fake should say so.

@@ -306,7 +306,9 @@ public class WorkflowJsonRepairerTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>((_, options, _) => captured = options)
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (_, options, _) => captured = options
+            )
             .ReturnsAsync([new TextMessage { Text = "{}", Role = Role.Assistant }]);
         var repairer = new WorkflowJsonRepairer(mock.Object, "cheap-model");
 

@@ -60,9 +60,9 @@ public sealed class DefaultProcessLauncher : IProcessLauncher
         Process process;
         try
         {
-            process = Process.Start(psi)
-                ?? throw new ProcessLauncherException(
-                    $"Process.Start returned null when launching '{fileName}'.");
+            process =
+                Process.Start(psi)
+                ?? throw new ProcessLauncherException($"Process.Start returned null when launching '{fileName}'.");
         }
         catch (ProcessLauncherException)
         {
@@ -72,7 +72,8 @@ public sealed class DefaultProcessLauncher : IProcessLauncher
         {
             throw new ProcessLauncherException(
                 $"Failed to start '{fileName}'. Ensure the executable is installed and accessible.",
-                ex);
+                ex
+            );
         }
 
         return new SystemProcessHandle(process);
@@ -85,8 +86,7 @@ public sealed class DefaultProcessLauncher : IProcessLauncher
             CliAgentKind.Claude => ResolveClaude(request),
             CliAgentKind.Codex => ResolveCodex(request),
             CliAgentKind.Copilot => ResolveCopilot(request),
-            _ => throw new ProcessLauncherException(
-                $"Unsupported {nameof(CliAgentKind)}: {request.Agent}."),
+            _ => throw new ProcessLauncherException($"Unsupported {nameof(CliAgentKind)}: {request.Agent}."),
         };
     }
 
@@ -132,7 +132,8 @@ public sealed class DefaultProcessLauncher : IProcessLauncher
                 "node_modules",
                 "@anthropic-ai",
                 "claude-agent-sdk",
-                "cli.js");
+                "cli.js"
+            );
             if (File.Exists(npmGlobalPath))
             {
                 return npmGlobalPath;
@@ -145,7 +146,8 @@ public sealed class DefaultProcessLauncher : IProcessLauncher
                 "node_modules",
                 "@anthropic-ai",
                 "claude-agent-sdk",
-                "cli.js");
+                "cli.js"
+            );
             if (File.Exists(systemPath))
             {
                 return systemPath;
@@ -161,7 +163,8 @@ public sealed class DefaultProcessLauncher : IProcessLauncher
         }
 
         throw new FileNotFoundException(
-            "claude-agent-sdk CLI not found. Please install: npm install -g @anthropic-ai/claude-agent-sdk");
+            "claude-agent-sdk CLI not found. Please install: npm install -g @anthropic-ai/claude-agent-sdk"
+        );
     }
 
     private static readonly string[] WindowsCopilotExtensions = [".cmd", ".exe", ".ps1", ".bat"];
@@ -183,8 +186,8 @@ public sealed class DefaultProcessLauncher : IProcessLauncher
             return cliPath;
         }
 
-        var hasPathSeparator = cliPath.Contains('/', StringComparison.Ordinal)
-            || cliPath.Contains('\\', StringComparison.Ordinal);
+        var hasPathSeparator =
+            cliPath.Contains('/', StringComparison.Ordinal) || cliPath.Contains('\\', StringComparison.Ordinal);
         if (!hasPathSeparator)
         {
             return cliPath;

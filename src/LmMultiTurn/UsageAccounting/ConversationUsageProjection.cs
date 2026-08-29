@@ -53,7 +53,8 @@ public static class ConversationUsageProjection
         IConversationStore store,
         ConversationUsageAggregate aggregate,
         IReadOnlyList<UsageRecord>? records = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(aggregate);
@@ -91,13 +92,18 @@ public static class ConversationUsageProjection
                     var completeness = MaxCompleteness(persistedAggregate?.Completeness, aggregate.Completeness);
 
                     var foldedAggregate = ConversationUsageAggregate.Fold(
-                        aggregate.RootConversationId, merged, revision, completeness);
+                        aggregate.RootConversationId,
+                        merged,
+                        revision,
+                        completeness
+                    );
 
                     return WithProjection(
                         existing,
                         aggregate.RootConversationId,
                         JsonSerializer.Serialize(foldedAggregate),
-                        JsonSerializer.Serialize(merged));
+                        JsonSerializer.Serialize(merged)
+                    );
                 }
 
                 // Aggregate-only save: keep the strictly-lower-watermark guard.
@@ -111,9 +117,11 @@ public static class ConversationUsageProjection
                     existing,
                     aggregate.RootConversationId,
                     JsonSerializer.Serialize(aggregate),
-                    recordsJson: null);
+                    recordsJson: null
+                );
             },
-            ct);
+            ct
+        );
     }
 
     /// <summary>
@@ -128,7 +136,8 @@ public static class ConversationUsageProjection
     /// </remarks>
     private static IReadOnlyList<UsageRecord> MergeRecords(
         IReadOnlyList<UsageRecord> persisted,
-        IReadOnlyList<UsageRecord> incoming)
+        IReadOnlyList<UsageRecord> incoming
+    )
     {
         if (persisted.Count == 0)
         {
@@ -195,9 +204,7 @@ public static class ConversationUsageProjection
     /// <summary>Returns the more-complete of two completeness states (Complete &gt; Partial &gt; InProgress).</summary>
     private static UsageCompleteness MaxCompleteness(UsageCompleteness? persisted, UsageCompleteness incoming)
     {
-        return persisted is null
-            ? incoming
-            : (UsageCompleteness)Math.Max((int)persisted.Value, (int)incoming);
+        return persisted is null ? incoming : (UsageCompleteness)Math.Max((int)persisted.Value, (int)incoming);
     }
 
     /// <summary>Reads the persisted schema version even when it is newer than this build understands.</summary>
@@ -212,7 +219,8 @@ public static class ConversationUsageProjection
         try
         {
             using var document = JsonDocument.Parse(json);
-            return document.RootElement.TryGetProperty("SchemaVersion", out var value)
+            return
+                document.RootElement.TryGetProperty("SchemaVersion", out var value)
                 && value.ValueKind == JsonValueKind.Number
                 ? value.GetInt32()
                 : CurrentSchemaVersion;
@@ -227,7 +235,8 @@ public static class ConversationUsageProjection
     public static async Task<ConversationUsageAggregate?> LoadAsync(
         IConversationStore store,
         string threadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(store);
         var metadata = await store.LoadMetadataAsync(threadId, ct);
@@ -238,7 +247,8 @@ public static class ConversationUsageProjection
     public static async Task<IReadOnlyList<UsageRecord>> LoadRecordsAsync(
         IConversationStore store,
         string threadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(store);
         var metadata = await store.LoadMetadataAsync(threadId, ct);
@@ -291,9 +301,7 @@ public static class ConversationUsageProjection
 
     private static string? RawJson(ThreadMetadata? metadata, string key)
     {
-        if (metadata?.Properties is null
-            || !metadata.Properties.TryGetValue(key, out var raw)
-            || raw is null)
+        if (metadata?.Properties is null || !metadata.Properties.TryGetValue(key, out var raw) || raw is null)
         {
             return null;
         }
@@ -311,10 +319,13 @@ public static class ConversationUsageProjection
         ThreadMetadata? existing,
         string threadId,
         string aggregateJson,
-        string? recordsJson)
+        string? recordsJson
+    )
     {
-        var properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty)
-            .SetItem(PropertyKey, aggregateJson);
+        var properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
+            PropertyKey,
+            aggregateJson
+        );
 
         if (recordsJson is not null)
         {

@@ -118,7 +118,8 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
 
         var results = await Task.WhenAll(
             registry.GetOrCreateLiveSessionAsync(),
-            registry.GetOrCreateLiveSessionAsync());
+            registry.GetOrCreateLiveSessionAsync()
+        );
 
         results[0].SessionId.Should().Be(results[1].SessionId, "both callers must converge on the same session");
         calls.PostCount.Should().Be(2, "the recreate must be single-flighted, not duplicated per caller");
@@ -133,15 +134,20 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         // resurrects the OLD configuration — the user's edit appears to have been thrown away. The
         // recreate must therefore re-read current workspace config first.
         var reloadCalls = 0;
-        var (registry, calls) = CreateRegistry(reloadWorkspaceRef: (workspaceId, _) =>
-        {
-            reloadCalls++;
-            return Task.FromResult<WorkspaceRef?>(new WorkspaceRef(
-                workspaceId,
-                DirectoryRelPath: null,
-                Marketplaces: ["official"],
-                PluginSelection: [new SandboxPluginRef("official", "code-review")]));
-        });
+        var (registry, calls) = CreateRegistry(
+            reloadWorkspaceRef: (workspaceId, _) =>
+            {
+                reloadCalls++;
+                return Task.FromResult<WorkspaceRef?>(
+                    new WorkspaceRef(
+                        workspaceId,
+                        DirectoryRelPath: null,
+                        Marketplaces: ["official"],
+                        PluginSelection: [new SandboxPluginRef("official", "code-review")]
+                    )
+                );
+            }
+        );
         var staleRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
 
         _ = await registry.GetOrCreateSessionAsync(staleRef);
@@ -157,8 +163,12 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         ReadMarketplaces(calls.PostBodies[0]).Should().Equal("superpowers");
         ReadMarketplaces(calls.PostBodies[1]).Should().Equal("official");
         using var recreate = JsonDocument.Parse(calls.PostBodies[1]);
-        recreate.RootElement.GetProperty("pluginSelection")[0].GetProperty("plugin").GetString()
-            .Should().Be("code-review");
+        recreate
+            .RootElement.GetProperty("pluginSelection")[0]
+            .GetProperty("plugin")
+            .GetString()
+            .Should()
+            .Be("code-review");
     }
 
     [Fact]
@@ -185,11 +195,13 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         // turn — and the two tests above would still pass, because both of them recreate. Only this
         // test can tell the scoped fix from the unscoped one.
         var reloadCalls = 0;
-        var (registry, calls) = CreateRegistry(reloadWorkspaceRef: (workspaceId, _) =>
-        {
-            reloadCalls++;
-            return Task.FromResult<WorkspaceRef?>(new WorkspaceRef(workspaceId));
-        });
+        var (registry, calls) = CreateRegistry(
+            reloadWorkspaceRef: (workspaceId, _) =>
+            {
+                reloadCalls++;
+                return Task.FromResult<WorkspaceRef?>(new WorkspaceRef(workspaceId));
+            }
+        );
         var workspaceRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
 
         _ = await registry.GetOrCreateSessionAsync(workspaceRef);
@@ -206,8 +218,7 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         // A workspace deleted between capture and recreate returns null. Falling back to the captured
         // ref keeps the session recoverable; treating null as "no marketplaces" would strip the
         // agent's tools on a race that is not the user's doing.
-        var (registry, calls) = CreateRegistry(
-            reloadWorkspaceRef: (_, _) => Task.FromResult<WorkspaceRef?>(null));
+        var (registry, calls) = CreateRegistry(reloadWorkspaceRef: (_, _) => Task.FromResult<WorkspaceRef?>(null));
         var workspaceRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
 
         _ = await registry.GetOrCreateSessionAsync(workspaceRef);
@@ -227,7 +238,8 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         // all: strictly worse than the stale-config outcome the reload exists to avoid. Degrade to
         // the captured ref instead.
         var (registry, calls) = CreateRegistry(
-            reloadWorkspaceRef: (_, _) => throw new InvalidOperationException("workspace store is corrupt"));
+            reloadWorkspaceRef: (_, _) => throw new InvalidOperationException("workspace store is corrupt")
+        );
         var workspaceRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
 
         _ = await registry.GetOrCreateSessionAsync(workspaceRef);
@@ -245,8 +257,7 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         // cancellation and press on with a gateway create that was already abandoned. The exception
         // filter excluding OperationCanceledException is what separates "the store failed, degrade"
         // from "this work was cancelled, stop" — and only this test can tell the two apart.
-        var (registry, calls) = CreateRegistry(
-            reloadWorkspaceRef: (_, _) => throw new OperationCanceledException());
+        var (registry, calls) = CreateRegistry(reloadWorkspaceRef: (_, _) => throw new OperationCanceledException());
         var workspaceRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
 
         _ = await registry.GetOrCreateSessionAsync(workspaceRef);
@@ -266,8 +277,7 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         // mid-teardown with its session already evicted and no replacement built. That is an
         // improvement the reorder happens to buy, and an unasserted improvement is one tidy-up away
         // from being silently undone.
-        var (registry, calls) = CreateRegistry(
-            reloadWorkspaceRef: (_, _) => throw new OperationCanceledException());
+        var (registry, calls) = CreateRegistry(reloadWorkspaceRef: (_, _) => throw new OperationCanceledException());
         var workspaceRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
 
         var original = await registry.GetOrCreateSessionAsync(workspaceRef);
@@ -275,10 +285,13 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         var act = async () => await registry.GetOrCreateLiveSessionAsync(workspaceRef);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
-        registry.TryGetSessionById(original.SessionId, out _).Should().BeTrue(
-            "a cancelled reload must not leave the per-session state of a session it never replaced evicted");
-        (await registry.GetOrCreateSessionAsync(workspaceRef)).SessionId.Should().Be(
-            original.SessionId, "the cache entry survives, so a later resolve reuses it rather than creating");
+        registry
+            .TryGetSessionById(original.SessionId, out _)
+            .Should()
+            .BeTrue("a cancelled reload must not leave the per-session state of a session it never replaced evicted");
+        (await registry.GetOrCreateSessionAsync(workspaceRef))
+            .SessionId.Should()
+            .Be(original.SessionId, "the cache entry survives, so a later resolve reuses it rather than creating");
         calls.PostCount.Should().Be(1, "nothing was recreated, so nothing new was created either");
     }
 
@@ -313,18 +326,23 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         // non-cancellation exception, so an assertion that failed in there would be swallowed whole
         // and this test would pass having proved nothing.
         observedInsideReload.Should().NotBeNull("the concurrent caller must actually have run");
-        observedInsideReload!.SessionId.Should().Be(
-            "sess-1",
-            "the slot must still hold the session being replaced while the store is read, so a "
-                + "concurrent caller gets a cache hit instead of publishing a stale-ref session into "
-                + "an empty slot");
+        observedInsideReload!
+            .SessionId.Should()
+            .Be(
+                "sess-1",
+                "the slot must still hold the session being replaced while the store is read, so a "
+                    + "concurrent caller gets a cache hit instead of publishing a stale-ref session into "
+                    + "an empty slot"
+            );
 
         // The count below is the SAME under the broken ordering — there the second POST is the
         // concurrent caller's stale-ref create and the recreate becomes the cache hit — so it is a
         // supporting assertion that no THIRD session appeared, not a witness for the fix. Verified by
         // hoisting it above the session-id assertion under the reverted ordering: it stayed green.
         // The session-id assertion above is the one that discriminates, which is why it comes first.
-        calls.PostCount.Should().Be(2, "the arrange-phase create and the recreate — the concurrent caller added none");
+        calls
+            .PostCount.Should()
+            .Be(2, "the arrange-phase create and the recreate — the concurrent caller added none");
         live.SessionId.Should().Be("sess-2");
         ReadMarketplaces(calls.PostBodies[^1]).Should().Equal("official");
     }
@@ -337,7 +355,8 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
 
     private static (SandboxSessionRegistry Registry, CallLog Calls) CreateRegistry(
         HttpStatusCode? livenessStatusOverride = null,
-        Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null)
+        Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null
+    )
     {
         var calls = new CallLog();
 
@@ -379,7 +398,8 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
                         Content = new StringContent(
                             $$"""{ "code": 404, "error": "Session not found: {{id}}" }""",
                             Encoding.UTF8,
-                            "application/json"),
+                            "application/json"
+                        ),
                     };
             }
 
@@ -393,7 +413,8 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         var gateway = new SandboxGatewayLifetime(
             options,
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK))));
+            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)))
+        );
 
         var auth = new AuthOptions();
         var registry = new SandboxSessionRegistry(
@@ -404,8 +425,10 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
             auth,
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance),
-            reloadWorkspaceRef: reloadWorkspaceRef);
+                NullLogger<SessionSecretStore>.Instance
+            ),
+            reloadWorkspaceRef: reloadWorkspaceRef
+        );
 
         return (registry, calls);
     }
@@ -425,19 +448,26 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         var gateway = new SandboxGatewayLifetime(
             options,
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK))));
+            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)))
+        );
         var auth = new AuthOptions();
         var registry = new SandboxSessionRegistry(
             gateway,
             options,
             NullLogger<SandboxSessionRegistry>.Instance,
-            new HttpClient(new StubHandler(_ =>
-                throw new HttpRequestException(
-                    "No connection could be made because the target machine actively refused it."))),
+            new HttpClient(
+                new StubHandler(_ =>
+                    throw new HttpRequestException(
+                        "No connection could be made because the target machine actively refused it."
+                    )
+                )
+            ),
             auth,
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
 
         var act = async () => await registry.GetOrCreateSessionAsync();
 
@@ -456,17 +486,35 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
 
         public int PostCount
         {
-            get { lock (_gate) { return _postBodies.Count; } }
+            get
+            {
+                lock (_gate)
+                {
+                    return _postBodies.Count;
+                }
+            }
         }
 
         public IReadOnlyList<string> PostBodies
         {
-            get { lock (_gate) { return [.. _postBodies]; } }
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _postBodies];
+                }
+            }
         }
 
         public IReadOnlyList<string> LivenessGets
         {
-            get { lock (_gate) { return [.. _livenessGets]; } }
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _livenessGets];
+                }
+            }
         }
 
         /// <summary>Records a create POST body and returns its 1-based ordinal.</summary>
@@ -517,7 +565,7 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(respond(request));
+            CancellationToken cancellationToken
+        ) => Task.FromResult(respond(request));
     }
 }

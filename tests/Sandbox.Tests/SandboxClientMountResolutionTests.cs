@@ -139,16 +139,16 @@ public sealed class SandboxClientMountResolutionTests
         // Two cold resolves are in-flight simultaneously (neither can complete until the gate is released).
         // Single-flight must funnel them through ONE shared GET instead of each issuing its own. Dedicated
         // (LongRunning) threads so the blocking gate never depends on thread-pool growth.
-        var first = Task.Factory
-            .StartNew(
+        var first = Task
+            .Factory.StartNew(
                 () => client.ResolveWorkspaceMountIdAsync(SessionId, CancellationToken.None),
                 CancellationToken.None,
                 TaskCreationOptions.LongRunning,
                 TaskScheduler.Default
             )
             .Unwrap();
-        var second = Task.Factory
-            .StartNew(
+        var second = Task
+            .Factory.StartNew(
                 () => client.ResolveWorkspaceMountIdAsync(SessionId, CancellationToken.None),
                 CancellationToken.None,
                 TaskCreationOptions.LongRunning,

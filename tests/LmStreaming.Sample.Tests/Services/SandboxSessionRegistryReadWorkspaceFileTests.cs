@@ -32,7 +32,8 @@ public sealed class SandboxSessionRegistryReadWorkspaceFileTests
         var (registry, handler) = CreateRegistry(req =>
             req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.Contains("/files/", StringComparison.Ordinal)
                 ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(fileBytes) }
-                : MountResolution());
+                : MountResolution()
+        );
         await using var _ = registry;
 
         var content = await registry.ReadWorkspaceFileAsync(SessionId, "/workspace/CLAUDE.md");
@@ -50,7 +51,9 @@ public sealed class SandboxSessionRegistryReadWorkspaceFileTests
             .Which;
         filesRequest.RequestUri!.Query.Should().Contain("path=CLAUDE.md");
         filesRequest.Headers.GetValues("X-Session-ID").Should().ContainSingle().Which.Should().Be(SessionId);
-        handler.Requests.Should().NotContain(r => r.RequestUri!.AbsolutePath.EndsWith("/mcp", StringComparison.Ordinal));
+        handler
+            .Requests.Should()
+            .NotContain(r => r.RequestUri!.AbsolutePath.EndsWith("/mcp", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -61,7 +64,8 @@ public sealed class SandboxSessionRegistryReadWorkspaceFileTests
         var (registry, _) = CreateRegistry(req =>
             req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.Contains("/files/", StringComparison.Ordinal)
                 ? Error(HttpStatusCode.NotFound, "path_not_found")
-                : MountResolution());
+                : MountResolution()
+        );
         await using var _ = registry;
 
         var content = await registry.ReadWorkspaceFileAsync(SessionId, "/workspace/missing.md");
@@ -77,7 +81,8 @@ public sealed class SandboxSessionRegistryReadWorkspaceFileTests
         var (registry, _) = CreateRegistry(req =>
             req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.Contains("/files/", StringComparison.Ordinal)
                 ? new HttpResponseMessage(HttpStatusCode.InternalServerError)
-                : MountResolution());
+                : MountResolution()
+        );
         await using var _ = registry;
 
         var content = await registry.ReadWorkspaceFileAsync("sess-gone", "/workspace/CLAUDE.md");
@@ -95,7 +100,8 @@ public sealed class SandboxSessionRegistryReadWorkspaceFileTests
         var (registry, _) = CreateRegistry(req =>
             req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.Contains("/files/", StringComparison.Ordinal)
                 ? new HttpResponseMessage(HttpStatusCode.OK) { Content = content }
-                : MountResolution());
+                : MountResolution()
+        );
         await using var _ = registry;
 
         var result = await registry.ReadWorkspaceFileAsync(SessionId, "/workspace/big.bin");
@@ -122,7 +128,15 @@ public sealed class SandboxSessionRegistryReadWorkspaceFileTests
         new(status)
         {
             Content = new StringContent(
-                JsonSerializer.Serialize(new { error = errorCode, code = (int)status, error_code = errorCode, retryable = false }),
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        error = errorCode,
+                        code = (int)status,
+                        error_code = errorCode,
+                        retryable = false,
+                    }
+                ),
                 Encoding.UTF8,
                 "application/json"
             ),
@@ -152,7 +166,8 @@ public sealed class SandboxSessionRegistryReadWorkspaceFileTests
             auth,
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance)
+                NullLogger<SessionSecretStore>.Instance
+            )
         );
 
         return (registry, handler);
@@ -209,7 +224,11 @@ public sealed class SandboxSessionRegistryReadWorkspaceFileTests
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => throw new NotSupportedException();
-        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
 
         public override int Read(byte[] buffer, int offset, int count)
         {

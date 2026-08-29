@@ -111,7 +111,8 @@ internal sealed class HeldProviderTurn : DelegatingHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (await IsHeldTurnAsync(request, cancellationToken))
         {
@@ -164,12 +165,13 @@ internal sealed class WebSocketObserver
 
     private readonly Func<int>? _sampleAtOpen;
     private readonly List<List<string>> _framesPerConnection = [];
-    private readonly TaskCompletionSource _secondConnection =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly TaskCompletionSource _secondConnectionStreaming =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly TaskCompletionSource _secondConnectionDone =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _secondConnection = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _secondConnectionStreaming = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
+    private readonly TaskCompletionSource _secondConnectionDone = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
     private readonly object _sync = new();
     private int _sampleAtSecondConnection = NotSampled;
 
@@ -305,8 +307,10 @@ internal sealed class RestMessagesObserver
     {
         page.Request += (_, request) =>
         {
-            if (request.Url.Contains(urlMustContain, StringComparison.Ordinal)
-                && request.Url.Contains("/messages", StringComparison.Ordinal))
+            if (
+                request.Url.Contains(urlMustContain, StringComparison.Ordinal)
+                && request.Url.Contains("/messages", StringComparison.Ordinal)
+            )
             {
                 Interlocked.Increment(ref _count);
             }

@@ -16,7 +16,8 @@ public interface ICopilotSdkClient : IAsyncDisposable
     string DependencyState { get; }
 
     void ConfigureDynamicToolExecutor(
-        Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor);
+        Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor
+    );
 
     Task StartOrResumeSessionAsync(CopilotBridgeInitOptions options, CancellationToken ct = default);
 

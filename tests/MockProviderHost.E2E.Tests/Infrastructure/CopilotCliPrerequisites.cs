@@ -34,11 +34,9 @@ internal static class CopilotCliPrerequisites
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 ".npm-global",
                 "bin",
-                "copilot"),
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "npm",
-                "copilot.cmd"),
+                "copilot"
+            ),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm", "copilot.cmd"),
         };
 
         foreach (var candidate in candidates)
@@ -56,15 +54,17 @@ internal static class CopilotCliPrerequisites
         output = string.Empty;
         try
         {
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = fileName,
-                Arguments = args,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            });
+            using var p = Process.Start(
+                new ProcessStartInfo
+                {
+                    FileName = fileName,
+                    Arguments = args,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                }
+            );
             if (p is null)
             {
                 return false;
@@ -75,22 +75,32 @@ internal static class CopilotCliPrerequisites
             // child, which a hung CLI may never do.
             if (!p.WaitForExit(5000))
             {
-                try { p.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+                try
+                {
+                    p.Kill(entireProcessTree: true);
+                }
+                catch
+                { /* best-effort */
+                }
                 return false;
             }
             output = p.StandardOutput.ReadToEnd();
             return p.ExitCode == 0;
         }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception
-                                       or InvalidOperationException
-                                       or PlatformNotSupportedException
-                                       or System.IO.IOException)
+        catch (Exception ex)
+            when (ex
+                    is System.ComponentModel.Win32Exception
+                        or InvalidOperationException
+                        or PlatformNotSupportedException
+                        or System.IO.IOException
+            )
         {
             // Probe is best-effort (file not on PATH, permission denied, platform mismatch).
             // Surface a Debug trace so a missing-tool diagnosis isn't silent on machines where
             // the CLI is supposedly installed.
             Debug.WriteLine(
-                $"CopilotCliPrerequisites probe failed for '{fileName}': {ex.GetType().Name}: {ex.Message}");
+                $"CopilotCliPrerequisites probe failed for '{fileName}': {ex.GetType().Name}: {ex.Message}"
+            );
             return false;
         }
     }

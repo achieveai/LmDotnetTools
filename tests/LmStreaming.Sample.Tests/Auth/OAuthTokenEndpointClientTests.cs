@@ -14,7 +14,10 @@ public sealed class OAuthTokenEndpointClientTests
         public Uri? LastUri { get; private set; }
         public bool SawJsonAccept { get; private set; }
 
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
         {
             LastUri = request.RequestUri;
             LastBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
@@ -32,12 +35,13 @@ public sealed class OAuthTokenEndpointClientTests
         return (new OAuthTokenEndpointClient(new HttpClient(handler)), handler);
     }
 
-    private static Dictionary<string, string> RefreshForm() => new()
-    {
-        ["grant_type"] = "refresh_token",
-        ["client_id"] = "cid",
-        ["refresh_token"] = "rt-secret",
-    };
+    private static Dictionary<string, string> RefreshForm() =>
+        new()
+        {
+            ["grant_type"] = "refresh_token",
+            ["client_id"] = "cid",
+            ["refresh_token"] = "rt-secret",
+        };
 
     [Fact]
     public async Task PostAsync_parses_success_token_and_posts_json_form()
@@ -92,10 +96,12 @@ public sealed class OAuthTokenEndpointClientTests
     public async Task PostAsync_rejects_token_from_non_success_status()
     {
         // A 503 (transient) with a token-shaped body must NOT be accepted as a credential.
-        var (client, _) = NewClient(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable)
-        {
-            Content = new StringContent("{\"access_token\":\"should-be-ignored\"}"),
-        });
+        var (client, _) = NewClient(
+            new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StringContent("{\"access_token\":\"should-be-ignored\"}"),
+            }
+        );
 
         var result = await client.PostAsync("https://token.example/oauth/token", RefreshForm());
 
@@ -119,10 +125,12 @@ public sealed class OAuthTokenEndpointClientTests
     [Fact]
     public async Task PostAsync_surfaces_oauth_error_on_4xx()
     {
-        var (client, _) = NewClient(new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest)
-        {
-            Content = new StringContent("{\"error\":\"invalid_grant\"}"),
-        });
+        var (client, _) = NewClient(
+            new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("{\"error\":\"invalid_grant\"}"),
+            }
+        );
 
         var result = await client.PostAsync("https://token.example/oauth/token", RefreshForm());
 

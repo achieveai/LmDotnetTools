@@ -60,6 +60,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     private long _replayBufferBytes;
     private string? _replayRunId;
     private string? _replayGenerationId;
+
     // Replay is bounded by BOTH a message count and an estimated byte budget: a long tool/reasoning
     // turn can stay under the count cap while still retaining large per-message payloads (text, tool
     // args/results), and multiple live conversations multiply that. Whichever cap trips first stops
@@ -326,7 +327,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         int maxReplayBufferSize = 10_000,
         long maxReplayBufferBytes = 8L * 1024 * 1024,
         bool persistRunLedger = false,
-        MultiTurnLifecycleServices? lifecycleServices = null)
+        MultiTurnLifecycleServices? lifecycleServices = null
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -351,17 +353,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // the provider pick its default model — this sets budget only, never clobbers model selection).
         var baseOptions = defaultOptions ?? new GenerateReplyOptions();
         DefaultOptions = baseOptions.MaxToken is null
-            ? baseOptions with { MaxToken = DefaultMaxTokenFloor }
+            ? baseOptions with
+            {
+                MaxToken = DefaultMaxTokenFloor,
+            }
             : baseOptions;
         Store = store;
         Logger = logger ?? NullLogger.Instance;
 
         if (persistRunLedger)
         {
-            RunLedgerStore = store as IRunLedgerStore
+            RunLedgerStore =
+                store as IRunLedgerStore
                 ?? throw new ArgumentException(
                     $"{nameof(persistRunLedger)} is true but {nameof(store)} is null or does not implement {nameof(IRunLedgerStore)}.",
-                    nameof(store));
+                    nameof(store)
+                );
         }
 
         LifecycleServices = lifecycleServices ?? MultiTurnLifecycleServices.Disabled;
@@ -369,11 +376,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // The conversation store doubles as the lifecycle store when it can, but only for a host
         // that actually asked for lifecycle — persisting to SQLite must not by itself start writing
         // run_lifecycle rows.
-        Lifecycle = new RunTurnLifecycleFinalizer(
-            threadId,
-            LifecycleServices,
-            store as IRunLifecycleStore,
-            Logger);
+        Lifecycle = new RunTurnLifecycleFinalizer(threadId, LifecycleServices, store as IRunLifecycleStore, Logger);
 
         // Create initial channel
         _inputChannel = CreateInputChannel();
@@ -390,7 +393,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 FullMode = BoundedChannelFullMode.Wait,
                 SingleReader = true,
                 SingleWriter = false,
-            });
+            }
+        );
     }
 
     /// <summary>
@@ -478,7 +482,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             usageMessage,
             ThreadId,
             UsageExecutionKind.Primary,
-            DefaultOptions.ModelId);
+            DefaultOptions.ModelId
+        );
         ledger.RecordUsage(record);
 
         EnsureUsageWriter()?.Schedule();
@@ -520,8 +525,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         lock (_usageWriterLock)
         {
             return _usageWriter ??= new UsagePersistenceWriter(
-                    ct => ConversationUsageProjection.SaveAsync(store, ledger.Snapshot(CurrentUsageCompleteness), ledger.SnapshotRecords(), ct),
-                    onError: ex => Logger.LogWarning(ex, "Failed to persist usage snapshot for thread {ThreadId}", ThreadId));
+                ct =>
+                    ConversationUsageProjection.SaveAsync(
+                        store,
+                        ledger.Snapshot(CurrentUsageCompleteness),
+                        ledger.SnapshotRecords(),
+                        ct
+                    ),
+                onError: ex => Logger.LogWarning(ex, "Failed to persist usage snapshot for thread {ThreadId}", ThreadId)
+            );
         }
     }
 
@@ -604,7 +616,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             {
                 Logger.LogError(
                     "Usage flush did not achieve durability for thread {ThreadId}; final usage may remain only in memory",
-                    ThreadId);
+                    ThreadId
+                );
             }
         }
         catch (Exception ex)
@@ -714,7 +727,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// </exception>
     protected (ToolCallResultMessage Old, ToolCallResultMessage New) UpdateToolResultByCallId(
         string toolCallId,
-        Func<ToolCallResultMessage, ToolCallResultMessage> updater)
+        Func<ToolCallResultMessage, ToolCallResultMessage> updater
+    )
     {
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
         ArgumentNullException.ThrowIfNull(updater);
@@ -722,11 +736,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         lock (_historyLock)
         {
             var index = ConversationHistory.FindLastIndex(m =>
-                m is ToolCallResultMessage tcr && tcr.ToolCallId == toolCallId);
+                m is ToolCallResultMessage tcr && tcr.ToolCallId == toolCallId
+            );
             if (index < 0)
             {
                 throw new InvalidOperationException(
-                    $"No ToolCallResultMessage with ToolCallId '{toolCallId}' found in history.");
+                    $"No ToolCallResultMessage with ToolCallId '{toolCallId}' found in history."
+                );
             }
 
             var old = (ToolCallResultMessage)ConversationHistory[index];
@@ -745,7 +761,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     protected async Task ReplacePersistedAsync(
         ToolCallResultMessage old,
         ToolCallResultMessage updated,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(old);
         ArgumentNullException.ThrowIfNull(updated);
@@ -781,7 +798,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             Logger.LogWarning(
                 ex,
                 "Failed to persist deferred-tool resolution for ToolCallId={ToolCallId}",
-                updated.ToolCallId);
+                updated.ToolCallId
+            );
         }
     }
 
@@ -942,7 +960,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 unreadableCount++;
                 LogSkippedRecord(persisted, ex);
             },
-            cancellationToken: ct);
+            cancellationToken: ct
+        );
 
         // Restore history
         RestoreHistory(messages);
@@ -980,7 +999,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             ThreadId,
             unreadableCount,
             unpairedCount,
-            metadata.LatestRunId);
+            metadata.LatestRunId
+        );
 
         // "Recovered" means messages were actually restored. The zero-row branch above already
         // returns false for that same observable outcome, so an all-corrupt load — which restores
@@ -1010,7 +1030,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                     + "(schema mismatch, not corruption)",
                 persisted.Id,
                 ThreadId,
-                unknownType.TypeDiscriminator);
+                unknownType.TypeDiscriminator
+            );
             return;
         }
 
@@ -1018,7 +1039,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             ex,
             "Skipping corrupt persisted record {RecordId} for thread {ThreadId} during recovery",
             persisted.Id,
-            ThreadId);
+            ThreadId
+        );
     }
 
     /// <summary>
@@ -1090,7 +1112,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         ArgumentNullException.ThrowIfNull(queuedInput);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-        return _inputChannel.Writer.TryWrite(queuedInput) ? ValueTask.CompletedTask : _inputChannel.Writer.WriteAsync(queuedInput, ct);
+        return _inputChannel.Writer.TryWrite(queuedInput)
+            ? ValueTask.CompletedTask
+            : _inputChannel.Writer.WriteAsync(queuedInput, ct);
     }
 
     /// <summary>
@@ -1147,17 +1171,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default) =>
-        SendAsync(new UserInput(messages, inputId, parentRunId), ct);
+        CancellationToken ct = default
+    ) => SendAsync(new UserInput(messages, inputId, parentRunId), ct);
 
     /// <summary>
     /// <see cref="SendAsync(List{IMessage}, string?, string?, CancellationToken)"/> over a full
     /// <see cref="UserInput"/>, so per-input flags (notably
     /// <see cref="UserInput.SuppressSubAgentSpawning"/>) reach the run instead of being rebuilt away.
     /// </summary>
-    public virtual ValueTask<SendReceipt> SendAsync(
-        UserInput input,
-        CancellationToken ct = default)
+    public virtual ValueTask<SendReceipt> SendAsync(UserInput input, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(input);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -1221,8 +1243,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
         Logger.LogDebug("Message queued. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
 
-        return ValueTask.FromResult(
-            new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed));
+        return ValueTask.FromResult(new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed));
     }
 
     /// <inheritdoc />
@@ -1230,8 +1251,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default) =>
-        TrySendAsync(new UserInput(messages, inputId, parentRunId), ct);
+        CancellationToken ct = default
+    ) => TrySendAsync(new UserInput(messages, inputId, parentRunId), ct);
 
     /// <summary>
     /// Whether THIS agent will actually ENFORCE <see cref="UserInput.SuppressSubAgentSpawning"/> on the run
@@ -1253,8 +1274,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// spawn, and echoing the flag back would let an agent that ignores it advertise a guarantee nothing is
     /// keeping. Shared by both send paths so the two cannot drift apart.
     /// </summary>
-    private bool WillSuppressSpawning(UserInput input) =>
-        input.SuppressSubAgentSpawning && EnforcesSpawnSuppression;
+    private bool WillSuppressSpawning(UserInput input) => input.SuppressSubAgentSpawning && EnforcesSpawnSuppression;
 
     /// <summary>
     /// <see cref="TrySendAsync(List{IMessage}, string?, string?, CancellationToken)"/> over a full
@@ -1262,9 +1282,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <see cref="UserInput.SuppressSubAgentSpawning"/> — survive as far as the run that consumes them
     /// instead of being rebuilt away from a message list.
     /// </summary>
-    public virtual async ValueTask<SendReceipt?> TrySendAsync(
-        UserInput input,
-        CancellationToken ct = default)
+    public virtual async ValueTask<SendReceipt?> TrySendAsync(UserInput input, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(input);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -1323,31 +1341,34 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             return null;
         }
 
-        Logger.LogDebug("Message queued via TrySendAsync. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
-
-        return new SendReceipt(
+        Logger.LogDebug(
+            "Message queued via TrySendAsync. ReceiptId: {ReceiptId}, InputId: {InputId}",
             receiptId,
-            inputId,
-            queuedAt,
-            SpawningSuppressed: WillSuppressSpawning(input));
+            inputId
+        );
+
+        return new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: WillSuppressSpawning(input));
     }
 
     /// <inheritdoc />
     public virtual async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(userInput);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
         // Subscribe first to ensure we don't miss any messages
         var subscriberId = Guid.NewGuid().ToString("N");
-        var outputChannel = Channel.CreateBounded<IMessage>(new BoundedChannelOptions(_outputChannelCapacity)
-        {
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = true,
-            SingleWriter = true,
-        });
+        var outputChannel = Channel.CreateBounded<IMessage>(
+            new BoundedChannelOptions(_outputChannelCapacity)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = true,
+            }
+        );
 
         var subscriber = new Subscriber { Channel = outputChannel };
         lock (_replayLock)
@@ -1404,10 +1425,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                         // pending completion is the terminal one. Fire fallback.
                         Logger.LogWarning(
                             "ExecuteRun terminating on RunId {RunId} via deferred fallback — receipt {ReceiptId} was never observed in a RunAssignmentMessage and no further messages arrived within {GraceMs}ms. "
-                            + "This indicates the implementation did not publish a receipt-correlated assignment for this run.",
+                                + "This indicates the implementation did not publish a receipt-correlated assignment for this run.",
                             pendingFallbackRunId,
                             receiptId,
-                            (int)FallbackGracePeriod.TotalMilliseconds);
+                            (int)FallbackGracePeriod.TotalMilliseconds
+                        );
                         yield break;
                     }
                 }
@@ -1533,20 +1555,24 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         public DeliveredIdentity Advance(IMessage message) =>
             message.RunId != null && !string.Equals(message.RunId, RunId, StringComparison.Ordinal)
                 ? new DeliveredIdentity(message.RunId, message.GenerationId)
-                : this with { GenerationId = message.GenerationId ?? GenerationId };
+                : this with
+                {
+                    GenerationId = message.GenerationId ?? GenerationId,
+                };
     }
 
     /// <inheritdoc />
-    public async IAsyncEnumerable<IMessage> SubscribeAsync(
-        [EnumeratorCancellation] CancellationToken ct = default)
+    public async IAsyncEnumerable<IMessage> SubscribeAsync([EnumeratorCancellation] CancellationToken ct = default)
     {
         var subscriberId = Guid.NewGuid().ToString("N");
-        var channel = Channel.CreateBounded<IMessage>(new BoundedChannelOptions(_outputChannelCapacity)
-        {
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = true,
-            SingleWriter = false,
-        });
+        var channel = Channel.CreateBounded<IMessage>(
+            new BoundedChannelOptions(_outputChannelCapacity)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false,
+            }
+        );
 
         // Atomically register this subscriber AND snapshot the in-flight run's buffered messages,
         // so a message published concurrently is delivered EITHER via this replay snapshot OR via
@@ -1576,13 +1602,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                     ThreadId,
                     _replayRunId,
                     _replayGenerationId,
-                    StreamRecoveryReason.ReplayTruncated);
+                    StreamRecoveryReason.ReplayTruncated
+                );
             }
             else
             {
-                replay = _replayRunActive && _replayBuffer.Count > 0
-                    ? [.. _replayBuffer]
-                    : [];
+                replay = _replayRunActive && _replayBuffer.Count > 0 ? [.. _replayBuffer] : [];
             }
 
             // A replayed message is delivered as surely as a live one — the loop below yields the whole
@@ -1614,13 +1639,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 "Subscriber {SubscriberId} joined run {RunId} whose replay buffer is truncated; "
                     + "withholding the partial replay and signalling resync.",
                 subscriberId,
-                truncationAdvisory.RunId);
+                truncationAdvisory.RunId
+            );
         }
 
         Logger.LogDebug(
             "Subscriber {SubscriberId} connected (replaying {ReplayCount} in-flight message(s))",
             subscriberId,
-            replay.Count);
+            replay.Count
+        );
 
         try
         {
@@ -1721,7 +1748,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                                 + "reconnecting mid-run — that client is told to resync from persisted history "
                                 + "instead of resuming on a silently partial stream.",
                             _maxReplayBufferSize,
-                            _maxReplayBufferBytes);
+                            _maxReplayBufferBytes
+                        );
                     }
                 }
 
@@ -1796,17 +1824,21 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             // observable to SubscribeAsync even though the channel it was dropped from is (by
             // definition) full: SubscribeAsync checks this TCS only after its own read loop ends,
             // never by writing into the now-completed channel.
-            _ = removed.RecoveryControl.TrySetResult(new StreamRecoveryMessage(
-                ThreadId,
-                identity.RunId,
-                identity.GenerationId,
-                StreamRecoveryReason.SlowConsumer));
+            _ = removed.RecoveryControl.TrySetResult(
+                new StreamRecoveryMessage(
+                    ThreadId,
+                    identity.RunId,
+                    identity.GenerationId,
+                    StreamRecoveryReason.SlowConsumer
+                )
+            );
             _ = removed.Channel.Writer.TryComplete();
             Logger.LogWarning(
                 "Dropping slow subscriber {SubscriberId}: output channel full at capacity {Capacity}; "
                     + "the live run is not blocked and the client can reconnect to resume.",
                 subscriberId,
-                _outputChannelCapacity);
+                _outputChannelCapacity
+            );
         }
     }
 
@@ -1827,18 +1859,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             case TextMessage t:
                 return baseOverhead + ((t.Text?.Length ?? 0) * 2L);
             case ToolsCallMessage tc:
+            {
+                var bytes = baseOverhead;
+                if (tc.ToolCalls is { } calls)
                 {
-                    var bytes = baseOverhead;
-                    if (tc.ToolCalls is { } calls)
+                    foreach (var call in calls)
                     {
-                        foreach (var call in calls)
-                        {
-                            bytes += ((call.FunctionName?.Length ?? 0) + (call.FunctionArgs?.Length ?? 0)) * 2L;
-                        }
+                        bytes += ((call.FunctionName?.Length ?? 0) + (call.FunctionArgs?.Length ?? 0)) * 2L;
                     }
-
-                    return bytes;
                 }
+
+                return bytes;
+            }
 
             default:
                 return baseOverhead;
@@ -1910,7 +1942,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 Logger.LogWarning(
                     ex,
                     "History recovery failed for thread {ThreadId}; starting with empty history",
-                    ThreadId);
+                    ThreadId
+                );
             }
         }
 
@@ -2220,7 +2253,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                     ex,
                     "Subscriber {SubscriberId} teardown hook failed during disposal of thread {ThreadId}",
                     subscriberId,
-                    ThreadId);
+                    ThreadId
+                );
                 (failures ??= []).Add(ex);
             }
         }
@@ -2231,8 +2265,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             // A lone failure reports AS ITSELF: the overwhelmingly common case hands the caller the
             // real exception to catch rather than an AggregateException it has to unwrap first.
             [var only] => only,
-            _ => new AggregateException(
-                "One or more subscriber teardown hooks failed during disposal.", failures),
+            _ => new AggregateException("One or more subscriber teardown hooks failed during disposal.", failures),
         };
     }
 
@@ -2256,8 +2289,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <returns>
     /// A tuple of (parent run id from caller input or null, whether caller explicitly forked).
     /// </returns>
-    protected (string? ParentRunId, bool IsExplicitFork) ResolveBatchParent(
-        IReadOnlyList<QueuedInput> inputs)
+    protected (string? ParentRunId, bool IsExplicitFork) ResolveBatchParent(IReadOnlyList<QueuedInput> inputs)
     {
         ArgumentNullException.ThrowIfNull(inputs);
 
@@ -2291,7 +2323,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 "Mixed ParentRunId values in batch ({Count} distinct: {Parents}); using first-encountered '{First}'.",
                 distinct.Count,
                 string.Join(",", distinct),
-                first);
+                first
+            );
         }
 
         return (first, first != null);
@@ -2333,7 +2366,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         bool wasForked = false,
         string? runId = null,
         string? causeKind = null,
-        string? causeToolCallId = null)
+        string? causeToolCallId = null
+    )
     {
         ArgumentNullException.ThrowIfNull(inputs);
 
@@ -2352,10 +2386,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             var createdAt = DateTimeOffset.UtcNow;
             await RunLedgerStore.UpsertRunLedgerAsync(
                 new RunLedgerEntry(ThreadId, runId, RunStatus.Queued, inputIds, createdAt, createdAt),
-                ct);
+                ct
+            );
             await RunLedgerStore.UpsertRunLedgerAsync(
                 new RunLedgerEntry(ThreadId, runId, RunStatus.InProgress, inputIds, createdAt, DateTimeOffset.UtcNow),
-                ct);
+                ct
+            );
 
             // Now folded into the run's own InputIds above — the pre-run acceptance record has
             // served its purpose (see TrySendAsync) and would otherwise accumulate forever.
@@ -2372,14 +2408,16 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             causeKind: causeKind,
             causeToolCallId: causeToolCallId,
             wasForked: wasForked,
-            ct: ct);
+            ct: ct
+        );
 
         Logger.LogInformation(
             "Starting run {RunId} (parent: {ParentRunId}, generation: {GenerationId}, inputs: {InputCount})",
             runId,
             parentRunId ?? "none",
             generationId,
-            inputs.Count);
+            inputs.Count
+        );
 
         return new RunAssignment(runId, generationId, inputIds, parentRunId);
     }
@@ -2395,8 +2433,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// reported by the finalizer with the run's own outcome, which is what keeps error,
     /// cancellation, and teardown from needing a copy of this logic in each loop.
     /// </remarks>
-    protected void BeginTurn(string runId, string generationId) =>
-        Lifecycle.TurnStarted(runId, generationId);
+    protected void BeginTurn(string runId, string generationId) => Lifecycle.TurnStarted(runId, generationId);
 
     /// <summary>
     /// Folds a message the current turn produced into that turn's lifecycle report.
@@ -2429,12 +2466,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         string runId,
         string generationId,
         string? outcome = null,
-        CancellationToken ct = default) =>
-        Lifecycle.TurnCompletedAsync(
-            runId,
-            generationId,
-            outcome ?? LifecycleTurnOutcomes.Completed,
-            ct: ct);
+        CancellationToken ct = default
+    ) => Lifecycle.TurnCompletedAsync(runId, generationId, outcome ?? LifecycleTurnOutcomes.Completed, ct: ct);
 
     /// <summary>
     /// Reports the discovered context a provider request is about to carry, reading it back out of
@@ -2460,13 +2493,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         string runId,
         string generationId,
         IEnumerable<IMessage>? request,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         Lifecycle.PublishesEvents
-            ? Lifecycle.ContextLoadedAsync(
-                runId,
-                generationId,
-                RenderedContextBlock.ScanRequest(request),
-                ct)
+            ? Lifecycle.ContextLoadedAsync(runId, generationId, RenderedContextBlock.ScanRequest(request), ct)
             : Task.CompletedTask;
 
     /// <summary>
@@ -2488,13 +2518,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         string generationId,
         string? prompt,
         string? phase = null,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         Lifecycle.PublishesEvents
             ? Lifecycle.ContextLoadedAsync(
                 runId,
                 generationId,
                 RenderedContextBlock.Scan(prompt, phase ?? LifecycleContextPhases.MidSession),
-                ct)
+                ct
+            )
             : Task.CompletedTask;
 
     /// <summary>
@@ -2511,7 +2543,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     protected async Task RecordInjectedInputsAsync(
         string runId,
         IReadOnlyList<string> injectedInputIds,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(injectedInputIds);
 
@@ -2526,14 +2559,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             Logger.LogWarning(
                 "No run ledger entry found for RunId {RunId} to record injected inputs {InputIds}",
                 runId,
-                string.Join(",", injectedInputIds));
+                string.Join(",", injectedInputIds)
+            );
             return;
         }
 
         var mergedInputIds = existing.InputIds.Union(injectedInputIds, StringComparer.Ordinal).ToList();
         await RunLedgerStore.UpsertRunLedgerAsync(
-            existing with { InputIds = mergedInputIds, UpdatedAt = DateTimeOffset.UtcNow },
-            ct);
+            existing with
+            {
+                InputIds = mergedInputIds,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            },
+            ct
+        );
 
         // Same cleanup as StartRunAsync: these ids are now covered by the run's InputIds.
         foreach (var injectedInputId in injectedInputIds)
@@ -2575,7 +2614,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         bool isError = false,
         string? errorMessage = null,
         string? outcome = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (RunLedgerStore != null)
         {
@@ -2584,14 +2624,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             {
                 var status = isError ? RunStatus.Errored : RunStatus.Completed;
                 await RunLedgerStore.UpsertRunLedgerAsync(
-                    existing with { Status = status, UpdatedAt = DateTimeOffset.UtcNow },
-                    ct);
+                    existing with
+                    {
+                        Status = status,
+                        UpdatedAt = DateTimeOffset.UtcNow,
+                    },
+                    ct
+                );
             }
             else
             {
                 Logger.LogWarning(
                     "No run ledger entry found for RunId {RunId} at completion; skipping terminal ledger write",
-                    runId);
+                    runId
+                );
             }
         }
 
@@ -2602,23 +2648,25 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             runId,
             generationId,
             outcome ?? (isError ? LifecycleRunOutcomes.Error : LifecycleRunOutcomes.Completed),
-            isError
-                ? new LifecycleError { Message = errorMessage ?? "The run failed." }
-                : null,
-            ct: ct);
+            isError ? new LifecycleError { Message = errorMessage ?? "The run failed." } : null,
+            ct: ct
+        );
 
-        await PublishToAllAsync(new RunCompletedMessage
-        {
-            CompletedRunId = runId,
-            WasForked = wasForked,
-            ForkedToRunId = forkedToRunId,
-            ThreadId = ThreadId,
-            GenerationId = generationId,
-            HasPendingMessages = pendingMessageCount > 0,
-            PendingMessageCount = pendingMessageCount,
-            IsError = isError,
-            ErrorMessage = errorMessage,
-        }, ct);
+        await PublishToAllAsync(
+            new RunCompletedMessage
+            {
+                CompletedRunId = runId,
+                WasForked = wasForked,
+                ForkedToRunId = forkedToRunId,
+                ThreadId = ThreadId,
+                GenerationId = generationId,
+                HasPendingMessages = pendingMessageCount > 0,
+                PendingMessageCount = pendingMessageCount,
+                IsError = isError,
+                ErrorMessage = errorMessage,
+            },
+            ct
+        );
 
         lock (_stateLock)
         {
@@ -2677,13 +2725,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 if (run.Status is RunStatus.Queued or RunStatus.InProgress)
                 {
                     await RunLedgerStore.UpsertRunLedgerAsync(
-                        run with { Status = RunStatus.Interrupted, UpdatedAt = DateTimeOffset.UtcNow },
-                        ct);
+                        run with
+                        {
+                            Status = RunStatus.Interrupted,
+                            UpdatedAt = DateTimeOffset.UtcNow,
+                        },
+                        ct
+                    );
                     Logger.LogWarning(
                         "Marking dangling run {RunId} (status {Status}) Interrupted on restart for thread {ThreadId}",
                         run.RunId,
                         run.Status,
-                        ThreadId);
+                        ThreadId
+                    );
                 }
             }
 
@@ -2699,12 +2753,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 var now = DateTimeOffset.UtcNow;
                 await RunLedgerStore.UpsertRunLedgerAsync(
                     new RunLedgerEntry(ThreadId, orphanRunId, RunStatus.Interrupted, [inputId], now, now),
-                    ct);
+                    ct
+                );
                 Logger.LogWarning(
                     "Synthesized orphan Interrupted run {RunId} for accepted-but-never-assigned InputId {InputId} on restart for thread {ThreadId}",
                     orphanRunId,
                     inputId,
-                    ThreadId);
+                    ThreadId
+                );
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -2713,7 +2769,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         }
         catch (Exception ex)
         {
-            Logger.LogWarning(ex, "Run-ledger reconciliation failed for thread {ThreadId}; continuing without it", ThreadId);
+            Logger.LogWarning(
+                ex,
+                "Run-ledger reconciliation failed for thread {ThreadId}; continuing without it",
+                ThreadId
+            );
         }
     }
 

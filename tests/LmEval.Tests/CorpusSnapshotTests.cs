@@ -57,12 +57,7 @@ public class CorpusSnapshotTests
         var plain = EvalFixtures.Snapshot(EvalFixtures.Item("a"));
         var annotated = CorpusSnapshot.Create(
             "corpus-1",
-            [
-                EvalFixtures.Item("a") with
-                {
-                    Metadata = new Dictionary<string, string> { ["prId"] = "42" },
-                },
-            ]
+            [EvalFixtures.Item("a") with { Metadata = new Dictionary<string, string> { ["prId"] = "42" } }]
         );
 
         annotated.SnapshotHash.Should().Be(plain.SnapshotHash);
@@ -81,10 +76,7 @@ public class CorpusSnapshotTests
     public void A_repeated_candidate_id_is_refused()
     {
         var act = () =>
-            CorpusSnapshot.Create(
-                "corpus-1",
-                [EvalFixtures.Item("a", "one"), EvalFixtures.Item("a", "two")]
-            );
+            CorpusSnapshot.Create("corpus-1", [EvalFixtures.Item("a", "one"), EvalFixtures.Item("a", "two")]);
 
         act.Should().Throw<ArgumentException>().WithMessage("*repeats candidate id 'a'*");
     }
@@ -95,10 +87,7 @@ public class CorpusSnapshotTests
         var act = () =>
             CorpusSnapshot.Create(
                 "corpus-1",
-                [
-                    EvalFixtures.Item("a"),
-                    EvalFixtures.Item("b") with { TaskType = "summarization" },
-                ]
+                [EvalFixtures.Item("a"), EvalFixtures.Item("b") with { TaskType = "summarization" }]
             );
 
         act.Should().Throw<ArgumentException>().WithMessage("*mixes task types*");
@@ -209,8 +198,7 @@ public class CorpusSnapshotTests
                     TaskType = "code-review",
                     TaskInput = "i1",
                     Content = "x1",
-                    Reference =
-                        $"\nc2{Sep}code-review{Sep}{Sep}{Sep}{Sep}i2{Sep}x2{Sep}",
+                    Reference = $"\nc2{Sep}code-review{Sep}{Sep}{Sep}{Sep}i2{Sep}x2{Sep}",
                 },
             ]
         );

@@ -31,7 +31,8 @@ internal static class RunLifecycleGuards
                 $"A run recorded as started must be {nameof(RunLifecyclePhase.Running)}, not "
                     + $"{state.Phase}. Use {nameof(IRunLifecycleStore.TryMarkRunTerminalAsync)} to "
                     + "terminalize it.",
-                nameof(state));
+                nameof(state)
+            );
         }
     }
 
@@ -66,7 +67,8 @@ internal static class RunLifecycleGuards
     /// </returns>
     public static (string? Standing, bool NeedsWrite) ClassifyChildRunAttach(
         DeferredToolCallRecord existing,
-        string childRunId)
+        string childRunId
+    )
     {
         // An unresolved call has no continuation to name yet: naming one now would let a crash
         // recovery start a child for a result that never arrived.

@@ -76,9 +76,7 @@ internal sealed class SystemProcessHandle : IProcessHandle
         // OS — no busy-wait. Honour the BCL convention: a negative TimeSpan
         // (e.g. Timeout.InfiniteTimeSpan) maps to Timeout.Infinite (-1), which
         // waits indefinitely.
-        var ms = timeout < TimeSpan.Zero
-            ? Timeout.Infinite
-            : (int)Math.Min(int.MaxValue, timeout.TotalMilliseconds);
+        var ms = timeout < TimeSpan.Zero ? Timeout.Infinite : (int)Math.Min(int.MaxValue, timeout.TotalMilliseconds);
         return _process.WaitForExit(ms);
     }
 

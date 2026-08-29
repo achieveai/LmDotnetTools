@@ -30,7 +30,8 @@ internal sealed class GitHubPrProvider : IPrProvider
         IOAuthTokenProvider tokenProvider,
         ILogger<GitHubPrProvider> logger,
         int maxPagesPerPoll = CodeReviewDaemonOptions.DefaultMaxPagesPerPoll,
-        int maxPrsPerPage = CodeReviewDaemonOptions.DefaultMaxPrsPerPage)
+        int maxPrsPerPage = CodeReviewDaemonOptions.DefaultMaxPrsPerPage
+    )
     {
         _httpClient = httpClient;
         _tokenProvider = tokenProvider;
@@ -44,7 +45,8 @@ internal sealed class GitHubPrProvider : IPrProvider
         // ignored, which would make a configured 500 read as if it had been honoured.
         PageSize = Math.Min(
             maxPrsPerPage > 0 ? maxPrsPerPage : CodeReviewDaemonOptions.DefaultMaxPrsPerPage,
-            GitHubMaxPageSize);
+            GitHubMaxPageSize
+        );
     }
 
     public string Provider => "github";
@@ -66,7 +68,10 @@ internal sealed class GitHubPrProvider : IPrProvider
     /// <summary>GitHub's documented maximum for <c>per_page</c>.</summary>
     private const int GitHubMaxPageSize = 100;
 
-    public async Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
+    public async Task<PullRequestPage> ListOpenPullRequestsAsync(
+        PrPollRequest request,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -78,7 +83,8 @@ internal sealed class GitHubPrProvider : IPrProvider
 
         // Follow GitHub's Link rel="next" pagination (M5): the first page fixes the query, each subsequent
         // page URL comes verbatim from the previous response's Link header. Bounded by MaxPagesPerPoll.
-        var url = $"{BaseUrl}/repos/{owner}/{repo}/pulls"
+        var url =
+            $"{BaseUrl}/repos/{owner}/{repo}/pulls"
             + $"?state=open&sort=updated&direction=desc&per_page={PageSize.ToString(CultureInfo.InvariantCulture)}";
         var pages = 0;
         while (url is not null && pages < MaxPagesPerPoll)
@@ -86,8 +92,9 @@ internal sealed class GitHubPrProvider : IPrProvider
             cancellationToken.ThrowIfCancellationRequested();
             pages++;
 
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-                .WithOperation(SandboxOperation.ReadProviderMetadata);
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+                SandboxOperation.ReadProviderMetadata
+            );
             var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
             httpRequest.Headers.UserAgent.ParseAdd(UserAgent);
@@ -102,27 +109,29 @@ internal sealed class GitHubPrProvider : IPrProvider
                 foreach (var pr in document.RootElement.EnumerateArray())
                 {
                     var updatedAt = pr.GetProperty("updated_at").GetString() ?? string.Empty;
-                    pullRequests.Add(new PullRequestDescriptor
-                    {
-                        PrId = pr.GetProperty("number").GetRawText(),
-                        HeadSha = pr.GetProperty("head").GetProperty("sha").GetString() ?? string.Empty,
-                        BaseSha = pr.GetProperty("base").GetProperty("sha").GetString() ?? string.Empty,
-                        TriggerWatermark = updatedAt,
-                        LifecycleState = MapLifecycle(pr),
-                        // Recency-filter signals: GitHub exposes both, so the filter uses updated_at (true
-                        // last activity) with created_at as the fallback.
-                        CreatedAt = ParseTimestamp(pr, "created_at"),
-                        UpdatedAt = ParseTimestamp(pr, "updated_at"),
-                        // Who OPENED the PR — addresses the per-developer feedback record. Left null when
-                        // the payload omits it (deleted account, or a shape we didn't expect) so the daemon
-                        // skips the record rather than addressing it to a placeholder.
-                        Author = LoginOf(pr, "user"),
-                        // What the PR SAYS it does. Retrieval ranks on this as well as on the changed
-                        // paths, because sibling PRs applying one pattern often share no path token at all
-                        // and the pattern is named here.
-                        Title = StringOf(pr, "title"),
-                        Description = StringOf(pr, "body"),
-                    });
+                    pullRequests.Add(
+                        new PullRequestDescriptor
+                        {
+                            PrId = pr.GetProperty("number").GetRawText(),
+                            HeadSha = pr.GetProperty("head").GetProperty("sha").GetString() ?? string.Empty,
+                            BaseSha = pr.GetProperty("base").GetProperty("sha").GetString() ?? string.Empty,
+                            TriggerWatermark = updatedAt,
+                            LifecycleState = MapLifecycle(pr),
+                            // Recency-filter signals: GitHub exposes both, so the filter uses updated_at (true
+                            // last activity) with created_at as the fallback.
+                            CreatedAt = ParseTimestamp(pr, "created_at"),
+                            UpdatedAt = ParseTimestamp(pr, "updated_at"),
+                            // Who OPENED the PR — addresses the per-developer feedback record. Left null when
+                            // the payload omits it (deleted account, or a shape we didn't expect) so the daemon
+                            // skips the record rather than addressing it to a placeholder.
+                            Author = LoginOf(pr, "user"),
+                            // What the PR SAYS it does. Retrieval ranks on this as well as on the changed
+                            // paths, because sibling PRs applying one pattern often share no path token at all
+                            // and the pattern is named here.
+                            Title = StringOf(pr, "title"),
+                            Description = StringOf(pr, "body"),
+                        }
+                    );
 
                     if (string.CompareOrdinal(updatedAt, highWaterMark) > 0)
                     {
@@ -144,12 +153,21 @@ internal sealed class GitHubPrProvider : IPrProvider
                 "GitHub poll of {Owner}/{Repo} stopped after {Pages} page(s) of {PageSize} with more results "
                     + "still available; {Count} PR(s) were enumerated and the rest were NOT seen this poll. "
                     + "Raise CodeReviewDaemon:MaxPagesPerPoll if this repeats.",
-                owner, repo, pages, PageSize, pullRequests.Count);
+                owner,
+                repo,
+                pages,
+                PageSize,
+                pullRequests.Count
+            );
         }
 
         _logger.LogDebug(
             "GitHub poll of {Owner}/{Repo} returned {Count} open PR(s) across {Pages} page(s).",
-            owner, repo, pullRequests.Count, pages);
+            owner,
+            repo,
+            pullRequests.Count,
+            pages
+        );
 
         return new PullRequestPage
         {
@@ -183,12 +201,17 @@ internal sealed class GitHubPrProvider : IPrProvider
     /// throws, because "unreachable" must never be reported as "nothing contradicts the recorded head".
     /// </summary>
     public async Task<string?> GetCurrentHeadShaAsync(
-        RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        RepoIdentity repo,
+        string prId,
+        CancellationToken cancellationToken
+    )
     {
         using var document = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
-        if (!document.RootElement.TryGetProperty("head", out var head)
+        if (
+            !document.RootElement.TryGetProperty("head", out var head)
             || !head.TryGetProperty("sha", out var sha)
-            || sha.ValueKind is not JsonValueKind.String)
+            || sha.ValueKind is not JsonValueKind.String
+        )
         {
             return null;
         }
@@ -202,7 +225,10 @@ internal sealed class GitHubPrProvider : IPrProvider
     /// The caller owns the returned document.
     /// </summary>
     private async Task<JsonDocument> GetPullRequestAsync(
-        RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        RepoIdentity repo,
+        string prId,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(repo);
         ArgumentException.ThrowIfNullOrEmpty(prId);
@@ -211,8 +237,9 @@ internal sealed class GitHubPrProvider : IPrProvider
         var repoName = repo.RepoName;
         var url = $"{BaseUrl}/repos/{owner}/{repoName}/pulls/{prId}";
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-            .WithOperation(SandboxOperation.ReadProviderMetadata);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
         httpRequest.Headers.UserAgent.ParseAdd(UserAgent);
@@ -292,7 +319,11 @@ internal sealed class GitHubPrProvider : IPrProvider
         pr.TryGetProperty(property, out var value)
         && value.ValueKind is JsonValueKind.String
         && DateTimeOffset.TryParse(
-            value.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
+            value.GetString(),
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out var parsed
+        )
             ? parsed
             : null;
 

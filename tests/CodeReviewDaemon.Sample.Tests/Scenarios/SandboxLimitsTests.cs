@@ -99,8 +99,10 @@ public sealed class SandboxLimitsTests
         // KnowledgeDigest reads exactly this distinction to decide whether to trust the last record.
         var limits = new SandboxLimits { MaxArtifactPayloadChars = 16 };
 
-        limits.CapRecordListing("aaa\nbbb\nsrc/VeryLongFileName.cs\n")
-            .Should().Be("aaa\nbbb\n" + SandboxLimits.TruncationMarker);
+        limits
+            .CapRecordListing("aaa\nbbb\nsrc/VeryLongFileName.cs\n")
+            .Should()
+            .Be("aaa\nbbb\n" + SandboxLimits.TruncationMarker);
     }
 
     [Fact]

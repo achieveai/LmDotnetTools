@@ -32,10 +32,7 @@ public class WorkflowSessionFaultTests
             )
             .Throws(new OperationCanceledException("controller pump fault"));
 
-        var subAgentOptions = new SubAgentOptions
-        {
-            Templates = new Dictionary<string, SubAgentTemplate>(),
-        };
+        var subAgentOptions = new SubAgentOptions { Templates = new Dictionary<string, SubAgentTemplate>() };
 
         await using var handle = await WorkflowSession.StartAsync(
             objective: "Drive the workflow.",
@@ -48,8 +45,7 @@ public class WorkflowSessionFaultTests
 
         // A short timeout guarantees a regression (the old hang) fails the test FAST rather than stalling CI:
         // WaitAsync surfaces the faulted Completion as the original exception, or a TimeoutException on a hang.
-        var awaitCompletion = async () =>
-            await handle.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        var awaitCompletion = async () => await handle.Completion.WaitAsync(TimeSpan.FromSeconds(5));
 
         await awaitCompletion.Should().ThrowAsync<OperationCanceledException>();
 

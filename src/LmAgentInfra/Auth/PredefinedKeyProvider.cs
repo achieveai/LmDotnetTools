@@ -53,7 +53,8 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
         PredefinedKeyEntry entry,
         IOAuthTokenStore tokenStore,
         OAuthTokenEndpointClient endpoint,
-        ILogger logger)
+        ILogger logger
+    )
     {
         ArgumentNullException.ThrowIfNull(entry);
         _id = entry.Id;
@@ -155,7 +156,8 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
     /// <inheritdoc />
     public async Task<OAuthAccessToken> GetAccessTokenAsync(
         IReadOnlyList<string>? scopes = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         // Everything runs under the gate so a captured entry can never be minted with a credential that
         // an interleaved UpdateEntry (also gated) has since superseded: the kind/invalidation/credential
@@ -180,7 +182,9 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
 
             if (_invalidated)
             {
-                throw new InvalidOperationException($"predefined key '{_id}' is marked invalid; update the credential.");
+                throw new InvalidOperationException(
+                    $"predefined key '{_id}' is marked invalid; update the credential."
+                );
             }
 
             _cachedToken ??= await LoadCachedFromStoreAsync(ct).ConfigureAwait(false);
@@ -262,27 +266,48 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
                 // Definitive rejection: mark invalid so we prompt for an update instead of re-sending a bad credential.
                 _invalidated = true;
                 SetStatus(OAuthSignInState.Failed, resp.Error);
-                _logger.LogWarning("Predefined key {ProviderId} rejected by token endpoint ({Error}); marked invalid.", ProviderId, resp.Error);
+                _logger.LogWarning(
+                    "Predefined key {ProviderId} rejected by token endpoint ({Error}); marked invalid.",
+                    ProviderId,
+                    resp.Error
+                );
                 throw new InvalidOperationException($"predefined key '{_id}' rejected: {resp.Error}");
             }
 
             SetStatus(OAuthSignInState.Failed, resp.Error ?? "mint_failed");
-            throw new InvalidOperationException($"predefined key '{_id}' token mint failed: {resp.Error ?? "no access_token"}");
+            throw new InvalidOperationException(
+                $"predefined key '{_id}' token mint failed: {resp.Error ?? "no access_token"}"
+            );
         }
 
         var expiry = resp.ExpiresIn > 0 ? DateTimeOffset.UtcNow.AddSeconds(resp.ExpiresIn) : NonExpiring;
         var token = new OAuthAccessToken(resp.AccessToken, expiry);
         _cachedToken = token;
 
-        var persistedRefresh = entry.Kind == PredefinedKeyKind.RefreshToken
-            ? (string.IsNullOrEmpty(resp.RefreshToken) ? refreshToken : resp.RefreshToken)
-            : null;
-        await _tokenStore.SaveAsync(
-            new OAuthTokenRecord(ProviderId, null, persistedRefresh ?? string.Empty, token.Value, expiry, entry.Scopes),
-            ct).ConfigureAwait(false);
+        var persistedRefresh =
+            entry.Kind == PredefinedKeyKind.RefreshToken
+                ? (string.IsNullOrEmpty(resp.RefreshToken) ? refreshToken : resp.RefreshToken)
+                : null;
+        await _tokenStore
+            .SaveAsync(
+                new OAuthTokenRecord(
+                    ProviderId,
+                    null,
+                    persistedRefresh ?? string.Empty,
+                    token.Value,
+                    expiry,
+                    entry.Scopes
+                ),
+                ct
+            )
+            .ConfigureAwait(false);
 
         SetStatus(OAuthSignInState.SignedIn, null);
-        _logger.LogInformation("Predefined key {ProviderId} minted an access token (expires {ExpiresAt:o}).", ProviderId, expiry);
+        _logger.LogInformation(
+            "Predefined key {ProviderId} minted an access token (expires {ExpiresAt:o}).",
+            ProviderId,
+            expiry
+        );
         return token;
     }
 
@@ -323,7 +348,9 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
 
     /// <inheritdoc />
     public Task<SignInChallenge> BeginSignInAsync(CancellationToken ct = default) =>
-        throw new NotSupportedException("Predefined egress keys are configured directly, not via an interactive sign-in.");
+        throw new NotSupportedException(
+            "Predefined egress keys are configured directly, not via an interactive sign-in."
+        );
 
     /// <inheritdoc />
     public async Task SignOutAsync(CancellationToken ct = default)

@@ -17,7 +17,8 @@ public sealed record AnthropicCompatModel(
     string ModelName,
     string BaseUrl,
     string ApiKey,
-    string FamilyKey);
+    string FamilyKey
+);
 
 /// <summary>
 /// Discovers Anthropic-compatible provider families from env vars, so adding a new model or a whole
@@ -44,7 +45,10 @@ internal static class AnthropicCompatProviders
         }
 
         var models = new List<AnthropicCompatModel>();
-        var familyKeys = familyKeysRaw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var familyKeys = familyKeysRaw.Split(
+            ',',
+            StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries
+        );
 
         // The generated id is the dropdown/provider key. ProviderRegistry indexes models by id with an
         // OrdinalIgnoreCase comparer and would SILENTLY overwrite/skip a later entry sharing an id — so
@@ -61,7 +65,11 @@ internal static class AnthropicCompatProviders
             var apiKey = Environment.GetEnvironmentVariable($"{familyKey}_APIKEY");
             var modelNamesRaw = Environment.GetEnvironmentVariable($"{familyKey}_MODELS");
 
-            if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(modelNamesRaw))
+            if (
+                string.IsNullOrWhiteSpace(baseUrl)
+                || string.IsNullOrWhiteSpace(apiKey)
+                || string.IsNullOrWhiteSpace(modelNamesRaw)
+            )
             {
                 logger.LogWarning(
                     "Skipping Anthropic-compatible family {FamilyKey}: one or more of its _ANTHROPIC_URL/_APIKEY/_MODELS env vars is not set.",
@@ -70,7 +78,10 @@ internal static class AnthropicCompatProviders
                 continue;
             }
 
-            var modelNames = modelNamesRaw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            var modelNames = modelNamesRaw.Split(
+                ',',
+                StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries
+            );
             foreach (var modelName in modelNames)
             {
                 var id = Slugify(modelName);

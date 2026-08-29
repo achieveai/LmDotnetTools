@@ -48,11 +48,7 @@ public sealed record HarnessOptions
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        if (
-            double.IsNaN(options.AbstainFloor)
-            || options.AbstainFloor < 0.0
-            || options.AbstainFloor > 1.0
-        )
+        if (double.IsNaN(options.AbstainFloor) || options.AbstainFloor < 0.0 || options.AbstainFloor > 1.0)
         {
             throw new ArgumentOutOfRangeException(
                 paramName,
@@ -64,10 +60,7 @@ public sealed record HarnessOptions
             );
         }
 
-        if (
-            options.DispersionAlarm is { } alarm
-            && (double.IsNaN(alarm) || alarm < 0.0)
-        )
+        if (options.DispersionAlarm is { } alarm && (double.IsNaN(alarm) || alarm < 0.0))
         {
             throw new ArgumentOutOfRangeException(
                 paramName,

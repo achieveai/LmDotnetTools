@@ -67,9 +67,7 @@ public sealed class RealFixtureReplayTests
 
     [Theory]
     [MemberData(nameof(FixtureFiles))]
-    public void Function_call_arguments_streaming_produces_well_formed_json_after_assembly(
-        string fixtureName
-    )
+    public void Function_call_arguments_streaming_produces_well_formed_json_after_assembly(string fixtureName)
     {
         var frames = LoadFrames(fixtureName);
         var perItem = new Dictionary<string, System.Text.StringBuilder>(StringComparer.Ordinal);
@@ -95,8 +93,13 @@ public sealed class RealFixtureReplayTests
                     // The 'arguments' field on the done event must equal the assembled deltas.
                     if (perItem.TryGetValue(done.ItemId, out var assembled))
                     {
-                        assembled.ToString().Should().Be(done.Arguments,
-                            $"streamed deltas must concatenate to the final arguments for item {done.ItemId}");
+                        assembled
+                            .ToString()
+                            .Should()
+                            .Be(
+                                done.Arguments,
+                                $"streamed deltas must concatenate to the final arguments for item {done.ItemId}"
+                            );
                     }
 
                     // The final arguments must be valid JSON the agent can hand to the tool.
@@ -131,16 +134,14 @@ public sealed class RealFixtureReplayTests
         }
     }
 
-    private static readonly JsonSerializerOptions s_fixtureOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-    };
+    private static readonly JsonSerializerOptions s_fixtureOptions = new() { PropertyNameCaseInsensitive = true };
 
     private static List<CapturedFrame> LoadFrames(string fixtureName)
     {
         var path = Path.Combine(LocateFixtureDirectory(), fixtureName);
         using var stream = File.OpenRead(path);
-        var raw = JsonSerializer.Deserialize<List<RawFrame>>(stream, s_fixtureOptions)
+        var raw =
+            JsonSerializer.Deserialize<List<RawFrame>>(stream, s_fixtureOptions)
             ?? throw new InvalidOperationException($"Fixture {fixtureName} did not deserialize");
         return raw.ConvertAll(r => new CapturedFrame(r.Text ?? string.Empty, r.From_Client));
     }

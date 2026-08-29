@@ -71,11 +71,7 @@ internal sealed class WorkflowJsonRepairer
 
             // json_object mode nudges JSON-only output across cheap-tier transports without depending on the
             // provider's own schema enforcement; correctness is owned by the caller's re-validation, not here.
-            var options = new GenerateReplyOptions
-            {
-                ModelId = _modelId,
-                ResponseFormat = ResponseFormat.JSON,
-            };
+            var options = new GenerateReplyOptions { ModelId = _modelId, ResponseFormat = ResponseFormat.JSON };
 
             var replies = await _repairAgent.GenerateReplyAsync(messages, options, ct).ConfigureAwait(false);
             var text = replies.OfType<TextMessage>().FirstOrDefault()?.Text;

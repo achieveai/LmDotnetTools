@@ -108,7 +108,8 @@ public interface ITenantStore
     Task<TenantProvisionOutcome> ProvisionAsync(
         TenantRecord tenant,
         string firstAdminUpn,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Binds a named-but-unbound admin row to a durable user id, on that user's first successful
@@ -126,7 +127,8 @@ public interface ITenantStore
         string upn,
         string userId,
         DateTimeOffset boundAt,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Lower-cases every stored <c>entra_tenant_id</c> that is not already lower-cased (#347).
@@ -171,7 +173,8 @@ public interface ITenantStore
     Task<bool> TryEnsureQuarantineTenantAsync(
         string tenantId,
         DateTimeOffset createdAt,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Whether the given durable user id holds the <c>admin</c> role in the given tenant. Reads

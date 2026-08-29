@@ -20,8 +20,11 @@ public class TriggerRuntimeNotifyRestoreTests
 
     private static long FutureUnixMs(int minutes) => DateTimeOffset.UtcNow.AddMinutes(minutes).ToUnixTimeMilliseconds();
 
-    private static (TriggerRuntime rt, ManualTriggerSource src, List<(string payload, bool isError)> notified) BuildRuntime(
-        INotifyWaitStore store, string threadId, bool restorableManual)
+    private static (
+        TriggerRuntime rt,
+        ManualTriggerSource src,
+        List<(string payload, bool isError)> notified
+    ) BuildRuntime(INotifyWaitStore store, string threadId, bool restorableManual)
     {
         var notified = new List<(string, bool)>();
         var src = new ManualTriggerSource();
@@ -31,28 +34,40 @@ public class TriggerRuntimeNotifyRestoreTests
             resolve: (_, _, _, _) => Task.CompletedTask,
             notify: (payload, isError, _) =>
             {
-                lock (notified) { notified.Add((payload, isError)); }
+                lock (notified)
+                {
+                    notified.Add((payload, isError));
+                }
                 return Task.CompletedTask;
-            });
+            }
+        );
 
-        rt.Register(new TriggerSourceRegistration
-        {
-            Kind = "manual",
-            Description = "test",
-            ArgsSchema = "{}",
-            Capabilities = restorableManual
-                ? new TriggerCapabilities(SupportsBlock: true, SupportsNotify: true, SupportsRestore: true)
-                : ManualTriggerSource.Caps, // SupportsRestore: false
-            Source = src,
-        });
-        rt.Register(new TriggerSourceRegistration
-        {
-            Kind = "manual-restorable",
-            Description = "test",
-            ArgsSchema = "{}",
-            Capabilities = new TriggerCapabilities(SupportsBlock: true, SupportsNotify: true, SupportsRestore: true),
-            Source = src,
-        });
+        rt.Register(
+            new TriggerSourceRegistration
+            {
+                Kind = "manual",
+                Description = "test",
+                ArgsSchema = "{}",
+                Capabilities = restorableManual
+                    ? new TriggerCapabilities(SupportsBlock: true, SupportsNotify: true, SupportsRestore: true)
+                    : ManualTriggerSource.Caps, // SupportsRestore: false
+                Source = src,
+            }
+        );
+        rt.Register(
+            new TriggerSourceRegistration
+            {
+                Kind = "manual-restorable",
+                Description = "test",
+                ArgsSchema = "{}",
+                Capabilities = new TriggerCapabilities(
+                    SupportsBlock: true,
+                    SupportsNotify: true,
+                    SupportsRestore: true
+                ),
+                Source = src,
+            }
+        );
 
         return (rt, src, notified);
     }
@@ -61,8 +76,20 @@ public class TriggerRuntimeNotifyRestoreTests
     public async Task RestoreNotifyWaits_ReArmsRestorableRows()
     {
         var store = new InMemoryNotifyWaitStore();
-        await store.SaveAsync(new NotifyWaitRecord("w1", "t", "manual-restorable", "{}", null, null, 0,
-            FutureUnixMs(minutes: 30), NowUnixMs(), "active"));
+        await store.SaveAsync(
+            new NotifyWaitRecord(
+                "w1",
+                "t",
+                "manual-restorable",
+                "{}",
+                null,
+                null,
+                0,
+                FutureUnixMs(minutes: 30),
+                NowUnixMs(),
+                "active"
+            )
+        );
 
         var (rt, _, _) = BuildRuntime(store, threadId: "t", restorableManual: true);
         await rt.RestoreNotifyWaitsAsync(CancellationToken.None);
@@ -74,8 +101,9 @@ public class TriggerRuntimeNotifyRestoreTests
     public async Task RestoreNotifyWaits_NonRestorable_DeliversTriggerLostAndDeletesRow()
     {
         var store = new InMemoryNotifyWaitStore();
-        await store.SaveAsync(new NotifyWaitRecord("w2", "t", "manual", "{}", null, null, 0,
-            FutureUnixMs(30), NowUnixMs(), "active")); // "manual" = SupportsRestore:false
+        await store.SaveAsync(
+            new NotifyWaitRecord("w2", "t", "manual", "{}", null, null, 0, FutureUnixMs(30), NowUnixMs(), "active")
+        ); // "manual" = SupportsRestore:false
 
         var (rt, _, notified) = BuildRuntime(store, threadId: "t", restorableManual: false);
         await rt.RestoreNotifyWaitsAsync(CancellationToken.None);
@@ -88,8 +116,20 @@ public class TriggerRuntimeNotifyRestoreTests
     public async Task RestoreNotifyWaits_UnregisteredKind_DeliversTriggerLostAndDeletesRow()
     {
         var store = new InMemoryNotifyWaitStore();
-        await store.SaveAsync(new NotifyWaitRecord("w2b", "t", "no-such-kind", "{}", null, null, 0,
-            FutureUnixMs(30), NowUnixMs(), "active"));
+        await store.SaveAsync(
+            new NotifyWaitRecord(
+                "w2b",
+                "t",
+                "no-such-kind",
+                "{}",
+                null,
+                null,
+                0,
+                FutureUnixMs(30),
+                NowUnixMs(),
+                "active"
+            )
+        );
 
         var (rt, _, notified) = BuildRuntime(store, threadId: "t", restorableManual: false);
         await rt.RestoreNotifyWaitsAsync(CancellationToken.None);
@@ -105,8 +145,9 @@ public class TriggerRuntimeNotifyRestoreTests
         // Already-elapsed deadline (armed 2 hours ago with a 1-minute TTL).
         var armedAt = DateTimeOffset.UtcNow.AddHours(-2).ToUnixTimeMilliseconds();
         var deadline = DateTimeOffset.UtcNow.AddHours(-2).AddMinutes(1).ToUnixTimeMilliseconds();
-        await store.SaveAsync(new NotifyWaitRecord("w3", "t", "manual-restorable", "{}", null, null, 0,
-            deadline, armedAt, "active"));
+        await store.SaveAsync(
+            new NotifyWaitRecord("w3", "t", "manual-restorable", "{}", null, null, 0, deadline, armedAt, "active")
+        );
 
         var (rt, _, notified) = BuildRuntime(store, threadId: "t", restorableManual: true);
         await rt.RestoreNotifyWaitsAsync(CancellationToken.None);
@@ -125,14 +166,28 @@ public class TriggerRuntimeNotifyRestoreTests
         // remaining budget of 0 would produce a wait that can never fire again, but also never
         // self-terminates until its TTL) — it must be deleted, silently, as stale terminal state.
         var store = new InMemoryNotifyWaitStore();
-        await store.SaveAsync(new NotifyWaitRecord("w-exhausted", "t", "manual-restorable", "{}", null, 3, 3,
-            FutureUnixMs(minutes: 30), NowUnixMs(), "active"));
+        await store.SaveAsync(
+            new NotifyWaitRecord(
+                "w-exhausted",
+                "t",
+                "manual-restorable",
+                "{}",
+                null,
+                3,
+                3,
+                FutureUnixMs(minutes: 30),
+                NowUnixMs(),
+                "active"
+            )
+        );
 
         var (rt, _, notified) = BuildRuntime(store, threadId: "t", restorableManual: true);
         await rt.RestoreNotifyWaitsAsync(CancellationToken.None);
 
         rt.ListWaits().Should().NotContain(w => w.WaitId == "w-exhausted", "an exhausted row must not be re-armed");
-        notified.Should().BeEmpty("the final fire's envelope was already delivered before the crash — no redundant notification");
+        notified
+            .Should()
+            .BeEmpty("the final fire's envelope was already delivered before the crash — no redundant notification");
         (await store.LoadActiveAsync("t")).Should().BeEmpty("the stale exhausted row must be deleted");
     }
 
@@ -151,8 +206,20 @@ public class TriggerRuntimeNotifyRestoreTests
         var store = new InMemoryNotifyWaitStore();
         for (var i = 0; i < 3; i++)
         {
-            await store.SaveAsync(new NotifyWaitRecord($"w{i}", "t", "no-such-kind", "{}", null, null, 0,
-                FutureUnixMs(30), NowUnixMs(), "active")); // unregistered kind -> always terminal
+            await store.SaveAsync(
+                new NotifyWaitRecord(
+                    $"w{i}",
+                    "t",
+                    "no-such-kind",
+                    "{}",
+                    null,
+                    null,
+                    0,
+                    FutureUnixMs(30),
+                    NowUnixMs(),
+                    "active"
+                )
+            ); // unregistered kind -> always terminal
         }
 
         var accepted = 0;
@@ -160,16 +227,21 @@ public class TriggerRuntimeNotifyRestoreTests
         var rt = new TriggerRuntime(
             options,
             resolve: (_, _, _, _) => Task.CompletedTask,
-            notify: (_, _, _) => throw new InvalidOperationException(
-                "blocking notify delegate must not be used for restore-time delivery once tryNotify is wired"),
-            tryNotify: (_, _) => Interlocked.Increment(ref accepted) <= 1); // only the first delivery is "accepted"
+            notify: (_, _, _) =>
+                throw new InvalidOperationException(
+                    "blocking notify delegate must not be used for restore-time delivery once tryNotify is wired"
+                ),
+            tryNotify: (_, _) => Interlocked.Increment(ref accepted) <= 1
+        ); // only the first delivery is "accepted"
 
         await rt.RestoreNotifyWaitsAsync(CancellationToken.None);
 
-        accepted.Should().Be(3, "the non-blocking delegate is attempted for every terminal row regardless of acceptance");
-        (await store.LoadActiveAsync("t")).Should().HaveCount(
-            2,
-            "rows whose envelope could not be enqueued without blocking must be retained, not dropped");
+        accepted
+            .Should()
+            .Be(3, "the non-blocking delegate is attempted for every terminal row regardless of acceptance");
+        (await store.LoadActiveAsync("t"))
+            .Should()
+            .HaveCount(2, "rows whose envelope could not be enqueued without blocking must be retained, not dropped");
     }
 
     [Fact]
@@ -190,19 +262,30 @@ public class TriggerRuntimeNotifyRestoreTests
         var store = new InMemoryNotifyWaitStore();
         var (rt, _, _) = BuildRuntime(store, threadId: "t", restorableManual: true);
 
-        var armed = await rt.ArmAsync("w4", "manual-restorable", "{\"x\":1}", "1h", "my-label", WaitMode.Notify, maxFires: 3, CancellationToken.None);
+        var armed = await rt.ArmAsync(
+            "w4",
+            "manual-restorable",
+            "{\"x\":1}",
+            "1h",
+            "my-label",
+            WaitMode.Notify,
+            maxFires: 3,
+            CancellationToken.None
+        );
 
         armed.IsArmed.Should().BeTrue();
         var rows = await store.LoadActiveAsync("t");
-        rows.Should().ContainSingle(r =>
-            r.WaitId == "w4"
-            && r.ThreadId == "t"
-            && r.Kind == "manual-restorable"
-            && r.Args == "{\"x\":1}"
-            && r.Label == "my-label"
-            && r.MaxFires == 3
-            && r.FiresSoFar == 0
-            && r.Status == "active");
+        rows.Should()
+            .ContainSingle(r =>
+                r.WaitId == "w4"
+                && r.ThreadId == "t"
+                && r.Kind == "manual-restorable"
+                && r.Args == "{\"x\":1}"
+                && r.Label == "my-label"
+                && r.MaxFires == 3
+                && r.FiresSoFar == 0
+                && r.Status == "active"
+            );
     }
 
     [Fact]
@@ -211,7 +294,16 @@ public class TriggerRuntimeNotifyRestoreTests
         var store = new InMemoryNotifyWaitStore();
         var (rt, _, _) = BuildRuntime(store, threadId: "t", restorableManual: true);
 
-        await rt.ArmAsync("w5", "manual-restorable", "{}", "1h", null, WaitMode.Notify, maxFires: null, CancellationToken.None);
+        await rt.ArmAsync(
+            "w5",
+            "manual-restorable",
+            "{}",
+            "1h",
+            null,
+            WaitMode.Notify,
+            maxFires: null,
+            CancellationToken.None
+        );
         (await store.LoadActiveAsync("t")).Should().ContainSingle(r => r.WaitId == "w5");
 
         var cancelled = await rt.CancelWaitsAsync("w5", null, null, CancellationToken.None);
@@ -240,7 +332,9 @@ public class TriggerRuntimeNotifyRestoreTests
         public Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(string threadId, CancellationToken ct = default)
         {
             IReadOnlyList<NotifyWaitRecord> result =
-                [.. _rows.Values.Where(r => r.ThreadId == threadId && r.Status == "active")];
+            [
+                .. _rows.Values.Where(r => r.ThreadId == threadId && r.Status == "active"),
+            ];
             return Task.FromResult(result);
         }
     }

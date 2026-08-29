@@ -1,7 +1,7 @@
 using System.Text;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using FluentAssertions;
 using Xunit.Abstractions;
@@ -74,7 +74,13 @@ public sealed class CopilotResponsesLiveTests
 
         var first = ExtractText(
             await agent.GenerateReplyAsync(
-                [new TextMessage { Role = Role.User, Text = "My favourite colour is teal. Acknowledge in one short sentence." }],
+                [
+                    new TextMessage
+                    {
+                        Role = Role.User,
+                        Text = "My favourite colour is teal. Acknowledge in one short sentence.",
+                    },
+                ],
                 options,
                 cancellationToken
             )
@@ -85,7 +91,13 @@ public sealed class CopilotResponsesLiveTests
         // Second turn reuses the same open socket; the client chains previous_response_id automatically.
         var second = ExtractText(
             await agent.GenerateReplyAsync(
-                [new TextMessage { Role = Role.User, Text = "What colour did I say was my favourite? Answer with one word." }],
+                [
+                    new TextMessage
+                    {
+                        Role = Role.User,
+                        Text = "What colour did I say was my favourite? Answer with one word.",
+                    },
+                ],
                 options,
                 cancellationToken
             )

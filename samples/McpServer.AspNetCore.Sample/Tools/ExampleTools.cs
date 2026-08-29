@@ -28,39 +28,39 @@ public class WeatherTool : IFunctionProvider
                     Name = "city",
                     Description = "The city name",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                    IsRequired = true
+                    IsRequired = true,
                 },
                 new FunctionParameterContract
                 {
                     Name = "unit",
                     Description = "Temperature unit (celsius or fahrenheit)",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                    IsRequired = false
-                }
+                    IsRequired = false,
+                },
             },
-            ReturnType = typeof(string)
+            ReturnType = typeof(string),
         };
 
         yield return new FunctionDescriptor
         {
             Contract = contract,
             Handler = GetWeatherAsync,
-            ProviderName = ProviderName
+            ProviderName = ProviderName,
         };
     }
 
     private async Task<ToolHandlerResult> GetWeatherAsync(
         string argumentsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         await Task.Delay(100, cancellationToken); // Simulate async operation
 
         var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argumentsJson);
         var city = args?["city"].GetString() ?? "Unknown";
-        var unit = args?.TryGetValue("unit", out var unitValue) == true
-            ? unitValue.GetString() ?? "celsius"
-            : "celsius";
+        var unit =
+            args?.TryGetValue("unit", out var unitValue) == true ? unitValue.GetString() ?? "celsius" : "celsius";
 
         var temp = unit == "fahrenheit" ? 72 : 22;
         var conditions = new[] { "Sunny", "Cloudy", "Rainy", "Windy" };
@@ -72,7 +72,7 @@ public class WeatherTool : IFunctionProvider
             temperature = temp,
             unit,
             conditions = condition,
-            humidity = 65
+            humidity = 65,
         };
 
         return ToolHandlerResult.FromText(JsonSerializer.Serialize(result));
@@ -104,17 +104,17 @@ public class CalculatorTool : IFunctionProvider
                         Name = "a",
                         Description = "First number",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-                        IsRequired = true
+                        IsRequired = true,
                     },
                     new FunctionParameterContract
                     {
                         Name = "b",
                         Description = "Second number",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-                        IsRequired = true
-                    }
+                        IsRequired = true,
+                    },
                 },
-                ReturnType = typeof(double)
+                ReturnType = typeof(double),
             },
             Handler = async (args, context, cancellationToken) =>
             {
@@ -124,7 +124,7 @@ public class CalculatorTool : IFunctionProvider
                 var b = parsed?["b"].GetDouble() ?? 0;
                 return ToolHandlerResult.FromText(JsonSerializer.Serialize(new { result = a + b }));
             },
-            ProviderName = ProviderName
+            ProviderName = ProviderName,
         };
 
         // Multiply operation
@@ -142,17 +142,17 @@ public class CalculatorTool : IFunctionProvider
                         Name = "a",
                         Description = "First number",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-                        IsRequired = true
+                        IsRequired = true,
                     },
                     new FunctionParameterContract
                     {
                         Name = "b",
                         Description = "Second number",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-                        IsRequired = true
-                    }
+                        IsRequired = true,
+                    },
                 },
-                ReturnType = typeof(double)
+                ReturnType = typeof(double),
             },
             Handler = async (args, context, cancellationToken) =>
             {
@@ -162,7 +162,7 @@ public class CalculatorTool : IFunctionProvider
                 var b = parsed?["b"].GetDouble() ?? 0;
                 return ToolHandlerResult.FromText(JsonSerializer.Serialize(new { result = a * b }));
             },
-            ProviderName = ProviderName
+            ProviderName = ProviderName,
         };
     }
 }
@@ -188,24 +188,25 @@ public class FileInfoTool : IFunctionProvider
                     Name = "path",
                     Description = "The file path",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                    IsRequired = true
-                }
+                    IsRequired = true,
+                },
             },
-            ReturnType = typeof(string)
+            ReturnType = typeof(string),
         };
 
         yield return new FunctionDescriptor
         {
             Contract = contract,
             Handler = GetFileInfoAsync,
-            ProviderName = ProviderName
+            ProviderName = ProviderName,
         };
     }
 
     private async Task<ToolHandlerResult> GetFileInfoAsync(
         string argumentsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         await Task.CompletedTask;
 
@@ -219,8 +220,7 @@ public class FileInfoTool : IFunctionProvider
 
         if (!File.Exists(path))
         {
-            return ToolHandlerResult.FromText(
-                JsonSerializer.Serialize(new { error = $"File not found: {path}" }));
+            return ToolHandlerResult.FromText(JsonSerializer.Serialize(new { error = $"File not found: {path}" }));
         }
 
         var fileInfo = new FileInfo(path);
@@ -231,7 +231,7 @@ public class FileInfoTool : IFunctionProvider
             size = fileInfo.Length,
             created = fileInfo.CreationTimeUtc,
             modified = fileInfo.LastWriteTimeUtc,
-            extension = fileInfo.Extension
+            extension = fileInfo.Extension,
         };
 
         return ToolHandlerResult.FromText(JsonSerializer.Serialize(result));

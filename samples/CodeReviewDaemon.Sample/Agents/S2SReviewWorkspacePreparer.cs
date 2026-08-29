@@ -47,7 +47,8 @@ internal sealed class S2SReviewWorkspacePreparer
         GitRunner hostGit,
         string workspaceBasePath,
         string? reviewMarketplace,
-        ILogger<S2SReviewWorkspacePreparer> logger)
+        ILogger<S2SReviewWorkspacePreparer> logger
+    )
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _hostGit = hostGit ?? throw new ArgumentNullException(nameof(hostGit));
@@ -65,7 +66,8 @@ internal sealed class S2SReviewWorkspacePreparer
         ReviewRun run,
         RepoIdentity repo,
         string provider,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(repo);
@@ -78,7 +80,8 @@ internal sealed class S2SReviewWorkspacePreparer
             "Preparing S2S review workspace for PR {PrId}: leaf '{Leaf}', host dir '{HostDir}'.",
             run.PrId,
             leaf,
-            hostDir);
+            hostDir
+        );
 
         await CloneCheckoutAsync(remote, hostDir, run, cancellationToken).ConfigureAwait(false);
 
@@ -104,7 +107,8 @@ internal sealed class S2SReviewWorkspacePreparer
     public async Task<PreparedReviewWorkspace> AdoptSlotAsync(
         ReviewSlot slot,
         ReviewRun run,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(slot);
         ArgumentNullException.ThrowIfNull(run);
@@ -118,14 +122,16 @@ internal sealed class S2SReviewWorkspacePreparer
             throw new InvalidOperationException(
                 $"Review slot directory '{leaf}' is not stable under LmStreaming's workspace-directory sanitizer "
                     + $"(it becomes '{sanitized}'), so the hosted conversation would be mounted on a different, "
-                    + "empty directory.");
+                    + "empty directory."
+            );
         }
 
         _logger.LogInformation(
             "Adopting leased review slot {Index} as the S2S workspace for PR {PrId}: leaf '{Leaf}'.",
             slot.Index,
             run.PrId,
-            leaf);
+            leaf
+        );
 
         var name = string.Format(CultureInfo.InvariantCulture, "Review slot {0}", slot.Index);
         var workspaceId = await EnsureWorkspaceForLeafAsync(leaf, name, cancellationToken).ConfigureAwait(false);
@@ -195,7 +201,12 @@ internal sealed class S2SReviewWorkspacePreparer
     /// the mounted tree reflects the code the PR PROPOSES. Failures throw so the review stage retries. This
     /// mirrors the daemon's own <c>CloneIfMissingAsync</c>/<c>FetchAndCheckoutHeadAsync</c> sequence.
     /// </summary>
-    private async Task CloneCheckoutAsync(string remote, string hostDir, ReviewRun run, CancellationToken cancellationToken)
+    private async Task CloneCheckoutAsync(
+        string remote,
+        string hostDir,
+        ReviewRun run,
+        CancellationToken cancellationToken
+    )
     {
         var probe = await _hostGit
             .RunAsync(["-C", hostDir, "rev-parse", "--is-inside-work-tree"], hostDir, cancellationToken)
@@ -206,14 +217,15 @@ internal sealed class S2SReviewWorkspacePreparer
             // be corrupt, inaccessible, or rejected by git's ownership checks. Cloning into that directory both
             // masks the useful diagnosis and cannot repair it. Inspect the leaf through the same host runner and
             // clone only when it is absent/empty.
-            var entries = await _hostGit.CommandRunner
-                .RunAsync(new SandboxCommand(["ls", "-1A", "--", hostDir]), cancellationToken)
+            var entries = await _hostGit
+                .CommandRunner.RunAsync(new SandboxCommand(["ls", "-1A", "--", hostDir]), cancellationToken)
                 .ConfigureAwait(false);
             if (entries.Succeeded && !string.IsNullOrWhiteSpace(entries.Stdout))
             {
                 throw new InvalidOperationException(
                     $"Existing checkout probe for PR {run.PrId} at '{hostDir}' failed (exit {probe.ExitCode}): "
-                        + probe.Stderr);
+                        + probe.Stderr
+                );
             }
 
             var clone = await _hostGit
@@ -222,7 +234,8 @@ internal sealed class S2SReviewWorkspacePreparer
             if (!clone.Succeeded)
             {
                 throw new InvalidOperationException(
-                    $"Cloning '{remote}' for PR {run.PrId} into '{hostDir}' failed (exit {clone.ExitCode}): {clone.Stderr}");
+                    $"Cloning '{remote}' for PR {run.PrId} into '{hostDir}' failed (exit {clone.ExitCode}): {clone.Stderr}"
+                );
             }
         }
 
@@ -232,7 +245,8 @@ internal sealed class S2SReviewWorkspacePreparer
         if (!fetch.Succeeded)
         {
             throw new InvalidOperationException(
-                $"Fetching the PR commits for PR {run.PrId} failed (exit {fetch.ExitCode}): {fetch.Stderr}");
+                $"Fetching the PR commits for PR {run.PrId} failed (exit {fetch.ExitCode}): {fetch.Stderr}"
+            );
         }
 
         var checkout = await _hostGit
@@ -241,7 +255,8 @@ internal sealed class S2SReviewWorkspacePreparer
         if (!checkout.Succeeded)
         {
             throw new InvalidOperationException(
-                $"Checking out the PR head for PR {run.PrId} failed (exit {checkout.ExitCode}): {checkout.Stderr}");
+                $"Checking out the PR head for PR {run.PrId} failed (exit {checkout.ExitCode}): {checkout.Stderr}"
+            );
         }
     }
 
@@ -259,7 +274,8 @@ internal sealed class S2SReviewWorkspacePreparer
     internal async Task<string> EnsureWorkspaceForLeafAsync(
         string leaf,
         string name,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(leaf);
 
@@ -275,7 +291,8 @@ internal sealed class S2SReviewWorkspacePreparer
                 _logger.LogInformation(
                     "Reusing existing S2S review workspace {WorkspaceId} for leaf '{Leaf}'.",
                     workspace.Id,
-                    leaf);
+                    leaf
+                );
                 return workspace.Id;
             }
         }
@@ -287,7 +304,8 @@ internal sealed class S2SReviewWorkspacePreparer
             "Created S2S review workspace {WorkspaceId} for leaf '{Leaf}' (marketplaces: {Count}).",
             created.Id,
             leaf,
-            marketplaces.Count);
+            marketplaces.Count
+        );
         return created.Id;
     }
 

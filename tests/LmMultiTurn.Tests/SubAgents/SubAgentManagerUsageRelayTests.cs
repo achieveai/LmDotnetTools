@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -10,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -29,11 +29,14 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
     public Task InitializeAsync()
     {
         _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         return Task.CompletedTask;
@@ -96,11 +99,14 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
             new TextMessage { Text = "done", Role = Role.Assistant },
         ]);
 
-        var agentId = await SpawnAsync(ledger, () =>
-        {
-            _ = Interlocked.Increment(ref persistCount);
-            return Task.CompletedTask;
-        });
+        var agentId = await SpawnAsync(
+            ledger,
+            () =>
+            {
+                _ = Interlocked.Increment(ref persistCount);
+                return Task.CompletedTask;
+            }
+        );
         _ = await _manager!.ObserveCompletionAsync(agentId, CancellationToken.None);
 
         persistCount.Should().BeGreaterThan(0);
@@ -133,7 +139,8 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
             options: options,
             source: new MutableSubAgentTemplateSource(options.Templates),
             usageSink: sink.Object,
-            persistUsageAsync: null);
+            persistUsageAsync: null
+        );
 
         var spawnJson = await _manager.SpawnAsync("test-agent", "Do some work", runInBackground: true);
         using var spawnDoc = JsonDocument.Parse(spawnJson);
@@ -178,9 +185,7 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
         // — the source of the live usage banner frame. This is what makes sub-agent spend appear live in the
         // parent banner rather than only after a reload of the persisted aggregate (#196, BUG 1b).
         var totals = new List<long>();
-        var ledger = new UsageLedger(
-            "root-conv",
-            onAggregateUpdated: aggregate => totals.Add(aggregate.TotalTokens));
+        var ledger = new UsageLedger("root-conv", onAggregateUpdated: aggregate => totals.Add(aggregate.TotalTokens));
 
         SetupSubAgentResponse([
             new UsageMessage
@@ -232,7 +237,8 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
             options: options,
             source: new MutableSubAgentTemplateSource(options.Templates),
             usageSink: usageSink,
-            persistUsageAsync: persistUsageAsync);
+            persistUsageAsync: persistUsageAsync
+        );
     }
 
     private SubAgentOptions CreateOptions()
@@ -245,10 +251,7 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
 
         return new SubAgentOptions
         {
-            Templates = new Dictionary<string, SubAgentTemplate>
-            {
-                ["test-agent"] = template,
-            },
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
             MaxConcurrentSubAgents = 5,
         };
     }
@@ -256,16 +259,20 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
     private void SetupSubAgentResponse(List<IMessage> messages)
     {
         _subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable(messages)));
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         List<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

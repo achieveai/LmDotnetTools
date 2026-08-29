@@ -26,5 +26,6 @@ public interface IAuthResolutionPolicy
     Task<OAuthAccessToken?> ResolveAsync(
         IOAuthTokenProvider provider,
         IReadOnlyList<string>? scopes,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken
+    );
 }

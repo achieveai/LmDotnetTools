@@ -48,14 +48,18 @@ public sealed class CrossRepoCheckoutTests
             AcmeWidgets,
             "https://github.com/acme/AchieveAiReviews.git",
             allowWriteOperations: false,
-            allowedSubmodules: rules);
+            allowedSubmodules: rules
+        );
 
         Fetch(policy, "github.com", "/acme/widgets.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeTrue("the reviewed repo itself is always allow-listed");
+            .IsAllowed.Should()
+            .BeTrue("the reviewed repo itself is always allow-listed");
         Fetch(policy, "github.com", "/acme/Contracts.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeTrue("Contracts/ is the shared low-sensitivity layer, always allowed");
+            .IsAllowed.Should()
+            .BeTrue("Contracts/ is the shared low-sensitivity layer, always allowed");
         Fetch(policy, "github.com", "/evil/secret.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeFalse("an unrelated repo is never on the allow-list");
+            .IsAllowed.Should()
+            .BeFalse("an unrelated repo is never on the allow-list");
     }
 
     [Fact]
@@ -78,10 +82,12 @@ public sealed class CrossRepoCheckoutTests
             AcmeWidgets,
             "https://github.com/acme/AchieveAiReviews.git",
             allowWriteOperations: false,
-            allowedSubmodules: rules);
+            allowedSubmodules: rules
+        );
 
         Fetch(policy, "github.com", "/acme/other-service.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeFalse("co-location is gated by trust (Task 17); an unconfirmed run gets none");
+            .IsAllowed.Should()
+            .BeFalse("co-location is gated by trust (Task 17); an unconfirmed run gets none");
     }
 
     [Fact]
@@ -106,20 +112,25 @@ public sealed class CrossRepoCheckoutTests
             McqdbDev,
             "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/MCQdbReview",
             allowWriteOperations: false,
-            allowedSubmodules: rules);
+            allowedSubmodules: rules
+        );
 
         // The target's OWN submodules are allow-listed even with the gate shut (unlike CrossRepoSiblings).
         FetchAdo(policy, "/mcqdbdev/MCQdb_Development/_git/LibProfiler.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeTrue("reviewed-repo submodules are the target's own dependencies, not gated");
+            .IsAllowed.Should()
+            .BeTrue("reviewed-repo submodules are the target's own dependencies, not gated");
         FetchAdo(policy, "/mcqdbdev/MCQdb_Development/_git/Microsoft%20Orleans.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeTrue("the URL-encoded name matches its allow rule verbatim");
+            .IsAllowed.Should()
+            .BeTrue("the URL-encoded name matches its allow rule verbatim");
 
         // A store-level sibling stays gated (denied) under the same shut gate...
         FetchAdo(policy, "/mcqdbdev/MCQdb_Development/_git/some-sibling.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeFalse("CrossRepoSiblings remain gated by AllowsCrossRepoCoLocation");
+            .IsAllowed.Should()
+            .BeFalse("CrossRepoSiblings remain gated by AllowsCrossRepoCoLocation");
         // ...and an unlisted same-org name is denied — explicit allow-list, never a same-org wildcard.
         FetchAdo(policy, "/mcqdbdev/MCQdb_Development/_git/UnlistedLib.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeFalse("only explicitly listed submodules are allowed");
+            .IsAllowed.Should()
+            .BeFalse("only explicitly listed submodules are allowed");
     }
 
     /// <summary>
@@ -155,20 +166,26 @@ public sealed class CrossRepoCheckoutTests
         var rules = executor.BuildStoreSubmoduleAllowList(run, spaced);
 
         cloneUrl.Should().NotContain(" ", "a raw space makes the argv git clone parses a malformed URL");
-        rules.Should().Contain(
-            r => r.Host == parsed.Host && r.RepoPath == parsed.RepoPath,
-            "the reviewed repo's allow rule must be the exact path the clone URL addresses");
+        rules
+            .Should()
+            .Contain(
+                r => r.Host == parsed.Host && r.RepoPath == parsed.RepoPath,
+                "the reviewed repo's allow rule must be the exact path the clone URL addresses"
+            );
 
         var policy = DaemonOperationPolicy.BuildForRun(
             spaced,
             DaemonReviewStageExecutor.TargetRemoteUrl(spaced with { RepoName = "MCQdbReview" }, "ado"),
             allowWriteOperations: false,
-            allowedSubmodules: rules);
+            allowedSubmodules: rules
+        );
 
         FetchAdo(policy, $"{parsed.RepoPath}.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeTrue("the spaced-org repo the daemon clones is the one the policy permits");
+            .IsAllowed.Should()
+            .BeTrue("the spaced-org repo the daemon clones is the one the policy permits");
         FetchAdo(policy, "/contoso%20org/MCQdb%20Development/_git/Unlisted.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeFalse("the allow-list is still explicit — no same-org wildcard");
+            .IsAllowed.Should()
+            .BeFalse("the allow-list is still explicit — no same-org wildcard");
     }
 
     /// <summary>
@@ -192,14 +209,20 @@ public sealed class CrossRepoCheckoutTests
 
         var rules = executor.BuildStoreSubmoduleAllowList(SeedRun(), McqdbDev);
 
-        loggers.Capturing.CountAtLevel(LogLevel.Warning, "is not in URL form").Should().Be(
-            1,
-            "the raw-space entry never matches, and only the log can distinguish that from an unconfigured one");
-        loggers.Capturing.CountAtLevel(LogLevel.Warning, "Microsoft Orleans").Should().Be(
-            1, "the warning must name the offending entry");
-        rules.Should().Contain(
-            r => r.RepoPath.EndsWith("/Microsoft%20Orleans", StringComparison.Ordinal),
-            "the already-correct URL-form entry is left alone and must not be reported");
+        loggers
+            .Capturing.CountAtLevel(LogLevel.Warning, "is not in URL form")
+            .Should()
+            .Be(1, "the raw-space entry never matches, and only the log can distinguish that from an unconfigured one");
+        loggers
+            .Capturing.CountAtLevel(LogLevel.Warning, "Microsoft Orleans")
+            .Should()
+            .Be(1, "the warning must name the offending entry");
+        rules
+            .Should()
+            .Contain(
+                r => r.RepoPath.EndsWith("/Microsoft%20Orleans", StringComparison.Ordinal),
+                "the already-correct URL-form entry is left alone and must not be reported"
+            );
     }
 
     [Fact]
@@ -209,8 +232,10 @@ public sealed class CrossRepoCheckoutTests
         var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = false });
         var run = SeedRun();
 
-        executor.BuildStoreSubmoduleAllowList(run, AcmeWidgets).Should().BeEmpty(
-            "the diff-only path never grants any submodule fetch");
+        executor
+            .BuildStoreSubmoduleAllowList(run, AcmeWidgets)
+            .Should()
+            .BeEmpty("the diff-only path never grants any submodule fetch");
     }
 
     private static PolicyDecision Fetch(OperationPolicy policy, string host, string path) =>
@@ -222,7 +247,8 @@ public sealed class CrossRepoCheckoutTests
     private static DaemonReviewStageExecutor BuildExecutor(
         TempSqliteDatabase db,
         CodeReviewDaemonOptions options,
-        ILoggerFactory? loggerFactory = null) =>
+        ILoggerFactory? loggerFactory = null
+    ) =>
         new(
             new ReviewStore(db.ConnectionString),
             new FakeReviewAgentLoopFactory(),
@@ -230,20 +256,22 @@ public sealed class CrossRepoCheckoutTests
             new FakeSandboxFileSystem(),
             options,
             [new FakeReviewCommentPublisher("github")],
-            loggerFactory ?? NullLoggerFactory.Instance);
+            loggerFactory ?? NullLoggerFactory.Instance
+        );
 
-    private static ReviewRun SeedRun() => new()
-    {
-        RepoId = 1,
-        PrId = "42",
-        HeadSha = "head-sha",
-        BaseSha = "base-sha",
-        TriggerWatermark = "wm-1",
-        ReviewKind = "full",
-        VariantId = "primary",
-        Mode = "collect-only",
-        Stage = ReviewStage.Discovered,
-        WorkflowStatus = WorkflowStatus.Running,
-        PrLifecycleState = PrLifecycleState.Open,
-    };
+    private static ReviewRun SeedRun() =>
+        new()
+        {
+            RepoId = 1,
+            PrId = "42",
+            HeadSha = "head-sha",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "collect-only",
+            Stage = ReviewStage.Discovered,
+            WorkflowStatus = WorkflowStatus.Running,
+            PrLifecycleState = PrLifecycleState.Open,
+        };
 }

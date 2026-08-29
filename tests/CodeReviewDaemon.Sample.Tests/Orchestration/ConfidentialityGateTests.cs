@@ -126,15 +126,19 @@ public sealed class ConfidentialityGateTests
             AcmeWidgets,
             "https://github.com/acme/AchieveAiReviews.git",
             allowWriteOperations: false,
-            allowedSubmodules: rules);
+            allowedSubmodules: rules
+        );
 
         policy
-            .Decide(new OperationRequest(
-                SandboxOperation.FetchSubmodule,
-                "github",
-                "github.com",
-                "GET",
-                "/acme/other-service.git/info/refs?service=git-upload-pack"))
+            .Decide(
+                new OperationRequest(
+                    SandboxOperation.FetchSubmodule,
+                    "github",
+                    "github.com",
+                    "GET",
+                    "/acme/other-service.git/info/refs?service=git-upload-pack"
+                )
+            )
             .IsAllowed.Should()
             .BeTrue("the gate confirmed same-trust-domain, so the configured sibling is granted");
     }
@@ -155,15 +159,19 @@ public sealed class ConfidentialityGateTests
             AdoRepo,
             "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/MCQdbReview",
             allowWriteOperations: false,
-            allowedSubmodules: rules);
+            allowedSubmodules: rules
+        );
 
         policy
-            .Decide(new OperationRequest(
-                SandboxOperation.FetchSubmodule,
-                "ado",
-                "dev.azure.com",
-                "GET",
-                "/mcqdbdev/MCQdb_Development/_git/MCQdbDEV.git/info/refs?service=git-upload-pack"))
+            .Decide(
+                new OperationRequest(
+                    SandboxOperation.FetchSubmodule,
+                    "ado",
+                    "dev.azure.com",
+                    "GET",
+                    "/mcqdbdev/MCQdb_Development/_git/MCQdbDEV.git/info/refs?service=git-upload-pack"
+                )
+            )
             .IsAllowed.Should()
             .BeTrue("the reviewed ADO repo's own submodule must be allow-listed with its dev.azure.com host/path");
     }
@@ -176,22 +184,24 @@ public sealed class ConfidentialityGateTests
             new FakeSandboxFileSystem(),
             options,
             [new FakeReviewCommentPublisher("github")],
-            NullLoggerFactory.Instance);
+            NullLoggerFactory.Instance
+        );
 
-    private static ReviewRun SeedRun(bool isForkPr, bool isTargetRepoPublic) => new()
-    {
-        RepoId = 1,
-        PrId = "42",
-        HeadSha = "head-sha",
-        BaseSha = "base-sha",
-        TriggerWatermark = "wm-1",
-        ReviewKind = "full",
-        VariantId = "primary",
-        Mode = "collect-only",
-        Stage = ReviewStage.Discovered,
-        WorkflowStatus = WorkflowStatus.Running,
-        PrLifecycleState = PrLifecycleState.Open,
-        IsForkPr = isForkPr,
-        IsTargetRepoPublic = isTargetRepoPublic,
-    };
+    private static ReviewRun SeedRun(bool isForkPr, bool isTargetRepoPublic) =>
+        new()
+        {
+            RepoId = 1,
+            PrId = "42",
+            HeadSha = "head-sha",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "collect-only",
+            Stage = ReviewStage.Discovered,
+            WorkflowStatus = WorkflowStatus.Running,
+            PrLifecycleState = PrLifecycleState.Open,
+            IsForkPr = isForkPr,
+            IsTargetRepoPublic = isTargetRepoPublic,
+        };
 }

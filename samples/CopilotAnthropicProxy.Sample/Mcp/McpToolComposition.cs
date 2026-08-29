@@ -26,14 +26,13 @@ internal sealed class McpToolComposition
 {
     private readonly McpJinaToolCatalog _catalog;
     private readonly McpToolSnapshotStore _snapshots;
-    private readonly ConcurrentDictionary<(string Endpoint, string SessionId, string RequestId), CancellationTokenSource> _localCalls = [];
+    private readonly ConcurrentDictionary<
+        (string Endpoint, string SessionId, string RequestId),
+        CancellationTokenSource
+    > _localCalls = [];
     private readonly ILogger _logger;
 
-    public McpToolComposition(
-        McpJinaToolCatalog catalog,
-        McpToolSnapshotStore snapshots,
-        ILoggerFactory loggerFactory
-    )
+    public McpToolComposition(McpJinaToolCatalog catalog, McpToolSnapshotStore snapshots, ILoggerFactory loggerFactory)
     {
         _catalog = catalog;
         _snapshots = snapshots;
@@ -70,11 +69,7 @@ internal sealed class McpToolComposition
         var sessionId = context.Request.Headers["Mcp-Session-Id"].FirstOrDefault();
         var endpoint = context.Request.Path.Value;
         var requestId = (request["params"] as JsonObject)?["requestId"];
-        if (
-            string.IsNullOrWhiteSpace(endpoint)
-            || string.IsNullOrWhiteSpace(sessionId)
-            || requestId is null
-        )
+        if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(sessionId) || requestId is null)
         {
             return false;
         }
@@ -247,7 +242,8 @@ internal sealed class McpToolComposition
         var mediaType = upstream.Content.Headers.ContentType?.MediaType;
         var isJson = string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase);
         var isSse = string.Equals(mediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase);
-        var hasBoundedSseBody = isSse && upstream.Content.Headers.ContentLength is { } sseLength && sseLength <= maxBodyBytes;
+        var hasBoundedSseBody =
+            isSse && upstream.Content.Headers.ContentLength is { } sseLength && sseLength <= maxBodyBytes;
         if (!upstream.IsSuccessStatusCode)
         {
             return null;
@@ -279,7 +275,13 @@ internal sealed class McpToolComposition
             var sse = Encoding.UTF8.GetString(original);
             if (!TryReadSingleSseMessage(sse, out ssePrefix, out var json, out sseSuffix))
             {
-                return new McpComposedList(original, endpoint, sessionId, McpSnapshotAction.None, Generation: generation);
+                return new McpComposedList(
+                    original,
+                    endpoint,
+                    sessionId,
+                    McpSnapshotAction.None,
+                    Generation: generation
+                );
             }
 
             jsonBytes = Encoding.UTF8.GetBytes(json);
@@ -301,7 +303,13 @@ internal sealed class McpToolComposition
                 || !McpToolSnapshotStore.TryBuildHeaderContext(context.Request.Headers, out var headerContext)
             )
             {
-                return new McpComposedList(original, endpoint, sessionId, McpSnapshotAction.None, Generation: generation);
+                return new McpComposedList(
+                    original,
+                    endpoint,
+                    sessionId,
+                    McpSnapshotAction.None,
+                    Generation: generation
+                );
             }
 
             var githubNames = tools
@@ -395,23 +403,16 @@ internal sealed class McpToolComposition
         };
         context.Response.StatusCode = StatusCodes.Status200OK;
         context.Response.ContentType = "application/json";
-        await context.Response.Body.WriteAsync(
-            Encoding.UTF8.GetBytes(response.ToJsonString()),
-            context.RequestAborted
-        );
+        await context.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(response.ToJsonString()), context.RequestAborted);
     }
 
-    private static string? Text(JsonNode? node) => node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+    private static string? Text(JsonNode? node) =>
+        node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
     private static string ToolCallId(JsonNode id) =>
         id is JsonValue value && value.TryGetValue<string>(out var text) ? text : id.ToJsonString();
 
-    private static bool TryReadSingleSseMessage(
-        string sse,
-        out string prefix,
-        out string json,
-        out string suffix
-    )
+    private static bool TryReadSingleSseMessage(string sse, out string prefix, out string json, out string suffix)
     {
         prefix = string.Empty;
         json = string.Empty;
@@ -444,9 +445,10 @@ internal sealed class McpToolComposition
             prefix += newline;
         }
         prefix += dataLine[..separatorLength];
-        suffix = dataIndex + 1 < lines.Length
-            ? newline + string.Join(newline, lines[(dataIndex + 1)..]) + terminator
-            : terminator;
+        suffix =
+            dataIndex + 1 < lines.Length
+                ? newline + string.Join(newline, lines[(dataIndex + 1)..]) + terminator
+                : terminator;
         return true;
     }
 
@@ -454,6 +456,8 @@ internal sealed class McpToolComposition
     {
         upstream.Content.Dispose();
         upstream.Content = new ByteArrayContent(body);
-        upstream.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(mediaType ?? "application/json");
+        upstream.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(
+            mediaType ?? "application/json"
+        );
     }
 }

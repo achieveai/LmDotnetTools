@@ -79,26 +79,28 @@ public sealed class WorkspaceTranscriptMirrorTests
         public Task AppendMessagesAsync(
             string threadId,
             IReadOnlyList<PersistedMessage> messages,
-            CancellationToken ct = default) => inner.AppendMessagesAsync(threadId, messages, ct);
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
 
         public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
             string threadId,
-            CancellationToken ct = default) => inner.LoadMessagesAsync(threadId, ct);
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
 
         public Task ReplaceMessageAsync(
             string threadId,
             PersistedMessage replacement,
-            CancellationToken ct = default) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
 
-        public Task SaveMetadataAsync(
-            string threadId,
-            ThreadMetadata metadata,
-            CancellationToken ct = default) => inner.SaveMetadataAsync(threadId, metadata, ct);
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
 
         public Task UpdateMetadataAsync(
             string threadId,
             Func<ThreadMetadata?, ThreadMetadata> update,
-            CancellationToken ct = default) => inner.UpdateMetadataAsync(threadId, update, ct);
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
 
         public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
             inner.DeleteThreadAsync(threadId, ct);
@@ -107,7 +109,8 @@ public sealed class WorkspaceTranscriptMirrorTests
             int limit = 50,
             int offset = 0,
             ConversationListOptions? options = null,
-            CancellationToken ct = default) => inner.ListThreadsAsync(limit, offset, options, ct);
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     /// <summary>
@@ -134,8 +137,7 @@ public sealed class WorkspaceTranscriptMirrorTests
 
         public bool IsRunning => inner.IsRunning;
 
-        public async IAsyncEnumerable<IMessage> SubscribeAsync(
-            [EnumeratorCancellation] CancellationToken ct = default)
+        public async IAsyncEnumerable<IMessage> SubscribeAsync([EnumeratorCancellation] CancellationToken ct = default)
         {
             Volatile.Write(ref _subscribeThreadId, Environment.CurrentManagedThreadId);
 
@@ -149,13 +151,15 @@ public sealed class WorkspaceTranscriptMirrorTests
             List<IMessage> messages,
             string? inputId = null,
             string? parentRunId = null,
-            CancellationToken ct = default) => inner.SendAsync(messages, inputId, parentRunId, ct);
+            CancellationToken ct = default
+        ) => inner.SendAsync(messages, inputId, parentRunId, ct);
 
         public ValueTask<SendReceipt?> TrySendAsync(
             List<IMessage> messages,
             string? inputId = null,
             string? parentRunId = null,
-            CancellationToken ct = default) => inner.TrySendAsync(messages, inputId, parentRunId, ct);
+            CancellationToken ct = default
+        ) => inner.TrySendAsync(messages, inputId, parentRunId, ct);
 
         public IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default) =>
             inner.ExecuteRunAsync(userInput, ct);
@@ -194,8 +198,7 @@ public sealed class WorkspaceTranscriptMirrorTests
     /// </summary>
     /// <param name="inner">The real agent every surviving attempt subscribes to.</param>
     /// <param name="failure">Where that first attempt throws from — see <see cref="SubscriptionFailure"/>.</param>
-    private sealed class FlakySubscriptionAgent(PublishingAgent inner, SubscriptionFailure failure)
-        : IMultiTurnAgent
+    private sealed class FlakySubscriptionAgent(PublishingAgent inner, SubscriptionFailure failure) : IMultiTurnAgent
     {
         private const string FailureMessage = "the fan-out refused the subscriber";
 
@@ -241,8 +244,7 @@ public sealed class WorkspaceTranscriptMirrorTests
         ///     <c>MoveNextAsync</c>, on whatever thread awaits it — and not as a throw the subscriber's own
         ///     stack frame could catch.
         /// </summary>
-        private async IAsyncEnumerable<IMessage> IteratorAsync(
-            [EnumeratorCancellation] CancellationToken ct = default)
+        private async IAsyncEnumerable<IMessage> IteratorAsync([EnumeratorCancellation] CancellationToken ct = default)
         {
             if (Interlocked.Increment(ref _attempts) == 1)
             {
@@ -259,13 +261,15 @@ public sealed class WorkspaceTranscriptMirrorTests
             List<IMessage> messages,
             string? inputId = null,
             string? parentRunId = null,
-            CancellationToken ct = default) => inner.SendAsync(messages, inputId, parentRunId, ct);
+            CancellationToken ct = default
+        ) => inner.SendAsync(messages, inputId, parentRunId, ct);
 
         public ValueTask<SendReceipt?> TrySendAsync(
             List<IMessage> messages,
             string? inputId = null,
             string? parentRunId = null,
-            CancellationToken ct = default) => inner.TrySendAsync(messages, inputId, parentRunId, ct);
+            CancellationToken ct = default
+        ) => inner.TrySendAsync(messages, inputId, parentRunId, ct);
 
         public IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default) =>
             inner.ExecuteRunAsync(userInput, ct);
@@ -287,8 +291,7 @@ public sealed class WorkspaceTranscriptMirrorTests
             {
                 public IMessage Current => throw new NotSupportedException();
 
-                public ValueTask<bool> MoveNextAsync() =>
-                    throw new InvalidOperationException(FailureMessage);
+                public ValueTask<bool> MoveNextAsync() => throw new InvalidOperationException(FailureMessage);
 
                 public ValueTask DisposeAsync()
                 {
@@ -304,7 +307,8 @@ public sealed class WorkspaceTranscriptMirrorTests
     private static WorkspaceTranscriptMirror CreateMirror(
         IConversationStore store,
         FakeFileBrowser browser,
-        Func<string, IMultiTurnAgent?> agentLookup) =>
+        Func<string, IMultiTurnAgent?> agentLookup
+    ) =>
         new(
             agentLookup,
             store,
@@ -316,7 +320,8 @@ public sealed class WorkspaceTranscriptMirrorTests
             TimeSpan.Zero,
             // Zero: the writer's stability probe re-reads immediately; these tests drive settling through
             // the store, never through elapsed time.
-            TimeSpan.Zero);
+            TimeSpan.Zero
+        );
 
     private static Task SeedConversationAsync(IConversationStore store) =>
         store.SaveMetadataAsync(
@@ -328,7 +333,8 @@ public sealed class WorkspaceTranscriptMirrorTests
                 Properties = ImmutableDictionary<string, object>
                     .Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, WorkspaceId)
                     .Add("title", Title),
-            });
+            }
+        );
 
     private static async Task SeedSubAgentAsync(IConversationStore store, string agentId, string name)
     {
@@ -349,8 +355,11 @@ public sealed class WorkspaceTranscriptMirrorTests
                         Status: SubAgentStatus.Completed,
                         ThreadId: childThreadId,
                         LastActivityUtc: DateTimeOffset.UnixEpoch,
-                        TerminalAtUtc: DateTimeOffset.UnixEpoch)),
-            });
+                        TerminalAtUtc: DateTimeOffset.UnixEpoch
+                    )
+                ),
+            }
+        );
 
         await store.AppendMessagesAsync(childThreadId, [Msg("c1", 1, threadId: childThreadId)]);
     }
@@ -370,8 +379,7 @@ public sealed class WorkspaceTranscriptMirrorTests
 
     private static string ExpectedAppend(IReadOnlyList<PersistedMessage> all, int skip = 0)
     {
-        var lines = WorkspaceTranscriptLine.ChainMessages(
-            TranscriptProjection.Normalize(all, excludeReasoning: false));
+        var lines = WorkspaceTranscriptLine.ChainMessages(TranscriptProjection.Normalize(all, excludeReasoning: false));
 
         return string.Concat(lines.Skip(skip).Select(l => WorkspaceTranscriptLine.Serialize(l) + "\n"));
     }
@@ -476,13 +484,26 @@ public sealed class WorkspaceTranscriptMirrorTests
     private static bool SplicedInto(FakeFileBrowser browser, string path) =>
         browser.Commands.Any(c =>
             c.Arguments.Contains(TempPath, StringComparer.Ordinal)
-            && string.Equals(c.Arguments[^1], path, StringComparison.Ordinal));
+            && string.Equals(c.Arguments[^1], path, StringComparison.Ordinal)
+        );
 
     private static SandboxCommandResult Ok() =>
-        new() { ExitCode = 0, StandardOutput = "", StandardError = "", OperationId = "op" };
+        new()
+        {
+            ExitCode = 0,
+            StandardOutput = "",
+            StandardError = "",
+            OperationId = "op",
+        };
 
     private static SandboxCommandResult Fail() =>
-        new() { ExitCode = 1, StandardOutput = "", StandardError = "no space left on device", OperationId = "op" };
+        new()
+        {
+            ExitCode = 1,
+            StandardOutput = "",
+            StandardError = "no space left on device",
+            OperationId = "op",
+        };
 
     // ---------------------------------------------------------------- tests
 
@@ -515,16 +536,20 @@ public sealed class WorkspaceTranscriptMirrorTests
 
         // Zero would mean nothing has enumerated yet; a pool thread's id would mean the registration was
         // merely queued. Task.Run never inlines onto the caller, so only pulling it directly can match.
-        _ = agent.SubscribeThreadId.Should().Be(
-            caller,
-            "Attach must pull the first MoveNextAsync itself, so the subscription exists before it returns");
+        _ = agent
+            .SubscribeThreadId.Should()
+            .Be(
+                caller,
+                "Attach must pull the first MoveNextAsync itself, so the subscription exists before it returns"
+            );
 
         // The consequence, end to end: ONE completion — published exactly once, never in a retry loop —
         // is enough to get this conversation's rows into its workspace.
         await inner.PublishAsync(RunCompleted());
         await WaitForAsync(
             () => SplicedInto(browser, MainPath),
-            "A single run completion published after Attach returned never reached the mirror.");
+            "A single run completion published after Attach returned never reached the mirror."
+        );
         _ = LastPayload(browser).Should().Be(ExpectedAppend(only));
     }
 
@@ -557,14 +582,15 @@ public sealed class WorkspaceTranscriptMirrorTests
         // The pool hands the SAME instance back on a later request. This is the re-attach the idempotent
         // early return swallows while the failed registration is still resident.
         mirror.Attach(agent);
-        _ = agent.SubscribeAttempts.Should().Be(
-            2,
-            "a registration whose pump never started must not make a re-attach of that agent a no-op");
+        _ = agent
+            .SubscribeAttempts.Should()
+            .Be(2, "a registration whose pump never started must not make a re-attach of that agent a no-op");
 
         await inner.PublishAsync(RunCompleted());
         await WaitForAsync(
             () => SplicedInto(browser, MainPath),
-            "The conversation stayed unmirrored after a transient subscription failure and a re-attach.");
+            "The conversation stayed unmirrored after a transient subscription failure and a re-attach."
+        );
         _ = LastPayload(browser).Should().Be(ExpectedAppend(only));
     }
 
@@ -594,14 +620,16 @@ public sealed class WorkspaceTranscriptMirrorTests
         // pool's factory — so it is awaited rather than asserted inline.
         await WaitForAsync(
             () => agent.AbandonedEnumeratorDisposals == 1,
-            "The enumerator whose first MoveNextAsync threw was never disposed, so its subscriber registration and channel leak.");
+            "The enumerator whose first MoveNextAsync threw was never disposed, so its subscriber registration and channel leak."
+        );
 
         // And the recovery still works, exactly as in the throw-before-the-enumerator case.
         mirror.Attach(agent);
         await inner.PublishAsync(RunCompleted());
         await WaitForAsync(
             () => SplicedInto(browser, MainPath),
-            "The conversation stayed unmirrored after a failed first MoveNextAsync and a re-attach.");
+            "The conversation stayed unmirrored after a failed first MoveNextAsync and a re-attach."
+        );
         _ = LastPayload(browser).Should().Be(ExpectedAppend(only));
     }
 
@@ -648,12 +676,14 @@ public sealed class WorkspaceTranscriptMirrorTests
                 return agent.SubscribeAttempts >= 2;
             },
             "A subscription that faulted asynchronously kept its registration, so re-attaching the same "
-                + "agent stayed a no-op and the conversation could never be mirrored again.");
+                + "agent stayed a no-op and the conversation could never be mirrored again."
+        );
 
         await inner.PublishAsync(RunCompleted());
         await WaitForAsync(
             () => SplicedInto(browser, MainPath),
-            "The conversation stayed unmirrored after an asynchronously faulted subscription and a re-attach.");
+            "The conversation stayed unmirrored after an asynchronously faulted subscription and a re-attach."
+        );
         _ = LastPayload(browser).Should().Be(ExpectedAppend(only));
     }
 
@@ -679,7 +709,8 @@ public sealed class WorkspaceTranscriptMirrorTests
         await PublishUntilFlushedAsync(agent, store, 1);
         await WaitForAsync(
             () => SplicedInto(browser, MainPath),
-            "The first run completion never produced an append into the main transcript.");
+            "The first run completion never produced an append into the main transcript."
+        );
 
         // Staged through the writer's temp file and spliced from there — the payload is picked by that
         // path because the writer also drops a .gitignore after its first successful append.
@@ -692,7 +723,8 @@ public sealed class WorkspaceTranscriptMirrorTests
 
         await WaitForAsync(
             () => LastPayload(browser) == ExpectedAppend(all, skip: 2),
-            "The second run completion never appended ONLY the new row.");
+            "The second run completion never appended ONLY the new row."
+        );
     }
 
     /// <summary>
@@ -723,7 +755,8 @@ public sealed class WorkspaceTranscriptMirrorTests
         await agent.PublishAsync(RunCompleted());
         await WaitForAsync(
             () => store.FlushCount > baseline,
-            "The run completion after the burst never produced a flush.");
+            "The run completion after the burst never produced a flush."
+        );
 
         // The burst is fully consumed by now — the pump is strictly ordered, so observing the completion's
         // flush proves every delta ahead of it was observed too.
@@ -759,10 +792,12 @@ public sealed class WorkspaceTranscriptMirrorTests
         await agent.PublishAsync(RunCompleted());
 
         // Named by the sub-agent's OWN id, not by its prefixed thread id.
-        var expected = $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf("researcher", WorkspaceTranscriptLine.ShortId("agent-1"))}{ConversationTranscriptWriter.TranscriptExtension}";
+        var expected =
+            $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf("researcher", WorkspaceTranscriptLine.ShortId("agent-1"))}{ConversationTranscriptWriter.TranscriptExtension}";
         await WaitForAsync(
             () => SplicedInto(browser, expected),
-            "The sub-agent transcript was never written, so the spawn call did not refresh the graph.");
+            "The sub-agent transcript was never written, so the spawn call did not refresh the graph."
+        );
     }
 
     /// <summary>
@@ -799,10 +834,12 @@ public sealed class WorkspaceTranscriptMirrorTests
         // No spawn call and NO run completion — the notification has to carry this on its own.
         await agent.PublishAsync(new NotifyMessage { NotifyKind = NotifyKinds.SubAgentCompletion });
 
-        var expected = $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf("reviewer", WorkspaceTranscriptLine.ShortId("agent-2"))}{ConversationTranscriptWriter.TranscriptExtension}";
+        var expected =
+            $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf("reviewer", WorkspaceTranscriptLine.ShortId("agent-2"))}{ConversationTranscriptWriter.TranscriptExtension}";
         await WaitForAsync(
             () => SplicedInto(browser, expected),
-            "The sub-agent transcript was never written, so the completion notification did not schedule a flush.");
+            "The sub-agent transcript was never written, so the completion notification did not schedule a flush."
+        );
     }
 
     /// <summary>
@@ -895,7 +932,8 @@ public sealed class WorkspaceTranscriptMirrorTests
 
         await WaitForAsync(
             () => store.FlushCount > baseline,
-            "Re-subscribing after a drop never scheduled a flush, so whatever was published during the gap stays unmirrored.");
+            "Re-subscribing after a drop never scheduled a flush, so whatever was published during the gap stays unmirrored."
+        );
     }
 
     /// <summary>
@@ -998,8 +1036,11 @@ public sealed class WorkspaceTranscriptMirrorTests
         await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1)]);
 
         // One more than (1 + MaxDeferredRetries) passes of the default cap can reach.
-        var roster = ((1 + WorkspaceTranscriptMirror.MaxDeferredRetries)
-            * ConversationTranscriptWriter.DefaultMaxSubAgentFilesPerFlush) + 1;
+        var roster =
+            (
+                (1 + WorkspaceTranscriptMirror.MaxDeferredRetries)
+                * ConversationTranscriptWriter.DefaultMaxSubAgentFilesPerFlush
+            ) + 1;
         for (var i = 0; i < roster; i++)
         {
             await SeedSubAgentAsync(store, $"agent-{i:D2}", $"worker{i:D2}");
@@ -1012,13 +1053,17 @@ public sealed class WorkspaceTranscriptMirrorTests
         mirror.Attach(agent);
         await agent.PublishAsync(RunCompleted());
 
-        var expectedPaths = Enumerable.Range(0, roster).Select(i =>
-            $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf($"worker{i:D2}", WorkspaceTranscriptLine.ShortId($"agent-{i:D2}"))}{ConversationTranscriptWriter.TranscriptExtension}")
+        var expectedPaths = Enumerable
+            .Range(0, roster)
+            .Select(i =>
+                $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf($"worker{i:D2}", WorkspaceTranscriptLine.ShortId($"agent-{i:D2}"))}{ConversationTranscriptWriter.TranscriptExtension}"
+            )
             .ToList();
 
         await WaitForAsync(
             () => expectedPaths.All(p => SplicedInto(browser, p)),
-            "The tail of the descendant roster was never mirrored: the capped fan-out spent the retry budget before it got there.");
+            "The tail of the descendant roster was never mirrored: the capped fan-out spent the retry budget before it got there."
+        );
     }
 
     /// <summary>
@@ -1063,8 +1108,10 @@ public sealed class WorkspaceTranscriptMirrorTests
         browser.ExecuteHandler = command =>
         {
             var destination = command.Arguments[^1];
-            if (!command.Arguments.Contains(TempPath, StringComparer.Ordinal)
-                || !destination.StartsWith(AgentsDirectory, StringComparison.Ordinal))
+            if (
+                !command.Arguments.Contains(TempPath, StringComparer.Ordinal)
+                || !destination.StartsWith(AgentsDirectory, StringComparison.Ordinal)
+            )
             {
                 return Ok();
             }
@@ -1087,14 +1134,18 @@ public sealed class WorkspaceTranscriptMirrorTests
 
         var settled = await SettleAsync(store);
 
-        _ = attempts.Should().BeGreaterThan(
-            1,
-            "a descendant whose splice failed was never retried — the sweep marked it covered the moment it picked it, so the later slice's success ended the chain with that transcript missing"
-        );
-        _ = settled.Should().BeLessThanOrEqualTo(
-            (WorkspaceTranscriptMirror.MaxDeferredRetries + 2) * slices,
-            "the retry has to be bounded by the failure budget, not by the roster"
-        );
+        _ = attempts
+            .Should()
+            .BeGreaterThan(
+                1,
+                "a descendant whose splice failed was never retried — the sweep marked it covered the moment it picked it, so the later slice's success ended the chain with that transcript missing"
+            );
+        _ = settled
+            .Should()
+            .BeLessThanOrEqualTo(
+                (WorkspaceTranscriptMirror.MaxDeferredRetries + 2) * slices,
+                "the retry has to be bounded by the failure budget, not by the roster"
+            );
     }
 
     /// <summary>
@@ -1145,7 +1196,8 @@ public sealed class WorkspaceTranscriptMirrorTests
             }
         }
 
-        var expected = $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf("reviewer", WorkspaceTranscriptLine.ShortId("agent-2"))}{ConversationTranscriptWriter.TranscriptExtension}";
+        var expected =
+            $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf("reviewer", WorkspaceTranscriptLine.ShortId("agent-2"))}{ConversationTranscriptWriter.TranscriptExtension}";
         await WaitForAsync(
             () => SplicedInto(browser, expected),
             "The sub-agent that appeared during the gap was never mirrored: recovery reused the roster cached before it existed."
@@ -1189,7 +1241,10 @@ public sealed class WorkspaceTranscriptMirrorTests
         mirror.Attach(agent);
         await agent.PublishAsync(RunCompleted());
 
-        _ = reached.Wait(Deadline).Should().BeTrue("the first flush never reached the gateway, so nothing is in flight to supersede");
+        _ = reached
+            .Wait(Deadline)
+            .Should()
+            .BeTrue("the first flush never reached the gateway, so nothing is in flight to supersede");
 
         // A brand-new trigger, published while that first flush is still blocked in the sandbox call.
         await agent.PublishAsync(RunCompleted());
@@ -1231,7 +1286,8 @@ public sealed class WorkspaceTranscriptMirrorTests
         await PublishUntilFlushedAsync(original, store, 1);
         await WaitForAsync(
             () => SplicedInto(browser, MainPath),
-            "The original agent's run completion never produced an append.");
+            "The original agent's run completion never produced an append."
+        );
 
         current = replacement;
         mirror.Attach(replacement);
@@ -1242,7 +1298,8 @@ public sealed class WorkspaceTranscriptMirrorTests
         await PublishUntilFlushedAsync(replacement, store, settled + 1);
         await WaitForAsync(
             () => LastPayload(browser) == ExpectedAppend(all, skip: 1),
-            "The replacement agent's turn did not append ONLY the new row — the writer was rebuilt.");
+            "The replacement agent's turn did not append ONLY the new row — the writer was rebuilt."
+        );
 
         // And the original is no longer listened to: its publishes are inert.
         var afterSwitch = await SettleAsync(store);
@@ -1285,13 +1342,16 @@ public sealed class WorkspaceTranscriptMirrorTests
         using var mirror = CreateMirror(store, browser, _ => agent);
 
         mirror.Attach(agent);
-        _ = mirror.IsMirroring(ThreadId).Should().BeTrue(
-            "attach has never been caller-dependent - the gap was at flush time, not here");
+        _ = mirror
+            .IsMirroring(ThreadId)
+            .Should()
+            .BeTrue("attach has never been caller-dependent - the gap was at flush time, not here");
 
         await agent.PublishAsync(RunCompleted());
         await WaitForAsync(
             () => SplicedInto(browser, MainPath),
-            "An S2S-created conversation published a completed run and still got no transcript.");
+            "An S2S-created conversation published a completed run and still got no transcript."
+        );
         _ = LastPayload(browser).Should().Be(ExpectedAppend(only));
     }
 
@@ -1320,9 +1380,7 @@ public sealed class WorkspaceTranscriptMirrorTests
 
         await agent.PublishAsync(RunCompleted());
         _ = (await SettleAsync(store)).Should().Be(afterEvict);
-        _ = browser
-            .Commands.Should()
-            .NotContain(c => c.Arguments.Contains("rm") || c.Arguments.Contains("rm -rf"));
+        _ = browser.Commands.Should().NotContain(c => c.Arguments.Contains("rm") || c.Arguments.Contains("rm -rf"));
         _ = SplicedInto(browser, MainPath).Should().BeTrue();
 
         // Evicting an unknown thread is a no-op, not a fault: ThreadRemoved fires for conversations this
@@ -1350,13 +1408,15 @@ public sealed class WorkspaceTranscriptMirrorTests
         _ = services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
         _ = services.AddSingleton(sp => new ConversationDescendantScanner(
             sp.GetRequiredService<IConversationStore>(),
-            NullLogger<ConversationDescendantScanner>.Instance));
+            NullLogger<ConversationDescendantScanner>.Instance
+        ));
         _ = services.AddSingleton(sp => new WorkspaceTranscriptMirror(
             _ => null,
             sp.GetRequiredService<IConversationStore>(),
             sp.GetRequiredService<IWorkspaceFileBrowser>(),
             sp.GetRequiredService<ConversationDescendantScanner>(),
-            sp.GetRequiredService<ILoggerFactory>()));
+            sp.GetRequiredService<ILoggerFactory>()
+        ));
 
         var provider = services.BuildServiceProvider();
         await using var agent = new PublishingAgent(ThreadId);

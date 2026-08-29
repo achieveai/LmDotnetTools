@@ -35,18 +35,15 @@ internal sealed record PatternTrend(
     double? RecentRate,
     double? PriorRate,
     int RecentExposed,
-    int PriorExposed);
+    int PriorExposed
+);
 
 /// <summary>One PR in which a pattern was seen, for the "Seen in" list under each pattern.</summary>
 /// <param name="SourcePr">Fully qualified PR reference as recorded in the observation.</param>
 /// <param name="ObservedAtUtc">When that observation was written.</param>
 /// <param name="Severity">The severity the shipped review carried for this hit.</param>
 /// <param name="Location">The <c>path:line</c> the finding cited.</param>
-internal sealed record PatternSighting(
-    string SourcePr,
-    string ObservedAtUtc,
-    string Severity,
-    string Location);
+internal sealed record PatternSighting(string SourcePr, string ObservedAtUtc, string Severity, string Location);
 
 /// <summary>
 /// The model-authored body of a pattern file. The only model-originated text in any rendered view — every
@@ -67,8 +64,7 @@ internal sealed record PatternProse(string Title, string WhatItIs, string WhyItM
     /// </para>
     /// </summary>
     /// <param name="patternId">The pattern whose file could not be read; used as a stand-in title.</param>
-    public static PatternProse Missing(string patternId) =>
-        new(patternId, MissingText, MissingText, MissingText);
+    public static PatternProse Missing(string patternId) => new(patternId, MissingText, MissingText, MissingText);
 
     /// <summary>The text substituted for every missing prose field, so a gap reads as a gap.</summary>
     public const string MissingText = "_Pattern file missing; prose is written once, at pattern creation._";
@@ -83,7 +79,8 @@ internal sealed record PatternView(
     PatternStanding Standing,
     PatternProse Prose,
     PatternTrend Trend,
-    IReadOnlyList<PatternSighting> Sightings);
+    IReadOnlyList<PatternSighting> Sightings
+);
 
 /// <summary>
 /// One window of exposed PRs for one dimension, for the progress view's trend table.
@@ -109,7 +106,8 @@ internal sealed record DimensionWindow(
     int ExposedPrs,
     int Findings,
     double FindingsPerExposedPr,
-    bool Partial);
+    bool Partial
+);
 
 /// <summary>One dimension's recent history, oldest window first.</summary>
 /// <param name="Dimension">The specialist template.</param>
@@ -150,7 +148,8 @@ internal sealed record DeveloperLearningsView(
     string? LastObservedUtc,
     IReadOnlyList<PatternView> Patterns,
     IReadOnlyList<DimensionTrend> DimensionTrends,
-    LearningsThresholds Thresholds)
+    LearningsThresholds Thresholds
+)
 {
     /// <summary>
     /// Windows of exposed PRs kept in the progress view's per-dimension trend table.
@@ -176,8 +175,7 @@ internal sealed record DeveloperLearningsView(
     /// Resolutions reached while their dimension was cohort-suppressed, excluded from the headline resolved
     /// count until a later clean window confirms them.
     /// </summary>
-    public IReadOnlyList<PatternView> ProvisionalResolutions =>
-        [.. Resolved.Where(p => p.Standing.Provisional)];
+    public IReadOnlyList<PatternView> ProvisionalResolutions => [.. Resolved.Where(p => p.Standing.Provisional)];
 
     /// <summary>
     /// The headline resolved count: confirmed resolutions only. Provisional ones are rendered separately and
@@ -205,7 +203,8 @@ internal sealed record DeveloperLearningsView(
         IReadOnlyList<PatternStanding> standings,
         IReadOnlyDictionary<string, PatternProse> prose,
         LearningsThresholds thresholds,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(developerSlug);
         ArgumentNullException.ThrowIfNull(observations);
@@ -225,7 +224,9 @@ internal sealed record DeveloperLearningsView(
                         ? body
                         : PatternProse.Missing(standing.PatternId),
                     ComputeTrend(ordered, standing, thresholds),
-                    Sightings(ordered, standing.PatternId)));
+                    Sightings(ordered, standing.PatternId)
+                )
+            );
         }
 
         return new DeveloperLearningsView(
@@ -236,7 +237,8 @@ internal sealed record DeveloperLearningsView(
             ordered.Count == 0 ? null : ordered[^1].ObservedAtUtc,
             patterns,
             BuildDimensionTrends(ordered, thresholds),
-            thresholds);
+            thresholds
+        );
     }
 
     /// <summary>
@@ -265,7 +267,8 @@ internal sealed record DeveloperLearningsView(
 
     private static IReadOnlyList<PatternSighting> Sightings(
         IReadOnlyList<DeveloperObservation> ordered,
-        string patternId)
+        string patternId
+    )
     {
         var sightings = new List<PatternSighting>();
         foreach (var observation in ordered)
@@ -275,8 +278,8 @@ internal sealed record DeveloperLearningsView(
                 if (string.Equals(hit.PatternId, patternId, StringComparison.Ordinal))
                 {
                     sightings.Add(
-                        new PatternSighting(
-                            observation.SourcePr, observation.ObservedAtUtc, hit.Severity, hit.Location));
+                        new PatternSighting(observation.SourcePr, observation.ObservedAtUtc, hit.Severity, hit.Location)
+                    );
                 }
             }
         }
@@ -300,7 +303,8 @@ internal sealed record DeveloperLearningsView(
     private static PatternTrend ComputeTrend(
         IReadOnlyList<DeveloperObservation> ordered,
         PatternStanding standing,
-        LearningsThresholds thresholds)
+        LearningsThresholds thresholds
+    )
     {
         var size = Math.Max(1, thresholds.ActiveWindowPrs);
         var minimum = Math.Max(1, size / 2);
@@ -316,15 +320,18 @@ internal sealed record DeveloperLearningsView(
         }
 
         var recentRate = DeveloperLearningsLedger.SmoothedRate(
-            recent.Count(i => HasHit(ordered[i], standing.PatternId)), recent.Length);
+            recent.Count(i => HasHit(ordered[i], standing.PatternId)),
+            recent.Length
+        );
         var priorRate = DeveloperLearningsLedger.SmoothedRate(
-            prior.Count(i => HasHit(ordered[i], standing.PatternId)), prior.Length);
+            prior.Count(i => HasHit(ordered[i], standing.PatternId)),
+            prior.Length
+        );
 
-        var direction = recentRate < priorRate
-            ? TrendDirection.Improving
-            : recentRate > priorRate
-                ? TrendDirection.Worsening
-                : TrendDirection.Unchanged;
+        var direction =
+            recentRate < priorRate ? TrendDirection.Improving
+            : recentRate > priorRate ? TrendDirection.Worsening
+            : TrendDirection.Unchanged;
 
         return new PatternTrend(direction, recentRate, priorRate, recent.Length, prior.Length);
     }
@@ -344,7 +351,8 @@ internal sealed record DeveloperLearningsView(
     /// </summary>
     private static IReadOnlyList<DimensionTrend> BuildDimensionTrends(
         IReadOnlyList<DeveloperObservation> ordered,
-        LearningsThresholds thresholds)
+        LearningsThresholds thresholds
+    )
     {
         var size = Math.Max(1, thresholds.ActiveWindowPrs);
         var dimensions = ordered
@@ -361,15 +369,18 @@ internal sealed record DeveloperLearningsView(
             {
                 var start = Math.Max(0, end - size);
                 var slice = exposed.Skip(start).Take(end - start).ToArray();
-                var findings = slice.Sum(
-                    i => ordered[i].Hits.Count(h => string.Equals(h.Dimension, dimension, StringComparison.Ordinal)));
+                var findings = slice.Sum(i =>
+                    ordered[i].Hits.Count(h => string.Equals(h.Dimension, dimension, StringComparison.Ordinal))
+                );
                 windows.Add(
                     new DimensionWindow(
                         dimension,
                         slice.Length,
                         findings,
                         findings / (double)slice.Length,
-                        slice.Length < size));
+                        slice.Length < size
+                    )
+                );
             }
 
             windows.Reverse();

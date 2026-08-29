@@ -23,9 +23,7 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
     private const string SourcePrRef = "github/acme/widgets/42";
 
     public KnowledgeExtractionCommitterTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private KnowledgeExtractionCommitter CreateCommitter(FakeSandboxCommandRunner runner) =>
         new(new GitRunner(runner), RepoRoot, LoggerFactory.CreateLogger<KnowledgeExtractionCommitter>());
@@ -40,7 +38,8 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
             Branch,
             SourcePrRef,
             _ => Task.FromResult(KnowledgeExtractionResult.Wrote("system/x.md", "run-1")),
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         // The notes branch is checked out BEFORE the write is committed + pushed so the sweeper's later
@@ -61,7 +60,8 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
             Branch,
             SourcePrRef,
             _ => Task.FromResult(KnowledgeExtractionResult.Declined("run-1")),
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         // The gate wrote nothing durable, so there is nothing to stage, commit, or push.
@@ -82,7 +82,8 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
             Branch,
             SourcePrRef,
             _ => Task.FromResult(KnowledgeExtractionResult.Failed("run-1")),
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         // Nothing is committed either way, but the sweeper must be able to tell this apart from a decline —
         // conflating the two is what made every extraction failure permanent (defect D5).
@@ -98,11 +99,13 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
         var committer = CreateCommitter(runner);
         KnowledgeExtractionOutcome outcome = default;
 
-        var act = async () => outcome = await committer.RunAsync(
-            Branch,
-            SourcePrRef,
-            _ => throw new InvalidOperationException("simulated extraction failure"),
-            CancellationToken.None);
+        var act = async () =>
+            outcome = await committer.RunAsync(
+                Branch,
+                SourcePrRef,
+                _ => throw new InvalidOperationException("simulated extraction failure"),
+                CancellationToken.None
+            );
 
         // Extraction failure must never block the lifecycle (design §6) — it is logged and swallowed, and
         // no commit is made — but it IS reported as a failure so the sweeper can retry it.
@@ -121,7 +124,8 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
         runner.OnArgvContainsSequence(
             $"push origin {Branch}",
             new SandboxCommandResult(1, string.Empty, "rejected (non-fast-forward)"),
-            new SandboxCommandResult(0, string.Empty, string.Empty));
+            new SandboxCommandResult(0, string.Empty, string.Empty)
+        );
         var logger = new CapturingLogger<KnowledgeExtractionCommitter>();
         var committer = new KnowledgeExtractionCommitter(new GitRunner(runner), RepoRoot, logger);
 
@@ -129,7 +133,8 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
             Branch,
             SourcePrRef,
             _ => Task.FromResult(KnowledgeExtractionResult.Wrote("system/x.md", "run-1")),
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         // Rejected once, rebased onto the moved remote, then retried successfully.
@@ -145,15 +150,18 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"push origin {Branch}",
-            new SandboxCommandResult(1, string.Empty, "rejected (non-fast-forward)"));
+            new SandboxCommandResult(1, string.Empty, "rejected (non-fast-forward)")
+        );
         var logger = new CapturingLogger<KnowledgeExtractionCommitter>();
         var committer = new KnowledgeExtractionCommitter(new GitRunner(runner), RepoRoot, logger);
 
-        var act = () => committer.RunAsync(
-            Branch,
-            SourcePrRef,
-            _ => Task.FromResult(KnowledgeExtractionResult.Wrote("system/x.md", "run-1")),
-            CancellationToken.None);
+        var act = () =>
+            committer.RunAsync(
+                Branch,
+                SourcePrRef,
+                _ => Task.FromResult(KnowledgeExtractionResult.Wrote("system/x.md", "run-1")),
+                CancellationToken.None
+            );
 
         // A push that is rejected forever must never throw and — crucially — must never be reported as a
         // success: the sweeper's later merge would fetch origin/<branch> WITHOUT this commit and silently
@@ -171,7 +179,8 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"checkout -B {Branch} origin/{Branch}",
-            new SandboxCommandResult(128, string.Empty, "fatal: unknown revision"));
+            new SandboxCommandResult(128, string.Empty, "fatal: unknown revision")
+        );
         var committer = CreateCommitter(runner);
         var extractCalled = false;
 
@@ -183,7 +192,8 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
                 extractCalled = true;
                 return Task.FromResult(KnowledgeExtractionResult.Wrote("system/x.md", "run-1"));
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         // A failed checkout must never let extraction run — HEAD could be left on the wrong branch
         // (e.g. the default branch from a prior sweep), which would commit the KB write there instead.
@@ -199,9 +209,13 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
         var runner = new FakeSandboxCommandRunner();
         // The push is rejected (remote moved) and the follow-up rebase then fails (conflict / force-push).
         runner.OnArgvContains(
-            $"push origin {Branch}", new SandboxCommandResult(1, string.Empty, "rejected (non-fast-forward)"));
+            $"push origin {Branch}",
+            new SandboxCommandResult(1, string.Empty, "rejected (non-fast-forward)")
+        );
         runner.OnArgvContains(
-            $"pull --rebase origin {Branch}", new SandboxCommandResult(1, string.Empty, "CONFLICT: could not apply"));
+            $"pull --rebase origin {Branch}",
+            new SandboxCommandResult(1, string.Empty, "CONFLICT: could not apply")
+        );
         var logger = new CapturingLogger<KnowledgeExtractionCommitter>();
         var committer = new KnowledgeExtractionCommitter(new GitRunner(runner), RepoRoot, logger);
 
@@ -209,7 +223,8 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
             Branch,
             SourcePrRef,
             _ => Task.FromResult(KnowledgeExtractionResult.Wrote("system/x.md", "run-1")),
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         // A failed rebase leaves the checkout mid-rebase: it must abort (so the reused sweeper checkout is

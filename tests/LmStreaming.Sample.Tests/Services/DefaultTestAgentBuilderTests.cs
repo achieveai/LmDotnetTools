@@ -37,7 +37,9 @@ public class DefaultTestAgentBuilderTests
         options.Should().NotBeNull();
         foreach (var template in options!.Templates.Values)
         {
-            template.AgentFactory.Should().BeSameAs(SentinelFactory, "spawned test sub-agents must reuse the parent's test transport");
+            template
+                .AgentFactory.Should()
+                .BeSameAs(SentinelFactory, "spawned test sub-agents must reuse the parent's test transport");
         }
     }
 }

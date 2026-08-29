@@ -40,7 +40,8 @@ public class WorkflowManagerConversationScopeTests
                 OwnerUserId = "entra-tid:owner-oid",
                 OwnerAppId = "codereview-daemon",
                 Visibility = Visibility.Shared,
-            });
+            }
+        );
 
         var controller = ScriptedController(DriveMinimalToTerminal);
 
@@ -122,12 +123,7 @@ public class WorkflowManagerConversationScopeTests
             .Be(0, "the unscoped workflow-{id} thread is what caused cross-conversation inheritance");
 
         // The presentation summary exposes the real thread id so the host does not reconstruct the stale one.
-        manager
-            .ListRuns()
-            .Should()
-            .ContainSingle()
-            .Which.ThreadId.Should()
-            .Be("workflow-pr-review-thread-conv-alpha");
+        manager.ListRuns().Should().ContainSingle().Which.ThreadId.Should().Be("workflow-pr-review-thread-conv-alpha");
     }
 
     [Fact]
@@ -148,7 +144,9 @@ public class WorkflowManagerConversationScopeTests
             )
         )
         {
-            (await managerA.StartAsync("shared-id", MinimalDefinition(), WorkflowStartMode.Sync)).Status.Should().Be("completed");
+            (await managerA.StartAsync("shared-id", MinimalDefinition(), WorkflowStartMode.Sync))
+                .Status.Should()
+                .Be("completed");
         }
 
         await using (
@@ -160,7 +158,9 @@ public class WorkflowManagerConversationScopeTests
             )
         )
         {
-            (await managerB.StartAsync("shared-id", MinimalDefinition(), WorkflowStartMode.Sync)).Status.Should().Be("completed");
+            (await managerB.StartAsync("shared-id", MinimalDefinition(), WorkflowStartMode.Sync))
+                .Status.Should()
+                .Be("completed");
         }
 
         store.GetMessageCount("workflow-shared-id-thread-alpha").Should().BeGreaterThan(0);

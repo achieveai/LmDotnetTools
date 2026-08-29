@@ -103,11 +103,58 @@ internal static class KnowledgeDigest
     /// </summary>
     private static readonly HashSet<string> Stopwords = new(StringComparer.Ordinal)
     {
-        "src", "test", "tests", "sample", "samples", "docs", "bin", "obj", "lib", "csproj", "sln",
-        "json", "jsonl", "yaml", "yml", "md", "txt", "cshtml", "razor",
-        "the", "and", "for", "with", "from", "into", "not", "this", "that", "are", "its", "use",
-        "using", "when", "before", "after", "all", "any", "one", "two", "per", "has", "have", "was",
-        "were", "will", "can", "get", "set", "must", "new", "old", "main",
+        "src",
+        "test",
+        "tests",
+        "sample",
+        "samples",
+        "docs",
+        "bin",
+        "obj",
+        "lib",
+        "csproj",
+        "sln",
+        "json",
+        "jsonl",
+        "yaml",
+        "yml",
+        "md",
+        "txt",
+        "cshtml",
+        "razor",
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "into",
+        "not",
+        "this",
+        "that",
+        "are",
+        "its",
+        "use",
+        "using",
+        "when",
+        "before",
+        "after",
+        "all",
+        "any",
+        "one",
+        "two",
+        "per",
+        "has",
+        "have",
+        "was",
+        "were",
+        "will",
+        "can",
+        "get",
+        "set",
+        "must",
+        "new",
+        "old",
+        "main",
     };
 
     /// <summary>
@@ -230,8 +277,7 @@ internal static class KnowledgeDigest
     {
         var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n');
         var markerHead = SandboxLimits.TruncationMarker.TrimStart('\n');
-        var marker = Array.FindIndex(
-            lines, line => line.Trim().StartsWith(markerHead, StringComparison.Ordinal));
+        var marker = Array.FindIndex(lines, line => line.Trim().StartsWith(markerHead, StringComparison.Ordinal));
 
         if (marker < 0)
         {
@@ -278,7 +324,8 @@ internal static class KnowledgeDigest
         IReadOnlyList<string> changedPaths,
         string? prTitle,
         string? prDescription,
-        int maxEntries)
+        int maxEntries
+    )
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentNullException.ThrowIfNull(changedPaths);
@@ -341,9 +388,7 @@ internal static class KnowledgeDigest
     /// own topic, which would otherwise turn an unscoped KB into pure round-robin.
     /// </para>
     /// </summary>
-    private static List<KnowledgeEntryMeta> ReserveScopeBreadth(
-        List<KnowledgeEntryMeta> byScore,
-        int maxEntries)
+    private static List<KnowledgeEntryMeta> ReserveScopeBreadth(List<KnowledgeEntryMeta> byScore, int maxEntries)
     {
         if (byScore.Count <= maxEntries)
         {
@@ -430,7 +475,9 @@ internal static class KnowledgeDigest
     /// entry with nothing reporting that it went.
     /// </summary>
     public static KnowledgeDeduplication Deduplicate(
-        IReadOnlyList<KnowledgeEntryMeta> entries, string knowledgeBaseRoot)
+        IReadOnlyList<KnowledgeEntryMeta> entries,
+        string knowledgeBaseRoot
+    )
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentNullException.ThrowIfNull(knowledgeBaseRoot);
@@ -483,7 +530,8 @@ internal static class KnowledgeDigest
         return new KnowledgeDeduplication(
             [.. order.Select(key => winners[key])],
             collapsed,
-            [.. conflicted.Select(key => winners[key])]);
+            [.. conflicted.Select(key => winners[key])]
+        );
     }
 
     /// <summary>
@@ -523,7 +571,8 @@ internal static class KnowledgeDigest
         IReadOnlyList<KnowledgeEntryMeta> entries,
         string knowledgeBaseRoot,
         int charBudget,
-        int omitted)
+        int omitted
+    )
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentNullException.ThrowIfNull(knowledgeBaseRoot);
@@ -606,14 +655,16 @@ internal static class KnowledgeDigest
                 builder.Length > 0 && missing > 0 ? header + Footer(missing, knowledgeBaseRoot) : string.Empty,
                 [],
                 rejected,
-                neutralized);
+                neutralized
+            );
         }
 
         return new KnowledgeDigestBlock(
             builder.Append(missing > 0 ? Footer(missing, knowledgeBaseRoot) : string.Empty).ToString(),
             rendered,
             rejected,
-            neutralized);
+            neutralized
+        );
     }
 
     /// <summary>
@@ -629,7 +680,9 @@ internal static class KnowledgeDigest
     /// </para>
     /// </summary>
     public static KnowledgeContainmentPartition PartitionByContainment(
-        IReadOnlyList<KnowledgeEntryMeta> entries, string knowledgeBaseRoot)
+        IReadOnlyList<KnowledgeEntryMeta> entries,
+        string knowledgeBaseRoot
+    )
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentNullException.ThrowIfNull(knowledgeBaseRoot);
@@ -663,7 +716,9 @@ internal static class KnowledgeDigest
     /// </para>
     /// </summary>
     public static KnowledgeSanitizedEntries SanitizeMetadata(
-        IReadOnlyList<KnowledgeEntryMeta> entries, string knowledgeBaseRoot)
+        IReadOnlyList<KnowledgeEntryMeta> entries,
+        string knowledgeBaseRoot
+    )
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentNullException.ThrowIfNull(knowledgeBaseRoot);
@@ -701,7 +756,10 @@ internal static class KnowledgeDigest
     /// </para>
     /// </summary>
     public static KnowledgeTocBlock RenderTableOfContents(
-        string? tableOfContents, string knowledgeBaseRoot, int charBudget)
+        string? tableOfContents,
+        string knowledgeBaseRoot,
+        int charBudget
+    )
     {
         ArgumentNullException.ThrowIfNull(knowledgeBaseRoot);
 
@@ -726,14 +784,19 @@ internal static class KnowledgeDigest
             """;
 
         var lines = tableOfContents
-            .Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').TrimEnd('\n').Split('\n');
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .TrimEnd('\n')
+            .Split('\n');
         var total = lines.Count(IsTocEntry);
 
         // Room for the closing note is reserved up front, against whichever of the two forms is longer and
         // against the largest count the footer could report, so the promise of a route to what was cut can
         // never itself be what overruns the budget.
         var reserve = Math.Max(
-            total > 0 ? Footer(total, knowledgeBaseRoot).Length : 0, TruncatedNotice(knowledgeBaseRoot).Length);
+            total > 0 ? Footer(total, knowledgeBaseRoot).Length : 0,
+            TruncatedNotice(knowledgeBaseRoot).Length
+        );
 
         var builder = new StringBuilder();
         var listed = 0;
@@ -894,11 +957,18 @@ internal static class KnowledgeDigest
             return new KnowledgeTocBlock(string.Empty, 0, dropped, true, refused, duplicates);
         }
 
-        var closing = dropped > 0 ? Footer(dropped, knowledgeBaseRoot)
+        var closing =
+            dropped > 0 ? Footer(dropped, knowledgeBaseRoot)
             : truncated ? TruncatedNotice(knowledgeBaseRoot)
             : string.Empty;
         return new KnowledgeTocBlock(
-            builder.Append(closing).ToString(), listed, dropped, truncated, refused, duplicates);
+            builder.Append(closing).ToString(),
+            listed,
+            dropped,
+            truncated,
+            refused,
+            duplicates
+        );
     }
 
     /// <summary>
@@ -916,7 +986,10 @@ internal static class KnowledgeDigest
     /// <param name="knowledgeBaseRoot">The Knowledge Base root as the AGENT resolves it.</param>
     /// <param name="maxBytes">The ceiling the listings exceeded.</param>
     public static string RenderRefusedListings(
-        IEnumerable<string> refusedPaths, string knowledgeBaseRoot, long maxBytes)
+        IEnumerable<string> refusedPaths,
+        string knowledgeBaseRoot,
+        long maxBytes
+    )
     {
         ArgumentNullException.ThrowIfNull(refusedPaths);
         ArgumentException.ThrowIfNullOrWhiteSpace(knowledgeBaseRoot);
@@ -1078,10 +1151,12 @@ internal static class KnowledgeDigest
                 digits++;
             }
 
-            if (digits > 0
+            if (
+                digits > 0
                 && digits + 1 < text.Length
                 && text[digits] is '.' or ')'
-                && (text[digits + 1] == ' ' || text[digits + 1] == '\t'))
+                && (text[digits + 1] == ' ' || text[digits + 1] == '\t')
+            )
             {
                 text = text[(digits + 2)..].TrimStart();
                 continue;
@@ -1157,9 +1232,10 @@ internal static class KnowledgeDigest
 
         for (var i = 0; i < colon; i++)
         {
-            var allowed = i == 0
-                ? char.IsAsciiLetter(link[i])
-                : char.IsAsciiLetterOrDigit(link[i]) || link[i] is '+' or '-' or '.';
+            var allowed =
+                i == 0
+                    ? char.IsAsciiLetter(link[i])
+                    : char.IsAsciiLetterOrDigit(link[i]) || link[i] is '+' or '-' or '.';
             if (!allowed)
             {
                 return false;
@@ -1513,9 +1589,11 @@ internal static class KnowledgeDigest
             // Only ASCII punctuation is escapable in CommonMark; a backslash before anything else is a
             // literal backslash - and on this path it is very likely a Windows-style separator, which
             // TryResolveEntryPath still has to see as one.
-            if (text[scan] == '\\'
+            if (
+                text[scan] == '\\'
                 && scan + 1 < text.Length
-                && EscapableAsciiPunctuation.Contains(text[scan + 1], StringComparison.Ordinal))
+                && EscapableAsciiPunctuation.Contains(text[scan + 1], StringComparison.Ordinal)
+            )
             {
                 scan++;
             }
@@ -1632,16 +1710,16 @@ internal static class KnowledgeDigest
 
     private static string Header() =>
         $"""
-        {Heading}
+            {Heading}
 
-        Durable lessons from earlier reviews, ranked by relevance to the files this PR changes. Open one
-        with the Read tool using the EXACT ABSOLUTE PATH shown below — do NOT Grep or Glob for it, because
-        a root-level Grep can come back empty even when the file exists. When you dispatch a sub-agent for
-        a dimension, copy the paths that match that dimension into its brief; it has no other way to see
-        them and will otherwise review with no prior knowledge at all.
+            Durable lessons from earlier reviews, ranked by relevance to the files this PR changes. Open one
+            with the Read tool using the EXACT ABSOLUTE PATH shown below — do NOT Grep or Glob for it, because
+            a root-level Grep can come back empty even when the file exists. When you dispatch a sub-agent for
+            a dimension, copy the paths that match that dimension into its brief; it has no other way to see
+            them and will otherwise review with no prior knowledge at all.
 
 
-        """;
+            """;
 
     /// <summary>
     /// The one heading the prior-knowledge block ever carries. The review prompt teaches this exact string
@@ -1715,9 +1793,11 @@ internal static class KnowledgeDigest
     /// </summary>
     private static bool CarriesAnEscapingLink(string? field, string knowledgeBaseRoot) =>
         !string.IsNullOrEmpty(field)
-        && (CarriesAReferenceStyleLink(field)
-            || TocLinks(field).Any(
-                link => !link.Delimited || !IsLinkTheAgentCanSafelyJoin(link.Destination, knowledgeBaseRoot)));
+        && (
+            CarriesAReferenceStyleLink(field)
+            || TocLinks(field)
+                .Any(link => !link.Delimited || !IsLinkTheAgentCanSafelyJoin(link.Destination, knowledgeBaseRoot))
+        );
 
     /// <summary>
     /// Renders one entry within <paramref name="maxLength"/>, or an empty string when not even a truncated
@@ -1746,9 +1826,7 @@ internal static class KnowledgeDigest
         // The marker and the newline that closes the cut line are part of what has to fit, so they are
         // subtracted before the metadata is measured rather than appended on top of a full block.
         var room = maxLength - pathLine.Length - TruncationMarker.Length - 1;
-        return room < MinimumMetadataChars
-            ? string.Empty
-            : $"{metadata[..room]}{TruncationMarker}\n{pathLine}";
+        return room < MinimumMetadataChars ? string.Empty : $"{metadata[..room]}{TruncationMarker}\n{pathLine}";
     }
 
     /// <summary>
@@ -1864,8 +1942,7 @@ internal static class KnowledgeDigest
             }
 
             var rest = remainder[(i + 1)..];
-            if (!rest.StartsWith("b/", StringComparison.Ordinal)
-                && !rest.StartsWith("\"b/", StringComparison.Ordinal))
+            if (!rest.StartsWith("b/", StringComparison.Ordinal) && !rest.StartsWith("\"b/", StringComparison.Ordinal))
             {
                 continue;
             }
@@ -1934,17 +2011,21 @@ internal static class KnowledgeDigest
 
             bytes.AddRange(
                 Encoding.UTF8.GetBytes(
-                    (next switch
-                    {
-                        'n' => '\n',
-                        't' => '\t',
-                        'r' => '\r',
-                        'a' => '\a',
-                        'b' => '\b',
-                        'f' => '\f',
-                        'v' => '\v',
-                        _ => next, // \\ and \" decode to themselves.
-                    }).ToString()));
+                    (
+                        next switch
+                        {
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            'a' => '\a',
+                            'b' => '\b',
+                            'f' => '\f',
+                            'v' => '\v',
+                            _ => next, // \\ and \" decode to themselves.
+                        }
+                    ).ToString()
+                )
+            );
         }
 
         return Encoding.UTF8.GetString([.. bytes]);
@@ -1963,7 +2044,8 @@ internal static class KnowledgeDigest
             AddTokens(tag, tagTokens);
         }
 
-        var score = (PathTagWeight * tagTokens.Count(pathTokens.Contains))
+        var score =
+            (PathTagWeight * tagTokens.Count(pathTokens.Contains))
             + (ProseTagWeight * tagTokens.Count(proseTokens.Contains));
 
         var titleTokens = new HashSet<string>(StringComparer.Ordinal);
@@ -2026,7 +2108,8 @@ internal static class KnowledgeDigest
         {
             // A boundary is an upper-case letter that either follows a non-upper character, or ends an
             // upper-case run that is starting a new word ("HTTPServer" -> "HTTP", "Server").
-            var boundary = char.IsUpper(word[i])
+            var boundary =
+                char.IsUpper(word[i])
                 && (!char.IsUpper(word[i - 1]) || (i + 1 < word.Length && char.IsLower(word[i + 1])));
             if (boundary)
             {
@@ -2069,7 +2152,8 @@ internal sealed record KnowledgeDigestBlock(
     string Text,
     IReadOnlyList<KnowledgeEntryMeta> Rendered,
     IReadOnlyList<KnowledgeEntryMeta> Rejected,
-    IReadOnlyList<KnowledgeEntryMeta> Neutralized);
+    IReadOnlyList<KnowledgeEntryMeta> Neutralized
+);
 
 /// <summary>
 /// The rendered <c>_toc.md</c> fallback block plus what it actually carried. <see cref="Listed"/> and
@@ -2085,7 +2169,13 @@ internal sealed record KnowledgeDigestBlock(
 /// counts at once.
 /// </summary>
 internal sealed record KnowledgeTocBlock(
-    string Text, int Listed, int Dropped, bool Truncated, IReadOnlyList<string> Refused, int Duplicates);
+    string Text,
+    int Listed,
+    int Dropped,
+    bool Truncated,
+    IReadOnlyList<string> Refused,
+    int Duplicates
+);
 
 /// <summary>
 /// Knowledge Base entries with records naming the same file collapsed to one apiece, plus what was
@@ -2096,7 +2186,8 @@ internal sealed record KnowledgeTocBlock(
 internal sealed record KnowledgeDeduplication(
     IReadOnlyList<KnowledgeEntryMeta> Entries,
     IReadOnlyList<KnowledgeEntryMeta> Collapsed,
-    IReadOnlyList<KnowledgeEntryMeta> Conflicting);
+    IReadOnlyList<KnowledgeEntryMeta> Conflicting
+);
 
 /// <summary>
 /// Knowledge Base entries split by whether their path resolves inside the Knowledge Base root.
@@ -2106,7 +2197,8 @@ internal sealed record KnowledgeDeduplication(
 /// </summary>
 internal sealed record KnowledgeContainmentPartition(
     IReadOnlyList<KnowledgeEntryMeta> Usable,
-    IReadOnlyList<KnowledgeEntryMeta> Refused);
+    IReadOnlyList<KnowledgeEntryMeta> Refused
+);
 
 /// <summary>
 /// Knowledge Base entries with their model-authored metadata already cleaned, plus the ORIGINALS of the
@@ -2118,4 +2210,5 @@ internal sealed record KnowledgeContainmentPartition(
 /// </summary>
 internal sealed record KnowledgeSanitizedEntries(
     IReadOnlyList<KnowledgeEntryMeta> Entries,
-    IReadOnlyList<KnowledgeEntryMeta> Neutralized);
+    IReadOnlyList<KnowledgeEntryMeta> Neutralized
+);

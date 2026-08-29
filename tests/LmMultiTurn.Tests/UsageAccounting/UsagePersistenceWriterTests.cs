@@ -94,7 +94,8 @@ public class UsagePersistenceWriterTests
         var errors = 0;
         var writer = new UsagePersistenceWriter(
             ct => throw new InvalidOperationException("boom"),
-            onError: _ => Interlocked.Increment(ref errors));
+            onError: _ => Interlocked.Increment(ref errors)
+        );
 
         writer.Schedule();
         var durable = await writer.FlushAsync();

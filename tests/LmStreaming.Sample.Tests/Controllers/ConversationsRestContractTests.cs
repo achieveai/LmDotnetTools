@@ -21,7 +21,8 @@ public class ConversationsRestContractTests
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]);
         await using var pool = CreateRealAgentPool(registry, store);
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
 
         var controller = CreateController(
@@ -29,7 +30,8 @@ public class ConversationsRestContractTests
             pool,
             ModeStoreResolvingSystemModes(),
             workspaceStore: workspaceStore.Object,
-            providerRegistry: registry.ToReal());
+            providerRegistry: registry.ToReal()
+        );
 
         var provisionResult = await controller.Provision(
             new ProvisionConversationRequest
@@ -38,14 +40,17 @@ public class ConversationsRestContractTests
                 ProviderId = "test",
                 ModeId = SystemChatModes.DefaultModeId,
             },
-            CancellationToken.None);
-        var threadId = Assert.IsType<ProvisionConversationResponse>(
-            Assert.IsType<OkObjectResult>(provisionResult).Value).ThreadId;
+            CancellationToken.None
+        );
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(provisionResult).Value)
+            .ThreadId;
 
         var sendResult = await controller.SendMessage(
             threadId,
             new SendMessageRequest { Text = "hello" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
         var sendResponse = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(sendResult).Value);
         sendResponse.Queued.Should().BeTrue();
 
@@ -54,12 +59,17 @@ public class ConversationsRestContractTests
             async () =>
             {
                 var statusResult = await controller.GetStatus(
-                    threadId, runId: null, inputId: sendResponse.InputId, CancellationToken.None);
+                    threadId,
+                    runId: null,
+                    inputId: sendResponse.InputId,
+                    CancellationToken.None
+                );
                 status = Assert.IsType<OkObjectResult>(statusResult).Value as ConversationStatusResponse;
                 return status?.Status == nameof(ConversationRunStatus.Completed) && status.Response != null;
             },
             "the accepted input resolved to a Completed run carrying a response",
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(5)
+        );
 
         status!.RunId.Should().NotBeNullOrEmpty();
         JsonSerializer.Serialize(status.Response).Should().Contain("Echo: hello");
@@ -73,7 +83,8 @@ public class ConversationsRestContractTests
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var pool = CreateRealAgentPool(registry, store, beforeComplete: () => gate.Task);
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
 
         var controller = CreateController(
@@ -81,7 +92,8 @@ public class ConversationsRestContractTests
             pool,
             ModeStoreResolvingSystemModes(),
             workspaceStore: workspaceStore.Object,
-            providerRegistry: registry.ToReal());
+            providerRegistry: registry.ToReal()
+        );
 
         var provisionResult = await controller.Provision(
             new ProvisionConversationRequest
@@ -90,12 +102,17 @@ public class ConversationsRestContractTests
                 ProviderId = "test",
                 ModeId = SystemChatModes.DefaultModeId,
             },
-            CancellationToken.None);
-        var threadId = Assert.IsType<ProvisionConversationResponse>(
-            Assert.IsType<OkObjectResult>(provisionResult).Value).ThreadId;
+            CancellationToken.None
+        );
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(provisionResult).Value)
+            .ThreadId;
 
         var send1 = await controller.SendMessage(
-            threadId, new SendMessageRequest { Text = "first" }, CancellationToken.None);
+            threadId,
+            new SendMessageRequest { Text = "first" },
+            CancellationToken.None
+        );
         var inputId1 = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(send1).Value).InputId;
 
         // Wait until run #1 is actually in progress (StartRunAsync ran; the agent is now blocked
@@ -105,21 +122,33 @@ public class ConversationsRestContractTests
             async () =>
             {
                 var statusResult = await controller.GetStatus(
-                    threadId, runId: null, inputId: inputId1, CancellationToken.None);
+                    threadId,
+                    runId: null,
+                    inputId: inputId1,
+                    CancellationToken.None
+                );
                 var value = Assert.IsType<OkObjectResult>(statusResult).Value as ConversationStatusResponse;
                 return value?.Status == nameof(ConversationRunStatus.InProgress);
             },
             "run #1 reached InProgress, so the second message cannot land in the same drained batch",
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(5)
+        );
 
         var send2 = await controller.SendMessage(
-            threadId, new SendMessageRequest { Text = "second" }, CancellationToken.None);
+            threadId,
+            new SendMessageRequest { Text = "second" },
+            CancellationToken.None
+        );
         var inputId2 = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(send2).Value).InputId;
 
         // Input #2 was durably accepted but not yet drained into a run — the loop is still
         // blocked completing run #1.
         var status2Result = await controller.GetStatus(
-            threadId, runId: null, inputId: inputId2, CancellationToken.None);
+            threadId,
+            runId: null,
+            inputId: inputId2,
+            CancellationToken.None
+        );
         var status2 = Assert.IsType<OkObjectResult>(status2Result).Value as ConversationStatusResponse;
         status2!.Status.Should().Be(nameof(ConversationRunStatus.NotStarted));
         status2.RunId.Should().BeNull();
@@ -132,24 +161,34 @@ public class ConversationsRestContractTests
             async () =>
             {
                 var statusResult = await controller.GetStatus(
-                    threadId, runId: null, inputId: inputId1, CancellationToken.None);
+                    threadId,
+                    runId: null,
+                    inputId: inputId1,
+                    CancellationToken.None
+                );
                 finalStatus1 = Assert.IsType<OkObjectResult>(statusResult).Value as ConversationStatusResponse;
                 return finalStatus1?.Status == nameof(ConversationRunStatus.Completed) && finalStatus1.Response != null;
             },
             "releasing the gate let run #1 complete with a response",
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(5)
+        );
 
         ConversationStatusResponse? finalStatus2 = null;
         await Wait.UntilAsync(
             async () =>
             {
                 var statusResult = await controller.GetStatus(
-                    threadId, runId: null, inputId: inputId2, CancellationToken.None);
+                    threadId,
+                    runId: null,
+                    inputId: inputId2,
+                    CancellationToken.None
+                );
                 finalStatus2 = Assert.IsType<OkObjectResult>(statusResult).Value as ConversationStatusResponse;
                 return finalStatus2?.Status == nameof(ConversationRunStatus.Completed) && finalStatus2.Response != null;
             },
             "the queued input #2 was drained into its own run, which completed with a response",
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(5)
+        );
 
         finalStatus1!.RunId.Should().NotBe(finalStatus2!.RunId);
         JsonSerializer.Serialize(finalStatus1.Response).Should().Contain("Echo: first");
@@ -162,7 +201,8 @@ public class ConversationsRestContractTests
         var store = new InMemoryConversationStore();
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]);
         var workspaceStore = new Mock<IWorkspaceStore>();
-        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(TestWorkspace("ws-1"));
 
         string threadId;
@@ -178,7 +218,8 @@ public class ConversationsRestContractTests
                 crashedPool,
                 ModeStoreResolvingSystemModes(),
                 workspaceStore: workspaceStore.Object,
-                providerRegistry: registry.ToReal());
+                providerRegistry: registry.ToReal()
+            );
 
             var provisionResult = await controller.Provision(
                 new ProvisionConversationRequest
@@ -187,12 +228,17 @@ public class ConversationsRestContractTests
                     ProviderId = "test",
                     ModeId = SystemChatModes.DefaultModeId,
                 },
-                CancellationToken.None);
-            threadId = Assert.IsType<ProvisionConversationResponse>(
-                Assert.IsType<OkObjectResult>(provisionResult).Value).ThreadId;
+                CancellationToken.None
+            );
+            threadId = Assert
+                .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(provisionResult).Value)
+                .ThreadId;
 
             var sendResult = await controller.SendMessage(
-                threadId, new SendMessageRequest { Text = "hello" }, CancellationToken.None);
+                threadId,
+                new SendMessageRequest { Text = "hello" },
+                CancellationToken.None
+            );
             inputId = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(sendResult).Value).InputId;
         }
 
@@ -205,7 +251,8 @@ public class ConversationsRestContractTests
             restartedPool,
             ModeStoreResolvingSystemModes(),
             workspaceStore: workspaceStore.Object,
-            providerRegistry: registry.ToReal());
+            providerRegistry: registry.ToReal()
+        );
 
         _ = restartedPool.GetOrCreateAgent(threadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
@@ -214,12 +261,17 @@ public class ConversationsRestContractTests
             async () =>
             {
                 var statusResult = await restartedController.GetStatus(
-                    threadId, runId: null, inputId: inputId, CancellationToken.None);
+                    threadId,
+                    runId: null,
+                    inputId: inputId,
+                    CancellationToken.None
+                );
                 status = Assert.IsType<OkObjectResult>(statusResult).Value as ConversationStatusResponse;
                 return status?.Status == nameof(ConversationRunStatus.Interrupted);
             },
             "the restarted process reconciled the orphaned accepted input into an Interrupted row",
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(5)
+        );
 
         status!.RunId.Should().NotBeNullOrEmpty();
     }
@@ -230,7 +282,8 @@ public class ConversationsRestContractTests
         IChatModeStore modeStore,
         IWorkspaceStore? workspaceStore = null,
         ProviderRegistry? providerRegistry = null,
-        ConversationStatusResolver? statusResolver = null)
+        ConversationStatusResolver? statusResolver = null
+    )
     {
         return new ConversationsController(
             store,
@@ -238,39 +291,50 @@ public class ConversationsRestContractTests
             modeStore,
             workspaceStore ?? Mock.Of<IWorkspaceStore>(),
             providerRegistry ?? new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
-            statusResolver ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
+            statusResolver
+                ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
             TimeProvider.System,
             new WorkflowRunRegistry(),
             TestAuthorizers.Disabled(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
-            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance));
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance)
+        );
     }
 
     private static IChatModeStore ModeStoreResolvingSystemModes()
     {
         var modeStore = new Mock<IChatModeStore>();
-        modeStore.Setup(m => m.GetModeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        modeStore
+            .Setup(m => m.GetModeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((string modeId, CancellationToken _) => SystemChatModes.GetById(modeId));
         return modeStore.Object;
     }
 
     private static Workspace TestWorkspace(string id) =>
-        new() { Id = id, Name = id, DirectoryRelPath = id };
+        new()
+        {
+            Id = id,
+            Name = id,
+            DirectoryRelPath = id,
+        };
 
     private static MultiTurnAgentPool CreateRealAgentPool(
         FakeProviderRegistry registry,
         InMemoryConversationStore store,
         bool neverDrains = false,
-        Func<Task>? beforeComplete = null)
+        Func<Task>? beforeComplete = null
+    )
     {
         return new MultiTurnAgentPool(
             context => new MultiTurnAgentPool.AgentCreationResult(
-                new RestContractTestAgent(context.ThreadId, store, neverDrains, beforeComplete)),
+                new RestContractTestAgent(context.ThreadId, store, neverDrains, beforeComplete)
+            ),
             registry.ToReal(),
             store,
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
     }
 
     /// <summary>
@@ -291,7 +355,8 @@ public class ConversationsRestContractTests
             string threadId,
             IConversationStore store,
             bool neverDrains = false,
-            Func<Task>? beforeComplete = null)
+            Func<Task>? beforeComplete = null
+        )
             : base(threadId, store: store, persistRunLedger: true)
         {
             _neverDrains = neverDrains;
@@ -320,10 +385,9 @@ public class ConversationsRestContractTests
                     continue;
                 }
 
-                var lastText = batch
-                    .SelectMany(item => item.Input.Messages)
-                    .OfType<TextMessage>()
-                    .LastOrDefault()?.Text ?? string.Empty;
+                var lastText =
+                    batch.SelectMany(item => item.Input.Messages).OfType<TextMessage>().LastOrDefault()?.Text
+                    ?? string.Empty;
 
                 var assignment = await StartRunAsync(batch, ct: ct);
 

@@ -34,8 +34,10 @@ internal static class ReviewProfileArgs
         {
             var probe = new HashSet<int>();
             var raw = FindValue(args, flag, probe);
-            if (raw is not null
-                && int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            if (
+                raw is not null
+                && int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            )
             {
                 maxPrAgeDays = parsed;
                 strip.UnionWith(probe);

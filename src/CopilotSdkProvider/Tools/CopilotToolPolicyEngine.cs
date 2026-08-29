@@ -12,16 +12,20 @@ public sealed class CopilotToolPolicyEngine
 
     public CopilotToolPolicyEngine(
         IEnumerable<string>? dynamicToolNames = null,
-        IEnumerable<string>? enabledTools = null)
+        IEnumerable<string>? enabledTools = null
+    )
     {
         _dynamicToolNames = new HashSet<string>(
             (dynamicToolNames ?? []).Where(static x => !string.IsNullOrWhiteSpace(x)),
-            StringComparer.OrdinalIgnoreCase);
-        _enabledTools = enabledTools == null
-            ? null
-            : new HashSet<string>(
-                enabledTools.Where(static x => !string.IsNullOrWhiteSpace(x)),
-                StringComparer.OrdinalIgnoreCase);
+            StringComparer.OrdinalIgnoreCase
+        );
+        _enabledTools =
+            enabledTools == null
+                ? null
+                : new HashSet<string>(
+                    enabledTools.Where(static x => !string.IsNullOrWhiteSpace(x)),
+                    StringComparer.OrdinalIgnoreCase
+                );
     }
 
     public bool IsBuiltInAllowed(string toolName)

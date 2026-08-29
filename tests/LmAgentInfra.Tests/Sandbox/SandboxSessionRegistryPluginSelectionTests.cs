@@ -72,7 +72,11 @@ public class SandboxSessionRegistryPluginSelectionTests
 
         var partitions = registry.SnapshotPluginSelectionPartitions("   ");
 
-        partitions.Should().ContainSingle().Which.Key.WorkspaceId.Should().Be(SandboxSessionRegistry.DefaultWorkspaceId);
+        partitions
+            .Should()
+            .ContainSingle()
+            .Which.Key.WorkspaceId.Should()
+            .Be(SandboxSessionRegistry.DefaultWorkspaceId);
     }
 
     [Fact]
@@ -118,7 +122,9 @@ public class SandboxSessionRegistryPluginSelectionTests
         await using var registry = CreateRegistryWithFakeGateway(out var gateway);
         gateway.HoldCreates();
         var createTasks = new[] { "app-a", "app-b", "app-c" }
-            .Select(appId => registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"), credential: CredentialFor(appId)))
+            .Select(appId =>
+                registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"), credential: CredentialFor(appId))
+            )
             .ToList();
         await gateway.WaitForHeldCreatesAsync(3);
 
@@ -226,7 +232,8 @@ public class SandboxSessionRegistryPluginSelectionTests
 
         candidate.SessionId.Should().NotBe(partition.Session.SessionId);
         gateway.Requests.Count(r => r.Method == HttpMethod.Delete).Should().Be(0);
-        registry.TryGetSessionById(partition.Session.SessionId, out _)
+        registry
+            .TryGetSessionById(partition.Session.SessionId, out _)
             .Should()
             .BeTrue("the live session must survive candidate creation untouched");
     }
@@ -246,7 +253,10 @@ public class SandboxSessionRegistryPluginSelectionTests
 
         var candidate = await registry.CreatePluginSelectionCandidateAsync(
             // Deliberately WRONG id: the primitive must ignore it and pin the partition's.
-            new WorkspaceRef("some-other-workspace", PluginSelection: [new SandboxPluginRef("official", "code-review")]),
+            new WorkspaceRef(
+                "some-other-workspace",
+                PluginSelection: [new SandboxPluginRef("official", "code-review")]
+            ),
             partition,
             CancellationToken.None
         );
@@ -256,9 +266,13 @@ public class SandboxSessionRegistryPluginSelectionTests
         // Non-vacuity guard for the credential assertion below: if the default app id happened to be
         // "app-a", a regression that fell back to the default would still read as a pass.
         registry.DefaultCredential.AppId.Should().NotBe("app-a");
-        candidateCreate.AppId.Should().Be("app-a", "the candidate must be created under the captured caller credential");
+        candidateCreate
+            .AppId.Should()
+            .Be("app-a", "the candidate must be created under the captured caller credential");
 
-        candidate.WorkspaceId.Should().Be("ws-1", "the workspace id is pinned from the partition key, not the caller ref");
+        candidate
+            .WorkspaceId.Should()
+            .Be("ws-1", "the workspace id is pinned from the partition key, not the caller ref");
 
         // The updated selection has to actually reach the wire — the gateway fixes the plugin set at
         // create time, so a candidate created without it is indistinguishable from the session it replaces.
@@ -303,10 +317,7 @@ public class SandboxSessionRegistryPluginSelectionTests
         // partition stays snapshot-visible with nothing tracking its credential — the same shape as a
         // session created before credential tracking existed.
         await using var registry = CreateRegistryWithFakeGateway(out var gateway);
-        var live = await registry.GetOrCreateSessionAsync(
-            new WorkspaceRef("ws-1"),
-            credential: CredentialFor("app-a")
-        );
+        var live = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"), credential: CredentialFor("app-a"));
         await registry.RetirePluginSelectionSessionsAsync([live]);
 
         var partition = registry.SnapshotPluginSelectionPartitions("ws-1").Single();
@@ -321,10 +332,7 @@ public class SandboxSessionRegistryPluginSelectionTests
         // Non-vacuity: the original session was created under a NON-default app id, so "fell back to
         // the default" and "kept the captured credential" are distinguishable outcomes.
         registry.DefaultCredential.AppId.Should().NotBe("app-a");
-        gateway
-            .Requests.Last(r => r.Method == HttpMethod.Post)
-            .AppId.Should()
-            .Be(registry.DefaultCredential.AppId);
+        gateway.Requests.Last(r => r.Method == HttpMethod.Post).AppId.Should().Be(registry.DefaultCredential.AppId);
     }
 
     [Fact]
@@ -542,8 +550,8 @@ public class SandboxSessionRegistryPluginSelectionTests
 
         uncommitted.Select(s => s.SessionId).Should().Equal("loser-session");
         var current = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"));
-        current.SessionId
-            .Should()
+        current
+            .SessionId.Should()
             .Be("winner-session", "a swap whose witness is stale must not clobber the session that replaced it");
     }
 
@@ -560,7 +568,8 @@ public class SandboxSessionRegistryPluginSelectionTests
 
         await act.Should().NotThrowAsync();
         gateway.Requests.Should().Contain(r => r.Method == HttpMethod.Delete);
-        registry.TryGetSessionById(oldSession.SessionId, out _)
+        registry
+            .TryGetSessionById(oldSession.SessionId, out _)
             .Should()
             .BeFalse("eviction must happen even when the gateway DELETE fails");
     }
@@ -599,7 +608,6 @@ public class SandboxSessionRegistryPluginSelectionTests
     /// <summary>A session the gateway answered with the given <c>requested</c> echo.</summary>
     private static SandboxSession SessionWithResolution(IReadOnlyList<SandboxPluginRef>? requested) =>
         new("ws-1", "sess-1", "ws", "/host", new SandboxPluginResolution(supported: true, requested));
-
 
     /// <summary>The gateway's <c>workspace</c> create field — the logical directory leaf being mounted.</summary>
     private static string? ReadWorkspace(string? createBody) =>
@@ -703,7 +711,10 @@ public class SandboxSessionRegistryPluginSelectionTests
         /// racing a sleep against it.
         /// </summary>
         public void HoldCreates() =>
-            Volatile.Write(ref _createGate, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+            Volatile.Write(
+                ref _createGate,
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+            );
 
         /// <summary>Lets every parked create through, and stops holding subsequent ones.</summary>
         public void ReleaseCreates()
@@ -736,10 +747,9 @@ public class SandboxSessionRegistryPluginSelectionTests
         )
         {
             var appId = request.Headers.TryGetValues(AppIdHeader, out var values) ? values.FirstOrDefault() : null;
-            var body =
-                request.Content is null
-                    ? null
-                    : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var body = request.Content is null
+                ? null
+                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
             lock (Requests)
             {
@@ -773,9 +783,7 @@ public class SandboxSessionRegistryPluginSelectionTests
                 return new HttpResponseMessage(HttpStatusCode.InternalServerError);
             }
 
-            var resolution = omitPluginResolution
-                ? string.Empty
-                : ResolutionPrefix + RequestedField(body) + " }";
+            var resolution = omitPluginResolution ? string.Empty : ResolutionPrefix + RequestedField(body) + " }";
             var responseBody = $$"""
                 { "session_id": "sess-{{created}}", "container_id": "c-{{created}}",
                   "volumes": { "workspace": { "container_path": "/workspace", "read_only": false } }{{resolution}} }

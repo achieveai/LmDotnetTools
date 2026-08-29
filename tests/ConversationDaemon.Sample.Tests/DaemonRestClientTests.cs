@@ -30,8 +30,9 @@ public sealed class DaemonRestClientTests
     [Fact]
     public async Task ProvisionAsync_wraps_an_HttpRequestException_with_a_socket_inner_as_DaemonConnectionException()
     {
-        var client = ClientThatThrows(
-            () => new HttpRequestException("boom", new SocketException((int)SocketError.ConnectionRefused)));
+        var client = ClientThatThrows(() =>
+            new HttpRequestException("boom", new SocketException((int)SocketError.ConnectionRefused))
+        );
 
         var act = () => client.ProvisionAsync("ws", "provider", "mode", CancellationToken.None);
 
@@ -81,8 +82,9 @@ public sealed class DaemonRestClientTests
         // The socket guard is narrowed to ConnectionRefused only. A different socket error
         // (host-not-found / DNS failure) is a genuine HTTP-layer failure, NOT "server not running",
         // so it must propagate as HttpRequestException rather than be mislabeled "start the server".
-        var client = ClientThatThrows(
-            () => new HttpRequestException("boom", new SocketException((int)SocketError.HostNotFound)));
+        var client = ClientThatThrows(() =>
+            new HttpRequestException("boom", new SocketException((int)SocketError.HostNotFound))
+        );
 
         var act = () => client.ProvisionAsync("ws", "provider", "mode", CancellationToken.None);
 

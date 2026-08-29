@@ -16,10 +16,7 @@ public class MessagePersistenceConverterTests
 
     public MessagePersistenceConverterTests()
     {
-        _jsonOptions = new JsonSerializerOptions
-        {
-            WriteIndented = false,
-        };
+        _jsonOptions = new JsonSerializerOptions { WriteIndented = false };
         _jsonOptions.Converters.Add(new IMessageJsonConverter());
     }
 
@@ -39,8 +36,7 @@ public class MessagePersistenceConverterTests
         };
 
         // Act
-        var persisted = MessagePersistenceConverter.ToPersistedMessage(
-            message, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(message, "thread-1", "run-1", _jsonOptions);
 
         // Assert
         persisted.ThreadId.Should().Be("thread-1");
@@ -60,10 +56,8 @@ public class MessagePersistenceConverterTests
         var message = new TextMessage { Text = "Test", Role = Role.User };
 
         // Act
-        var persisted1 = MessagePersistenceConverter.ToPersistedMessage(
-            message, "thread-1", "run-1", _jsonOptions);
-        var persisted2 = MessagePersistenceConverter.ToPersistedMessage(
-            message, "thread-1", "run-1", _jsonOptions);
+        var persisted1 = MessagePersistenceConverter.ToPersistedMessage(message, "thread-1", "run-1", _jsonOptions);
+        var persisted2 = MessagePersistenceConverter.ToPersistedMessage(message, "thread-1", "run-1", _jsonOptions);
 
         // Assert
         persisted1.Id.Should().NotBe(persisted2.Id);
@@ -77,8 +71,7 @@ public class MessagePersistenceConverterTests
         var beforeTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
         // Act
-        var persisted = MessagePersistenceConverter.ToPersistedMessage(
-            message, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(message, "thread-1", "run-1", _jsonOptions);
 
         var afterTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
@@ -99,8 +92,7 @@ public class MessagePersistenceConverterTests
         };
 
         // Act
-        var persisted = MessagePersistenceConverter.ToPersistedMessage(
-            message, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(message, "thread-1", "run-1", _jsonOptions);
 
         // Assert
         persisted.MessageType.Should().Be("ToolCallMessage");
@@ -120,8 +112,7 @@ public class MessagePersistenceConverterTests
         };
 
         // Act
-        var persisted = MessagePersistenceConverter.ToPersistedMessage(
-            message, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(message, "thread-1", "run-1", _jsonOptions);
 
         // Assert
         persisted.MessageType.Should().Be("ToolCallResultMessage");
@@ -141,8 +132,7 @@ public class MessagePersistenceConverterTests
         };
 
         // Act
-        var persisted = MessagePersistenceConverter.ToPersistedMessage(
-            message, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(message, "thread-1", "run-1", _jsonOptions);
 
         // Assert
         persisted.ParentRunId.Should().Be("parent-run-0");
@@ -165,8 +155,7 @@ public class MessagePersistenceConverterTests
             MessageOrderIdx = 5,
         };
 
-        var persisted = MessagePersistenceConverter.ToPersistedMessage(
-            original, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(original, "thread-1", "run-1", _jsonOptions);
 
         // Act
         var restored = MessagePersistenceConverter.FromPersistedMessage(persisted, _jsonOptions);
@@ -193,8 +182,7 @@ public class MessagePersistenceConverterTests
             Role = Role.Assistant,
         };
 
-        var persisted = MessagePersistenceConverter.ToPersistedMessage(
-            original, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(original, "thread-1", "run-1", _jsonOptions);
 
         // Act
         var restored = MessagePersistenceConverter.FromPersistedMessage(persisted, _jsonOptions);
@@ -218,8 +206,7 @@ public class MessagePersistenceConverterTests
             Role = Role.User,
         };
 
-        var persisted = MessagePersistenceConverter.ToPersistedMessage(
-            original, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(original, "thread-1", "run-1", _jsonOptions);
 
         // Act
         var restored = MessagePersistenceConverter.FromPersistedMessage(persisted, _jsonOptions);
@@ -243,12 +230,16 @@ public class MessagePersistenceConverterTests
         {
             new TextMessage { Text = "Hello", Role = Role.User },
             new TextMessage { Text = "Hi there!", Role = Role.Assistant },
-            new ToolCallMessage { FunctionName = "test", ToolCallId = "call-1", Role = Role.Assistant },
+            new ToolCallMessage
+            {
+                FunctionName = "test",
+                ToolCallId = "call-1",
+                Role = Role.Assistant,
+            },
         };
 
         // Act
-        var persisted = MessagePersistenceConverter.ToPersistedMessages(
-            messages, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessages(messages, "thread-1", "run-1", _jsonOptions);
 
         // Assert
         persisted.Should().HaveCount(3);
@@ -265,11 +256,20 @@ public class MessagePersistenceConverterTests
         {
             new TextMessage { Text = "Hello", Role = Role.User },
             new TextMessage { Text = "Hi there!", Role = Role.Assistant },
-            new ToolCallMessage { FunctionName = "test", ToolCallId = "call-1", Role = Role.Assistant },
+            new ToolCallMessage
+            {
+                FunctionName = "test",
+                ToolCallId = "call-1",
+                Role = Role.Assistant,
+            },
         };
 
         var persisted = MessagePersistenceConverter.ToPersistedMessages(
-            originalMessages, "thread-1", "run-1", _jsonOptions);
+            originalMessages,
+            "thread-1",
+            "run-1",
+            _jsonOptions
+        );
 
         // Act
         var restored = MessagePersistenceConverter.FromPersistedMessages(persisted, _jsonOptions);
@@ -289,7 +289,8 @@ public class MessagePersistenceConverterTests
     public void ToPersistedMessages_PreservesOrder()
     {
         // Arrange
-        var messages = Enumerable.Range(0, 10)
+        var messages = Enumerable
+            .Range(0, 10)
             .Select(i => new TextMessage
             {
                 Text = $"Message {i}",
@@ -300,8 +301,7 @@ public class MessagePersistenceConverterTests
             .ToList();
 
         // Act
-        var persisted = MessagePersistenceConverter.ToPersistedMessages(
-            messages, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessages(messages, "thread-1", "run-1", _jsonOptions);
 
         // Assert
         for (var i = 0; i < 10; i++)
@@ -317,8 +317,7 @@ public class MessagePersistenceConverterTests
         var messages = new List<IMessage>();
 
         // Act
-        var persisted = MessagePersistenceConverter.ToPersistedMessages(
-            messages, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessages(messages, "thread-1", "run-1", _jsonOptions);
 
         // Assert
         persisted.Should().BeEmpty();
@@ -355,8 +354,7 @@ public class MessagePersistenceConverterTests
         };
 
         // Act
-        var persisted = MessagePersistenceConverter.ToPersistedMessage(
-            original, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(original, "thread-1", "run-1", _jsonOptions);
         var restored = MessagePersistenceConverter.FromPersistedMessage(persisted, _jsonOptions);
 
         // Assert
@@ -383,8 +381,7 @@ public class MessagePersistenceConverterTests
         };
 
         // Act
-        var persisted = MessagePersistenceConverter.ToPersistedMessage(
-            original, "thread-1", "run-1", _jsonOptions);
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(original, "thread-1", "run-1", _jsonOptions);
         var restored = MessagePersistenceConverter.FromPersistedMessage(persisted, _jsonOptions);
 
         // Assert

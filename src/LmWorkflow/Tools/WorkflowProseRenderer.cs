@@ -119,9 +119,7 @@ internal static class WorkflowProseRenderer
     }
 
     private static string RailLine(string what, string? target, string routeName) =>
-        target is null
-            ? $"{what}; no {routeName} target is defined."
-            : $"{what}; route to {routeName} '{target}'.";
+        target is null ? $"{what}; no {routeName} target is defined." : $"{what}; route to {routeName} '{target}'.";
 
     private static string? StringOf(JsonNode? node) => node?.GetValue<string>();
 

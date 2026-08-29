@@ -19,7 +19,8 @@ internal static class AtomicJsonFile
         string filePath,
         T value,
         JsonSerializerOptions options,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var dir = Path.GetDirectoryName(filePath);
         if (!string.IsNullOrEmpty(dir))

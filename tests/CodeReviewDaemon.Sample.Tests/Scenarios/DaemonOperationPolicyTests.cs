@@ -34,27 +34,46 @@ public sealed class DaemonOperationPolicyTests
     public void GitHub_run_policy_scopes_the_target_repo_path_to_the_run_repo()
     {
         var policy = DaemonOperationPolicy.BuildForRun(
-            GitHubRepo, reviewBotRepoUrl: "https://github.com/acme/reviewbot.git");
+            GitHubRepo,
+            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git"
+        );
 
         // The target fetch must be confined to the run's repo — not a sibling under the same host.
         Fetch(policy, SandboxOperation.FetchTarget, "github.com", "/acme/widgets.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeTrue();
-        Fetch(policy, SandboxOperation.FetchTarget, "github.com", "/acme/other-repo.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeFalse("the policy is scoped to the run repo, not the whole host");
+            .IsAllowed.Should()
+            .BeTrue();
+        Fetch(
+            policy,
+            SandboxOperation.FetchTarget,
+            "github.com",
+            "/acme/other-repo.git/info/refs?service=git-upload-pack"
+        )
+            .IsAllowed.Should()
+            .BeFalse("the policy is scoped to the run repo, not the whole host");
     }
 
     [Fact]
     public void GitHub_run_policy_validates_the_api_repo_route_not_just_host_and_method()
     {
         var policy = DaemonOperationPolicy.BuildForRun(
-            GitHubRepo, reviewBotRepoUrl: "https://github.com/acme/reviewbot.git");
+            GitHubRepo,
+            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git"
+        );
 
         // A metadata GET on the run's own repo route is allowed.
-        Api(policy, SandboxOperation.ReadProviderMetadata, "api.github.com", "GET", "/repos/acme/widgets/pulls?state=open")
-            .IsAllowed.Should().BeTrue();
+        Api(
+            policy,
+            SandboxOperation.ReadProviderMetadata,
+            "api.github.com",
+            "GET",
+            "/repos/acme/widgets/pulls?state=open"
+        )
+            .IsAllowed.Should()
+            .BeTrue();
         // The same method + host but a DIFFERENT repo route is denied (off-repo with the bot credential).
         Api(policy, SandboxOperation.ReadProviderMetadata, "api.github.com", "GET", "/repos/acme/secret-repo/pulls")
-            .IsAllowed.Should().BeFalse("provider-API ops must be scoped to the run's repo route");
+            .IsAllowed.Should()
+            .BeFalse("provider-API ops must be scoped to the run's repo route");
     }
 
     [Fact]
@@ -65,25 +84,41 @@ public sealed class DaemonOperationPolicyTests
         var policy = DaemonOperationPolicy.BuildForRun(
             GitHubRepo,
             reviewBotRepoUrl: "https://github.com/acme/reviewbot.git",
-            allowWriteOperations: true);
+            allowWriteOperations: true
+        );
 
         Receive(policy, "github.com", "/acme/reviewbot.git/git-receive-pack").IsAllowed.Should().BeTrue();
         Receive(policy, "github.com", "/acme/widgets.git/git-receive-pack")
-            .IsAllowed.Should().BeFalse("push is confined to the ReviewBot remote, not the target");
+            .IsAllowed.Should()
+            .BeFalse("push is confined to the ReviewBot remote, not the target");
     }
 
     [Fact]
     public void Ado_run_policy_scopes_the_api_route_to_the_project_repo()
     {
         var policy = DaemonOperationPolicy.BuildForRun(
-            AdoRepo, reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot");
+            AdoRepo,
+            reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot"
+        );
 
-        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
-                "/contoso/Platform/_apis/git/repositories/core/pullrequests?searchCriteria.status=active")
-            .IsAllowed.Should().BeTrue();
-        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
-                "/contoso/Platform/_apis/git/repositories/other/pullrequests")
-            .IsAllowed.Should().BeFalse("the ADO api route is scoped to the run's repository");
+        Api(
+            policy,
+            SandboxOperation.ReadProviderMetadata,
+            "dev.azure.com",
+            "GET",
+            "/contoso/Platform/_apis/git/repositories/core/pullrequests?searchCriteria.status=active"
+        )
+            .IsAllowed.Should()
+            .BeTrue();
+        Api(
+            policy,
+            SandboxOperation.ReadProviderMetadata,
+            "dev.azure.com",
+            "GET",
+            "/contoso/Platform/_apis/git/repositories/other/pullrequests"
+        )
+            .IsAllowed.Should()
+            .BeFalse("the ADO api route is scoped to the run's repository");
     }
 
     /// <summary>
@@ -100,18 +135,37 @@ public sealed class DaemonOperationPolicyTests
     public void Ado_run_policy_allows_reading_the_runs_own_work_item_routes()
     {
         var policy = DaemonOperationPolicy.BuildForRun(
-            AdoRepo, reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot");
+            AdoRepo,
+            reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot"
+        );
 
-        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
-                "/contoso/Platform/_apis/wit/workitems?ids=1234&$expand=relations&api-version=7.1")
-            .IsAllowed.Should().BeTrue("the batch read is what walks the chain up to the Epic");
-        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
-                "/contoso/Platform/_apis/git/repositories/core/pullRequests/5505458/workitems?api-version=7.1")
-            .IsAllowed.Should().BeTrue("the PR's own links were already under the run's repo route");
-        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
-                "/contoso/Platform/_apis/git/repositories/other/pullRequests/1/workitems?api-version=7.1")
-            .IsAllowed.Should().BeFalse(
-                "and being already in scope does not mean unscoped — a sibling repo's links stay denied");
+        Api(
+            policy,
+            SandboxOperation.ReadProviderMetadata,
+            "dev.azure.com",
+            "GET",
+            "/contoso/Platform/_apis/wit/workitems?ids=1234&$expand=relations&api-version=7.1"
+        )
+            .IsAllowed.Should()
+            .BeTrue("the batch read is what walks the chain up to the Epic");
+        Api(
+            policy,
+            SandboxOperation.ReadProviderMetadata,
+            "dev.azure.com",
+            "GET",
+            "/contoso/Platform/_apis/git/repositories/core/pullRequests/5505458/workitems?api-version=7.1"
+        )
+            .IsAllowed.Should()
+            .BeTrue("the PR's own links were already under the run's repo route");
+        Api(
+            policy,
+            SandboxOperation.ReadProviderMetadata,
+            "dev.azure.com",
+            "GET",
+            "/contoso/Platform/_apis/git/repositories/other/pullRequests/1/workitems?api-version=7.1"
+        )
+            .IsAllowed.Should()
+            .BeFalse("and being already in scope does not mean unscoped — a sibling repo's links stay denied");
     }
 
     /// <summary>
@@ -124,18 +178,37 @@ public sealed class DaemonOperationPolicyTests
     public void Ado_run_policy_does_not_open_the_projects_whole_api_surface()
     {
         var policy = DaemonOperationPolicy.BuildForRun(
-            AdoRepo, reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot");
+            AdoRepo,
+            reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot"
+        );
 
-        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
-                "/contoso/Platform/_apis/wit/wiql?api-version=7.1")
-            .IsAllowed.Should().BeFalse("a WIQL query is arbitrary search, not this PR's own items");
-        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
-                "/contoso/Platform/_apis/wit/workitemtypes?api-version=7.1")
-            .IsAllowed.Should().BeFalse(
-                "a sibling whose name merely starts with the granted root is outside it");
-        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
-                "/contoso/Platform/_apis/git/repositories/other/items?path=/secrets.txt")
-            .IsAllowed.Should().BeFalse();
+        Api(
+            policy,
+            SandboxOperation.ReadProviderMetadata,
+            "dev.azure.com",
+            "GET",
+            "/contoso/Platform/_apis/wit/wiql?api-version=7.1"
+        )
+            .IsAllowed.Should()
+            .BeFalse("a WIQL query is arbitrary search, not this PR's own items");
+        Api(
+            policy,
+            SandboxOperation.ReadProviderMetadata,
+            "dev.azure.com",
+            "GET",
+            "/contoso/Platform/_apis/wit/workitemtypes?api-version=7.1"
+        )
+            .IsAllowed.Should()
+            .BeFalse("a sibling whose name merely starts with the granted root is outside it");
+        Api(
+            policy,
+            SandboxOperation.ReadProviderMetadata,
+            "dev.azure.com",
+            "GET",
+            "/contoso/Platform/_apis/git/repositories/other/items?path=/secrets.txt"
+        )
+            .IsAllowed.Should()
+            .BeFalse();
     }
 
     /// <summary>
@@ -152,19 +225,39 @@ public sealed class DaemonOperationPolicyTests
         var policy = DaemonOperationPolicy.BuildForRun(
             AdoRepo,
             reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot",
-            allowWriteOperations: true);
+            allowWriteOperations: true
+        );
 
-        Api(policy, SandboxOperation.PostReviewComment, "dev.azure.com", "POST",
-                "/contoso/Platform/_apis/wit/workitems/1234")
-            .IsAllowed.Should().BeFalse(
+        Api(
+            policy,
+            SandboxOperation.PostReviewComment,
+            "dev.azure.com",
+            "POST",
+            "/contoso/Platform/_apis/wit/workitems/1234"
+        )
+            .IsAllowed.Should()
+            .BeFalse(
                 "the work-item routes are readable, never writable — no item can be created, updated or "
-                    + "commented on through this");
-        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
-                "/contoso/OtherProject/_apis/wit/workitems?ids=1234&api-version=7.1")
-            .IsAllowed.Should().BeFalse("only the run's own project is in scope");
-        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
-                "/contoso/Platform-Secrets/_apis/wit/workitems?ids=1&api-version=7.1")
-            .IsAllowed.Should().BeFalse("a project whose name merely starts with the run's is not the run's");
+                    + "commented on through this"
+            );
+        Api(
+            policy,
+            SandboxOperation.ReadProviderMetadata,
+            "dev.azure.com",
+            "GET",
+            "/contoso/OtherProject/_apis/wit/workitems?ids=1234&api-version=7.1"
+        )
+            .IsAllowed.Should()
+            .BeFalse("only the run's own project is in scope");
+        Api(
+            policy,
+            SandboxOperation.ReadProviderMetadata,
+            "dev.azure.com",
+            "GET",
+            "/contoso/Platform-Secrets/_apis/wit/workitems?ids=1&api-version=7.1"
+        )
+            .IsAllowed.Should()
+            .BeFalse("a project whose name merely starts with the run's is not the run's");
     }
 
     [Fact]
@@ -173,10 +266,13 @@ public sealed class DaemonOperationPolicyTests
         // The work-item routes are an ADO shape. GitHub's linked issues hang off the repo route the policy
         // already scopes, so there is nothing to except and nothing is excepted.
         var policy = DaemonOperationPolicy.BuildForRun(
-            GitHubRepo, reviewBotRepoUrl: "https://github.com/acme/reviewbot.git");
+            GitHubRepo,
+            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git"
+        );
 
         Api(policy, SandboxOperation.ReadProviderMetadata, "api.github.com", "GET", "/_apis/wit/workitems?ids=1")
-            .IsAllowed.Should().BeFalse();
+            .IsAllowed.Should()
+            .BeFalse();
     }
 
     [Fact]
@@ -185,12 +281,21 @@ public sealed class DaemonOperationPolicyTests
         var policy = DaemonOperationPolicy.BuildForRun(
             GitHubRepo,
             reviewBotRepoUrl: "https://github.com/acme/reviewbot.git",
-            allowWriteOperations: false);
+            allowWriteOperations: false
+        );
 
-        Api(policy, SandboxOperation.PostReviewComment, "api.github.com", "POST", "/repos/acme/widgets/issues/7/comments")
-            .IsAllowed.Should().BeFalse("a collect-only (B) variant has no post capability");
+        Api(
+            policy,
+            SandboxOperation.PostReviewComment,
+            "api.github.com",
+            "POST",
+            "/repos/acme/widgets/issues/7/comments"
+        )
+            .IsAllowed.Should()
+            .BeFalse("a collect-only (B) variant has no post capability");
         Receive(policy, "github.com", "/acme/reviewbot.git/git-receive-pack")
-            .IsAllowed.Should().BeFalse("a collect-only (B) variant has no push capability");
+            .IsAllowed.Should()
+            .BeFalse("a collect-only (B) variant has no push capability");
     }
 
     [Fact]
@@ -201,20 +306,26 @@ public sealed class DaemonOperationPolicyTests
         // #536 the capability check runs first, so a policy built without an explicit grant would deny on the
         // capability and never reach DecideReceivePack at all: the assertion below would pass no matter what
         // ParseReviewBotRemote did, which is the vacuous shape this comment exists to prevent recurring.
-        var policy = DaemonOperationPolicy.BuildForRun(
-            GitHubRepo, reviewBotRepoUrl: null, allowWriteOperations: true);
+        var policy = DaemonOperationPolicy.BuildForRun(GitHubRepo, reviewBotRepoUrl: null, allowWriteOperations: true);
 
         Fetch(policy, SandboxOperation.FetchTarget, "github.com", "/acme/widgets.git/info/refs?service=git-upload-pack")
-            .IsAllowed.Should().BeTrue();
+            .IsAllowed.Should()
+            .BeTrue();
         Receive(policy, "github.com", "/acme/reviewbot.git/git-receive-pack")
-            .IsAllowed.Should().BeFalse("no ReviewBot remote is configured, so push has no destination");
+            .IsAllowed.Should()
+            .BeFalse("no ReviewBot remote is configured, so push has no destination");
     }
 
     private static PolicyDecision Fetch(OperationPolicy policy, SandboxOperation op, string host, string path) =>
         policy.Decide(new OperationRequest(op, "github", host, "GET", path));
 
-    private static PolicyDecision Api(OperationPolicy policy, SandboxOperation op, string host, string method, string path) =>
-        policy.Decide(new OperationRequest(op, "github", host, method, path));
+    private static PolicyDecision Api(
+        OperationPolicy policy,
+        SandboxOperation op,
+        string host,
+        string method,
+        string path
+    ) => policy.Decide(new OperationRequest(op, "github", host, method, path));
 
     private static PolicyDecision Receive(OperationPolicy policy, string host, string path) =>
         policy.Decide(new OperationRequest(SandboxOperation.PushReviewBot, "github", host, "POST", path));

@@ -113,7 +113,8 @@ public record WorkspaceUpdate
     /// (clear to legacy all-plugins), empty list (explicitly no plugins), or a non-empty subset.
     /// </summary>
     [JsonConverter(typeof(OptionalJsonConverterFactory))]
-    public Optional<IReadOnlyList<PluginRef>?> PluginSelection { get; init; } = Optional<IReadOnlyList<PluginRef>?>.Unset;
+    public Optional<IReadOnlyList<PluginRef>?> PluginSelection { get; init; } =
+        Optional<IReadOnlyList<PluginRef>?>.Unset;
 
     /// <summary>
     /// Compare-and-swap token echoed from <see cref="Workspace.PluginsRevision"/>. Mandatory
@@ -136,17 +137,9 @@ public sealed record WorkspaceView(
     int PluginsRevision
 );
 
-public sealed record WorkspaceGatewayView(
-    string CanonicalBaseUrl,
-    string AppId,
-    bool Available,
-    string? Error
-);
+public sealed record WorkspaceGatewayView(string CanonicalBaseUrl, string AppId, bool Available, string? Error);
 
-public sealed record WorkspaceListResponse(
-    WorkspaceGatewayView Gateway,
-    IReadOnlyList<WorkspaceView> Workspaces
-);
+public sealed record WorkspaceListResponse(WorkspaceGatewayView Gateway, IReadOnlyList<WorkspaceView> Workspaces);
 
 public static class WorkspaceViewMapping
 {

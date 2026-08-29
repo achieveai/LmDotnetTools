@@ -13,10 +13,7 @@ public class ClaudeAgentSdkClientMockHostOverridesTests
     [Fact]
     public void Sets_all_three_env_vars_when_options_are_populated()
     {
-        var env = new Dictionary<string, string?>
-        {
-            ["UNRELATED"] = "preserved",
-        };
+        var env = new Dictionary<string, string?> { ["UNRELATED"] = "preserved" };
         var options = new ClaudeAgentSdkOptions
         {
             BaseUrl = "http://127.0.0.1:5099",
@@ -39,10 +36,7 @@ public class ClaudeAgentSdkClientMockHostOverridesTests
         // so a configured '/v1' suffix produces '/v1/v1/messages' and 404s silently.
         // ApplyMockHostOverrides must strip it defensively at the provider boundary.
         var env = new Dictionary<string, string?>();
-        var options = new ClaudeAgentSdkOptions
-        {
-            BaseUrl = "http://127.0.0.1:5099/v1",
-        };
+        var options = new ClaudeAgentSdkOptions { BaseUrl = "http://127.0.0.1:5099/v1" };
 
         ClaudeAgentSdkClient.ApplyMockHostOverrides(env, options);
 

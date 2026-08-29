@@ -31,7 +31,8 @@ public sealed class TimerTriggerSource : ITriggerSource
     public ValueTask<IArmedTrigger> ArmAsync(
         TriggerArmRequest request,
         ITriggerEventSink eventSink,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(eventSink);
@@ -76,7 +77,8 @@ public sealed class TimerTriggerSource : ITriggerSource
             if (!TriggerDurations.TryParseDuration(delay, out var relative))
             {
                 throw new ArgumentException(
-                    $"timer 'delay' is invalid: '{delay}' is not a duration (e.g. \"10m\", \"30s\").");
+                    $"timer 'delay' is invalid: '{delay}' is not a duration (e.g. \"10m\", \"30s\")."
+                );
             }
             return request.ArmedAt + relative;
         }

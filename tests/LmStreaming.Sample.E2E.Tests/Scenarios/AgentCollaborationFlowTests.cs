@@ -62,22 +62,31 @@ public sealed class AgentCollaborationFlowTests
     [Theory]
     [InlineData("test")]
     [InlineData("test-anthropic")]
-    public async Task Collaboration_spawns_nests_messages_waits_and_publishes_the_hierarchy(
-        string providerMode)
+    public async Task Collaboration_spawns_nests_messages_waits_and_publishes_the_hierarchy(string providerMode)
     {
         var threadId = $"collab-{providerMode}-{Guid.NewGuid():N}";
 
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("helper", ctx => ctx.SystemPromptContains(HelperMarker))
-                // A grandchild addressing the ROOT is the claim collaboration makes and nesting alone
-                // does not: these two are not parent and child, they are two nodes of one hierarchy,
-                // and pre-#244 the helper could not have named the root at all.
-                .Turn(t => t.ToolCall(
+            // A grandchild addressing the ROOT is the claim collaboration makes and nesting alone
+            // does not: these two are not parent and child, they are two nodes of one hierarchy,
+            // and pre-#244 the helper could not have named the root at all.
+            .Turn(t =>
+                t.ToolCall(
                     "SendMessage",
-                    new { target = threadId, content = HelperQuestion, msg_type = "question" }))
-                .Turn(t => t.Text(HelperAnswer))
+                    new
+                    {
+                        target = threadId,
+                        content = HelperQuestion,
+                        msg_type = "question",
+                    }
+                )
+            )
+            .Turn(t => t.Text(HelperAnswer))
             .ForRole("lead", ctx => ctx.SystemPromptContains(LeadMarker))
-                .Turn(t => t.ToolCall(
+            .Turn(t =>
+                t.ToolCall(
                     "Agent",
                     new
                     {
@@ -86,12 +95,15 @@ public sealed class AgentCollaborationFlowTests
                         name = "helper",
                         role = "repo reviewer",
                         description = "Reviews one repository and reports findings back to the lead.",
-                    }))
-                .Turn(t => t.Text(LeadAnswer))
+                    }
+                )
+            )
+            .Turn(t => t.Text(LeadAnswer))
             .ForRole("notifier", ctx => ctx.SystemPromptContains(NotifierMarker))
-                .Turn(t => t.Text("Notifier done."))
+            .Turn(t => t.Text("Notifier done."))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.ToolCall(
+            .Turn(t =>
+                t.ToolCall(
                     "Agent",
                     new
                     {
@@ -100,8 +112,11 @@ public sealed class AgentCollaborationFlowTests
                         name = "lead",
                         role = "migration lead",
                         description = "Owns the auth migration review and delegates repositories.",
-                    }))
-                .Turn(t => t.ToolCall(
+                    }
+                )
+            )
+            .Turn(t =>
+                t.ToolCall(
                     "Agent",
                     new
                     {
@@ -111,31 +126,43 @@ public sealed class AgentCollaborationFlowTests
                         role = "summary notifier",
                         description = "Posts the finished summary once the review lands.",
                         run_in_background = true,
-                    }))
-                // WaitForAgents is the reason the notifier runs in the background: a blocking wait on a
-                // synchronous child would be meaningless.
-                .Turn(t => t.ToolCall(
+                    }
+                )
+            )
+            // WaitForAgents is the reason the notifier runs in the background: a blocking wait on a
+            // synchronous child would be meaningless.
+            .Turn(t =>
+                t.ToolCall(
                     "WaitForAgents",
-                    new { agent_ids = "notifier", mode = "all", timeout_seconds = 30 }))
-                .Turn(t => t.ToolCall("CheckAgents", new { agent_ids = "lead, notifier" }))
-                // GetAgents is hierarchy-wide: the helper is the lead's child, invisible to the root's
-                // own manager, and must still be listed.
-                .Turn(t => t.ToolCall("GetAgents", new { }))
-                .Turn(t => t.Text(ParentAnswer))
+                    new
+                    {
+                        agent_ids = "notifier",
+                        mode = "all",
+                        timeout_seconds = 30,
+                    }
+                )
+            )
+            .Turn(t => t.ToolCall("CheckAgents", new { agent_ids = "lead, notifier" }))
+            // GetAgents is hierarchy-wide: the helper is the lead's child, invisible to the root's
+            // own manager, and must still be listed.
+            .Turn(t => t.ToolCall("GetAgents", new { }))
+            .Turn(t => t.Text(ParentAnswer))
             .Build();
 
         var builder = new ScriptedBuilder(
             responder,
-            subAgentFactory: (_, providerAgentFactory) => new SubAgentOptions
-            {
-                Templates = new Dictionary<string, SubAgentTemplate>
+            subAgentFactory: (_, providerAgentFactory) =>
+                new SubAgentOptions
                 {
-                    ["lead"] = Template("Lead", LeadMarker, providerAgentFactory),
-                    ["helper"] = Template("Helper", HelperMarker, providerAgentFactory),
-                    ["notifier"] = Template("Notifier", NotifierMarker, providerAgentFactory),
-                },
-                MaxConcurrentSubAgents = 5,
-            });
+                    Templates = new Dictionary<string, SubAgentTemplate>
+                    {
+                        ["lead"] = Template("Lead", LeadMarker, providerAgentFactory),
+                        ["helper"] = Template("Helper", HelperMarker, providerAgentFactory),
+                        ["notifier"] = Template("Notifier", NotifierMarker, providerAgentFactory),
+                    },
+                    MaxConcurrentSubAgents = 5,
+                }
+        );
 
         using var factory = new E2EWebAppFactory(providerMode, builder, CollaborationEnabled());
 
@@ -148,8 +175,9 @@ public sealed class AgentCollaborationFlowTests
         // --- What the model was able to do ------------------------------------------------------
         var toolCalls = frames.ToolCallNames();
         toolCalls.Should().Contain("Agent");
-        toolCalls.Should().Contain(
-            "WaitForAgents", "the collaboration tool surface replaces CheckAgent with the plural tools");
+        toolCalls
+            .Should()
+            .Contain("WaitForAgents", "the collaboration tool surface replaces CheckAgent with the plural tools");
         toolCalls.Should().Contain("CheckAgents");
         toolCalls.Should().Contain("GetAgents");
 
@@ -158,18 +186,25 @@ public sealed class AgentCollaborationFlowTests
         // Both nested runs really ran: the lead's answer only exists because the helper's synchronous
         // spawn returned, and the helper's answer only exists because its SendMessage was accepted.
         var toolResults = frames.ToolCallResults();
-        toolResults.Should().Contain(
-            r => r.Contains(LeadAnswer, StringComparison.Ordinal),
-            "the lead's synchronous spawn returns its final answer to the root");
-        toolResults.Should().Contain(
-            r => r.Contains(HelperAnswer, StringComparison.Ordinal),
-            "the helper is a SECOND delegation hop, which only exists under collaboration");
+        toolResults
+            .Should()
+            .Contain(
+                r => r.Contains(LeadAnswer, StringComparison.Ordinal),
+                "the lead's synchronous spawn returns its final answer to the root"
+            );
+        toolResults
+            .Should()
+            .Contain(
+                r => r.Contains(HelperAnswer, StringComparison.Ordinal),
+                "the helper is a SECOND delegation hop, which only exists under collaboration"
+            );
 
         // The hierarchy roster the root asked for names the grandchild it never spawned, by the role
         // and description its own parent published for it.
         var roster = toolResults.FirstOrDefault(r => r.Contains("repo reviewer", StringComparison.Ordinal));
-        roster.Should().NotBeNull(
-            "GetAgents lists the whole collaboration, including agents owned by a manager further down");
+        roster
+            .Should()
+            .NotBeNull("GetAgents lists the whole collaboration, including agents owned by a manager further down");
         roster.Should().Contain("migration lead");
 
         responder.RemainingTurns["parent"].Should().Be(0);
@@ -184,35 +219,45 @@ public sealed class AgentCollaborationFlowTests
         var lead = Row(rows, "lead");
         var helper = Row(rows, "helper");
 
-        lead.GetProperty("collaborationId").GetString().Should().Be(
-            threadId, "the conversation's own id is the collaboration id, so a reload rejoins it");
+        lead.GetProperty("collaborationId")
+            .GetString()
+            .Should()
+            .Be(threadId, "the conversation's own id is the collaboration id, so a reload rejoins it");
         lead.GetProperty("role").GetString().Should().Be("migration lead");
         helper.GetProperty("role").GetString().Should().Be("repo reviewer");
         helper.GetProperty("description").GetString().Should().Contain("Reviews one repository");
 
-        helper.GetProperty("parentAgentId").GetString().Should().Be(
-            lead.GetProperty("agentId").GetString(),
-            "the helper hangs off the lead, not off the conversation that never spawned it");
+        helper
+            .GetProperty("parentAgentId")
+            .GetString()
+            .Should()
+            .Be(
+                lead.GetProperty("agentId").GetString(),
+                "the helper hangs off the lead, not off the conversation that never spawned it"
+            );
         helper.GetProperty("delegationDepth").GetInt32().Should().Be(2);
         lead.GetProperty("delegationDepth").GetInt32().Should().Be(1);
 
-        var ancestors = helper.GetProperty("ancestorAgentIds")
-            .EnumerateArray().Select(a => a.GetString()).ToList();
-        ancestors.Should().Contain(
-            threadId, "the root must appear in the grandchild's lineage for an ancestor read to resolve");
+        var ancestors = helper.GetProperty("ancestorAgentIds").EnumerateArray().Select(a => a.GetString()).ToList();
+        ancestors
+            .Should()
+            .Contain(threadId, "the root must appear in the grandchild's lineage for an ancestor read to resolve");
 
         // --- The transcript boundary --------------------------------------------------------------
         // The root reads the grandchild it never spawned. Under the default Ancestors visibility this
         // is allowed precisely because of the lineage asserted above, so the two are one claim.
         var helperId = helper.GetProperty("agentId").GetString()!;
-        using var transcript = await http.GetAsync(
-            $"/api/conversations/{threadId}/agents/{helperId}/transcript");
-        transcript.StatusCode.Should().Be(
-            HttpStatusCode.OK, "collaboration is enabled and the reader is an ancestor");
+        using var transcript = await http.GetAsync($"/api/conversations/{threadId}/agents/{helperId}/transcript");
+        transcript.StatusCode.Should().Be(HttpStatusCode.OK, "collaboration is enabled and the reader is an ancestor");
 
         var transcriptBody = await transcript.Content.ReadAsStringAsync();
-        transcriptBody.Should().Contain(
-            HelperAnswer, "the transcript is the agent's real persisted history; body was: {0}", transcriptBody);
+        transcriptBody
+            .Should()
+            .Contain(
+                HelperAnswer,
+                "the transcript is the agent's real persisted history; body was: {0}",
+                transcriptBody
+            );
 
         // --- The grandchild's message actually reached the root ------------------------------------
         // Everything above would still pass if the SendMessage were silently dropped: the helper's next
@@ -228,11 +273,13 @@ public sealed class AgentCollaborationFlowTests
         var agentMessage = await WaitForAgentMessageAsync(http, threadId, TimeSpan.FromSeconds(30));
 
         var envelope = agentMessage.GetProperty("messageJson").GetString()!;
-        envelope.Should().Contain(
-            HelperQuestion, "the delivered message must carry the grandchild's own words");
-        envelope.Should().Contain(
-            "\"from_name\":\"helper\"",
-            "delivery is attributed to the sender itself, not to the parent that relayed it");
+        envelope.Should().Contain(HelperQuestion, "the delivered message must carry the grandchild's own words");
+        envelope
+            .Should()
+            .Contain(
+                "\"from_name\":\"helper\"",
+                "delivery is attributed to the sender itself, not to the parent that relayed it"
+            );
     }
 
     /// <summary>
@@ -242,16 +289,14 @@ public sealed class AgentCollaborationFlowTests
     /// but it can be waited FOR. Each attempt is a real awaited HTTP round-trip; <paramref name="timeout"/>
     /// is a safety net, not a sleep.
     /// </summary>
-    private static async Task<JsonElement> WaitForAgentMessageAsync(
-        HttpClient http, string threadId, TimeSpan timeout)
+    private static async Task<JsonElement> WaitForAgentMessageAsync(HttpClient http, string threadId, TimeSpan timeout)
     {
         using var cts = new CancellationTokenSource(timeout);
         var lastBody = "<none>";
 
         while (!cts.IsCancellationRequested)
         {
-            using var response = await http.GetAsync(
-                $"/api/conversations/{threadId}/messages", cts.Token);
+            using var response = await http.GetAsync($"/api/conversations/{threadId}/messages", cts.Token);
             response.StatusCode.Should().Be(HttpStatusCode.OK);
 
             lastBody = await response.Content.ReadAsStringAsync(cts.Token);
@@ -259,8 +304,7 @@ public sealed class AgentCollaborationFlowTests
 
             foreach (var message in doc.RootElement.EnumerateArray())
             {
-                if (message.TryGetProperty("messageType", out var type)
-                    && type.GetString() == "AgentMessage")
+                if (message.TryGetProperty("messageType", out var type) && type.GetString() == "AgentMessage")
                 {
                     return message.Clone();
                 }
@@ -270,12 +314,15 @@ public sealed class AgentCollaborationFlowTests
         }
 
         throw new TimeoutException(
-            $"No AgentMessage reached the root conversation within {timeout}. "
-            + $"Last messages body: {lastBody}");
+            $"No AgentMessage reached the root conversation within {timeout}. " + $"Last messages body: {lastBody}"
+        );
     }
 
     private static SubAgentTemplate Template(
-        string name, string systemPrompt, Func<IStreamingAgent> providerAgentFactory) =>
+        string name,
+        string systemPrompt,
+        Func<IStreamingAgent> providerAgentFactory
+    ) =>
         new()
         {
             Name = name,
@@ -287,15 +334,17 @@ public sealed class AgentCollaborationFlowTests
     /// <summary>The row for a named agent, failing with the whole roster when it is missing.</summary>
     private static JsonElement Row(IReadOnlyList<JsonElement> rows, string name)
     {
-        var row = rows.FirstOrDefault(
-            r => r.TryGetProperty("name", out var n)
-                && string.Equals(n.GetString(), name, StringComparison.Ordinal));
+        var row = rows.FirstOrDefault(r =>
+            r.TryGetProperty("name", out var n) && string.Equals(n.GetString(), name, StringComparison.Ordinal)
+        );
 
-        row.ValueKind.Should().NotBe(
-            JsonValueKind.Undefined,
-            "'{0}' must appear in the hierarchy listing; it contained: {1}",
-            name,
-            string.Join(", ", rows.Select(r => r.ToString())));
+        row.ValueKind.Should()
+            .NotBe(
+                JsonValueKind.Undefined,
+                "'{0}' must appear in the hierarchy listing; it contained: {1}",
+                name,
+                string.Join(", ", rows.Select(r => r.ToString()))
+            );
 
         return row;
     }
@@ -304,8 +353,7 @@ public sealed class AgentCollaborationFlowTests
     /// Reads the hierarchy projection once. The run is already finished when this is called — the
     /// <c>done</c> sentinel arrived — so there is nothing to poll for and nothing to wait on.
     /// </summary>
-    private static async Task<IReadOnlyList<JsonElement>> ListAgentsAsync(
-        HttpClient http, string threadId)
+    private static async Task<IReadOnlyList<JsonElement>> ListAgentsAsync(HttpClient http, string threadId)
     {
         using var response = await http.GetAsync($"/api/conversations/{threadId}/subagents");
         response.StatusCode.Should().Be(HttpStatusCode.OK);

@@ -46,23 +46,29 @@ public sealed class PredefinedKeyRegistryTests
     private static PredefinedKeyRegistry NewRegistry(string dir, IOAuthTokenStore? store = null) =>
         new(dir, store ?? new NoopStore(), new HttpClient(), NullLoggerFactory.Instance);
 
-    private static PredefinedKeyEntry Custom(string id, string host = "api.example.com") => new()
-    {
-        Id = id,
-        Host = host,
-        Kind = PredefinedKeyKind.CustomHeaders,
-        Headers = [new PredefinedHeader("X-Key", "v")],
-    };
+    private static PredefinedKeyEntry Custom(string id, string host = "api.example.com") =>
+        new()
+        {
+            Id = id,
+            Host = host,
+            Kind = PredefinedKeyKind.CustomHeaders,
+            Headers = [new PredefinedHeader("X-Key", "v")],
+        };
 
-    private static PredefinedKeyEntry Refresh(string id, string host = "api.example.com", string refreshToken = "rt0") => new()
-    {
-        Id = id,
-        Host = host,
-        Kind = PredefinedKeyKind.RefreshToken,
-        TokenEndpoint = "https://token.example/oauth/token",
-        ClientId = "cid",
-        RefreshToken = refreshToken,
-    };
+    private static PredefinedKeyEntry Refresh(
+        string id,
+        string host = "api.example.com",
+        string refreshToken = "rt0"
+    ) =>
+        new()
+        {
+            Id = id,
+            Host = host,
+            Kind = PredefinedKeyKind.RefreshToken,
+            TokenEndpoint = "https://token.example/oauth/token",
+            ClientId = "cid",
+            RefreshToken = refreshToken,
+        };
 
     private static OAuthTokenRecord Minted(string providerId) =>
         new(providerId, null, "rotated-rt", "at", DateTimeOffset.UtcNow.AddHours(1), []);
@@ -223,11 +229,15 @@ public sealed class PredefinedKeyRegistryTests
 
             // A credential-change upsert must FAIL (reliably) if the stale token can't be invalidated,
             // rather than commit the new definition while the old token stays reloadable.
-            await FluentActions.Awaiting(() => registry.UpsertAsync(Refresh("e1", refreshToken: "x")))
-                .Should().ThrowAsync<IOException>();
+            await FluentActions
+                .Awaiting(() => registry.UpsertAsync(Refresh("e1", refreshToken: "x")))
+                .Should()
+                .ThrowAsync<IOException>();
 
             // Delete cleanup stays best-effort — a token-store failure does not fail the delete.
-            (await registry.RemoveAsync("e1")).Should().BeTrue();
+            (await registry.RemoveAsync("e1"))
+                .Should()
+                .BeTrue();
         }
         finally
         {

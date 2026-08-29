@@ -31,45 +31,47 @@ public sealed class SendMessageTests
         const string FirstAnswer = "Initial research done.";
         const string SecondAnswer = "Follow-up research done.";
 
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("researcher", ctx => ctx.SystemPromptContains(ResearcherMarker))
-                .Turn(t => t.Text(FirstAnswer))
-                .Turn(t => t.Text(SecondAnswer))
+            .Turn(t => t.Text(FirstAnswer))
+            .Turn(t => t.Text(SecondAnswer))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.ToolCall(
+            .Turn(t =>
+                t.ToolCall(
                     "Agent",
                     new
                     {
                         subagent_type = "researcher",
                         prompt = "initial research",
                         name = "researcher",
-                    }))
-                .Turn(t => t.ToolCall(
-                    "SendMessage",
-                    new { target = "researcher", prompt = "dig deeper" }))
-                .Turn(t => t.Text("Done: both rounds complete."))
+                    }
+                )
+            )
+            .Turn(t => t.ToolCall("SendMessage", new { target = "researcher", prompt = "dig deeper" }))
+            .Turn(t => t.Text("Done: both rounds complete."))
             .Build();
 
-        var handler = providerMode == "test-anthropic"
-            ? responder.AsAnthropicHandler()
-            : responder.AsOpenAiHandler();
+        var handler = providerMode == "test-anthropic" ? responder.AsAnthropicHandler() : responder.AsOpenAiHandler();
 
         var builder = new ScriptedBuilder(
             handler,
-            subAgentFactory: (_, providerAgentFactory) => new SubAgentOptions
-            {
-                Templates = new Dictionary<string, SubAgentTemplate>
+            subAgentFactory: (_, providerAgentFactory) =>
+                new SubAgentOptions
                 {
-                    ["researcher"] = new SubAgentTemplate
+                    Templates = new Dictionary<string, SubAgentTemplate>
                     {
-                        Name = "Researcher",
-                        SystemPrompt = ResearcherMarker,
-                        AgentFactory = providerAgentFactory,
-                        MaxTurnsPerRun = 5,
+                        ["researcher"] = new SubAgentTemplate
+                        {
+                            Name = "Researcher",
+                            SystemPrompt = ResearcherMarker,
+                            AgentFactory = providerAgentFactory,
+                            MaxTurnsPerRun = 5,
+                        },
                     },
-                },
-                MaxConcurrentSubAgents = 5,
-            });
+                    MaxConcurrentSubAgents = 5,
+                }
+        );
 
         using var factory = new E2EWebAppFactory(providerMode, builder);
 
@@ -88,12 +90,18 @@ public sealed class SendMessageTests
         // spawn returns the first run's text, the SendMessage continuation returns the
         // restarted run's text. Both surface as Agent/SendMessage tool results.
         var toolResults = frames.ToolCallResults();
-        toolResults.Should().Contain(
-            r => r.Contains(FirstAnswer, StringComparison.Ordinal),
-            "the Agent spawn result is the sub-agent's first-round answer");
-        toolResults.Should().Contain(
-            r => r.Contains(SecondAnswer, StringComparison.Ordinal),
-            "the SendMessage continuation result is the restarted run's answer");
+        toolResults
+            .Should()
+            .Contain(
+                r => r.Contains(FirstAnswer, StringComparison.Ordinal),
+                "the Agent spawn result is the sub-agent's first-round answer"
+            );
+        toolResults
+            .Should()
+            .Contain(
+                r => r.Contains(SecondAnswer, StringComparison.Ordinal),
+                "the SendMessage continuation result is the restarted run's answer"
+            );
 
         var streamedText = frames.ConcatText();
         streamedText.Should().Contain("Done: both rounds complete");

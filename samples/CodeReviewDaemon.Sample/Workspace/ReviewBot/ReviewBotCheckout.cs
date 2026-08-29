@@ -22,15 +22,15 @@ internal static class ReviewBotCheckout
         string url,
         string workdir,
         ILogger logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(git);
         ArgumentException.ThrowIfNullOrWhiteSpace(url);
         ArgumentException.ThrowIfNullOrWhiteSpace(workdir);
         ArgumentNullException.ThrowIfNull(logger);
 
-        var probe = await git
-            .RunAsync(["rev-parse", "--is-inside-work-tree"], workdir, cancellationToken)
+        var probe = await git.RunAsync(["rev-parse", "--is-inside-work-tree"], workdir, cancellationToken)
             .ConfigureAwait(false);
         if (probe.Succeeded)
         {
@@ -38,8 +38,7 @@ internal static class ReviewBotCheckout
             return null;
         }
 
-        var clone = await git
-            .RunAsync(["clone", url, workdir], workingDirectory: null, cancellationToken)
+        var clone = await git.RunAsync(["clone", url, workdir], workingDirectory: null, cancellationToken)
             .ConfigureAwait(false);
         if (clone.Succeeded)
         {

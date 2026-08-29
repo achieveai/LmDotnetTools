@@ -19,10 +19,7 @@ public class ServerToolRequestTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools =
-            [
-                new AnthropicWebSearchTool { MaxUses = 5 },
-            ],
+            BuiltInTools = [new AnthropicWebSearchTool { MaxUses = 5 }],
         };
 
         var request = AnthropicRequest.FromMessages(messages, options);
@@ -53,10 +50,7 @@ public class ServerToolRequestTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools =
-            [
-                new AnthropicWebSearchTool(),
-            ],
+            BuiltInTools = [new AnthropicWebSearchTool()],
             Functions =
             [
                 new FunctionContract
@@ -157,9 +151,11 @@ public class ServerToolRequestTests
                         // Provider server tool results are converted to tool_result in a user message,
                         // since providers like Kimi treat server_tool_use as regular tool_use
                         // and require a matching tool_result in the next user turn.
-                        if (blockType.GetString() == "tool_result"
+                        if (
+                            blockType.GetString() == "tool_result"
                             && block.TryGetProperty("tool_use_id", out var toolUseId)
-                            && toolUseId.GetString() == "srvtoolu_01")
+                            && toolUseId.GetString() == "srvtoolu_01"
+                        )
                         {
                             hasToolResult = true;
                             Assert.Equal("user", role);
@@ -339,7 +335,8 @@ public class ServerToolRequestTests
             {
                 ToolCallId = "srvtoolu_kimi_01",
                 ToolName = "web_search",
-                Result = """[{"type":"web_search_result","content":null,"url":"https://example.com","title":"AI Companies"}]""",
+                Result =
+                    """[{"type":"web_search_result","content":null,"url":"https://example.com","title":"AI Companies"}]""",
                 ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = Role.Assistant,
             },
@@ -387,9 +384,11 @@ public class ServerToolRequestTests
                         Assert.Equal("web_search", block.GetProperty("name").GetString());
                     }
 
-                    if (typeStr == "tool_result"
+                    if (
+                        typeStr == "tool_result"
                         && block.TryGetProperty("tool_use_id", out var toolUseId)
-                        && toolUseId.GetString() == "srvtoolu_kimi_01")
+                        && toolUseId.GetString() == "srvtoolu_kimi_01"
+                    )
                     {
                         hasToolResult = true;
                         Assert.Equal("user", role);
@@ -448,10 +447,12 @@ public class ServerToolRequestTests
             {
                 foreach (var block in content.EnumerateArray())
                 {
-                    if (block.TryGetProperty("type", out var blockType)
+                    if (
+                        block.TryGetProperty("type", out var blockType)
                         && blockType.GetString() == "tool_result"
                         && block.TryGetProperty("tool_use_id", out var tuid)
-                        && tuid.GetString() == "srvtoolu_null_01")
+                        && tuid.GetString() == "srvtoolu_null_01"
+                    )
                     {
                         foundToolResult = true;
 
@@ -497,10 +498,7 @@ public class ServerToolRequestTests
             new TextMessage { Role = Role.User, Text = "Tell me more." },
         };
 
-        var options = new GenerateReplyOptions
-        {
-            ModelId = "claude-sonnet-4-20250514",
-        };
+        var options = new GenerateReplyOptions { ModelId = "claude-sonnet-4-20250514" };
 
         var request = AnthropicRequest.FromMessages(messages, options);
         var json = JsonSerializer.Serialize(request, _jsonOptions);
@@ -520,8 +518,7 @@ public class ServerToolRequestTests
             {
                 foreach (var block in content.EnumerateArray())
                 {
-                    if (block.TryGetProperty("type", out var blockType)
-                        && blockType.GetString() == "text")
+                    if (block.TryGetProperty("type", out var blockType) && blockType.GetString() == "text")
                     {
                         foundAssistantText = true;
                         Assert.Equal(

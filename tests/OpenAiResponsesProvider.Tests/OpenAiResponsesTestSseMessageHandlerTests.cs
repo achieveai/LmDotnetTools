@@ -104,12 +104,14 @@ public sealed class OpenAiResponsesTestSseMessageHandlerTests
         var handler = new OpenAiResponsesTestSseMessageHandler { ChunkDelayMs = 0 };
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://mock.local/") };
 
-        using var content = JsonContent.Create(new
-        {
-            model = "gpt-test",
-            stream = false,
-            input = Array.Empty<object>(),
-        });
+        using var content = JsonContent.Create(
+            new
+            {
+                model = "gpt-test",
+                stream = false,
+                input = Array.Empty<object>(),
+            }
+        );
 
         using var response = await http.PostAsync("http://mock.local/v1/responses", content);
 
@@ -169,7 +171,8 @@ public sealed class OpenAiResponsesTestSseMessageHandlerTests
 
     private static async Task<List<ResponseEvent>> CollectAsync(
         OpenAiResponsesClient client,
-        ResponseCreateRequest request)
+        ResponseCreateRequest request
+    )
     {
         var events = new List<ResponseEvent>();
         await foreach (var ev in client.StreamResponseAsync(request))

@@ -46,10 +46,7 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
     /// returns <paramref name="results"/>[0], the next [1], and so on, repeating the last entry once
     /// exhausted. Used to exercise rebase-retry (fail, fail, succeed) paths.
     /// </summary>
-    public FakeSandboxCommandRunner OnArgvContainsSequence(
-        string argvSubstring,
-        params SandboxCommandResult[] results
-    )
+    public FakeSandboxCommandRunner OnArgvContainsSequence(string argvSubstring, params SandboxCommandResult[] results)
     {
         if (results.Length == 0)
         {
@@ -93,9 +90,11 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
             return Task.FromResult(localResult);
         }
 
-        if (IsGitDirectoryProbe(command, out var storePath)
+        if (
+            IsGitDirectoryProbe(command, out var storePath)
             && !Directory.Exists(Path.Combine(storePath, ".git"))
-            && !File.Exists(Path.Combine(storePath, ".git")))
+            && !File.Exists(Path.Combine(storePath, ".git"))
+        )
         {
             return Task.FromResult(new SandboxCommandResult(128, string.Empty, "fatal: not a git repository"));
         }
@@ -106,11 +105,14 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
         // told anything. Fail loudly instead, so a test that reaches the check has to say what it means.
         if (IsBlobIdentityProbe(command.Argv))
         {
-            return Task.FromResult(new SandboxCommandResult(
-                128,
-                string.Empty,
-                "fatal: this fake was not told what blob to report. Script the `hash-object` / "
-                    + "`rev-parse :<path>` pair if this test means to reach the normalization check."));
+            return Task.FromResult(
+                new SandboxCommandResult(
+                    128,
+                    string.Empty,
+                    "fatal: this fake was not told what blob to report. Script the `hash-object` / "
+                        + "`rev-parse :<path>` pair if this test means to reach the normalization check."
+                )
+            );
         }
 
         // `git status --porcelain -b` ALWAYS emits a branch header, and the gate reads its absence as "the
@@ -181,16 +183,11 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
             && argv.Contains("--git-dir", StringComparer.Ordinal);
     }
 
-    private static bool TryApplyLocalFileCommand(
-        SandboxCommand command,
-        out SandboxCommandResult result)
+    private static bool TryApplyLocalFileCommand(SandboxCommand command, out SandboxCommandResult result)
     {
         result = new SandboxCommandResult(0, string.Empty, string.Empty);
         var argv = command.Argv;
-        if (argv.Count >= 4
-            && argv[0] == "rm"
-            && argv[1] == "-rf"
-            && argv[2] == "--")
+        if (argv.Count >= 4 && argv[0] == "rm" && argv[1] == "-rf" && argv[2] == "--")
         {
             var path = argv[3];
             if (Directory.Exists(path))
@@ -205,10 +202,7 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
             return true;
         }
 
-        if (argv.Count >= 4
-            && argv[0] == "mkdir"
-            && argv[1] == "-p"
-            && argv[2] == "--")
+        if (argv.Count >= 4 && argv[0] == "mkdir" && argv[1] == "-p" && argv[2] == "--")
         {
             Directory.CreateDirectory(argv[3]);
             return true;
@@ -240,8 +234,11 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
             {
                 foreach (var name in new[] { "rebase-merge", "rebase-apply" })
                 {
-                    foreach (var directory in Directory.EnumerateDirectories(root, name, SearchOption.AllDirectories)
-                                 .OrderByDescending(path => path.Length))
+                    foreach (
+                        var directory in Directory
+                            .EnumerateDirectories(root, name, SearchOption.AllDirectories)
+                            .OrderByDescending(path => path.Length)
+                    )
                     {
                         Directory.Delete(directory, recursive: true);
                     }

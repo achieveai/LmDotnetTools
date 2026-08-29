@@ -1,15 +1,15 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -77,8 +77,12 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
         idA.Should().MatchRegex(GuidThenTag, "the id is a 12-hex guid plus an 8-hex conversation tag");
         idB.Should().MatchRegex(GuidThenTag, "the id is a 12-hex guid plus an 8-hex conversation tag");
 
-        TagOf(idA).Should().NotBe(TagOf(idB),
-            "sub-agents launched from different conversations must carry different conversation tags");
+        TagOf(idA)
+            .Should()
+            .NotBe(
+                TagOf(idB),
+                "sub-agents launched from different conversations must carry different conversation tags"
+            );
         GuidOf(idA).Should().NotBe(GuidOf(idB), "the guid component is unique per spawn");
     }
 
@@ -92,8 +96,12 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
         var id1 = ParseAgentId(await manager.SpawnAsync("worker", "first", name: "one", runInBackground: true));
         var id2 = ParseAgentId(await manager.SpawnAsync("worker", "second", name: "two", runInBackground: true));
 
-        TagOf(id1).Should().Be(TagOf(id2),
-            "the conversation tag is deterministic from the launching conversation, so it is stable within it");
+        TagOf(id1)
+            .Should()
+            .Be(
+                TagOf(id2),
+                "the conversation tag is deterministic from the launching conversation, so it is stable within it"
+            );
         GuidOf(id1).Should().NotBe(GuidOf(id2), "each spawn still gets its own unique guid");
 
         // The subagent-{id} thread reconstruction must stay intact so persistence/live-subscribe keep working.
@@ -121,11 +129,11 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
                 OwnerUserId = "entra-tid:owner-oid",
                 OwnerAppId = "codereview-daemon",
                 Visibility = Visibility.Shared,
-            });
+            }
+        );
 
         var manager = CreateManager(parent, store);
-        var agentId = ParseAgentId(
-            await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
+        var agentId = ParseAgentId(await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
 
         var metadata = await store.LoadMetadataAsync($"subagent-{agentId}");
 
@@ -149,8 +157,7 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
         var store = new InMemoryConversationStore();
         var manager = CreateManager("thread-conversation-untenanted", store);
 
-        var agentId = ParseAgentId(
-            await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
+        var agentId = ParseAgentId(await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
 
         var metadata = await store.LoadMetadataAsync($"subagent-{agentId}");
 
@@ -180,21 +187,27 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
                 capturedParentThread = parentThread;
                 capturedDescribe = describe;
                 return childStore;
-            });
+            }
+        );
 
-        var agentId = ParseAgentId(
-            await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
+        var agentId = ParseAgentId(await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
 
-        capturedParentThread.Should().Be(
-            nestedParentThread,
-            "the child is attributed to THIS manager's own parent thread, not a root captured elsewhere");
+        capturedParentThread
+            .Should()
+            .Be(
+                nestedParentThread,
+                "the child is attributed to THIS manager's own parent thread, not a root captured elsewhere"
+            );
         capturedChildThread.Should().Be($"subagent-{agentId}");
 
         capturedDescribe.Should().NotBeNull("the manager must hand the factory a live describe callback");
         var resolved = capturedDescribe!($"subagent-{agentId}");
-        resolved.Should().NotBeNull(
-            "the child's snapshot resolves against THIS manager's live roster, so a grandchild is no "
-                + "longer a null snapshot on a manager it does not live in");
+        resolved
+            .Should()
+            .NotBeNull(
+                "the child's snapshot resolves against THIS manager's live roster, so a grandchild is no "
+                    + "longer a null snapshot on a manager it does not live in"
+            );
         resolved!.AgentId.Should().Be(agentId);
     }
 
@@ -205,26 +218,35 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
     private SubAgentManager CreateManager(
         string parentThreadId,
         IConversationStore? store = null,
-        Func<string, string?, Func<string, SubAgentSnapshot?>, IConversationStore>? provenanceFactory = null)
+        Func<string, string?, Func<string, SubAgentSnapshot?>, IConversationStore>? provenanceFactory = null
+    )
     {
         var parentMock = new Mock<IMultiTurnAgent>();
         parentMock.Setup(p => p.ThreadId).Returns(parentThreadId);
         parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         var provider = new Mock<IStreamingAgent>();
         provider
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns((IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken _) =>
-                Task.FromResult(SingleMessage(new TextMessage { Text = "done", Role = Role.Assistant })));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                (IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken _) =>
+                    Task.FromResult(SingleMessage(new TextMessage { Text = "done", Role = Role.Assistant }))
+            );
 
         var options = new SubAgentOptions
         {
@@ -246,7 +268,8 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: new MutableSubAgentTemplateSource(options.Templates));
+            source: new MutableSubAgentTemplateSource(options.Templates)
+        );
         _managers.Add(manager);
         return manager;
     }

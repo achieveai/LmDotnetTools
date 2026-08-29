@@ -72,16 +72,17 @@ public class SseStreamHttpContentTests
             }
 
             using var doc = JsonDocument.Parse(payload);
-            if (!doc.RootElement.TryGetProperty("choices", out var choices)
+            if (
+                !doc.RootElement.TryGetProperty("choices", out var choices)
                 || choices.ValueKind != JsonValueKind.Array
-                || choices.GetArrayLength() == 0)
+                || choices.GetArrayLength() == 0
+            )
             {
                 continue;
             }
 
             var delta = choices[0].GetProperty("delta");
-            if (delta.TryGetProperty("content", out var contentEl)
-                && contentEl.ValueKind == JsonValueKind.String)
+            if (delta.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.String)
             {
                 builder.Append(contentEl.GetString());
             }

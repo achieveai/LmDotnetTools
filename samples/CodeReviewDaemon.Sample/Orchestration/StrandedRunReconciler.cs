@@ -150,7 +150,8 @@ internal sealed class StrandedRunReconciler
         int maxResumesPerPass,
         ILogger<StrandedRunReconciler> logger,
         Func<DateTimeOffset, int, IReadOnlyList<StrandedRunRow>>? listRetryPendingRuns = null,
-        TimeSpan retryPendingGrace = default)
+        TimeSpan retryPendingGrace = default
+    )
     {
         _listStrandedRuns = listStrandedRuns ?? throw new ArgumentNullException(nameof(listStrandedRuns));
         _getPrLifecycleAsync = getPrLifecycleAsync ?? throw new ArgumentNullException(nameof(getPrLifecycleAsync));
@@ -178,7 +179,8 @@ internal sealed class StrandedRunReconciler
         {
             throw new ArgumentException(
                 "A retry-pending grace period was supplied without a listing to apply it to.",
-                nameof(listRetryPendingRuns));
+                nameof(listRetryPendingRuns)
+            );
         }
 
         _listRetryPendingRuns = listRetryPendingRuns;
@@ -236,9 +238,7 @@ internal sealed class StrandedRunReconciler
         // resume slots go to the runs that are owed a retry rather than to the ones merely old enough to be
         // written off. `_scanLimit` caps each listing separately: it is a cap on reading, not on working, and a
         // pass that reads up to twice as many rows still resumes at most `_maxResumesPerPass` of them.
-        var retryPending = _listRetryPendingRuns is null
-            ? []
-            : _listRetryPendingRuns(retryStaleBefore, _scanLimit);
+        var retryPending = _listRetryPendingRuns is null ? [] : _listRetryPendingRuns(retryStaleBefore, _scanLimit);
         var stranded = _listStrandedRuns(staleBefore, _scanLimit);
         var settling = MergeFastPathFirst(retryPending, stranded);
         if (settling.Count == 0)
@@ -254,7 +254,8 @@ internal sealed class StrandedRunReconciler
             retryPending.Count,
             retryStaleBefore,
             staleBefore,
-            _maxResumesPerPass);
+            _maxResumesPerPass
+        );
 
         var budget = new ResumeBudget(_maxResumesPerPass);
         var deferred = 0;
@@ -269,7 +270,8 @@ internal sealed class StrandedRunReconciler
                     deferred++;
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            catch (Exception ex)
+                when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 // Deliberately NOT the promise the earlier version of this line made. Every failure that leaves a
                 // write behind is handled where it happens — the lookup backs itself off below, a stage that throws
@@ -289,7 +291,8 @@ internal sealed class StrandedRunReconciler
                         + "was written for it; the pass carries on, and this run is eligible again on the next one.",
                     row.Run.Id,
                     row.Repo.Provider,
-                    row.Run.PrId);
+                    row.Run.PrId
+                );
             }
         }
 
@@ -304,7 +307,8 @@ internal sealed class StrandedRunReconciler
                     + "{Spent} of this pass's {MaxResumes} resume slot(s).",
                 deferred,
                 budget.Spent,
-                _maxResumesPerPass);
+                _maxResumesPerPass
+            );
         }
     }
 
@@ -318,7 +322,9 @@ internal sealed class StrandedRunReconciler
     /// something every future outcome branch has to remember.
     /// </summary>
     private static IReadOnlyList<StrandedRunRow> MergeFastPathFirst(
-        IReadOnlyList<StrandedRunRow> fast, IReadOnlyList<StrandedRunRow> slow)
+        IReadOnlyList<StrandedRunRow> fast,
+        IReadOnlyList<StrandedRunRow> slow
+    )
     {
         if (fast.Count == 0)
         {
@@ -382,7 +388,10 @@ internal sealed class StrandedRunReconciler
 
     /// <summary>Settles one run — see <see cref="SettleOutcome"/> for what the return value means.</summary>
     private async Task<SettleOutcome> SettleAsync(
-        StrandedRunRow row, ResumeBudget budget, CancellationToken cancellationToken)
+        StrandedRunRow row,
+        ResumeBudget budget,
+        CancellationToken cancellationToken
+    )
     {
         var run = row.Run;
 
@@ -443,7 +452,8 @@ internal sealed class StrandedRunReconciler
                     + "about whether the PR is still open.",
                 row.Repo.Provider,
                 run.Id,
-                run.PrId);
+                run.PrId
+            );
             return SettleOutcome.BackedOff;
         }
 
@@ -467,7 +477,8 @@ internal sealed class StrandedRunReconciler
                 row.Repo.Provider,
                 run.PrId,
                 run.Stage,
-                _maxResumesPerPass);
+                _maxResumesPerPass
+            );
             return SettleOutcome.Deferred;
         }
 
@@ -489,10 +500,10 @@ internal sealed class StrandedRunReconciler
             run.Id,
             row.Repo.Provider,
             run.PrId,
-            run.Stage);
+            run.Stage
+        );
 
-        var result = await _resumeAsync(run with { PrLifecycleState = state }, cancellationToken)
-            .ConfigureAwait(false);
+        var result = await _resumeAsync(run with { PrLifecycleState = state }, cancellationToken).ConfigureAwait(false);
 
         // The orchestrator resolves the run to work on by identity tuple, so it can legitimately land on a
         // different row than the one handed to it (an earlier, further-progressed run at the same head). That
@@ -520,14 +531,16 @@ internal sealed class StrandedRunReconciler
             row.Repo.Provider,
             row.Run.PrId,
             row.Run.Stage,
-            reason);
+            reason
+        );
     }
 
-    private static PrLifecycleState ToLifecycleState(PrLifecycle lifecycle) => lifecycle switch
-    {
-        PrLifecycle.Open => PrLifecycleState.Open,
-        PrLifecycle.Merged => PrLifecycleState.Merged,
-        PrLifecycle.Abandoned => PrLifecycleState.Abandoned,
-        _ => throw new ArgumentOutOfRangeException(nameof(lifecycle), lifecycle, "Unhandled PrLifecycle value."),
-    };
+    private static PrLifecycleState ToLifecycleState(PrLifecycle lifecycle) =>
+        lifecycle switch
+        {
+            PrLifecycle.Open => PrLifecycleState.Open,
+            PrLifecycle.Merged => PrLifecycleState.Merged,
+            PrLifecycle.Abandoned => PrLifecycleState.Abandoned,
+            _ => throw new ArgumentOutOfRangeException(nameof(lifecycle), lifecycle, "Unhandled PrLifecycle value."),
+        };
 }

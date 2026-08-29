@@ -2,6 +2,7 @@ using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Logging;
 
 /// <summary>
@@ -50,7 +51,12 @@ public class LoggingSystemIntegrationTests
             )
             .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
-        var middleware = new FunctionCallMiddleware(functions, LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "perf-test", logger: mockLogger.Object);
+        var middleware = new FunctionCallMiddleware(
+            functions,
+            LegacyHandlerAdapter.WrapToNewHandlers(functionMap),
+            name: "perf-test",
+            logger: mockLogger.Object
+        );
 
         // Act - Measure performance
         const int iterations = 100;
@@ -116,7 +122,12 @@ public class LoggingSystemIntegrationTests
         var messages = new List<IMessage> { toolCallMessage };
         var context = new MiddlewareContext(messages);
 
-        var middleware = new FunctionCallMiddleware(functions, LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "error-test-middleware", logger: mockLogger.Object);
+        var middleware = new FunctionCallMiddleware(
+            functions,
+            LegacyHandlerAdapter.WrapToNewHandlers(functionMap),
+            name: "error-test-middleware",
+            logger: mockLogger.Object
+        );
 
         // Act
         _ = await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
@@ -162,7 +173,11 @@ public class LoggingSystemIntegrationTests
         };
 
         // Act & Assert - Should not throw with null logger
-        var middleware = new FunctionCallMiddleware(functions, LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "test-middleware");
+        var middleware = new FunctionCallMiddleware(
+            functions,
+            LegacyHandlerAdapter.WrapToNewHandlers(functionMap),
+            name: "test-middleware"
+        );
         Assert.NotNull(middleware);
         Assert.Equal("test-middleware", middleware.Name);
     }
@@ -203,7 +218,12 @@ public class LoggingSystemIntegrationTests
             )
             .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
-        var middleware = new FunctionCallMiddleware(functions, LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "test-middleware", logger: mockLogger.Object);
+        var middleware = new FunctionCallMiddleware(
+            functions,
+            LegacyHandlerAdapter.WrapToNewHandlers(functionMap),
+            name: "test-middleware",
+            logger: mockLogger.Object
+        );
 
         // Act
         _ = await middleware.InvokeAsync(context, mockAgent.Object);
@@ -403,7 +423,11 @@ public class LoggingSystemIntegrationTests
         };
 
         // Should not throw with null logger
-        var middleware = new FunctionCallMiddleware(functions, LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "null-safe-test");
+        var middleware = new FunctionCallMiddleware(
+            functions,
+            LegacyHandlerAdapter.WrapToNewHandlers(functionMap),
+            name: "null-safe-test"
+        );
         Assert.NotNull(middleware);
         Assert.Equal("null-safe-test", middleware.Name);
     }

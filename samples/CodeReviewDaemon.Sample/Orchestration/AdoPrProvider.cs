@@ -31,7 +31,8 @@ internal sealed class AdoPrProvider : IPrProvider
         IOAuthTokenProvider tokenProvider,
         ILogger<AdoPrProvider> logger,
         int maxPagesPerPoll = CodeReviewDaemonOptions.DefaultMaxPagesPerPoll,
-        int maxPrsPerPage = CodeReviewDaemonOptions.DefaultMaxPrsPerPage)
+        int maxPrsPerPage = CodeReviewDaemonOptions.DefaultMaxPrsPerPage
+    )
     {
         _httpClient = httpClient;
         _tokenProvider = tokenProvider;
@@ -44,7 +45,8 @@ internal sealed class AdoPrProvider : IPrProvider
         // ADO rejects a $top above 1000 outright.
         PageSize = Math.Min(
             maxPrsPerPage > 0 ? maxPrsPerPage : CodeReviewDaemonOptions.DefaultMaxPrsPerPage,
-            AdoMaxPageSize);
+            AdoMaxPageSize
+        );
     }
 
     public string Provider => "ado";
@@ -83,7 +85,10 @@ internal sealed class AdoPrProvider : IPrProvider
     /// of old PRs doesn't serialize into minutes of round trips or trip ADO throttling.</summary>
     private const int MaxRecencyLookupConcurrency = 6;
 
-    public async Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
+    public async Task<PullRequestPage> ListOpenPullRequestsAsync(
+        PrPollRequest request,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -135,14 +140,14 @@ internal sealed class AdoPrProvider : IPrProvider
             cancellationToken.ThrowIfCancellationRequested();
             pages++;
 
-            var url = continuationToken is not null
-                ? $"{baseUrl}&continuationToken={Uri.EscapeDataString(continuationToken)}"
-                : skip > 0
-                    ? $"{baseUrl}&$skip={skip.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
-                    : baseUrl;
+            var url =
+                continuationToken is not null ? $"{baseUrl}&continuationToken={Uri.EscapeDataString(continuationToken)}"
+                : skip > 0 ? $"{baseUrl}&$skip={skip.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+                : baseUrl;
 
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-                .WithOperation(SandboxOperation.ReadProviderMetadata);
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+                SandboxOperation.ReadProviderMetadata
+            );
             var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
             var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
@@ -160,22 +165,25 @@ internal sealed class AdoPrProvider : IPrProvider
                 var rawPrs = new List<RawAdoPr>();
                 foreach (var pr in document.RootElement.GetProperty("value").EnumerateArray())
                 {
-                    rawPrs.Add(new RawAdoPr(
-                        pr.GetProperty("pullRequestId").GetInt64(),
-                        CommitId(pr, "lastMergeSourceCommit"),
-                        CommitId(pr, "lastMergeTargetCommit"),
-                        ParseTimestamp(pr, "creationDate"),
-                        pr.TryGetProperty("sourceRefName", out var srn) && srn.ValueKind is JsonValueKind.String
-                            ? srn.GetString()
-                            : null,
-                        pr.GetProperty("status").GetString(),
-                        // Who OPENED the PR. ADO's uniqueName is normally an email address; it is only
-                        // carried as an opaque identity string here, and the consumer is responsible for
-                        // reducing it to a safe, confined file name.
-                        UniqueNameOf(pr, "createdBy"),
-                        // What the PR SAYS it does — the prose half of the knowledge-retrieval key.
-                        StringOf(pr, "title"),
-                        StringOf(pr, "description")));
+                    rawPrs.Add(
+                        new RawAdoPr(
+                            pr.GetProperty("pullRequestId").GetInt64(),
+                            CommitId(pr, "lastMergeSourceCommit"),
+                            CommitId(pr, "lastMergeTargetCommit"),
+                            ParseTimestamp(pr, "creationDate"),
+                            pr.TryGetProperty("sourceRefName", out var srn) && srn.ValueKind is JsonValueKind.String
+                                ? srn.GetString()
+                                : null,
+                            pr.GetProperty("status").GetString(),
+                            // Who OPENED the PR. ADO's uniqueName is normally an email address; it is only
+                            // carried as an opaque identity string here, and the consumer is responsible for
+                            // reducing it to a safe, confined file name.
+                            UniqueNameOf(pr, "createdBy"),
+                            // What the PR SAYS it does — the prose half of the knowledge-retrieval key.
+                            StringOf(pr, "title"),
+                            StringOf(pr, "description")
+                        )
+                    );
                 }
 
                 // Phase 2: resolve each PR's recency signal. ADO's PR list has no last-activity field, so a PR
@@ -184,31 +192,40 @@ internal sealed class AdoPrProvider : IPrProvider
                 // bounded concurrency so a page full of old PRs doesn't serialize into minutes of round trips or
                 // trip ADO throttling; recent PRs and PRs with no usable source ref make no call.
                 var recency = await ResolveRecencySignalsAsync(
-                    rawPrs, org, project, repo, request.RecencyCutoff, cancellationToken).ConfigureAwait(false);
+                        rawPrs,
+                        org,
+                        project,
+                        repo,
+                        request.RecencyCutoff,
+                        cancellationToken
+                    )
+                    .ConfigureAwait(false);
 
                 // Phase 3: build descriptors.
                 for (var i = 0; i < rawPrs.Count; i++)
                 {
                     var raw = rawPrs[i];
                     var (updatedAt, recencyCreatedAt) = recency[i];
-                    pullRequests.Add(new PullRequestDescriptor
-                    {
-                        PrId = raw.PrId.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        HeadSha = raw.HeadSha,
-                        BaseSha = raw.BaseSha,
-                        // ADO's PR list exposes no last-activity timestamp, so a new source commit (the head
-                        // SHA) is the re-review trigger; same-head comment threads do not re-trigger here.
-                        TriggerWatermark = raw.HeadSha,
-                        LifecycleState = MapLifecycle(raw.Status),
-                        // Recency signals (consumed only by ApplyRecencyFilter): CreatedAt = opened date, but
-                        // nulled for an old PR whose last push couldn't be dated (see ResolveRecencySignalsAsync)
-                        // so the filter keeps it; UpdatedAt = last push, resolved only for PRs before the window.
-                        CreatedAt = recencyCreatedAt,
-                        UpdatedAt = updatedAt,
-                        Author = raw.Author,
-                        Title = raw.Title,
-                        Description = raw.Description,
-                    });
+                    pullRequests.Add(
+                        new PullRequestDescriptor
+                        {
+                            PrId = raw.PrId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                            HeadSha = raw.HeadSha,
+                            BaseSha = raw.BaseSha,
+                            // ADO's PR list exposes no last-activity timestamp, so a new source commit (the head
+                            // SHA) is the re-review trigger; same-head comment threads do not re-trigger here.
+                            TriggerWatermark = raw.HeadSha,
+                            LifecycleState = MapLifecycle(raw.Status),
+                            // Recency signals (consumed only by ApplyRecencyFilter): CreatedAt = opened date, but
+                            // nulled for an old PR whose last push couldn't be dated (see ResolveRecencySignalsAsync)
+                            // so the filter keeps it; UpdatedAt = last push, resolved only for PRs before the window.
+                            CreatedAt = recencyCreatedAt,
+                            UpdatedAt = updatedAt,
+                            Author = raw.Author,
+                            Title = raw.Title,
+                            Description = raw.Description,
+                        }
+                    );
 
                     if (raw.PrId > highWaterMark)
                     {
@@ -223,8 +240,7 @@ internal sealed class AdoPrProvider : IPrProvider
             continuationToken = response.Headers.TryGetValues("x-ms-continuationtoken", out var values)
                 ? values.FirstOrDefault()
                 : null;
-        }
-        while (MoreMayRemain(continuationToken, lastPageCount, PageSize) && pages < MaxPagesPerPoll);
+        } while (MoreMayRemain(continuationToken, lastPageCount, PageSize) && pages < MaxPagesPerPoll);
 
         // A poll that stops while more may remain has NOT seen the repo's open PRs, and every downstream
         // filter — recency above all — can only ever filter what this list contained. Said out loud at
@@ -236,12 +252,23 @@ internal sealed class AdoPrProvider : IPrProvider
                 "ADO poll of {Org}/{Project}/{Repo} stopped after {Pages} page(s) of {PageSize} with more "
                     + "results still available; {Count} PR(s) were enumerated and the rest were NOT seen this "
                     + "poll. Raise CodeReviewDaemon:MaxPagesPerPoll or MaxPrsPerPage if this repeats.",
-                org, project, repo, pages, PageSize, pullRequests.Count);
+                org,
+                project,
+                repo,
+                pages,
+                PageSize,
+                pullRequests.Count
+            );
         }
 
         _logger.LogDebug(
             "ADO poll of {Org}/{Project}/{Repo} returned {Count} active PR(s) across {Pages} page(s).",
-            org, project, repo, pullRequests.Count, pages);
+            org,
+            project,
+            repo,
+            pullRequests.Count,
+            pages
+        );
 
         var hwm = highWaterMark.ToString(System.Globalization.CultureInfo.InvariantCulture);
         return new PullRequestPage
@@ -275,7 +302,8 @@ internal sealed class AdoPrProvider : IPrProvider
             value.GetString(),
             System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.RoundtripKind,
-            out var parsed)
+            out var parsed
+        )
             ? parsed
             : null;
 
@@ -299,7 +327,8 @@ internal sealed class AdoPrProvider : IPrProvider
             return null;
         }
 
-        return identity.TryGetProperty("uniqueName", out var value)
+        return
+            identity.TryGetProperty("uniqueName", out var value)
             && value.ValueKind is JsonValueKind.String
             && !string.IsNullOrWhiteSpace(value.GetString())
             ? value.GetString()
@@ -309,8 +338,16 @@ internal sealed class AdoPrProvider : IPrProvider
     /// <summary>Raw per-PR metadata materialized from one ADO PR-list page, before the async recency
     /// resolution (a <see cref="JsonElement"/> can't outlive its document).</summary>
     private sealed record RawAdoPr(
-        long PrId, string HeadSha, string BaseSha, DateTimeOffset? CreatedAt, string? SourceRefName, string? Status,
-        string? Author, string? Title, string? Description);
+        long PrId,
+        string HeadSha,
+        string BaseSha,
+        DateTimeOffset? CreatedAt,
+        string? SourceRefName,
+        string? Status,
+        string? Author,
+        string? Title,
+        string? Description
+    );
 
     /// <summary>
     /// Reads a string property off an ADO PR payload, or null when it is absent, non-string, or blank.
@@ -339,7 +376,8 @@ internal sealed class AdoPrProvider : IPrProvider
         string? project,
         string repo,
         DateTimeOffset? cutoff,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         using var gate = new SemaphoreSlim(MaxRecencyLookupConcurrency);
         var tasks = prs.Select(pr => ResolveOneRecencyAsync(pr, gate, org, project, repo, cutoff, cancellationToken));
@@ -355,7 +393,8 @@ internal sealed class AdoPrProvider : IPrProvider
         string? project,
         string repo,
         DateTimeOffset? cutoff,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         // Recent PR (or recency off): no lookup; the recent opened-date is the keep signal.
         if (cutoff is not { } c || pr.CreatedAt is not { } created || created >= c)
@@ -401,7 +440,8 @@ internal sealed class AdoPrProvider : IPrProvider
         string? project,
         string repo,
         string sourceRefName,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         try
         {
@@ -410,8 +450,9 @@ internal sealed class AdoPrProvider : IPrProvider
                 + $"?searchCriteria.refName={Uri.EscapeDataString(sourceRefName)}"
                 + $"&$top=1&api-version={ApiVersion}";
 
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-                .WithOperation(SandboxOperation.ReadProviderMetadata);
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+                SandboxOperation.ReadProviderMetadata
+            );
             var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
             var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
@@ -423,14 +464,17 @@ internal sealed class AdoPrProvider : IPrProvider
                 _logger.LogDebug(
                     "ADO pushes fetch for ref {Ref} returned {Status}; keeping the PR (recency indeterminate).",
                     sourceRefName,
-                    (int)response.StatusCode);
+                    (int)response.StatusCode
+                );
                 return null;
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            if (!document.RootElement.TryGetProperty("value", out var pushes)
-                || pushes.ValueKind is not JsonValueKind.Array)
+            if (
+                !document.RootElement.TryGetProperty("value", out var pushes)
+                || pushes.ValueKind is not JsonValueKind.Array
+            )
             {
                 return null;
             }
@@ -495,7 +539,10 @@ internal sealed class AdoPrProvider : IPrProvider
     /// </para>
     /// </summary>
     public async Task<string?> GetCurrentHeadShaAsync(
-        RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        RepoIdentity repo,
+        string prId,
+        CancellationToken cancellationToken
+    )
     {
         using var document = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
         var head = CommitId(document.RootElement, "lastMergeSourceCommit");
@@ -507,7 +554,10 @@ internal sealed class AdoPrProvider : IPrProvider
     /// the returned document.
     /// </summary>
     private async Task<JsonDocument> GetPullRequestAsync(
-        RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        RepoIdentity repo,
+        string prId,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(repo);
         ArgumentException.ThrowIfNullOrEmpty(prId);
@@ -519,8 +569,9 @@ internal sealed class AdoPrProvider : IPrProvider
             $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repoName}/pullrequests/{prId}"
             + $"?api-version={ApiVersion}";
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-            .WithOperation(SandboxOperation.ReadProviderMetadata);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
         var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
@@ -538,19 +589,21 @@ internal sealed class AdoPrProvider : IPrProvider
     /// <c>completed</c> is Merged, <c>abandoned</c> is Abandoned. An unrecognized status is treated as Open
     /// so the sweep leaves the notes branch untouched rather than risk a wrong merge or delete.
     /// </summary>
-    private static PrLifecycle MapPrLifecycle(string? status) => status switch
-    {
-        "active" => PrLifecycle.Open,
-        "completed" => PrLifecycle.Merged,
-        "abandoned" => PrLifecycle.Abandoned,
-        _ => PrLifecycle.Open,
-    };
+    private static PrLifecycle MapPrLifecycle(string? status) =>
+        status switch
+        {
+            "active" => PrLifecycle.Open,
+            "completed" => PrLifecycle.Merged,
+            "abandoned" => PrLifecycle.Abandoned,
+            _ => PrLifecycle.Open,
+        };
 
-    private static PrLifecycleState MapLifecycle(string? status) => status switch
-    {
-        "active" => PrLifecycleState.Open,
-        "completed" => PrLifecycleState.Merged,
-        "abandoned" => PrLifecycleState.Abandoned,
-        _ => PrLifecycleState.Closed,
-    };
+    private static PrLifecycleState MapLifecycle(string? status) =>
+        status switch
+        {
+            "active" => PrLifecycleState.Open,
+            "completed" => PrLifecycleState.Merged,
+            "abandoned" => PrLifecycleState.Abandoned,
+            _ => PrLifecycleState.Closed,
+        };
 }

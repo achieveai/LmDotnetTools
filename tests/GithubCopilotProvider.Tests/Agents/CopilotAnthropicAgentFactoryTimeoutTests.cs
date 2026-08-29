@@ -44,9 +44,12 @@ public sealed class CopilotAnthropicAgentFactoryTimeoutTests
     // asserts on the REAL client the factory built rather than a re-derived value.
     private static HttpClient HttpClientOf(AnthropicAgent agent)
     {
-        var client = GetPrivateField(agent, "_client")
+        var client =
+            GetPrivateField(agent, "_client")
             ?? throw new InvalidOperationException("AnthropicAgent._client not found.");
-        var httpClient = GetPrivateField(client, "HttpClient") ?? GetPrivateField(client, "_httpClient")
+        var httpClient =
+            GetPrivateField(client, "HttpClient")
+            ?? GetPrivateField(client, "_httpClient")
             ?? throw new InvalidOperationException("AnthropicClient HttpClient not found.");
         return (HttpClient)httpClient;
     }

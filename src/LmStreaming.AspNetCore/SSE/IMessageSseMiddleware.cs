@@ -17,9 +17,7 @@ public sealed class IMessageSseStreamer
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ILogger<IMessageSseStreamer> _logger;
 
-    public IMessageSseStreamer(
-        ILogger<IMessageSseStreamer> logger,
-        IOptions<LmStreamingOptions> options)
+    public IMessageSseStreamer(ILogger<IMessageSseStreamer> logger, IOptions<LmStreamingOptions> options)
     {
         ArgumentNullException.ThrowIfNull(options);
         _logger = logger;
@@ -37,7 +35,8 @@ public sealed class IMessageSseStreamer
     public async Task StreamAsync(
         HttpResponse response,
         IAsyncEnumerable<IMessage> messages,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(response);
 
@@ -56,10 +55,7 @@ public sealed class IMessageSseStreamer
     /// <summary>
     /// Writes a single IMessage as an SSE event.
     /// </summary>
-    public async Task WriteMessageAsync(
-        HttpResponse response,
-        IMessage message,
-        CancellationToken cancellationToken)
+    public async Task WriteMessageAsync(HttpResponse response, IMessage message, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(response);
         ArgumentNullException.ThrowIfNull(message);
@@ -77,10 +73,7 @@ public sealed class IMessageSseStreamer
     /// <summary>
     /// Writes an error message as an SSE event.
     /// </summary>
-    public async Task WriteErrorAsync(
-        HttpResponse response,
-        string error,
-        CancellationToken cancellationToken)
+    public async Task WriteErrorAsync(HttpResponse response, string error, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(response);
 

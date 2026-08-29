@@ -104,10 +104,7 @@ public readonly record struct AgentMessageAdmissionRequest(
 /// <param name="FailureCode">
 /// A code from <see cref="AgentMessageFailureCodes"/> when the message was refused, otherwise null.
 /// </param>
-public readonly record struct AgentMessageAdmissionResult(
-    string? MessageId,
-    string? FailureCode = null
-)
+public readonly record struct AgentMessageAdmissionResult(string? MessageId, string? FailureCode = null)
 {
     /// <summary>Whether the message was admitted.</summary>
     public bool Succeeded => MessageId is not null;
@@ -221,9 +218,7 @@ public sealed record AgentMessageLedgerEntry
 /// </remarks>
 public sealed class AgentMessageLedger
 {
-    private readonly Dictionary<string, AgentMessageLedgerEntry> _entries = new(
-        StringComparer.Ordinal
-    );
+    private readonly Dictionary<string, AgentMessageLedgerEntry> _entries = new(StringComparer.Ordinal);
 
     // Closed entries in the order they closed, so retention is a walk from the front rather than a
     // scan of everything on every admission.
@@ -276,15 +271,9 @@ public sealed class AgentMessageLedger
     /// The target's inbox, obtained from the directory. Null means the target is not registered.
     /// </param>
     /// <returns>The minted identifier, or a content-free refusal code.</returns>
-    public AgentMessageAdmissionResult TryAdmit(
-        AgentMessageAdmissionRequest request,
-        AgentInbox? targetInbox
-    )
+    public AgentMessageAdmissionResult TryAdmit(AgentMessageAdmissionRequest request, AgentInbox? targetInbox)
     {
-        if (
-            string.IsNullOrWhiteSpace(request.FromAgentId)
-            || string.IsNullOrWhiteSpace(request.ToAgentId)
-        )
+        if (string.IsNullOrWhiteSpace(request.FromAgentId) || string.IsNullOrWhiteSpace(request.ToAgentId))
         {
             return new AgentMessageAdmissionResult(null, AgentMessageFailureCodes.InvalidSender);
         }
@@ -321,8 +310,7 @@ public sealed class AgentMessageLedger
             }
 
             var now = _timeProvider.GetUtcNow();
-            var expectsReply =
-                request.MessageType is AgentMessageType.Question or AgentMessageType.DelegateTask;
+            var expectsReply = request.MessageType is AgentMessageType.Question or AgentMessageType.DelegateTask;
 
             _entries[messageId] = new AgentMessageLedgerEntry
             {
@@ -384,11 +372,7 @@ public sealed class AgentMessageLedger
 
             if (!entry.ExpectsReply)
             {
-                _entries[messageId] = entry with
-                {
-                    State = AgentMessageDeliveryState.Delivered,
-                    ClosedAt = now,
-                };
+                _entries[messageId] = entry with { State = AgentMessageDeliveryState.Delivered, ClosedAt = now };
                 _closedOrder.Enqueue(messageId);
                 return true;
             }
@@ -416,13 +400,7 @@ public sealed class AgentMessageLedger
             // Release before closing: an answer that never arrived must leave the question it claimed
             // open, or the responder could never try again and the asker would wait forever.
             SettleCorrelation(entry, delivered: false, now);
-            return Close(
-                messageId,
-                AgentMessageDeliveryState.DeliveryFailed,
-                reasonCode,
-                responseMessageId: null,
-                now
-            );
+            return Close(messageId, AgentMessageDeliveryState.DeliveryFailed, reasonCode, responseMessageId: null, now);
         }
     }
 
@@ -471,21 +449,13 @@ public sealed class AgentMessageLedger
     /// nothing.
     /// </summary>
     /// <remarks>Callers already hold <see cref="_gate"/>.</remarks>
-    private void SettleCorrelation(
-        AgentMessageLedgerEntry reply,
-        bool delivered,
-        DateTimeOffset now
-    )
+    private void SettleCorrelation(AgentMessageLedgerEntry reply, bool delivered, DateTimeOffset now)
     {
         if (
             reply.InResponseTo is not { } original
             || reply.MessageType != AgentMessageType.Response
             || !TryGetOpen(original, out var originalEntry)
-            || !string.Equals(
-                originalEntry.PendingResponseMessageId,
-                reply.MessageId,
-                StringComparison.Ordinal
-            )
+            || !string.Equals(originalEntry.PendingResponseMessageId, reply.MessageId, StringComparison.Ordinal)
         )
         {
             return;
@@ -493,13 +463,7 @@ public sealed class AgentMessageLedger
 
         if (delivered)
         {
-            _ = Close(
-                original,
-                AgentMessageDeliveryState.Answered,
-                reasonCode: null,
-                reply.MessageId,
-                now
-            );
+            _ = Close(original, AgentMessageDeliveryState.Answered, reasonCode: null, reply.MessageId, now);
             return;
         }
 
@@ -519,10 +483,7 @@ public sealed class AgentMessageLedger
     public IReadOnlyList<string> AbandonMessagesFor(string toAgentId, string reasonCode) =>
         string.IsNullOrWhiteSpace(toAgentId)
             ? []
-            : Abandon(
-                entry => string.Equals(entry.ToAgentId, toAgentId, StringComparison.Ordinal),
-                reasonCode
-            );
+            : Abandon(entry => string.Equals(entry.ToAgentId, toAgentId, StringComparison.Ordinal), reasonCode);
 
     /// <summary>
     /// Closes every open message an agent that has left was still owed an answer to.
@@ -548,17 +509,12 @@ public sealed class AgentMessageLedger
         string.IsNullOrWhiteSpace(fromAgentId)
             ? []
             : Abandon(
-                entry =>
-                    entry.ExpectsReply
-                    && string.Equals(entry.FromAgentId, fromAgentId, StringComparison.Ordinal),
+                entry => entry.ExpectsReply && string.Equals(entry.FromAgentId, fromAgentId, StringComparison.Ordinal),
                 reasonCode
             );
 
     /// <summary>Abandons every open entry matching <paramref name="selector"/> under one lock.</summary>
-    private IReadOnlyList<string> Abandon(
-        Func<AgentMessageLedgerEntry, bool> selector,
-        string reasonCode
-    )
+    private IReadOnlyList<string> Abandon(Func<AgentMessageLedgerEntry, bool> selector, string reasonCode)
     {
         lock (_gate)
         {
@@ -570,13 +526,7 @@ public sealed class AgentMessageLedger
 
             foreach (var messageId in affected)
             {
-                _ = Close(
-                    messageId,
-                    AgentMessageDeliveryState.Abandoned,
-                    reasonCode,
-                    responseMessageId: null,
-                    now
-                );
+                _ = Close(messageId, AgentMessageDeliveryState.Abandoned, reasonCode, responseMessageId: null, now);
             }
 
             return affected;
@@ -606,22 +556,16 @@ public sealed class AgentMessageLedger
     /// </remarks>
     public IReadOnlyList<AgentMessageLedgerEntry> GetOpenOutbound(string fromAgentId)
     {
-        return SnapshotOpen(entry =>
-            string.Equals(entry.FromAgentId, fromAgentId, StringComparison.Ordinal)
-        );
+        return SnapshotOpen(entry => string.Equals(entry.FromAgentId, fromAgentId, StringComparison.Ordinal));
     }
 
     /// <summary>What an agent still owes a reply on, oldest first.</summary>
     public IReadOnlyList<AgentMessageLedgerEntry> GetOpenInbound(string toAgentId)
     {
-        return SnapshotOpen(entry =>
-            string.Equals(entry.ToAgentId, toAgentId, StringComparison.Ordinal)
-        );
+        return SnapshotOpen(entry => string.Equals(entry.ToAgentId, toAgentId, StringComparison.Ordinal));
     }
 
-    private IReadOnlyList<AgentMessageLedgerEntry> SnapshotOpen(
-        Func<AgentMessageLedgerEntry, bool> predicate
-    )
+    private IReadOnlyList<AgentMessageLedgerEntry> SnapshotOpen(Func<AgentMessageLedgerEntry, bool> predicate)
     {
         lock (_gate)
         {
@@ -642,9 +586,7 @@ public sealed class AgentMessageLedger
             // A Response and a TaskUpdate only exist relative to something. Admitting one with no
             // correlation would produce a message the receiver cannot place and the ledger cannot
             // settle, so it is refused here rather than delivered as an orphan.
-            return request.MessageType
-                is AgentMessageType.Response
-                    or AgentMessageType.TaskUpdate
+            return request.MessageType is AgentMessageType.Response or AgentMessageType.TaskUpdate
                 ? AgentMessageFailureCodes.MissingCorrelation
                 : null;
         }
@@ -680,10 +622,7 @@ public sealed class AgentMessageLedger
         // for — and, because an update closes nothing, the question could then only ever be closed by
         // the target leaving. Refused at admission rather than recorded and ignored, so the sender is
         // told in time to send an answer instead.
-        if (
-            request.MessageType == AgentMessageType.TaskUpdate
-            && entry.MessageType != AgentMessageType.DelegateTask
-        )
+        if (request.MessageType == AgentMessageType.TaskUpdate && entry.MessageType != AgentMessageType.DelegateTask)
         {
             return AgentMessageFailureCodes.CorrelationNotADelegation;
         }
@@ -693,11 +632,7 @@ public sealed class AgentMessageLedger
 
     private bool TryGetOpen(string messageId, out AgentMessageLedgerEntry entry)
     {
-        if (
-            !string.IsNullOrWhiteSpace(messageId)
-            && _entries.TryGetValue(messageId, out var found)
-            && !found.IsClosed
-        )
+        if (!string.IsNullOrWhiteSpace(messageId) && _entries.TryGetValue(messageId, out var found) && !found.IsClosed)
         {
             entry = found;
             return true;

@@ -70,14 +70,8 @@ public class AgentCollaborationContextTests
     {
         // The whole point of the zero-cost hop: routing work through a controller must not consume a
         // level of the delegation budget that an ordinary spawn would have had.
-        var controller = Root()
-            .CreateChild("agent-ctl", AgentKind.WorkflowController, "controller", "orchestrates");
-        var worker = controller.CreateChild(
-            "agent-w",
-            AgentKind.WorkflowDelegate,
-            "worker",
-            "does the work"
-        );
+        var controller = Root().CreateChild("agent-ctl", AgentKind.WorkflowController, "controller", "orchestrates");
+        var worker = controller.CreateChild("agent-w", AgentKind.WorkflowDelegate, "worker", "does the work");
 
         worker.StructuralDepth.Should().Be(2);
         worker.DelegationDepth.Should().Be(1);
@@ -116,9 +110,7 @@ public class AgentCollaborationContextTests
     {
         // An astral character is two UTF-16 code units but one thing a human reads, so counting code
         // units would silently halve the usable budget for non-Latin text.
-        var maxScalars = string.Concat(
-            Enumerable.Repeat("\U0001F600", AgentCollaborationContext.MaxRoleLength)
-        );
+        var maxScalars = string.Concat(Enumerable.Repeat("\U0001F600", AgentCollaborationContext.MaxRoleLength));
         var oneTooMany = maxScalars + "\U0001F600";
 
         AgentCollaborationContext.IsMetadataValid(maxScalars, "d").Should().BeTrue();

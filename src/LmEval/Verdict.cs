@@ -140,10 +140,7 @@ public sealed record AggregationContext
     /// <param name="reliability">The snapshot to validate.</param>
     /// <param name="paramName">Name of the caller's parameter, for the thrown exception.</param>
     /// <exception cref="ArgumentOutOfRangeException">A weight is NaN or outside [0,1].</exception>
-    internal static void ValidateReliability(
-        IReadOnlyDictionary<string, double> reliability,
-        string paramName
-    )
+    internal static void ValidateReliability(IReadOnlyDictionary<string, double> reliability, string paramName)
     {
         foreach (var entry in reliability)
         {

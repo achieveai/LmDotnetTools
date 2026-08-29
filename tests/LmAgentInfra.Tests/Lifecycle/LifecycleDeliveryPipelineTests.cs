@@ -58,9 +58,7 @@ public sealed class LifecycleDeliveryPipelineTests
         // sequence number either, or the first real delivery would arrive looking like a loss.
         var harness = new Harness();
         harness.Registry.Add(harness.Subscription("sub-a"));
-        harness.Resolver.ResolveWith(lifecycleEvent =>
-            lifecycleEvent.EventId == "unowned" ? null : Harness.OwnerA
-        );
+        harness.Resolver.ResolveWith(lifecycleEvent => lifecycleEvent.EventId == "unowned" ? null : Harness.OwnerA);
 
         await harness.StartAsync();
         await harness.Pipeline.PublishAsync(Event(0, eventId: "unowned"));
@@ -108,9 +106,7 @@ public sealed class LifecycleDeliveryPipelineTests
     public async Task A_subscription_only_receives_the_event_types_it_asked_for()
     {
         var harness = new Harness();
-        harness.Registry.Add(
-            harness.Subscription("sub-a", eventTypes: [LifecycleEventTypes.RunCompleted])
-        );
+        harness.Registry.Add(harness.Subscription("sub-a", eventTypes: [LifecycleEventTypes.RunCompleted]));
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
 
         await harness.StartAsync();
@@ -161,15 +157,17 @@ public sealed class LifecycleDeliveryPipelineTests
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
 
         var firstAttemptHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        harness.Sender.RespondWith(async (attempt, _) =>
-        {
-            if (attempt.Ordinal == 1)
+        harness.Sender.RespondWith(
+            async (attempt, _) =>
             {
-                await firstAttemptHeld.Task;
-            }
+                if (attempt.Ordinal == 1)
+                {
+                    await firstAttemptHeld.Task;
+                }
 
-            return LifecycleDeliveryResult.Succeeded(202);
-        });
+                return LifecycleDeliveryResult.Succeeded(202);
+            }
+        );
 
         await harness.StartAsync();
 
@@ -187,10 +185,7 @@ public sealed class LifecycleDeliveryPipelineTests
         await harness.StopAsync();
 
         harness.Pipeline.QueueDropCount.Should().Be(1);
-        harness
-            .SequencesFor("sub-a")
-            .Should()
-            .Equal([1L, 2L, 4L], "the dropped delivery burned 3");
+        harness.SequencesFor("sub-a").Should().Equal([1L, 2L, 4L], "the dropped delivery burned 3");
     }
 
     [Fact]
@@ -226,9 +221,7 @@ public sealed class LifecycleDeliveryPipelineTests
         });
         harness.Registry.Add(harness.Subscription("sub-a"));
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
-        harness.Sender.RespondWith((_, _) =>
-            Task.FromResult(LifecycleDeliveryResult.Retryable("http_status", 503))
-        );
+        harness.Sender.RespondWith((_, _) => Task.FromResult(LifecycleDeliveryResult.Retryable("http_status", 503)));
 
         await harness.StartAsync();
         await harness.Pipeline.PublishAsync(Event(0));
@@ -263,10 +256,8 @@ public sealed class LifecycleDeliveryPipelineTests
         });
         harness.Registry.Add(harness.Subscription("sub-a"));
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
-        harness.Sender.RespondWith((_, _) =>
-            Task.FromResult(
-                LifecycleDeliveryResult.Retryable("http_status", 429, TimeSpan.FromHours(1))
-            )
+        harness.Sender.RespondWith(
+            (_, _) => Task.FromResult(LifecycleDeliveryResult.Retryable("http_status", 429, TimeSpan.FromHours(1)))
         );
 
         await harness.StartAsync();
@@ -289,9 +280,7 @@ public sealed class LifecycleDeliveryPipelineTests
         var harness = new Harness(options => options.MaxAttempts = 4);
         harness.Registry.Add(harness.Subscription("sub-a"));
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
-        harness.Sender.RespondWith((_, _) =>
-            Task.FromResult(LifecycleDeliveryResult.Permanent("http_status", 400))
-        );
+        harness.Sender.RespondWith((_, _) => Task.FromResult(LifecycleDeliveryResult.Permanent("http_status", 400)));
 
         await harness.StartAsync();
         await harness.Pipeline.PublishAsync(Event(0));
@@ -299,9 +288,7 @@ public sealed class LifecycleDeliveryPipelineTests
         harness.Clock.Advance(TimeSpan.FromMinutes(10));
         await harness.StopAsync();
 
-        harness
-            .Sender.Attempts.Should()
-            .HaveCount(1, "repeating a rejected request only repeats the rejection");
+        harness.Sender.Attempts.Should().HaveCount(1, "repeating a rejected request only repeats the rejection");
     }
 
     [Fact]
@@ -317,12 +304,13 @@ public sealed class LifecycleDeliveryPipelineTests
         });
         harness.Registry.Add(harness.Subscription("sub-a"));
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
-        harness.Sender.RespondWith((attempt, _) =>
-            Task.FromResult(
-                attempt.Ordinal == 1
-                    ? LifecycleDeliveryResult.Retryable("http_status", 503)
-                    : LifecycleDeliveryResult.Succeeded(202)
-            )
+        harness.Sender.RespondWith(
+            (attempt, _) =>
+                Task.FromResult(
+                    attempt.Ordinal == 1
+                        ? LifecycleDeliveryResult.Retryable("http_status", 503)
+                        : LifecycleDeliveryResult.Succeeded(202)
+                )
         );
 
         await harness.StartAsync();
@@ -345,12 +333,13 @@ public sealed class LifecycleDeliveryPipelineTests
         harness.Registry.Add(harness.Subscription("sub-gone"));
         harness.Registry.Add(harness.Subscription("sub-healthy"));
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
-        harness.Sender.RespondWith((attempt, _) =>
-            Task.FromResult(
-                attempt.SubscriptionId == "sub-gone"
-                    ? LifecycleDeliveryResult.Gone(410)
-                    : LifecycleDeliveryResult.Succeeded(202)
-            )
+        harness.Sender.RespondWith(
+            (attempt, _) =>
+                Task.FromResult(
+                    attempt.SubscriptionId == "sub-gone"
+                        ? LifecycleDeliveryResult.Gone(410)
+                        : LifecycleDeliveryResult.Succeeded(202)
+                )
         );
 
         await harness.StartAsync();
@@ -376,12 +365,13 @@ public sealed class LifecycleDeliveryPipelineTests
         harness.Registry.Add(harness.Subscription("sub-broken"));
         harness.Registry.Add(harness.Subscription("sub-healthy"));
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
-        harness.Sender.RespondWith((attempt, _) =>
-            Task.FromResult(
-                attempt.SubscriptionId == "sub-broken"
-                    ? LifecycleDeliveryResult.Permanent("http_status", 400)
-                    : LifecycleDeliveryResult.Succeeded(202)
-            )
+        harness.Sender.RespondWith(
+            (attempt, _) =>
+                Task.FromResult(
+                    attempt.SubscriptionId == "sub-broken"
+                        ? LifecycleDeliveryResult.Permanent("http_status", 400)
+                        : LifecycleDeliveryResult.Succeeded(202)
+                )
         );
 
         await harness.StartAsync();
@@ -429,10 +419,7 @@ public sealed class LifecycleDeliveryPipelineTests
         await harness.Pipeline.PublishAsync(Event(3));
         await harness.StopAsync();
 
-        harness
-            .SequencesFor("sub-a")
-            .Should()
-            .Equal([1L, 4L], "the two refused deliveries burned 2 and 3");
+        harness.SequencesFor("sub-a").Should().Equal([1L, 4L], "the two refused deliveries burned 2 and 3");
         harness.Pipeline.QueueDropCount.Should().Be(2);
         harness.Pipeline.QuarantineCount.Should().Be(0);
     }
@@ -449,9 +436,7 @@ public sealed class LifecycleDeliveryPipelineTests
         });
         harness.Registry.Add(harness.Subscription("sub-a"));
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
-        harness.Sender.RespondWith((_, _) =>
-            Task.FromResult(LifecycleDeliveryResult.Retryable("http_status", 503))
-        );
+        harness.Sender.RespondWith((_, _) => Task.FromResult(LifecycleDeliveryResult.Retryable("http_status", 503)));
 
         await harness.StartAsync();
         await harness.Pipeline.PublishAsync(Event(0));
@@ -564,9 +549,7 @@ public sealed class LifecycleDeliveryPipelineTests
         var harness = new Harness(options => options.QuarantineCooloff = TimeSpan.FromMinutes(15));
         var callback = new Uri($"https://{Harness.CallbackHost}/hook");
         harness.Registry.Add(harness.Subscription("sub-a", callbackUri: callback));
-        harness.Registry.Add(
-            harness.Subscription("sub-b", owner: Harness.OwnerB, callbackUri: callback)
-        );
+        harness.Registry.Add(harness.Subscription("sub-b", owner: Harness.OwnerB, callbackUri: callback));
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
         harness.Sender.RespondWith((_, _) => Task.FromResult(LifecycleDeliveryResult.Gone(410)));
 
@@ -591,10 +574,7 @@ public sealed class LifecycleDeliveryPipelineTests
         // string; keying on the host alone would let one dead port retire a healthy service.
         var harness = new Harness(options => options.QuarantineCooloff = TimeSpan.FromMinutes(15));
         harness.Registry.Add(
-            harness.Subscription(
-                "sub-dead",
-                callbackUri: new Uri($"https://{Harness.CallbackHost}/hook?tenant=1")
-            )
+            harness.Subscription("sub-dead", callbackUri: new Uri($"https://{Harness.CallbackHost}/hook?tenant=1"))
         );
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
         harness.Sender.RespondWith((_, _) => Task.FromResult(LifecycleDeliveryResult.Gone(410)));
@@ -612,10 +592,7 @@ public sealed class LifecycleDeliveryPipelineTests
             )
         );
         harness.Registry.Add(
-            harness.Subscription(
-                "sub-other-port",
-                callbackUri: new Uri($"https://{Harness.CallbackHost}:8443/hook")
-            )
+            harness.Subscription("sub-other-port", callbackUri: new Uri($"https://{Harness.CallbackHost}:8443/hook"))
         );
 
         await harness.Pipeline.PublishAsync(Event(1));
@@ -641,9 +618,7 @@ public sealed class LifecycleDeliveryPipelineTests
             options.AllowedCallbackHosts = [Unicode, Punycode];
             options.QuarantineCooloff = TimeSpan.FromMinutes(15);
         });
-        harness.Registry.Add(
-            harness.Subscription("sub-unicode", callbackUri: new Uri($"https://{Unicode}/hook"))
-        );
+        harness.Registry.Add(harness.Subscription("sub-unicode", callbackUri: new Uri($"https://{Unicode}/hook")));
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
         harness.Sender.RespondWith((_, _) => Task.FromResult(LifecycleDeliveryResult.Gone(410)));
 
@@ -653,9 +628,7 @@ public sealed class LifecycleDeliveryPipelineTests
 
         harness.Sender.RespondWith((_, _) => Task.FromResult(LifecycleDeliveryResult.Succeeded(202)));
         harness.Registry.Remove("sub-unicode");
-        harness.Registry.Add(
-            harness.Subscription("sub-punycode", callbackUri: new Uri($"https://{Punycode}/hook"))
-        );
+        harness.Registry.Add(harness.Subscription("sub-punycode", callbackUri: new Uri($"https://{Punycode}/hook")));
 
         await harness.Pipeline.PublishAsync(Event(1));
         await harness.StopAsync();
@@ -697,11 +670,13 @@ public sealed class LifecycleDeliveryPipelineTests
         var harness = new Harness(options => options.ShutdownDrainTimeout = TimeSpan.FromSeconds(5));
         harness.Registry.Add(harness.Subscription("sub-hung"));
         harness.Resolver.ResolveWith(_ => Harness.OwnerA);
-        harness.Sender.RespondWith(async (_, cancellationToken) =>
-        {
-            await Task.Delay(Timeout.Infinite, cancellationToken);
-            return LifecycleDeliveryResult.Succeeded(202);
-        });
+        harness.Sender.RespondWith(
+            async (_, cancellationToken) =>
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+                return LifecycleDeliveryResult.Succeeded(202);
+            }
+        );
 
         await harness.StartAsync();
         await harness.Pipeline.PublishAsync(Event(0));
@@ -716,11 +691,7 @@ public sealed class LifecycleDeliveryPipelineTests
         await stop;
     }
 
-    private static LifecycleEventEnvelope Event(
-        int sequence,
-        string? eventId = null,
-        string? eventType = null
-    ) =>
+    private static LifecycleEventEnvelope Event(int sequence, string? eventId = null, string? eventType = null) =>
         new()
         {
             EventId = eventId ?? $"evt-{sequence}",
@@ -834,9 +805,7 @@ public sealed class LifecycleDeliveryPipelineTests
             [
                 .. Sender
                     .Attempts.Where(attempt => attempt.SubscriptionId == subscriptionId)
-                    .Select(attempt =>
-                        LifecycleSerializer.DeserializeDelivery(attempt.Body).DeliverySequence
-                    ),
+                    .Select(attempt => LifecycleSerializer.DeserializeDelivery(attempt.Body).DeliverySequence),
             ];
 
         /// <summary>
@@ -889,8 +858,7 @@ public sealed class LifecycleDeliveryPipelineTests
         private Func<LifecycleEventEnvelope, LifecycleOwnerKey?> _resolve = _ => null;
         private int _resolutions;
 
-        internal void ResolveWith(Func<LifecycleEventEnvelope, LifecycleOwnerKey?> resolve) =>
-            _resolve = resolve;
+        internal void ResolveWith(Func<LifecycleEventEnvelope, LifecycleOwnerKey?> resolve) => _resolve = resolve;
 
         /// <summary>
         /// Completes once the pump has begun dispatching <paramref name="count"/> events. Because the
@@ -961,21 +929,13 @@ public sealed class LifecycleDeliveryPipelineTests
             }
         }
 
-        public bool TryGet(
-            LifecycleOwnerKey owner,
-            string subscriptionId,
-            out LifecycleSubscription? subscription
-        )
+        public bool TryGet(LifecycleOwnerKey owner, string subscriptionId, out LifecycleSubscription? subscription)
         {
             lock (_sync)
             {
                 subscription = _subscriptions.FirstOrDefault(candidate =>
                     candidate.Owner == owner
-                    && string.Equals(
-                        candidate.SubscriptionId,
-                        subscriptionId,
-                        StringComparison.Ordinal
-                    )
+                    && string.Equals(candidate.SubscriptionId, subscriptionId, StringComparison.Ordinal)
                 );
             }
 
@@ -994,17 +954,11 @@ public sealed class LifecycleDeliveryPipelineTests
         public void RevokePreviousKey(LifecycleOwnerKey owner, string subscriptionId) =>
             throw new NotSupportedException();
 
-        public void Unregister(LifecycleOwnerKey owner, string subscriptionId) =>
-            throw new NotSupportedException();
+        public void Unregister(LifecycleOwnerKey owner, string subscriptionId) => throw new NotSupportedException();
     }
 
     /// <summary>One recorded delivery attempt, captured exactly as the pipeline handed it over.</summary>
-    internal sealed record RecordedAttempt(
-        int Ordinal,
-        string SubscriptionId,
-        string DeliveryId,
-        byte[] Body
-    );
+    internal sealed record RecordedAttempt(int Ordinal, string SubscriptionId, string DeliveryId, byte[] Body);
 
     /// <summary>A sender whose answers the test dictates and whose attempts the test can wait on.</summary>
     private sealed class RecordingSender : ILifecycleDeliverySender
@@ -1013,12 +967,11 @@ public sealed class LifecycleDeliveryPipelineTests
         private readonly List<RecordedAttempt> _attempts = [];
         private readonly Lock _sync = new();
 
-        private Func<RecordedAttempt, CancellationToken, Task<LifecycleDeliveryResult>> _respond =
-            (_, _) => Task.FromResult(LifecycleDeliveryResult.Succeeded(202));
+        private Func<RecordedAttempt, CancellationToken, Task<LifecycleDeliveryResult>> _respond = (_, _) =>
+            Task.FromResult(LifecycleDeliveryResult.Succeeded(202));
 
-        internal void RespondWith(
-            Func<RecordedAttempt, CancellationToken, Task<LifecycleDeliveryResult>> respond
-        ) => _respond = respond;
+        internal void RespondWith(Func<RecordedAttempt, CancellationToken, Task<LifecycleDeliveryResult>> respond) =>
+            _respond = respond;
 
         internal IReadOnlyList<RecordedAttempt> Attempts
         {
@@ -1066,7 +1019,6 @@ public sealed class LifecycleDeliveryPipelineTests
             return _respond(attempt, cancellationToken);
         }
     }
-
 }
 
 /// <summary>
@@ -1100,11 +1052,7 @@ public sealed class HttpLifecycleDeliverySenderTests
         handler
             .RequestHeaderNames.Should()
             .BeEquivalentTo(
-                [
-                    WebhookHeaderNames.Signature,
-                    WebhookHeaderNames.Timestamp,
-                    WebhookHeaderNames.DeliveryId,
-                ],
+                [WebhookHeaderNames.Signature, WebhookHeaderNames.Timestamp, WebhookHeaderNames.DeliveryId],
                 "the delivery carries its own signature and nothing the host was holding"
             );
         handler.ContentHeaderNames.Should().BeEquivalentTo(["Content-Type"]);
@@ -1145,12 +1093,7 @@ public sealed class HttpLifecycleDeliverySenderTests
             NullLogger<HttpLifecycleDeliverySender>.Instance
         );
 
-        var result = await sender.SendAsync(
-            Subscription(),
-            "delivery-1",
-            Body,
-            CancellationToken.None
-        );
+        var result = await sender.SendAsync(Subscription(), "delivery-1", Body, CancellationToken.None);
 
         result.Outcome.Should().Be(expected);
     }
@@ -1158,22 +1101,14 @@ public sealed class HttpLifecycleDeliverySenderTests
     [Fact]
     public async Task A_retry_after_header_is_surfaced_for_the_pipeline_to_clamp()
     {
-        var handler = new RecordingHandler(HttpStatusCode.TooManyRequests)
-        {
-            RetryAfterSeconds = 3600,
-        };
+        var handler = new RecordingHandler(HttpStatusCode.TooManyRequests) { RetryAfterSeconds = 3600 };
         using var sender = new HttpLifecycleDeliverySender(
             new HttpClient(handler),
             new ManualTimeProvider(Now),
             NullLogger<HttpLifecycleDeliverySender>.Instance
         );
 
-        var result = await sender.SendAsync(
-            Subscription(),
-            "delivery-1",
-            Body,
-            CancellationToken.None
-        );
+        var result = await sender.SendAsync(Subscription(), "delivery-1", Body, CancellationToken.None);
 
         // Reported verbatim. Deciding what to do about an hour-long hint is the pipeline's job, not
         // the transport's.
@@ -1211,10 +1146,7 @@ public sealed class HttpLifecycleDeliverySenderTests
         {
             RequestHeaderNames = [.. request.Headers.Select(header => header.Key)];
             ContentHeaderNames = [.. request.Content!.Headers.Select(header => header.Key)];
-            DeliveryIdHeader = request.Headers.TryGetValues(
-                WebhookHeaderNames.DeliveryId,
-                out var values
-            )
+            DeliveryIdHeader = request.Headers.TryGetValues(WebhookHeaderNames.DeliveryId, out var values)
                 ? values.Single()
                 : null;
             SentBody = await request.Content.ReadAsByteArrayAsync(cancellationToken);

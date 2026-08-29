@@ -25,7 +25,8 @@ public sealed class DeveloperLearningsRendererTests
             [],
             new Dictionary<string, PatternProse>(StringComparer.Ordinal),
             LearningsThresholds.Defaults,
-            Now);
+            Now
+        );
 
     private static PatternStanding Standing(
         string patternId,
@@ -35,7 +36,8 @@ public sealed class DeveloperLearningsRendererTests
         double luck = 0.01,
         int cleanStreak = 4,
         int occurrences = 3,
-        int exposedInWindow = 8) =>
+        int exposedInWindow = 8
+    ) =>
         new(
             PatternId: patternId,
             Dimension: ExceptionDim,
@@ -50,7 +52,8 @@ public sealed class DeveloperLearningsRendererTests
             FirstSeenUtc: "2026-01-05T00:00:00Z",
             LastSeenUtc: "2026-02-09T00:00:00Z",
             RegressedAtUtc: regressed ? "2026-02-09T00:00:00Z" : null,
-            StreakBrokenAt: regressed ? 7 : null);
+            StreakBrokenAt: regressed ? 7 : null
+        );
 
     private static PatternView Pattern(
         string patternId,
@@ -60,24 +63,28 @@ public sealed class DeveloperLearningsRendererTests
         double luck = 0.01,
         int cleanStreak = 4,
         string? howToAvoid = null,
-        TrendDirection trend = TrendDirection.InsufficientData) =>
+        TrendDirection trend = TrendDirection.InsufficientData
+    ) =>
         new(
             Standing(patternId, state, regressed, provisional, luck, cleanStreak),
             new PatternProse(
                 "Title for " + patternId,
                 "What " + patternId + " is.",
                 "Why " + patternId + " matters.",
-                howToAvoid ?? ("Avoid " + patternId + ".")),
+                howToAvoid ?? ("Avoid " + patternId + ".")
+            ),
             trend == TrendDirection.InsufficientData
                 ? new PatternTrend(trend, null, null, 3, 1)
                 : new PatternTrend(trend, 0.25, 0.5, 10, 10),
-            [new PatternSighting("azure-devops/o/r/p/5001", "2026-01-05T00:00:00Z", "MEDIUM", "src/Foo.cs:42")]);
+            [new PatternSighting("azure-devops/o/r/p/5001", "2026-01-05T00:00:00Z", "MEDIUM", "src/Foo.cs:42")]
+        );
 
     private static DeveloperLearningsView View(
         IReadOnlyList<PatternView> patterns,
         string slug = Slug,
         string? lastObserved = "2026-02-09T00:00:00Z",
-        int observations = 12) =>
+        int observations = 12
+    ) =>
         new(
             slug,
             DeveloperLearningsView.Iso(Now),
@@ -86,7 +93,8 @@ public sealed class DeveloperLearningsRendererTests
             lastObserved,
             patterns,
             [new DimensionTrend(ExceptionDim, [new DimensionWindow(ExceptionDim, 10, 4, 0.4, false)])],
-            LearningsThresholds.Defaults);
+            LearningsThresholds.Defaults
+        );
 
     [Fact]
     public void Every_profile_section_prints_for_a_developer_with_nothing_recorded()
@@ -95,7 +103,8 @@ public sealed class DeveloperLearningsRendererTests
         // different facts, and only one of them means the daemon failed to write something.
         var profile = DeveloperLearningsRenderer.RenderProfile(Empty());
 
-        _ = profile.Should()
+        _ = profile
+            .Should()
             .Contain("## Snapshot")
             .And.Contain("## Regressions")
             .And.Contain("## Active patterns")
@@ -103,7 +112,8 @@ public sealed class DeveloperLearningsRendererTests
             .And.Contain("## Resolved")
             .And.Contain("## Unjudgeable")
             .And.Contain("## Provenance");
-        _ = profile.Should()
+        _ = profile
+            .Should()
             .Contain("_No pattern has come back after resolving._")
             .And.Contain("_No active patterns._")
             .And.Contain("_No patterns are on watch._")
@@ -117,12 +127,14 @@ public sealed class DeveloperLearningsRendererTests
     {
         var progress = DeveloperLearningsRenderer.RenderProgress(Empty());
 
-        _ = progress.Should()
+        _ = progress
+            .Should()
             .Contain("## 1. Resolved")
             .And.Contain("## 2. Regressed after resolution")
             .And.Contain("## 3. Trend")
             .And.Contain("## 4. Not enough exposure to judge");
-        progress.Should()
+        progress
+            .Should()
             .Contain("_No pattern has resolved yet._")
             .And.Contain("_No resolved pattern has come back._")
             .And.Contain("_No specialist has completed on any of this developer's PRs._")
@@ -172,7 +184,8 @@ public sealed class DeveloperLearningsRendererTests
         Skip.If(
             CommaLocaleUnavailable,
             "invariant globalization: no locale on this runtime can produce a decimal comma, so this "
-                + "assertion could not fail and a pass would mean nothing");
+                + "assertion could not fail and a pass would mean nothing"
+        );
 
         var previous = CultureInfo.CurrentCulture;
         try
@@ -206,7 +219,8 @@ public sealed class DeveloperLearningsRendererTests
                 return string.Equals(
                     CultureInfo.GetCultureInfo("de-DE").NumberFormat.NumberDecimalSeparator,
                     CultureInfo.InvariantCulture.NumberFormat.NumberDecimalSeparator,
-                    StringComparison.Ordinal);
+                    StringComparison.Ordinal
+                );
             }
             catch (CultureNotFoundException)
             {
@@ -264,10 +278,7 @@ public sealed class DeveloperLearningsRendererTests
 
         _ = profile.Should().Contain("| Resolved (confirmed) | 0 |");
         _ = profile.Should().Contain("| Resolved (provisional) | 1 |");
-        DeveloperLearningsRenderer
-            .RenderProgress(view)
-            .Should()
-            .Contain("yes — cohort drop in this dimension");
+        DeveloperLearningsRenderer.RenderProgress(view).Should().Contain("yes — cohort drop in this dimension");
     }
 
     [Fact]
@@ -325,14 +336,13 @@ public sealed class DeveloperLearningsRendererTests
     [Fact]
     public void The_checklist_carries_at_most_five_patterns()
     {
-        var patterns = Enumerable
-            .Range(0, 12)
-            .Select(i => Pattern("pattern-" + i, PatternState.Active))
-            .ToArray();
+        var patterns = Enumerable.Range(0, 12).Select(i => Pattern("pattern-" + i, PatternState.Active)).ToArray();
 
         var checklist = DeveloperLearningsRenderer.RenderChecklist(View(patterns));
 
-        _ = checklist.Split('\n').Count(l => l.StartsWith("- **", StringComparison.Ordinal))
+        _ = checklist
+            .Split('\n')
+            .Count(l => l.StartsWith("- **", StringComparison.Ordinal))
             .Should()
             .Be(DeveloperLearningsRenderer.MaxChecklistPatterns);
         checklist.Should().Contain("Top 5 of 12 active patterns");
@@ -345,17 +355,20 @@ public sealed class DeveloperLearningsRendererTests
             Standing("quiet", PatternState.Active, cleanStreak: 9),
             new PatternProse("Quiet", "…", "…", "Avoid quiet."),
             new PatternTrend(TrendDirection.InsufficientData, null, null, 0, 0),
-            []);
+            []
+        );
         var recent = new PatternView(
             Standing("recent", PatternState.Active, cleanStreak: 0),
             new PatternProse("Recent", "…", "…", "Avoid recent."),
             new PatternTrend(TrendDirection.InsufficientData, null, null, 0, 0),
-            []);
+            []
+        );
 
         var checklist = DeveloperLearningsRenderer.RenderChecklist(View([quiet, recent]));
 
         _ = checklist.Should().Contain("ranked by rate ÷ (1 + clean streak in exposed PRs)");
-        checklist.IndexOf("Recent", StringComparison.Ordinal)
+        checklist
+            .IndexOf("Recent", StringComparison.Ordinal)
             .Should()
             .BeLessThan(checklist.IndexOf("Quiet", StringComparison.Ordinal));
     }
@@ -367,11 +380,10 @@ public sealed class DeveloperLearningsRendererTests
         // 1745-test suite. Every renderer test up to that point had an EMPTY Watch and Unjudgeable list, so
         // the populated path — two profile sections and the whole of progress §4 — was never rendered once.
         // The visible failure would have been a heading with nothing under it on a named person's file.
-        var view = View(
-            [
-                Pattern("on-watch", PatternState.Watch),
-                Pattern("stale-dimension", PatternState.Unjudgeable),
-            ]);
+        var view = View([
+            Pattern("on-watch", PatternState.Watch),
+            Pattern("stale-dimension", PatternState.Unjudgeable),
+        ]);
 
         var profile = DeveloperLearningsRenderer.RenderProfile(view);
         var watchAt = profile.IndexOf("## Watch", StringComparison.Ordinal);
@@ -404,15 +416,18 @@ public sealed class DeveloperLearningsRendererTests
         var busyButOld = View(
             [.. Enumerable.Range(0, 9).Select(i => Pattern("p" + i, PatternState.Active))],
             slug: "aaa-older-000000000000",
-            lastObserved: "2026-01-02T00:00:00Z");
+            lastObserved: "2026-01-02T00:00:00Z"
+        );
         var quietButRecent = View(
             [Pattern("p", PatternState.Active)],
             slug: "zzz-newer-000000000000",
-            lastObserved: "2026-03-02T00:00:00Z");
+            lastObserved: "2026-03-02T00:00:00Z"
+        );
 
         var index = DeveloperLearningsRenderer.RenderIndex([busyButOld, quietButRecent], Now);
 
-        index.IndexOf("zzz-newer", StringComparison.Ordinal)
+        index
+            .IndexOf("zzz-newer", StringComparison.Ordinal)
             .Should()
             .BeLessThan(index.IndexOf("aaa-older", StringComparison.Ordinal));
     }

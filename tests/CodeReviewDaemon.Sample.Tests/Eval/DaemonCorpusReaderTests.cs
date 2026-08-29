@@ -128,8 +128,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         return page.Snapshot!;
     }
 
-    private DaemonCorpusReader Reader(ModelFamilyResolver? resolver = null) =>
-        new(_store, resolver ?? (_ => null));
+    private DaemonCorpusReader Reader(ModelFamilyResolver? resolver = null) => new(_store, resolver ?? (_ => null));
 
     [Fact]
     public async Task A_recorded_review_is_paired_with_the_input_it_answered()
@@ -215,10 +214,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
 
         var snapshot = await SnapshotAsync(Reader());
 
-        Assert.Single(snapshot.Items)
-            .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
-            .Should()
-            .BeEmpty();
+        Assert.Single(snapshot.Items).Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey].Should().BeEmpty();
     }
 
     /// <summary>
@@ -352,9 +348,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         // resolver answers reaches the candidate, which is the reader's job. Re-deriving a family here
         // would test the resolver instead — that lives in ModelFamilyTests — and would leave a second
         // copy of a family rule in the tree, which is the defect #456 closed.
-        var snapshot = await SnapshotAsync(
-            Reader(modelId => modelId == "openai/gpt-5" ? "openai" : null)
-        );
+        var snapshot = await SnapshotAsync(Reader(modelId => modelId == "openai/gpt-5" ? "openai" : null));
 
         Assert.Single(snapshot.Items).GeneratorFamily.Should().Be("openai");
     }
@@ -419,9 +413,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddContext(runId, "a diff");
         AddReview(runId, "a review");
 
-        var snapshot = await SnapshotAsync(
-            Reader(modelId => modelId == "gpt-5.6-luna" ? "seeded-family" : null)
-        );
+        var snapshot = await SnapshotAsync(Reader(modelId => modelId == "gpt-5.6-luna" ? "seeded-family" : null));
 
         var candidate = Assert.Single(snapshot.Items);
         candidate.ModelId.Should().Be("gpt-5.6-luna");
@@ -439,9 +431,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddReview(runId, "a review");
         AddLifecycleCheckpoint(runId, modelId: null);
 
-        Assert.Single((await SnapshotAsync(Reader())).Items)
-            .ModelId.Should()
-            .Be("gpt-5.6-luna");
+        Assert.Single((await SnapshotAsync(Reader())).Items).ModelId.Should().Be("gpt-5.6-luna");
     }
 
     [Fact]
@@ -480,9 +470,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddReview(runId, "a review");
         AddLifecycleCheckpoint(runId, "   ");
 
-        Assert.Single((await SnapshotAsync(Reader())).Items)
-            .ModelId.Should()
-            .Be("gpt-5.6-luna");
+        Assert.Single((await SnapshotAsync(Reader())).Items).ModelId.Should().Be("gpt-5.6-luna");
     }
 
     [Fact]
@@ -497,9 +485,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddLifecycleCheckpoint(runId, "gpt-5.6-luna");
         AddLifecycleCheckpoint(runId, "gpt-5.6-terra");
 
-        Assert.Single((await SnapshotAsync(Reader())).Items)
-            .ModelId.Should()
-            .Be("gpt-5.6-terra");
+        Assert.Single((await SnapshotAsync(Reader())).Items).ModelId.Should().Be("gpt-5.6-terra");
     }
 
     [Fact]
@@ -520,10 +506,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
 
         var snapshot = await SnapshotAsync(Reader());
 
-        snapshot
-            .Items.Single(c => c.VariantId == "primary")
-            .ModelId.Should()
-            .Be("gpt-5.6-terra");
+        snapshot.Items.Single(c => c.VariantId == "primary").ModelId.Should().Be("gpt-5.6-terra");
         snapshot.Items.Single(c => c.VariantId == "b").ModelId.Should().Be("claude-haiku-4.5");
     }
 
@@ -628,11 +611,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
             ids.Add(id);
         }
 
-        var page = await LoadAsync(
-            new DaemonCorpusReader(_store, _ => "openai"),
-            afterCursor: ids[1],
-            limit: 10
-        );
+        var page = await LoadAsync(new DaemonCorpusReader(_store, _ => "openai"), afterCursor: ids[1], limit: 10);
 
         page.Snapshot.Should().NotBeNull();
         page.Snapshot!.Items.Select(i => i.CandidateId)
@@ -640,9 +619,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
             .BeEquivalentTo([$"{ids[2]}:primary", $"{ids[3]}:primary"]);
 
         page.Truncated.Should().BeFalse("the window reached the end of the history");
-        page.NextCursor
-            .Should()
-            .Be(ids[3], "the caller must be told the edge it reached, not left to derive it");
+        page.NextCursor.Should().Be(ids[3], "the caller must be told the edge it reached, not left to derive it");
     }
 
     /// <summary>
@@ -662,16 +639,11 @@ public sealed class DaemonCorpusReaderTests : IDisposable
 
         var logger = new CapturingLogger<DaemonCorpusReader>();
 
-        var page = await LoadAsync(
-            new DaemonCorpusReader(_store, _ => "openai", logger),
-            limit: 2
-        );
+        var page = await LoadAsync(new DaemonCorpusReader(_store, _ => "openai", logger), limit: 2);
 
         page.Snapshot.Should().NotBeNull();
         page.Snapshot!.Size.Should().Be(2);
-        page.Truncated
-            .Should()
-            .BeTrue("truncation is returned to the caller, not only written to a log nobody reads");
+        page.Truncated.Should().BeTrue("truncation is returned to the caller, not only written to a log nobody reads");
         logger.CountAtLevel(LogLevel.Warning, "did not reach the end").Should().Be(1);
     }
 
@@ -726,9 +698,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
 
         page.Snapshot.Should().NotBeNull();
         page.Snapshot!.Size.Should().Be(1, "only one run formed a pair");
-        page.NextCursor
-            .Should()
-            .Be(orphan, "the reader reached the orphan and will learn nothing new from it");
+        page.NextCursor.Should().Be(orphan, "the reader reached the orphan and will learn nothing new from it");
     }
 
     /// <summary>
@@ -751,8 +721,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         var page = await LoadAsync(Reader());
 
         page.Snapshot.Should().BeNull("no run in the window formed a pair");
-        page.NextCursor
-            .Should()
+        page.NextCursor.Should()
             .Be(
                 lastOrphan,
                 "the reader read both runs and will learn nothing new from either; leaving the "
@@ -824,9 +793,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
 
         page.Snapshot.Should().NotBeNull();
         page.Snapshot!.Size.Should().Be(3, "the window still yields every run it was asked for");
-        page.Truncated
-            .Should()
-            .BeFalse("the history ended at the limit; it did not continue past it");
+        page.Truncated.Should().BeFalse("the history ended at the limit; it did not continue past it");
         logger.CountAtLevel(LogLevel.Warning, "did not reach the end").Should().Be(0);
     }
 
@@ -871,9 +838,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     {
         var reader = Reader();
 
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
-            () => LoadAsync(reader, afterCursor: -1)
-        );
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => LoadAsync(reader, afterCursor: -1));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => LoadAsync(reader, limit: 0));
     }
 }

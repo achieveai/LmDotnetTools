@@ -90,7 +90,8 @@ public sealed class ConversationAuthorizer
         IResourceAccessPolicy policy,
         IResourceGrantStore grants,
         IEnforcementGate enforcement,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider
+    )
     {
         ArgumentNullException.ThrowIfNull(principalAccessor);
         ArgumentNullException.ThrowIfNull(policy);
@@ -119,8 +120,7 @@ public sealed class ConversationAuthorizer
 
     /// <summary>Addresses one conversation as a policy resource.</summary>
     /// <param name="threadId">The conversation's id.</param>
-    public static ResourceRef ConversationRef(string threadId) =>
-        new(ResourceTypes.Conversation, threadId);
+    public static ResourceRef ConversationRef(string threadId) => new(ResourceTypes.Conversation, threadId);
 
     /// <summary>
     /// Decides one action on one conversation.
@@ -136,7 +136,8 @@ public sealed class ConversationAuthorizer
         string threadId,
         ThreadMetadata? metadata,
         AccessAction action,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
 
@@ -177,14 +178,13 @@ public sealed class ConversationAuthorizer
             Visibility = metadata.Visibility ?? Visibility.Private,
         };
 
-        var decision = await _policy
-            .EvaluateAsync(principal, descriptor, action, ct)
-            .ConfigureAwait(false);
+        var decision = await _policy.EvaluateAsync(principal, descriptor, action, ct).ConfigureAwait(false);
 
         return new ConversationAccessResult(
             decision.Allowed,
             decision.Reason,
-            !decision.Allowed && ExistenceHidingReasons.Contains(decision.Reason));
+            !decision.Allowed && ExistenceHidingReasons.Contains(decision.Reason)
+        );
     }
 
     /// <summary>
@@ -234,14 +234,16 @@ public sealed class ConversationAuthorizer
         Principal principal,
         string threadId,
         ThreadMetadata? metadata,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (principal.EffectiveUserId is not { } user)
         {
             return;
         }
 
-        var policyWillLookUp = metadata?.TenantId is not null
+        var policyWillLookUp =
+            metadata?.TenantId is not null
             && string.Equals(metadata.TenantId, principal.TenantId, StringComparison.Ordinal);
 
         if (policyWillLookUp)
@@ -253,12 +255,7 @@ public sealed class ConversationAuthorizer
         // have issued, which is the whole point; issuing it against another tenant would both cost
         // differently and read another tenant's registry for no reason.
         _ = await _grants
-            .FindGrantAsync(
-                principal.TenantId,
-                ConversationRef(threadId),
-                user,
-                _timeProvider.GetUtcNow(),
-                ct)
+            .FindGrantAsync(principal.TenantId, ConversationRef(threadId), user, _timeProvider.GetUtcNow(), ct)
             .ConfigureAwait(false);
     }
 
@@ -296,7 +293,8 @@ public sealed class ConversationAuthorizer
                     user,
                     ResourceTypes.Conversation,
                     _timeProvider.GetUtcNow(),
-                    ct)
+                    ct
+                )
                 .ConfigureAwait(false);
 
         return new ConversationListScope
@@ -332,7 +330,8 @@ public sealed class ConversationAuthorizer
     public async Task<bool> MayShareForListingAsync(
         ThreadMetadata metadata,
         IReadOnlySet<string>? grantedThreadIds,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(metadata);
 
@@ -365,9 +364,7 @@ public sealed class ConversationAuthorizer
             Visibility = metadata.Visibility ?? Visibility.Private,
         };
 
-        var suppliedGrant = grantedThreadIds?.Contains(metadata.ThreadId) == true
-            ? GrantRole.Viewer
-            : (GrantRole?)null;
+        var suppliedGrant = grantedThreadIds?.Contains(metadata.ThreadId) == true ? GrantRole.Viewer : (GrantRole?)null;
 
         var decision = await _policy
             .EvaluateCapabilityAsync(principal, descriptor, AccessAction.Share, suppliedGrant, ct)

@@ -27,7 +27,8 @@ public class FunctionFilterTests
                 Name = functionName,
                 Description = $"Test function {functionName} from {providerName}",
             },
-            Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"Result from {functionName}")),
+            Handler = (_, _, _) =>
+                Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"Result from {functionName}")),
             ProviderName = providerName,
         };
     }
@@ -291,7 +292,11 @@ public class FunctionFilterTests
     public void ShouldFilterFunctionWithReason_WithGlobalBlockList_ChecksProviderPrefixedPattern()
     {
         // Arrange
-        var config = new FunctionFilterConfig { EnableFiltering = true, GlobalBlockedFunctions = ["SampleProvider__*"] };
+        var config = new FunctionFilterConfig
+        {
+            EnableFiltering = true,
+            GlobalBlockedFunctions = ["SampleProvider__*"],
+        };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("anyFunction");
 

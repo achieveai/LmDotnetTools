@@ -33,15 +33,9 @@ public class WorkflowEndToEndTests
             )
             .Returns(
                 Task.FromResult(
-                    ToAsyncEnumerable(
-                        [
-                            new TextMessage
-                            {
-                                Text = """{ "summary": "analyzed-by-subagent" }""",
-                                Role = Role.Assistant,
-                            },
-                        ]
-                    )
+                    ToAsyncEnumerable([
+                        new TextMessage { Text = """{ "summary": "analyzed-by-subagent" }""", Role = Role.Assistant },
+                    ])
                 )
             );
 
@@ -88,12 +82,16 @@ public class WorkflowEndToEndTests
         runtime.IsComplete.Should().BeTrue();
 
         // The validated sub-agent output is recorded under outputs[analyze][task].
-        runtime.Outputs["analyze"]!["task"]!["summary"]!.GetValue<string>()
+        runtime.Outputs["analyze"]!["task"]!["summary"]!
+            .GetValue<string>()
             .Should()
             .Be("analyzed-by-subagent");
 
         // The task's write landed in state.analysis.
-        runtime.State["analysis"]!["summary"]!.GetValue<string>().Should().Be("analyzed-by-subagent");
+        runtime.State["analysis"]!["summary"]!
+            .GetValue<string>()
+            .Should()
+            .Be("analyzed-by-subagent");
 
         // The terminal result was captured and validated (distinct from the sub-agent output).
         handle.Result.Should().NotBeNull();
@@ -131,15 +129,9 @@ public class WorkflowEndToEndTests
             )
             .Returns(
                 Task.FromResult(
-                    ToAsyncEnumerable(
-                        [
-                            new TextMessage
-                            {
-                                Text = """{ "not_summary": "schema-miss" }""",
-                                Role = Role.Assistant,
-                            },
-                        ]
-                    )
+                    ToAsyncEnumerable([
+                        new TextMessage { Text = """{ "not_summary": "schema-miss" }""", Role = Role.Assistant },
+                    ])
                 )
             );
 
@@ -186,7 +178,8 @@ public class WorkflowEndToEndTests
         runtime.CurrentNodeId.Should().Be("fail");
 
         // The task is recorded as failed (not validated, not stuck pending).
-        runtime.GetProjection(null)["tasks"]!["analyze:1:task"]!.GetValue<string>()
+        runtime.GetProjection(null)["tasks"]!["analyze:1:task"]!
+            .GetValue<string>()
             .Should()
             .Be("failed");
     }

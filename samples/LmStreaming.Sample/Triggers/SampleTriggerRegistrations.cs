@@ -27,71 +27,78 @@ public static class SampleTriggerRegistrations
     public static TriggerOptions Build(
         bool sandboxEnabled,
         Func<SubAgentManager?>? subAgentManagerAccessor = null,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null
+    )
     {
         var registrations = new List<TriggerSourceRegistration>();
 
         // (#141) file_tail: unconditional — tails a file under a host-fixed allowed root regardless
         // of sandbox availability.
         var fileTailRoots = new[] { Path.Combine(Path.GetTempPath(), "lmstreaming-tails") };
-        registrations.Add(new TriggerSourceRegistration
-        {
-            Kind = FileTailTriggerSource.KindName,
-            Description = "Fire when a matching line is appended to an allowed log file.",
-            ArgsSchema = FileTailTriggerSource.ArgsSchemaText,
-            Capabilities = FileTailTriggerSource.Capabilities,
-            // Redacted (the default) rather than MetadataOnly: a sample host tailing its own temp
-            // directory wants the matched line to stay useful. A deployment tailing files that can
-            // carry customer data should pass MetadataOnly instead — pattern redaction removes the
-            // shapes it knows and makes no promise about the rest.
-            Source = new FileTailTriggerSource(
-                fileTailRoots,
-                FileTailContentMode.Redacted,
-                loggerFactory?.CreateLogger<FileTailTriggerSource>()),
-        });
+        registrations.Add(
+            new TriggerSourceRegistration
+            {
+                Kind = FileTailTriggerSource.KindName,
+                Description = "Fire when a matching line is appended to an allowed log file.",
+                ArgsSchema = FileTailTriggerSource.ArgsSchemaText,
+                Capabilities = FileTailTriggerSource.Capabilities,
+                // Redacted (the default) rather than MetadataOnly: a sample host tailing its own temp
+                // directory wants the matched line to stay useful. A deployment tailing files that can
+                // carry customer data should pass MetadataOnly instead — pattern redaction removes the
+                // shapes it knows and makes no promise about the rest.
+                Source = new FileTailTriggerSource(
+                    fileTailRoots,
+                    FileTailContentMode.Redacted,
+                    loggerFactory?.CreateLogger<FileTailTriggerSource>()
+                ),
+            }
+        );
 
         // (#143) schedule: unconditional — fires on a cron expression or a fixed interval.
-        registrations.Add(new TriggerSourceRegistration
-        {
-            Kind = ScheduleTriggerSource.KindName,
-            Description = "Fire on a cron expression or a fixed interval (block resolves once; notify repeats).",
-            ArgsSchema = ScheduleTriggerSource.ArgsSchemaText,
-            Capabilities = ScheduleTriggerSource.Capabilities,
-            Source = new ScheduleTriggerSource(),
-        });
+        registrations.Add(
+            new TriggerSourceRegistration
+            {
+                Kind = ScheduleTriggerSource.KindName,
+                Description = "Fire on a cron expression or a fixed interval (block resolves once; notify repeats).",
+                ArgsSchema = ScheduleTriggerSource.ArgsSchemaText,
+                Capabilities = ScheduleTriggerSource.Capabilities,
+                Source = new ScheduleTriggerSource(),
+            }
+        );
 
         // (#144) subagent: registered only when the conversation has sub-agent orchestration
         // configured — the source needs a live SubAgentManager to observe.
         if (subAgentManagerAccessor != null)
         {
-            registrations.Add(new TriggerSourceRegistration
-            {
-                Kind = SubAgentCompletionTriggerSource.KindName,
-                Description = "Fire when a specific spawned sub-agent completes.",
-                ArgsSchema = SubAgentCompletionTriggerSource.ArgsSchemaText,
-                Capabilities = SubAgentCompletionTriggerSource.Capabilities,
-                Source = new SubAgentCompletionTriggerSource(subAgentManagerAccessor),
-            });
+            registrations.Add(
+                new TriggerSourceRegistration
+                {
+                    Kind = SubAgentCompletionTriggerSource.KindName,
+                    Description = "Fire when a specific spawned sub-agent completes.",
+                    ArgsSchema = SubAgentCompletionTriggerSource.ArgsSchemaText,
+                    Capabilities = SubAgentCompletionTriggerSource.Capabilities,
+                    Source = new SubAgentCompletionTriggerSource(subAgentManagerAccessor),
+                }
+            );
         }
 
         // (#142) process registration appended here, guarded by `if (sandboxEnabled)`, in Task 9.
         if (sandboxEnabled)
         {
-            registrations.Add(new TriggerSourceRegistration
-            {
-                Kind = ProcessTriggerSource.KindName,
-                Description = "Fire when a sandbox process exits with a matching exit code / stdout.",
-                ArgsSchema = ProcessTriggerSource.ArgsSchemaText,
-                Capabilities = ProcessTriggerSource.Capabilities,
-                // Placeholder observer: wire a real IProcessExitObserver over the Bash-tool process
-                // registry to make this kind actually fire in production (documented follow-up).
-                Source = new ProcessTriggerSource(NoopProcessExitObserver.Instance),
-            });
+            registrations.Add(
+                new TriggerSourceRegistration
+                {
+                    Kind = ProcessTriggerSource.KindName,
+                    Description = "Fire when a sandbox process exits with a matching exit code / stdout.",
+                    ArgsSchema = ProcessTriggerSource.ArgsSchemaText,
+                    Capabilities = ProcessTriggerSource.Capabilities,
+                    // Placeholder observer: wire a real IProcessExitObserver over the Bash-tool process
+                    // registry to make this kind actually fire in production (documented follow-up).
+                    Source = new ProcessTriggerSource(NoopProcessExitObserver.Instance),
+                }
+            );
         }
 
-        return new TriggerOptions
-        {
-            AdditionalRegistrations = registrations,
-        };
+        return new TriggerOptions { AdditionalRegistrations = registrations };
     }
 }

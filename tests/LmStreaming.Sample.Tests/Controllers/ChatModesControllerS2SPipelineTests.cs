@@ -40,8 +40,7 @@ public sealed class ChatModesControllerS2SPipelineTests
     private const string ItemRoute = $"{CollectionRoute}/{ModeId}";
     private const string CopiesRoute = $"{ItemRoute}/copies";
 
-    private const string ValidCreateBody =
-        """{"name":"Probe","systemPrompt":"you are a probe"}""";
+    private const string ValidCreateBody = """{"name":"Probe","systemPrompt":"you are a probe"}""";
 
     private const string ValidCopyBody = """{"newName":"Probe copy"}""";
 
@@ -74,10 +73,7 @@ public sealed class ChatModesControllerS2SPipelineTests
     }
 
     private static HttpRequestMessage Json(HttpMethod method, string route, string body) =>
-        new(method, route)
-        {
-            Content = new StringContent(body, Encoding.UTF8, "application/json"),
-        };
+        new(method, route) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 
     private async Task<IHost> StartHostAsync(string? configuredSecret)
     {
@@ -96,9 +92,7 @@ public sealed class ChatModesControllerS2SPipelineTests
                     .ConfigureServices(services =>
                     {
                         _ = services.AddSingleton<IChatModeStore>(_store);
-                        _ = services
-                            .AddControllers()
-                            .AddApplicationPart(typeof(ChatModesController).Assembly);
+                        _ = services.AddControllers().AddApplicationPart(typeof(ChatModesController).Assembly);
                     })
                     .Configure(app =>
                     {
@@ -116,7 +110,8 @@ public sealed class ChatModesControllerS2SPipelineTests
     private static async Task<(HttpStatusCode Status, string Body)> SendAsync(
         HttpClient client,
         HttpRequestMessage request,
-        Action<HttpRequestMessage>? markers = null)
+        Action<HttpRequestMessage>? markers = null
+    )
     {
         markers?.Invoke(request);
         using (request)
@@ -237,10 +232,13 @@ public sealed class ChatModesControllerS2SPipelineTests
         {
             var (status, body) = await SendAsync(client, build(MalformedBody), ForgedNoSecret);
 
-            _ = status.Should().Be(
-                HttpStatusCode.Unauthorized,
-                "{0} must answer the guard before model validation answers on its behalf",
-                name);
+            _ = status
+                .Should()
+                .Be(
+                    HttpStatusCode.Unauthorized,
+                    "{0} must answer the guard before model validation answers on its behalf",
+                    name
+                );
             _ = body.Should().Contain("s2s_auth_failed");
         }
 
@@ -261,10 +259,9 @@ public sealed class ChatModesControllerS2SPipelineTests
         {
             var (status, _) = await SendAsync(client, build(MalformedBody), CorrectlySigned);
 
-            _ = status.Should().Be(
-                HttpStatusCode.BadRequest,
-                "{0} must still validate the body once the caller is admitted",
-                name);
+            _ = status
+                .Should()
+                .Be(HttpStatusCode.BadRequest, "{0} must still validate the body once the caller is admitted", name);
         }
 
         _ = _store.Mutations.Should().BeEmpty();
@@ -314,10 +311,7 @@ public sealed class ChatModesControllerS2SPipelineTests
             return Task.FromResult(Mode("created"));
         }
 
-        public Task<ChatMode> UpdateModeAsync(
-            string modeId,
-            ChatModeCreateUpdate mode,
-            CancellationToken ct = default)
+        public Task<ChatMode> UpdateModeAsync(string modeId, ChatModeCreateUpdate mode, CancellationToken ct = default)
         {
             Mutations.Add("Update");
             return Task.FromResult(Mode(modeId));

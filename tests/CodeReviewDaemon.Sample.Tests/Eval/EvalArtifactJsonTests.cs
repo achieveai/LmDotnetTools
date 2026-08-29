@@ -22,10 +22,7 @@ public class EvalArtifactJsonTests
     [Fact]
     public void A_payload_that_fits_is_returned_with_no_failure()
     {
-        var value = EvalArtifactJson.TryRead<Payload>(
-            "{\"score\":7,\"rationale\":\"because\"}",
-            out var failure
-        );
+        var value = EvalArtifactJson.TryRead<Payload>("{\"score\":7,\"rationale\":\"because\"}", out var failure);
 
         value.Should().Be(new Payload(7, "because"));
         failure.Should().BeNull();
@@ -40,10 +37,7 @@ public class EvalArtifactJsonTests
     [Fact]
     public void A_payload_whose_keys_differ_only_in_case_still_fits()
     {
-        var value = EvalArtifactJson.TryRead<Payload>(
-            "{\"Score\":7,\"Rationale\":\"because\"}",
-            out _
-        );
+        var value = EvalArtifactJson.TryRead<Payload>("{\"Score\":7,\"Rationale\":\"because\"}", out _);
 
         value.Should().Be(new Payload(7, "because"));
     }

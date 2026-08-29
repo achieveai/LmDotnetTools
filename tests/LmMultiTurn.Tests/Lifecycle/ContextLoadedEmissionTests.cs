@@ -43,7 +43,8 @@ public class ContextLoadedEmissionTests
 
         publisher.EventTypes.Should().Contain(LifecycleEventTypes.ContextLoaded);
 
-        var payload = publisher.Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
+        var payload = publisher
+            .Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
             .Should()
             .ContainSingle()
             .Subject;
@@ -64,16 +65,17 @@ public class ContextLoadedEmissionTests
         var assignment = await agent.StartAsync();
         await agent.ReportAsync(
             assignment,
-            [SystemPrompt(Rendered(@"\workspace\target\docs\CLAUDE.md", ClaudeMdBody).Text)]);
+            [SystemPrompt(Rendered(@"\workspace\target\docs\CLAUDE.md", ClaudeMdBody).Text)]
+        );
 
         var source = SingleSource(publisher);
         source.Phase.Should().Be(LifecycleContextPhases.Boot);
         source.DiscoveryKind.Should().Be(RenderedContextBlock.ContextFileKind);
-        source.NormalizedPath.Should()
+        source
+            .NormalizedPath.Should()
             .Be("/workspace/target/docs/CLAUDE.md", "separators are normalized so two hosts agree");
         source.Name.Should().Be("CLAUDE.md");
-        source.DedupIdentity.Should()
-            .Be($"{RenderedContextBlock.ContextFileKind}:/workspace/target/docs/CLAUDE.md");
+        source.DedupIdentity.Should().Be($"{RenderedContextBlock.ContextFileKind}:/workspace/target/docs/CLAUDE.md");
         source.WasTruncated.Should().BeFalse();
         source.RenderedByteCount.Should().BeGreaterThan(0);
     }
@@ -92,8 +94,10 @@ public class ContextLoadedEmissionTests
                 NotifyMessage.Create(
                     NotifyKinds.ContextDiscovery,
                     detail: Rendered(ClaudeMdPath, ClaudeMdBody, phase: LifecycleContextPhases.MidSession).Text,
-                    generationId: "notify-1"),
-            ]);
+                    generationId: "notify-1"
+                ),
+            ]
+        );
 
         SingleSource(publisher).Phase.Should().Be(LifecycleContextPhases.MidSession);
     }
@@ -105,9 +109,7 @@ public class ContextLoadedEmissionTests
         await using var _agent = agent;
 
         var assignment = await agent.StartAsync();
-        await agent.ReportAsync(
-            assignment,
-            [SystemPrompt(Rendered(ClaudeMdPath, ClaudeMdBody, truncated: true).Text)]);
+        await agent.ReportAsync(assignment, [SystemPrompt(Rendered(ClaudeMdPath, ClaudeMdBody, truncated: true).Text)]);
 
         SingleSource(publisher).WasTruncated.Should().BeTrue();
     }
@@ -124,12 +126,15 @@ public class ContextLoadedEmissionTests
 
         await agent.ReportAsync(assignment, [SystemPrompt(claude.Text + "\n" + agents.Text)]);
 
-        var payload = publisher.Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
+        var payload = publisher
+            .Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
             .Should()
             .ContainSingle("one request carrying two sources is one delivery")
             .Subject;
 
-        payload.Sources.Select(s => s.NormalizedPath).Should()
+        payload
+            .Sources.Select(s => s.NormalizedPath)
+            .Should()
             .Equal([ClaudeMdPath, "/workspace/target/AGENTS.md"], "sources follow request order");
 
         // No separator: the hash covers the blocks and nothing the model was never sent. The
@@ -151,7 +156,8 @@ public class ContextLoadedEmissionTests
         var assignment = await agent.StartAsync();
         await agent.ReportAsync(
             assignment,
-            [SystemPrompt("You are helpful."), Text("Read CLAUDE.md and tell me the rules.")]);
+            [SystemPrompt("You are helpful."), Text("Read CLAUDE.md and tell me the rules.")]
+        );
 
         publisher.EventTypes.Should().NotContain(LifecycleEventTypes.ContextLoaded);
     }
@@ -195,7 +201,8 @@ public class ContextLoadedEmissionTests
 
         await agent.ReportPromptAsync(assignment, "user: hello\n\n" + block.Text);
 
-        var payload = publisher.Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
+        var payload = publisher
+            .Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
             .Should()
             .ContainSingle()
             .Subject;
@@ -221,7 +228,8 @@ public class ContextLoadedEmissionTests
         await agent.ReportAsync(assignment, [systemPrompt, Text("turn two")], generationId: "gen-2");
         await agent.ReportAsync(assignment, [systemPrompt, Text("turn three")], generationId: "gen-3");
 
-        publisher.Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
+        publisher
+            .Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
             .Should()
             .ContainSingle("the same block in every request is one delivery, not one per turn");
     }
@@ -237,9 +245,11 @@ public class ContextLoadedEmissionTests
         await agent.ReportAsync(
             assignment,
             [SystemPrompt(Rendered(ClaudeMdPath, "# Project\nUse spaces after all.").Text)],
-            generationId: "gen-2");
+            generationId: "gen-2"
+        );
 
-        publisher.Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
+        publisher
+            .Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
             .Should()
             .ContainSingle("identity is the source, not its bytes");
     }
@@ -255,15 +265,13 @@ public class ContextLoadedEmissionTests
         var agents = Rendered("/workspace/target/AGENTS.md", "# Agents\nBe brief.");
 
         await agent.ReportAsync(assignment, [SystemPrompt(claude.Text)]);
-        await agent.ReportAsync(
-            assignment,
-            [SystemPrompt(claude.Text + agents.Text)],
-            generationId: "gen-2");
+        await agent.ReportAsync(assignment, [SystemPrompt(claude.Text + agents.Text)], generationId: "gen-2");
 
         var payloads = publisher.Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded);
         payloads.Should().HaveCount(2);
         payloads[0].Sources.Should().ContainSingle().Which.NormalizedPath.Should().Be(ClaudeMdPath);
-        payloads[1].Sources.Should()
+        payloads[1]
+            .Sources.Should()
             .ContainSingle("the block already reported is not re-announced")
             .Which.NormalizedPath.Should()
             .Be("/workspace/target/AGENTS.md");
@@ -286,8 +294,10 @@ public class ContextLoadedEmissionTests
             [
                 SystemPrompt(
                     "<context-discoveryX path=\"/nope.md\">body</context-discoveryX>\n"
-                    + "Mention of <context-discovery in prose."),
-            ]);
+                        + "Mention of <context-discovery in prose."
+                ),
+            ]
+        );
 
         publisher.EventTypes.Should().NotContain(LifecycleEventTypes.ContextLoaded);
     }
@@ -303,9 +313,11 @@ public class ContextLoadedEmissionTests
 
         await agent.ReportAsync(
             assignment,
-            [SystemPrompt(whole.Text + "\n<context-discovery path=\"/truncated.md\">\nno close tag")]);
+            [SystemPrompt(whole.Text + "\n<context-discovery path=\"/truncated.md\">\nno close tag")]
+        );
 
-        var payload = publisher.Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
+        var payload = publisher
+            .Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
             .Should()
             .ContainSingle()
             .Subject;
@@ -321,11 +333,10 @@ public class ContextLoadedEmissionTests
             awkwardPath,
             ClaudeMdBody,
             truncated: true,
-            LifecycleContextPhases.Boot);
+            LifecycleContextPhases.Boot
+        );
 
-        var read = RenderedContextBlock.Scan(
-            "prefix\n" + written.Text + "\nsuffix",
-            LifecycleContextPhases.Boot);
+        var read = RenderedContextBlock.Scan("prefix\n" + written.Text + "\nsuffix", LifecycleContextPhases.Boot);
 
         read.Should().ContainSingle();
         read[0].Text.Should().Be(written.Text);
@@ -343,8 +354,8 @@ public class ContextLoadedEmissionTests
         string path,
         string content,
         bool truncated = false,
-        string phase = LifecycleContextPhases.Boot) =>
-        RenderedContextBlock.Create(path, content, truncated, phase);
+        string phase = LifecycleContextPhases.Boot
+    ) => RenderedContextBlock.Create(path, content, truncated, phase);
 
     private static string Sha256Hex(string text) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
@@ -354,22 +365,23 @@ public class ContextLoadedEmissionTests
     private static TextMessage Text(string text) => new() { Text = text, Role = Role.User };
 
     private static LifecycleContextSource SingleSource(RecordingLifecyclePublisher publisher) =>
-        publisher.Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
+        publisher
+            .Payloads<ContextLoadedPayload>(LifecycleEventTypes.ContextLoaded)
             .Should()
             .ContainSingle()
             .Subject.Sources.Should()
             .ContainSingle()
             .Subject;
 
-    private static (ContextProbeAgent Agent, RecordingLifecyclePublisher Publisher) CreateWiredAgent(
-        string threadId)
+    private static (ContextProbeAgent Agent, RecordingLifecyclePublisher Publisher) CreateWiredAgent(string threadId)
     {
         var store = new InMemoryConversationStore();
         var publisher = new RecordingLifecyclePublisher();
         var agent = new ContextProbeAgent(
             threadId,
             new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store },
-            store);
+            store
+        );
         return (agent, publisher);
     }
 
@@ -382,42 +394,26 @@ public class ContextLoadedEmissionTests
         public ContextProbeAgent(
             string threadId,
             MultiTurnLifecycleServices? services = null,
-            IConversationStore? store = null)
-            : base(threadId, store: store, lifecycleServices: services)
-        {
-        }
+            IConversationStore? store = null
+        )
+            : base(threadId, store: store, lifecycleServices: services) { }
 
-        public Task<RunAssignment> StartAsync(CancellationToken ct = default) =>
-            StartRunAsync([], null, ct);
+        public Task<RunAssignment> StartAsync(CancellationToken ct = default) => StartRunAsync([], null, ct);
 
         /// <summary>Reports the request a message-list loop is about to dispatch.</summary>
         public Task ReportAsync(
             RunAssignment assignment,
             IEnumerable<IMessage> request,
             string? generationId = null,
-            CancellationToken ct = default) =>
-            ReportContextLoadedAsync(
-                assignment.RunId,
-                generationId ?? assignment.GenerationId,
-                request,
-                ct);
+            CancellationToken ct = default
+        ) => ReportContextLoadedAsync(assignment.RunId, generationId ?? assignment.GenerationId, request, ct);
 
         /// <summary>Reports the prompt string a Codex/Copilot-shaped loop is about to dispatch.</summary>
-        public Task ReportPromptAsync(
-            RunAssignment assignment,
-            string? prompt,
-            CancellationToken ct = default) =>
+        public Task ReportPromptAsync(RunAssignment assignment, string? prompt, CancellationToken ct = default) =>
             ReportContextLoadedAsync(assignment.RunId, assignment.GenerationId, prompt, ct: ct);
 
-        public Task CompleteAsync(
-            RunAssignment assignment,
-            string? outcome = null,
-            CancellationToken ct = default) =>
-            CompleteRunAsync(
-                assignment.RunId,
-                assignment.GenerationId,
-                outcome: outcome,
-                ct: ct);
+        public Task CompleteAsync(RunAssignment assignment, string? outcome = null, CancellationToken ct = default) =>
+            CompleteRunAsync(assignment.RunId, assignment.GenerationId, outcome: outcome, ct: ct);
 
         protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
     }

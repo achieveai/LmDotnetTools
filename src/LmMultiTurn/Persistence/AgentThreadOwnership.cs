@@ -45,7 +45,8 @@ public static class AgentThreadOwnership
         IConversationStore? store,
         string? parentThreadId,
         string childThreadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(childThreadId);
 
@@ -63,23 +64,27 @@ public static class AgentThreadOwnership
         await store
             .UpdateMetadataAsync(
                 childThreadId,
-                existing => (existing
-                    ?? new ThreadMetadata
+                existing =>
+                    (
+                        existing
+                        ?? new ThreadMetadata
+                        {
+                            ThreadId = childThreadId,
+                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        }
+                    ) with
                     {
                         ThreadId = childThreadId,
-                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    }) with
-                {
-                    ThreadId = childThreadId,
 
-                    // Existing values win, so a re-spawn onto the same thread id cannot move
-                    // ownership - the same rule the provisioning route's stamp follows.
-                    TenantId = existing?.TenantId ?? parent.TenantId,
-                    OwnerUserId = existing?.OwnerUserId ?? parent.OwnerUserId,
-                    OwnerAppId = existing?.OwnerAppId ?? parent.OwnerAppId,
-                    Visibility = existing?.Visibility ?? Visibility.Private,
-                },
-                ct)
+                        // Existing values win, so a re-spawn onto the same thread id cannot move
+                        // ownership - the same rule the provisioning route's stamp follows.
+                        TenantId = existing?.TenantId ?? parent.TenantId,
+                        OwnerUserId = existing?.OwnerUserId ?? parent.OwnerUserId,
+                        OwnerAppId = existing?.OwnerAppId ?? parent.OwnerAppId,
+                        Visibility = existing?.Visibility ?? Visibility.Private,
+                    },
+                ct
+            )
             .ConfigureAwait(false);
     }
 }

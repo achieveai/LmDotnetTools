@@ -48,8 +48,7 @@ public sealed record ConversationListScope
     /// Thread ids on which <see cref="UserId"/> holds an unexpired grant. Empty for an app-only
     /// caller: an app-only principal never consults grants (7.4 step 3).
     /// </summary>
-    public IReadOnlySet<string> GrantedThreadIds { get; init; } =
-        new HashSet<string>(StringComparer.Ordinal);
+    public IReadOnlySet<string> GrantedThreadIds { get; init; } = new HashSet<string>(StringComparer.Ordinal);
 
     /// <summary>
     /// Also admit rows that carry NO tenant, in addition to <see cref="TenantId"/>. Off by default,
@@ -156,9 +155,10 @@ public sealed record ConversationListScope
             // The non-null guard on the OWNER is the C# half of spec 7.1 principle 4. SQL gets this
             // right on its own because NULL = 'x' is NULL; C# `==` on two nulls is true, which
             // would hand every unclaimed row to every caller with no user id.
-            return (metadata.OwnerUserId is not null
-                    && string.Equals(metadata.OwnerUserId, UserId, StringComparison.Ordinal))
-                || GrantedThreadIds.Contains(metadata.ThreadId);
+            return (
+                    metadata.OwnerUserId is not null
+                    && string.Equals(metadata.OwnerUserId, UserId, StringComparison.Ordinal)
+                ) || GrantedThreadIds.Contains(metadata.ThreadId);
         }
 
         return AppId is not null

@@ -13,8 +13,7 @@ internal static class IdempotencyMarker
     private const string Suffix = " -->";
 
     /// <summary>Appends the hidden marker for <paramref name="idempotencyKey"/> to a comment body.</summary>
-    public static string Embed(string body, string idempotencyKey) =>
-        $"{body}\n\n{Prefix}{idempotencyKey}{Suffix}";
+    public static string Embed(string body, string idempotencyKey) => $"{body}\n\n{Prefix}{idempotencyKey}{Suffix}";
 
     /// <summary>True when <paramref name="commentBody"/> carries the marker for <paramref name="idempotencyKey"/>.</summary>
     public static bool Matches(string? commentBody, string idempotencyKey) =>

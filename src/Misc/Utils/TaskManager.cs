@@ -795,9 +795,12 @@ Examples:
 
             // An empty list still gets the header — a bare "No tasks found." gives the model no
             // clue which tool answered it.
-            _ = body.Length == 0
-                ? sb.Append(_state.RootTasks.Count == 0 ? "No tasks found." : "No tasks match the specified criteria.")
-                : sb.Append(body);
+            _ =
+                body.Length == 0
+                    ? sb.Append(
+                        _state.RootTasks.Count == 0 ? "No tasks found." : "No tasks match the specified criteria."
+                    )
+                    : sb.Append(body);
 
             return sb.ToString().TrimEnd();
         }

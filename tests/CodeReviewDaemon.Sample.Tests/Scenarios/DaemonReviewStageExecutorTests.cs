@@ -37,9 +37,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     private const string StaleProvisionalText = "## Review\nProvisional answer from the interrupted attempt.";
 
     public DaemonReviewStageExecutorTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     [Fact]
     public async Task ContextReady_fetches_the_diff_and_persists_a_context_artifact()
@@ -49,8 +47,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
-        fixture.Runner.Commands
-            .Should().Contain(c => string.Join(' ', c.Argv).Contains("diff"), "the diff is fetched in the sandbox");
+        fixture
+            .Runner.Commands.Should()
+            .Contain(c => string.Join(' ', c.Argv).Contains("diff"), "the diff is fetched in the sandbox");
 
         var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
         artifact.ArtifactKind.Should().Be(DaemonReviewStageExecutor.ContextArtifactKind);
@@ -68,14 +67,14 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         using var fixture = Fixture.GitHub(LoggerFactory);
         fixture.Runner.OnArgvContainsFirst(
             "diff --name-only",
-            new SandboxCommandResult(0, "\n lead.cs\ntrail.cs \n", string.Empty));
+            new SandboxCommandResult(0, "\n lead.cs\ntrail.cs \n", string.Empty)
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
         var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
-        var changedPaths = JsonDocument.Parse(artifact.Payload).RootElement
-            .GetProperty("ChangedPaths").GetString();
+        var changedPaths = JsonDocument.Parse(artifact.Payload).RootElement.GetProperty("ChangedPaths").GetString();
 
         KnowledgeDigest.ParseChangedPaths(changedPaths).Should().Equal(" lead.cs", "trail.cs ");
     }
@@ -92,15 +91,24 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         // The target repo is cloned/fetched (PR #121 H1) — the diff must come from the TARGET checkout,
         // not the ReviewBot retention checkout that has none of the PR's commits.
-        commands.Should().Contain(
-            a => a.Contains("clone") && a.Contains("github.com/achieveai/LmDotnetTools"),
-            "the target PR repo is cloned into its own checkout");
-        commands.Should().Contain(
-            a => a.Contains("/workspace/target") && a.Contains("diff"),
-            "the diff is taken from the target checkout, not /workspace/reviewbot");
-        commands.Should().NotContain(
-            a => a.Contains("/workspace/reviewbot") && a.Contains("diff"),
-            "diffing the ReviewBot checkout would produce an empty/incorrect diff (the H1 bug)");
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains("clone") && a.Contains("github.com/achieveai/LmDotnetTools"),
+                "the target PR repo is cloned into its own checkout"
+            );
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains("/workspace/target") && a.Contains("diff"),
+                "the diff is taken from the target checkout, not /workspace/reviewbot"
+            );
+        commands
+            .Should()
+            .NotContain(
+                a => a.Contains("/workspace/reviewbot") && a.Contains("diff"),
+                "diffing the ReviewBot checkout would produce an empty/incorrect diff (the H1 bug)"
+            );
     }
 
     [Fact]
@@ -112,18 +120,24 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // untrusted submodule code — and continue to the diff (H1 selective submodule init, plan §3).
         fixture.FileSystem.Seed(
             "/workspace/target/.gitmodules",
-            "[submodule \"libs/shared\"]\n\tpath = libs/shared\n\turl = https://evil.example.com/x/shared.git\n");
+            "[submodule \"libs/shared\"]\n\tpath = libs/shared\n\turl = https://evil.example.com/x/shared.git\n"
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().NotContain(
-            a => a.Contains("submodule update --init"),
-            "an off-allow-list submodule must be refused, not initialized");
+        commands
+            .Should()
+            .NotContain(
+                a => a.Contains("submodule update --init"),
+                "an off-allow-list submodule must be refused, not initialized"
+            );
         // The diff still ran (the walk continued past the denied submodule) and a context artifact landed.
-        fixture.Store.GetArtifacts(run.Id)
-            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind);
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind);
     }
 
     [Fact]
@@ -136,7 +150,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 Limits = new CodeReviewDaemon.Sample.Configuration.SandboxLimits { MaxArtifactPayloadChars = 256 },
             },
-            diffResult: new SandboxCommandResult(0, hugeDiff, string.Empty));
+            diffResult: new SandboxCommandResult(0, hugeDiff, string.Empty)
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -158,9 +173,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         // The working tree must be moved to the PR head so Read/Grep/Glob and the file manifest reflect the
         // code the PR proposes, not the clone's default branch (which would ground findings in the wrong code).
-        commands.Should().Contain(
-            a => a.Contains("checkout --force") && a.Contains("head-sha"),
-            "the PR head is checked out into the target working tree");
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains("checkout --force") && a.Contains("head-sha"),
+                "the PR head is checked out into the target working tree"
+            );
     }
 
     [Fact]
@@ -170,7 +188,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // The head checkout's tracked files — the manifest the review agent Reads by exact path to ground
         // findings (the gateway's Glob/Grep cannot enumerate the repo root reliably).
         fixture.Runner.OnArgvContains(
-            "ls-files", new SandboxCommandResult(0, "src/Foo/Bar.cs\nsrc/Foo/Baz.cs\nREADME.md\n", string.Empty));
+            "ls-files",
+            new SandboxCommandResult(0, "src/Foo/Bar.cs\nsrc/Foo/Baz.cs\nREADME.md\n", string.Empty)
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -200,9 +220,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             new CodeReviewDaemonOptions
             {
                 Limits = new CodeReviewDaemon.Sample.Configuration.SandboxLimits { MaxArtifactPayloadChars = 10 },
-            });
-        fixture.Runner.OnArgvContains(
-            "ls-files", new SandboxCommandResult(0, "AAAAA\nBBBBB\nCCCCC\n", string.Empty));
+            }
+        );
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "AAAAA\nBBBBB\nCCCCC\n", string.Empty));
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -223,10 +243,13 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             new CodeReviewDaemonOptions
             {
                 Limits = new CodeReviewDaemon.Sample.Configuration.SandboxLimits { MaxArtifactPayloadChars = 10 },
-            });
+            }
+        );
         // Registered FIRST: the fixture's broad "diff" rule would otherwise answer the listing with a patch.
         fixture.Runner.OnArgvContainsFirst(
-            "diff --name-only", new SandboxCommandResult(0, "AAAAA\nBBBBB\nCCCCC\n", string.Empty));
+            "diff --name-only",
+            new SandboxCommandResult(0, "AAAAA\nBBBBB\nCCCCC\n", string.Empty)
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -247,12 +270,17 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     private static void AssertCappedOnRecordBoundary(string capped)
     {
         var markerIndex = capped.IndexOf(
-            CodeReviewDaemon.Sample.Configuration.SandboxLimits.TruncationMarker, StringComparison.Ordinal);
+            CodeReviewDaemon.Sample.Configuration.SandboxLimits.TruncationMarker,
+            StringComparison.Ordinal
+        );
         markerIndex.Should().BeGreaterThanOrEqualTo(0, "the payload was expected to be capped");
-        capped[..markerIndex].Should().EndWith(
-            "\n",
-            "a record-boundary cut (CapRecordListing) keeps the prior record's own newline; a "
-                + "character-exact cut (CapArtifactPayload) would leave a non-empty stump here instead");
+        capped[..markerIndex]
+            .Should()
+            .EndWith(
+                "\n",
+                "a record-boundary cut (CapRecordListing) keeps the prior record's own newline; a "
+                    + "character-exact cut (CapArtifactPayload) would leave a non-empty stump here instead"
+            );
     }
 
     [Fact]
@@ -260,10 +288,14 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.GitHub(LoggerFactory);
         fixture.Runner.OnArgvContains(
-            "ls-files", new SandboxCommandResult(0, "src/Foo/Bar.cs\nsrc/Foo/Baz.cs\n", string.Empty));
+            "ls-files",
+            new SandboxCommandResult(0, "src/Foo/Bar.cs\nsrc/Foo/Baz.cs\n", string.Empty)
+        );
         // Registered FIRST: the fixture's broad "diff" rule would otherwise answer the listing with a patch.
         fixture.Runner.OnArgvContainsFirst(
-            "diff --name-only", new SandboxCommandResult(0, "src/Foo/Bar.cs\n", string.Empty));
+            "diff --name-only",
+            new SandboxCommandResult(0, "src/Foo/Bar.cs\n", string.Empty)
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -280,14 +312,17 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // The two payloads this brief used to carry. Both are things the reviewer holds a checkout of and can
         // fetch itself, and inlining them cost most of the input budget (measured on run 226: 117k of patch and
         // 15.6k of manifest in a 173,567-char brief).
-        text.Should().NotContain(
-            "src/Foo/Baz.cs",
-            "Baz.cs is tracked but UNCHANGED - listing the whole tree is the manifest coming back in");
-        text.Should().NotContain(
-            "\n\nDiff:\n", "the patch is read from git now, not copied into the brief");
-        text.Should().Contain(
-            $"diff {run.BaseSha}...{run.HeadSha}",
-            "the fetch instruction must carry the range, the one thing the reviewer cannot derive");
+        text.Should()
+            .NotContain(
+                "src/Foo/Baz.cs",
+                "Baz.cs is tracked but UNCHANGED - listing the whole tree is the manifest coming back in"
+            );
+        text.Should().NotContain("\n\nDiff:\n", "the patch is read from git now, not copied into the brief");
+        text.Should()
+            .Contain(
+                $"diff {run.BaseSha}...{run.HeadSha}",
+                "the fetch instruction must carry the range, the one thing the reviewer cannot derive"
+            );
 
         // The checkout root is templated into the review agent's SYSTEM PROMPT via
         // DaemonAgentFactory.CreateReviewProfile's workspace-layout variables, and stays load-bearing now that
@@ -309,8 +344,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // authoritative synthesis whose answer becomes the persisted review.
         var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         agent.ReceivedInputs.Should().HaveCount(2, "collect-only provisional, then synthesis on the same agent");
-        agent.ReceivedInputs[1].Messages.OfType<TextMessage>().Single().Text
-            .Should().Contain("sub-agent", "the synthesis turn is told what the settled sub-agent roster was");
+        agent
+            .ReceivedInputs[1]
+            .Messages.OfType<TextMessage>()
+            .Single()
+            .Text.Should()
+            .Contain("sub-agent", "the synthesis turn is told what the settled sub-agent roster was");
     }
 
     [Fact]
@@ -324,12 +363,14 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // Resolved lazily: the agent under observation does not exist until the Reviewed stage creates it, and
         // the barrier only ever polls from inside that stage.
         FakeReviewAgentLoopFactory? factory = null;
-        var source = new ObservingCompletionSource(
-            () => observedRunsAtBarrier.Add(factory!.CreatedAgents[0].Lifecycle.Count));
+        var source = new ObservingCompletionSource(() =>
+            observedRunsAtBarrier.Add(factory!.CreatedAgents[0].Lifecycle.Count)
+        );
         using var fixture = Fixture.GitHub(
             LoggerFactory,
             new CodeReviewDaemonOptions { ReviewSubAgentBarrierQuietSeconds = 1 },
-            completionSource: source);
+            completionSource: source
+        );
         factory = fixture.Factory;
         var run = fixture.SeedRun();
 
@@ -337,12 +378,16 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        agent.Lifecycle.Should().Equal(
-            FakeMultiTurnAgent.RunEvent,
-            FakeMultiTurnAgent.RunEvent,
-            FakeMultiTurnAgent.DisposeEvent);
-        observedRunsAtBarrier.Should().NotBeEmpty("the barrier ran").And.AllBeEquivalentTo(
-            1, "the barrier polls after exactly one turn, with the loop still alive (no dispose event yet)");
+        agent
+            .Lifecycle.Should()
+            .Equal(FakeMultiTurnAgent.RunEvent, FakeMultiTurnAgent.RunEvent, FakeMultiTurnAgent.DisposeEvent);
+        observedRunsAtBarrier
+            .Should()
+            .NotBeEmpty("the barrier ran")
+            .And.AllBeEquivalentTo(
+                1,
+                "the barrier polls after exactly one turn, with the loop still alive (no dispose event yet)"
+            );
     }
 
     /// <summary>
@@ -352,7 +397,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     private sealed class ObservingCompletionSource(Action onPoll) : IReviewSubAgentCompletionSource
     {
         public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
-            ReviewRun run, string parentThreadId, CancellationToken ct)
+            ReviewRun run,
+            string parentThreadId,
+            CancellationToken ct
+        )
         {
             onPoll();
             return Task.FromResult(new ReviewSubAgentTreeSnapshot([]));
@@ -376,7 +424,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // The PR closes while the review is running: the stage drives the run object it loaded BEFORE that,
         // so the store and the in-flight run have diverged — the divergence the check looks for.
         fixture.Store.UpdateReviewRunState(
-            run.Id, ReviewStage.Reviewed, WorkflowStatus.Running, PrLifecycleState.Closed);
+            run.Id,
+            ReviewStage.Reviewed,
+            WorkflowStatus.Running,
+            PrLifecycleState.Closed
+        );
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
@@ -385,7 +437,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // The provisional turn ran; the AUTHORITATIVE synthesis turn did not, and nothing was persisted.
         var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         agent.ReceivedInputs.Should().HaveCount(1, "the collect-only turn ran, the synthesis turn was refused");
-        fixture.Store.GetArtifacts(run.Id).Should()
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
             .NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
@@ -398,29 +452,49 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         // The store declares the reviewed repo as a submodule under repos/LmDotnetTools.
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
-        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\nREADME.md\n", string.Empty));
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
+        fixture.Runner.OnArgvContains(
+            "ls-files",
+            new SandboxCommandResult(0, "src/LmCore/Foo.cs\nREADME.md\n", string.Empty)
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(
-            a => a.Contains("clone") && a.Contains("AchieveAiReviews") && a.Contains("/workspace/store"),
-            "the cross-repo store is cloned as the review superproject");
-        commands.Should().Contain(
-            a => a.Contains("submodule update --init") && a.Contains("repos/LmDotnetTools"),
-            "the reviewed repo's submodule is initialized in the store");
-        commands.Should().Contain(
-            a => a.Contains("/workspace/store/repos/LmDotnetTools") && a.Contains("checkout --force") && a.Contains("head-sha"),
-            "the PR head is checked out in the reviewed submodule working tree");
-        commands.Should().Contain(
-            a => a.Contains("/workspace/store/repos/LmDotnetTools") && a.Contains("diff"),
-            "the diff is taken from the reviewed submodule, not the store root");
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains("clone") && a.Contains("AchieveAiReviews") && a.Contains("/workspace/store"),
+                "the cross-repo store is cloned as the review superproject"
+            );
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains("submodule update --init") && a.Contains("repos/LmDotnetTools"),
+                "the reviewed repo's submodule is initialized in the store"
+            );
+        commands
+            .Should()
+            .Contain(
+                a =>
+                    a.Contains("/workspace/store/repos/LmDotnetTools")
+                    && a.Contains("checkout --force")
+                    && a.Contains("head-sha"),
+                "the PR head is checked out in the reviewed submodule working tree"
+            );
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains("/workspace/store/repos/LmDotnetTools") && a.Contains("diff"),
+                "the diff is taken from the reviewed submodule, not the store root"
+            );
 
         var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
         var payload = JsonDocument.Parse(artifact.Payload).RootElement;
@@ -437,23 +511,34 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         // The store declares a DIFFERENT repo — the reviewed repo is not in it, so the review falls back to
         // the single-repo /workspace/target checkout.
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n");
+            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n"
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(
-            a => a.Contains("clone") && a.Contains("github.com/achieveai/LmDotnetTools") && a.Contains("/workspace/target"),
-            "the reviewed repo is cloned directly when it is not a store submodule");
+        commands
+            .Should()
+            .Contain(
+                a =>
+                    a.Contains("clone")
+                    && a.Contains("github.com/achieveai/LmDotnetTools")
+                    && a.Contains("/workspace/target"),
+                "the reviewed repo is cloned directly when it is not a store submodule"
+            );
         var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
-        JsonDocument.Parse(artifact.Payload).RootElement.GetProperty("StoreRoot").ValueKind
-            .Should().Be(JsonValueKind.Null, "the single-repo fallback records no store root");
+        JsonDocument
+            .Parse(artifact.Payload)
+            .RootElement.GetProperty("StoreRoot")
+            .ValueKind.Should()
+            .Be(JsonValueKind.Null, "the single-repo fallback records no store root");
     }
 
     [Fact]
@@ -465,10 +550,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
         var run = fixture.SeedRun();
 
@@ -479,8 +566,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // agent's SYSTEM PROMPT via DaemonAgentFactory.CreateReviewProfile's workspace-layout variables,
         // rather than duplicated into the input.
         var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
-        profile.SystemPrompt.Should().Contain("/workspace/store/repos/LmDotnetTools", "the reviewed repo's submodule path is given");
-        profile.SystemPrompt.Should().Contain("/workspace/store/Contracts", "the shared Contracts/ layer is pointed out for cross-repo grounding");
+        profile
+            .SystemPrompt.Should()
+            .Contain("/workspace/store/repos/LmDotnetTools", "the reviewed repo's submodule path is given");
+        profile
+            .SystemPrompt.Should()
+            .Contain(
+                "/workspace/store/Contracts",
+                "the shared Contracts/ layer is pointed out for cross-repo grounding"
+            );
     }
 
     [Fact]
@@ -492,10 +586,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
         // _index.jsonl carries tags/scope per entry, so it — not the title-only _toc.md — is what lets the
         // reviewer (and the sub-agents it dispatches) match a lesson to the files this PR changes.
@@ -504,7 +600,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             """{"file":"system/null-guard.md","title":"Null-guard boundaries","tags":["null","boundaries"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
                 + "\n"
                 + """{"file":"system/pagination.md","title":"Filter before paging","tags":["pagination"],"scope":"system","sourcePrs":[],"updated":"2026-07-04"}"""
-                + "\n");
+                + "\n"
+        );
         fixture.FileSystem.Seed("/workspace/store/KnowledgeBase/_toc.md", "# Knowledge Base\n\nTOC-ONLY-MARKER\n");
         var run = fixture.SeedRun();
 
@@ -514,14 +611,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("## Prior knowledge (Knowledge Base)");
-        text.Should().Contain(
-            "/workspace/store/KnowledgeBase/system/null-guard.md",
-            "the agent cannot Grep the KB open, so it must be handed the exact absolute path");
+        text.Should()
+            .Contain(
+                "/workspace/store/KnowledgeBase/system/null-guard.md",
+                "the agent cannot Grep the KB open, so it must be handed the exact absolute path"
+            );
         text.Should().Contain("tags: null, boundaries", "metadata is what lets a lesson be matched to a dimension");
         text.Should().Contain("sub-agent", "the parent is told to copy matching paths into each sub-agent's brief");
-        text.Should().NotContain(
-            "TOC-ONLY-MARKER",
-            "with an index present the weaker title-only ToC block must not be used");
+        text.Should()
+            .NotContain("TOC-ONLY-MARKER", "with an index present the weaker title-only ToC block must not be used");
     }
 
     [Fact]
@@ -544,15 +642,19 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 "diff --git a/src/Alpha/Widget.cs b/src/Alpha/Widget.cs\n"
                     + string.Join('\n', Enumerable.Repeat("+ a line of widget body text", 20))
                     + "\ndiff --git a/src/Zeta/KrakenTentacle.cs b/src/Zeta/KrakenTentacle.cs\n+ late\n",
-                string.Empty));
+                string.Empty
+            )
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/Alpha/Widget.cs\n", string.Empty));
         // Registered FIRST: the fixture's broad "diff" rule would otherwise swallow this narrower one.
         fixture.Runner.OnArgvContainsFirst(
             "diff --name-only",
-            new SandboxCommandResult(0, "src/Alpha/Widget.cs\nsrc/Zeta/KrakenTentacle.cs\n", string.Empty));
+            new SandboxCommandResult(0, "src/Alpha/Widget.cs\nsrc/Zeta/KrakenTentacle.cs\n", string.Empty)
+        );
 
         // The kraken entry matches two tokens of a path that only the lossless list still carries, so it
         // must outscore the widget entry. Its file sorts LAST ordinally and both entries share an Updated
@@ -562,7 +664,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             """{"file":"system/a-widget.md","title":"Widget lifecycle","tags":["widget"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
                 + "\n"
                 + """{"file":"system/z-kraken.md","title":"Kraken tentacle retries","tags":["kraken","tentacle"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
-                + "\n");
+                + "\n"
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -570,13 +673,18 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().NotContain(
-            "KrakenTentacle.cs\nb/src",
-            "the fixture's cap must really have truncated the diff, or this test proves nothing");
+        text.Should()
+            .NotContain(
+                "KrakenTentacle.cs\nb/src",
+                "the fixture's cap must really have truncated the diff, or this test proves nothing"
+            );
         text.IndexOf("system/z-kraken.md", StringComparison.Ordinal).Should().BeGreaterThan(-1);
-        text.IndexOf("system/z-kraken.md", StringComparison.Ordinal).Should().BeLessThan(
-            text.IndexOf("system/a-widget.md", StringComparison.Ordinal),
-            "the entry matching the truncated-away path must still be ranked on it");
+        text.IndexOf("system/z-kraken.md", StringComparison.Ordinal)
+            .Should()
+            .BeLessThan(
+                text.IndexOf("system/a-widget.md", StringComparison.Ordinal),
+                "the entry matching the truncated-away path must still be ranked on it"
+            );
     }
 
     /// <summary>
@@ -604,15 +712,23 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // Premise first: with no title, the right entry does NOT come first. Without this the assertion
         // below could be satisfied by an ordering the fixture produces anyway.
         var withoutTitle = await RankedKnowledgeBlockAsync(index, prTitle: null);
-        withoutTitle.IndexOf("system/a-unrelated.md", StringComparison.Ordinal).Should().BeLessThan(
-            withoutTitle.IndexOf("system/z-flags.md", StringComparison.Ordinal),
-            "on paths alone both entries score zero and the ordinal tie-break wins, so this test can fail");
+        withoutTitle
+            .IndexOf("system/a-unrelated.md", StringComparison.Ordinal)
+            .Should()
+            .BeLessThan(
+                withoutTitle.IndexOf("system/z-flags.md", StringComparison.Ordinal),
+                "on paths alone both entries score zero and the ordinal tie-break wins, so this test can fail"
+            );
 
         var withTitle = await RankedKnowledgeBlockAsync(index, prTitle: "Remove the stale featureflag entry");
 
-        withTitle.IndexOf("system/z-flags.md", StringComparison.Ordinal).Should().BeLessThan(
-            withTitle.IndexOf("system/a-unrelated.md", StringComparison.Ordinal),
-            "the pattern is named in the PR's title and nowhere in its changed paths");
+        withTitle
+            .IndexOf("system/z-flags.md", StringComparison.Ordinal)
+            .Should()
+            .BeLessThan(
+                withTitle.IndexOf("system/a-unrelated.md", StringComparison.Ordinal),
+                "the pattern is named in the PR's title and nowhere in its changed paths"
+            );
     }
 
     /// <summary>Runs ContextReady + Reviewed over one seeded <c>_index.jsonl</c> and returns the review brief
@@ -625,21 +741,30 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "deploy/task.json\n", string.Empty));
         fixture.Runner.OnArgvContainsFirst(
-            "diff --name-only", new SandboxCommandResult(0, "deploy/task.json\n", string.Empty));
+            "diff --name-only",
+            new SandboxCommandResult(0, "deploy/task.json\n", string.Empty)
+        );
         fixture.FileSystem.Seed("/workspace/store/KnowledgeBase/_index.jsonl", index);
         var run = fixture.SeedRun(prTitle: prTitle);
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        return fixture.Factory.CreatedAgents.Should().ContainSingle().Subject
-            .ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        return fixture
+            .Factory.CreatedAgents.Should()
+            .ContainSingle()
+            .Subject.ReceivedInputs[0]
+            .Messages.OfType<TextMessage>()
+            .Single()
+            .Text;
     }
 
     [Fact]
@@ -657,17 +782,20 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
         fixture.FileSystem.Seed(
             "/workspace/store/KnowledgeBase/_index.jsonl",
             """{"file":"../../../workspace/target/src/LmCore/Foo.cs","title":"Poisoned","tags":["null"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
                 + "\n"
                 + """{"file":"system/null-guard.md","title":"Null-guard boundaries","tags":["null"],"scope":"system","sourcePrs":[],"updated":"2026-07-04"}"""
-                + "\n");
+                + "\n"
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -675,16 +803,21 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain(
-            "/workspace/store/KnowledgeBase/system/null-guard.md",
-            "the well-formed entry alongside it must still reach the reviewer");
+        text.Should()
+            .Contain(
+                "/workspace/store/KnowledgeBase/system/null-guard.md",
+                "the well-formed entry alongside it must still reach the reviewer"
+            );
         text.Should().NotContain("Poisoned");
-        text.Should().NotContain(
-            "/workspace/target/src/LmCore/Foo.cs",
-            "the escaping entry must never be rendered as a path the agent is told to Read");
+        text.Should()
+            .NotContain(
+                "/workspace/target/src/LmCore/Foo.cs",
+                "the escaping entry must never be rendered as a path the agent is told to Read"
+            );
 
         logs.Capturing.CountAtLevel(LogLevel.Warning, "../../../workspace/target/src/LmCore/Foo.cs")
-            .Should().Be(1, "a refused entry has to be visible in the log the way the surfaced ones are");
+            .Should()
+            .Be(1, "a refused entry has to be visible in the log the way the surfaced ones are");
     }
 
     [Fact]
@@ -702,10 +835,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
 
         // Two distinct entries, each recorded twice — the merged-index shape, four records for two lessons.
@@ -715,7 +850,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             """{"file":"system/retry-policy.md","title":"Retry policy","tags":["retry"],"scope":"system","sourcePrs":[],"updated":"2026-07-04"}""";
         fixture.FileSystem.Seed(
             "/workspace/store/KnowledgeBase/_index.jsonl",
-            NullGuard + "\n" + RetryPolicy + "\n" + NullGuard + "\n" + RetryPolicy + "\n");
+            NullGuard + "\n" + RetryPolicy + "\n" + NullGuard + "\n" + RetryPolicy + "\n"
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -723,17 +859,22 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain(
-            "/workspace/store/KnowledgeBase/system/null-guard.md",
-            "collapsing the repeats must not cost a distinct entry");
+        text.Should()
+            .Contain(
+                "/workspace/store/KnowledgeBase/system/null-guard.md",
+                "collapsing the repeats must not cost a distinct entry"
+            );
         text.Should().Contain("/workspace/store/KnowledgeBase/system/retry-policy.md");
 
         logs.Capturing.CountAtLevel(LogLevel.Information, "surfaced 2 Knowledge Base entries")
-            .Should().Be(1, "two entries reached the reviewer, and that is what the entry count must count");
+            .Should()
+            .Be(1, "two entries reached the reviewer, and that is what the entry count must count");
         logs.Capturing.CountAtLevel(LogLevel.Information, "from 4 _index.jsonl records")
-            .Should().Be(1, "the raw record count is the only signal that the index was doubled — it stays");
+            .Should()
+            .Be(1, "the raw record count is the only signal that the index was doubled — it stays");
         logs.Capturing.CountAtLevel(LogLevel.Warning, "collapsed 2 duplicate _index.jsonl records")
-            .Should().Be(1, "the gap between 2 and 4 is only honest if something explains it");
+            .Should()
+            .Be(1, "the gap between 2 and 4 is only honest if something explains it");
     }
 
     [Fact]
@@ -752,15 +893,18 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
         fixture.FileSystem.Seed(
             "/workspace/store/KnowledgeBase/_index.jsonl",
             """{"file":"system/ado-onboarding.md","title":"Follow the [ADO guide](../../docs/ado.md) first","tags":["ado"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
-                + "\n");
+                + "\n"
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -769,12 +913,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().NotContain("../../docs/ado.md", "the escaping link must not reach the reviewer");
-        text.Should().Contain(
-            "/workspace/store/KnowledgeBase/system/ado-onboarding.md",
-            "the entry itself is sound and must still be handed over");
+        text.Should()
+            .Contain(
+                "/workspace/store/KnowledgeBase/system/ado-onboarding.md",
+                "the entry itself is sound and must still be handed over"
+            );
 
         logs.Capturing.CountAtLevel(LogLevel.Warning, "system/ado-onboarding.md")
-            .Should().Be(1, "a cleared field has to be as visible as a refusal, and countable");
+            .Should()
+            .Be(1, "a cleared field has to be as visible as a refusal, and countable");
     }
 
     [Fact]
@@ -794,26 +941,31 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
         fixture.FileSystem.Seed(
             "/workspace/store/KnowledgeBase/_index.jsonl",
-            string.Join('\n', Enumerable.Repeat("not json at all", KnowledgeIndex.MaxIndexRecords + 1)));
+            string.Join('\n', Enumerable.Repeat("not json at all", KnowledgeIndex.MaxIndexRecords + 1))
+        );
         // A usable fallback, so the run takes the downgrade rather than the no-knowledge-at-all path: the
         // point is that a review which LOOKS well-supplied still says the index was torn.
         fixture.FileSystem.Seed(
             "/workspace/store/KnowledgeBase/_toc.md",
-            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n");
+            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n"
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         logs.Capturing.CountAtLevel(LogLevel.Warning, "_index.jsonl exceeds")
-            .Should().Be(1, "an index too big AND too broken to read must not look like an absent one");
+            .Should()
+            .Be(1, "an index too big AND too broken to read must not look like an absent one");
     }
 
     [Fact]
@@ -830,21 +982,25 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
         fixture.FileSystem.Seed(
             "/workspace/store/KnowledgeBase/_index.jsonl",
-            string.Join('\n', Enumerable.Repeat("not json at all", KnowledgeIndex.MaxIndexRecords + 1)));
+            string.Join('\n', Enumerable.Repeat("not json at all", KnowledgeIndex.MaxIndexRecords + 1))
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         logs.Capturing.CountAtLevel(LogLevel.Warning, "_index.jsonl exceeds")
-            .Should().Be(1, "the torn index is a fact about the read, not about which fallback followed it");
+            .Should()
+            .Be(1, "the torn index is a fact about the read, not about which fallback followed it");
     }
 
     [Fact]
@@ -861,24 +1017,29 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
         fixture.FileSystem.Seed(
             "/workspace/store/KnowledgeBase/_index.jsonl",
-            string.Join('\n', Enumerable.Repeat("not json at all", 3)));
+            string.Join('\n', Enumerable.Repeat("not json at all", 3))
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/KnowledgeBase/_toc.md",
-            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n");
+            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n"
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         logs.Capturing.CountAtLevel(LogLevel.Warning, "_index.jsonl exceeds")
-            .Should().Be(0, "nothing was left behind, so nothing was truncated");
+            .Should()
+            .Be(0, "nothing was left behind, so nothing was truncated");
     }
 
     [Fact]
@@ -890,16 +1051,19 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
         // The store carries prior knowledge distilled from past PRs; with no _index.jsonl to rank (a KB
         // written before the index existed) the review must still start with its table of contents (design §3).
         fixture.FileSystem.Seed(
             "/workspace/store/KnowledgeBase/_toc.md",
-            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n");
+            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n"
+        );
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -913,9 +1077,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // absolute path, since a bare "_toc.md" is not something the agent can open.
         text.Should().Contain("## Prior knowledge (Knowledge Base)", "the ToC is prepended as a labelled block");
         text.Should().Contain("Null-guard boundaries", "the seeded ToC entries are surfaced to the reviewer");
-        text.Should().Contain(
-            "/workspace/store/KnowledgeBase/_toc.md",
-            "the fallback must hand over the ToC's exact absolute path");
+        text.Should()
+            .Contain(
+                "/workspace/store/KnowledgeBase/_toc.md",
+                "the fallback must hand over the ToC's exact absolute path"
+            );
     }
 
     [Fact]
@@ -927,10 +1093,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
         var run = fixture.SeedRun();
 
@@ -965,10 +1133,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             {
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
         // No KnowledgeBase/_toc.md seeded — the common case before any knowledge has been extracted. The
         // best-effort read must skip silently and leave the input untouched (design §6).
@@ -995,10 +1165,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
                 EnableReviewFeedbackAgent = enableReviewFeedbackAgent,
-            });
+            }
+        );
         fixture.FileSystem.Seed(
             "/workspace/store/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
         return fixture;
     }
@@ -1013,7 +1185,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     private static void SeedFeedbackRecord(Fixture fixture, string slug, string body) =>
         fixture.FileSystem.Seed(
             $"/workspace/store/KnowledgeBase/developers/{slug}.reviewfeedbacks.md",
-            $"---\ndeveloper: {slug}\nsourcePrs: [\"github/a-r/1\"]\nupdated: 2026-08-04\n---\n\n## PATTERNS\n\n{body}\n");
+            $"---\ndeveloper: {slug}\nsourcePrs: [\"github/a-r/1\"]\nupdated: 2026-08-04\n---\n\n## PATTERNS\n\n{body}\n"
+        );
 
     private static async Task<string> RunAndReadReviewInputAsync(Fixture fixture, ReviewRun run)
     {
@@ -1045,12 +1218,17 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         var text = await RunAndReadReviewInputAsync(fixture, run);
 
-        text.Should().Contain(
-            $"KnowledgeBase/developers/{slug}.reviewfeedbacks.md",
-            "the record is prepended as a labelled block naming the exact file it came from");
+        text.Should()
+            .Contain(
+                $"KnowledgeBase/developers/{slug}.reviewfeedbacks.md",
+                "the record is prepended as a labelled block naming the exact file it came from"
+            );
         text.Should().Contain("ConfigureAwait(false)", "the seeded patterns are surfaced to the reviewer");
-        text.Should().NotContain(
-            "sourcePrs:", "the daemon-owned frontmatter is bookkeeping, not something the reviewer should read");
+        text.Should()
+            .NotContain(
+                "sourcePrs:",
+                "the daemon-owned frontmatter is bookkeeping, not something the reviewer should read"
+            );
     }
 
     /// <summary>
@@ -1095,9 +1273,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         var text = await RunAndReadReviewInputAsync(fixture, run);
 
-        text.Should().NotContain(
-            "Recurring feedback",
-            "a store that carries records from another daemon must not leak them into a review here");
+        text.Should()
+            .NotContain(
+                "Recurring feedback",
+                "a store that carries records from another daemon must not leak them into a review here"
+            );
     }
 
     /// <summary>Design §6: reading the record must never fail the review.</summary>
@@ -1157,11 +1337,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var text = await RunAndReadReviewInputAsync(fixture, run);
 
         var block = text[text.IndexOf("## Recurring feedback", StringComparison.Ordinal)..];
-        block.Should().Contain(
-            "sub-agent", "the parent must be told to forward this, exactly as the prior-knowledge digest is");
-        block.Should().Contain(
-            "copy that path into its brief",
-            "forwarding the PATH is what a sub-agent can act on; it has no other route to the record");
+        block
+            .Should()
+            .Contain("sub-agent", "the parent must be told to forward this, exactly as the prior-knowledge digest is");
+        block
+            .Should()
+            .Contain(
+                "copy that path into its brief",
+                "forwarding the PATH is what a sub-agent can act on; it has no other route to the record"
+            );
     }
 
     /// <summary>
@@ -1179,11 +1363,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var text = await RunAndReadReviewInputAsync(fixture, run);
 
         var block = text[text.IndexOf("## Recurring feedback", StringComparison.Ordinal)..];
-        block.Should().Contain(
-            $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
-            "the heading names the record's exact ABSOLUTE path as the agent sees it, not a relative one");
-        block.Should().Contain(
-            "do NOT ", "the agent is steered off Grep/Glob, which can miss the file even when it exists");
+        block
+            .Should()
+            .Contain(
+                $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
+                "the heading names the record's exact ABSOLUTE path as the agent sees it, not a relative one"
+            );
+        block
+            .Should()
+            .Contain("do NOT ", "the agent is steered off Grep/Glob, which can miss the file even when it exists");
     }
 
     [Fact]
@@ -1206,7 +1394,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         using var fixture = Fixture.GitHub(
             LoggerFactory,
             new CodeReviewDaemonOptions { ReviewSubAgentBarrierQuietSeconds = 1 },
-            completionSource: source);
+            completionSource: source
+        );
         observed = fixture;
         var run = fixture.SeedRun();
         observedRun = run;
@@ -1215,16 +1404,24 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         artifactKindsPerPoll.Should().NotBeEmpty("the barrier ran");
-        artifactKindsPerPoll.Should().AllSatisfy(kindsAtBarrier =>
-        {
-            kindsAtBarrier.Should().Contain(
-                DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
-                "the provisional answer is checkpointed before the wait it has to survive");
-            kindsAtBarrier.Should().NotContain(
-                DaemonReviewStageExecutor.ReviewArtifactKind,
-                "only a synthesis turn may write the authoritative review");
-            kindsAtBarrier.Should().NotContain(JudgeAgent.JudgeArtifactKind);
-        });
+        artifactKindsPerPoll
+            .Should()
+            .AllSatisfy(kindsAtBarrier =>
+            {
+                kindsAtBarrier
+                    .Should()
+                    .Contain(
+                        DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+                        "the provisional answer is checkpointed before the wait it has to survive"
+                    );
+                kindsAtBarrier
+                    .Should()
+                    .NotContain(
+                        DaemonReviewStageExecutor.ReviewArtifactKind,
+                        "only a synthesis turn may write the authoritative review"
+                    );
+                kindsAtBarrier.Should().NotContain(JudgeAgent.JudgeArtifactKind);
+            });
         outboxRowsPerPoll.Should().AllBeEquivalentTo(0, "nothing is delivered while the review is still provisional");
 
         var kinds = fixture.Store.GetArtifacts(run.Id).Select(a => a.ArtifactKind).ToList();
@@ -1243,20 +1440,32 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // confusable: the artifact everything downstream reads has to carry the SYNTHESIS text.
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
-        fixture.Factory.DecorateCreatedAgent = agent => agent.ThenReplies(
-            new TextMessage { Text = SynthesisText, Role = Role.Assistant, RunId = "run-synthesis" });
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true }
+        );
+        fixture.Factory.DecorateCreatedAgent = agent =>
+            agent.ThenReplies(
+                new TextMessage
+                {
+                    Text = SynthesisText,
+                    Role = Role.Assistant,
+                    RunId = "run-synthesis",
+                }
+            );
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
 
         var artifacts = fixture.Store.GetArtifacts(run.Id);
         ReviewTextOf(artifacts, DaemonReviewStageExecutor.ProvisionalReviewArtifactKind)
-            .Should().Be(fixture.Factory.DefaultText, "the checkpoint keeps the provisional answer verbatim");
+            .Should()
+            .Be(fixture.Factory.DefaultText, "the checkpoint keeps the provisional answer verbatim");
         ReviewTextOf(artifacts, DaemonReviewStageExecutor.ReviewArtifactKind).Should().Be(SynthesisText);
-        fixture.GitHubPublisher.PostedBodies.Should().ContainSingle().Which
-            .Should().Contain(SynthesisText).And.NotContain(
-                fixture.Factory.DefaultText, "the provisional answer must never reach the PR");
+        fixture
+            .GitHubPublisher.PostedBodies.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Contain(SynthesisText)
+            .And.NotContain(fixture.Factory.DefaultText, "the provisional answer must never reach the PR");
     }
 
     // ── Restart semantics: a Reviewed lifecycle interrupted by a daemon restart ──────────────────────
@@ -1271,26 +1480,47 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         var barrierPolls = 0;
         using var fixture = Fixture.GitHub(
-            LoggerFactory, S2SResumeOptions(), completionSource: new ObservingCompletionSource(() => barrierPolls++));
+            LoggerFactory,
+            S2SResumeOptions(),
+            completionSource: new ObservingCompletionSource(() => barrierPolls++)
+        );
         var run = fixture.SeedRun();
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         SeedProvisionalCheckpoint(fixture, run, "thread-persisted", DateTimeOffset.UtcNow.AddMinutes(20));
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle(
-            "one turn was created").Which.Should().Be(
-            "thread-persisted", "the review rejoins the conversation its provisional turn ran on");
+        fixture
+            .Factory.ResumeHostedThreadIds.Should()
+            .ContainSingle("one turn was created")
+            .Which.Should()
+            .Be("thread-persisted", "the review rejoins the conversation its provisional turn ran on");
         var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        agent.ReceivedInputs.Should().ContainSingle(
-            "the provisional turn ran before the restart; re-running it would fan out a second sub-agent tree");
-        barrierPolls.Should().BeGreaterThan(
-            0, "no snapshot is checkpointed — a resumed lifecycle re-queries the barrier and re-proves stability");
-        fixture.Store.GetArtifacts(run.Id).Should().ContainSingle(
-            a => a.ArtifactKind == DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
-            "the existing checkpoint is resumed, not rewritten");
-        fixture.Store.GetArtifacts(run.Id).Should().Contain(
-            a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind, "the resumed lifecycle still completes");
+        agent
+            .ReceivedInputs.Should()
+            .ContainSingle(
+                "the provisional turn ran before the restart; re-running it would fan out a second sub-agent tree"
+            );
+        barrierPolls
+            .Should()
+            .BeGreaterThan(
+                0,
+                "no snapshot is checkpointed — a resumed lifecycle re-queries the barrier and re-proves stability"
+            );
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(
+                a => a.ArtifactKind == DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+                "the existing checkpoint is resumed, not rewritten"
+            );
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .Contain(
+                a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind,
+                "the resumed lifecycle still completes"
+            );
     }
 
     [Fact]
@@ -1345,9 +1575,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        agent.Deadlines.Should().ContainSingle(
-            "the resumed lifecycle runs exactly one turn — the synthesis").Which.Should().Be(
-            originalDeadline, "a resumed turn inherits what is LEFT of the original budget, never a fresh one");
+        agent
+            .Deadlines.Should()
+            .ContainSingle("the resumed lifecycle runs exactly one turn — the synthesis")
+            .Which.Should()
+            .Be(originalDeadline, "a resumed turn inherits what is LEFT of the original budget, never a fresh one");
     }
 
     [Fact]
@@ -1366,7 +1598,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().BeNull();
         var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         agent.ReceivedInputs.Should().HaveCount(2, "the fresh lifecycle runs provisional and synthesis again");
-        agent.Deadlines.Should().AllSatisfy(d => d.Should().BeAfter(DateTimeOffset.UtcNow, "a fresh budget was started"));
+        agent
+            .Deadlines.Should()
+            .AllSatisfy(d => d.Should().BeAfter(DateTimeOffset.UtcNow, "a fresh budget was started"));
     }
 
     [Fact]
@@ -1379,7 +1613,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var run = fixture.SeedRun();
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         SeedProvisionalCheckpoint(
-            fixture, run, "thread-that-died", DateTimeOffset.UtcNow.AddMinutes(20), text: StaleProvisionalText);
+            fixture,
+            run,
+            "thread-that-died",
+            DateTimeOffset.UtcNow.AddMinutes(20),
+            text: StaleProvisionalText
+        );
         SeedSynthesisRequest(fixture, run, "input-that-died", "thread-that-died");
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -1388,11 +1627,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         fixture.Factory.ResumableLoops.Should().BeEmpty("an in-process loop is not resumable, so none is wrapped");
         var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         agent.ReceivedInputs.Should().HaveCount(2, "the attempt restarts collect-only");
-        ArtifactsOf(fixture, run, DaemonReviewStageExecutor.SynthesisRequestArtifactKind).Should().ContainSingle(
-            "the seeded row is the only one — an in-process turn cannot be rejoined, so none is checkpointed");
+        ArtifactsOf(fixture, run, DaemonReviewStageExecutor.SynthesisRequestArtifactKind)
+            .Should()
+            .ContainSingle(
+                "the seeded row is the only one — an in-process turn cannot be rejoined, so none is checkpointed"
+            );
         ReviewTextOf(fixture.Store.GetArtifacts(run.Id), DaemonReviewStageExecutor.ReviewArtifactKind)
-            .Should().Be(fixture.Factory.DefaultText).And.NotBe(
-                StaleProvisionalText, "a provisional is never promoted to the authoritative review");
+            .Should()
+            .Be(fixture.Factory.DefaultText)
+            .And.NotBe(StaleProvisionalText, "a provisional is never promoted to the authoritative review");
     }
 
     [Theory]
@@ -1424,26 +1667,36 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             "model" => current with { ModelId = "gpt-5.6-terra" },
             // An escalation rung runs on its own thread with the overflowing history shed; resuming it as the
             // base attempt would review under a model and window this attempt never chose.
-            "rung" => current with
-            {
-                LocalThreadId = DaemonReviewStageExecutor.ThreadId(run, run.VariantId + "-esc"),
-            },
+            "rung" => current with { LocalThreadId = DaemonReviewStageExecutor.ThreadId(run, run.VariantId + "-esc") },
             "tool-mode" => current with { ToolAssisted = true },
             // ContextReady was re-entered: the diff the checkpointed conversation reviewed is superseded.
             _ => current with { ContextGeneration = current.ContextGeneration + 1 },
         };
         SeedProvisionalCheckpoint(
-            fixture, run, "thread-from-another-lifecycle", DateTimeOffset.UtcNow.AddMinutes(20),
-            lifecycle: persisted);
+            fixture,
+            run,
+            "thread-from-another-lifecycle",
+            DateTimeOffset.UtcNow.AddMinutes(20),
+            lifecycle: persisted
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().BeNull(
-            "a checkpoint this process cannot prove it wrote is not a conversation it may rejoin");
-        fixture.Factory.ResumableLoops.Should().ContainSingle().Which.MintedThreadIds.Should().ContainSingle(
-            "a discarded checkpoint starts over on a NEW conversation");
-        fixture.Factory.CreatedAgents.Should().ContainSingle().Which.ReceivedInputs.Should().HaveCount(
-            2, "the fresh lifecycle runs provisional and synthesis again");
+        fixture
+            .Factory.ResumeHostedThreadIds.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeNull("a checkpoint this process cannot prove it wrote is not a conversation it may rejoin");
+        fixture
+            .Factory.ResumableLoops.Should()
+            .ContainSingle()
+            .Which.MintedThreadIds.Should()
+            .ContainSingle("a discarded checkpoint starts over on a NEW conversation");
+        fixture
+            .Factory.CreatedAgents.Should()
+            .ContainSingle()
+            .Which.ReceivedInputs.Should()
+            .HaveCount(2, "the fresh lifecycle runs provisional and synthesis again");
     }
 
     [Fact]
@@ -1460,8 +1713,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().BeNull(
-            "the conversation reviewed a diff this run is no longer about");
+        fixture
+            .Factory.ResumeHostedThreadIds.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeNull("the conversation reviewed a diff this run is no longer about");
         fixture.Factory.ResumableLoops.Should().ContainSingle().Which.MintedThreadIds.Should().ContainSingle();
     }
 
@@ -1481,16 +1737,23 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*host 503*");
         var checkpoint = PayloadOf<ReviewArtifactPayload>(
-            fixture, run, DaemonReviewStageExecutor.ProvisionalReviewArtifactKind);
-        checkpoint.ThreadId.Should().Be(
-            $"hosted-{DaemonReviewStageExecutor.ThreadId(run, run.VariantId)}",
-            "the minted conversation is recorded before the turn that fans out on it");
+            fixture,
+            run,
+            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind
+        );
+        checkpoint
+            .ThreadId.Should()
+            .Be(
+                $"hosted-{DaemonReviewStageExecutor.ThreadId(run, run.VariantId)}",
+                "the minted conversation is recorded before the turn that fans out on it"
+            );
         checkpoint.ProvisionalComplete.Should().BeFalse("the provisional turn never returned");
         checkpoint.ReviewText.Should().BeEmpty();
-        checkpoint.Lifecycle.Should().Be(
-            LifecycleOf(fixture, run), "a checkpoint only a matching process may resume");
-        fixture.Store.GetArtifacts(run.Id).Should().NotContain(
-            a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        checkpoint.Lifecycle.Should().Be(LifecycleOf(fixture, run), "a checkpoint only a matching process may resume");
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     [Fact]
@@ -1503,8 +1766,13 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var run = fixture.SeedRun();
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         SeedProvisionalCheckpoint(
-            fixture, run, "thread-minted", DateTimeOffset.UtcNow.AddMinutes(20),
-            text: string.Empty, provisionalComplete: false);
+            fixture,
+            run,
+            "thread-minted",
+            DateTimeOffset.UtcNow.AddMinutes(20),
+            text: string.Empty,
+            provisionalComplete: false
+        );
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
@@ -1512,13 +1780,17 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var localThreadId = DaemonReviewStageExecutor.ThreadId(run, run.VariantId);
         var loop = fixture.Factory.ResumableLoops.Should().ContainSingle().Subject;
         loop.MintedThreadIds.Should().BeEmpty("the conversation already exists");
-        loop.ArmedIdempotencyKeys.Should().Equal(
-            DaemonReviewStageExecutor.TurnIdempotencyKey(localThreadId, DaemonReviewStageExecutor.ProvisionalTurn),
-            DaemonReviewStageExecutor.TurnIdempotencyKey(localThreadId, DaemonReviewStageExecutor.SynthesisTurn));
+        loop.ArmedIdempotencyKeys.Should()
+            .Equal(
+                DaemonReviewStageExecutor.TurnIdempotencyKey(localThreadId, DaemonReviewStageExecutor.ProvisionalTurn),
+                DaemonReviewStageExecutor.TurnIdempotencyKey(localThreadId, DaemonReviewStageExecutor.SynthesisTurn)
+            );
         ReviewTextOf(fixture.Store.GetArtifacts(run.Id), DaemonReviewStageExecutor.ReviewArtifactKind)
-            .Should().Be(
+            .Should()
+            .Be(
                 fixture.Factory.DefaultText,
-                "the empty mint-time payload is a lifecycle record, never an authoritative answer");
+                "the empty mint-time payload is a lifecycle record, never an authoritative answer"
+            );
     }
 
     [Fact]
@@ -1536,12 +1808,19 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var loop = fixture.Factory.ResumableLoops.Should().ContainSingle().Subject;
-        loop.ArmedResumeInputIds.Should().ContainSingle().Which.Should().BeNull(
-            "no accepted-input row survived, so the turn is sent rather than polled");
-        PayloadOf<SynthesisRequestPayload>(
-            fixture, run, DaemonReviewStageExecutor.SynthesisRequestArtifactKind).Should().Be(
-            new SynthesisRequestPayload(
-                loop.NextInputId, run.Id.ToString(CultureInfo.InvariantCulture), "thread-persisted"));
+        loop.ArmedResumeInputIds.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeNull("no accepted-input row survived, so the turn is sent rather than polled");
+        PayloadOf<SynthesisRequestPayload>(fixture, run, DaemonReviewStageExecutor.SynthesisRequestArtifactKind)
+            .Should()
+            .Be(
+                new SynthesisRequestPayload(
+                    loop.NextInputId,
+                    run.Id.ToString(CultureInfo.InvariantCulture),
+                    "thread-persisted"
+                )
+            );
     }
 
     [Fact]
@@ -1557,7 +1836,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 UseS2SReviewAgent = true,
                 ReviewSubAgentBarrierQuietSeconds = 1,
                 ReviewStageDeadlineMinutes = 1,
-            });
+            }
+        );
         var run = fixture.SeedRun();
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         var ceiling = DateTimeOffset.UtcNow.AddMinutes(1);
@@ -1565,10 +1845,19 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().Be(
-            "thread-persisted", "the checkpoint is still resumed — only its budget is clamped");
-        fixture.Factory.CreatedAgents.Should().ContainSingle().Which.Deadlines.Should().ContainSingle()
-            .Which.Should().BeOnOrBefore(ceiling.AddSeconds(5)).And.BeAfter(DateTimeOffset.UtcNow);
+        fixture
+            .Factory.ResumeHostedThreadIds.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("thread-persisted", "the checkpoint is still resumed — only its budget is clamped");
+        fixture
+            .Factory.CreatedAgents.Should()
+            .ContainSingle()
+            .Which.Deadlines.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeOnOrBefore(ceiling.AddSeconds(5))
+            .And.BeAfter(DateTimeOffset.UtcNow);
     }
 
     [Fact]
@@ -1585,8 +1874,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*IResumableReviewTurn*");
-        fixture.Store.GetArtifacts(run.Id).Should().NotContain(
-            a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     [Fact]
@@ -1599,19 +1890,23 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
         var run = fixture.SeedRun();
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
-        _ = fixture.Store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
-            Provider = "github",
-            Payload = "{ truncated by a half-written",
-        });
+        _ = fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+                Provider = "github",
+                Payload = "{ truncated by a half-written",
+            }
+        );
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         await act.Should().ThrowAsync<ReviewCheckpointCorruptException>();
-        fixture.Factory.CreatedAgents.Should().BeEmpty("no review is started while an existing lifecycle is unreadable");
+        fixture
+            .Factory.CreatedAgents.Should()
+            .BeEmpty("no review is started while an existing lifecycle is unreadable");
     }
 
     [Fact]
@@ -1626,21 +1921,26 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
         var run = fixture.SeedRun();
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
-        _ = fixture.Store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
-            Provider = "github",
-            Payload = "null",
-        });
+        _ = fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+                Provider = "github",
+                Payload = "null",
+            }
+        );
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var thrown = await act.Should().ThrowAsync<ReviewCheckpointCorruptException>();
-        thrown.And.InnerException.Should().BeOfType<JsonException>(
-            "only a serialization fault may be answered with a corruption verdict");
-        fixture.Factory.CreatedAgents.Should().BeEmpty("no review is started while an existing lifecycle is unreadable");
+        thrown
+            .And.InnerException.Should()
+            .BeOfType<JsonException>("only a serialization fault may be answered with a corruption verdict");
+        fixture
+            .Factory.CreatedAgents.Should()
+            .BeEmpty("no review is started while an existing lifecycle is unreadable");
     }
 
     [Fact]
@@ -1655,10 +1955,18 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*host 503*");
         var kinds = fixture.Store.GetArtifacts(run.Id).Select(a => a.ArtifactKind).ToList();
-        kinds.Should().Contain(
-            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind, "the interrupted lifecycle's checkpoint survives");
-        kinds.Should().NotContain(
-            DaemonReviewStageExecutor.ReviewArtifactKind, "a failed synthesis leaves no authoritative review behind");
+        kinds
+            .Should()
+            .Contain(
+                DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+                "the interrupted lifecycle's checkpoint survives"
+            );
+        kinds
+            .Should()
+            .NotContain(
+                DaemonReviewStageExecutor.ReviewArtifactKind,
+                "a failed synthesis leaves no authoritative review behind"
+            );
     }
 
     [Fact]
@@ -1667,7 +1975,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // The dedicated exception type matters beyond this stage: it is what tells the orchestrator that the
         // tree never settled inside a whole budget — a stuck review to be parked, not a transient to retry.
         using var fixture = Fixture.GitHub(
-            LoggerFactory, S2SResumeOptions(), completionSource: new NeverSettlingCompletionSource());
+            LoggerFactory,
+            S2SResumeOptions(),
+            completionSource: new NeverSettlingCompletionSource()
+        );
         var run = fixture.SeedRun();
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         SeedProvisionalCheckpoint(fixture, run, "thread-persisted", DateTimeOffset.UtcNow.AddMilliseconds(300));
@@ -1675,10 +1986,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         await act.Should().ThrowAsync<ReviewBarrierDeadlineException>();
-        fixture.Store.GetArtifacts(run.Id).Should().NotContain(
-            a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
-        fixture.Factory.CreatedAgents.Should().ContainSingle().Which
-            .ReceivedInputs.Should().BeEmpty("the barrier never opened, so the synthesis turn never ran");
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        fixture
+            .Factory.CreatedAgents.Should()
+            .ContainSingle()
+            .Which.ReceivedInputs.Should()
+            .BeEmpty("the barrier never opened, so the synthesis turn never ran");
     }
 
     /// <summary>A source whose roster never reaches a terminal status, so the barrier can only end at the
@@ -1686,36 +2002,47 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     private sealed class NeverSettlingCompletionSource : IReviewSubAgentCompletionSource
     {
         public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
-            ReviewRun run, string parentThreadId, CancellationToken ct) =>
-            Task.FromResult(new ReviewSubAgentTreeSnapshot(
-            [
-                new ReviewSubAgentNode
-                {
-                    AgentId = "child-1",
-                    ThreadId = "child-thread",
-                    ParentThreadId = parentThreadId,
-                    Depth = 1,
-                    Status = ReviewSubAgentStatus.Running,
-                    Template = "code-reviewer",
-                },
-            ]));
+            ReviewRun run,
+            string parentThreadId,
+            CancellationToken ct
+        ) =>
+            Task.FromResult(
+                new ReviewSubAgentTreeSnapshot([
+                    new ReviewSubAgentNode
+                    {
+                        AgentId = "child-1",
+                        ThreadId = "child-thread",
+                        ParentThreadId = parentThreadId,
+                        Depth = 1,
+                        Status = ReviewSubAgentStatus.Running,
+                        Template = "code-reviewer",
+                    },
+                ])
+            );
     }
 
     [Fact]
     public async Task EnableABVariants_also_persists_a_b_variant_review_artifact()
     {
         using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableABVariants = true });
-        fixture.Factory.TextByProfileId[$"{DaemonAgentFactory.ReviewProfileId}-b"] = "## Review (B)\nConsider: extract.";
+        fixture.Factory.TextByProfileId[$"{DaemonAgentFactory.ReviewProfileId}-b"] =
+            "## Review (B)\nConsider: extract.";
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        var bVariant = fixture.Store
-            .GetArtifacts(run.Id)
-            .Should().ContainSingle(a => a.ArtifactKind == VariantReviewer.VariantReviewArtifactKind).Subject;
-        JsonDocument.Parse(bVariant.Payload).RootElement.GetProperty("ReviewText").GetString()
-            .Should().Contain("Review (B)");
+        var bVariant = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == VariantReviewer.VariantReviewArtifactKind)
+            .Subject;
+        JsonDocument
+            .Parse(bVariant.Payload)
+            .RootElement.GetProperty("ReviewText")
+            .GetString()
+            .Should()
+            .Contain("Review (B)");
         fixture.Factory.CreatedProfileIds.Should().Contain($"{DaemonAgentFactory.ReviewProfileId}-b");
     }
 
@@ -1736,16 +2063,19 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Judged_persists_a_judge_artifact_when_enabled()
     {
         using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableJudgeAgent = true });
-        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
+            "{\"score\": 8, \"rationale\": \"Solid.\"}";
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
 
-        var judge = fixture.Store
-            .GetArtifacts(run.Id)
-            .Should().ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind).Subject;
+        var judge = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind)
+            .Subject;
         JsonDocument.Parse(judge.Payload).RootElement.GetProperty("Score").GetInt32().Should().Be(8);
     }
 
@@ -1767,11 +2097,13 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             .OnJson(
                 HttpMethod.Get,
                 "ids=1234",
-                WorkItemBatch(WorkItem(1234, "Bug", "Tag cache returns stale entries", parent: 1200, child: 1299)))
+                WorkItemBatch(WorkItem(1234, "Bug", "Tag cache returns stale entries", parent: 1200, child: 1299))
+            )
             .OnJson(
                 HttpMethod.Get,
                 "ids=1200",
-                WorkItemBatch(WorkItem(1200, "User Story", "Tag lookups are correct", parent: 1100)))
+                WorkItemBatch(WorkItem(1200, "User Story", "Tag lookups are correct", parent: 1100))
+            )
             .OnJson(HttpMethod.Get, "ids=1100", WorkItemBatch(WorkItem(1100, "Epic", "Retail platform health")));
         using var fixture = Fixture.Ado(LoggerFactory, workItemContextReader: WorkItemReader(handler));
         var run = fixture.SeedRun();
@@ -1781,25 +2113,32 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         var text = BriefSentToTheAgent(fixture);
 
-        text.Should().StartWith(
-            "## Work items linked to this pull request",
-            "the intent is the first thing the reviewer reads, ahead of every block that presumes it");
+        text.Should()
+            .StartWith(
+                "## Work items linked to this pull request",
+                "the intent is the first thing the reviewer reads, ahead of every block that presumes it"
+            );
         text.Should().Contain("Bug 1234").And.Contain("Tag cache returns stale entries");
         text.Should().Contain("User Story 1200");
-        text.Should().Contain(
-            "Epic 1100",
-            "the top of the chain is what says why the change was wanted at all");
-        text.Should().NotContain(
-            "1299",
-            "1299 is the Bug's CHILD; walking Hierarchy-Forward instead of -Reverse would descend into "
-                + "sub-tasks and never reach the Epic");
-        text.Should().Contain(
-            "ASKED to do",
-            "the block has to tell the reviewer what to do with this, not just list identifiers");
+        text.Should().Contain("Epic 1100", "the top of the chain is what says why the change was wanted at all");
+        text.Should()
+            .NotContain(
+                "1299",
+                "1299 is the Bug's CHILD; walking Hierarchy-Forward instead of -Reverse would descend into "
+                    + "sub-tasks and never reach the Epic"
+            );
+        text.Should()
+            .Contain(
+                "ASKED to do",
+                "the block has to tell the reviewer what to do with this, not just list identifiers"
+            );
 
         // The rest of the brief is still there: this block is PREPENDED, never a replacement.
-        text.Should().Contain(
-            $"diff {run.BaseSha}...{run.HeadSha}", "the work-item block must not displace the diff instruction");
+        text.Should()
+            .Contain(
+                $"diff {run.BaseSha}...{run.HeadSha}",
+                "the work-item block must not displace the diff instruction"
+            );
     }
 
     /// <summary>
@@ -1821,9 +2160,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         text.Should().NotContain("Work items linked to this pull request");
         text.Should().NotContain("work-item lookup");
-        text.Should().Contain(
-            $"diff {run.BaseSha}...{run.HeadSha}",
-            "and the review still ran on the brief it has always had");
+        text.Should()
+            .Contain($"diff {run.BaseSha}...{run.HeadSha}", "and the review still ran on the brief it has always had");
     }
 
     /// <summary>
@@ -1841,8 +2179,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task Reviewed_distinguishes_a_pull_request_with_no_work_items_from_a_lookup_that_failed()
     {
-        var noneLinked = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Get, "/pullRequests/118/workitems", """{ "count": 0, "value": [] }""");
+        var noneLinked = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullRequests/118/workitems",
+            """{ "count": 0, "value": [] }"""
+        );
         using var linksNothing = Fixture.Ado(LoggerFactory, workItemContextReader: WorkItemReader(noneLinked));
         var runA = linksNothing.SeedRun();
         await linksNothing.Executor.ExecuteStageAsync(ReviewStage.ContextReady, runA, CancellationToken.None);
@@ -1851,57 +2192,81 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         // A read that is DENIED must reach the Failed arm, not the NoneLinked one. A reader that reported "no
         // work items" on a 403 would make every assertion below true and the feature still wrong.
-        var denied = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Get, "/pullRequests/118/workitems", "{}", HttpStatusCode.Forbidden);
+        var denied = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullRequests/118/workitems",
+            "{}",
+            HttpStatusCode.Forbidden
+        );
         using var lookupFails = Fixture.Ado(LoggerFactory, workItemContextReader: WorkItemReader(denied));
         var runB = lookupFails.SeedRun();
         await lookupFails.Executor.ExecuteStageAsync(ReviewStage.ContextReady, runB, CancellationToken.None);
         await lookupFails.Executor.ExecuteStageAsync(ReviewStage.Reviewed, runB, CancellationToken.None);
         var failedText = BriefSentToTheAgent(lookupFails);
 
-        noneText.Should().Contain(
-            "links NO work items", "the reviewer is told the absence outright rather than left to infer it");
-        noneText.Should().Contain(
-            "The lookup succeeded",
-            "the statement is only useful if the reviewer knows it rests on an answer rather than on silence");
+        noneText
+            .Should()
+            .Contain("links NO work items", "the reviewer is told the absence outright rather than left to infer it");
+        noneText
+            .Should()
+            .Contain(
+                "The lookup succeeded",
+                "the statement is only useful if the reviewer knows it rests on an answer rather than on silence"
+            );
 
         failedText.Should().Contain("lookup FAILED", "the failure is named, not implied by a gap");
-        failedText.Should().Contain(
-            "NOT the same as the pull request having no work items",
-            "the reviewer is told the distinction outright, because it cannot check it from the sandbox");
+        failedText
+            .Should()
+            .Contain(
+                "NOT the same as the pull request having no work items",
+                "the reviewer is told the distinction outright, because it cannot check it from the sandbox"
+            );
 
-        failedText.Should().NotBe(
-            noneText,
-            "a failed lookup and a PR with no work items must not reach the agent as the same brief — that is "
-                + "exactly how 'nobody could read the intent' becomes 'there was no intent'");
+        failedText
+            .Should()
+            .NotBe(
+                noneText,
+                "a failed lookup and a PR with no work items must not reach the agent as the same brief — that is "
+                    + "exactly how 'nobody could read the intent' becomes 'there was no intent'"
+            );
 
         // Neither arm is an error: both reviews completed and persisted their artifact.
-        linksNothing.Store.GetArtifacts(runA.Id)
-            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
-        lookupFails.Store.GetArtifacts(runB.Id)
-            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        linksNothing
+            .Store.GetArtifacts(runA.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        lookupFails
+            .Store.GetArtifacts(runB.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     /// <summary>The text the review loop was actually handed on its first turn.</summary>
     private static string BriefSentToTheAgent(Fixture fixture) =>
-        fixture.Factory.CreatedAgents.Should().ContainSingle().Subject
-            .ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        fixture
+            .Factory.CreatedAgents.Should()
+            .ContainSingle()
+            .Subject.ReceivedInputs[0]
+            .Messages.OfType<TextMessage>()
+            .Single()
+            .Text;
 
     private static AdoWorkItemContextReader WorkItemReader(FakeHttpMessageHandler handler) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            NullLogger<AdoWorkItemContextReader>.Instance);
+            NullLogger<AdoWorkItemContextReader>.Instance
+        );
 
     /// <summary>The PR-links response, whose ids ADO sends as STRINGS (the wit endpoint sends the same ids as
     /// numbers — one parser has to take both).</summary>
     private static string WorkItemLinks(params int[] ids) =>
         $$"""
-        {
-          "count": {{ids.Length}},
-          "value": [ {{string.Join(", ", ids.Select(id => $$"""{ "id": "{{id}}" }"""))}} ]
-        }
-        """;
+            {
+              "count": {{ids.Length}},
+              "value": [ {{string.Join(", ", ids.Select(id => $$"""{ "id": "{{id}}" }"""))}} ]
+            }
+            """;
 
     /// <summary>One work item, optionally naming a parent (Hierarchy-Reverse) and a child
     /// (Hierarchy-Forward). Both directions are present on the fixture that tests the walk, so following the
@@ -1912,13 +2277,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         if (parent is { } p)
         {
             relations.Add(
-                $$"""{ "rel": "System.LinkTypes.Hierarchy-Reverse", "url": "https://dev.azure.com/achieveai/_apis/wit/workItems/{{p}}" }""");
+                $$"""{ "rel": "System.LinkTypes.Hierarchy-Reverse", "url": "https://dev.azure.com/achieveai/_apis/wit/workItems/{{p}}" }"""
+            );
         }
 
         if (child is { } c)
         {
             relations.Add(
-                $$"""{ "rel": "System.LinkTypes.Hierarchy-Forward", "url": "https://dev.azure.com/achieveai/_apis/wit/workItems/{{c}}" }""");
+                $$"""{ "rel": "System.LinkTypes.Hierarchy-Forward", "url": "https://dev.azure.com/achieveai/_apis/wit/workItems/{{c}}" }"""
+            );
         }
 
         return $$"""
@@ -1940,13 +2307,18 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task An_azure_devops_run_maps_to_the_ado_provider_and_publisher()
     {
-        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        using var fixture = Fixture.Ado(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true }
+        );
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
 
-        fixture.Store.GetArtifacts(run.Id)
-            .Should().OnlyContain(a => a.Provider == "ado", "azure-devops is mapped to the 'ado' provider string");
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .OnlyContain(a => a.Provider == "ado", "azure-devops is mapped to the 'ado' provider string");
         fixture.AdoPublisher!.PostCount.Should().Be(1);
         fixture.GitHubPublisher.PostCount.Should().Be(0, "the ado run must not select the github publisher");
     }
@@ -1956,15 +2328,21 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+            new CodeReviewDaemonOptions
+            {
+                ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git",
+            }
+        );
         // This is the first review of the PR: the review branch does not exist yet.
         fixture.Runner.OnArgvContains(
             "rev-parse --verify review/lmdotnettools-118",
-            new SandboxCommandResult(1, string.Empty, "unknown revision"));
+            new SandboxCommandResult(1, string.Empty, "unknown revision")
+        );
         // The push must succeed so the retention sequence reaches the reviewbot_push record.
         fixture.Runner.OnArgvContains(
             "rev-parse review/lmdotnettools-118",
-            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
+        );
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
@@ -1979,7 +2357,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // The branch is kept: nothing merges or deletes it as part of a single review pass.
         commands.Should().NotContain(a => a.Contains("branch -D review/lmdotnettools-118"));
         commands.Should().NotContain(a => a.Contains("push origin --delete review/lmdotnettools-118"));
-        commands.Should().NotContain(a => a.Contains("push origin main"), "a per-review commit must never fast-forward the default branch");
+        commands
+            .Should()
+            .NotContain(
+                a => a.Contains("push origin main"),
+                "a per-review commit must never fast-forward the default branch"
+            );
 
         // The PRs/... review artifact was written into the checkout before the commit.
         fixture.FileSystem.Writes.Should().Contain(p => p.Contains("/PRs/") && p.EndsWith("review.md"));
@@ -1990,9 +2373,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         fixture.FileSystem.Files[reviewFilePath].Should().NotStartWith("[");
 
         // The reviewbot_push outcome is persisted in SQLite (outbox row, terminal Posted with the pushed SHA).
-        var push = fixture.Store
-            .GetOutboxForRun(run.Id)
-            .Should().ContainSingle(o => o.Operation == DaemonReviewStageExecutor.PushReviewBotOperation).Subject;
+        var push = fixture
+            .Store.GetOutboxForRun(run.Id)
+            .Should()
+            .ContainSingle(o => o.Operation == DaemonReviewStageExecutor.PushReviewBotOperation)
+            .Subject;
         push.Status.Should().Be(OutboxStatus.Posted);
         push.ProviderResponseId.Should().Be("f00dcafef00dcafe");
     }
@@ -2007,27 +2392,40 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // run, forever. That is the exact failure shape this feature exists to kill, so both gates are pinned.
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+            new CodeReviewDaemonOptions
+            {
+                ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git",
+            }
+        );
         fixture.Runner.OnArgvContains(
             "rev-parse --verify review/lmdotnettools-118",
-            new SandboxCommandResult(1, string.Empty, "unknown revision"));
+            new SandboxCommandResult(1, string.Empty, "unknown revision")
+        );
         fixture.Runner.OnArgvContains(
             "rev-parse review/lmdotnettools-118",
-            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
+        );
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
 
-        var reconciliation = fixture.FileSystem.Writes
-            .Should().ContainSingle(
-                p => p.Contains("/PRs/", StringComparison.Ordinal)
+        var reconciliation = fixture
+            .FileSystem.Writes.Should()
+            .ContainSingle(
+                p =>
+                    p.Contains("/PRs/", StringComparison.Ordinal)
                     && p.EndsWith("PR_Reconciliation_01.md", StringComparison.Ordinal),
-                "the host-retention gate must not produce a thinner PR directory than the pooled one")
+                "the host-retention gate must not produce a thinner PR directory than the pooled one"
+            )
             .Subject;
 
-        fixture.FileSystem.Files[reconciliation].Should().NotContain(
-            "## Not compared",
-            "this gate hands the builder the review body it is committing, so the comparison ran");
+        fixture
+            .FileSystem.Files[reconciliation]
+            .Should()
+            .NotContain(
+                "## Not compared",
+                "this gate hands the builder the review body it is committing, so the comparison ran"
+            );
     }
 
     [Fact]
@@ -2035,24 +2433,36 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+            new CodeReviewDaemonOptions
+            {
+                ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git",
+            }
+        );
         // The ReviewBot checkout does not exist yet (rev-parse probe fails everywhere via Default scripting
         // for /workspace/reviewbot), so the executor must clone it from ReviewBotRepoUrl before publishing (H3).
         fixture.Runner.On(
-            c => string.Join(' ', c.Argv).Contains("rev-parse --is-inside-work-tree")
+            c =>
+                string.Join(' ', c.Argv).Contains("rev-parse --is-inside-work-tree")
                 && c.WorkingDirectory == "/workspace/reviewbot",
-            new SandboxCommandResult(1, string.Empty, "not a git repo"));
+            new SandboxCommandResult(1, string.Empty, "not a git repo")
+        );
         // A well-formed (already-seeded) ReviewBot checkout: all required skeleton files are present.
         SeedReviewBotSkeleton(fixture);
-        fixture.Runner.OnArgvContains("rev-parse main", new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+        fixture.Runner.OnArgvContains(
+            "rev-parse main",
+            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
+        );
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
 
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(
-            a => a.Contains("clone") && a.Contains("CodeReviewBot-Workspace"),
-            "the ReviewBot remote is cloned into its checkout before pushing (H3)");
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains("clone") && a.Contains("CodeReviewBot-Workspace"),
+                "the ReviewBot remote is cloned into its checkout before pushing (H3)"
+            );
     }
 
     [Fact]
@@ -2060,7 +2470,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+            new CodeReviewDaemonOptions
+            {
+                ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git",
+            }
+        );
         // The checkout exists but the skeleton is malformed: only README.md present (PRs/, KnowledgeBase/
         // missing). The executor must surface this rather than pushing into a corrupt repo (H3).
         fixture.FileSystem.Seed("/workspace/reviewbot/README.md", "# ReviewBot");
@@ -2083,9 +2497,13 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await RunAllStagesAsync(fixture, run);
 
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().NotContain(a => a.Contains("checkout -B review/"), "retention is off without a ReviewBotRepoUrl");
-        fixture.Store.GetOutboxForRun(run.Id)
-            .Should().NotContain(o => o.Operation == DaemonReviewStageExecutor.PushReviewBotOperation);
+        commands
+            .Should()
+            .NotContain(a => a.Contains("checkout -B review/"), "retention is off without a ReviewBotRepoUrl");
+        fixture
+            .Store.GetOutboxForRun(run.Id)
+            .Should()
+            .NotContain(o => o.Operation == DaemonReviewStageExecutor.PushReviewBotOperation);
     }
 
     [Fact]
@@ -2093,11 +2511,16 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+            new CodeReviewDaemonOptions
+            {
+                ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git",
+            }
+        );
         // The push never succeeds → GitSyncFailed: nothing is deleted, the outbox row is left for reconcile.
         fixture.Runner.OnArgvContains(
             "push origin review/lmdotnettools-118",
-            new SandboxCommandResult(1, string.Empty, "rejected"));
+            new SandboxCommandResult(1, string.Empty, "rejected")
+        );
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
@@ -2105,9 +2528,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         commands.Should().NotContain(a => a.Contains("branch -D review/"), "a failed push must keep the review branch");
 
-        var push = fixture.Store
-            .GetOutboxForRun(run.Id)
-            .Should().ContainSingle(o => o.Operation == DaemonReviewStageExecutor.PushReviewBotOperation).Subject;
+        var push = fixture
+            .Store.GetOutboxForRun(run.Id)
+            .Should()
+            .ContainSingle(o => o.Operation == DaemonReviewStageExecutor.PushReviewBotOperation)
+            .Subject;
         push.Status.Should().Be(OutboxStatus.Pending, "a GitSyncFailed push is left non-terminal so reconcile retries");
         push.ProviderResponseId.Should().BeNull();
     }
@@ -2115,7 +2540,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task ContextReady_throws_and_persists_nothing_when_the_diff_fetch_fails()
     {
-        using var fixture = Fixture.GitHub(LoggerFactory, diffResult: new SandboxCommandResult(1, string.Empty, "fatal: bad revision"));
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            diffResult: new SandboxCommandResult(1, string.Empty, "fatal: bad revision")
+        );
         var run = fixture.SeedRun();
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -2131,7 +2559,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         using var fixture = Fixture.Ado(
             LoggerFactory,
             new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true },
-            publishersOverride: [new FakeReviewCommentPublisher("github")]);
+            publishersOverride: [new FakeReviewCommentPublisher("github")]
+        );
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -2145,7 +2574,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task Posted_does_not_post_a_comment_when_the_review_is_empty()
     {
-        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        using var fixture = Fixture.Ado(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true }
+        );
         // The persisted review carries no prose. Posting a "_No review content was produced._" placeholder would
         // claim the head_sha's idempotency slot on the provider — the backstop scan would then adopt that
         // placeholder and permanently suppress a later REAL review of the same commit (e.g. a re-run on a
@@ -2164,7 +2596,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // "No new findings since the last review." The host summary fallback must treat that as a no-post (not
         // publish it as a PR comment) — otherwise the post-nothing contract is violated and re-review noise
         // reappears via the host path even when the agent correctly posted nothing.
-        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        using var fixture = Fixture.Ado(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true }
+        );
         // An earlier round that actually reviewed something, because the sentinel is a claim ABOUT one and the
         // Reviewed stage refuses it otherwise. What this test is about is the disposition of the sentinel at the
         // host fallback, not whether the run was entitled to produce it.
@@ -2174,8 +2609,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         await RunAllStagesAsync(fixture, run);
 
-        fixture.AdoPublisher!.PostedBodies.Should().BeEmpty(
-            "the no-new-findings sentinel is a deliberate no-post, so the host fallback must not publish it");
+        fixture
+            .AdoPublisher!.PostedBodies.Should()
+            .BeEmpty("the no-new-findings sentinel is a deliberate no-post, so the host fallback must not publish it");
     }
 
     [Fact]
@@ -2183,13 +2619,18 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.Ado(
             LoggerFactory,
-            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true, BotName = "GB's Revobot" });
+            new CodeReviewDaemonOptions
+            {
+                EnableCommentPosting = true,
+                EnableHostSummaryFallback = true,
+                BotName = "GB's Revobot",
+            }
+        );
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
 
-        fixture.AdoPublisher!.PostedBodies.Should().ContainSingle()
-            .Which.Should().StartWith("[GB's Revobot]\n\n");
+        fixture.AdoPublisher!.PostedBodies.Should().ContainSingle().Which.Should().StartWith("[GB's Revobot]\n\n");
     }
 
     // ── Regression guards: "reviewed but not delivered" ──────────────────────────────────────────────
@@ -2206,16 +2647,27 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [InlineData("azure-devops")]
     public async Task Posted_delivers_the_review_to_the_pr_for_every_provider_when_authorized(string provider)
     {
-        using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true })
-            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        using var fixture =
+            provider == "azure-devops"
+                ? Fixture.Ado(
+                    LoggerFactory,
+                    new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true }
+                )
+                : Fixture.GitHub(
+                    LoggerFactory,
+                    new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true }
+                );
         var expectedPublisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
 
-        expectedPublisher.PostCount.Should().Be(
-            1, $"a completed, authorized, non-empty review must be delivered to the {provider} PR — never silently dropped");
+        expectedPublisher
+            .PostCount.Should()
+            .Be(
+                1,
+                $"a completed, authorized, non-empty review must be delivered to the {provider} PR — never silently dropped"
+            );
     }
 
     [Theory]
@@ -2225,9 +2677,16 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         // The dual of the delivery guard: a collect-only profile (EnableCommentPosting=false, the safe default)
         // still produces + retains a review, but must NEVER post it to the PR.
-        using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = false, EnableHostSummaryFallback = true })
-            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = false, EnableHostSummaryFallback = true });
+        using var fixture =
+            provider == "azure-devops"
+                ? Fixture.Ado(
+                    LoggerFactory,
+                    new CodeReviewDaemonOptions { EnableCommentPosting = false, EnableHostSummaryFallback = true }
+                )
+                : Fixture.GitHub(
+                    LoggerFactory,
+                    new CodeReviewDaemonOptions { EnableCommentPosting = false, EnableHostSummaryFallback = true }
+                );
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -2243,9 +2702,16 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         // An empty review must post NOTHING for EITHER provider — posting a placeholder would claim the
         // head_sha's idempotency slot and permanently suppress a later REAL review of the same commit.
-        using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true })
-            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        using var fixture =
+            provider == "azure-devops"
+                ? Fixture.Ado(
+                    LoggerFactory,
+                    new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true }
+                )
+                : Fixture.GitHub(
+                    LoggerFactory,
+                    new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true }
+                );
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -2275,9 +2741,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 LmStreamingBaseUrl = "http://localhost:5051",
                 EnableCommentPosting = true,
             };
-        using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, S2SOptions())
-            : Fixture.GitHub(LoggerFactory, S2SOptions());
+        using var fixture =
+            provider == "azure-devops"
+                ? Fixture.Ado(LoggerFactory, S2SOptions())
+                : Fixture.GitHub(LoggerFactory, S2SOptions());
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -2301,20 +2768,17 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Theory]
     [InlineData("github")]
     [InlineData("azure-devops")]
-    public async Task Posted_stays_retryable_when_an_authorized_post_replays_a_row_that_proves_no_comment(string provider)
+    public async Task Posted_stays_retryable_when_an_authorized_post_replays_a_row_that_proves_no_comment(
+        string provider
+    )
     {
         // The run was DISCOVERED in post mode and posting IS authorized, so this review is supposed to land on
         // the PR. Its outbox row already claims Posted but carries no provider response id — nothing about it
         // proves a comment exists, and the poster reads it as a terminal replay and touches no provider. That
         // ambiguity is exactly what let run 27 complete undelivered, so the stage must stay retryable.
-        var options = new CodeReviewDaemonOptions
-        {
-            EnableCommentPosting = true,
-            EnableHostSummaryFallback = true,
-        };
-        using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, options)
-            : Fixture.GitHub(LoggerFactory, options);
+        var options = new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true };
+        using var fixture =
+            provider == "azure-devops" ? Fixture.Ado(LoggerFactory, options) : Fixture.GitHub(LoggerFactory, options);
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
         SeedEvidenceFreePostedOutbox(fixture, run, provider);
@@ -2325,12 +2789,16 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<InvalidOperationException>())
-            .WithMessage("*post*", "the failure has to name the undelivered post so the operator can act");
+        (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            "*post*",
+            "the failure has to name the undelivered post so the operator can act"
+        );
         publisher.PostCount.Should().Be(0, "the poster treated the seeded row as a terminal replay");
         // One row, the seeded one — a second row would mean the key drifted and this test proved nothing.
-        fixture.Store.GetOutboxForRun(run.Id)
-            .Should().ContainSingle(o => o.Operation == ReviewPoster.PostReviewCommentOperation);
+        fixture
+            .Store.GetOutboxForRun(run.Id)
+            .Should()
+            .ContainSingle(o => o.Operation == ReviewPoster.PostReviewCommentOperation);
     }
 
     [Theory]
@@ -2343,25 +2811,23 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // produce delivery evidence — and Posted is not a governed stage, so failing here would spin the run in
         // an unbounded retry hot-loop over a config change it cannot influence. Collecting is the truthful
         // outcome for an unauthorized attempt, so the stage completes and records exactly that.
-        var options = new CodeReviewDaemonOptions
-        {
-            EnableCommentPosting = false,
-            EnableHostSummaryFallback = true,
-        };
-        using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, options)
-            : Fixture.GitHub(LoggerFactory, options);
+        var options = new CodeReviewDaemonOptions { EnableCommentPosting = false, EnableHostSummaryFallback = true };
+        using var fixture =
+            provider == "azure-devops" ? Fixture.Ado(LoggerFactory, options) : Fixture.GitHub(LoggerFactory, options);
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
 
         await RunAllStagesAsync(fixture, run);
 
         publisher.PostCount.Should().Be(0, "no live posting was authorized");
-        var delivery = fixture.Store.GetOutboxForRun(run.Id)
-            .Should().ContainSingle(o => o.Operation == ReviewPoster.PostReviewCommentOperation).Subject;
-        delivery.Status.Should().Be(
-            OutboxStatus.Collected,
-            "the run is recorded as having deliberately collected rather than posted");
+        var delivery = fixture
+            .Store.GetOutboxForRun(run.Id)
+            .Should()
+            .ContainSingle(o => o.Operation == ReviewPoster.PostReviewCommentOperation)
+            .Subject;
+        delivery
+            .Status.Should()
+            .Be(OutboxStatus.Collected, "the run is recorded as having deliberately collected rather than posted");
 
         // No hot-loop: re-running the terminal stage is still not a failure.
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
@@ -2375,22 +2841,20 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         // The positive half of the guard: a post-mode review whose comment DID land completes normally, with
         // durable Posted+provider-response evidence in the outbox for the delivery classifier to read.
-        var options = new CodeReviewDaemonOptions
-        {
-            EnableCommentPosting = true,
-            EnableHostSummaryFallback = true,
-        };
-        using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, options)
-            : Fixture.GitHub(LoggerFactory, options);
+        var options = new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true };
+        using var fixture =
+            provider == "azure-devops" ? Fixture.Ado(LoggerFactory, options) : Fixture.GitHub(LoggerFactory, options);
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
 
         await RunAllStagesAsync(fixture, run);
 
         publisher.PostCount.Should().Be(1);
-        var delivery = fixture.Store.GetOutboxForRun(run.Id)
-            .Should().ContainSingle(o => o.Operation == ReviewPoster.PostReviewCommentOperation).Subject;
+        var delivery = fixture
+            .Store.GetOutboxForRun(run.Id)
+            .Should()
+            .ContainSingle(o => o.Operation == ReviewPoster.PostReviewCommentOperation)
+            .Subject;
         delivery.Status.Should().Be(OutboxStatus.Posted);
         delivery.ProviderResponseId.Should().NotBeNullOrWhiteSpace();
     }
@@ -2403,14 +2867,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // The sentinel is a DELIBERATE no-comment, so it must stay a success in post mode too — the delivery
         // guard above may never be widened into "always force a comment", which is exactly the re-review noise
         // the sentinel exists to stop.
-        var options = new CodeReviewDaemonOptions
-        {
-            EnableCommentPosting = true,
-            EnableHostSummaryFallback = true,
-        };
-        using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, options)
-            : Fixture.GitHub(LoggerFactory, options);
+        var options = new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true };
+        using var fixture =
+            provider == "azure-devops" ? Fixture.Ado(LoggerFactory, options) : Fixture.GitHub(LoggerFactory, options);
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         // See the host-fallback case above: the sentinel is a claim about an earlier round, so this run needs
         // one to be entitled to it.
@@ -2421,10 +2880,13 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await RunAllStagesAsync(fixture, run);
 
         publisher.PostCount.Should().Be(0, "the sentinel is an intentional no-post, not a failed delivery");
-        fixture.Store.GetOutboxForRun(run.Id)
-            .Should().NotContain(
+        fixture
+            .Store.GetOutboxForRun(run.Id)
+            .Should()
+            .NotContain(
                 o => o.Operation == ReviewPoster.PostReviewCommentOperation,
-                "no delivery was attempted, so there is no comment outbox row to misread as evidence");
+                "no delivery was attempted, so there is no comment outbox row to misread as evidence"
+            );
     }
 
     // ── #113: daemon-infrastructure narration is filtered where the posted comment is composed ───────
@@ -2465,34 +2927,49 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 UseS2SReviewAgent = true,
                 EnableCommentPosting = true,
                 EnableHostSummaryFallback = true,
-            });
+            }
+        );
         fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = Body;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
 
         await RunAllStagesAsync(fixture, run);
 
         var posted = fixture.AdoPublisher!.PostedBodies.Should().ContainSingle().Subject;
-        posted.Should().Contain(
-            "[BLOCKER]", "the author's own finding is never touched by this filter, whatever else it removes");
-        posted.Should().NotContain(
-            "dotnet", "the internal sandbox/tooling cause is stripped from what the author sees");
-        posted.Should().NotContain(
-            "No comments were posted",
-            "posting-state narration carries zero value to the author and is not substituted");
-        posted.Should().Contain(
-            "Local build/test execution was not possible for this review; no results from running the code "
-                + "are reflected in this assessment.",
-            "sandbox/tooling narration is REWRITTEN, never deleted outright — the author still learns tests "
-                + "could not be run, just not why in daemon-internal terms");
+        posted
+            .Should()
+            .Contain("[BLOCKER]", "the author's own finding is never touched by this filter, whatever else it removes");
+        posted
+            .Should()
+            .NotContain("dotnet", "the internal sandbox/tooling cause is stripped from what the author sees");
+        posted
+            .Should()
+            .NotContain(
+                "No comments were posted",
+                "posting-state narration carries zero value to the author and is not substituted"
+            );
+        posted
+            .Should()
+            .Contain(
+                "Local build/test execution was not possible for this review; no results from running the code "
+                    + "are reflected in this assessment.",
+                "sandbox/tooling narration is REWRITTEN, never deleted outright — the author still learns tests "
+                    + "could not be run, just not why in daemon-internal terms"
+            );
 
-        var line = logs.Capturing.MessagesAtLevel(LogLevel.Information)
-            .Should().ContainSingle(
+        var line = logs
+            .Capturing.MessagesAtLevel(LogLevel.Information)
+            .Should()
+            .ContainSingle(
                 m => m.Contains("posting_state", StringComparison.Ordinal),
-                "the withheld text must actually reach the operator channel, not just vanish from the posted body")
+                "the withheld text must actually reach the operator channel, not just vanish from the posted body"
+            )
             .Subject;
         line.Should().Contain($"Run {run.Id}:", "an operator grepping this log needs the run id, not just the text");
-        line.Should().Contain(
-            "No comments were posted.", "the operator channel receives the exact text the PR author never saw");
+        line.Should()
+            .Contain(
+                "No comments were posted.",
+                "the operator channel receives the exact text the PR author never saw"
+            );
     }
 
     /// <summary>
@@ -2510,24 +2987,34 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         using var logs = new CapturingLoggerFactory();
         using var fixture = Fixture.Ado(
             logs,
-            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true }
+        );
         fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = Body;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
 
         await RunAllStagesAsync(fixture, run);
 
-        fixture.AdoPublisher!.PostedBodies.Should().BeEmpty(
-            "a review that filtered down to nothing must not be delivered as a bot-name prefix with no review "
-                + "under it");
-        fixture.Store.GetOutboxForRun(run.Id)
-            .Should().NotContain(
+        fixture
+            .AdoPublisher!.PostedBodies.Should()
+            .BeEmpty(
+                "a review that filtered down to nothing must not be delivered as a bot-name prefix with no review "
+                    + "under it"
+            );
+        fixture
+            .Store.GetOutboxForRun(run.Id)
+            .Should()
+            .NotContain(
                 o => o.Operation == ReviewPoster.PostReviewCommentOperation,
-                "no delivery was attempted, so there is no terminal outbox row to misread as a real delivery");
+                "no delivery was attempted, so there is no terminal outbox row to misread as a real delivery"
+            );
         logs.Capturing.MessagesAtLevel(LogLevel.Information)
-            .Should().ContainSingle(
-                m => m.Contains("posting_state", StringComparison.Ordinal)
+            .Should()
+            .ContainSingle(
+                m =>
+                    m.Contains("posting_state", StringComparison.Ordinal)
                     && m.Contains("No comments were posted.", StringComparison.Ordinal),
-                "suppressing the comment must not also suppress the operator's record of what was withheld");
+                "suppressing the comment must not also suppress the operator's record of what was withheld"
+            );
     }
 
     /// <summary>
@@ -2551,7 +3038,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 UseS2SReviewAgent = true,
                 LmStreamingBaseUrl = "http://localhost:5051",
                 EnableCommentPosting = true,
-            });
+            }
+        );
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
         fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = Body;
 
@@ -2559,11 +3047,13 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         var hostedThreadId = $"hosted-{DaemonReviewStageExecutor.ThreadId(run, run.VariantId)}";
         var posted = fixture.AdoPublisher!.PostedBodies.Should().ContainSingle().Subject;
-        posted.Should().Contain(
-            $"🔎 Full review conversation: http://localhost:5051/?threadId={hostedThreadId}&focus=1",
-            "this is the deep-link profile — if the link is absent the test is not exercising the arm it claims");
-        posted.Should().NotContain(
-            "dotnet", "the deployed profile filters infra narration exactly like the plain one");
+        posted
+            .Should()
+            .Contain(
+                $"🔎 Full review conversation: http://localhost:5051/?threadId={hostedThreadId}&focus=1",
+                "this is the deep-link profile — if the link is absent the test is not exercising the arm it claims"
+            );
+        posted.Should().NotContain("dotnet", "the deployed profile filters infra narration exactly like the plain one");
         posted.Should().Contain("[BLOCKER]", "the author's finding survives on this profile too");
     }
 
@@ -2577,26 +3067,31 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         // The executor keys off the PUBLISHER provider ("ado"), not the repo provider ("azure-devops").
         var postProvider = provider == "azure-devops" ? "ado" : provider;
-        var key = IdempotencyKey.Build(new IdempotencyKeyComponents(
-            Provider: postProvider,
-            OrgOrOwner: "achieveai",
-            Project: provider == "azure-devops" ? "Platform" : null,
-            RepoStableId: "repo-stable-1",
-            PrId: run.PrId,
-            Operation: ReviewPoster.PostReviewCommentOperation,
-            ArtifactKind: DaemonReviewStageExecutor.ReviewArtifactKind,
-            ArtifactSubject: "summary",
-            HeadSha: run.HeadSha,
-            VariantId: run.VariantId));
-        _ = fixture.Store.EnqueueOutbox(new OutboxEntry
-        {
-            IdempotencyKey = key,
-            Provider = postProvider,
-            ReviewRunId = run.Id,
-            Operation = ReviewPoster.PostReviewCommentOperation,
-            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
-            Status = OutboxStatus.Posted,
-        });
+        var key = IdempotencyKey.Build(
+            new IdempotencyKeyComponents(
+                Provider: postProvider,
+                OrgOrOwner: "achieveai",
+                Project: provider == "azure-devops" ? "Platform" : null,
+                RepoStableId: "repo-stable-1",
+                PrId: run.PrId,
+                Operation: ReviewPoster.PostReviewCommentOperation,
+                ArtifactKind: DaemonReviewStageExecutor.ReviewArtifactKind,
+                ArtifactSubject: "summary",
+                HeadSha: run.HeadSha,
+                VariantId: run.VariantId
+            )
+        );
+        _ = fixture.Store.EnqueueOutbox(
+            new OutboxEntry
+            {
+                IdempotencyKey = key,
+                Provider = postProvider,
+                ReviewRunId = run.Id,
+                Operation = ReviewPoster.PostReviewCommentOperation,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Status = OutboxStatus.Posted,
+            }
+        );
     }
 
     /// <summary>Seeds a well-formed (already-seeded) ReviewBot skeleton into the checkout.</summary>
@@ -2609,7 +3104,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     private static async Task RunAllStagesAsync(
-        Fixture fixture, ReviewRun run, Action<Fixture, ReviewRun>? afterReviewed = null)
+        Fixture fixture,
+        ReviewRun run,
+        Action<Fixture, ReviewRun>? afterReviewed = null
+    )
     {
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -2625,14 +3123,18 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     /// actually protects: what was PERSISTED, whatever produced it (including artifacts written by older builds).
     /// </summary>
     private static void SeedEmptyReviewArtifact(Fixture fixture, ReviewRun run) =>
-        _ = fixture.Store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
-            Provider = "github",
-            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(string.Empty, "run-review", run.VariantId)),
-        });
+        _ = fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new ReviewArtifactPayload(string.Empty, "run-review", run.VariantId)
+                ),
+            }
+        );
 
     /// <summary>Options for the restart tests: the resumable (hosted) review path, with the settlement barrier's
     /// quiet period shortened so an already-settled tree costs one second rather than the production default.</summary>
@@ -2653,7 +3155,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         string? workspaceId = null,
         string? modelId = null,
         bool toolAssisted = false,
-        long? contextGeneration = null) =>
+        long? contextGeneration = null
+    ) =>
         new(
             modality,
             localThreadId ?? DaemonReviewStageExecutor.ThreadId(run, run.VariantId),
@@ -2662,7 +3165,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             toolAssisted,
             contextGeneration
                 ?? fixture.Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ContextArtifactKind)?.Id
-                ?? 0);
+                ?? 0
+        );
 
     /// <summary>Writes the checkpoint a Reviewed stage leaves behind when it is interrupted between the
     /// provisional turn and the synthesis turn — the state every restart test starts from. Defaults to the
@@ -2676,42 +3180,63 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         DateTimeOffset deadlineUtc,
         string text = StaleProvisionalText,
         ReviewLifecycleIdentity? lifecycle = null,
-        bool provisionalComplete = true) =>
-        _ = fixture.Store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
-            Provider = "github",
-            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(
-                text, "run-provisional", run.VariantId, hostedThreadId, deadlineUtc.AddMinutes(-10), deadlineUtc,
-                lifecycle ?? LifecycleOf(fixture, run), provisionalComplete)),
-        });
+        bool provisionalComplete = true
+    ) =>
+        _ = fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new ReviewArtifactPayload(
+                        text,
+                        "run-provisional",
+                        run.VariantId,
+                        hostedThreadId,
+                        deadlineUtc.AddMinutes(-10),
+                        deadlineUtc,
+                        lifecycle ?? LifecycleOf(fixture, run),
+                        provisionalComplete
+                    )
+                ),
+            }
+        );
 
     /// <summary>Records that the host accepted a synthesis input, i.e. the restart landed AFTER the last
     /// re-sendable moment of the lifecycle.</summary>
     private static void SeedSynthesisRequest(Fixture fixture, ReviewRun run, string inputId, string parentThreadId) =>
-        _ = fixture.Store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.SynthesisRequestArtifactKind,
-            Provider = "github",
-            Payload = JsonSerializer.Serialize(new SynthesisRequestPayload(
-                inputId, run.Id.ToString(CultureInfo.InvariantCulture), parentThreadId)),
-        });
+        _ = fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.SynthesisRequestArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new SynthesisRequestPayload(inputId, run.Id.ToString(CultureInfo.InvariantCulture), parentThreadId)
+                ),
+            }
+        );
 
     /// <summary>The review text of the newest artifact of <paramref name="kind"/> (artifacts are append-only).</summary>
     private static string ReviewTextOf(IReadOnlyList<ReviewArtifact> artifacts, string kind) =>
-        JsonSerializer.Deserialize<ReviewArtifactPayload>(
-            artifacts.Last(a => string.Equals(a.ArtifactKind, kind, StringComparison.Ordinal)).Payload)!.ReviewText;
+        JsonSerializer
+            .Deserialize<ReviewArtifactPayload>(
+                artifacts.Last(a => string.Equals(a.ArtifactKind, kind, StringComparison.Ordinal)).Payload
+            )!
+            .ReviewText;
 
     /// <summary>The newest checkpoint artifact of <paramref name="kind"/>, deserialized — the row a restarting
     /// process would read back.</summary>
     private static T PayloadOf<T>(Fixture fixture, ReviewRun run, string kind) =>
-        JsonSerializer.Deserialize<T>(fixture.Store
-            .GetArtifacts(run.Id)
-            .Last(a => string.Equals(a.ArtifactKind, kind, StringComparison.Ordinal)).Payload)!;
+        JsonSerializer.Deserialize<T>(
+            fixture
+                .Store.GetArtifacts(run.Id)
+                .Last(a => string.Equals(a.ArtifactKind, kind, StringComparison.Ordinal))
+                .Payload
+        )!;
 
     /// <summary>The artifacts of one <paramref name="kind"/>, in append order.</summary>
     private static IEnumerable<ReviewArtifact> ArtifactsOf(Fixture fixture, ReviewRun run, string kind) =>
@@ -2729,7 +3254,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             SandboxCommandResult? diffResult,
             IReviewCommentPublisher[]? publishersOverride,
             IReviewSubAgentCompletionSource? completionSource,
-            AdoWorkItemContextReader? workItemContextReader = null)
+            AdoWorkItemContextReader? workItemContextReader = null
+        )
         {
             _db = new TempSqliteDatabase();
             _repoProvider = repoProvider;
@@ -2737,7 +3263,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             Runner = new FakeSandboxCommandRunner()
                 // A fresh sandbox: the target checkout does not exist yet, so the rev-parse probe fails
                 // and the executor clones the target repo (PR #121 H1).
-                .OnArgvContains("rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a git repo"))
+                .OnArgvContains(
+                    "rev-parse --is-inside-work-tree",
+                    new SandboxCommandResult(1, string.Empty, "not a git repo")
+                )
                 .OnArgvContains("diff", diffResult ?? new SandboxCommandResult(0, DiffText, string.Empty));
             FileSystem = new FakeSandboxFileSystem();
             GitHubPublisher = new FakeReviewCommentPublisher("github");
@@ -2747,10 +3276,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             // Resumability is a property of WHERE the turn runs, so the double is resumable on exactly the
             // path production's is: hosted (S2S) turns survive this process, in-process ones do not.
             Factory.Resumable = options.UseS2SReviewAgent;
-            var publishers = publishersOverride
-                ?? (AdoPublisher is null
-                    ? [GitHubPublisher]
-                    : [GitHubPublisher, AdoPublisher]);
+            var publishers =
+                publishersOverride ?? (AdoPublisher is null ? [GitHubPublisher] : [GitHubPublisher, AdoPublisher]);
 
             Executor = new DaemonReviewStageExecutor(
                 Store,
@@ -2761,7 +3288,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 publishers,
                 loggerFactory,
                 completionSource: completionSource,
-                workItemContextReader: workItemContextReader);
+                workItemContextReader: workItemContextReader
+            );
         }
 
         public ReviewStore Store { get; }
@@ -2777,14 +3305,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             CodeReviewDaemonOptions? options = null,
             SandboxCommandResult? diffResult = null,
             IReviewCommentPublisher[]? publishersOverride = null,
-            IReviewSubAgentCompletionSource? completionSource = null) =>
-            new(loggerFactory, "github", options, diffResult, publishersOverride, completionSource);
+            IReviewSubAgentCompletionSource? completionSource = null
+        ) => new(loggerFactory, "github", options, diffResult, publishersOverride, completionSource);
 
         public static Fixture Ado(
             ILoggerFactory loggerFactory,
             CodeReviewDaemonOptions? options = null,
             IReviewCommentPublisher[]? publishersOverride = null,
-            AdoWorkItemContextReader? workItemContextReader = null) =>
+            AdoWorkItemContextReader? workItemContextReader = null
+        ) =>
             new(
                 loggerFactory,
                 "azure-devops",
@@ -2792,7 +3321,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 diffResult: null,
                 publishersOverride,
                 completionSource: null,
-                workItemContextReader);
+                workItemContextReader
+            );
 
         public ReviewRun SeedRun(
             string watermark = "wm-1",
@@ -2800,34 +3330,39 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             string? prAuthor = null,
             string? modelId = null,
             string? prTitle = null,
-            string? prDescription = null)
+            string? prDescription = null
+        )
         {
-            var repoId = Store.EnsureRepo(new RepoIdentity
-            {
-                Provider = _repoProvider,
-                OrgOrOwner = "achieveai",
-                Project = _repoProvider == "azure-devops" ? "Platform" : null,
-                RepoName = "LmDotnetTools",
-                RepoStableId = "repo-stable-1",
-            });
-            return Store.CreateOrGetReviewRun(new ReviewRun
-            {
-                RepoId = repoId,
-                PrId = "118",
-                HeadSha = "head-sha",
-                BaseSha = "base-sha",
-                TriggerWatermark = watermark,
-                ReviewKind = "full",
-                VariantId = "primary",
-                Mode = mode,
-                Stage = ReviewStage.Discovered,
-                WorkflowStatus = WorkflowStatus.Running,
-                PrLifecycleState = PrLifecycleState.Open,
-                PrAuthor = prAuthor,
-                ModelId = modelId,
-                PrTitle = prTitle,
-                PrDescription = prDescription,
-            });
+            var repoId = Store.EnsureRepo(
+                new RepoIdentity
+                {
+                    Provider = _repoProvider,
+                    OrgOrOwner = "achieveai",
+                    Project = _repoProvider == "azure-devops" ? "Platform" : null,
+                    RepoName = "LmDotnetTools",
+                    RepoStableId = "repo-stable-1",
+                }
+            );
+            return Store.CreateOrGetReviewRun(
+                new ReviewRun
+                {
+                    RepoId = repoId,
+                    PrId = "118",
+                    HeadSha = "head-sha",
+                    BaseSha = "base-sha",
+                    TriggerWatermark = watermark,
+                    ReviewKind = "full",
+                    VariantId = "primary",
+                    Mode = mode,
+                    Stage = ReviewStage.Discovered,
+                    WorkflowStatus = WorkflowStatus.Running,
+                    PrLifecycleState = PrLifecycleState.Open,
+                    PrAuthor = prAuthor,
+                    ModelId = modelId,
+                    PrTitle = prTitle,
+                    PrDescription = prDescription,
+                }
+            );
         }
 
         /// <summary>
@@ -2836,39 +3371,43 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         /// review". The body comes with the row deliberately: the sentinel guard asks for the BODY rather than
         /// the row, because a run discovered and then dead leaves a row and no review.
         /// </summary>
-        public ReviewRun SeedPriorReviewedRound(
-            string reviewText = "## Review\nMust: null check missing in Foo.cs:10.")
+        public ReviewRun SeedPriorReviewedRound(string reviewText = "## Review\nMust: null check missing in Foo.cs:10.")
         {
-            var prior = Store.CreateOrGetReviewRun(new ReviewRun
-            {
-                RepoId = Store.EnsureRepo(new RepoIdentity
+            var prior = Store.CreateOrGetReviewRun(
+                new ReviewRun
                 {
-                    Provider = _repoProvider,
-                    OrgOrOwner = "achieveai",
-                    Project = _repoProvider == "azure-devops" ? "Platform" : null,
-                    RepoName = "LmDotnetTools",
-                    RepoStableId = "repo-stable-1",
-                }),
-                PrId = "118",
-                HeadSha = "head-sha-round-1",
-                BaseSha = "base-sha",
-                TriggerWatermark = "wm-0",
-                ReviewKind = "full",
-                VariantId = "primary",
-                Mode = "collect-only",
-                Stage = ReviewStage.Posted,
-                WorkflowStatus = WorkflowStatus.Running,
-                PrLifecycleState = PrLifecycleState.Open,
-            });
-            _ = Store.AddArtifact(new ReviewArtifact
-            {
-                ReviewRunId = prior.Id,
-                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
-                Provider = _repoProvider == "azure-devops" ? "ado" : "github",
-                Payload = JsonSerializer.Serialize(
-                    new ReviewArtifactPayload(reviewText, "prior-run", "primary")),
-            });
+                    RepoId = Store.EnsureRepo(
+                        new RepoIdentity
+                        {
+                            Provider = _repoProvider,
+                            OrgOrOwner = "achieveai",
+                            Project = _repoProvider == "azure-devops" ? "Platform" : null,
+                            RepoName = "LmDotnetTools",
+                            RepoStableId = "repo-stable-1",
+                        }
+                    ),
+                    PrId = "118",
+                    HeadSha = "head-sha-round-1",
+                    BaseSha = "base-sha",
+                    TriggerWatermark = "wm-0",
+                    ReviewKind = "full",
+                    VariantId = "primary",
+                    Mode = "collect-only",
+                    Stage = ReviewStage.Posted,
+                    WorkflowStatus = WorkflowStatus.Running,
+                    PrLifecycleState = PrLifecycleState.Open,
+                }
+            );
+            _ = Store.AddArtifact(
+                new ReviewArtifact
+                {
+                    ReviewRunId = prior.Id,
+                    ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                    ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                    Provider = _repoProvider == "azure-devops" ? "ado" : "github",
+                    Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(reviewText, "prior-run", "primary")),
+                }
+            );
             return prior;
         }
 
@@ -2890,11 +3429,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         using var logs = new CapturingLoggerFactory();
         using var fixture = Fixture.GitHub(
             logs,
-            new CodeReviewDaemonOptions
-            {
-                EnableJudgeAgent = true,
-                JudgeModelId = "anthropic/claude-opus-4",
-            });
+            new CodeReviewDaemonOptions { EnableJudgeAgent = true, JudgeModelId = "anthropic/claude-opus-4" }
+        );
         fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
             "{\"score\": 8, \"rationale\": \"Solid.\"}";
         var run = fixture.SeedRun(modelId: "openai/gpt-5");
@@ -2906,9 +3442,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         JudgeModelIds(fixture).Should().ContainSingle().Which.Should().Be("anthropic/claude-opus-4");
         logs.Capturing.CountAtLevel(LogLevel.Warning, "self-preference bias").Should().Be(0);
 
-        var judge = fixture.Store
-            .GetArtifacts(run.Id)
-            .Should().ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind).Subject;
+        var judge = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind)
+            .Subject;
         using var payload = JsonDocument.Parse(judge.Payload);
         payload.RootElement.GetProperty("SelfGraded").GetBoolean().Should().BeFalse();
     }
@@ -2921,9 +3459,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Judged_without_a_configured_judge_model_grades_on_the_reviewers_and_records_it()
     {
         using var logs = new CapturingLoggerFactory();
-        using var fixture = Fixture.GitHub(
-            logs,
-            new CodeReviewDaemonOptions { EnableJudgeAgent = true });
+        using var fixture = Fixture.GitHub(logs, new CodeReviewDaemonOptions { EnableJudgeAgent = true });
         fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
             "{\"score\": 8, \"rationale\": \"Solid.\"}";
         var run = fixture.SeedRun(modelId: "openai/gpt-5");
@@ -2932,9 +3468,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
 
-        var judge = fixture.Store
-            .GetArtifacts(run.Id)
-            .Should().ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind).Subject;
+        var judge = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind)
+            .Subject;
         using var payload = JsonDocument.Parse(judge.Payload);
         JudgeModelIds(fixture).Should().ContainSingle().Which.Should().Be("openai/gpt-5");
         payload.RootElement.GetProperty("SelfGraded").GetBoolean().Should().BeTrue();
@@ -2956,11 +3494,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         using var logs = new CapturingLoggerFactory();
         using var fixture = Fixture.GitHub(
             logs,
-            new CodeReviewDaemonOptions
-            {
-                EnableJudgeAgent = true,
-                JudgeModelId = "anthropic/claude-opus-4",
-            });
+            new CodeReviewDaemonOptions { EnableJudgeAgent = true, JudgeModelId = "anthropic/claude-opus-4" }
+        );
         fixture.Factory.EffectiveModelIdOverride = "lmstreaming:openai";
         fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
             "{\"score\": 8, \"rationale\": \"Solid.\"}";
@@ -2970,9 +3505,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
 
-        var judge = fixture.Store
-            .GetArtifacts(run.Id)
-            .Should().ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind).Subject;
+        var judge = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind)
+            .Subject;
         using var payload = JsonDocument.Parse(judge.Payload);
         payload.RootElement.GetProperty("JudgeModelId").GetString().Should().Be("lmstreaming:openai");
         payload.RootElement.GetProperty("GeneratorModelId").GetString().Should().Be("lmstreaming:openai");
@@ -2990,9 +3527,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Judged_by_an_unrecorded_model_leaves_the_self_preference_relation_unknown()
     {
         using var logs = new CapturingLoggerFactory();
-        using var fixture = Fixture.GitHub(
-            logs,
-            new CodeReviewDaemonOptions { EnableJudgeAgent = true });
+        using var fixture = Fixture.GitHub(logs, new CodeReviewDaemonOptions { EnableJudgeAgent = true });
         fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
             "{\"score\": 8, \"rationale\": \"Solid.\"}";
         var run = fixture.SeedRun();
@@ -3001,9 +3536,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
 
-        var judge = fixture.Store
-            .GetArtifacts(run.Id)
-            .Should().ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind).Subject;
+        var judge = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind)
+            .Subject;
         using var payload = JsonDocument.Parse(judge.Payload);
         payload.RootElement.GetProperty("SelfGraded").ValueKind.Should().Be(JsonValueKind.Null);
 
@@ -3014,8 +3551,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     private static List<string?> JudgeModelIds(Fixture fixture) =>
-        [.. fixture.Factory.CreatedProfileIds
-            .Select((id, i) => (id, i))
-            .Where(p => p.id == DaemonAgentFactory.JudgeProfileId)
-            .Select(p => fixture.Factory.ModelIds[p.i])];
+        [
+            .. fixture
+                .Factory.CreatedProfileIds.Select((id, i) => (id, i))
+                .Where(p => p.id == DaemonAgentFactory.JudgeProfileId)
+                .Select(p => fixture.Factory.ModelIds[p.i]),
+        ];
 }

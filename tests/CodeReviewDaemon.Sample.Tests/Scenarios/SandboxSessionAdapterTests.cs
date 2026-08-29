@@ -247,7 +247,8 @@ public sealed class SandboxSessionAdapterTests
         var gateway = new ScriptedSandboxGateway();
         await using var adapter = CreateAdapter(gateway);
 
-        var act = () => adapter.WriteFileAsync("/workspace/reviewbot/README.md", "hello\nworld\n", CancellationToken.None);
+        var act = () =>
+            adapter.WriteFileAsync("/workspace/reviewbot/README.md", "hello\nworld\n", CancellationToken.None);
 
         await act.Should().NotThrowAsync();
     }
@@ -260,8 +261,6 @@ public sealed class SandboxSessionAdapterTests
 
         var act = () => adapter.WriteFileAsync("/workspace/reviewbot/README.md", "content", CancellationToken.None);
 
-        (await act.Should().ThrowAsync<IOException>())
-            .Which.Message.Should()
-            .Contain("/workspace/reviewbot/README.md");
+        (await act.Should().ThrowAsync<IOException>()).Which.Message.Should().Contain("/workspace/reviewbot/README.md");
     }
 }

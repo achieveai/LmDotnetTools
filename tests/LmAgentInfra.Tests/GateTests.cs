@@ -16,12 +16,11 @@ public class GateTests
 
         var wait = async () => await gate.WaitAsync(() => false);
 
-        (await wait.Should().ThrowAsync<TimeoutException>())
-            .WithMessage(
-                "*A_condition_that_never_holds_fails_the_test_instead_of_wedging_it*",
-                "the message must name the waiter, because the whole point is telling which wait "
-                    + "stalled without a hang dump"
-            );
+        (await wait.Should().ThrowAsync<TimeoutException>()).WithMessage(
+            "*A_condition_that_never_holds_fails_the_test_instead_of_wedging_it*",
+            "the message must name the waiter, because the whole point is telling which wait "
+                + "stalled without a hang dump"
+        );
     }
 
     [Fact]

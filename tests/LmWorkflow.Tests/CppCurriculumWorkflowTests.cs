@@ -49,12 +49,11 @@ public class CppCurriculumWorkflowTests
             .Returns(() =>
             {
                 synthCalls++;
-                var json = synthCalls < ProblemThreshold
-                    ? """{ "problemCount": 1, "problems": [ { "id": "p0" } ] }"""
-                    : """{ "problemCount": 2, "problems": [ { "id": "p0" }, { "id": "p1" } ] }""";
-                return Task.FromResult(
-                    ToAsyncEnumerable([new TextMessage { Text = json, Role = Role.Assistant }])
-                );
+                var json =
+                    synthCalls < ProblemThreshold
+                        ? """{ "problemCount": 1, "problems": [ { "id": "p0" } ] }"""
+                        : """{ "problemCount": 2, "problems": [ { "id": "p0" }, { "id": "p1" } ] }""";
+                return Task.FromResult(ToAsyncEnumerable([new TextMessage { Text = json, Role = Role.Assistant }]));
             });
 
         var controllerMock = new Mock<IStreamingAgent>();
@@ -98,7 +97,10 @@ public class CppCurriculumWorkflowTests
 
         // state.research accumulated across the loop (two clusters x two research passes), and
         // state.authored accumulated one entry per curriculum problem.
-        runtime.State["research"]!.AsArray().Should().HaveCount(4);
+        runtime.State["research"]!
+            .AsArray()
+            .Should()
+            .HaveCount(4);
         runtime.State["authored"]!.AsArray().Should().HaveCount(2);
 
         // The final result was composed from the terminal's resultTemplate and validated.
@@ -119,11 +121,7 @@ public class CppCurriculumWorkflowTests
         {
             1 =>
             [
-                ToolCall(
-                    "SetWorkflow",
-                    new JsonObject { ["definition"] = JsonNode.Parse(CppCurriculum) },
-                    "tc_setwf"
-                ),
+                ToolCall("SetWorkflow", new JsonObject { ["definition"] = JsonNode.Parse(CppCurriculum) }, "tc_setwf"),
             ],
             2 => [Route("start", "research", "tc_r0")],
             3 => [ToolCall("GetWorkflow", [], "tc_get1")],
@@ -149,11 +147,7 @@ public class CppCurriculumWorkflowTests
             15 => [Route("synthesize", "gate", "tc_gate2")],
             16 => [Route("gate", "author", "tc_proceed")],
             17 => [ToolCall("GetWorkflow", [], "tc_get5")],
-            18 =>
-            [
-                Spawn("author", "author:1:a:0", "tc_auth_0"),
-                Spawn("author", "author:1:a:1", "tc_auth_1"),
-            ],
+            18 => [Spawn("author", "author:1:a:0", "tc_auth_0"), Spawn("author", "author:1:a:1", "tc_auth_1")],
             19 => [Route("author", "done", "tc_done")],
             _ => [new TextMessage { Text = "Workflow finished.", Role = Role.Assistant }],
         };
@@ -170,9 +164,7 @@ public class CppCurriculumWorkflowTests
                 )
             )
             .Returns(() =>
-                Task.FromResult(
-                    ToAsyncEnumerable([new TextMessage { Text = answerJson, Role = Role.Assistant }])
-                )
+                Task.FromResult(ToAsyncEnumerable([new TextMessage { Text = answerJson, Role = Role.Assistant }]))
             );
         return mock;
     }

@@ -47,7 +47,8 @@ public class SystemPromptAugmenterTests
         // pull. A headless caller that replaced the prompt would lose the workspace wiring it depends on.
         var result = SystemPromptAugmenter.AppendCallerInstructions(
             "You are a workspace agent.\n\nYour workspace directory is: /workspace",
-            "Review the PR and dispatch the code-reviewer:* sub-agents.");
+            "Review the PR and dispatch the code-reviewer:* sub-agents."
+        );
 
         result.Should().StartWith("You are a workspace agent.");
         result.Should().EndWith("\n\nReview the PR and dispatch the code-reviewer:* sub-agents.");

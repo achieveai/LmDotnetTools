@@ -12,17 +12,11 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 /// </summary>
 public sealed class InMemoryWorkflowStore : IWorkflowStore
 {
-    private readonly ConcurrentDictionary<string, WorkflowInstanceSnapshot> _snapshots = new(
-        StringComparer.Ordinal
-    );
+    private readonly ConcurrentDictionary<string, WorkflowInstanceSnapshot> _snapshots = new(StringComparer.Ordinal);
     private readonly object _writeLock = new();
 
     /// <inheritdoc />
-    public Task SaveAsync(
-        string instanceId,
-        WorkflowInstanceSnapshot snapshot,
-        CancellationToken ct = default
-    )
+    public Task SaveAsync(string instanceId, WorkflowInstanceSnapshot snapshot, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(instanceId);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -39,17 +33,12 @@ public sealed class InMemoryWorkflowStore : IWorkflowStore
     }
 
     /// <inheritdoc />
-    public Task<WorkflowInstanceSnapshot?> LoadAsync(
-        string instanceId,
-        CancellationToken ct = default
-    )
+    public Task<WorkflowInstanceSnapshot?> LoadAsync(string instanceId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(instanceId);
 
         // Hand back an isolated copy so a caller mutating the returned snapshot cannot corrupt the store.
-        return Task.FromResult(
-            _snapshots.TryGetValue(instanceId, out var snapshot) ? snapshot.DeepCopy() : null
-        );
+        return Task.FromResult(_snapshots.TryGetValue(instanceId, out var snapshot) ? snapshot.DeepCopy() : null);
     }
 
     /// <inheritdoc />

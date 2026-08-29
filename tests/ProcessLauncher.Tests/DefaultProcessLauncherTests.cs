@@ -102,10 +102,7 @@ public class DefaultProcessLauncherTests
             Agent = CliAgentKind.Codex,
             ExecutableHint = fileName,
             Arguments = args,
-            EnvironmentOverrides = new Dictionary<string, string?>
-            {
-                ["LAUNCHER_TEST_VAR"] = "hello-launcher",
-            },
+            EnvironmentOverrides = new Dictionary<string, string?> { ["LAUNCHER_TEST_VAR"] = "hello-launcher" },
         };
 
         using var handle = DefaultProcessLauncher.Instance.Launch(request);

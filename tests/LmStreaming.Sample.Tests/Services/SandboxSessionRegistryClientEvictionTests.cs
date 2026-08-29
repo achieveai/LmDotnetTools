@@ -86,7 +86,11 @@ public sealed class SandboxSessionRegistryClientEvictionTests
                 }
 
                 var body =
-                    "{\"session_id\":\"sess-" + n + "\",\"container_id\":\"c-" + n + "\",\"volumes\":{\"workspace\":"
+                    "{\"session_id\":\"sess-"
+                    + n
+                    + "\",\"container_id\":\"c-"
+                    + n
+                    + "\",\"volumes\":{\"workspace\":"
                     + "{\"container_path\":\"/workspace\",\"read_only\":false,\"id\":7}}}";
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
@@ -113,7 +117,8 @@ public sealed class SandboxSessionRegistryClientEvictionTests
             auth,
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance)
+                NullLogger<SessionSecretStore>.Instance
+            )
         );
 
         // Two workspaces under the SAME credential → they share one per-credential client entry.
@@ -134,10 +139,13 @@ public sealed class SandboxSessionRegistryClientEvictionTests
         registry.PerCredentialClientCount.Should().Be(1); // credA's client survived (now holding only session B)
     }
 
-    private sealed class GatedHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond) : HttpMessageHandler
+    private sealed class GatedHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond)
+        : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            respond(request, cancellationToken);
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        ) => respond(request, cancellationToken);
     }
 
     private static (SandboxSessionRegistry Registry, StubHandler Handler) CreateRegistry()
@@ -151,7 +159,11 @@ public sealed class SandboxSessionRegistryClientEvictionTests
             {
                 var n = Interlocked.Increment(ref createCounter);
                 var body =
-                    "{\"session_id\":\"sess-" + n + "\",\"container_id\":\"c-" + n + "\",\"volumes\":{\"workspace\":"
+                    "{\"session_id\":\"sess-"
+                    + n
+                    + "\",\"container_id\":\"c-"
+                    + n
+                    + "\",\"volumes\":{\"workspace\":"
                     + "{\"container_path\":\"/workspace\",\"read_only\":false,\"id\":7}}}";
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
@@ -188,7 +200,8 @@ public sealed class SandboxSessionRegistryClientEvictionTests
             auth,
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance)
+                NullLogger<SessionSecretStore>.Instance
+            )
         );
 
         return (registry, handler);
@@ -196,7 +209,9 @@ public sealed class SandboxSessionRegistryClientEvictionTests
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(respond(request));
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        ) => Task.FromResult(respond(request));
     }
 }

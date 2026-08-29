@@ -8,10 +8,7 @@ public class ModeToolFilterTests
     [Fact]
     public void FilterBuiltInTools_ReturnsAll_WhenEnabledToolsIsNull()
     {
-        var allTools = new List<object>
-        {
-            new AnthropicWebSearchTool(),
-        };
+        var allTools = new List<object> { new AnthropicWebSearchTool() };
 
         var filtered = ModeToolFilter.FilterBuiltInTools(allTools, enabledTools: null);
 
@@ -24,10 +21,7 @@ public class ModeToolFilterTests
     [Fact]
     public void FilterBuiltInTools_ReturnsNull_WhenEnabledToolsExcludesBuiltIns()
     {
-        var allTools = new List<object>
-        {
-            new AnthropicWebSearchTool(),
-        };
+        var allTools = new List<object> { new AnthropicWebSearchTool() };
 
         var filtered = ModeToolFilter.FilterBuiltInTools(allTools, ["calculate"]);
 
@@ -37,10 +31,7 @@ public class ModeToolFilterTests
     [Fact]
     public void FilterBuiltInTools_ReturnsMatchingBuiltIns_WhenEnabledToolsIncludesBuiltIn()
     {
-        var allTools = new List<object>
-        {
-            new AnthropicWebSearchTool(),
-        };
+        var allTools = new List<object> { new AnthropicWebSearchTool() };
 
         var filtered = ModeToolFilter.FilterBuiltInTools(allTools, ["calculate", "web_search"]);
 

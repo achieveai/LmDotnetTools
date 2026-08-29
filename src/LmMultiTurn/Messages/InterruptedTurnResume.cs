@@ -25,4 +25,5 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 internal sealed record InterruptedTurnResume(
     string InterruptedRunId,
     string InterruptedGenerationId,
-    bool HadCanonicalOutput);
+    bool HadCanonicalOutput
+);

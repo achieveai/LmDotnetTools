@@ -14,7 +14,8 @@ public sealed record NotifyWaitRecord(
     int FiresSoFar,
     long TimeoutAtUnixMs,
     long ArmedAtUnixMs,
-    string Status);
+    string Status
+);
 
 /// <summary>
 /// Durable store for live notify-mode waits. Separate from <see cref="IConversationStore"/> on

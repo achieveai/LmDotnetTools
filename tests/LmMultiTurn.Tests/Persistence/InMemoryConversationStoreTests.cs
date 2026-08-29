@@ -68,8 +68,7 @@ public class InMemoryConversationStoreTests
         var act = async () => await store.AppendMessagesAsync(null!, messages);
 
         // Assert
-        await act.Should().ThrowAsync<ArgumentNullException>()
-            .WithParameterName("threadId");
+        await act.Should().ThrowAsync<ArgumentNullException>().WithParameterName("threadId");
     }
 
     [Fact]
@@ -82,8 +81,7 @@ public class InMemoryConversationStoreTests
         var act = async () => await store.AppendMessagesAsync("thread-1", null!);
 
         // Assert
-        await act.Should().ThrowAsync<ArgumentNullException>()
-            .WithParameterName("messages");
+        await act.Should().ThrowAsync<ArgumentNullException>().WithParameterName("messages");
     }
 
     #endregion
@@ -274,11 +272,13 @@ public class InMemoryConversationStoreTests
         for (var i = 0; i < 10; i++)
         {
             var runId = $"run-{i}";
-            tasks.Add(Task.Run(async () =>
-            {
-                var messages = CreateTestMessages("thread-1", runId, 10);
-                await store.AppendMessagesAsync("thread-1", messages);
-            }));
+            tasks.Add(
+                Task.Run(async () =>
+                {
+                    var messages = CreateTestMessages("thread-1", runId, 10);
+                    await store.AppendMessagesAsync("thread-1", messages);
+                })
+            );
         }
 
         await Task.WhenAll(tasks);
@@ -366,21 +366,18 @@ public class InMemoryConversationStoreTests
         var store = new InMemoryConversationStore();
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-        await store.SaveMetadataAsync("thread-oldest", new ThreadMetadata
-        {
-            ThreadId = "thread-oldest",
-            LastUpdated = now - 2000,
-        });
-        await store.SaveMetadataAsync("thread-newest", new ThreadMetadata
-        {
-            ThreadId = "thread-newest",
-            LastUpdated = now,
-        });
-        await store.SaveMetadataAsync("thread-middle", new ThreadMetadata
-        {
-            ThreadId = "thread-middle",
-            LastUpdated = now - 1000,
-        });
+        await store.SaveMetadataAsync(
+            "thread-oldest",
+            new ThreadMetadata { ThreadId = "thread-oldest", LastUpdated = now - 2000 }
+        );
+        await store.SaveMetadataAsync(
+            "thread-newest",
+            new ThreadMetadata { ThreadId = "thread-newest", LastUpdated = now }
+        );
+        await store.SaveMetadataAsync(
+            "thread-middle",
+            new ThreadMetadata { ThreadId = "thread-middle", LastUpdated = now - 1000 }
+        );
 
         // Act
         var result = await store.ListThreadsAsync();
@@ -400,11 +397,14 @@ public class InMemoryConversationStoreTests
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < 5; i++)
         {
-            await store.SaveMetadataAsync($"thread-{i}", new ThreadMetadata
-            {
-                ThreadId = $"thread-{i}",
-                LastUpdated = now - (i * 1000), // thread-0 is newest
-            });
+            await store.SaveMetadataAsync(
+                $"thread-{i}",
+                new ThreadMetadata
+                {
+                    ThreadId = $"thread-{i}",
+                    LastUpdated = now - (i * 1000), // thread-0 is newest
+                }
+            );
         }
 
         // Act
@@ -425,11 +425,14 @@ public class InMemoryConversationStoreTests
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < 5; i++)
         {
-            await store.SaveMetadataAsync($"thread-{i}", new ThreadMetadata
-            {
-                ThreadId = $"thread-{i}",
-                LastUpdated = now - (i * 1000), // thread-0 is newest
-            });
+            await store.SaveMetadataAsync(
+                $"thread-{i}",
+                new ThreadMetadata
+                {
+                    ThreadId = $"thread-{i}",
+                    LastUpdated = now - (i * 1000), // thread-0 is newest
+                }
+            );
         }
 
         // Act
@@ -513,20 +516,18 @@ public class InMemoryConversationStoreTests
         var store = new InMemoryConversationStore();
         for (var i = 0; i < 20; i++)
         {
-            await store.SaveMetadataAsync($"subagent-{i:D2}", new ThreadMetadata
-            {
-                ThreadId = $"subagent-{i:D2}",
-                LastUpdated = 10_000 + i,
-            });
+            await store.SaveMetadataAsync(
+                $"subagent-{i:D2}",
+                new ThreadMetadata { ThreadId = $"subagent-{i:D2}", LastUpdated = 10_000 + i }
+            );
         }
 
         for (var i = 0; i < 15; i++)
         {
-            await store.SaveMetadataAsync($"keep-{i:D2}", new ThreadMetadata
-            {
-                ThreadId = $"keep-{i:D2}",
-                LastUpdated = 1_000 + i,
-            });
+            await store.SaveMetadataAsync(
+                $"keep-{i:D2}",
+                new ThreadMetadata { ThreadId = $"keep-{i:D2}", LastUpdated = 1_000 + i }
+            );
         }
 
         var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["subagent-"] };
@@ -557,16 +558,14 @@ public class InMemoryConversationStoreTests
         var store = new InMemoryConversationStore();
         for (var i = 0; i < 12; i++)
         {
-            await store.SaveMetadataAsync($"keep-{i:D2}", new ThreadMetadata
-            {
-                ThreadId = $"keep-{i:D2}",
-                LastUpdated = 10_000 - (i * 2),
-            });
-            await store.SaveMetadataAsync($"subagent-{i:D2}", new ThreadMetadata
-            {
-                ThreadId = $"subagent-{i:D2}",
-                LastUpdated = 10_000 - (i * 2) - 1,
-            });
+            await store.SaveMetadataAsync(
+                $"keep-{i:D2}",
+                new ThreadMetadata { ThreadId = $"keep-{i:D2}", LastUpdated = 10_000 - (i * 2) }
+            );
+            await store.SaveMetadataAsync(
+                $"subagent-{i:D2}",
+                new ThreadMetadata { ThreadId = $"subagent-{i:D2}", LastUpdated = 10_000 - (i * 2) - 1 }
+            );
         }
 
         var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["subagent-"] };
@@ -601,35 +600,32 @@ public class InMemoryConversationStoreTests
     {
         // Arrange
         var store = new InMemoryConversationStore();
-        await store.SaveMetadataAsync("thread-1000-aaa", new ThreadMetadata
-        {
-            ThreadId = "thread-1000-aaa",
-            LastUpdated = 9_000,
-        });
-        await store.SaveMetadataAsync("thread-2000-bbb", new ThreadMetadata
-        {
-            ThreadId = "thread-2000-bbb",
-            LastUpdated = 8_000,
-        });
-        await store.SaveMetadataAsync("thread-3000-ccc", new ThreadMetadata
-        {
-            ThreadId = "thread-3000-ccc",
-            LastUpdated = 7_000,
-        });
+        await store.SaveMetadataAsync(
+            "thread-1000-aaa",
+            new ThreadMetadata { ThreadId = "thread-1000-aaa", LastUpdated = 9_000 }
+        );
+        await store.SaveMetadataAsync(
+            "thread-2000-bbb",
+            new ThreadMetadata { ThreadId = "thread-2000-bbb", LastUpdated = 8_000 }
+        );
+        await store.SaveMetadataAsync(
+            "thread-3000-ccc",
+            new ThreadMetadata { ThreadId = "thread-3000-ccc", LastUpdated = 7_000 }
+        );
 
         // Act
         var byLastUsed = await store.ListThreadsAsync(
             limit: 10,
-            options: new ConversationListOptions { SortOrder = ConversationSortOrder.LastUsed });
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.LastUsed }
+        );
         var byCreated = await store.ListThreadsAsync(
             limit: 10,
-            options: new ConversationListOptions { SortOrder = ConversationSortOrder.Created });
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.Created }
+        );
 
         // Assert
-        byLastUsed.Select(m => m.ThreadId).Should()
-            .Equal("thread-1000-aaa", "thread-2000-bbb", "thread-3000-ccc");
-        byCreated.Select(m => m.ThreadId).Should()
-            .Equal("thread-3000-ccc", "thread-2000-bbb", "thread-1000-aaa");
+        byLastUsed.Select(m => m.ThreadId).Should().Equal("thread-1000-aaa", "thread-2000-bbb", "thread-3000-ccc");
+        byCreated.Select(m => m.ThreadId).Should().Equal("thread-3000-ccc", "thread-2000-bbb", "thread-1000-aaa");
     }
 
     /// <summary>
@@ -655,34 +651,27 @@ public class InMemoryConversationStoreTests
         var store = new InMemoryConversationStore();
         var provisioned = $"thread-{Guid.NewGuid():N}";
         const string NonNumeric = "thread-notatimestamp-zzz";
-        await store.SaveMetadataAsync("thread-5000-aaa", new ThreadMetadata
-        {
-            ThreadId = "thread-5000-aaa",
-            LastUpdated = 1_000,
-        });
-        await store.SaveMetadataAsync(provisioned, new ThreadMetadata
-        {
-            ThreadId = provisioned,
-            LastUpdated = 7_000,
-        });
-        await store.SaveMetadataAsync(NonNumeric, new ThreadMetadata
-        {
-            ThreadId = NonNumeric,
-            LastUpdated = 6_500,
-        });
-        await store.SaveMetadataAsync("thread-6000-bbb", new ThreadMetadata
-        {
-            ThreadId = "thread-6000-bbb",
-            LastUpdated = 2_000,
-        });
+        await store.SaveMetadataAsync(
+            "thread-5000-aaa",
+            new ThreadMetadata { ThreadId = "thread-5000-aaa", LastUpdated = 1_000 }
+        );
+        await store.SaveMetadataAsync(provisioned, new ThreadMetadata { ThreadId = provisioned, LastUpdated = 7_000 });
+        await store.SaveMetadataAsync(NonNumeric, new ThreadMetadata { ThreadId = NonNumeric, LastUpdated = 6_500 });
+        await store.SaveMetadataAsync(
+            "thread-6000-bbb",
+            new ThreadMetadata { ThreadId = "thread-6000-bbb", LastUpdated = 2_000 }
+        );
 
         // Act
         var byCreated = await store.ListThreadsAsync(
             limit: 10,
-            options: new ConversationListOptions { SortOrder = ConversationSortOrder.Created });
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.Created }
+        );
 
         // Assert - both fallbacks (7,000 and 6,500) rank above the parsed 6,000 and 5,000.
-        byCreated.Select(m => m.ThreadId).Should()
+        byCreated
+            .Select(m => m.ThreadId)
+            .Should()
             .Equal(provisioned, NonNumeric, "thread-6000-bbb", "thread-5000-aaa");
     }
 
@@ -700,32 +689,25 @@ public class InMemoryConversationStoreTests
     {
         // Arrange
         var store = new InMemoryConversationStore();
-        await store.SaveMetadataAsync("subagent-newest", new ThreadMetadata
-        {
-            ThreadId = "subagent-newest",
-            LastUpdated = 9_000,
-        });
-        await store.SaveMetadataAsync("thread-1000-aaa", new ThreadMetadata
-        {
-            ThreadId = "thread-1000-aaa",
-            LastUpdated = 8_000,
-        });
-        await store.SaveMetadataAsync("workflow-older", new ThreadMetadata
-        {
-            ThreadId = "workflow-older",
-            LastUpdated = 7_000,
-        });
+        await store.SaveMetadataAsync(
+            "subagent-newest",
+            new ThreadMetadata { ThreadId = "subagent-newest", LastUpdated = 9_000 }
+        );
+        await store.SaveMetadataAsync(
+            "thread-1000-aaa",
+            new ThreadMetadata { ThreadId = "thread-1000-aaa", LastUpdated = 8_000 }
+        );
+        await store.SaveMetadataAsync(
+            "workflow-older",
+            new ThreadMetadata { ThreadId = "workflow-older", LastUpdated = 7_000 }
+        );
 
         // Act
         var withNull = await store.ListThreadsAsync(limit: 10, offset: 0, options: null);
-        var withDefault = await store.ListThreadsAsync(
-            limit: 10,
-            offset: 0,
-            options: ConversationListOptions.Default);
+        var withDefault = await store.ListThreadsAsync(limit: 10, offset: 0, options: ConversationListOptions.Default);
 
         // Assert
-        withNull.Select(m => m.ThreadId).Should()
-            .Equal("subagent-newest", "thread-1000-aaa", "workflow-older");
+        withNull.Select(m => m.ThreadId).Should().Equal("subagent-newest", "thread-1000-aaa", "workflow-older");
         withDefault.Select(m => m.ThreadId).Should().Equal(withNull.Select(m => m.ThreadId));
     }
 
@@ -740,24 +722,27 @@ public class InMemoryConversationStoreTests
         var store = new InMemoryConversationStore();
         foreach (var suffix in new[] { "bbb", "eee", "aaa", "fff", "ccc", "ddd" })
         {
-            await store.SaveMetadataAsync($"thread-5000-{suffix}", new ThreadMetadata
-            {
-                ThreadId = $"thread-5000-{suffix}",
-                LastUpdated = 5_000,
-            });
+            await store.SaveMetadataAsync(
+                $"thread-5000-{suffix}",
+                new ThreadMetadata { ThreadId = $"thread-5000-{suffix}", LastUpdated = 5_000 }
+            );
         }
 
         // Act
         var listed = await store.ListThreadsAsync(limit: 10, offset: 0);
 
         // Assert
-        listed.Select(m => m.ThreadId).Should().Equal(
-            "thread-5000-fff",
-            "thread-5000-eee",
-            "thread-5000-ddd",
-            "thread-5000-ccc",
-            "thread-5000-bbb",
-            "thread-5000-aaa");
+        listed
+            .Select(m => m.ThreadId)
+            .Should()
+            .Equal(
+                "thread-5000-fff",
+                "thread-5000-eee",
+                "thread-5000-ddd",
+                "thread-5000-ccc",
+                "thread-5000-bbb",
+                "thread-5000-aaa"
+            );
     }
 
     // NOTE: this test does NOT prove the tie-break - it stays green without it. A single test run
@@ -778,11 +763,7 @@ public class InMemoryConversationStoreTests
         {
             var threadId = $"thread-5000-{suffix}";
             expected.Add(threadId);
-            await store.SaveMetadataAsync(threadId, new ThreadMetadata
-            {
-                ThreadId = threadId,
-                LastUpdated = 5_000,
-            });
+            await store.SaveMetadataAsync(threadId, new ThreadMetadata { ThreadId = threadId, LastUpdated = 5_000 });
         }
 
         // Act - page the tied set two at a time, exactly as the sidebar does
@@ -832,8 +813,7 @@ public class InMemoryConversationStoreTests
         var phantom = CreateMessage("thread-1", "run-1", "does-not-exist", 1, 0);
 
         var act = () => store.ReplaceMessageAsync("thread-1", phantom);
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*does-not-exist*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*does-not-exist*");
     }
 
     [Fact]
@@ -843,8 +823,7 @@ public class InMemoryConversationStoreTests
         var msg = CreateMessage("thread-1", "run-1", "id", 1, 0);
 
         var act = () => store.ReplaceMessageAsync("never-created-thread", msg);
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*never-created-thread*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*never-created-thread*");
     }
 
     #endregion
@@ -856,8 +835,9 @@ public class InMemoryConversationStoreTests
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         return
         [
-            .. Enumerable.Range(0, count)
-                .Select(i => CreateMessage(threadId, runId, $"msg-{runId}-{i}", now + i, messageOrderIdx: i))
+            .. Enumerable
+                .Range(0, count)
+                .Select(i => CreateMessage(threadId, runId, $"msg-{runId}-{i}", now + i, messageOrderIdx: i)),
         ];
     }
 
@@ -866,7 +846,8 @@ public class InMemoryConversationStoreTests
         string runId,
         string id,
         long timestamp,
-        int? messageOrderIdx = null)
+        int? messageOrderIdx = null
+    )
     {
         return new PersistedMessage
         {

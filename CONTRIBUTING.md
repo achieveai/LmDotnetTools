@@ -7,7 +7,7 @@ PR.
 ## Build setup
 
 ```bash
-# Restore packages and the local tool manifest (Husky.Net, dotnet-format).
+# Restore packages and the local tool manifest (Husky.Net, CSharpier).
 dotnet tool restore
 dotnet restore LmDotnetTools.sln
 
@@ -44,28 +44,42 @@ for an entire project (the central `NoWarn` list lives in
 
 ## Formatting
 
-The repository uses `dotnet format` with the rules in `.editorconfig`. The
-pre-commit hook runs `dotnet format whitespace --verify-no-changes`, and the
-same step runs in CI before the build.
+**CSharpier is the formatting authority.** Its settings live in `.csharpierrc`
+and its version is pinned in `.config/dotnet-tools.json`, so the hook, your
+editor and CI all format identically. The pre-commit hook runs
+`csharpier check` over the staged `.cs` files; CI runs it over the whole tree.
 
-Run the autofixer locally before pushing:
+Run the formatter locally before pushing:
 
 ```bash
-# Whitespace + line endings only — safe and fast.
-dotnet format whitespace LmDotnetTools.sln
+# Reformats every .cs file in place. This is the fix for any formatting failure.
+dotnet csharpier format .
 
-# Style rules (collection expressions, redundant casts, etc.). The IDE0039
-# fixer rewrites lambdas as local functions and can break code that uses
-# multiple `_` discards, so we exclude it.
-dotnet format style LmDotnetTools.sln --severity warn --exclude-diagnostics IDE0039
+# What the gates run. Exits non-zero and names each offending file.
+dotnet csharpier check .
 ```
 
-If the pre-commit hook reports a diff, run the commands above, review the
-changes, and stage them.
+If the pre-commit hook reports a diff, run `dotnet csharpier format .`, review
+the changes, and stage them.
+
+Two things worth knowing:
+
+- **Do not reach for `dotnet format`.** It is no longer a gate here, and
+  `dotnet format style` in particular applies Roslyn's own formatter, whose
+  line wrapping disagrees with CSharpier's — running it will *introduce*
+  formatting failures rather than fix them. That disagreement is why
+  `IDE0055` is set to `none` in `.editorconfig`; every semantic and style
+  analyzer stays enabled, and the zero-warning gate above is unaffected.
+- **CI checks the whole tree, not just what you staged.** The hook only ever
+  sees staged files, so a file changed by a merge, a revert, or a
+  `--no-verify` commit reaches `main` unchecked. `dotnet csharpier check .` in
+  CI is the step that catches it.
 
 ## Commit hook bypass
 
-The pre-commit hook is intentionally fast (whitespace verify only) so it
-should rarely be the bottleneck. If it is, you can run the build gate
-manually via `./scripts/ci-test.ps1 -SkipRestore` and skip the hook with
-`git commit --no-verify`. CI will still enforce both gates on the PR.
+The pre-commit hook is intentionally fast — it checks only the staged `.cs`
+files — so it should rarely be the bottleneck. If it is, you can run the build
+gate manually via `./scripts/ci-test.ps1 -SkipRestore` and skip the hook with
+`git commit --no-verify`. CI will still enforce both gates on the PR, and its
+formatting step reads the whole tree rather than your staged set, so a
+bypassed commit is caught there rather than slipping through.

@@ -90,9 +90,13 @@ public sealed class AgentOwnedThreadRouteTests
         var ok = Assert.IsType<OkObjectResult>(result);
         var messages = Assert.IsAssignableFrom<IReadOnlyList<PersistedMessage>>(ok.Value);
         messages.Should().HaveCount(2);
-        messages.Select(m => m.MessageType).Should().Contain(
-            nameof(ReasoningMessage),
-            "the owning client's view of its own sub-agent is unchanged, reasoning included");
+        messages
+            .Select(m => m.MessageType)
+            .Should()
+            .Contain(
+                nameof(ReasoningMessage),
+                "the owning client's view of its own sub-agent is unchanged, reasoning included"
+            );
     }
 
     [Fact]
@@ -105,7 +109,8 @@ public sealed class AgentOwnedThreadRouteTests
         var controller = CreateController(store, pool);
         SetRequestHeaders(
             controller,
-            new Dictionary<string, string> { [InboundS2SAuthAttribute.HeaderName] = "secret" });
+            new Dictionary<string, string> { [InboundS2SAuthAttribute.HeaderName] = "secret" }
+        );
 
         var result = await controller.GetMessages(RootThread, viewer: "alpha");
 
@@ -157,7 +162,8 @@ public sealed class AgentOwnedThreadRouteTests
         var controller = CreateController(store, pool);
         SetRequestHeaders(
             controller,
-            new Dictionary<string, string> { [InboundS2SAuthAttribute.HeaderName] = "secret" });
+            new Dictionary<string, string> { [InboundS2SAuthAttribute.HeaderName] = "secret" }
+        );
 
         var result = await controller.GetStatus(SubAgentThread, runId: "run-1");
 
@@ -197,23 +203,29 @@ public sealed class AgentOwnedThreadRouteTests
         var controller = CreateController(store, pool);
         SetRequestHeaders(
             controller,
-            new Dictionary<string, string> { [SandboxCredential.AppIdHeader] = "some-caller" });
+            new Dictionary<string, string> { [SandboxCredential.AppIdHeader] = "some-caller" }
+        );
 
         var result = route switch
         {
             "metadata" => await controller.UpdateMetadata(
-                SubAgentThread, new ConversationMetadataUpdate { Title = "mine now" }),
+                SubAgentThread,
+                new ConversationMetadataUpdate { Title = "mine now" }
+            ),
             "delete" => await controller.Delete(SubAgentThread),
             "mode" => await controller.SwitchMode(
-                SubAgentThread, new SwitchModeRequest { ModeId = SystemChatModes.DefaultModeId }),
-            _ => await controller.SwitchProvider(
-                SubAgentThread, new SwitchProviderRequest { ProviderId = "test" }),
+                SubAgentThread,
+                new SwitchModeRequest { ModeId = SystemChatModes.DefaultModeId }
+            ),
+            _ => await controller.SwitchProvider(SubAgentThread, new SwitchProviderRequest { ProviderId = "test" }),
         };
 
         AssertForbidden(result, ConversationsController.AgentOwnedThreadWriteCode);
 
         // The refusal is a refusal, not a partial edit: the thread is exactly as it was.
-        (await store.LoadMetadataAsync(SubAgentThread)).Should().NotBeNull();
+        (await store.LoadMetadataAsync(SubAgentThread))
+            .Should()
+            .NotBeNull();
     }
 
     [Fact]
@@ -227,7 +239,8 @@ public sealed class AgentOwnedThreadRouteTests
         var controller = CreateController(store, pool);
         SetRequestHeaders(
             controller,
-            new Dictionary<string, string> { [InboundS2SAuthAttribute.HeaderName] = "secret" });
+            new Dictionary<string, string> { [InboundS2SAuthAttribute.HeaderName] = "secret" }
+        );
 
         _ = Assert.IsType<NoContentResult>(await controller.Delete(RootThread));
         (await store.LoadMetadataAsync(RootThread)).Should().BeNull();
@@ -266,7 +279,8 @@ public sealed class AgentOwnedThreadRouteTests
             [
                 Persisted(threadId, "m-1", new ReasoningMessage { Reasoning = "secret sub-agent thinking" }),
                 Persisted(threadId, "m-2", new TextMessage { Text = "the answer", Role = Role.Assistant }),
-            ]);
+            ]
+        );
         return store;
     }
 
@@ -289,9 +303,12 @@ public sealed class AgentOwnedThreadRouteTests
             {
                 ThreadId = threadId,
                 LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
-            });
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    SystemChatModes.DefaultModeId
+                ),
+            }
+        );
 
     private static void SetRequestHeaders(ConversationsController controller, IDictionary<string, string> headers)
     {
@@ -307,14 +324,16 @@ public sealed class AgentOwnedThreadRouteTests
     private static MultiTurnAgentPool CreateFakeAgentPool() =>
         new(
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
     /// <summary>A pool that fails the test if the refused write ever reaches agent creation.</summary>
     private static MultiTurnAgentPool CreateForbiddenAgentPool() =>
         new(
-            (threadId, _, _) => throw new InvalidOperationException(
-                $"A refused request must not create an agent for '{threadId}'."),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            (threadId, _, _) =>
+                throw new InvalidOperationException($"A refused request must not create an agent for '{threadId}'."),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
     private static ConversationsController CreateController(IConversationStore store, MultiTurnAgentPool pool) =>
         new(
@@ -330,5 +349,6 @@ public sealed class AgentOwnedThreadRouteTests
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
-            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance));
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance)
+        );
 }

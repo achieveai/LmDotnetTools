@@ -51,11 +51,14 @@ public sealed class StaleHeadGuardTests
 
         (await act.Should().ThrowAsync<InvalidOperationException>())
             .Which.Message.Should()
-            .Contain("head-before-force-push").And.Contain("head-after-force-push");
+            .Contain("head-before-force-push")
+            .And.Contain("head-after-force-push");
         // The artifact is the load-bearing assertion, not the throw: the posting arm reads
         // ReviewArtifactKind, so a review that produced one is a review that could reach the author.
-        store.GetArtifacts(run.Id)
-            .Should().NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        store
+            .GetArtifacts(run.Id)
+            .Should()
+            .NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     [Fact]
@@ -69,8 +72,10 @@ public sealed class StaleHeadGuardTests
 
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        store.GetArtifacts(run.Id)
-            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        store
+            .GetArtifacts(run.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
         // Non-vacuity: a guard that never calls the host passes this test for the wrong reason, and would
         // pass the moved case too if the refusal came from anywhere else.
         provider.HeadShaCalls.Should().BeGreaterThan(0, "the recorded head is only checkable against the host");
@@ -81,8 +86,7 @@ public sealed class StaleHeadGuardTests
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
-        var executor = BuildExecutor(
-            store, new FakeReviewAgentLoopFactory(), [new UnreachablePrProvider("github")]);
+        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), [new UnreachablePrProvider("github")]);
         var run = SeedRunWithContext(store, prId: "325", headSha: "head-325");
 
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -90,8 +94,10 @@ public sealed class StaleHeadGuardTests
         // "The host could not be reached" is not evidence the head moved. Failing the run on it would let a
         // momentary API blip discard a review that took minutes and cost tokens, and would do it on every
         // run for as long as the blip lasted.
-        store.GetArtifacts(run.Id)
-            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        store
+            .GetArtifacts(run.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     [Fact]
@@ -106,8 +112,10 @@ public sealed class StaleHeadGuardTests
 
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        store.GetArtifacts(run.Id)
-            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        store
+            .GetArtifacts(run.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     [Fact]
@@ -123,8 +131,10 @@ public sealed class StaleHeadGuardTests
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         ado.HeadShaCalls.Should().Be(0);
-        store.GetArtifacts(run.Id)
-            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        store
+            .GetArtifacts(run.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     [Fact]
@@ -149,7 +159,10 @@ public sealed class StaleHeadGuardTests
         // Exactly how Program.cs builds it: ActivatorUtilities with the credential + gateway url passed
         // explicitly and everything else resolved from DI.
         var executor = ActivatorUtilities.CreateInstance<DaemonReviewStageExecutor>(
-            sp, default(SandboxCredential), "http://localhost:5051");
+            sp,
+            default(SandboxCredential),
+            "http://localhost:5051"
+        );
         var run = SeedRunWithContext(store, prId: "325", headSha: "head-before-force-push");
 
         var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -179,8 +192,10 @@ public sealed class StaleHeadGuardTests
         // guard promises to continue is discarded over a transport blip.
         provider.HeadShaCalls.Should().Be(1, "the site under test is only reached if the host is consulted");
         logs.Capturing.WarningCount(TimedOutHeadReadLog).Should().Be(1);
-        store.GetArtifacts(run.Id)
-            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        store
+            .GetArtifacts(run.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     [Fact]
@@ -199,15 +214,19 @@ public sealed class StaleHeadGuardTests
         // The other half of the same rule: shutdown must not be swallowed as "no head" and allowed to run a
         // whole review during a cancel.
         _ = await act.Should().ThrowAsync<OperationCanceledException>();
-        provider.HeadShaCalls.Should()
+        provider
+            .HeadShaCalls.Should()
             .Be(1, "a pre-cancelled token is refused before the read, which would pass this test vacuously");
         // The throw alone proves nothing: once the token is cancelled, a filter that swallowed this
         // cancellation still ends in an OperationCanceledException raised a few lines later, and still writes
         // no artifact. The SWALLOW's own log line is the only observable that tells the two apart.
         logs.Capturing.WarningCount(TimedOutHeadReadLog)
-            .Should().Be(0, "a caller-requested cancel is not a timeout and must not be reported as one");
-        store.GetArtifacts(run.Id)
-            .Should().NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+            .Should()
+            .Be(0, "a caller-requested cancel is not a timeout and must not be reported as one");
+        store
+            .GetArtifacts(run.Id)
+            .Should()
+            .NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     /// <summary>The head-read swallow's own log line — the observable that separates it from a real cancel.</summary>
@@ -230,10 +249,13 @@ public sealed class StaleHeadGuardTests
 
         provider.HeadShaCalls.Should().Be(1, "only the host can contradict the recorded head at this boundary");
         publisher.PostCount.Should().Be(0, "the publisher is the last thing between a stale review and the author");
-        store.GetOutboxForRun(run.Id)
-            .Should().NotContain(
+        store
+            .GetOutboxForRun(run.Id)
+            .Should()
+            .NotContain(
                 o => o.Operation == ReviewPoster.PostReviewCommentOperation,
-                "a refusal must not leave a delivery row claiming the review reached the PR");
+                "a refusal must not leave a delivery row claiming the review reached the PR"
+            );
         // A refusal that leaked the sandbox session would trade a stale comment for a stuck pooled slot.
         provisioner.DestroyCalls.Should().Contain(r => r.Id == run.Id, "cleanup runs on the refusal path too");
     }
@@ -293,11 +315,7 @@ public sealed class StaleHeadGuardTests
         // case: the head guard agrees here, so if the review is withheld it can only be because the lifecycle
         // clause withheld it. The synthesis-time check cannot cover this — it reads the run's persisted
         // pr_lifecycle_state, stamped once at discovery and never refreshed while the review ran.
-        var provider = new MockPrProvider("github", [], Cursor())
-        {
-            CurrentHeadSha = "head-118",
-            PrState = lifecycle,
-        };
+        var provider = new MockPrProvider("github", [], Cursor()) { CurrentHeadSha = "head-118", PrState = lifecycle };
         var publisher = new FakeReviewCommentPublisher("github");
         var provisioner = new RecordingProvisioner();
         var executor = BuildPostingExecutor(store, publisher, [provider], provisioner);
@@ -305,14 +323,20 @@ public sealed class StaleHeadGuardTests
 
         await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
 
-        provider.PrStateCalls.Should().Be(
-            1, "only the host can contradict the lifecycle the run was discovered with");
-        publisher.PostCount.Should().Be(
-            0, "findings on a PR that has already merged or closed read as noise, and the conversation may be locked");
-        store.GetOutboxForRun(run.Id)
-            .Should().NotContain(
+        provider.PrStateCalls.Should().Be(1, "only the host can contradict the lifecycle the run was discovered with");
+        publisher
+            .PostCount.Should()
+            .Be(
+                0,
+                "findings on a PR that has already merged or closed read as noise, and the conversation may be locked"
+            );
+        store
+            .GetOutboxForRun(run.Id)
+            .Should()
+            .NotContain(
                 o => o.Operation == ReviewPoster.PostReviewCommentOperation,
-                "a refusal must not leave a delivery row claiming the review reached the PR");
+                "a refusal must not leave a delivery row claiming the review reached the PR"
+            );
         // Merged and Closed are terminal, so the skip must be non-throwing: failing the stage would spin the
         // terminal stage forever waiting for a state that is never coming back.
         provisioner.DestroyCalls.Should().Contain(r => r.Id == run.Id, "cleanup runs on the refusal path too");
@@ -371,7 +395,11 @@ public sealed class StaleHeadGuardTests
             PrState = PrLifecycle.Open,
         };
         var executor = BuildPostingExecutor(
-            store, new FakeReviewCommentPublisher("github"), [provider], new RecordingProvisioner());
+            store,
+            new FakeReviewCommentPublisher("github"),
+            [provider],
+            new RecordingProvisioner()
+        );
         var run = SeedRunReadyToPost(store, headSha: "head-before-force-push");
 
         await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
@@ -392,26 +420,29 @@ public sealed class StaleHeadGuardTests
         public int PrStateCalls { get; private set; }
 
         public Task<PullRequestPage> ListOpenPullRequestsAsync(
-            PrPollRequest request, CancellationToken cancellationToken) =>
-            throw new NotSupportedException("not part of this test");
+            PrPollRequest request,
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException("not part of this test");
 
-        public Task<PrLifecycle> GetPrStateAsync(
-            RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
         {
             PrStateCalls++;
             throw new HttpRequestException("simulated provider outage");
         }
 
         public Task<string?> GetCurrentHeadShaAsync(
-            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
-            Task.FromResult<string?>(headSha);
+            RepoIdentity repo,
+            string prId,
+            CancellationToken cancellationToken
+        ) => Task.FromResult<string?>(headSha);
     }
 
     private static DaemonReviewStageExecutor BuildPostingExecutor(
         ReviewStore store,
         FakeReviewCommentPublisher publisher,
         IReadOnlyList<IPrProvider> prProviders,
-        IReviewSessionProvisioner provisioner) =>
+        IReviewSessionProvisioner provisioner
+    ) =>
         new(
             store,
             new FakeReviewAgentLoopFactory(),
@@ -428,43 +459,50 @@ public sealed class StaleHeadGuardTests
             [publisher],
             NullLoggerFactory.Instance,
             provisioner,
-            prProviders: prProviders);
+            prProviders: prProviders
+        );
 
     /// <summary>Seeds a run plus the <c>review</c> artifact the Posted stage reads, so that stage can be driven
     /// directly. <c>mode: "post"</c> is what authorizes a live delivery — a collect-only run posts nothing
     /// whatever the head says, and would prove nothing here.</summary>
     private static ReviewRun SeedRunReadyToPost(ReviewStore store, string headSha)
     {
-        var repoId = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "repo-stable-1",
-        });
-        var run = store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = "118",
-            HeadSha = headSha,
-            BaseSha = "base-118",
-            TriggerWatermark = "wm-118",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "post",
-            Stage = ReviewStage.Judged,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        });
+        var repoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-stable-1",
+            }
+        );
+        var run = store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = "118",
+                HeadSha = headSha,
+                BaseSha = "base-118",
+                TriggerWatermark = "wm-118",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "post",
+                Stage = ReviewStage.Judged,
+                WorkflowStatus = WorkflowStatus.Running,
+                PrLifecycleState = PrLifecycleState.Open,
+            }
+        );
 
-        _ = store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
-            Provider = "github",
-            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload("Found one thing.", "run-1", "primary")),
-        });
+        _ = store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(new ReviewArtifactPayload("Found one thing.", "run-1", "primary")),
+            }
+        );
 
         return run;
     }
@@ -475,11 +513,14 @@ public sealed class StaleHeadGuardTests
         public List<ReviewRun> DestroyCalls { get; } = [];
 
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
-            Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
-                $"session-{run.Id}",
-                $"/workspace/review-run-{run.Id}",
-                new FakeSandboxCommandRunner(),
-                new FakeSandboxFileSystem()));
+            Task.FromResult<ReviewRunSession?>(
+                new ReviewRunSession(
+                    $"session-{run.Id}",
+                    $"/workspace/review-run-{run.Id}",
+                    new FakeSandboxCommandRunner(),
+                    new FakeSandboxFileSystem()
+                )
+            );
 
         public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
             GetOrCreateAsync(run, ct);
@@ -493,19 +534,21 @@ public sealed class StaleHeadGuardTests
         public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
     }
 
-    private static OpaqueCursor Cursor() => new()
-    {
-        Provider = "github",
-        Scope = "achieveai/LmDotnetTools:open-prs",
-        CursorVersion = PrPollingService.CursorVersion,
-        CursorPayload = "{}",
-    };
+    private static OpaqueCursor Cursor() =>
+        new()
+        {
+            Provider = "github",
+            Scope = "achieveai/LmDotnetTools:open-prs",
+            CursorVersion = PrPollingService.CursorVersion,
+            CursorPayload = "{}",
+        };
 
     private static DaemonReviewStageExecutor BuildExecutor(
         ReviewStore store,
         FakeReviewAgentLoopFactory factory,
         IReadOnlyList<IPrProvider> prProviders,
-        ILoggerFactory? loggerFactory = null) =>
+        ILoggerFactory? loggerFactory = null
+    ) =>
         new(
             store,
             factory,
@@ -514,43 +557,56 @@ public sealed class StaleHeadGuardTests
             new CodeReviewDaemonOptions(),
             [new FakeReviewCommentPublisher("github")],
             loggerFactory ?? NullLoggerFactory.Instance,
-            prProviders: prProviders);
+            prProviders: prProviders
+        );
 
     /// <summary>Seeds a run plus the <c>review-context</c> artifact the Reviewed stage reads, so the stage
     /// can be driven directly without first running ContextReady.</summary>
     private static ReviewRun SeedRunWithContext(ReviewStore store, string prId, string headSha)
     {
-        var repoId = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "repo-stable-1",
-        });
-        var run = store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = prId,
-            HeadSha = headSha,
-            BaseSha = $"base-{prId}",
-            TriggerWatermark = $"wm-{prId}",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "collect-only",
-            Stage = ReviewStage.Discovered,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        });
+        var repoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-stable-1",
+            }
+        );
+        var run = store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = prId,
+                HeadSha = headSha,
+                BaseSha = $"base-{prId}",
+                TriggerWatermark = $"wm-{prId}",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Running,
+                PrLifecycleState = PrLifecycleState.Open,
+            }
+        );
 
-        _ = store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.ContextArtifactKind,
-            Provider = "github",
-            Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
-                run.PrId, run.BaseSha, run.HeadSha, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;")),
-        });
+        _ = store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ContextArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new ContextArtifactPayload(
+                        run.PrId,
+                        run.BaseSha,
+                        run.HeadSha,
+                        "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;"
+                    )
+                ),
+            }
+        );
 
         return run;
     }
@@ -561,16 +617,18 @@ public sealed class StaleHeadGuardTests
         public string Provider { get; } = provider;
 
         public Task<PullRequestPage> ListOpenPullRequestsAsync(
-            PrPollRequest request, CancellationToken cancellationToken) =>
-            throw new HttpRequestException("simulated provider outage");
+            PrPollRequest request,
+            CancellationToken cancellationToken
+        ) => throw new HttpRequestException("simulated provider outage");
 
-        public Task<PrLifecycle> GetPrStateAsync(
-            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+        public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
             throw new HttpRequestException("simulated provider outage");
 
         public Task<string?> GetCurrentHeadShaAsync(
-            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
-            throw new HttpRequestException("simulated provider outage");
+            RepoIdentity repo,
+            string prId,
+            CancellationToken cancellationToken
+        ) => throw new HttpRequestException("simulated provider outage");
     }
 
     /// <summary>
@@ -586,20 +644,20 @@ public sealed class StaleHeadGuardTests
         public int HeadShaCalls { get; private set; }
 
         public Task<PullRequestPage> ListOpenPullRequestsAsync(
-            PrPollRequest request, CancellationToken cancellationToken) =>
-            throw new NotSupportedException("not part of this test");
+            PrPollRequest request,
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException("not part of this test");
 
-        public Task<PrLifecycle> GetPrStateAsync(
-            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+        public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
             Task.FromResult(PrLifecycle.Open);
 
-        public Task<string?> GetCurrentHeadShaAsync(
-            RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        public Task<string?> GetCurrentHeadShaAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
         {
             HeadShaCalls++;
             throw new TaskCanceledException(
                 "The request was canceled due to the configured HttpClient.Timeout elapsing.",
-                new TimeoutException());
+                new TimeoutException()
+            );
         }
     }
 
@@ -616,15 +674,14 @@ public sealed class StaleHeadGuardTests
         public int HeadShaCalls { get; private set; }
 
         public Task<PullRequestPage> ListOpenPullRequestsAsync(
-            PrPollRequest request, CancellationToken cancellationToken) =>
-            throw new NotSupportedException("not part of this test");
+            PrPollRequest request,
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException("not part of this test");
 
-        public Task<PrLifecycle> GetPrStateAsync(
-            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+        public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
             Task.FromResult(PrLifecycle.Open);
 
-        public Task<string?> GetCurrentHeadShaAsync(
-            RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        public Task<string?> GetCurrentHeadShaAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
         {
             HeadShaCalls++;
             cts.Cancel();

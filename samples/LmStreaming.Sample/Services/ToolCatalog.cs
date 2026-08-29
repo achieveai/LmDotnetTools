@@ -39,7 +39,8 @@ public sealed class ToolCatalog(
     FunctionRegistry sampleRegistry,
     IReadOnlyList<ToolDefinition> builtInToolDefinitions,
     ISandboxToolCatalogProbe sandboxProbe,
-    TimeProvider timeProvider) : IToolCatalog
+    TimeProvider timeProvider
+) : IToolCatalog
 {
     /// <inheritdoc />
     public async Task<IReadOnlyList<ToolDefinition>> GetAsync(CancellationToken ct = default)
@@ -61,35 +62,32 @@ public sealed class ToolCatalog(
 
         // 2. The sample's demo function tools, from the shared singleton registry.
         var (sampleContracts, _) = sampleRegistry.Build();
-        catalog.AddRange(
-            sampleContracts.Select(c => Bare(ToolGroups.Sample, c.Name, c.Description))
-        );
+        catalog.AddRange(sampleContracts.Select(c => Bare(ToolGroups.Sample, c.Name, c.Description)));
 
         // 3. The per-conversation todo list. Enumerated from a throwaway TaskManager rather than a
         //    hand-written name list, so adding a task tool cannot silently skip the editor.
         var taskRegistry = new FunctionRegistry();
         _ = taskRegistry.AddFunctionsFromObject(new TaskManager(), providerName: "TaskManager");
         var (taskContracts, _) = taskRegistry.Build();
-        catalog.AddRange(
-            taskContracts.Select(c => Bare(ToolGroups.Tasks, c.Name, c.Description))
-        );
+        catalog.AddRange(taskContracts.Select(c => Bare(ToolGroups.Tasks, c.Name, c.Description)));
 
         // 4. Jina web fallbacks. Bare ids — Research Assistant has always listed these in
         //    EnabledTools, and WebToolRegistrationPolicy still reads them from there.
         catalog.Add(
-            Bare(ToolGroups.Web, WebSearchTool.ToolName, "Search the web (fallback for providers with no native web search).")
+            Bare(
+                ToolGroups.Web,
+                WebSearchTool.ToolName,
+                "Search the web (fallback for providers with no native web search)."
+            )
         );
-        catalog.Add(
-            Bare(ToolGroups.Web, WebFetchTool.ToolName, "Fetch and read a web page as text.")
-        );
+        catalog.Add(Bare(ToolGroups.Web, WebFetchTool.ToolName, "Fetch and read a web page as text."));
 
         // 5. Sub-agents. The union of both surface shapes — a conversation sees the legacy set or the
         //    collaboration set, never all of these at once (see SubAgentToolProvider.AllToolNames).
         catalog.Add(Wildcard(ToolGroups.SubAgents, "All sub-agent tools", requiresSandbox: false));
         catalog.AddRange(
             SubAgentToolProvider.AllToolNames.Select(name =>
-                Qualified(ToolGroups.SubAgents, name, SubAgentToolDescription(name), requiresSandbox: false)
-                with
+                Qualified(ToolGroups.SubAgents, name, SubAgentToolDescription(name), requiresSandbox: false) with
                 {
                     // The legacy surface, marked so the editor can pre-select exactly what a mode
                     // with no capability selection already gets. Derived from
@@ -132,7 +130,8 @@ public sealed class ToolCatalog(
         catalog.Add(
             Wildcard(ToolGroups.Sandbox, "All workspace tools", requiresSandbox: true) with
             {
-                Description = "Every file and shell tool the workspace sandbox offers, including "
+                Description =
+                    "Every file and shell tool the workspace sandbox offers, including "
                     + "tools added later by marketplace plugins.",
                 CatalogWarning = sandbox.Warning,
             }
@@ -159,11 +158,7 @@ public sealed class ToolCatalog(
             GroupLabel = ToolGroups.LabelFor(group),
         };
 
-    private static ToolDefinition Qualified(
-        string group,
-        string name,
-        string? description,
-        bool requiresSandbox) =>
+    private static ToolDefinition Qualified(string group, string name, string? description, bool requiresSandbox) =>
         new()
         {
             Name = name,

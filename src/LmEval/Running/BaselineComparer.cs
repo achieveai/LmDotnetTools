@@ -168,11 +168,7 @@ public static class BaselineComparer
     /// <param name="run">The candidate run.</param>
     /// <param name="baseline">The frozen baseline.</param>
     /// <param name="margins">The margins a regression is declared past.</param>
-    public static EvalComparison Compare(
-        EvalRun run,
-        EvalBaseline baseline,
-        RegressionMargins? margins = null
-    )
+    public static EvalComparison Compare(EvalRun run, EvalBaseline baseline, RegressionMargins? margins = null)
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(baseline);
@@ -202,14 +198,7 @@ public static class BaselineComparer
             PassRateDeltaUpper = upper,
             Coverage = run.Coverage,
             BaselineCoverage = (double)baseline.ScoredItems / baseline.CorpusSize,
-            Triggers = Triggers(
-                passRateDelta,
-                meanDelta,
-                p10Delta,
-                noDecisionDelta,
-                upper,
-                margins
-            ),
+            Triggers = Triggers(passRateDelta, meanDelta, p10Delta, noDecisionDelta, upper, margins),
         };
     }
 
@@ -257,28 +246,15 @@ public static class BaselineComparer
         // construction: string.Equals is TRUE for two nulls, so without that guarantee two runs
         // whose provenance was never recorded would be declared comparable — the one pairing where
         // a refusal matters most.
-        if (
-            !string.Equals(
-                run.CorpusSnapshotHash,
-                baseline.CorpusSnapshotHash,
-                StringComparison.Ordinal
-            )
-        )
+        if (!string.Equals(run.CorpusSnapshotHash, baseline.CorpusSnapshotHash, StringComparison.Ordinal))
         {
             return Refused(
                 ComparisonRefusal.CorpusSnapshotDiffers,
-                "run and baseline are over different corpus snapshots, so their means are over "
-                    + "different items"
+                "run and baseline are over different corpus snapshots, so their means are over " + "different items"
             );
         }
 
-        if (
-            !string.Equals(
-                run.EvaluatorConfigHash,
-                baseline.EvaluatorConfigHash,
-                StringComparison.Ordinal
-            )
-        )
+        if (!string.Equals(run.EvaluatorConfigHash, baseline.EvaluatorConfigHash, StringComparison.Ordinal))
         {
             return Refused(
                 ComparisonRefusal.EvaluatorConfigDiffers,
@@ -314,10 +290,7 @@ public static class BaselineComparer
         // A null rate is the run that recorded no gate decision at all, and it is deliberately NOT
         // refused: a harness with no gates configured is a real configuration. The pattern match is
         // what keeps that case from silently comparing false against the bound the way a NaN would.
-        if (
-            run.InconclusiveGateRate is { } inconclusiveRate
-            && inconclusiveRate > baseline.MaxInconclusiveGateRate
-        )
+        if (run.InconclusiveGateRate is { } inconclusiveRate && inconclusiveRate > baseline.MaxInconclusiveGateRate)
         {
             return Refused(
                 ComparisonRefusal.InconclusiveGateRateAboveMaximum,
@@ -398,9 +371,7 @@ public static class BaselineComparer
     )
     {
         var indicators = run
-            .Items.Select(i =>
-                i.IsScored && i.Verdict?.Outcome == VerdictOutcome.Pass ? 1.0 : 0.0
-            )
+            .Items.Select(i => i.IsScored && i.Verdict?.Outcome == VerdictOutcome.Pass ? 1.0 : 0.0)
             .ToArray();
 
         var random = new Random(margins.BootstrapSeed);

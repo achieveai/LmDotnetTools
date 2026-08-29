@@ -18,9 +18,7 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 public sealed class M365OAuthProviderTests : LoggingTestBase
 {
     public M365OAuthProviderTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private M365OAuthProvider NewProvider(
         string? clientId,
@@ -28,7 +26,8 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
         string cacheDir,
         TimeProvider? time = null,
         IMsalHttpClientFactory? msalHttpClientFactory = null,
-        string tenantId = "common") =>
+        string tenantId = "common"
+    ) =>
         new(
             new M365AuthOptions
             {
@@ -42,7 +41,8 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
             tokenCacheFilePath: Path.Combine(cacheDir, "msal-m365.bin"),
             LoggerFactory.CreateLogger<M365OAuthProvider>(),
             time,
-            msalHttpClientFactory);
+            msalHttpClientFactory
+        );
 
     [Fact]
     public async Task Unconfigured_provider_is_disabled_not_crashing()
@@ -73,7 +73,11 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
     {
         LogTestStart();
         using var temp = new TempDir();
-        var provider = NewProvider(clientId: "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c", clientSecret: null, cacheDir: temp.Path);
+        var provider = NewProvider(
+            clientId: "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c",
+            clientSecret: null,
+            cacheDir: temp.Path
+        );
 
         provider.IsConfigured.Should().BeFalse();
         var beginSignIn = async () => await provider.BeginSignInAsync();
@@ -89,7 +93,8 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
         var provider = NewProvider(
             clientId: "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c",
             clientSecret: "secret-not-used-in-hydrate",
-            cacheDir: temp.Path);
+            cacheDir: temp.Path
+        );
 
         await provider.HydrateFromStoreAsync();
         Logger.LogInformation("Hydrate with empty MSAL cache left state {State}.", provider.Status.State);
@@ -110,7 +115,8 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
             redirectUri: "http://localhost:5000/auth/m365/callback",
             scopes: ["User.Read", "Mail.Read"],
             state: "test-state-abc",
-            codeChallenge: "test-challenge-xyz");
+            codeChallenge: "test-challenge-xyz"
+        );
         Logger.LogInformation("Authorize URL: {Url}", url);
 
         url.Should().StartWith("https://login.microsoftonline.com/common/oauth2/v2.0/authorize");
@@ -140,7 +146,8 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
             redirectUri: "http://x/cb",
             scopes: ["User.Read", "offline_access"],
             state: "s",
-            codeChallenge: "ch");
+            codeChallenge: "ch"
+        );
         var occurrences = url.Split("offline_access").Length - 1;
         occurrences.Should().Be(1);
         LogTestEnd();
@@ -154,7 +161,8 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
         var provider = NewProvider(
             clientId: "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c",
             clientSecret: "secret",
-            cacheDir: temp.Path);
+            cacheDir: temp.Path
+        );
 
         var failure = await provider.CompleteSignInAsync(code: "abc", state: "never-registered");
 
@@ -248,7 +256,8 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
         var provider = NewProvider(
             clientId: "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c",
             clientSecret: "secret",
-            cacheDir: temp.Path);
+            cacheDir: temp.Path
+        );
 
         var hydrate = async () => await provider.HydrateFromStoreAsync();
         await hydrate.Should().NotThrowAsync();
@@ -278,14 +287,17 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
         using var temp = new TempDir();
         var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
 
-        var handler = new RecordingHandler((request, _) =>
-            new HttpResponseMessage(HttpStatusCode.BadRequest)
-            {
-                Content = new StringContent(
-                    "{\"error\":\"invalid_grant\",\"error_description\":\"AADSTS70008: stub\"}",
-                    Encoding.UTF8,
-                    "application/json"),
-            });
+        var handler = new RecordingHandler(
+            (request, _) =>
+                new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent(
+                        "{\"error\":\"invalid_grant\",\"error_description\":\"AADSTS70008: stub\"}",
+                        Encoding.UTF8,
+                        "application/json"
+                    ),
+                }
+        );
         var factory = new FakeMsalHttpClientFactory(handler);
 
         var provider = NewProvider(
@@ -293,13 +305,18 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
             clientSecret: "secret",
             cacheDir: temp.Path,
             time: time,
-            msalHttpClientFactory: factory);
+            msalHttpClientFactory: factory
+        );
         provider.RegisterPendingForTest("state-1", "verifier-1", time.GetUtcNow() + TimeSpan.FromMinutes(5));
 
         _ = await provider.CompleteSignInAsync(code: "auth-code", state: "state-1");
 
-        handler.Requests.Should().Contain(u => u.AbsolutePath.EndsWith("/oauth2/v2.0/token", StringComparison.Ordinal),
-            "the seam must route MSAL's token request through the injected factory");
+        handler
+            .Requests.Should()
+            .Contain(
+                u => u.AbsolutePath.EndsWith("/oauth2/v2.0/token", StringComparison.Ordinal),
+                "the seam must route MSAL's token request through the injected factory"
+            );
         Logger.LogInformation("Seam captured {Count} token-endpoint calls.", handler.Requests.Count);
         LogTestEnd();
     }
@@ -315,14 +332,17 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
         using var temp = new TempDir();
         var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
 
-        var handler = new RecordingHandler((_, _) =>
-            new HttpResponseMessage(HttpStatusCode.BadRequest)
-            {
-                Content = new StringContent(
-                    "{\"error\":\"invalid_grant\",\"error_description\":\"AADSTS70008: refresh token expired\"}",
-                    Encoding.UTF8,
-                    "application/json"),
-            });
+        var handler = new RecordingHandler(
+            (_, _) =>
+                new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent(
+                        "{\"error\":\"invalid_grant\",\"error_description\":\"AADSTS70008: refresh token expired\"}",
+                        Encoding.UTF8,
+                        "application/json"
+                    ),
+                }
+        );
         var factory = new FakeMsalHttpClientFactory(handler);
 
         var provider = NewProvider(
@@ -330,14 +350,17 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
             clientSecret: "secret",
             cacheDir: temp.Path,
             time: time,
-            msalHttpClientFactory: factory);
+            msalHttpClientFactory: factory
+        );
         provider.RegisterPendingForTest("state-bad", "verifier-bad", time.GetUtcNow() + TimeSpan.FromMinutes(5));
 
         var failure = await provider.CompleteSignInAsync(code: "auth-code", state: "state-bad");
 
         failure.Should().Be("invalid_grant");
         provider.Status.State.Should().Be(OAuthSignInState.Failed);
-        provider.Status.Error.Should().Be("invalid_grant", "MSAL's OAuth error code, not the description, is what we surface");
+        provider
+            .Status.Error.Should()
+            .Be("invalid_grant", "MSAL's OAuth error code, not the description, is what we surface");
         LogTestEnd();
     }
 
@@ -351,11 +374,13 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
         using var temp = new TempDir();
         var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
 
-        var handler = new RecordingHandler((_, _) =>
-            new HttpResponseMessage(HttpStatusCode.InternalServerError)
-            {
-                Content = new StringContent("server is on fire", Encoding.UTF8, "text/plain"),
-            });
+        var handler = new RecordingHandler(
+            (_, _) =>
+                new HttpResponseMessage(HttpStatusCode.InternalServerError)
+                {
+                    Content = new StringContent("server is on fire", Encoding.UTF8, "text/plain"),
+                }
+        );
         var factory = new FakeMsalHttpClientFactory(handler);
 
         var provider = NewProvider(
@@ -363,7 +388,8 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
             clientSecret: "secret",
             cacheDir: temp.Path,
             time: time,
-            msalHttpClientFactory: factory);
+            msalHttpClientFactory: factory
+        );
         provider.RegisterPendingForTest("state-5xx", "verifier", time.GetUtcNow() + TimeSpan.FromMinutes(5));
 
         var failure = await provider.CompleteSignInAsync(code: "code", state: "state-5xx");
@@ -420,15 +446,21 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
     private sealed class ManualTimeProvider : TimeProvider
     {
         private DateTimeOffset _now;
+
         public ManualTimeProvider(DateTimeOffset start) => _now = start;
+
         public override DateTimeOffset GetUtcNow() => _now;
+
         public void Advance(TimeSpan delta) => _now += delta;
     }
 
     private sealed class TempDir : IDisposable
     {
         public TempDir() =>
-            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "m365-oauth-test-" + Guid.NewGuid().ToString("N"));
+            Path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                "m365-oauth-test-" + Guid.NewGuid().ToString("N")
+            );
 
         public string Path { get; }
 

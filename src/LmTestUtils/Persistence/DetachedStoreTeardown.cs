@@ -170,7 +170,8 @@ public static class DetachedStoreTeardown
                             + "refuses instead. Most likely a test left a store operation in flight or a "
                             + "handle undisposed under this root; see the inner exception, which also covers "
                             + "a pooled connection not yet released and a plain access failure.",
-                        ex);
+                        ex
+                    );
                 }
 
                 Thread.Sleep(DetachRetryDelayMs * attempt);

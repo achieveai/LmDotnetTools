@@ -17,7 +17,8 @@ public class AnthropicClientHttpTests : LoggingTestBase
     private readonly ILogger<AnthropicClient> _anthropicClientLogger;
     private readonly IPerformanceTracker _performanceTracker;
 
-    public AnthropicClientHttpTests(ITestOutputHelper output) : base(output)
+    public AnthropicClientHttpTests(ITestOutputHelper output)
+        : base(output)
     {
         _anthropicClientLogger = LoggerFactory.CreateLogger<AnthropicClient>();
         _performanceTracker = new PerformanceTracker();
@@ -32,7 +33,11 @@ public class AnthropicClientHttpTests : LoggingTestBase
             statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
             chunkDelayMs: 0
         );
-        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
+        var client = new AnthropicClient(
+            httpClient,
+            performanceTracker: _performanceTracker,
+            logger: _anthropicClientLogger
+        );
 
         var request = new AnthropicRequest
         {
@@ -80,7 +85,11 @@ public class AnthropicClientHttpTests : LoggingTestBase
     {
         // Arrange
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
-        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
+        var client = new AnthropicClient(
+            httpClient,
+            performanceTracker: _performanceTracker,
+            logger: _anthropicClientLogger
+        );
 
         var request = new AnthropicRequest
         {
@@ -106,7 +115,11 @@ public class AnthropicClientHttpTests : LoggingTestBase
             statusSequence: statusCodes,
             chunkDelayMs: 0
         );
-        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
+        var client = new AnthropicClient(
+            httpClient,
+            performanceTracker: _performanceTracker,
+            logger: _anthropicClientLogger
+        );
 
         var request = new AnthropicRequest
         {
@@ -144,7 +157,11 @@ public class AnthropicClientHttpTests : LoggingTestBase
     {
         // Arrange
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
-        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
+        var client = new AnthropicClient(
+            httpClient,
+            performanceTracker: _performanceTracker,
+            logger: _anthropicClientLogger
+        );
 
         var request = new AnthropicRequest
         {
@@ -185,7 +202,11 @@ public class AnthropicClientHttpTests : LoggingTestBase
             statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
             chunkDelayMs: 0
         );
-        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
+        var client = new AnthropicClient(
+            httpClient,
+            performanceTracker: _performanceTracker,
+            logger: _anthropicClientLogger
+        );
 
         var request = new AnthropicRequest
         {
@@ -331,8 +352,10 @@ public class AnthropicClientHttpTests : LoggingTestBase
             events.Add(streamEvent);
 
             // Extract text content from content_block_delta events
-            if (streamEvent is AnthropicContentBlockDeltaEvent deltaEvent
-                && deltaEvent.Delta is AnthropicTextDelta textDelta)
+            if (
+                streamEvent is AnthropicContentBlockDeltaEvent deltaEvent
+                && deltaEvent.Delta is AnthropicTextDelta textDelta
+            )
             {
                 allContent.Append(textDelta.Text);
             }
@@ -354,7 +377,9 @@ public class AnthropicClientHttpTests : LoggingTestBase
         Assert.Contains(events, e => e.Type == "content_block_delta");
         Assert.Contains(events, e => e.Type == "message_stop");
 
-        Logger.LogInformation("StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed completed successfully");
+        Logger.LogInformation(
+            "StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed completed successfully"
+        );
     }
 
     [Fact]
@@ -362,7 +387,11 @@ public class AnthropicClientHttpTests : LoggingTestBase
     {
         // Arrange
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
-        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
+        var client = new AnthropicClient(
+            httpClient,
+            performanceTracker: _performanceTracker,
+            logger: _anthropicClientLogger
+        );
 
         var request = new AnthropicRequest
         {

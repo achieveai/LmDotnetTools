@@ -72,12 +72,14 @@ public sealed class NotifyClientTests
             .Should()
             .Be(1, "NotifyClient must not fork a redundant assistant run");
 
-        responder.RemainingTurns["parent"]
+        responder
+            .RemainingTurns["parent"]
             .Should()
             .Be(0, "the scripted plan is exactly notify -> long text, with no extra turn consumed");
 
         await session.SaveSuccessScreenshotAsync(
-            $"NotifyClient.NotifyClient_renders_live_without_pausing_or_starting_an_extra_run_{providerMode}");
+            $"NotifyClient.NotifyClient_renders_live_without_pausing_or_starting_an_extra_run_{providerMode}"
+        );
     }
 
     /// <summary>

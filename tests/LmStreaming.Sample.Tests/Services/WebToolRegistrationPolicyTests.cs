@@ -372,10 +372,7 @@ public class WebToolRegistrationPolicyTests
 
         // Only the original lowercase contract exists; the policy did not add a second one.
         var (contracts, _) = registry.Build();
-        contracts
-            .Count(c => string.Equals(c.Name, "webfetch", StringComparison.OrdinalIgnoreCase))
-            .Should()
-            .Be(1);
+        contracts.Count(c => string.Equals(c.Name, "webfetch", StringComparison.OrdinalIgnoreCase)).Should().Be(1);
     }
 
     // ---- Per-conversation scoping: two registries, two providers, never both capabilities ----

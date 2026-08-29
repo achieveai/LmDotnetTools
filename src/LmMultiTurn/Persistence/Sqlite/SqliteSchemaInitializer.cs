@@ -272,7 +272,8 @@ public static class SqliteSchemaInitializer
                 CreateRunDeferredCallsIndexSql,
                 CreateNotifyWaitsTableSql,
                 CreateNotifyWaitsIndexSql,
-            ]),
+            ]
+        ),
         new(
             2,
             [
@@ -280,19 +281,10 @@ public static class SqliteSchemaInitializer
                 CreateTenantsEntraIndexSql,
                 CreateTenantAdminsTableSql,
                 CreateTenantAdminsUserIndexSql,
-            ]),
-        new(
-            3,
-            [
-                .. AddThreadMetadataOwnerColumnsSql,
-                CreateThreadMetadataOwnerIndexSql,
-            ]),
-        new(
-            4,
-            [
-                CreateResourceGrantsTableSql,
-                CreateResourceGrantsSubjectIndexSql,
-            ]),
+            ]
+        ),
+        new(3, [.. AddThreadMetadataOwnerColumnsSql, CreateThreadMetadataOwnerIndexSql]),
+        new(4, [CreateResourceGrantsTableSql, CreateResourceGrantsSubjectIndexSql]),
     ];
 
     /// <summary>
@@ -318,9 +310,7 @@ public static class SqliteSchemaInitializer
     /// </remarks>
     /// <param name="connection">An open SQLite connection.</param>
     /// <param name="ct">Cancellation token.</param>
-    public static async Task InitializeSchemaAsync(
-        SqliteConnection connection,
-        CancellationToken ct = default)
+    public static async Task InitializeSchemaAsync(SqliteConnection connection, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(connection);
 
@@ -365,7 +355,8 @@ public static class SqliteSchemaInitializer
                         connection,
                         transaction,
                         FormattableString.Invariant($"PRAGMA user_version = {step.Version};"),
-                        ct)
+                        ct
+                    )
                     .ConfigureAwait(false);
             }
 
@@ -410,19 +401,22 @@ public static class SqliteSchemaInitializer
         if (version > LatestSchemaVersion)
         {
             var detail = FormattableString.Invariant(
-                $"The database is at schema version {version}, which is newer than the version {LatestSchemaVersion} this build understands.");
+                $"The database is at schema version {version}, which is newer than the version {LatestSchemaVersion} this build understands."
+            );
 
             throw new NotSupportedException(
                 detail
                     + " It was migrated by a later build and cannot be migrated back. Deploy that"
-                    + " build again, or point this process at a different database.");
+                    + " build again, or point this process at a different database."
+            );
         }
     }
 
     private static async Task<int> ReadUserVersionAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA user_version;";
@@ -435,7 +429,8 @@ public static class SqliteSchemaInitializer
         SqliteConnection connection,
         SqliteTransaction transaction,
         string sql,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         using var command = connection.CreateCommand();
         command.CommandText = sql;
@@ -450,12 +445,12 @@ public static class SqliteSchemaInitializer
     /// <param name="ct">Cancellation token.</param>
     public static async Task InitializeSchemaAsync(
         ISqliteConnectionFactory connectionFactory,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(connectionFactory);
 
-        await using var connection = await connectionFactory.GetConnectionAsync(ct)
-            .ConfigureAwait(false);
+        await using var connection = await connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
         await InitializeSchemaAsync(connection, ct).ConfigureAwait(false);
     }
 }

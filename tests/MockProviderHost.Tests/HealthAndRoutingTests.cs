@@ -14,9 +14,7 @@ public sealed class HealthAndRoutingTests
     [Fact]
     public async Task Healthz_returns_ok()
     {
-        var responder = ScriptedSseResponder.New()
-            .ForRole("any", _ => true).Turn(t => t.Text("unused"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("any", _ => true).Turn(t => t.Text("unused")).Build();
         await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var client = new HttpClient { BaseAddress = new Uri(fixture.BaseUrl) };
 
@@ -29,9 +27,7 @@ public sealed class HealthAndRoutingTests
     [Fact]
     public async Task Unknown_path_returns_404()
     {
-        var responder = ScriptedSseResponder.New()
-            .ForRole("any", _ => true).Turn(t => t.Text("unused"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("any", _ => true).Turn(t => t.Text("unused")).Build();
         await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var client = new HttpClient { BaseAddress = new Uri(fixture.BaseUrl) };
 
@@ -43,9 +39,7 @@ public sealed class HealthAndRoutingTests
     [Fact]
     public async Task OpenAi_endpoint_echoes_convention_headers()
     {
-        var responder = ScriptedSseResponder.New()
-            .ForRole("parent", _ => true).Turn(t => t.Text("hi"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("parent", _ => true).Turn(t => t.Text("hi")).Build();
         await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var client = new HttpClient { BaseAddress = new Uri(fixture.BaseUrl) };
 
@@ -61,19 +55,20 @@ public sealed class HealthAndRoutingTests
     [Fact]
     public async Task Anthropic_endpoint_echoes_convention_headers()
     {
-        var responder = ScriptedSseResponder.New()
-            .ForRole("parent", _ => true).Turn(t => t.Text("hi"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("parent", _ => true).Turn(t => t.Text("hi")).Build();
         await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var client = new HttpClient { BaseAddress = new Uri(fixture.BaseUrl) };
 
-        var body = """{"model":"claude-test","stream":true,"max_tokens":256,"messages":[{"role":"user","content":"hi"}]}""";
+        var body =
+            """{"model":"claude-test","stream":true,"max_tokens":256,"messages":[{"role":"user","content":"hi"}]}""";
         using var content = new StringContent(body, Encoding.UTF8, "application/json");
         using var response = await client.PostAsync("/v1/messages", content);
 
         response.EnsureSuccessStatusCode();
         response.Headers.Should().Contain(h => h.Key.Equals("anthropic-version", StringComparison.OrdinalIgnoreCase));
-        response.Headers.Should().Contain(h => h.Key.Equals("anthropic-request-id", StringComparison.OrdinalIgnoreCase));
+        response
+            .Headers.Should()
+            .Contain(h => h.Key.Equals("anthropic-request-id", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -81,13 +76,12 @@ public sealed class HealthAndRoutingTests
     {
         // Claude Agent SDK CLI sends both Authorization: Bearer ... and x-api-key: ... — the
         // forwarder must accept both and not reject the request on either header.
-        var responder = ScriptedSseResponder.New()
-            .ForRole("parent", _ => true).Turn(t => t.Text("hi"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("parent", _ => true).Turn(t => t.Text("hi")).Build();
         await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var client = new HttpClient { BaseAddress = new Uri(fixture.BaseUrl) };
 
-        var body = """{"model":"claude-test","stream":true,"max_tokens":256,"messages":[{"role":"user","content":"hi"}]}""";
+        var body =
+            """{"model":"claude-test","stream":true,"max_tokens":256,"messages":[{"role":"user","content":"hi"}]}""";
         using var content = new StringContent(body, Encoding.UTF8, "application/json");
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages") { Content = content };
         request.Headers.TryAddWithoutValidation("Authorization", "Bearer mock-token");

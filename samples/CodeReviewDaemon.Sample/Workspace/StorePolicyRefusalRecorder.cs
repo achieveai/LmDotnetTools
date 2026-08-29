@@ -36,7 +36,8 @@ internal sealed class StorePolicyRefusalRecorder : IPolicyRefusalRecorder
             refusal.Subject,
             refusal.Method,
             refusal.Target,
-            refusal.Reason);
+            refusal.Reason
+        );
 
         try
         {
@@ -49,7 +50,8 @@ internal sealed class StorePolicyRefusalRecorder : IPolicyRefusalRecorder
                 "Could not persist the {RefusalKind} refusal of {RefusalSubject}; the refusal HELD, but it is "
                     + "not in the ledger and only this line records it.",
                 refusal.Kind,
-                refusal.Subject);
+                refusal.Subject
+            );
         }
     }
 }

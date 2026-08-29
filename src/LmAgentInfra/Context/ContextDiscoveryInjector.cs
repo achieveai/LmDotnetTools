@@ -1,6 +1,6 @@
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Context;
@@ -64,7 +64,8 @@ public sealed class ContextDiscoveryInjector
         ContextDiscoveryFormatter formatter,
         ContextDiscoveryOptions options,
         ContextDiscoveryDiagnostics diagnostics,
-        ILogger<ContextDiscoveryInjector> logger)
+        ILogger<ContextDiscoveryInjector> logger
+    )
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _pool = pool ?? throw new ArgumentNullException(nameof(pool));
@@ -82,10 +83,9 @@ public sealed class ContextDiscoveryInjector
         SandboxSessionRegistry registry,
         MultiTurnAgentPool pool,
         ContextDiscoveryFormatter formatter,
-        ILogger<ContextDiscoveryInjector> logger)
-        : this(registry, pool, formatter, new ContextDiscoveryOptions(), new ContextDiscoveryDiagnostics(), logger)
-    {
-    }
+        ILogger<ContextDiscoveryInjector> logger
+    )
+        : this(registry, pool, formatter, new ContextDiscoveryOptions(), new ContextDiscoveryDiagnostics(), logger) { }
 
     /// <summary>
     /// Best-effort: delivers the formatted file body to its target — the opening sub-agent (routed)
@@ -116,7 +116,8 @@ public sealed class ContextDiscoveryInjector
             // can't make use of).
             _logger.LogInformation(
                 "ContextDiscovery context_file: payload missing path or has empty content; dropping for session {SessionId}.",
-                body.SessionId);
+                body.SessionId
+            );
             return 0;
         }
 
@@ -137,16 +138,20 @@ public sealed class ContextDiscoveryInjector
     /// </summary>
     private async Task<int> FanOutToSessionAsync(ContextDiscoveryPayload body, CancellationToken ct)
     {
-        if (!_registry.TryMarkDiscoverySeen(
+        if (
+            !_registry.TryMarkDiscoverySeen(
                 body.SessionId!,
                 SandboxSessionRegistry.SessionDiscoveryTarget,
                 body.Kind!,
-                body.Path!))
+                body.Path!
+            )
+        )
         {
             _logger.LogDebug(
                 "ContextDiscovery context_file: duplicate delivery for {Path} in session {SessionId}; dropping.",
                 body.Path,
-                body.SessionId);
+                body.SessionId
+            );
             return 0;
         }
 
@@ -162,7 +167,8 @@ public sealed class ContextDiscoveryInjector
             // the file content can still read it directly via the file-system tool.
             _logger.LogInformation(
                 "ContextDiscovery context_file: no live thread for session {SessionId}; nothing to inject.",
-                body.SessionId);
+                body.SessionId
+            );
             return 0;
         }
 
@@ -202,7 +208,8 @@ public sealed class ContextDiscoveryInjector
                 _logger.LogWarning(
                     ex,
                     "ContextDiscovery context_file: SendAsync threw for thread {ThreadId}; continuing with other threads.",
-                    threadId);
+                    threadId
+                );
             }
         }
 
@@ -211,7 +218,8 @@ public sealed class ContextDiscoveryInjector
             body.Path,
             injected,
             threads.Count,
-            body.SessionId);
+            body.SessionId
+        );
 
         return injected;
     }
@@ -244,10 +252,11 @@ public sealed class ContextDiscoveryInjector
         {
             _logger.LogDebug(
                 "ContextDiscovery context_file: duplicate routed delivery for {Path} to agent {AgentId} "
-                + "in session {SessionId}; dropping.",
+                    + "in session {SessionId}; dropping.",
                 body.Path,
                 agentId,
-                body.SessionId);
+                body.SessionId
+            );
             return 0;
         }
 
@@ -288,9 +297,10 @@ public sealed class ContextDiscoveryInjector
                 _logger.LogWarning(
                     ex,
                     "ContextDiscovery context_file: sink delivery threw for agent {AgentId} on thread {ThreadId}; "
-                    + "treating as ambiguous (delivery may have occurred) and stopping the scan.",
+                        + "treating as ambiguous (delivery may have occurred) and stopping the scan.",
                     agentId,
-                    threadId);
+                    threadId
+                );
                 anyAmbiguous = true;
                 break;
             }
@@ -301,7 +311,8 @@ public sealed class ContextDiscoveryInjector
                     "ContextDiscovery context_file: routed {Path} to sub-agent {AgentId} in session {SessionId}.",
                     body.Path,
                     agentId,
-                    body.SessionId);
+                    body.SessionId
+                );
                 _diagnostics.RecordRoutingOutcome(ContextRoutingOutcome.Routed);
                 return 1;
             }
@@ -320,10 +331,11 @@ public sealed class ContextDiscoveryInjector
             // never redirect to the primary. Keep the mark: terminal, so a retry can't succeed.
             _logger.LogInformation(
                 "ContextDiscovery context_file: sub-agent {AgentId} owned but not deliverable for {Path} "
-                + "in session {SessionId}; dropping (no fan-out to primary).",
+                    + "in session {SessionId}; dropping (no fan-out to primary).",
                 agentId,
                 body.Path,
-                body.SessionId);
+                body.SessionId
+            );
             _diagnostics.RecordRoutingOutcome(ContextRoutingOutcome.Dropped);
             return 0;
         }
@@ -337,10 +349,11 @@ public sealed class ContextDiscoveryInjector
             // choice — still never fall back to the primary.
             _logger.LogWarning(
                 "ContextDiscovery context_file: ambiguous sink failure for {AgentId} on {Path} in session "
-                + "{SessionId}; keeping the dedup mark (no gateway retry) to avoid a possible double-inject.",
+                    + "{SessionId}; keeping the dedup mark (no gateway retry) to avoid a possible double-inject.",
                 agentId,
                 body.Path,
-                body.SessionId);
+                body.SessionId
+            );
             _diagnostics.RecordRoutingOutcome(ContextRoutingOutcome.Dropped);
             return 0;
         }
@@ -353,10 +366,11 @@ public sealed class ContextDiscoveryInjector
         _registry.UnmarkDiscoverySeen(body.SessionId!, agentId, body.Kind!, body.Path!);
         _logger.LogDebug(
             "ContextDiscovery context_file: no live sub-agent owns {AgentId} for {Path} in session {SessionId}; "
-            + "dropping and allowing gateway retry.",
+                + "dropping and allowing gateway retry.",
             agentId,
             body.Path,
-            body.SessionId);
+            body.SessionId
+        );
         _diagnostics.RecordRoutingOutcome(ContextRoutingOutcome.Dropped);
         return 0;
     }

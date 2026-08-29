@@ -9,8 +9,8 @@ using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
-using LmMultiTurn.Tests.Lifecycle;
 using FluentAssertions;
+using LmMultiTurn.Tests.Lifecycle;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -33,8 +33,7 @@ public class MultiTurnAgentLoopTests
 
         // Act & Assert
         var act = () => new MultiTurnAgentLoop(null!, registry, "thread-1");
-        act.Should().Throw<ArgumentNullException>()
-            .WithParameterName("providerAgent");
+        act.Should().Throw<ArgumentNullException>().WithParameterName("providerAgent");
     }
 
     [Fact]
@@ -42,8 +41,7 @@ public class MultiTurnAgentLoopTests
     {
         // Arrange & Act & Assert
         var act = () => new MultiTurnAgentLoop(_mockAgent.Object, null!, "thread-1");
-        act.Should().Throw<ArgumentNullException>()
-            .WithParameterName("functionRegistry");
+        act.Should().Throw<ArgumentNullException>().WithParameterName("functionRegistry");
     }
 
     [Fact]
@@ -54,19 +52,14 @@ public class MultiTurnAgentLoopTests
 
         // Act & Assert
         var act = () => new MultiTurnAgentLoop(_mockAgent.Object, registry, null!);
-        act.Should().Throw<ArgumentNullException>()
-            .WithParameterName("threadId");
+        act.Should().Throw<ArgumentNullException>().WithParameterName("threadId");
     }
 
     [Fact]
     public async Task ExecuteRunAsync_ProcessesSimpleTextResponse()
     {
         // Arrange
-        var responseMessage = new TextMessage
-        {
-            Text = "Hello! How can I help you?",
-            Role = Role.Assistant,
-        };
+        var responseMessage = new TextMessage { Text = "Hello! How can I help you?", Role = Role.Assistant };
 
         SetupMockAgentResponse([responseMessage]);
 
@@ -75,15 +68,14 @@ public class MultiTurnAgentLoopTests
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
         // Act
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Hi", Role = Role.User }],
-            InputId: "test-input");
+        var userInput = new UserInput([new TextMessage { Text = "Hi", Role = Role.User }], InputId: "test-input");
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
@@ -112,29 +104,30 @@ public class MultiTurnAgentLoopTests
             Role = Role.Assistant,
         };
 
-        var finalMessage = new TextMessage
-        {
-            Text = "The weather in Seattle is sunny!",
-            Role = Role.Assistant,
-        };
+        var finalMessage = new TextMessage { Text = "The weather in Seattle is sunny!", Role = Role.Assistant };
 
         // First call returns tool call, second call returns final message
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, ct) =>
-            {
-                callCount++;
-                if (callCount == 1)
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, ct) =>
                 {
-                    return Task.FromResult(ToAsyncEnumerable([toolCallMessage]));
-                }
+                    callCount++;
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(ToAsyncEnumerable([toolCallMessage]));
+                    }
 
-                return Task.FromResult(ToAsyncEnumerable([finalMessage]));
-            });
+                    return Task.FromResult(ToAsyncEnumerable([finalMessage]));
+                }
+            );
 
         var registry = new FunctionRegistry();
         var weatherContract = new FunctionContract
@@ -152,22 +145,26 @@ public class MultiTurnAgentLoopTests
                 },
             ],
         };
-        registry.AddFunction(weatherContract, (_, _, _) =>
-            Task.FromResult<ToolHandlerResult>(
-                ToolHandlerResult.FromText("{\"temperature\": \"72F\", \"condition\": \"sunny\"}")));
+        registry.AddFunction(
+            weatherContract,
+            (_, _, _) =>
+                Task.FromResult<ToolHandlerResult>(
+                    ToolHandlerResult.FromText("{\"temperature\": \"72F\", \"condition\": \"sunny\"}")
+                )
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
         // Act
-        var userInput = new UserInput(
-            [new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
+        var userInput = new UserInput([new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
@@ -204,22 +201,31 @@ public class MultiTurnAgentLoopTests
             Role = Role.Assistant,
             GenerationId = "gen1",
         };
-        var finalMessage = new TextMessage { Text = "Done!", Role = Role.Assistant, GenerationId = "gen1" };
+        var finalMessage = new TextMessage
+        {
+            Text = "Done!",
+            Role = Role.Assistant,
+            GenerationId = "gen1",
+        };
 
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                return Task.FromResult(
-                    callCount == 1
-                        ? ToAsyncEnumerable([toolCallMessage])
-                        : ToAsyncEnumerable([finalMessage]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                {
+                    callCount++;
+                    return Task.FromResult(
+                        callCount == 1 ? ToAsyncEnumerable([toolCallMessage]) : ToAsyncEnumerable([finalMessage])
+                    );
+                }
+            );
 
         var registry = new FunctionRegistry();
         var weatherContract = new FunctionContract
@@ -237,20 +243,22 @@ public class MultiTurnAgentLoopTests
                 },
             ],
         };
-        registry.AddFunction(weatherContract, (_, _, _) =>
-            Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("{\"temperature\": \"72F\"}")));
+        registry.AddFunction(
+            weatherContract,
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("{\"temperature\": \"72F\"}"))
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
+        var userInput = new UserInput([new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
@@ -290,19 +298,23 @@ public class MultiTurnAgentLoopTests
         var capturedGenerationIds = new List<string?>();
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, options, _) =>
-            {
-                capturedGenerationIds.Add(options.GenerationId);
-                callCount++;
-                return Task.FromResult(
-                    callCount == 1
-                        ? ToAsyncEnumerable([toolCallMessage])
-                        : ToAsyncEnumerable([finalMessage]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, options, _) =>
+                {
+                    capturedGenerationIds.Add(options.GenerationId);
+                    callCount++;
+                    return Task.FromResult(
+                        callCount == 1 ? ToAsyncEnumerable([toolCallMessage]) : ToAsyncEnumerable([finalMessage])
+                    );
+                }
+            );
 
         var registry = new FunctionRegistry();
         var weatherContract = new FunctionContract
@@ -320,20 +332,22 @@ public class MultiTurnAgentLoopTests
                 },
             ],
         };
-        registry.AddFunction(weatherContract, (_, _, _) =>
-            Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("{\"temperature\": \"72F\"}")));
+        registry.AddFunction(
+            weatherContract,
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("{\"temperature\": \"72F\"}"))
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
+        var userInput = new UserInput([new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
@@ -343,11 +357,19 @@ public class MultiTurnAgentLoopTests
 
         // Assert — two turns ran, each advertised a non-empty generationId, and they DIFFER.
         capturedGenerationIds.Should().HaveCount(2, "the tool call should force a second turn");
-        capturedGenerationIds.Should().OnlyContain(g => !string.IsNullOrEmpty(g),
-            "every turn must advertise a run generationId so WithIds can stamp it onto messages");
-        capturedGenerationIds[0].Should().NotBe(capturedGenerationIds[1],
-            "each agentic turn must advertise a DISTINCT generationId so the client merge key "
-            + "(kind-runId-generationId-messageOrderIdx) stays unique across turns when messageOrderIdx resets");
+        capturedGenerationIds
+            .Should()
+            .OnlyContain(
+                g => !string.IsNullOrEmpty(g),
+                "every turn must advertise a run generationId so WithIds can stamp it onto messages"
+            );
+        capturedGenerationIds[0]
+            .Should()
+            .NotBe(
+                capturedGenerationIds[1],
+                "each agentic turn must advertise a DISTINCT generationId so the client merge key "
+                    + "(kind-runId-generationId-messageOrderIdx) stays unique across turns when messageOrderIdx resets"
+            );
 
         await cts.CancelAsync();
     }
@@ -371,10 +393,13 @@ public class MultiTurnAgentLoopTests
         };
 
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable([providerToolCall, finalMessage])));
 
         var registry = new FunctionRegistry();
@@ -382,13 +407,13 @@ public class MultiTurnAgentLoopTests
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Find latest AI news", Role = Role.User }]);
+        var userInput = new UserInput([new TextMessage { Text = "Find latest AI news", Role = Role.User }]);
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
@@ -396,15 +421,27 @@ public class MultiTurnAgentLoopTests
             messages.Add(msg);
         }
 
-        messages.OfType<ToolCallMessage>().Should().ContainSingle(tc =>
-            tc.ToolCallId == "srvtoolu_123" && tc.ExecutionTarget == ExecutionTarget.ProviderServer);
+        messages
+            .OfType<ToolCallMessage>()
+            .Should()
+            .ContainSingle(tc =>
+                tc.ToolCallId == "srvtoolu_123" && tc.ExecutionTarget == ExecutionTarget.ProviderServer
+            );
         messages.OfType<ToolCallResultMessage>().Should().BeEmpty();
-        messages.OfType<TextMessage>().Should().Contain(m => m.Text == "I searched the web and found the latest updates.");
+        messages
+            .OfType<TextMessage>()
+            .Should()
+            .Contain(m => m.Text == "I searched the web and found the latest updates.");
 
-        _mockAgent.Verify(a => a.GenerateReplyStreamingAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _mockAgent.Verify(
+            a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
 
         await cts.CancelAsync();
     }
@@ -420,7 +457,8 @@ public class MultiTurnAgentLoopTests
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
@@ -456,7 +494,8 @@ public class MultiTurnAgentLoopTests
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
@@ -530,22 +569,26 @@ public class MultiTurnAgentLoopTests
         // whole budget). The wrap-up turn is the extra call AFTER the cap; return the summary there.
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((msgs, _, _) =>
-            {
-                callCount++;
-                // The wrap-up turn is identifiable by its injected instruction (a trailing user
-                // message telling the model not to call more tools).
-                var isWrapUp = msgs.OfType<TextMessage>().Any(m =>
-                    m.Role == Role.User && m.Text.Contains("maximum number of tool-use turns"));
-                return Task.FromResult(
-                    isWrapUp
-                        ? ToAsyncEnumerable([wrapUpSummary])
-                        : ToAsyncEnumerable([toolCallMessage]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, _, _) =>
+                {
+                    callCount++;
+                    // The wrap-up turn is identifiable by its injected instruction (a trailing user
+                    // message telling the model not to call more tools).
+                    var isWrapUp = msgs.OfType<TextMessage>()
+                        .Any(m => m.Role == Role.User && m.Text.Contains("maximum number of tool-use turns"));
+                    return Task.FromResult(
+                        isWrapUp ? ToAsyncEnumerable([wrapUpSummary]) : ToAsyncEnumerable([toolCallMessage])
+                    );
+                }
+            );
 
         var registry = new FunctionRegistry();
         registry.AddFunction(
@@ -564,21 +607,21 @@ public class MultiTurnAgentLoopTests
                     },
                 ],
             },
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                ToolHandlerResult.FromText("{\"temperature\": \"72F\"}")));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("{\"temperature\": \"72F\"}"))
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
             maxTurnsPerRun: 2,
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
+        var userInput = new UserInput([new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
 
         // Act
         var messages = new List<IMessage>();
@@ -610,20 +653,26 @@ public class MultiTurnAgentLoopTests
         };
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((messages, _, _) =>
-            {
-                callCount++;
-                var wrapUp = messages.OfType<TextMessage>().Any(m =>
-                    m.Role == Role.User && m.Text.Contains("maximum number of tool-use turns"));
-                List<IMessage> reply = wrapUp
-                    ? [new TextMessage { Text = "final", Role = Role.Assistant }]
-                    : [toolCall];
-                return Task.FromResult(ToAsyncEnumerable(reply));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (messages, _, _) =>
+                {
+                    callCount++;
+                    var wrapUp = messages
+                        .OfType<TextMessage>()
+                        .Any(m => m.Role == Role.User && m.Text.Contains("maximum number of tool-use turns"));
+                    List<IMessage> reply = wrapUp
+                        ? [new TextMessage { Text = "final", Role = Role.Assistant }]
+                        : [toolCall];
+                    return Task.FromResult(ToAsyncEnumerable(reply));
+                }
+            );
 
         var registry = new FunctionRegistry();
         registry.AddFunction(
@@ -641,26 +690,33 @@ public class MultiTurnAgentLoopTests
                     },
                 ],
             },
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok"))
+        );
         var publisher = new RecordingLifecyclePublisher();
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "wrap-lifecycle-thread",
             maxTurnsPerRun: 1,
-            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher });
+            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher }
+        );
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        await foreach (var _ in loop.ExecuteRunAsync(
-            new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)) { }
+        await foreach (
+            var _ in loop.ExecuteRunAsync(new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)
+        ) { }
 
         publisher.EventTypes.Count(t => t == LifecycleEventTypes.TurnCompleted).Should().Be(2);
         var wrapUpTurn = publisher.Payloads<TurnCompletedPayload>(LifecycleEventTypes.TurnCompleted)[1];
         wrapUpTurn.MessageCount.Should().Be(1);
         wrapUpTurn.ToolCallCount.Should().Be(0);
-        publisher.Payloads<RunCompletedPayload>(LifecycleEventTypes.RunCompleted)
-            .Should().ContainSingle().Which.TurnCount.Should().Be(2);
+        publisher
+            .Payloads<RunCompletedPayload>(LifecycleEventTypes.RunCompleted)
+            .Should()
+            .ContainSingle()
+            .Which.TurnCount.Should()
+            .Be(2);
         callCount.Should().Be(2);
         await cts.CancelAsync();
     }
@@ -677,19 +733,24 @@ public class MultiTurnAgentLoopTests
         };
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                if (Interlocked.Increment(ref callCount) == 2)
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
                 {
-                    throw new InvalidOperationException("wrap-up failed");
-                }
+                    if (Interlocked.Increment(ref callCount) == 2)
+                    {
+                        throw new InvalidOperationException("wrap-up failed");
+                    }
 
-                return Task.FromResult(ToAsyncEnumerable([toolCall]));
-            });
+                    return Task.FromResult(ToAsyncEnumerable([toolCall]));
+                }
+            );
         var registry = new FunctionRegistry();
         registry.AddFunction(
             new FunctionContract
@@ -706,19 +767,22 @@ public class MultiTurnAgentLoopTests
                     },
                 ],
             },
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok"))
+        );
         var publisher = new RecordingLifecyclePublisher();
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "wrap-error-thread",
             maxTurnsPerRun: 1,
-            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher });
+            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher }
+        );
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        await foreach (var _ in loop.ExecuteRunAsync(
-            new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)) { }
+        await foreach (
+            var _ in loop.ExecuteRunAsync(new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)
+        ) { }
 
         var wrapUpTurn = publisher.Payloads<TurnCompletedPayload>(LifecycleEventTypes.TurnCompleted)[1];
         wrapUpTurn.Outcome.Should().Be(LifecycleTurnOutcomes.Error);
@@ -743,10 +807,13 @@ public class MultiTurnAgentLoopTests
 
         var toolExecutions = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable([toolCallMessage])));
 
         var registry = new FunctionRegistry();
@@ -770,20 +837,21 @@ public class MultiTurnAgentLoopTests
             {
                 Interlocked.Increment(ref toolExecutions);
                 return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("{\"temperature\": \"72F\"}"));
-            });
+            }
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
             maxTurnsPerRun: 2,
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
+        var userInput = new UserInput([new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
 
         // Act
         var messages = new List<IMessage>();
@@ -793,8 +861,7 @@ public class MultiTurnAgentLoopTests
         }
 
         // Assert: a deterministic assistant status message closes the run.
-        var finalText = messages.OfType<TextMessage>()
-            .LastOrDefault(m => m.Role == Role.Assistant);
+        var finalText = messages.OfType<TextMessage>().LastOrDefault(m => m.Role == Role.Assistant);
         finalText.Should().NotBeNull();
         finalText!.Text.Should().Contain("maximum number of tool-use turns");
         messages.OfType<RunCompletedMessage>().Should().NotBeEmpty();
@@ -813,16 +880,20 @@ public class MultiTurnAgentLoopTests
     private void SetupMockAgentResponse(List<IMessage> messages)
     {
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable(messages)));
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         List<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

@@ -5,11 +5,13 @@ using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using Microsoft.Extensions.Logging;
 using Xunit.Abstractions;
+
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Middleware;
 
 public class MessageUpdateJoinerMiddlewareTests : LoggingTestBase
 {
-    public MessageUpdateJoinerMiddlewareTests(ITestOutputHelper output) : base(output) { }
+    public MessageUpdateJoinerMiddlewareTests(ITestOutputHelper output)
+        : base(output) { }
 
     /// <summary>
     ///     Gets the path to test files
@@ -249,7 +251,10 @@ public class MessageUpdateJoinerMiddlewareTests : LoggingTestBase
             return;
         }
 
-        if (TryParseJsonElement(expectedArgs, out var expectedJson) && TryParseJsonElement(actualArgs, out var actualJson))
+        if (
+            TryParseJsonElement(expectedArgs, out var expectedJson)
+            && TryParseJsonElement(actualArgs, out var actualJson)
+        )
         {
             Assert.True(
                 JsonElement.DeepEquals(expectedJson, actualJson),

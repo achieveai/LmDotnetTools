@@ -21,7 +21,12 @@ namespace LmMultiTurn.Tests;
 public class SubAgentToolInheritanceExclusionTests
 {
     private static FunctionContract Contract(string name) =>
-        new() { Name = name, Description = name, Parameters = [] };
+        new()
+        {
+            Name = name,
+            Description = name,
+            Parameters = [],
+        };
 
     [Fact]
     public void FilterInheritableContracts_ExcludesNamedTools()
@@ -38,10 +43,16 @@ public class SubAgentToolInheritanceExclusionTests
     {
         var contracts = new List<FunctionContract> { Contract("SafeTool"), Contract("StartWorkflow") };
 
-        MultiTurnAgentLoop.FilterInheritableContracts(contracts, null)
-            .Select(c => c.Name).Should().BeEquivalentTo(["SafeTool", "StartWorkflow"]);
-        MultiTurnAgentLoop.FilterInheritableContracts(contracts, [])
-            .Select(c => c.Name).Should().BeEquivalentTo(["SafeTool", "StartWorkflow"]);
+        MultiTurnAgentLoop
+            .FilterInheritableContracts(contracts, null)
+            .Select(c => c.Name)
+            .Should()
+            .BeEquivalentTo(["SafeTool", "StartWorkflow"]);
+        MultiTurnAgentLoop
+            .FilterInheritableContracts(contracts, [])
+            .Select(c => c.Name)
+            .Should()
+            .BeEquivalentTo(["SafeTool", "StartWorkflow"]);
     }
 
     [Fact]
@@ -53,11 +64,13 @@ public class SubAgentToolInheritanceExclusionTests
         _ = registry.AddFunction(
             Contract("SafeTool"),
             (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")),
-            "ParentTools");
+            "ParentTools"
+        );
         _ = registry.AddFunction(
             Contract("StartWorkflow"),
             (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")),
-            "ParentTools");
+            "ParentTools"
+        );
 
         var subAgentOptions = new SubAgentOptions
         {
@@ -79,7 +92,8 @@ public class SubAgentToolInheritanceExclusionTests
             providerAgent,
             registry,
             threadId: "exclusion-test",
-            subAgentOptions: subAgentOptions);
+            subAgentOptions: subAgentOptions
+        );
 
         // The PARENT keeps both its own tools plus the self-registered Agent-family tools.
         loop.RegisteredToolNames.Should().Contain(["SafeTool", "StartWorkflow", "Agent", "SendMessage", "CheckAgent"]);
@@ -111,15 +125,18 @@ public class SubAgentToolInheritanceExclusionTests
             providerAgent,
             registry,
             threadId: "snapshot-test",
-            subAgentOptions: subAgentOptions);
+            subAgentOptions: subAgentOptions
+        );
 
         var snapshot = loop.SubAgentManager!.GetInheritableToolSnapshot();
 
         // The snapshot is the INHERITABLE set a spawn hands down: keeps domain tools, excludes
         // NonInheritedToolNames AND the Agent-family tools (registered after the snapshot).
         snapshot.Contracts.Select(c => c.Name).Should().Contain("SafeTool");
-        snapshot.Contracts.Select(c => c.Name)
-            .Should().NotContain(["StartWorkflow", "Agent", "SendMessage", "CheckAgent"]);
+        snapshot
+            .Contracts.Select(c => c.Name)
+            .Should()
+            .NotContain(["StartWorkflow", "Agent", "SendMessage", "CheckAgent"]);
     }
 
     [Fact]
@@ -139,7 +156,8 @@ public class SubAgentToolInheritanceExclusionTests
             {
                 ["Foo"] = OkHandler(),
                 ["SetState"] = OkHandler(),
-            });
+            }
+        );
 
         var subAgentOptions = new SubAgentOptions
         {
@@ -160,7 +178,8 @@ public class SubAgentToolInheritanceExclusionTests
             providerAgent,
             registry,
             threadId: "transparency-test",
-            subAgentOptions: subAgentOptions);
+            subAgentOptions: subAgentOptions
+        );
 
         var snapshot = loop.SubAgentManager!.GetInheritableToolSnapshot();
 
@@ -203,7 +222,8 @@ public class SubAgentToolInheritanceExclusionTests
             providerAgent,
             registry,
             threadId: "recursion-guard",
-            subAgentOptions: subAgentOptions);
+            subAgentOptions: subAgentOptions
+        );
 
         // The parent advertises the Agent-family tools to ITSELF...
         loop.RegisteredToolNames.Should().Contain(["Agent", "CheckAgent", "SendMessage"]);
@@ -228,7 +248,8 @@ public class SubAgentToolInheritanceExclusionTests
 
         var external = new InheritableToolSnapshot(
             [Contract("Foo")],
-            new Dictionary<string, ToolHandler>(StringComparer.Ordinal) { ["Foo"] = OkHandler() });
+            new Dictionary<string, ToolHandler>(StringComparer.Ordinal) { ["Foo"] = OkHandler() }
+        );
 
         var subAgentOptions = new SubAgentOptions
         {
@@ -249,7 +270,8 @@ public class SubAgentToolInheritanceExclusionTests
             registry,
             threadId: "merge-log-test",
             subAgentOptions: subAgentOptions,
-            logger: logger);
+            logger: logger
+        );
 
         // The transparency merge must be observable in the logs (content-free: counts only).
         logger.CountAtLevel(LogLevel.Debug, "Merged external inheritable tools").Should().BeGreaterThan(0);

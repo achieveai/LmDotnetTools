@@ -37,14 +37,14 @@ public static class SubAgentTemplateMapper
         // (the GitHub Copilot backend returns model_not_supported for "inherit" and other non-native
         // aliases). Treat "inherit" (and a blank model) as "no explicit model" so the sub-agent inherits
         // the parent loop's concrete model instead.
-        var hasExplicitModel = !string.IsNullOrWhiteSpace(parsed.Model)
+        var hasExplicitModel =
+            !string.IsNullOrWhiteSpace(parsed.Model)
             && !string.Equals(parsed.Model.Trim(), "inherit", StringComparison.OrdinalIgnoreCase)
             && !parsed.IsModelTierResolved;
-        var hasRoutedModel = !string.IsNullOrWhiteSpace(parsed.Model)
+        var hasRoutedModel =
+            !string.IsNullOrWhiteSpace(parsed.Model)
             && !string.Equals(parsed.Model.Trim(), "inherit", StringComparison.OrdinalIgnoreCase);
-        var defaults = hasRoutedModel
-            ? new GenerateReplyOptions { ModelId = parsed.Model!.Trim() }
-            : null;
+        var defaults = hasRoutedModel ? new GenerateReplyOptions { ModelId = parsed.Model!.Trim() } : null;
 
         return new SubAgentTemplate
         {

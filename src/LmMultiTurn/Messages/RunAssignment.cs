@@ -13,4 +13,5 @@ public record RunAssignment(
     string GenerationId,
     List<string>? InputIds = null,
     string? ParentRunId = null,
-    bool WasInjected = false);
+    bool WasInjected = false
+);

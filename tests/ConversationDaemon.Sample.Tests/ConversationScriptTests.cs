@@ -11,14 +11,12 @@ public sealed class ConversationScriptTests
 {
     private const string ThreadId = "thread-1";
 
-    private static readonly string NoMarkerMessages =
-        "[{\"role\":\"assistant\",\"content\":\"still thinking\"}]";
+    private static readonly string NoMarkerMessages = "[{\"role\":\"assistant\",\"content\":\"still thinking\"}]";
 
     // A deferred Wait as it surfaces on the (hand-built) wire: the messages endpoint carries the marker.
     private static readonly string DeferredMessages = "[{\"is_deferred\":true}]";
 
-    private static readonly string RunInProgress =
-        "{\"isInProgress\":true,\"currentRunId\":\"run-1\"}";
+    private static readonly string RunInProgress = "{\"isInProgress\":true,\"currentRunId\":\"run-1\"}";
 
     private static readonly string RunIdle = "{\"isInProgress\":false,\"currentRunId\":\"run-1\"}";
 
@@ -39,7 +37,8 @@ public sealed class ConversationScriptTests
             HttpMethod.Get,
             "/messages",
             NoMarkerMessages,
-            DeferredMessages);
+            DeferredMessages
+        );
         var client = ClientOver(handler);
 
         var act = () =>
@@ -47,7 +46,8 @@ public sealed class ConversationScriptTests
                 client,
                 ThreadId,
                 TimeSpan.FromSeconds(5),
-                CancellationToken.None);
+                CancellationToken.None
+            );
 
         await act.Should().NotThrowAsync();
         handler
@@ -59,10 +59,7 @@ public sealed class ConversationScriptTests
     [Fact]
     public async Task WaitForDeferredWaitAsync_throws_TimeoutException_when_no_marker_ever_appears()
     {
-        var handler = new FakeHttpMessageHandler().OnJsonSequence(
-            HttpMethod.Get,
-            "/messages",
-            NoMarkerMessages);
+        var handler = new FakeHttpMessageHandler().OnJsonSequence(HttpMethod.Get, "/messages", NoMarkerMessages);
         var client = ClientOver(handler);
 
         // 800ms exceeds one 400ms poll interval but keeps the test fast.
@@ -71,7 +68,8 @@ public sealed class ConversationScriptTests
                 client,
                 ThreadId,
                 TimeSpan.FromMilliseconds(800),
-                CancellationToken.None);
+                CancellationToken.None
+            );
 
         await act.Should().ThrowAsync<TimeoutException>();
     }
@@ -79,11 +77,7 @@ public sealed class ConversationScriptTests
     [Fact]
     public async Task WaitForRunToCompleteAsync_returns_once_the_run_transitions_to_idle()
     {
-        var handler = new FakeHttpMessageHandler().OnJsonSequence(
-            HttpMethod.Get,
-            "/run-state",
-            RunInProgress,
-            RunIdle);
+        var handler = new FakeHttpMessageHandler().OnJsonSequence(HttpMethod.Get, "/run-state", RunInProgress, RunIdle);
         var client = ClientOver(handler);
 
         var act = () =>
@@ -91,7 +85,8 @@ public sealed class ConversationScriptTests
                 client,
                 ThreadId,
                 TimeSpan.FromSeconds(5),
-                CancellationToken.None);
+                CancellationToken.None
+            );
 
         await act.Should().NotThrowAsync();
         handler
@@ -103,10 +98,7 @@ public sealed class ConversationScriptTests
     [Fact]
     public async Task WaitForRunToCompleteAsync_throws_TimeoutException_when_the_run_never_idles()
     {
-        var handler = new FakeHttpMessageHandler().OnJsonSequence(
-            HttpMethod.Get,
-            "/run-state",
-            RunInProgress);
+        var handler = new FakeHttpMessageHandler().OnJsonSequence(HttpMethod.Get, "/run-state", RunInProgress);
         var client = ClientOver(handler);
 
         var act = () =>
@@ -114,7 +106,8 @@ public sealed class ConversationScriptTests
                 client,
                 ThreadId,
                 TimeSpan.FromMilliseconds(800),
-                CancellationToken.None);
+                CancellationToken.None
+            );
 
         await act.Should().ThrowAsync<TimeoutException>();
     }

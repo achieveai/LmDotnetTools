@@ -23,11 +23,7 @@ public sealed class LengthBoundsGate : GateBase, IConfigurationFingerprint
     /// <param name="minimumLength">Inclusive floor, in characters.</param>
     /// <param name="maximumLength">Inclusive ceiling, in characters.</param>
     /// <param name="appliesTo">Task types this gate applies to; empty means all.</param>
-    public LengthBoundsGate(
-        int minimumLength,
-        int maximumLength,
-        IEnumerable<string>? appliesTo = null
-    )
+    public LengthBoundsGate(int minimumLength, int maximumLength, IEnumerable<string>? appliesTo = null)
         : base(Id, appliesTo)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(minimumLength);
@@ -52,9 +48,6 @@ public sealed class LengthBoundsGate : GateBase, IConfigurationFingerprint
                 Id,
                 $"content length {length} is outside the band [{_minimumLength},{_maximumLength}]"
             )
-            : GateDecision.Pass(
-                Id,
-                $"content length {length} is inside the band [{_minimumLength},{_maximumLength}]"
-            );
+            : GateDecision.Pass(Id, $"content length {length} is inside the band [{_minimumLength},{_maximumLength}]");
     }
 }

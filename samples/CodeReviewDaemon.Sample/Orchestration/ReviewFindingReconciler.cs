@@ -58,7 +58,8 @@ internal sealed record ParsedReviewFinding(
     IReadOnlyList<string> SeverityTokens,
     IReadOnlyList<ReviewFindingCitation> Citations,
     string Body,
-    bool IsQuestion);
+    bool IsQuestion
+);
 
 /// <summary>One specialist finding and what the shipped review did with it.</summary>
 /// <param name="SourceIndex">
@@ -93,7 +94,8 @@ internal sealed record ReconciledFinding(
     ReviewFindingOutcome Outcome,
     string? ShippedSeverity,
     string? ShippedTitle,
-    string? SynthesisNote);
+    string? SynthesisNote
+);
 
 /// <summary>How many finding-shaped blocks one reviewer contributed, before any matching happened.</summary>
 /// <param name="Index">The reviewer's position in the source list — the join key that
@@ -192,7 +194,8 @@ internal static partial class ReviewFindingReconciler
             + @"|no\s+longer\s+appl(?:y|ies)"
             + @"|do(?:es)?\s+not\s+apply"
             + @")\b",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex DispositionVerb();
 
     /// <summary>
@@ -202,7 +205,8 @@ internal static partial class ReviewFindingReconciler
     /// </summary>
     [GeneratedRegex(
         @"\b(?:finding|concern|issue|comment|thread|blocker|item|recommendation)s?\b",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex FindingNoun();
 
     /// <summary>
@@ -213,7 +217,8 @@ internal static partial class ReviewFindingReconciler
     [GeneratedRegex(
         @"\b(?:escalated|downgraded|upgraded|promoted|demoted|raised|lowered|reduced)\b"
             + @"[^.!?]{0,40}?\b(?:from|to)\s+\**\s*(?:blocker|critical|high|medium|low|nit)\b",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex SeverityTransition();
 
     /// <summary>
@@ -295,7 +300,8 @@ internal static partial class ReviewFindingReconciler
     /// </summary>
     internal static IReadOnlyList<ReconciledFinding> Reconcile(
         IReadOnlyList<ReviewFindingSource> sources,
-        string? shippedReviewBody)
+        string? shippedReviewBody
+    )
     {
         ArgumentNullException.ThrowIfNull(sources);
         if (string.IsNullOrWhiteSpace(shippedReviewBody))
@@ -304,11 +310,8 @@ internal static partial class ReviewFindingReconciler
         }
 
         var shipped = ParseFindings(shippedReviewBody);
-        var pending = new List<(
-            int SourceIndex,
-            ReviewFindingSource Source,
-            ParsedReviewFinding Finding,
-            int ShippedIndex)>();
+        var pending =
+            new List<(int SourceIndex, ReviewFindingSource Source, ParsedReviewFinding Finding, int ShippedIndex)>();
         for (var sourceIndex = 0; sourceIndex < sources.Count; sourceIndex++)
         {
             var source = sources[sourceIndex];
@@ -347,10 +350,21 @@ internal static partial class ReviewFindingReconciler
         {
             if (index < 0)
             {
-                rows.Add(new ReconciledFinding(
-                    sourceIndex, source.Label, source.Template, finding.Title, RenderLocation(finding),
-                    finding.SeverityPhrase, finding.SeverityTokens, ReviewFindingOutcome.Dropped,
-                    ShippedSeverity: null, ShippedTitle: null, SynthesisNote: null));
+                rows.Add(
+                    new ReconciledFinding(
+                        sourceIndex,
+                        source.Label,
+                        source.Template,
+                        finding.Title,
+                        RenderLocation(finding),
+                        finding.SeverityPhrase,
+                        finding.SeverityTokens,
+                        ReviewFindingOutcome.Dropped,
+                        ShippedSeverity: null,
+                        ShippedTitle: null,
+                        SynthesisNote: null
+                    )
+                );
                 continue;
             }
 
@@ -361,18 +375,28 @@ internal static partial class ReviewFindingReconciler
             // makes the one outcome this artifact exists to surface indistinguishable from a no-op. Measured
             // over 283 real rows exactly one landed here, and inspection showed it was already a [QUESTION]
             // in the source — i.e. the entire observed population of this label was the no-op case.
-            var outcome = match.IsQuestion && !finding.IsQuestion
-                ? ReviewFindingOutcome.Reframed
-                : absorbed[index] >= 2
-                    ? ReviewFindingOutcome.MergedInto
-                    : !finding.SeverityTokens.SequenceEqual(match.SeverityTokens, StringComparer.Ordinal)
-                        ? ReviewFindingOutcome.SeverityChanged
-                        : ReviewFindingOutcome.Kept;
+            var outcome =
+                match.IsQuestion && !finding.IsQuestion ? ReviewFindingOutcome.Reframed
+                : absorbed[index] >= 2 ? ReviewFindingOutcome.MergedInto
+                : !finding.SeverityTokens.SequenceEqual(match.SeverityTokens, StringComparer.Ordinal)
+                    ? ReviewFindingOutcome.SeverityChanged
+                : ReviewFindingOutcome.Kept;
 
-            rows.Add(new ReconciledFinding(
-                sourceIndex, source.Label, source.Template, finding.Title, RenderLocation(finding),
-                finding.SeverityPhrase, finding.SeverityTokens, outcome,
-                match.SeverityPhrase, match.Title, StatedDisposition(match)));
+            rows.Add(
+                new ReconciledFinding(
+                    sourceIndex,
+                    source.Label,
+                    source.Template,
+                    finding.Title,
+                    RenderLocation(finding),
+                    finding.SeverityPhrase,
+                    finding.SeverityTokens,
+                    outcome,
+                    match.SeverityPhrase,
+                    match.Title,
+                    StatedDisposition(match)
+                )
+            );
         }
 
         return rows;
@@ -390,14 +414,14 @@ internal static partial class ReviewFindingReconciler
     /// guarantees and only the first one is claimed here.
     /// </para>
     /// </summary>
-    internal static IReadOnlyList<ReviewFindingSourceCount> CountParsed(
-        IReadOnlyList<ReviewFindingSource> sources)
+    internal static IReadOnlyList<ReviewFindingSourceCount> CountParsed(IReadOnlyList<ReviewFindingSource> sources)
     {
         ArgumentNullException.ThrowIfNull(sources);
         return
         [
-            .. sources.Select((s, i) =>
-                new ReviewFindingSourceCount(i, s.Label, s.Template, ParseFindings(s.OwnText).Count)),
+            .. sources.Select(
+                (s, i) => new ReviewFindingSourceCount(i, s.Label, s.Template, ParseFindings(s.OwnText).Count)
+            ),
         ];
     }
 
@@ -411,14 +435,16 @@ internal static partial class ReviewFindingReconciler
         string round,
         IReadOnlyList<ReviewFindingSource> sources,
         IReadOnlyList<ReconciledFinding> rows,
-        string? shippedReviewBody)
+        string? shippedReviewBody
+    )
     {
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(rows);
         var shippedBodyAvailable = !string.IsNullOrWhiteSpace(shippedReviewBody);
 
         var builder = new StringBuilder()
-            .Append("# Specialist findings vs the shipped review — round ").AppendLine(round)
+            .Append("# Specialist findings vs the shipped review — round ")
+            .AppendLine(round)
             .AppendLine()
             .AppendLine("Authored by the review daemon from its own run state. No agent wrote this file.")
             .AppendLine()
@@ -458,7 +484,9 @@ internal static partial class ReviewFindingReconciler
         builder
             .AppendLine("## Outcomes")
             .AppendLine()
-            .AppendLine("| # | Reviewer | Template | Specialist finding | Location | Specialist severity | Outcome | Shipped severity | Shipped as | Stated reason |")
+            .AppendLine(
+                "| # | Reviewer | Template | Specialist finding | Location | Specialist severity | Outcome | Shipped severity | Shipped as | Stated reason |"
+            )
             .AppendLine("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
 
         var rendered = 0;
@@ -473,16 +501,27 @@ internal static partial class ReviewFindingReconciler
             rendered++;
             var before = builder.Length;
             builder
-                .Append("| ").Append(rendered.ToString(CultureInfo.InvariantCulture))
-                .Append(" | ").Append(Cell(row.Source, 60))
-                .Append(" | ").Append(Cell(row.Template, 40))
-                .Append(" | ").Append(Cell(row.Title, 90))
-                .Append(" | ").Append(Cell(row.Location, 80))
-                .Append(" | ").Append(Cell(row.SpecialistSeverity, 40))
-                .Append(" | `").Append(Wire(row.Outcome)).Append('`')
-                .Append(" | ").Append(row.ShippedSeverity is null ? "—" : Cell(row.ShippedSeverity, 40))
-                .Append(" | ").Append(row.ShippedTitle is null ? "—" : Cell(row.ShippedTitle, 90))
-                .Append(" | ").Append(row.SynthesisNote is null ? "—" : Cell(row.SynthesisNote, MaxNoteChars))
+                .Append("| ")
+                .Append(rendered.ToString(CultureInfo.InvariantCulture))
+                .Append(" | ")
+                .Append(Cell(row.Source, 60))
+                .Append(" | ")
+                .Append(Cell(row.Template, 40))
+                .Append(" | ")
+                .Append(Cell(row.Title, 90))
+                .Append(" | ")
+                .Append(Cell(row.Location, 80))
+                .Append(" | ")
+                .Append(Cell(row.SpecialistSeverity, 40))
+                .Append(" | `")
+                .Append(Wire(row.Outcome))
+                .Append('`')
+                .Append(" | ")
+                .Append(row.ShippedSeverity is null ? "—" : Cell(row.ShippedSeverity, 40))
+                .Append(" | ")
+                .Append(row.ShippedTitle is null ? "—" : Cell(row.ShippedTitle, 90))
+                .Append(" | ")
+                .Append(row.SynthesisNote is null ? "—" : Cell(row.SynthesisNote, MaxNoteChars))
                 .AppendLine(" |");
             spent += builder.Length - before;
         }
@@ -491,7 +530,8 @@ internal static partial class ReviewFindingReconciler
         {
             builder
                 .AppendLine()
-                .Append("_[daemon: ").Append((rows.Count - rendered).ToString(CultureInfo.InvariantCulture))
+                .Append("_[daemon: ")
+                .Append((rows.Count - rendered).ToString(CultureInfo.InvariantCulture))
                 .AppendLine(" further row(s) omitted for artifact size. The totals below count every row,")
                 .AppendLine("including these.]_");
         }
@@ -505,13 +545,17 @@ internal static partial class ReviewFindingReconciler
         foreach (var outcome in Enum.GetValues<ReviewFindingOutcome>())
         {
             builder
-                .Append("| `").Append(Wire(outcome)).Append("` | ")
+                .Append("| `")
+                .Append(Wire(outcome))
+                .Append("` | ")
                 .Append(rows.Count(r => r.Outcome == outcome).ToString(CultureInfo.InvariantCulture))
                 .AppendLine(" |");
         }
 
         builder
-            .Append("| **total** | ").Append(rows.Count.ToString(CultureInfo.InvariantCulture)).AppendLine(" |")
+            .Append("| **total** | ")
+            .Append(rows.Count.ToString(CultureInfo.InvariantCulture))
+            .AppendLine(" |")
             .AppendLine();
 
         AppendUnattributedDispositions(builder, shippedReviewBody, rows);
@@ -538,27 +582,29 @@ internal static partial class ReviewFindingReconciler
     private static void AppendUnattributedDispositions(
         StringBuilder builder,
         string? shippedReviewBody,
-        IReadOnlyList<ReconciledFinding> rows)
+        IReadOnlyList<ReconciledFinding> rows
+    )
     {
         var quoted = new HashSet<string>(
             rows.Where(r => r.SynthesisNote is not null).Select(r => r.SynthesisNote!),
-            StringComparer.Ordinal);
+            StringComparer.Ordinal
+        );
         var loose = new List<string>();
         foreach (var line in UntrustedTranscriptText.Sanitize(shippedReviewBody).Split('\n'))
         {
             var trimmed = line.Trim();
-            if (trimmed.Length > 0
+            if (
+                trimmed.Length > 0
                 && !quoted.Contains(trimmed)
                 && IsDispositionStatement(trimmed)
-                && !loose.Contains(trimmed, StringComparer.Ordinal))
+                && !loose.Contains(trimmed, StringComparer.Ordinal)
+            )
             {
                 loose.Add(trimmed);
             }
         }
 
-        builder
-            .AppendLine("## Disposition statements not tied to a row")
-            .AppendLine();
+        builder.AppendLine("## Disposition statements not tied to a row").AppendLine();
         if (loose.Count == 0)
         {
             builder
@@ -648,45 +694,46 @@ internal static partial class ReviewFindingReconciler
 
     private static void AppendSources(StringBuilder builder, IReadOnlyList<ReviewFindingSource> sources)
     {
-        builder
-            .AppendLine("## Reviewers read for this mapping")
-            .AppendLine();
+        builder.AppendLine("## Reviewers read for this mapping").AppendLine();
         if (sources.Count == 0)
         {
             builder.AppendLine("This review dispatched no specialists, so there is nothing to reconcile.");
             return;
         }
 
-        builder
-            .AppendLine("| Reviewer | Template | Findings parsed |")
-            .AppendLine("| --- | --- | --- |");
+        builder.AppendLine("| Reviewer | Template | Findings parsed |").AppendLine("| --- | --- | --- |");
         foreach (var source in sources)
         {
             var parsed = ParseFindings(source.OwnText).Count;
             builder
-                .Append("| ").Append(Cell(source.Label, 60))
-                .Append(" | ").Append(Cell(source.Template, 40))
-                .Append(" | ").Append(parsed.ToString(CultureInfo.InvariantCulture))
+                .Append("| ")
+                .Append(Cell(source.Label, 60))
+                .Append(" | ")
+                .Append(Cell(source.Template, 40))
+                .Append(" | ")
+                .Append(parsed.ToString(CultureInfo.InvariantCulture))
                 .AppendLine(" |");
         }
     }
 
     /// <summary>The stable on-disk spelling of an outcome. Kept apart from the enum name so a rename in code
     /// cannot silently change what a committed artifact says.</summary>
-    internal static string Wire(ReviewFindingOutcome outcome) => outcome switch
-    {
-        ReviewFindingOutcome.Kept => "kept",
-        ReviewFindingOutcome.SeverityChanged => "severity-changed",
-        ReviewFindingOutcome.Reframed => "reframed",
-        ReviewFindingOutcome.MergedInto => "merged-into",
-        _ => "dropped",
-    };
+    internal static string Wire(ReviewFindingOutcome outcome) =>
+        outcome switch
+        {
+            ReviewFindingOutcome.Kept => "kept",
+            ReviewFindingOutcome.SeverityChanged => "severity-changed",
+            ReviewFindingOutcome.Reframed => "reframed",
+            ReviewFindingOutcome.MergedInto => "merged-into",
+            _ => "dropped",
+        };
 
     private static void Flush(
         List<ParsedReviewFinding> findings,
         ref string? openTitle,
         ref bool openIsQuestion,
-        StringBuilder openBody)
+        StringBuilder openBody
+    )
     {
         if (openTitle is null)
         {
@@ -695,13 +742,16 @@ internal static partial class ReviewFindingReconciler
 
         var body = openBody.ToString();
         var tokens = SeverityTokens(openTitle);
-        findings.Add(new ParsedReviewFinding(
-            openTitle,
-            tokens.Count == 0 ? "(unlabelled)" : string.Join('/', tokens),
-            tokens,
-            Citations(body),
-            body,
-            openIsQuestion));
+        findings.Add(
+            new ParsedReviewFinding(
+                openTitle,
+                tokens.Count == 0 ? "(unlabelled)" : string.Join('/', tokens),
+                tokens,
+                Citations(body),
+                body,
+                openIsQuestion
+            )
+        );
         openTitle = null;
         openIsQuestion = false;
         _ = openBody.Clear();
@@ -802,16 +852,17 @@ internal static partial class ReviewFindingReconciler
     private static bool StartsFinding(string leadLine) =>
         !IsNotAFinding(leadLine) && SeverityTokens(leadLine).Count > 0;
 
-    private static string Canonical(string raw) => raw.ToLowerInvariant() switch
-    {
-        "blocker" => "Blocker",
-        "critical" => "Critical",
-        "high" => "High",
-        "medium" or "moderate" => "Medium",
-        "low" => "Low",
-        "nit" or "nitpick" => "Nit",
-        _ => "Info",
-    };
+    private static string Canonical(string raw) =>
+        raw.ToLowerInvariant() switch
+        {
+            "blocker" => "Blocker",
+            "critical" => "Critical",
+            "high" => "High",
+            "medium" or "moderate" => "Medium",
+            "low" => "Low",
+            "nit" or "nitpick" => "Nit",
+            _ => "Info",
+        };
 
     private static IReadOnlyList<ReviewFindingCitation> Citations(string text)
     {
@@ -824,9 +875,11 @@ internal static partial class ReviewFindingReconciler
             }
 
             var end = start;
-            if (match.Groups["end"].Success
+            if (
+                match.Groups["end"].Success
                 && int.TryParse(match.Groups["end"].Value, CultureInfo.InvariantCulture, out var parsedEnd)
-                && parsedEnd >= start)
+                && parsedEnd >= start
+            )
             {
                 end = parsedEnd;
             }
@@ -878,9 +931,7 @@ internal static partial class ReviewFindingReconciler
         a.StartLine <= b.EndLine && b.StartLine <= a.EndLine && PathsMatch(a.Path, b.Path);
 
     private static bool PathsMatch(string a, string b) =>
-        string.Equals(a, b, StringComparison.OrdinalIgnoreCase)
-        || IsPathSuffix(a, b)
-        || IsPathSuffix(b, a);
+        string.Equals(a, b, StringComparison.OrdinalIgnoreCase) || IsPathSuffix(a, b) || IsPathSuffix(b, a);
 
     private static bool IsPathSuffix(string longer, string shorter) =>
         longer.Length > shorter.Length
@@ -892,8 +943,7 @@ internal static partial class ReviewFindingReconciler
     /// severity-to-severity transition which needs no noun to be unambiguous.
     /// </summary>
     internal static bool IsDispositionStatement(string line) =>
-        (DispositionVerb().IsMatch(line) && FindingNoun().IsMatch(line))
-        || SeverityTransition().IsMatch(line);
+        (DispositionVerb().IsMatch(line) && FindingNoun().IsMatch(line)) || SeverityTransition().IsMatch(line);
 
     /// <summary>
     /// The shipped review's own words about what it did with a finding, or null. Scanned within the matched
@@ -950,9 +1000,7 @@ internal static partial class ReviewFindingReconciler
     /// severity roll-ups and grading narration, which <see cref="IsNotAFinding"/> now removes as a class
     /// rather than by deleting a token that carries real labels.
     /// </summary>
-    [GeneratedRegex(
-        @"\b(blocker|critical|high|medium|moderate|low|nitpick|nit|info)\b(?!-)",
-        RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\b(blocker|critical|high|medium|moderate|low|nitpick|nit|info)\b(?!-)", RegexOptions.IgnoreCase)]
     private static partial Regex SeverityWord();
 
     /// <summary>A bracketed question tag — the marker, as against the word.</summary>
@@ -977,7 +1025,8 @@ internal static partial class ReviewFindingReconciler
     [GeneratedRegex(
         @"^\W*\d+\b[^.!?]{0,80}?\b(?:finding|issue|item|comment|blocker|problem|concern)s?\b"
             + @"[\s.;]*(?:[:—–-]\s*.*)?$",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex FindingTally();
 
     /// <summary>A lead line that announces a summary block, or reports what was posted, rather than a
@@ -985,7 +1034,8 @@ internal static partial class ReviewFindingReconciler
     [GeneratedRegex(
         @"^(?:summary|totals?|counts?|breakdown|overview|at a glance|tl;dr)\b"
             + @"|^(?:findings?|questions?|comments?)\s+posted\b",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex TallyPrefix();
 
     /// <summary>
@@ -995,13 +1045,12 @@ internal static partial class ReviewFindingReconciler
     /// </summary>
     [GeneratedRegex(
         @"^\W*(?:\d+\s*)?\**\s*\[?\s*(?:blocker|critical|high|medium|low|nit|question)s?\s*\]?\s*\**[\s.:;—–-]*$",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex ContentlessSeverityLine();
 
     /// <summary>One <c>&lt;count&gt; &lt;severity&gt;</c> pair; two or more on a line make it a roll-up.</summary>
-    [GeneratedRegex(
-        @"\b(?:zero|no|\d+)\s+\**\s*(?:blocker|critical|high|medium|low|nit)\b",
-        RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\b(?:zero|no|\d+)\s+\**\s*(?:blocker|critical|high|medium|low|nit)\b", RegexOptions.IgnoreCase)]
     private static partial Regex SeverityRollup();
 
     /// <summary>A statement that there are NONE of some severity, which is never itself a finding.</summary>
@@ -1011,11 +1060,13 @@ internal static partial class ReviewFindingReconciler
     /// <summary>The synthesis narrating its own grading pass rather than reporting a finding.</summary>
     [GeneratedRegex(
         @"^(?:the\s+)?(?:review|severity)[-\s]?grad(?:er|ing)\b|\bgrad(?:er|ing)\s+confirmed\b",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex GradingNarration();
 
     [GeneratedRegex(
         @"(?<path>[A-Za-z0-9_~][A-Za-z0-9_./\\+-]*\.[A-Za-z][A-Za-z0-9]{0,7})(?::|\#L)(?<start>\d{1,6})"
-            + @"(?:\s*[-–—]\s*L?(?<end>\d{1,6}))?")]
+            + @"(?:\s*[-–—]\s*L?(?<end>\d{1,6}))?"
+    )]
     private static partial Regex Citation();
 }

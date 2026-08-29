@@ -53,7 +53,8 @@ public record Usage
     {
         return this with
         {
-            InputTokenDetails = cachedTokens > 0 ? new InputTokenDetails { CachedTokens = cachedTokens } : InputTokenDetails,
+            InputTokenDetails =
+                cachedTokens > 0 ? new InputTokenDetails { CachedTokens = cachedTokens } : InputTokenDetails,
             OutputTokenDetails =
                 reasoningTokens > 0 ? new OutputTokenDetails { ReasoningTokens = reasoningTokens } : OutputTokenDetails,
         };

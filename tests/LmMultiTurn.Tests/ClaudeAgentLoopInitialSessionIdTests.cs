@@ -22,53 +22,46 @@ public class ClaudeAgentLoopInitialSessionIdTests
     {
         const string seededId = "sess-seeded-001";
 
-        var options = new ClaudeAgentSdkOptions
-        {
-            Mode = ClaudeAgentSdkMode.OneShot,
-            MaxTurnsPerRun = 5,
-        };
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot, MaxTurnsPerRun = 5 };
 
         var mockClient = new CapturingClient(
             scriptedMessages: [new ResultEventMessage { IsError = false }],
-            liveSessionId: null);
+            liveSessionId: null
+        );
 
         await using var loop = new ClaudeAgentLoop(
             claudeOptions: options,
             mcpServers: null,
             threadId: "ctor-seed-pre-run",
             clientFactory: (_, _) => mockClient,
-            initialSessionId: seededId);
+            initialSessionId: seededId
+        );
 
-        loop.CurrentSessionId.Should().Be(seededId,
-            "constructor seed must populate CurrentSessionId synchronously, " +
-            "before any run starts");
+        loop.CurrentSessionId.Should()
+            .Be(seededId, "constructor seed must populate CurrentSessionId synchronously, " + "before any run starts");
     }
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    public async Task Construction_WithNullOrEmptyInitialSessionId_LeavesCurrentSessionIdNull(
-        string? seed)
+    public async Task Construction_WithNullOrEmptyInitialSessionId_LeavesCurrentSessionIdNull(string? seed)
     {
-        var options = new ClaudeAgentSdkOptions
-        {
-            Mode = ClaudeAgentSdkMode.OneShot,
-            MaxTurnsPerRun = 5,
-        };
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot, MaxTurnsPerRun = 5 };
 
         var mockClient = new CapturingClient(
             scriptedMessages: [new ResultEventMessage { IsError = false }],
-            liveSessionId: null);
+            liveSessionId: null
+        );
 
         await using var loop = new ClaudeAgentLoop(
             claudeOptions: options,
             mcpServers: null,
             threadId: "ctor-seed-null-empty",
             clientFactory: (_, _) => mockClient,
-            initialSessionId: seed);
+            initialSessionId: seed
+        );
 
-        loop.CurrentSessionId.Should().BeNull(
-            "null and empty seeds must not propagate as a real session id");
+        loop.CurrentSessionId.Should().BeNull("null and empty seeds must not propagate as a real session id");
     }
 
     [Fact]
@@ -78,27 +71,25 @@ public class ClaudeAgentLoopInitialSessionIdTests
         // that the seeded id is what the first request would carry as --resume.
         const string seededId = "sess-seeded-resume-002";
 
-        var options = new ClaudeAgentSdkOptions
-        {
-            Mode = ClaudeAgentSdkMode.OneShot,
-            MaxTurnsPerRun = 5,
-        };
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot, MaxTurnsPerRun = 5 };
 
         var mockClient = new CapturingClient(
             scriptedMessages: [new ResultEventMessage { IsError = false }],
-            liveSessionId: null);
+            liveSessionId: null
+        );
 
         await using var loop = new ClaudeAgentLoop(
             claudeOptions: options,
             mcpServers: null,
             threadId: "ctor-seed-request-built",
             clientFactory: (_, _) => mockClient,
-            initialSessionId: seededId);
+            initialSessionId: seededId
+        );
 
         var request = loop.BuildClaudeAgentSdkRequest();
-        request.SessionId.Should().Be(seededId,
-            "the constructor seed must flow into the SDK request as --resume " +
-            "on the very first run");
+        request
+            .SessionId.Should()
+            .Be(seededId, "the constructor seed must flow into the SDK request as --resume " + "on the very first run");
     }
 
     [Fact]
@@ -107,11 +98,7 @@ public class ClaudeAgentLoopInitialSessionIdTests
         const string seededId = "sess-seeded-pre";
         const string liveId = "sess-live-actual";
 
-        var options = new ClaudeAgentSdkOptions
-        {
-            Mode = ClaudeAgentSdkMode.Interactive,
-            MaxTurnsPerRun = 5,
-        };
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.Interactive, MaxTurnsPerRun = 5 };
 
         var mockClient = new CapturingClient(
             scriptedMessages:
@@ -120,23 +107,27 @@ public class ClaudeAgentLoopInitialSessionIdTests
                 new TextMessage { Text = "hello", Role = Role.Assistant },
                 new ResultEventMessage { IsError = false },
             ],
-            liveSessionId: liveId);
+            liveSessionId: liveId
+        );
 
         await using var loop = new ClaudeAgentLoop(
             claudeOptions: options,
             mcpServers: null,
             threadId: "ctor-seed-overridden",
             clientFactory: (_, _) => mockClient,
-            initialSessionId: seededId);
+            initialSessionId: seededId
+        );
 
-        loop.CurrentSessionId.Should().Be(seededId,
-            "sanity check: seed must be visible before the run starts");
+        loop.CurrentSessionId.Should().Be(seededId, "sanity check: seed must be visible before the run starts");
 
         await DriveOneRunAsync(loop);
 
-        loop.CurrentSessionId.Should().Be(liveId,
-            "a live SystemInitMessage must replace the caller-seeded value " +
-            "so the loop continues with the SDK's actual session id");
+        loop.CurrentSessionId.Should()
+            .Be(
+                liveId,
+                "a live SystemInitMessage must replace the caller-seeded value "
+                    + "so the loop continues with the SDK's actual session id"
+            );
     }
 
     [Fact]
@@ -147,11 +138,7 @@ public class ClaudeAgentLoopInitialSessionIdTests
         // must still be observable on the loop.
         const string seededId = "sess-seeded-survives-oneshot";
 
-        var options = new ClaudeAgentSdkOptions
-        {
-            Mode = ClaudeAgentSdkMode.OneShot,
-            MaxTurnsPerRun = 5,
-        };
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot, MaxTurnsPerRun = 5 };
 
         // No SystemInitMessage; liveSessionId == null so CurrentSession stays
         // null in the mock - mirrors a real-world resume where the SDK accepts
@@ -162,20 +149,25 @@ public class ClaudeAgentLoopInitialSessionIdTests
                 new TextMessage { Text = "hello", Role = Role.Assistant },
                 new ResultEventMessage { IsError = false },
             ],
-            liveSessionId: null);
+            liveSessionId: null
+        );
 
         await using var loop = new ClaudeAgentLoop(
             claudeOptions: options,
             mcpServers: null,
             threadId: "ctor-seed-oneshot-survives-dispose",
             clientFactory: (_, _) => mockClient,
-            initialSessionId: seededId);
+            initialSessionId: seededId
+        );
 
         await DriveOneRunAsync(loop);
 
-        loop.CurrentSessionId.Should().Be(seededId,
-            "when the SDK never reports a different session id, OneShot's per-run " +
-            "client dispose must not drop the seeded value");
+        loop.CurrentSessionId.Should()
+            .Be(
+                seededId,
+                "when the SDK never reports a different session id, OneShot's per-run "
+                    + "client dispose must not drop the seeded value"
+            );
     }
 
     private static async Task<List<IMessage>> DriveOneRunAsync(ClaudeAgentLoop loop)
@@ -183,9 +175,7 @@ public class ClaudeAgentLoopInitialSessionIdTests
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "hi", Role = Role.User }],
-            InputId: "test-input");
+        var userInput = new UserInput([new TextMessage { Text = "hi", Role = Role.User }], InputId: "test-input");
 
         var received = new List<IMessage>();
         var executeTask = Task.Run(async () =>
@@ -233,7 +223,8 @@ public class ClaudeAgentLoopInitialSessionIdTests
 
         public async IAsyncEnumerable<IMessage> SendMessagesAsync(
             IEnumerable<IMessage> messages,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
         {
             if (_liveSessionId != null)
             {
@@ -255,7 +246,8 @@ public class ClaudeAgentLoopInitialSessionIdTests
         }
 
         public async IAsyncEnumerable<IMessage> SubscribeToMessagesAsync(
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
         {
             if (_liveSessionId != null)
             {
@@ -274,11 +266,10 @@ public class ClaudeAgentLoopInitialSessionIdTests
             }
         }
 
-        public Task SendAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default)
-            => Task.CompletedTask;
+        public Task SendAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
 
-        public Task<bool> SendExitCommandAsync(CancellationToken cancellationToken = default)
-            => Task.FromResult(true);
+        public Task<bool> SendExitCommandAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
 
         public Task ShutdownAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
         {

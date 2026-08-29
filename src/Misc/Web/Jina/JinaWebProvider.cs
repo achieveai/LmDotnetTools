@@ -356,7 +356,8 @@ public sealed class JinaWebProvider : BaseHttpService, IWebFetchProvider, IWebSe
     /// </summary>
     private static int? GetUsageTokens(JsonElement element)
     {
-        return element.TryGetProperty("usage", out var usage)
+        return
+            element.TryGetProperty("usage", out var usage)
             && usage.ValueKind == JsonValueKind.Object
             && usage.TryGetProperty("tokens", out var tokens)
             && tokens.ValueKind == JsonValueKind.Number

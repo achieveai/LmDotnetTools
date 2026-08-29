@@ -33,7 +33,8 @@ public static class UsageRecordMapper
         string ownerExecutionId,
         UsageExecutionKind kind,
         string? model,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         ArgumentNullException.ThrowIfNull(message);
 
@@ -83,7 +84,8 @@ public static class UsageRecordMapper
         var usage = message.Usage;
         var order = message.MessageOrderIdx?.ToString(CultureInfo.InvariantCulture) ?? "-";
         return FormattableString.Invariant(
-            $"derived:{usage.PromptTokens}-{usage.CompletionTokens}-{usage.TotalCachedTokens}-{usage.TotalReasoningTokens}-{usage.TotalCost ?? 0d}-{order}");
+            $"derived:{usage.PromptTokens}-{usage.CompletionTokens}-{usage.TotalCachedTokens}-{usage.TotalReasoningTokens}-{usage.TotalCost ?? 0d}-{order}"
+        );
     }
 
     private static long? ToMicros(double? cost)

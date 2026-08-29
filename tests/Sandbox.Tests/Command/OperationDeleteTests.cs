@@ -23,11 +23,16 @@ public sealed class OperationDeleteTests
 
     private static void RegisterDelete(FakeGatewayHandler handler, HttpStatusCode status, string? json = null) =>
         handler.On(
-            req => req.Method == HttpMethod.Delete && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{OperationId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Delete
+                && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{OperationId}", StringComparison.Ordinal),
             _ =>
                 json is null
                     ? new HttpResponseMessage(status)
-                    : new HttpResponseMessage(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") }
+                    : new HttpResponseMessage(status)
+                    {
+                        Content = new StringContent(json, Encoding.UTF8, "application/json"),
+                    }
         );
 
     [Fact]
@@ -288,7 +293,9 @@ public sealed class OperationDeleteTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public async Task DeleteOperationAsync_BlankSessionId_ThrowsArgumentException_WithoutSendingAnything(string? sessionId)
+    public async Task DeleteOperationAsync_BlankSessionId_ThrowsArgumentException_WithoutSendingAnything(
+        string? sessionId
+    )
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
         using var _ = client;
@@ -303,7 +310,9 @@ public sealed class OperationDeleteTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public async Task DeleteOperationAsync_BlankOperationId_ThrowsArgumentException_WithoutSendingAnything(string? operationId)
+    public async Task DeleteOperationAsync_BlankOperationId_ThrowsArgumentException_WithoutSendingAnything(
+        string? operationId
+    )
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
         using var _ = client;

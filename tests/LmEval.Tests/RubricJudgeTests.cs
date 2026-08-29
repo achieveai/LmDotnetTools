@@ -147,12 +147,7 @@ public sealed class RubricJudgeTests
         );
 
         var act = () =>
-            judge.JudgeAsync(
-                HarnessFixtures.Candidate(),
-                Rubric,
-                new JudgeContext(),
-                CancellationToken.None
-            );
+            judge.JudgeAsync(HarnessFixtures.Candidate(), Rubric, new JudgeContext(), CancellationToken.None);
 
         await act.Should().ThrowAsync<HttpRequestException>();
     }

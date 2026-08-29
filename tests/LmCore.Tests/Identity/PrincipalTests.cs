@@ -32,7 +32,8 @@ public class PrincipalTests
         // An app acting for a human attributes to the human, never to the app.
         var principal = Build(
             new PrincipalRef(PrincipalKind.App, "app-7"),
-            new PrincipalRef(PrincipalKind.EndUser, "tid-1:oid-1"));
+            new PrincipalRef(PrincipalKind.EndUser, "tid-1:oid-1")
+        );
 
         principal.EffectiveUserId.Should().Be("tid-1:oid-1");
     }
@@ -42,7 +43,8 @@ public class PrincipalTests
     {
         var principal = Build(
             new PrincipalRef(PrincipalKind.EndUser, "tid-1:actor"),
-            new PrincipalRef(PrincipalKind.EndUser, "tid-1:subject"));
+            new PrincipalRef(PrincipalKind.EndUser, "tid-1:subject")
+        );
 
         principal.EffectiveUserId.Should().Be("tid-1:subject");
     }
@@ -61,7 +63,8 @@ public class PrincipalTests
     {
         var principal = Build(
             new PrincipalRef(PrincipalKind.Agent, "agent-1"),
-            new PrincipalRef(PrincipalKind.App, "app-7"));
+            new PrincipalRef(PrincipalKind.App, "app-7")
+        );
 
         principal.EffectiveUserId.Should().BeNull();
     }

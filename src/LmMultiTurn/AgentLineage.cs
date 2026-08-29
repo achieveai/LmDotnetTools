@@ -54,8 +54,5 @@ public sealed record AgentLineage
     /// no sub-agent identity still has a parent thread, and still is not top-level.
     /// </remarks>
     public bool IsSpawned =>
-        ParentThreadId != null
-        || ParentRunId != null
-        || SpawningToolCallId != null
-        || SubAgentId != null;
+        ParentThreadId != null || ParentRunId != null || SpawningToolCallId != null || SubAgentId != null;
 }

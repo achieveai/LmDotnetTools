@@ -30,7 +30,8 @@ public sealed class CopilotAnthropicProxyLiveTests
     {
         Skip.IfNot(
             new CliCredentialCopilotTokenProvider().ResolveToken() is not null,
-            "No GitHub Copilot credential found; skipping the live proxy smoke test.");
+            "No GitHub Copilot credential found; skipping the live proxy smoke test."
+        );
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         var model = await _fixture.ResolveAnthropicModelAsync(cts.Token);
@@ -44,7 +45,10 @@ public sealed class CopilotAnthropicProxyLiveTests
             + "\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: READY\"}]}";
 
         using var response = await client.PostAsync(
-            "/v1/messages", new StringContent(body, Encoding.UTF8, "application/json"), cts.Token);
+            "/v1/messages",
+            new StringContent(body, Encoding.UTF8, "application/json"),
+            cts.Token
+        );
 
         _ = response.EnsureSuccessStatusCode();
         var text = ExtractText(await response.Content.ReadAsStringAsync(cts.Token));
@@ -57,7 +61,8 @@ public sealed class CopilotAnthropicProxyLiveTests
     {
         Skip.IfNot(
             new CliCredentialCopilotTokenProvider().ResolveToken() is not null,
-            "No GitHub Copilot credential found; skipping the live proxy smoke test.");
+            "No GitHub Copilot credential found; skipping the live proxy smoke test."
+        );
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         var model = await _fixture.ResolveAnthropicModelAsync(cts.Token);
@@ -149,10 +154,7 @@ public sealed class CopilotAnthropicProxyLiveTests
             {
                 model,
                 max_tokens = 1,
-                messages = new[]
-                {
-                    new { role = "user", content = new[] { new { type = "text", text = "Hi" } } },
-                },
+                messages = new[] { new { role = "user", content = new[] { new { type = "text", text = "Hi" } } } },
             },
             cts.Token
         );
@@ -218,7 +220,9 @@ public sealed class CopilotAnthropicProxyLiveTests
 
         // Named up front, so an upstream 400 fails as "the call did not succeed" rather than as a
         // confusing "incomplete_details was missing" further down.
-        rawStatus.Should().Be(HttpStatusCode.OK, "a truncated reply is still a successful call: {0}", Truncate(rawBody, 400));
+        rawStatus
+            .Should()
+            .Be(HttpStatusCode.OK, "a truncated reply is still a successful call: {0}", Truncate(rawBody, 400));
 
         var body = await PostProxyAsync(
             "/v1/messages",
@@ -408,13 +412,16 @@ public sealed class CopilotAnthropicProxyLiveTests
             askedSummaries = ReasoningEventsIn(asked);
 
             _output.WriteLine(
-                $"{candidate,-24} reasoning {{effort: medium, summary: auto}} -> "
+                $"{candidate, -24} reasoning {{effort: medium, summary: auto}} -> "
                     + (askedSummaries.Count == 0 ? "<none>" : string.Join(", ", askedSummaries))
             );
 
             if (askedSummaries.Count > 0)
             {
-                DumpCapture($"raw streaming /responses, {candidate}, reasoning {{effort: medium, summary: auto}}", asked);
+                DumpCapture(
+                    $"raw streaming /responses, {candidate}, reasoning {{effort: medium, summary: auto}}",
+                    asked
+                );
                 break;
             }
         }
@@ -509,11 +516,7 @@ public sealed class CopilotAnthropicProxyLiveTests
 
         var (status, body) = await SendProxyAsync(
             "/v1/messages/count_tokens",
-            new
-            {
-                model,
-                messages = new[] { new { role = "user", content = "Hi" } },
-            },
+            new { model, messages = new[] { new { role = "user", content = "Hi" } } },
             cts.Token
         );
 
@@ -614,7 +617,9 @@ public sealed class CopilotAnthropicProxyLiveTests
         );
 
         _output.WriteLine(body);
-        status.Should().Be(HttpStatusCode.OK, "the hosted tool must be stripped, not forwarded: {0}", Truncate(body, 2000));
+        status
+            .Should()
+            .Be(HttpStatusCode.OK, "the hosted tool must be stripped, not forwarded: {0}", Truncate(body, 2000));
         body.Should().NotContain("image_generation", "the stripped tool must not reach the backend");
         body.Should().Contain("\"output\"");
     }
@@ -659,7 +664,7 @@ public sealed class CopilotAnthropicProxyLiveTests
 
             var reasoningEvents = ReasoningEventsIn(capture);
             _output.WriteLine(
-                $"{model,-24} -> {(int)capture.Status} {capture.Status}  "
+                $"{model, -24} -> {(int)capture.Status} {capture.Status}  "
                     + $"effort={EchoedReasoningEffort(capture)}  "
                     + $"reasoning events: {(reasoningEvents.Count == 0 ? "<none>" : string.Join(", ", reasoningEvents))}"
             );
@@ -668,8 +673,12 @@ public sealed class CopilotAnthropicProxyLiveTests
             (reasoningEvents.Count == 0 ? inert : productive).Add(model);
         }
 
-        _output.WriteLine($"OBSERVED summaries produced by:  {(productive.Count == 0 ? "<none>" : string.Join(", ", productive))}");
-        _output.WriteLine($"OBSERVED accepted but inert on:  {(inert.Count == 0 ? "<none>" : string.Join(", ", inert))}");
+        _output.WriteLine(
+            $"OBSERVED summaries produced by:  {(productive.Count == 0 ? "<none>" : string.Join(", ", productive))}"
+        );
+        _output.WriteLine(
+            $"OBSERVED accepted but inert on:  {(inert.Count == 0 ? "<none>" : string.Join(", ", inert))}"
+        );
 
         // No assertion follows, deliberately. An all-inert sweep is a real, observed outcome of this
         // request shape, not a regression, so `productive` is not asserted on; and a coverage assertion
@@ -722,7 +731,7 @@ public sealed class CopilotAnthropicProxyLiveTests
                 cts.Token
             );
 
-            _output.WriteLine($"{model,-24} -> {(int)status} {status}  reasoning echo: {ReadEcho(body, "reasoning")}");
+            _output.WriteLine($"{model, -24} -> {(int)status} {status}  reasoning echo: {ReadEcho(body, "reasoning")}");
 
             if (status != HttpStatusCode.OK)
             {
@@ -733,9 +742,7 @@ public sealed class CopilotAnthropicProxyLiveTests
 
         rejections
             .Should()
-            .BeEmpty(
-                "an unconditional reasoning field is only safe if every served /responses model accepts it"
-            );
+            .BeEmpty("an unconditional reasoning field is only safe if every served /responses model accepts it");
     }
 
     /// <summary>
@@ -778,7 +785,9 @@ public sealed class CopilotAnthropicProxyLiveTests
                     cts.Token
                 );
 
-                _output.WriteLine($"{model,-24} effort={effort,-6} -> {(int)status} {status}  echo: {ReadEcho(body, "reasoning")}");
+                _output.WriteLine(
+                    $"{model, -24} effort={effort, -6} -> {(int)status} {status}  echo: {ReadEcho(body, "reasoning")}"
+                );
 
                 if (status != HttpStatusCode.OK)
                 {
@@ -789,7 +798,9 @@ public sealed class CopilotAnthropicProxyLiveTests
 
         rejections
             .Should()
-            .BeEmpty("the budget mapping can emit any of these, so a model rejecting one would 400 a legitimate request");
+            .BeEmpty(
+                "the budget mapping can emit any of these, so a model rejecting one would 400 a legitimate request"
+            );
     }
 
     /// <summary>
@@ -914,15 +925,21 @@ public sealed class CopilotAnthropicProxyLiveTests
                 cts.Token
             );
 
-            status.Should().Be(HttpStatusCode.OK, "{0} failed the translated route with: {1}", model, Truncate(body, 400));
+            status
+                .Should()
+                .Be(HttpStatusCode.OK, "{0} failed the translated route with: {1}", model, Truncate(body, 400));
 
             var thought = body.Contains("\"type\":\"thinking\"", StringComparison.Ordinal);
-            _output.WriteLine($"{model,-24} thinking enabled -> {(thought ? "THINKING BLOCK" : "no thinking block")}");
+            _output.WriteLine($"{model, -24} thinking enabled -> {(thought ? "THINKING BLOCK" : "no thinking block")}");
             (thought ? reasoned : stayedSilent).Add(model);
         }
 
-        _output.WriteLine($"OBSERVED reasoned once asked:    {(reasoned.Count == 0 ? "<none>" : string.Join(", ", reasoned))}");
-        _output.WriteLine($"OBSERVED still silent when asked: {(stayedSilent.Count == 0 ? "<none>" : string.Join(", ", stayedSilent))}");
+        _output.WriteLine(
+            $"OBSERVED reasoned once asked:    {(reasoned.Count == 0 ? "<none>" : string.Join(", ", reasoned))}"
+        );
+        _output.WriteLine(
+            $"OBSERVED still silent when asked: {(stayedSilent.Count == 0 ? "<none>" : string.Join(", ", stayedSilent))}"
+        );
 
         reasoned
             .Should()
@@ -942,7 +959,8 @@ public sealed class CopilotAnthropicProxyLiveTests
         try
         {
             using var doc = JsonDocument.Parse(json);
-            return doc.RootElement.TryGetProperty("reasoning", out var reasoning)
+            return
+                doc.RootElement.TryGetProperty("reasoning", out var reasoning)
                 && reasoning.ValueKind == JsonValueKind.Object
                 && reasoning.TryGetProperty("effort", out var effort)
                 ? effort.ToString()
@@ -1011,11 +1029,13 @@ public sealed class CopilotAnthropicProxyLiveTests
                 cts.Token
             );
 
-            status.Should().Be(HttpStatusCode.OK, "{0} failed the translated route with: {1}", model, Truncate(body, 400));
+            status
+                .Should()
+                .Be(HttpStatusCode.OK, "{0} failed the translated route with: {1}", model, Truncate(body, 400));
 
             if (body.Contains("\"type\":\"thinking\"", StringComparison.Ordinal))
             {
-                _output.WriteLine($"{model,-24} -> 200 OK, thinking block");
+                _output.WriteLine($"{model, -24} -> 200 OK, thinking block");
 
                 // The first one only, as the evidence sample: these streams run to hundreds of lines
                 // and the per-model split below is what a reader of this log actually needs.
@@ -1028,15 +1048,19 @@ public sealed class CopilotAnthropicProxyLiveTests
                 continue;
             }
 
-            _output.WriteLine($"{model,-24} -> 200 OK, no thinking block");
+            _output.WriteLine($"{model, -24} -> 200 OK, no thinking block");
             silent.Add(model);
         }
 
         // Recorded, never asserted — see the summary above. An all-silent sweep of this request shape
         // is an outcome `Summary_auto_alone_is_accepted_everywhere_but_is_not_dependable` has already
         // observed on the raw endpoint, and this probe cannot call the same observation a regression.
-        _output.WriteLine($"OBSERVED a thinking block from:  {(thought.Count == 0 ? "<none>" : string.Join(", ", thought))}");
-        _output.WriteLine($"OBSERVED no thinking block from: {(silent.Count == 0 ? "<none>" : string.Join(", ", silent))}");
+        _output.WriteLine(
+            $"OBSERVED a thinking block from:  {(thought.Count == 0 ? "<none>" : string.Join(", ", thought))}"
+        );
+        _output.WriteLine(
+            $"OBSERVED no thinking block from: {(silent.Count == 0 ? "<none>" : string.Join(", ", silent))}"
+        );
     }
 
     /// <summary>
@@ -1089,18 +1113,23 @@ public sealed class CopilotAnthropicProxyLiveTests
                 cts.Token
             );
 
-            status.Should().Be(HttpStatusCode.OK, "the {0} call must succeed or the comparison is meaningless", attempt);
+            status
+                .Should()
+                .Be(HttpStatusCode.OK, "the {0} call must succeed or the comparison is meaningless", attempt);
 
             using var doc = JsonDocument.Parse(body);
             var usage = doc.RootElement.GetProperty("usage");
             var input = usage.GetProperty("input_tokens").GetInt32();
             var total = usage.GetProperty("total_tokens").GetInt32();
-            var cached = usage.TryGetProperty("input_tokens_details", out var details)
+            var cached =
+                usage.TryGetProperty("input_tokens_details", out var details)
                 && details.TryGetProperty("cached_tokens", out var cachedTokens)
-                ? cachedTokens.GetInt32()
-                : 0;
+                    ? cachedTokens.GetInt32()
+                    : 0;
 
-            _output.WriteLine($"{attempt,-7} call -> input_tokens: {input}  cached_tokens: {cached}  total_tokens: {total}");
+            _output.WriteLine(
+                $"{attempt, -7} call -> input_tokens: {input}  cached_tokens: {cached}  total_tokens: {total}"
+            );
             usages.Add((input, cached, total));
         }
 
@@ -1118,7 +1147,8 @@ public sealed class CopilotAnthropicProxyLiveTests
 
         // Inclusive: input_tokens counts the cached prefix too, so it barely moves between the calls.
         // Exclusive: it drops by about the cached count.
-        var verdict = Math.Abs(secondInput - firstInput) <= secondCached / 2 ? "INSIDE the total" : "ALONGSIDE the total";
+        var verdict =
+            Math.Abs(secondInput - firstInput) <= secondCached / 2 ? "INSIDE the total" : "ALONGSIDE the total";
         _output.WriteLine(
             $"OBSERVED: cached_tokens {secondCached} is reported {verdict} "
                 + $"(input_tokens {firstInput} -> {secondInput})."
@@ -1424,9 +1454,11 @@ public sealed class CopilotAnthropicProxyLiveTests
         try
         {
             using var doc = JsonDocument.Parse(payload);
-            if (doc.RootElement.ValueKind == JsonValueKind.Object
+            if (
+                doc.RootElement.ValueKind == JsonValueKind.Object
                 && doc.RootElement.TryGetProperty("type", out var type)
-                && type.ValueKind == JsonValueKind.String)
+                && type.ValueKind == JsonValueKind.String
+            )
             {
                 return type.GetString() ?? "(null type)";
             }
@@ -1544,9 +1576,11 @@ public sealed class CopilotAnthropicProxyLiveTests
         var builder = new StringBuilder();
         foreach (var block in content.EnumerateArray())
         {
-            if (block.TryGetProperty("type", out var type)
+            if (
+                block.TryGetProperty("type", out var type)
                 && type.GetString() == "text"
-                && block.TryGetProperty("text", out var text))
+                && block.TryGetProperty("text", out var text)
+            )
             {
                 _ = builder.Append(text.GetString());
             }

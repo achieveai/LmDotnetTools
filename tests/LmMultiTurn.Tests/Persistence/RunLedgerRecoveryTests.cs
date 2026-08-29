@@ -30,8 +30,9 @@ public class RunLedgerRecoveryTests
         const string threadId = "recovery-dangling";
         const string runId = "run-dangling";
         var createdAt = DateTimeOffset.UtcNow;
-        await store.UpsertRunLedgerAsync(new RunLedgerEntry(
-            threadId, runId, seededStatus, ["input-1"], createdAt, createdAt));
+        await store.UpsertRunLedgerAsync(
+            new RunLedgerEntry(threadId, runId, seededStatus, ["input-1"], createdAt, createdAt)
+        );
 
         var agent = new RecoveryTestAgent(threadId, store: store, persistRunLedger: true);
         using var cts = new CancellationTokenSource();
@@ -39,7 +40,8 @@ public class RunLedgerRecoveryTests
 
         var interrupted = await WaitUntilAsync(
             async () => (await store.LoadRunLedgerAsync(runId))?.Status == RunStatus.Interrupted,
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(5)
+        );
 
         interrupted.Should().BeTrue($"a dangling {seededStatus} run must be reconciled to Interrupted on restart");
         (await store.LoadRunLedgerAsync(runId))!.Status.Should().Be(RunStatus.Interrupted);
@@ -58,8 +60,9 @@ public class RunLedgerRecoveryTests
         const string threadId = "recovery-terminal";
         const string runId = "run-terminal";
         var createdAt = DateTimeOffset.UtcNow;
-        await store.UpsertRunLedgerAsync(new RunLedgerEntry(
-            threadId, runId, terminalStatus, ["input-1"], createdAt, createdAt));
+        await store.UpsertRunLedgerAsync(
+            new RunLedgerEntry(threadId, runId, terminalStatus, ["input-1"], createdAt, createdAt)
+        );
 
         var agent = new RecoveryTestAgent(threadId, store: store, persistRunLedger: true);
         using var cts = new CancellationTokenSource();
@@ -96,13 +99,15 @@ public class RunLedgerRecoveryTests
         _ = agent.RunAsync(cts.Token);
 
         var synthesized = await WaitUntilAsync(
-            async () => (await store.ListRunLedgerAsync(threadId))
-                .Any(e => e.Status == RunStatus.Interrupted && e.InputIds.Contains(inputId)),
-            TimeSpan.FromSeconds(5));
+            async () =>
+                (await store.ListRunLedgerAsync(threadId)).Any(e =>
+                    e.Status == RunStatus.Interrupted && e.InputIds.Contains(inputId)
+                ),
+            TimeSpan.FromSeconds(5)
+        );
 
         synthesized.Should().BeTrue();
-        var orphan = (await store.ListRunLedgerAsync(threadId))
-            .Single(e => e.InputIds.Contains(inputId));
+        var orphan = (await store.ListRunLedgerAsync(threadId)).Single(e => e.InputIds.Contains(inputId));
         orphan.Status.Should().Be(RunStatus.Interrupted);
         orphan.ThreadId.Should().Be(threadId);
 
@@ -120,8 +125,9 @@ public class RunLedgerRecoveryTests
         const string inputId = "covered-input";
         const string runId = "run-covered";
         var createdAt = DateTimeOffset.UtcNow;
-        await store.UpsertRunLedgerAsync(new RunLedgerEntry(
-            threadId, runId, RunStatus.Completed, [inputId], createdAt, createdAt));
+        await store.UpsertRunLedgerAsync(
+            new RunLedgerEntry(threadId, runId, RunStatus.Completed, [inputId], createdAt, createdAt)
+        );
         await store.RecordAcceptedInputAsync(threadId, inputId, createdAt);
 
         var agent = new RecoveryTestAgent(threadId, store: store, persistRunLedger: true);
@@ -160,7 +166,8 @@ public class RunLedgerRecoveryTests
         _ = agent.RunAsync(cts.Token);
         var synthesized = await WaitUntilAsync(
             async () => (await store.ListRunLedgerAsync(threadId)).Any(e => e.InputIds.Contains(inputId)),
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(5)
+        );
         synthesized.Should().BeTrue();
         CountCovering(await store.ListRunLedgerAsync(threadId), inputId).Should().Be(1);
         await agent.StopAsync();
@@ -172,7 +179,8 @@ public class RunLedgerRecoveryTests
         // Give any (erroneous) second reconciliation a chance to run before asserting stability.
         await Task.Delay(100);
         CountCovering(await store.ListRunLedgerAsync(threadId), inputId)
-            .Should().Be(1, "restart reconciliation must not re-fire on a second RunAsync of the same instance");
+            .Should()
+            .Be(1, "restart reconciliation must not re-fire on a second RunAsync of the same instance");
 
         await cts.CancelAsync();
         await agent.DisposeAsync();
@@ -200,12 +208,17 @@ public class RunLedgerRecoveryTests
 
         // Query the INNER store directly so the test never trips the decorator's one-shot fault.
         var processed = await WaitUntilAsync(
-            async () => (await inner.ListRunLedgerAsync(threadId))
-                .Any(e => e.InputIds.Contains("real-input") && e.Status == RunStatus.Completed),
-            TimeSpan.FromSeconds(5));
+            async () =>
+                (await inner.ListRunLedgerAsync(threadId)).Any(e =>
+                    e.InputIds.Contains("real-input") && e.Status == RunStatus.Completed
+                ),
+            TimeSpan.FromSeconds(5)
+        );
 
         processed.Should().BeTrue("a swallowed reconciliation fault must not stop real input processing");
-        faulting.ListRunLedgerCallCount.Should().BeGreaterThan(0, "reconciliation must have attempted the faulting call");
+        faulting
+            .ListRunLedgerCallCount.Should()
+            .BeGreaterThan(0, "reconciliation must have attempted the faulting call");
 
         await cts.CancelAsync();
         await agent.DisposeAsync();
@@ -215,8 +228,8 @@ public class RunLedgerRecoveryTests
 
     #region Helpers
 
-    private static int CountCovering(IReadOnlyList<RunLedgerEntry> entries, string inputId)
-        => entries.Count(e => e.InputIds.Contains(inputId));
+    private static int CountCovering(IReadOnlyList<RunLedgerEntry> entries, string inputId) =>
+        entries.Count(e => e.InputIds.Contains(inputId));
 
     private static async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
@@ -262,9 +275,7 @@ public class RunLedgerRecoveryTests
     private sealed class RecoveryTestAgent : MultiTurnAgentBase
     {
         public RecoveryTestAgent(string threadId, IConversationStore? store, bool persistRunLedger)
-            : base(threadId, store: store, persistRunLedger: persistRunLedger)
-        {
-        }
+            : base(threadId, store: store, persistRunLedger: persistRunLedger) { }
 
         protected override TimeSpan FallbackGracePeriod => TimeSpan.FromMilliseconds(100);
 
@@ -283,9 +294,7 @@ public class RunLedgerRecoveryTests
                 }
 
                 var assignment = await StartRunAsync(batch, ct: ct);
-                await PublishToAllAsync(
-                    new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId },
-                    ct);
+                await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
                 await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, 0, ct: ct);
             }
         }
@@ -317,45 +326,64 @@ public class RunLedgerRecoveryTests
         }
 
         // === IRunLedgerStore delegation ===
-        public Task UpsertRunLedgerAsync(RunLedgerEntry entry, CancellationToken ct = default)
-            => _inner.UpsertRunLedgerAsync(entry, ct);
+        public Task UpsertRunLedgerAsync(RunLedgerEntry entry, CancellationToken ct = default) =>
+            _inner.UpsertRunLedgerAsync(entry, ct);
 
-        public Task<RunLedgerEntry?> LoadRunLedgerAsync(string runId, CancellationToken ct = default)
-            => _inner.LoadRunLedgerAsync(runId, ct);
+        public Task<RunLedgerEntry?> LoadRunLedgerAsync(string runId, CancellationToken ct = default) =>
+            _inner.LoadRunLedgerAsync(runId, ct);
 
-        public Task RecordAcceptedInputAsync(string threadId, string inputId, DateTimeOffset acceptedAt, CancellationToken ct = default)
-            => _inner.RecordAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
+        public Task RecordAcceptedInputAsync(
+            string threadId,
+            string inputId,
+            DateTimeOffset acceptedAt,
+            CancellationToken ct = default
+        ) => _inner.RecordAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
 
-        public Task RemoveAcceptedInputAsync(string threadId, string inputId, CancellationToken ct = default)
-            => _inner.RemoveAcceptedInputAsync(threadId, inputId, ct);
+        public Task RemoveAcceptedInputAsync(string threadId, string inputId, CancellationToken ct = default) =>
+            _inner.RemoveAcceptedInputAsync(threadId, inputId, ct);
 
-        public Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(string threadId, CancellationToken ct = default)
-            => _inner.ListAcceptedInputIdsAsync(threadId, ct);
+        public Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(string threadId, CancellationToken ct = default) =>
+            _inner.ListAcceptedInputIdsAsync(threadId, ct);
 
         // === IConversationStore delegation ===
-        public Task AppendMessagesAsync(string threadId, IReadOnlyList<PersistedMessage> messages, CancellationToken ct = default)
-            => _inner.AppendMessagesAsync(threadId, messages, ct);
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => _inner.AppendMessagesAsync(threadId, messages, ct);
 
-        public Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default)
-            => _inner.ReplaceMessageAsync(threadId, replacement, ct);
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => _inner.ReplaceMessageAsync(threadId, replacement, ct);
 
-        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default)
-            => _inner.LoadMessagesAsync(threadId, ct);
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => _inner.LoadMessagesAsync(threadId, ct);
 
-        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default)
-            => _inner.SaveMetadataAsync(threadId, metadata, ct);
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            _inner.SaveMetadataAsync(threadId, metadata, ct);
 
-        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default)
-            => _inner.LoadMetadataAsync(threadId, ct);
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            _inner.LoadMetadataAsync(threadId, ct);
 
-        public Task UpdateMetadataAsync(string threadId, Func<ThreadMetadata?, ThreadMetadata> update, CancellationToken ct = default)
-            => _inner.UpdateMetadataAsync(threadId, update, ct);
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => _inner.UpdateMetadataAsync(threadId, update, ct);
 
-        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default)
-            => _inner.DeleteThreadAsync(threadId, ct);
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            _inner.DeleteThreadAsync(threadId, ct);
 
-        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(int limit = 50, int offset = 0, ConversationListOptions? options = null, CancellationToken ct = default)
-            => _inner.ListThreadsAsync(limit, offset, options, ct);
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => _inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     #endregion

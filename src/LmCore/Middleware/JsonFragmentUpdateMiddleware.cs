@@ -50,7 +50,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
             {
                 ToolsCallUpdateMessage toolsCallUpdateMessage => ProcessToolsCallUpdateMessage(toolsCallUpdateMessage),
                 ToolCallUpdateMessage toolCallUpdateMessage => ProcessToolCallUpdateMessage(toolCallUpdateMessage),
-                _ => message
+                _ => message,
             };
         }
     }
@@ -109,7 +109,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
         // Return updated ToolCallUpdateMessage with JsonFragmentUpdates
         return message with
         {
-            JsonFragmentUpdates = jsonFragmentUpdates
+            JsonFragmentUpdates = jsonFragmentUpdates,
         };
     }
 

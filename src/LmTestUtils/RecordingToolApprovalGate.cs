@@ -65,7 +65,8 @@ public sealed class RecordingToolApprovalGate : IToolApprovalGate
     /// <inheritdoc />
     public ValueTask<ToolApprovalVerdict> RequestApprovalAsync(
         ToolApprovalContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(context);
         cancellationToken.ThrowIfCancellationRequested();

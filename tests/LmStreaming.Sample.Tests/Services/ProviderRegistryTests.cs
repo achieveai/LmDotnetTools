@@ -181,12 +181,24 @@ public class ProviderRegistryTests
         var registry = new ProviderRegistry(new FakeFileSystemProbe());
         var catalog = registry.ListAll();
 
-        catalog.Select(p => p.Id).Should().BeEquivalentTo(
-            [
-                "anthropic", "claude", "claude-mock", "codex", "codex-mock",
-                "copilot", "copilot-mock", "openai", "test", "test-anthropic",
-            ],
-            options => options.WithStrictOrdering());
+        catalog
+            .Select(p => p.Id)
+            .Should()
+            .BeEquivalentTo(
+                [
+                    "anthropic",
+                    "claude",
+                    "claude-mock",
+                    "codex",
+                    "codex-mock",
+                    "copilot",
+                    "copilot-mock",
+                    "openai",
+                    "test",
+                    "test-anthropic",
+                ],
+                options => options.WithStrictOrdering()
+            );
     }
 
     [Fact]
@@ -195,7 +207,12 @@ public class ProviderRegistryTests
         using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
         var copilotModels = new[]
         {
-            new CopilotModelInfo("claude-opus-4.8", "Claude Opus 4.8", CopilotModelVendor.Anthropic, CopilotModelTransport.Anthropic),
+            new CopilotModelInfo(
+                "claude-opus-4.8",
+                "Claude Opus 4.8",
+                CopilotModelVendor.Anthropic,
+                CopilotModelTransport.Anthropic
+            ),
             new CopilotModelInfo("gpt-5.5", "GPT-5.5", CopilotModelVendor.OpenAI, CopilotModelTransport.Responses),
         };
 
@@ -227,7 +244,12 @@ public class ProviderRegistryTests
         using var env = EnvScope.Set("LM_PROVIDER_MODE", "test");
         var copilotModels = new[]
         {
-            new CopilotModelInfo("claude-opus-4.8", "Claude Opus 4.8", CopilotModelVendor.Anthropic, CopilotModelTransport.Anthropic),
+            new CopilotModelInfo(
+                "claude-opus-4.8",
+                "Claude Opus 4.8",
+                CopilotModelVendor.Anthropic,
+                CopilotModelTransport.Anthropic
+            ),
         };
 
         var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, copilotModels);
@@ -258,13 +280,26 @@ public class ProviderRegistryTests
         using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
         var copilotModels = new[]
         {
-            new CopilotModelInfo("claude-opus-4.8", "Claude Opus 4.8", CopilotModelVendor.Anthropic, CopilotModelTransport.Anthropic),
+            new CopilotModelInfo(
+                "claude-opus-4.8",
+                "Claude Opus 4.8",
+                CopilotModelVendor.Anthropic,
+                CopilotModelTransport.Anthropic
+            ),
         };
 
         var withToken = new ProviderRegistry(
-            new FakeFileSystemProbe(), () => false, copilotModels, copilotTokenAvailable: () => true);
+            new FakeFileSystemProbe(),
+            () => false,
+            copilotModels,
+            copilotTokenAvailable: () => true
+        );
         var withoutToken = new ProviderRegistry(
-            new FakeFileSystemProbe(), () => false, copilotModels, copilotTokenAvailable: () => false);
+            new FakeFileSystemProbe(),
+            () => false,
+            copilotModels,
+            copilotTokenAvailable: () => false
+        );
 
         withToken.IsAvailable("claude-opus-4.8").Should().BeTrue();
         withoutToken.IsAvailable("claude-opus-4.8").Should().BeFalse();
@@ -278,11 +313,20 @@ public class ProviderRegistryTests
         var compatModels = new[]
         {
             new AnthropicCompatModel(
-                "deepseek-v4-pro", "deepseek-v4-pro", "deepseek-v4-pro",
-                "https://api.deepseek.com/anthropic", "sk-deepseek", "DEEPSEEK"),
+                "deepseek-v4-pro",
+                "deepseek-v4-pro",
+                "deepseek-v4-pro",
+                "https://api.deepseek.com/anthropic",
+                "sk-deepseek",
+                "DEEPSEEK"
+            ),
         };
 
-        var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, anthropicCompatModels: compatModels);
+        var registry = new ProviderRegistry(
+            new FakeFileSystemProbe(),
+            () => false,
+            anthropicCompatModels: compatModels
+        );
         var byId = registry.ListAll().ToDictionary(p => p.Id);
 
         byId["deepseek-v4-pro"].Group.Should().Be("DEEPSEEK (Anthropic-compatible)");
@@ -297,11 +341,20 @@ public class ProviderRegistryTests
         var compatModels = new[]
         {
             new AnthropicCompatModel(
-                "deepseek-v4-pro", "deepseek-v4-pro", "deepseek-v4-pro",
-                "https://api.deepseek.com/anthropic", "sk-deepseek", "DEEPSEEK"),
+                "deepseek-v4-pro",
+                "deepseek-v4-pro",
+                "deepseek-v4-pro",
+                "https://api.deepseek.com/anthropic",
+                "sk-deepseek",
+                "DEEPSEEK"
+            ),
         };
 
-        var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, anthropicCompatModels: compatModels);
+        var registry = new ProviderRegistry(
+            new FakeFileSystemProbe(),
+            () => false,
+            anthropicCompatModels: compatModels
+        );
 
         registry.TryGetAnthropicCompatModel("deepseek-v4-pro", out var model).Should().BeTrue();
         model.BaseUrl.Should().Be("https://api.deepseek.com/anthropic");
@@ -329,11 +382,20 @@ public class ProviderRegistryTests
         var compatModels = new[]
         {
             new AnthropicCompatModel(
-                "deepseek-v4-pro", "deepseek-v4-pro", "deepseek-v4-pro",
-                "https://api.deepseek.com/anthropic", "sk-deepseek", "DEEPSEEK"),
+                "deepseek-v4-pro",
+                "deepseek-v4-pro",
+                "deepseek-v4-pro",
+                "https://api.deepseek.com/anthropic",
+                "sk-deepseek",
+                "DEEPSEEK"
+            ),
         };
 
-        var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, anthropicCompatModels: compatModels);
+        var registry = new ProviderRegistry(
+            new FakeFileSystemProbe(),
+            () => false,
+            anthropicCompatModels: compatModels
+        );
 
         registry.IsAvailable("deepseek-v4-pro").Should().BeTrue();
     }
@@ -528,6 +590,4 @@ public class ProviderRegistryTests
 /// so xUnit serialises them — env vars are global state and concurrent mutation flakes.
 /// </summary>
 [CollectionDefinition("EnvironmentVariables", DisableParallelization = true)]
-public class EnvironmentVariablesCollection
-{
-}
+public class EnvironmentVariablesCollection { }

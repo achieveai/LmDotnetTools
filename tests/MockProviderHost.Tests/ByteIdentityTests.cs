@@ -100,8 +100,9 @@ public sealed class ByteIdentityTests
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var wireBytes = await response.Content.ReadAsByteArrayAsync();
-        wireBytes.Should().Equal(openAiTee.CapturedBytes,
-            "the host must propagate the inner handler's error body byte-for-byte");
+        wireBytes
+            .Should()
+            .Equal(openAiTee.CapturedBytes, "the host must propagate the inner handler's error body byte-for-byte");
         Encoding.UTF8.GetString(wireBytes).Should().Contain("stream=true");
         anthropicTee.CapturedBytes.Should().BeEmpty("anthropic handler must not be touched on the openai route");
     }
@@ -129,16 +130,18 @@ public sealed class ByteIdentityTests
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var wireBytes = await response.Content.ReadAsByteArrayAsync();
-        wireBytes.Should().Equal(anthropicTee.CapturedBytes,
-            "the host must propagate the inner handler's error body byte-for-byte");
+        wireBytes
+            .Should()
+            .Equal(anthropicTee.CapturedBytes, "the host must propagate the inner handler's error body byte-for-byte");
         openAiTee.CapturedBytes.Should().BeEmpty("openai handler must not be touched on the anthropic route");
     }
 
     private static ScriptedSseResponder BuildResponder()
     {
-        return ScriptedSseResponder.New()
+        return ScriptedSseResponder
+            .New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.Text("Hello from the scripted parent."))
+            .Turn(t => t.Text("Hello from the scripted parent."))
             .Build();
     }
 }

@@ -29,11 +29,13 @@ public sealed class SubAgentBackgroundTests
         const string WorkerMarker = "You are the background worker sub-agent";
         const string SubAgentAnswer = "Background work finished with secret payload.";
 
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("bg-worker", ctx => ctx.SystemPromptContains(WorkerMarker))
-                .Turn(t => t.Text(SubAgentAnswer))
+            .Turn(t => t.Text(SubAgentAnswer))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.ToolCall(
+            .Turn(t =>
+                t.ToolCall(
                     "Agent",
                     new
                     {
@@ -41,30 +43,32 @@ public sealed class SubAgentBackgroundTests
                         prompt = "do background work",
                         name = "bg1",
                         run_in_background = true,
-                    }))
-                .Turn(t => t.Text("Kicked off the background worker."))
+                    }
+                )
+            )
+            .Turn(t => t.Text("Kicked off the background worker."))
             .Build();
 
-        var handler = providerMode == "test-anthropic"
-            ? responder.AsAnthropicHandler()
-            : responder.AsOpenAiHandler();
+        var handler = providerMode == "test-anthropic" ? responder.AsAnthropicHandler() : responder.AsOpenAiHandler();
 
         var builder = new ScriptedBuilder(
             handler,
-            subAgentFactory: (_, providerAgentFactory) => new SubAgentOptions
-            {
-                Templates = new Dictionary<string, SubAgentTemplate>
+            subAgentFactory: (_, providerAgentFactory) =>
+                new SubAgentOptions
                 {
-                    ["bg_worker"] = new SubAgentTemplate
+                    Templates = new Dictionary<string, SubAgentTemplate>
                     {
-                        Name = "BackgroundWorker",
-                        SystemPrompt = WorkerMarker,
-                        AgentFactory = providerAgentFactory,
-                        MaxTurnsPerRun = 5,
+                        ["bg_worker"] = new SubAgentTemplate
+                        {
+                            Name = "BackgroundWorker",
+                            SystemPrompt = WorkerMarker,
+                            AgentFactory = providerAgentFactory,
+                            MaxTurnsPerRun = 5,
+                        },
                     },
-                },
-                MaxConcurrentSubAgents = 5,
-            });
+                    MaxConcurrentSubAgents = 5,
+                }
+        );
 
         using var factory = new E2EWebAppFactory(providerMode, builder);
 
@@ -80,8 +84,7 @@ public sealed class SubAgentBackgroundTests
 
         // The background spawn's tool result is a JSON receipt, returned synchronously before
         // the sub-agent finishes — so it carries the spawn metadata, NOT the sub-agent's answer.
-        var receipt = frames.ToolCallResults()
-            .FirstOrDefault(r => r.Contains("agent_id", StringComparison.Ordinal));
+        var receipt = frames.ToolCallResults().FirstOrDefault(r => r.Contains("agent_id", StringComparison.Ordinal));
         receipt.Should().NotBeNull("background spawn returns a JSON receipt with an agent id");
 
         using (var doc = JsonDocument.Parse(receipt!))

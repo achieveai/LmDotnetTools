@@ -2,17 +2,21 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Xunit.Abstractions;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Serialization;
+
 /// <summary>
 ///     Tests for serialization and deserialization of ImmutableDictionary.
 /// </summary>
 public class ImmutableDictionarySerializationTests
 {
     private readonly ITestOutputHelper _output;
+
     public ImmutableDictionarySerializationTests(ITestOutputHelper output)
     {
         _output = output;
     }
+
     private class TestClassWithExtensionDataConverter : ShadowPropertiesJsonConverter<TestClassWithExtensionData>
     {
         protected override TestClassWithExtensionData CreateInstance()
@@ -20,32 +24,35 @@ public class ImmutableDictionarySerializationTests
             return new TestClassWithExtensionData();
         }
     }
+
     // Test class with JsonExtensionData for testing inline extra properties
     [JsonConverter(typeof(TestClassWithExtensionDataConverter))]
     private record TestClassWithExtensionData
     {
         [JsonPropertyName("name")]
         public string Name { get; init; } = string.Empty;
+
         [JsonPropertyName("value")]
         public int Value { get; init; }
+
         [JsonExtensionData]
         private Dictionary<string, object?> ExtraPropertiesInternal
         {
             get => ExtraProperties.ToDictionary();
             init => ExtraProperties = value.ToImmutableDictionary();
         }
+
         [JsonIgnore]
         public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
             ImmutableDictionary<string, object?>.Empty;
+
         public TestClassWithExtensionData SetExtraProperty<T>(string key, T value)
         {
             return ExtraProperties == null
                 ? (this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) })
-                : (this with
-                {
-                    ExtraProperties = ExtraProperties.Add(key, value),
-                });
+                : (this with { ExtraProperties = ExtraProperties.Add(key, value) });
         }
+
         public T? GetExtraProperty<T>(string key)
         {
             if (ExtraProperties == null)
@@ -55,26 +62,28 @@ public class ImmutableDictionarySerializationTests
             return ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue : default;
         }
     }
+
     // Test class with JsonPropertyName for testing nested extra properties
     private record TestClassWithNestedProperties
     {
         [JsonPropertyName("name")]
         public string Name { get; init; } = string.Empty;
+
         [JsonPropertyName("value")]
         public int Value { get; init; }
+
         [JsonPropertyName("extra_properties")]
         [JsonConverter(typeof(ExtraPropertiesConverter))]
         public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
             ImmutableDictionary<string, object?>.Empty;
+
         public TestClassWithNestedProperties SetExtraProperty<T>(string key, T value)
         {
             return ExtraProperties == null
                 ? (this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) })
-                : (this with
-                {
-                    ExtraProperties = ExtraProperties.Add(key, value),
-                });
+                : (this with { ExtraProperties = ExtraProperties.Add(key, value) });
         }
+
         public T? GetExtraProperty<T>(string key)
         {
             if (ExtraProperties == null)
@@ -84,6 +93,7 @@ public class ImmutableDictionarySerializationTests
             return ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue : default;
         }
     }
+
     [Fact]
     public void BasicDictionarySerialization_WorksCorrectly()
     {
@@ -100,6 +110,7 @@ public class ImmutableDictionarySerializationTests
         Assert.Equal("value1", deserialized["key1"]);
         Assert.Equal("value2", deserialized["key2"]);
     }
+
     [Fact]
     public void ImmutableDictionaryWithConverter_SerializesAndDeserializes_StringValues()
     {
@@ -120,6 +131,7 @@ public class ImmutableDictionarySerializationTests
         Assert.Equal("value1", deserialized["key1"]);
         Assert.Equal("value2", deserialized["key2"]);
     }
+
     [Fact]
     public void ImmutableDictionaryWithConverter_SerializesAndDeserializes_MixedValues()
     {
@@ -182,6 +194,7 @@ public class ImmutableDictionarySerializationTests
         // For null values
         Assert.Null(deserialized["null"]);
     }
+
     [Fact]
     public void ExtraPropertiesConverter_SerializesAndDeserializes_SimpleValues()
     {
@@ -244,6 +257,7 @@ public class ImmutableDictionarySerializationTests
         // For null values
         Assert.Null(deserialized["null"]);
     }
+
     [Fact]
     public void UsageClass_SerializesAndDeserializes_WithExtraProperties()
     {
@@ -290,6 +304,7 @@ public class ImmutableDictionarySerializationTests
         _output.WriteLine($"Cached: {cached}");
         Assert.True(cached);
     }
+
     [Fact]
     public void GenerateReplyOptions_SerializesAndDeserializes_WithExtraProperties()
     {
@@ -339,6 +354,7 @@ public class ImmutableDictionarySerializationTests
             Assert.Equal("auto", functionCall);
         }
     }
+
     // Helper method to print JSON structure
     private static void PrintJsonElement(ITestOutputHelper output, JsonElement element, int indent)
     {

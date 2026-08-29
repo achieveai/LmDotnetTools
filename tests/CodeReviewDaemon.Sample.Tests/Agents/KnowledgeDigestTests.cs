@@ -8,8 +8,12 @@ public class KnowledgeDigestTests
     private const string KbRoot = "/workspace/store/KnowledgeBase";
 
     private static KnowledgeEntryMeta Entry(
-        string file, string title, string[] tags, string scope = "system", string updated = "2026-07-01") =>
-        new(file, title, tags, scope, [], updated);
+        string file,
+        string title,
+        string[] tags,
+        string scope = "system",
+        string updated = "2026-07-01"
+    ) => new(file, title, tags, scope, [], updated);
 
     // ---- ExtractChangedPaths -------------------------------------------------------------------
 
@@ -27,8 +31,10 @@ public class KnowledgeDigestTests
             diff --git a/tests/Foo/BarTests.cs b/tests/Foo/BarTests.cs
             """;
 
-        KnowledgeDigest.ExtractChangedPaths(diff)
-            .Should().Equal("src/LmCore/Agents/Runner.cs", "tests/Foo/BarTests.cs");
+        KnowledgeDigest
+            .ExtractChangedPaths(diff)
+            .Should()
+            .Equal("src/LmCore/Agents/Runner.cs", "tests/Foo/BarTests.cs");
     }
 
     [Fact]
@@ -54,7 +60,8 @@ public class KnowledgeDigestTests
         // Git quotes a header path that carries non-ASCII or special bytes, octal-escaping each UTF-8 byte.
         // A parser that only knows the bare form silently drops the file — and a dropped file contributes
         // nothing to ranking, so the lesson that would have matched it never surfaces.
-        var diff = """diff --git "a/src/Caf\303\251/Br\303\274cke.cs" "b/src/Caf\303\251/Br\303\274cke.cs" """.TrimEnd();
+        var diff =
+            """diff --git "a/src/Caf\303\251/Br\303\274cke.cs" "b/src/Caf\303\251/Br\303\274cke.cs" """.TrimEnd();
 
         KnowledgeDigest.ExtractChangedPaths(diff).Should().Equal("src/Café/Brücke.cs");
     }
@@ -164,7 +171,12 @@ public class KnowledgeDigestTests
         };
 
         var ranked = KnowledgeDigest.SelectRelevant(
-            entries, ["src/LmCore/Streaming/CallbackPump.cs"], prTitle: null, prDescription: null, maxEntries: 10);
+            entries,
+            ["src/LmCore/Streaming/CallbackPump.cs"],
+            prTitle: null,
+            prDescription: null,
+            maxEntries: 10
+        );
 
         ranked[0].File.Should().Be("system/matching.md");
     }
@@ -210,21 +222,30 @@ public class KnowledgeDigestTests
         // the failure: the entry that arrives first is the one whose name sorts first, not the one that knows
         // anything about this change.
         var pathsOnly = KnowledgeDigest.SelectRelevant(
-            entries, ["deploy/ecs/task-definition.json"], prTitle: null, prDescription: null, maxEntries: 10);
-        pathsOnly[0].File.Should().Be(
-            "system/aaa-unrelated.md",
-            "the premise: on paths alone the right entry does NOT come first, so this test can fail");
+            entries,
+            ["deploy/ecs/task-definition.json"],
+            prTitle: null,
+            prDescription: null,
+            maxEntries: 10
+        );
+        pathsOnly[0]
+            .File.Should()
+            .Be(
+                "system/aaa-unrelated.md",
+                "the premise: on paths alone the right entry does NOT come first, so this test can fail"
+            );
 
         var withTitle = KnowledgeDigest.SelectRelevant(
             entries,
             ["deploy/ecs/task-definition.json"],
             prTitle: "Remove the stale featureflag entry",
             prDescription: null,
-            maxEntries: 10);
+            maxEntries: 10
+        );
 
-        withTitle[0].File.Should().Be(
-            "system/zzz-flags.md",
-            "the pattern is named in the title even when no changed path names it");
+        withTitle[0]
+            .File.Should()
+            .Be("system/zzz-flags.md", "the pattern is named in the title even when no changed path names it");
     }
 
     /// <summary>
@@ -251,12 +272,16 @@ public class KnowledgeDigestTests
             ["src/Streaming/Callbacks.cs"],
             prTitle: "Rework pagination",
             prDescription: null,
-            maxEntries: 10);
+            maxEntries: 10
+        );
 
-        ranked[0].File.Should().Be(
-            "system/touched.md",
-            "one tag hit on a CHANGED PATH beats one tag hit on the author's prose; equal weighting would "
-                + "let a generic title demote the entry that actually matched the diff");
+        ranked[0]
+            .File.Should()
+            .Be(
+                "system/touched.md",
+                "one tag hit on a CHANGED PATH beats one tag hit on the author's prose; equal weighting would "
+                    + "let a generic title demote the entry that actually matched the diff"
+            );
     }
 
     /// <summary>
@@ -289,11 +314,14 @@ public class KnowledgeDigestTests
             ["src/Runner.cs", "src/Callbacks.cs"],
             prTitle: null,
             prDescription: null,
-            maxEntries: 10);
+            maxEntries: 10
+        );
 
         // 2 tag hits > 1 tag hit > 1 title hit > nothing — the historical 2/1 ordering, unchanged.
-        ranked.Select(e => e.File).Should().Equal(
-            "system/two-tags.md", "system/one-tag.md", "system/title-only.md", "system/nothing.md");
+        ranked
+            .Select(e => e.File)
+            .Should()
+            .Equal("system/two-tags.md", "system/one-tag.md", "system/title-only.md", "system/nothing.md");
     }
 
     // ---- Scope breadth reserve (#116) ----------------------------------------------------------
@@ -309,21 +337,34 @@ public class KnowledgeDigestTests
     {
         // Twelve strongly-matching entries in one scope, one weak entry in another. Pure score gives the
         // dominant scope every slot.
-        var entries = Enumerable.Range(0, 12)
+        var entries = Enumerable
+            .Range(0, 12)
             .Select(i => Entry($"system/e{i}.md", $"Runner lesson {i}", ["runner"]))
             .Append(Entry("deployment/rare.md", "Nothing in common", ["zzz"], scope: "deployment"))
             .ToArray();
 
         var ranked = KnowledgeDigest.SelectRelevant(
-            entries, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 6);
+            entries,
+            ["src/Runner.cs"],
+            prTitle: null,
+            prDescription: null,
+            maxEntries: 6
+        );
 
         ranked.Should().HaveCount(6);
-        ranked.Select(e => e.File).Should().Contain(
-            "deployment/rare.md",
-            "being best in an unpopular topic beats being seventh-best in a popular one; on pure score this "
-                + "entry is rank 13 of 13 and never arrives");
-        ranked.Select(e => e.Scope).Distinct().Should().HaveCount(
-            2, "the reserve buys breadth, it does not empty the ranking");
+        ranked
+            .Select(e => e.File)
+            .Should()
+            .Contain(
+                "deployment/rare.md",
+                "being best in an unpopular topic beats being seventh-best in a popular one; on pure score this "
+                    + "entry is rank 13 of 13 and never arrives"
+            );
+        ranked
+            .Select(e => e.Scope)
+            .Distinct()
+            .Should()
+            .HaveCount(2, "the reserve buys breadth, it does not empty the ranking");
     }
 
     /// <summary>
@@ -341,19 +382,29 @@ public class KnowledgeDigestTests
     [Fact]
     public void SelectRelevant_TreatsEveryBlankScopeAsOneBucketRatherThanOnePerEntry()
     {
-        var entries = Enumerable.Range(0, 12)
+        var entries = Enumerable
+            .Range(0, 12)
             .Select(i => Entry($"e{i}.md", $"Runner lesson {i}", ["runner"], scope: string.Empty))
             .Append(Entry("zz-unmatched.md", "Nothing in common", ["zzz"], scope: " "))
             .ToArray();
 
         var ranked = KnowledgeDigest.SelectRelevant(
-            entries, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 6);
+            entries,
+            ["src/Runner.cs"],
+            prTitle: null,
+            prDescription: null,
+            maxEntries: 6
+        );
 
-        ranked.Select(e => e.File).Should().NotContain(
-            "zz-unmatched.md",
-            "every blank scope is ONE bucket, so the reserve is satisfied by a single entry and the rest of "
-                + "the slots go to the ranking; treating \"\" and \" \" as two topics would hand a reserved "
-                + "slot to the worst-ranked entry in the index");
+        ranked
+            .Select(e => e.File)
+            .Should()
+            .NotContain(
+                "zz-unmatched.md",
+                "every blank scope is ONE bucket, so the reserve is satisfied by a single entry and the rest of "
+                    + "the slots go to the ranking; treating \"\" and \" \" as two topics would hand a reserved "
+                    + "slot to the worst-ranked entry in the index"
+            );
     }
 
     /// <summary>
@@ -384,11 +435,10 @@ public class KnowledgeDigestTests
             ["src/Runner.cs", "src/Callbacks.cs"],
             prTitle: "Runner cleanup",
             prDescription: null,
-            maxEntries: 10);
+            maxEntries: 10
+        );
 
-        ranked.Select(e => e.File).Should().Equal(
-            "system/aaa-quiet.md",
-            "system/zzz-echoed.md");
+        ranked.Select(e => e.File).Should().Equal("system/aaa-quiet.md", "system/zzz-echoed.md");
     }
 
     /// <summary>
@@ -406,21 +456,26 @@ public class KnowledgeDigestTests
         };
 
         // Positive control FIRST: inside the prefix, "telemetry" outranks a newer non-matching entry.
-        KnowledgeDigest.SelectRelevant(
-                entries, [], prTitle: null, prDescription: "telemetry", maxEntries: 10)[0]
-            .File.Should().Be("system/aaa-late.md", "the word is matchable when it is inside the prefix");
+        KnowledgeDigest
+            .SelectRelevant(entries, [], prTitle: null, prDescription: "telemetry", maxEntries: 10)[0]
+            .File.Should()
+            .Be("system/aaa-late.md", "the word is matchable when it is inside the prefix");
 
         // Past the clamp the same word scores nothing, so the newer entry wins on the tie-break instead.
-        KnowledgeDigest.SelectRelevant(
+        KnowledgeDigest
+            .SelectRelevant(
                 entries,
                 [],
                 prTitle: null,
                 prDescription: new string('x', 2100) + " telemetry",
-                maxEntries: 10)[0]
-            .File.Should().Be(
+                maxEntries: 10
+            )[0]
+            .File.Should()
+            .Be(
                 "system/bbb-other.md",
                 "prose past the scored prefix contributes nothing, so the entries tie at zero and the "
-                    + "deterministic newest-first tie-break decides");
+                    + "deterministic newest-first tie-break decides"
+            );
     }
 
     [Fact]
@@ -428,22 +483,18 @@ public class KnowledgeDigestTests
     {
         // The KB is small and tag vocabulary is coarse; surfacing nothing would reproduce exactly the
         // blindness this digest exists to fix. Rank them, don't drop them.
-        var entries = new[]
-        {
-            Entry("system/a.md", "Alpha", ["zzz"]),
-            Entry("system/b.md", "Beta", ["yyy"]),
-        };
+        var entries = new[] { Entry("system/a.md", "Alpha", ["zzz"]), Entry("system/b.md", "Beta", ["yyy"]) };
 
-        KnowledgeDigest.SelectRelevant(entries, ["totally/unrelated.txt"], null, null, maxEntries: 10)
-            .Should().HaveCount(2);
+        KnowledgeDigest
+            .SelectRelevant(entries, ["totally/unrelated.txt"], null, null, maxEntries: 10)
+            .Should()
+            .HaveCount(2);
     }
 
     [Fact]
     public void SelectRelevant_HonoursMaxEntries()
     {
-        var entries = Enumerable.Range(0, 12)
-            .Select(i => Entry($"system/e{i}.md", $"Entry {i}", ["t"]))
-            .ToArray();
+        var entries = Enumerable.Range(0, 12).Select(i => Entry($"system/e{i}.md", $"Entry {i}", ["t"])).ToArray();
 
         KnowledgeDigest.SelectRelevant(entries, [], null, null, maxEntries: 5).Should().HaveCount(5);
     }
@@ -470,7 +521,11 @@ public class KnowledgeDigestTests
     public void Render_EmitsExactAbsolutePathsAndForbidsGrep()
     {
         var digest = KnowledgeDigest.Render(
-            [Entry("system/alpha.md", "Alpha lesson", ["a", "b"])], KbRoot, charBudget: 10_000, omitted: 0);
+            [Entry("system/alpha.md", "Alpha lesson", ["a", "b"])],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0
+        );
 
         digest.Text.Should().Contain("/workspace/store/KnowledgeBase/system/alpha.md");
         digest.Text.Should().Contain("Alpha lesson");
@@ -483,7 +538,11 @@ public class KnowledgeDigestTests
     public void Render_TellsTheAgentToHandPathsToSubAgents()
     {
         var digest = KnowledgeDigest.Render(
-            [Entry("system/alpha.md", "Alpha", ["a"])], KbRoot, charBudget: 10_000, omitted: 0);
+            [Entry("system/alpha.md", "Alpha", ["a"])],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0
+        );
 
         digest.Text.Should().Contain("sub-agent");
     }
@@ -497,7 +556,8 @@ public class KnowledgeDigestTests
     [Fact]
     public void Render_OverBudget_TruncatesAndReportsHowManyWereNotListed()
     {
-        var entries = Enumerable.Range(0, 40)
+        var entries = Enumerable
+            .Range(0, 40)
             .Select(i => Entry($"system/entry-number-{i}.md", $"A reasonably long lesson title {i}", ["tag"]))
             .ToArray();
 
@@ -512,7 +572,11 @@ public class KnowledgeDigestTests
     public void Render_CarriesOmittedCountFromRankingIntoTheFooter()
     {
         var digest = KnowledgeDigest.Render(
-            [Entry("system/alpha.md", "Alpha", ["a"])], KbRoot, charBudget: 10_000, omitted: 7);
+            [Entry("system/alpha.md", "Alpha", ["a"])],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 7
+        );
 
         digest.Text.Should().Contain("7 more entr");
     }
@@ -524,7 +588,8 @@ public class KnowledgeDigestTests
         // rather than what was RENDERED, the budget cut-off would silently turn that proof into a lie —
         // the log would name entries the reviewer never received, which is the exact silent failure the
         // proof-of-use logging exists to make impossible.
-        var entries = Enumerable.Range(0, 40)
+        var entries = Enumerable
+            .Range(0, 40)
             .Select(i => Entry($"system/entry-number-{i}.md", $"A reasonably long lesson title {i}", ["tag"]))
             .ToArray();
 
@@ -574,14 +639,16 @@ public class KnowledgeDigestTests
         // KnowledgeBase/ is written by the knowledge agent — an LLM with file-write tools. A '..' in a
         // "file" value therefore reaches this renderer, and the absolute path it produces would point the
         // reviewer at something that is not knowledge, with no way to tell. Reject it, do not rewrite it.
-        var digest = KnowledgeDigest.Render(
-            [Entry(file, "Poisoned", ["x"])], KbRoot, charBudget: 10_000, omitted: 0);
+        var digest = KnowledgeDigest.Render([Entry(file, "Poisoned", ["x"])], KbRoot, charBudget: 10_000, omitted: 0);
 
         digest.Rendered.Should().BeEmpty("an entry that escapes the root must not be offered to the agent");
         digest.Rejected.Should().ContainSingle().Which.File.Should().Be(file);
-        digest.Text.Should().BeEmpty(
-            "with every entry rejected there are no paths to offer, and a header promising paths that are "
-                + "not there reads exactly like a Knowledge Base that happens to be empty");
+        digest
+            .Text.Should()
+            .BeEmpty(
+                "with every entry rejected there are no paths to offer, and a header promising paths that are "
+                    + "not there reads exactly like a Knowledge Base that happens to be empty"
+            );
     }
 
     [Fact]
@@ -597,12 +664,16 @@ public class KnowledgeDigestTests
             [Entry("system/ado.md", "Follow the [ADO onboarding guide](../../docs/ado.md) before first run", ["ado"])],
             KbRoot,
             charBudget: 10_000,
-            omitted: 0);
+            omitted: 0
+        );
 
         digest.Text.Should().NotContain("../../docs/ado.md", "the escaping link must not reach the agent");
-        digest.Text.Should().Contain(
-            "/workspace/store/KnowledgeBase/system/ado.md",
-            "the entry itself is sound and must still be surfaced - that pairing is the whole argument");
+        digest
+            .Text.Should()
+            .Contain(
+                "/workspace/store/KnowledgeBase/system/ado.md",
+                "the entry itself is sound and must still be surfaced - that pairing is the whole argument"
+            );
         digest.Rendered.Should().ContainSingle().Which.File.Should().Be("system/ado.md");
         digest.Rejected.Should().BeEmpty();
         digest.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/ado.md");
@@ -627,12 +698,14 @@ public class KnowledgeDigestTests
             [Entry("system/alpha.md", title, ["a"]), Entry("system/beta.md", "Beta", ["b"])],
             KbRoot,
             charBudget: 10_000,
-            omitted: 0);
+            omitted: 0
+        );
 
         digest.Text.Should().NotContain("/etc/passwd");
         digest.Text.Should().Contain("system/beta.md", "a clean entry must survive its neighbour's scrub");
-        digest.Text.Should().Contain(
-            "- system/alpha.md", "a cleared title falls back to the file path, as a blank one already did");
+        digest
+            .Text.Should()
+            .Contain("- system/alpha.md", "a cleared title falls back to the file path, as a blank one already did");
         digest.Rendered.Should().HaveCount(2);
         digest.Rejected.Should().BeEmpty();
         digest.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
@@ -654,13 +727,17 @@ public class KnowledgeDigestTests
             ],
             KbRoot,
             charBudget: 10_000,
-            omitted: 0);
+            omitted: 0
+        );
 
         digest.Text.Should().NotContain("/etc/passwd");
-        digest.Text.Should().NotContain("[outside]", "half a reference is still a live link once the other half arrives");
+        digest
+            .Text.Should()
+            .NotContain("[outside]", "half a reference is still a live link once the other half arrives");
         digest.Text.Should().Contain("system/beta.md", "a clean entry must survive its neighbour's scrub");
-        digest.Text.Should().Contain(
-            "- system/alpha.md", "a cleared title falls back to the file path, as a blank one already did");
+        digest
+            .Text.Should()
+            .Contain("- system/alpha.md", "a cleared title falls back to the file path, as a blank one already did");
         digest.Rendered.Should().HaveCount(2);
         digest.Rejected.Should().BeEmpty();
         digest.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
@@ -676,7 +753,8 @@ public class KnowledgeDigestTests
             [Entry("system/alpha.md", "Alpha", ["safe", "see [x](../../../etc/passwd)", "also-safe"])],
             KbRoot,
             charBudget: 10_000,
-            omitted: 0);
+            omitted: 0
+        );
 
         digest.Text.Should().NotContain("/etc/passwd");
         digest.Text.Should().Contain("tags: safe, also-safe");
@@ -692,7 +770,8 @@ public class KnowledgeDigestTests
             [Entry("system/alpha.md", "Alpha", ["a"], scope: "see [x](/etc/passwd)")],
             KbRoot,
             charBudget: 10_000,
-            omitted: 0);
+            omitted: 0
+        );
 
         digest.Text.Should().NotContain("/etc/passwd");
         digest.Text.Should().Contain("scope: (unscoped)", "a cleared scope takes the existing blank fallback");
@@ -706,7 +785,11 @@ public class KnowledgeDigestTests
         // The counter has to mean something: if it fires on entries nothing was done to, an operator reading
         // it learns nothing about extraction quality, which is the only reason it is reported.
         var digest = KnowledgeDigest.Render(
-            [Entry("system/alpha.md", "Alpha", ["a"])], KbRoot, charBudget: 10_000, omitted: 0);
+            [Entry("system/alpha.md", "Alpha", ["a"])],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0
+        );
 
         digest.Neutralized.Should().BeEmpty();
         digest.Rendered.Should().ContainSingle();
@@ -717,8 +800,11 @@ public class KnowledgeDigestTests
     {
         // Containment, not a ban on Markdown in titles - the same distinction the path check already draws.
         var digest = KnowledgeDigest.Render(
-            [Entry("system/alpha.md", "see [x](system/notes.md)", ["a"])], KbRoot, charBudget: 10_000,
-            omitted: 0);
+            [Entry("system/alpha.md", "see [x](system/notes.md)", ["a"])],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0
+        );
 
         digest.Rejected.Should().BeEmpty();
         digest.Text.Should().Contain("system/notes.md");
@@ -729,7 +815,11 @@ public class KnowledgeDigestTests
     {
         // Containment, not a blanket ban on '..': this path canonicalizes back inside the KB.
         var digest = KnowledgeDigest.Render(
-            [Entry("system/../system/alpha.md", "Alpha", ["a"])], KbRoot, charBudget: 10_000, omitted: 0);
+            [Entry("system/../system/alpha.md", "Alpha", ["a"])],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0
+        );
 
         digest.Rejected.Should().BeEmpty();
         digest.Text.Should().Contain("/workspace/store/KnowledgeBase/system/alpha.md");
@@ -739,7 +829,11 @@ public class KnowledgeDigestTests
     public void Render_ContainsALeadingSlashRatherThanReadingItAsAnAbsolutePath()
     {
         var digest = KnowledgeDigest.Render(
-            [Entry("/etc/passwd", "Contained", ["a"])], KbRoot, charBudget: 10_000, omitted: 0);
+            [Entry("/etc/passwd", "Contained", ["a"])],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0
+        );
 
         digest.Rejected.Should().BeEmpty();
         digest.Text.Should().Contain("/workspace/store/KnowledgeBase/etc/passwd");
@@ -748,8 +842,7 @@ public class KnowledgeDigestTests
     [Fact]
     public void Render_RejectsAnEntryThatNamesNoFileAtAll()
     {
-        var digest = KnowledgeDigest.Render(
-            [Entry("./", "Nothing", ["a"])], KbRoot, charBudget: 10_000, omitted: 0);
+        var digest = KnowledgeDigest.Render([Entry("./", "Nothing", ["a"])], KbRoot, charBudget: 10_000, omitted: 0);
 
         digest.Rendered.Should().BeEmpty();
         digest.Rejected.Should().ContainSingle();
@@ -765,7 +858,8 @@ public class KnowledgeDigestTests
             [Entry("system/alpha.md", "Alpha", ["a"]), Entry("../evil.md", "Evil", ["a"])],
             KbRoot,
             charBudget: 10_000,
-            omitted: 0);
+            omitted: 0
+        );
 
         digest.Rendered.Should().ContainSingle();
         digest.Text.Should().NotContain("more entr");
@@ -779,7 +873,8 @@ public class KnowledgeDigestTests
         // never examined: it never reaches Rejected, nothing warns about it, and the footer counts it as
         // an entry the agent can go and fetch from _toc.md. That is the silent disappearance the rejection
         // logging exists to prevent, reintroduced on the common path.
-        var entries = Enumerable.Range(0, 40)
+        var entries = Enumerable
+            .Range(0, 40)
             .Select(i => Entry($"system/entry-number-{i}.md", $"A reasonably long lesson title {i}", ["tag"]))
             .Append(Entry("../../etc/passwd", "Poisoned", ["tag"]))
             .ToArray();
@@ -793,7 +888,8 @@ public class KnowledgeDigestTests
     [Fact]
     public void Render_RejectedEntryPastTheBudgetIsStillKeptOutOfTheFootersCount()
     {
-        var sound = Enumerable.Range(0, 40)
+        var sound = Enumerable
+            .Range(0, 40)
             .Select(i => Entry($"system/entry-number-{i}.md", $"A reasonably long lesson title {i}", ["tag"]))
             .ToArray();
         var entries = sound.Append(Entry("../../etc/passwd", "Poisoned", ["tag"])).ToArray();
@@ -803,7 +899,8 @@ public class KnowledgeDigestTests
         // Exactly the sound entries that did not fit — the rejected one is neither rendered nor promised,
         // and must not be double-counted as both refused and merely-omitted.
         var reported = int.Parse(
-            System.Text.RegularExpressions.Regex.Match(digest.Text, @"(\d+) more entr").Groups[1].Value);
+            System.Text.RegularExpressions.Regex.Match(digest.Text, @"(\d+) more entr").Groups[1].Value
+        );
         reported.Should().Be(sound.Length - digest.Rendered.Count);
     }
 
@@ -812,12 +909,16 @@ public class KnowledgeDigestTests
     [Fact]
     public void RenderTableOfContents_UsesTheCanonicalHeadingAndTheTocsAbsolutePath()
     {
-        var block = KnowledgeDigest.RenderTableOfContents(
-            "# Knowledge Base\n\n- [Alpha](system/alpha.md)\n", KbRoot, charBudget: 10_000).Text;
+        var block = KnowledgeDigest
+            .RenderTableOfContents("# Knowledge Base\n\n- [Alpha](system/alpha.md)\n", KbRoot, charBudget: 10_000)
+            .Text;
 
-        block.Should().StartWith(
-            "## Prior knowledge (Knowledge Base)",
-            "the prompt teaches one heading and teaches that its absence means there is no KB at all");
+        block
+            .Should()
+            .StartWith(
+                "## Prior knowledge (Knowledge Base)",
+                "the prompt teaches one heading and teaches that its absence means there is no KB at all"
+            );
         block.Should().Contain("/workspace/store/KnowledgeBase/_toc.md");
         block.Should().Contain("/workspace/store/KnowledgeBase/", "the links are relative to a root the agent needs");
         block.Should().Contain("[Alpha](system/alpha.md)", "the table of contents rides along verbatim");
@@ -840,8 +941,10 @@ public class KnowledgeDigestTests
     private static string BigToc(int entries) =>
         "# Knowledge Base\n\n## system\n\n"
         + string.Concat(
-            Enumerable.Range(0, entries).Select(
-                i => $"- [A durable lesson about something number {i}](system/lesson-number-{i}.md)\n"));
+            Enumerable
+                .Range(0, entries)
+                .Select(i => $"- [A durable lesson about something number {i}](system/lesson-number-{i}.md)\n")
+        );
 
     [Fact]
     public void RenderTableOfContents_HonoursTheSameBudgetAsTheRankedDigest()
@@ -896,8 +999,7 @@ public class KnowledgeDigestTests
         // what was DELIVERED is the same silent-failure shape the ranked digest's proof-of-use line fixed.
         var block = KnowledgeDigest.RenderTableOfContents(BigToc(200), KbRoot, charBudget: 2_000);
 
-        block.Text.Split('\n').Count(l => l.StartsWith("- [", StringComparison.Ordinal))
-            .Should().Be(block.Listed);
+        block.Text.Split('\n').Count(l => l.StartsWith("- [", StringComparison.Ordinal)).Should().Be(block.Listed);
     }
 
     // ---- Both renderers: the budget is a HARD bound on model-authored content --------------------
@@ -917,7 +1019,11 @@ public class KnowledgeDigestTests
         var title = string.Concat(Enumerable.Repeat(LongTitle, 300));
 
         var digest = KnowledgeDigest.Render(
-            [Entry("system/alpha.md", title, ["tag"])], KbRoot, charBudget: 2_000, omitted: 0);
+            [Entry("system/alpha.md", title, ["tag"])],
+            KbRoot,
+            charBudget: 2_000,
+            omitted: 0
+        );
 
         digest.Text.Length.Should().BeLessThanOrEqualTo(2_000);
     }
@@ -930,7 +1036,11 @@ public class KnowledgeDigestTests
         var title = string.Concat(Enumerable.Repeat(LongTitle, 300));
 
         var digest = KnowledgeDigest.Render(
-            [Entry("system/alpha.md", title, ["tag"])], KbRoot, charBudget: 2_000, omitted: 0);
+            [Entry("system/alpha.md", title, ["tag"])],
+            KbRoot,
+            charBudget: 2_000,
+            omitted: 0
+        );
 
         digest.Text.Should().Contain($"{KbRoot}/system/alpha.md");
         digest.Rendered.Should().ContainSingle("a huge title must cost the title, not the entry");
@@ -945,7 +1055,8 @@ public class KnowledgeDigestTests
             [.. Enumerable.Range(0, 2_000).Select(i => $"a-tag-the-agent-invented-{i}")],
             string.Concat(Enumerable.Repeat("scope-", 2_000)),
             [],
-            "2026-07-01");
+            "2026-07-01"
+        );
 
         var digest = KnowledgeDigest.Render([entry], KbRoot, charBudget: 2_000, omitted: 0);
 
@@ -957,7 +1068,11 @@ public class KnowledgeDigestTests
     public void Render_BudgetTooSmallForEvenTheHeader_EmitsNothingRatherThanOverrun()
     {
         var digest = KnowledgeDigest.Render(
-            [Entry("system/alpha.md", "Alpha", ["a"])], KbRoot, charBudget: 40, omitted: 0);
+            [Entry("system/alpha.md", "Alpha", ["a"])],
+            KbRoot,
+            charBudget: 40,
+            omitted: 0
+        );
 
         digest.Text.Length.Should().BeLessThanOrEqualTo(40);
     }
@@ -967,14 +1082,17 @@ public class KnowledgeDigestTests
     {
         // The footer is appended once the entries are in. Unreserved, it is an unchecked append onto a
         // block already sitting at the limit - the same shape as the entry that skips the check.
-        var entries = Enumerable.Range(0, 40)
+        var entries = Enumerable
+            .Range(0, 40)
             .Select(i => Entry($"system/entry-number-{i}.md", $"A reasonably long lesson title {i}", ["tag"]))
             .ToArray();
 
         foreach (var budget in new[] { 300, 500, 900, 1_500 })
         {
-            KnowledgeDigest.Render(entries, KbRoot, budget, omitted: 0)
-                .Text.Length.Should().BeLessThanOrEqualTo(budget, "budget {0} must bound the block", budget);
+            KnowledgeDigest
+                .Render(entries, KbRoot, budget, omitted: 0)
+                .Text.Length.Should()
+                .BeLessThanOrEqualTo(budget, "budget {0} must bound the block", budget);
         }
     }
 
@@ -1007,15 +1125,13 @@ public class KnowledgeDigestTests
     [Fact]
     public void RenderTableOfContents_UnderBudget_ReportsNoTruncation()
     {
-        KnowledgeDigest.RenderTableOfContents(BigToc(3), KbRoot, charBudget: 10_000)
-            .Truncated.Should().BeFalse();
+        KnowledgeDigest.RenderTableOfContents(BigToc(3), KbRoot, charBudget: 10_000).Truncated.Should().BeFalse();
     }
 
     [Fact]
     public void RenderTableOfContents_OversizedSingleEntryIsStillBounded()
     {
-        var toc = "# Knowledge Base\n\n- [" + string.Concat(Enumerable.Repeat(LongTitle, 300))
-            + "](system/alpha.md)\n";
+        var toc = "# Knowledge Base\n\n- [" + string.Concat(Enumerable.Repeat(LongTitle, 300)) + "](system/alpha.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 2_000);
 
@@ -1027,8 +1143,7 @@ public class KnowledgeDigestTests
     {
         // Same rule as the ranked path: the title gives way, the link does not. A ToC line is only useful
         // because of what is inside its parentheses.
-        var toc = "# Knowledge Base\n\n- [" + string.Concat(Enumerable.Repeat(LongTitle, 300))
-            + "](system/alpha.md)\n";
+        var toc = "# Knowledge Base\n\n- [" + string.Concat(Enumerable.Repeat(LongTitle, 300)) + "](system/alpha.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 2_000);
 
@@ -1039,8 +1154,10 @@ public class KnowledgeDigestTests
     [Fact]
     public void RenderTableOfContents_BudgetTooSmallForEvenTheHeader_EmitsNothingRatherThanOverrun()
     {
-        KnowledgeDigest.RenderTableOfContents(BigToc(5), KbRoot, charBudget: 40)
-            .Text.Length.Should().BeLessThanOrEqualTo(40);
+        KnowledgeDigest
+            .RenderTableOfContents(BigToc(5), KbRoot, charBudget: 40)
+            .Text.Length.Should()
+            .BeLessThanOrEqualTo(40);
     }
 
     // ---- Containment is applied BEFORE the entry cap --------------------------------------------
@@ -1048,7 +1165,8 @@ public class KnowledgeDigestTests
     [Fact]
     public void PartitionByContainment_SeparatesUsableEntriesFromEscapingOnes()
     {
-        var entries = Enumerable.Range(0, 24)
+        var entries = Enumerable
+            .Range(0, 24)
             .Select(i => Entry($"../../etc/passwd-{i}", $"Poisoned {i}", ["runner"]))
             .Append(Entry("system/alpha.md", "Sound lesson about the runner", ["runner"]))
             .ToArray();
@@ -1066,16 +1184,26 @@ public class KnowledgeDigestTests
         // retrieval slot: 24 escaping entries ahead of good knowledge surface NOTHING, which is exactly the
         // knowledge-blind review issue #255 exists to prevent - reached through the containment check that
         // was added to make retrieval safer. The cap has to count entries the agent can actually use.
-        var entries = Enumerable.Range(0, 24)
+        var entries = Enumerable
+            .Range(0, 24)
             .Select(i => Entry($"../../etc/passwd-{i}", $"Runner lesson {i}", ["runner"], updated: "2026-08-01"))
             .Append(Entry("system/alpha.md", "Runner lesson", ["runner"], updated: "2026-01-01"))
             .ToArray();
 
         var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
         var selected = KnowledgeDigest.SelectRelevant(
-            partition.Usable, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 24);
+            partition.Usable,
+            ["src/Runner.cs"],
+            prTitle: null,
+            prDescription: null,
+            maxEntries: 24
+        );
         var digest = KnowledgeDigest.Render(
-            selected, KbRoot, charBudget: 10_000, omitted: partition.Usable.Count - selected.Count);
+            selected,
+            KbRoot,
+            charBudget: 10_000,
+            omitted: partition.Usable.Count - selected.Count
+        );
 
         digest.Rendered.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
         digest.Text.Should().Contain($"{KbRoot}/system/alpha.md");
@@ -1101,7 +1229,8 @@ public class KnowledgeDigestTests
         // shape KnowledgeIndex.MaxIndexRecords documents. Identical paths score identically, so the copies
         // sort adjacent and take consecutive slots: 20 distinct entries duplicated fill all 24 slots with 12
         // files, and 8 usable entries the reviewer needed are dropped for records it already has.
-        var store = Enumerable.Range(0, 20)
+        var store = Enumerable
+            .Range(0, 20)
             .Select(i => Entry($"system/entry-{i:D2}.md", $"Runner lesson {i}", ["runner"]))
             .ToArray();
         var entries = store.Concat(store).ToArray();
@@ -1110,7 +1239,12 @@ public class KnowledgeDigestTests
         var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, KbRoot);
         var deduplicated = KnowledgeDigest.Deduplicate(sanitized.Entries, KbRoot);
         var selected = KnowledgeDigest.SelectRelevant(
-            deduplicated.Entries, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 24);
+            deduplicated.Entries,
+            ["src/Runner.cs"],
+            prTitle: null,
+            prDescription: null,
+            maxEntries: 24
+        );
 
         // Assert what SHOULD be there: every distinct entry survives, including the tail the duplicates ate.
         selected.Select(entry => entry.File).Should().OnlyHaveUniqueItems();
@@ -1182,9 +1316,7 @@ public class KnowledgeDigestTests
         // itself spends the character budget listing entries the reviewer already has. The footer arithmetic
         // has to move with it - counting a duplicate as "1 more entry in _toc.md" routes the agent back to
         // the line it just read.
-        var toc = string.Join(
-            "\n",
-            Enumerable.Range(0, 3).Select(i => $"- [Entry {i}](system/entry-{i}.md)"));
+        var toc = string.Join("\n", Enumerable.Range(0, 3).Select(i => $"- [Entry {i}](system/entry-{i}.md)"));
 
         var block = KnowledgeDigest.RenderTableOfContents(toc + "\n" + toc, KbRoot, charBudget: 10_000);
 
@@ -1218,12 +1350,15 @@ public class KnowledgeDigestTests
         // the footer promised no route to it either: absent from the block AND from both sides of the ledger.
         // A line is not a file - the same reasoning that moved the "listed" marking below the budget check,
         // one scope out.
-        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md)\n"
+        var toc =
+            "# Knowledge Base\n\n- [Alpha](system/alpha.md)\n"
             + "- [Alpha again](system/alpha.md) see also [Beta](system/beta.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
 
-        block.Text.Should().Contain("system/beta.md", "a distinct entry cannot be collapsed away by its neighbour on the same line");
+        block
+            .Text.Should()
+            .Contain("system/beta.md", "a distinct entry cannot be collapsed away by its neighbour on the same line");
         block.Listed.Should().Be(2);
         block.Duplicates.Should().Be(0, "the line carried a file that was not already in the block");
         block.Dropped.Should().Be(0);
@@ -1235,7 +1370,8 @@ public class KnowledgeDigestTests
         // The over-correction pin. Keeping every line that carries any repeat at all would restore the
         // crowding-out this dedup exists to end, so a line still collapses - just on the whole set of files
         // it names rather than on its first one.
-        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md)\n- [Beta](system/beta.md)\n"
+        var toc =
+            "# Knowledge Base\n\n- [Alpha](system/alpha.md)\n- [Beta](system/beta.md)\n"
             + "- [Alpha again](system/alpha.md) and [Beta again](system/beta.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
@@ -1253,7 +1389,8 @@ public class KnowledgeDigestTests
         // The marking half of the same defect: a rendered line recorded only links[0], so the file named by
         // its second link was rendered but never marked as listed, and the next line naming it was rendered
         // a second time - the doubled table spending budget on a path the reviewer already had.
-        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md) see also [Beta](system/beta.md)\n"
+        var toc =
+            "# Knowledge Base\n\n- [Alpha](system/alpha.md) see also [Beta](system/beta.md)\n"
             + "- [Beta](system/beta.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
@@ -1274,33 +1411,42 @@ public class KnowledgeDigestTests
         // - so the delivered set does not contain the relevance that justified selecting it.
         var entries = Enumerable
             .Range(0, 24)
-            .Select(i => Entry(
-                $"system/decoy-{i}.md",
-                $"Lesson {i}",
-                ["[runner](../../../etc/passwd)"],
-                updated: "2026-08-01"))
+            .Select(i =>
+                Entry($"system/decoy-{i}.md", $"Lesson {i}", ["[runner](../../../etc/passwd)"], updated: "2026-08-01")
+            )
             .Append(Entry("system/alpha.md", "Runner lesson", ["runner"], updated: "2026-01-01"))
             .ToArray();
 
         var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
         var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, KbRoot);
         var selected = KnowledgeDigest.SelectRelevant(
-            sanitized.Entries, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 24);
+            sanitized.Entries,
+            ["src/Runner.cs"],
+            prTitle: null,
+            prDescription: null,
+            maxEntries: 24
+        );
         var digest = KnowledgeDigest.Render(
-            selected, KbRoot, charBudget: 100_000, omitted: sanitized.Entries.Count - selected.Count);
+            selected,
+            KbRoot,
+            charBudget: 100_000,
+            omitted: sanitized.Entries.Count - selected.Count
+        );
 
         digest
             .Rendered.Should()
             .Contain(
                 entry => entry.File == "system/alpha.md",
-                "the entry that really matched the changed path must not lose its slot to a tag that is deleted before delivery");
+                "the entry that really matched the changed path must not lose its slot to a tag that is deleted before delivery"
+            );
         digest.Rendered.Should().HaveCount(24, "the decoys are cleaned and kept, not refused - only outranked");
         sanitized
             .Neutralized.Should()
             .HaveCount(24)
             .And.OnlyContain(
                 entry => entry.Tags.Any(tag => tag.Contains("etc/passwd", StringComparison.Ordinal)),
-                "the diagnostic carries the ORIGINAL entry, so it can still name what the extraction agent wrote");
+                "the diagnostic carries the ORIGINAL entry, so it can still name what the extraction agent wrote"
+            );
 
         // Cleaning must leave File alone, because File is the JOIN KEY the caller uses to say which
         // neutralized entries actually reached the reviewer, and to fold the two sources of cleaning
@@ -1311,7 +1457,8 @@ public class KnowledgeDigestTests
             .Should()
             .Equal(
                 partition.Usable.Select(entry => entry.File),
-                "a cleaned entry has to stay identifiable as the entry it was cleaned from");
+                "a cleaned entry has to stay identifiable as the entry it was cleaned from"
+            );
     }
 
     [Fact]
@@ -1328,24 +1475,25 @@ public class KnowledgeDigestTests
         var entries = Enumerable
             .Range(0, 24)
             .Select(i => Entry($"system/decoy-{i}.md", $"Lesson {i}", ["unrelated"], updated: "2026-08-01"))
-            .Append(
-                Entry(
-                    "system/runner.md",
-                    "see [x](../../../etc/passwd) notes",
-                    ["kb"],
-                    updated: "2026-01-01"))
+            .Append(Entry("system/runner.md", "see [x](../../../etc/passwd) notes", ["kb"], updated: "2026-01-01"))
             .ToArray();
 
         var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
         var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, KbRoot);
         var selected = KnowledgeDigest.SelectRelevant(
-            sanitized.Entries, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 24);
+            sanitized.Entries,
+            ["src/Runner.cs"],
+            prTitle: null,
+            prDescription: null,
+            maxEntries: 24
+        );
 
         selected
             .Should()
             .Contain(
                 entry => entry.File == "system/runner.md",
-                "the entry is delivered under a title that matches the changed path, so it has to be ranked on that title");
+                "the entry is delivered under a title that matches the changed path, so it has to be ranked on that title"
+            );
         selected.Should().HaveCount(24);
     }
 
@@ -1367,7 +1515,12 @@ public class KnowledgeDigestTests
         };
 
         var selected = KnowledgeDigest.SelectRelevant(
-            entries, ["src/Blank.cs"], prTitle: null, prDescription: null, maxEntries: 1);
+            entries,
+            ["src/Blank.cs"],
+            prTitle: null,
+            prDescription: null,
+            maxEntries: 1
+        );
 
         selected
             .Should()
@@ -1375,7 +1528,8 @@ public class KnowledgeDigestTests
             .Which.File.Should()
             .Be(
                 "system/other.md",
-                "a titled entry is ranked on its title; its path is not a second set of tokens the reviewer never sees as its subject");
+                "a titled entry is ranked on its title; its path is not a second set of tokens the reviewer never sees as its subject"
+            );
     }
 
     [Fact]
@@ -1390,7 +1544,12 @@ public class KnowledgeDigestTests
         };
 
         var selected = KnowledgeDigest.SelectRelevant(
-            entries, ["src/Blank.cs"], prTitle: null, prDescription: null, maxEntries: 1);
+            entries,
+            ["src/Blank.cs"],
+            prTitle: null,
+            prDescription: null,
+            maxEntries: 1
+        );
 
         selected
             .Should()
@@ -1398,7 +1557,8 @@ public class KnowledgeDigestTests
             .Which.File.Should()
             .Be(
                 "system/blank.md",
-                "the blank-title entry is delivered under its path, so its path is what selected it");
+                "the blank-title entry is delivered under its path, so its path is what selected it"
+            );
     }
 
     [Fact]
@@ -1410,16 +1570,17 @@ public class KnowledgeDigestTests
         // reports Neutralized as "kept and still surfaced" names an entry the reviewer never received, and a
         // proof of delivery that can name undelivered entries proves nothing at all.
         var alpha = Entry("system/alpha.md", "Alpha", ["a"]);
-        var cleaned = Entry(
-            $"system/{new string('c', 300)}.md",
-            "Read [the guide](../../../etc/passwd)",
-            ["b"]);
+        var cleaned = Entry($"system/{new string('c', 300)}.md", "Read [the guide](../../../etc/passwd)", ["b"]);
 
         // Sized from a real render of the entry that must fit, so the budget cannot silently drift into
         // "everything fits" or "nothing fits" - both of which would pass a weaker pair of assertions.
         var roomForAlphaAlone = KnowledgeDigest.Render([alpha], KbRoot, charBudget: 100_000, omitted: 1);
         var block = KnowledgeDigest.Render(
-            [alpha, cleaned], KbRoot, charBudget: roomForAlphaAlone.Text.Length + 50, omitted: 0);
+            [alpha, cleaned],
+            KbRoot,
+            charBudget: roomForAlphaAlone.Text.Length + 50,
+            omitted: 0
+        );
 
         block.Neutralized.Should().ContainSingle().Which.File.Should().Be(cleaned.File);
         block.Rendered.Should().NotContain(entry => entry.File == cleaned.File);
@@ -1474,8 +1635,10 @@ public class KnowledgeDigestTests
     [Fact]
     public void RenderTableOfContents_OversizedLinkDropsTheLineRatherThanBreakingIt()
     {
-        var toc = "# Knowledge Base\n\n- [A](system/"
-            + string.Concat(Enumerable.Repeat("deeply-nested-segment/", 200)) + "a.md)\n";
+        var toc =
+            "# Knowledge Base\n\n- [A](system/"
+            + string.Concat(Enumerable.Repeat("deeply-nested-segment/", 200))
+            + "a.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 2_000);
 
@@ -1502,8 +1665,10 @@ public class KnowledgeDigestTests
     [Fact]
     public void DescribePaths_UnderBudget_ListsEveryPathAndAddsNoSuffix()
     {
-        KnowledgeDigest.DescribePaths(["system/alpha.md", "system/beta.md"], charBudget: 400)
-            .Should().Be("system/alpha.md, system/beta.md");
+        KnowledgeDigest
+            .DescribePaths(["system/alpha.md", "system/beta.md"], charBudget: 400)
+            .Should()
+            .Be("system/alpha.md, system/beta.md");
     }
 
     [Fact]
@@ -1595,7 +1760,8 @@ public class KnowledgeDigestTests
         // few dozen characters long, would fit with room to spare. Stopping at the first such line hands
         // the agent a header and nothing else, which is the knowledge-blind outcome this feature exists
         // to prevent, reached through one model-authored link.
-        var toc = "# Knowledge Base\n\n- [A](system/"
+        var toc =
+            "# Knowledge Base\n\n- [A](system/"
             + string.Concat(Enumerable.Repeat("deeply-nested-segment/", 200))
             + "a.md)\n- [Beta](system/beta.md)\n";
 
@@ -1625,7 +1791,8 @@ public class KnowledgeDigestTests
     [Fact]
     public void RenderTableOfContents_SkippedLineIsCountedAsDroppedAndAdmitsTheCut()
     {
-        var toc = "# Knowledge Base\n\n- [A](system/"
+        var toc =
+            "# Knowledge Base\n\n- [A](system/"
             + string.Concat(Enumerable.Repeat("deeply-nested-segment/", 200))
             + "a.md)\n- [Beta](system/beta.md)\n";
 
@@ -1669,7 +1836,8 @@ public class KnowledgeDigestTests
         // Same defect on the fallback route, which is reached exactly when the listing was unavailable. A
         // header cut after its " b/" separator still parses: the left side is a real path and the right side
         // is a stump, and both are added.
-        var diff = "diff --git a/src/A.cs b/src/A.cs\n@@ -1 +1 @@\n+x\ndiff --git a/src/Beta.cs b/src/Bet"
+        var diff =
+            "diff --git a/src/A.cs b/src/A.cs\n@@ -1 +1 @@\n+x\ndiff --git a/src/Beta.cs b/src/Bet"
             + SandboxLimits.TruncationMarker;
 
         KnowledgeDigest.ExtractChangedPaths(diff).Should().Equal("src/A.cs");
@@ -1730,7 +1898,8 @@ public class KnowledgeDigestTests
     {
         // LastIndexOf finds one link. A line carrying two validates the last and renders both, so the escape
         // only has to not be written last.
-        var toc = "# Knowledge Base\n\n- [Alpha](/etc/passwd) see also [Beta](system/beta.md)\n"
+        var toc =
+            "# Knowledge Base\n\n- [Alpha](/etc/passwd) see also [Beta](system/beta.md)\n"
             + "- [Gamma](system/gamma.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
@@ -1758,8 +1927,8 @@ public class KnowledgeDigestTests
         // link and the last is treated as title text. The line comes back as "- [Alpha… (truncated)](beta)":
         // a link labelled with one entry's title and pointing at a different entry. Misattributed knowledge
         // is worse than absent knowledge, so a multi-link line fits whole or is dropped and counted.
-        var toc = "# Knowledge Base\n\n- [" + new string('A', 400)
-            + "](system/alpha.md) see also [Beta](system/beta.md)\n";
+        var toc =
+            "# Knowledge Base\n\n- [" + new string('A', 400) + "](system/alpha.md) see also [Beta](system/beta.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 1_000);
 
@@ -1793,7 +1962,10 @@ public class KnowledgeDigestTests
         // a path nobody wrote, over a link belonging to a different entry. That is precisely the half-written
         // path FitTocLine's own doc comment says it exists to prevent - the comment was right, and the
         // implementation honoured it only for single-link lines.
-        var toc = "# Knowledge Base\n\n- [a](system/" + new string('x', 400) + ".md) and [b](system/ok.md)\n"
+        var toc =
+            "# Knowledge Base\n\n- [a](system/"
+            + new string('x', 400)
+            + ".md) and [b](system/ok.md)\n"
             + "- [Beta](system/beta.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 1_000);
@@ -1814,7 +1986,11 @@ public class KnowledgeDigestTests
         // then falls at an arbitrary offset and the line re-renders over the tail fragment "b.md>" - a path
         // nobody wrote, on a line the containment check had already cleared as safe. Two parsers reading one
         // syntax will disagree eventually; only one of them can be right.
-        var toc = "# Knowledge Base\n\n- [" + new string('t', 300) + "](<system/" + new string('x', 100)
+        var toc =
+            "# Knowledge Base\n\n- ["
+            + new string('t', 300)
+            + "](<system/"
+            + new string('x', 100)
             + "](b.md>)\n- [Beta](system/beta.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 1_000);
@@ -1876,7 +2052,10 @@ public class KnowledgeDigestTests
         // line that HAS that prefix. Now that non-entry lines are parsed for links too, a long prose line
         // carrying one safe link reaches the cut, and applying it there would invent an entry that the
         // _toc.md never contained - out of the middle of a sentence.
-        var toc = "# Knowledge Base\n\nSee " + new string('w', 400) + " [notes](system/ok.md) for more.\n"
+        var toc =
+            "# Knowledge Base\n\nSee "
+            + new string('w', 400)
+            + " [notes](system/ok.md) for more.\n"
             + "- [Beta](system/beta.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 1_000);
@@ -1965,8 +2144,7 @@ public class KnowledgeDigestTests
         // anywhere on the line. Searching the whole remainder for it read this line as ONE contained link to
         // "system/ok.md" and consumed the escaping second link along with it - never parsed, never checked,
         // printed verbatim to an agent that resolves Markdown properly and finds the link we missed.
-        var toc =
-            "# Knowledge Base\n\n- [a](<system/ok.md> [b](../../../etc/passwd)\n- [Beta](system/beta.md)\n";
+        var toc = "# Knowledge Base\n\n- [a](<system/ok.md> [b](../../../etc/passwd)\n- [Beta](system/beta.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
 
@@ -1997,11 +2175,19 @@ public class KnowledgeDigestTests
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
 
         block.Text.Should().NotContain("etc/passwd");
-        block.Text.Should().NotContain("[a][outside]", "the half that names the reference is no use on its own, and it is what the agent follows");
+        block
+            .Text.Should()
+            .NotContain(
+                "[a][outside]",
+                "the half that names the reference is no use on its own, and it is what the agent follows"
+            );
         block.Text.Should().Contain("system/alpha.md", "a contained entry must survive its neighbour's refusal");
         block
             .Refused.Should()
-            .HaveCount(2, "both the reference and the definition that gives it a destination are refused, and each is reported")
+            .HaveCount(
+                2,
+                "both the reference and the definition that gives it a destination are refused, and each is reported"
+            )
             .And.Contain(refused => refused.Contains("etc/passwd", StringComparison.Ordinal));
     }
 
@@ -2036,8 +2222,11 @@ public class KnowledgeDigestTests
 
         block.Text.Should().NotContain("etc/passwd");
         block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
-        block.Refused.Should().ContainSingle().Which.Should().Contain("&sol;etc/passwd",
-            "the refusal reports the destination as the file spells it, entity and all");
+        block
+            .Refused.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Contain("&sol;etc/passwd", "the refusal reports the destination as the file spells it, entity and all");
     }
 
     [Fact]
@@ -2075,7 +2264,8 @@ public class KnowledgeDigestTests
         // "[foo\]]: dest" the first "]" is the escaped one, so the character after it is "]" rather than ":"
         // and the line reads as ordinary prose. The label is used in shortcut form, which carries no "][",
         // so neither half of the gate fires and both lines are printed to an agent that resolves them.
-        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md)\nSee [foo\\]] for more.\n\n[foo\\]]: ../../../etc/passwd\n";
+        var toc =
+            "# Knowledge Base\n\n- [Alpha](system/alpha.md)\nSee [foo\\]] for more.\n\n[foo\\]]: ../../../etc/passwd\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
 
@@ -2091,7 +2281,8 @@ public class KnowledgeDigestTests
         // shortcut reference to it. Every check ran per line and each line looked like prose: "[foo" has no
         // "]" to find, "bar]: ..." does not begin with "[", and neither carries "][". Both halves reached an
         // agent that reads CommonMark properly, which is the exact failure the per-line gate was added for.
-        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md)\nSee [foo\nbar] for more.\n\n[foo\nbar]: ../../../etc/passwd\n";
+        var toc =
+            "# Knowledge Base\n\n- [Alpha](system/alpha.md)\nSee [foo\nbar] for more.\n\n[foo\nbar]: ../../../etc/passwd\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
 
@@ -2130,7 +2321,10 @@ public class KnowledgeDigestTests
         // "](" exemption: a destination may contain a "]" of its own, and reading that as an orphaned closer
         // refused a link the containment check had already cleared.
         var block = KnowledgeDigest.RenderTableOfContents(
-            "# Knowledge Base\n\n" + entry + "\n", KbRoot, charBudget: 10_000);
+            "# Knowledge Base\n\n" + entry + "\n",
+            KbRoot,
+            charBudget: 10_000
+        );
 
         block.Text.Should().Contain("alpha.md");
         block.Refused.Should().BeEmpty();
@@ -2180,8 +2374,7 @@ public class KnowledgeDigestTests
         // result reduces to a contained path - the ".." inside it cancel a segment that came from the same
         // destination. Fixed by refusing an extracted destination that still carries an angle bracket,
         // which is a point check over what the scan produced and leaves the extent logic to #258.
-        var toc =
-            "# Knowledge Base\n\n- [a](<system/ok.md<[b](../../../etc/passwd)>)\n- [Beta](system/beta.md)\n";
+        var toc = "# Knowledge Base\n\n- [a](<system/ok.md<[b](../../../etc/passwd)>)\n- [Beta](system/beta.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
 
@@ -2214,8 +2407,7 @@ public class KnowledgeDigestTests
         // quoted or parenthesised, and "[b](...)" is neither, so the outer link does not parse and the
         // second link renders exactly as in the nested case above. We validated "system/ok.md" and handed
         // the agent a line whose only real link is the one we never looked at.
-        var toc =
-            "# Knowledge Base\n\n- [a](system/ok.md [b](../../../etc/passwd))\n- [Beta](system/beta.md)\n";
+        var toc = "# Knowledge Base\n\n- [a](system/ok.md [b](../../../etc/passwd))\n- [Beta](system/beta.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
 
@@ -2229,10 +2421,7 @@ public class KnowledgeDigestTests
     {
         // The escaped-label spelling on the metadata route. A title is not one line by construction - it
         // comes out of JSON, where "\n" is an ordinary character - so it can place a definition of its own.
-        var entries = new[]
-        {
-            Entry("system/alpha.md", "See [foo\\]]\n\n[foo\\]]: ../../../etc/passwd", ["auth"]),
-        };
+        var entries = new[] { Entry("system/alpha.md", "See [foo\\]]\n\n[foo\\]]: ../../../etc/passwd", ["auth"]) };
 
         var block = KnowledgeDigest.Render(entries, KbRoot, charBudget: 10_000, omitted: 0);
 

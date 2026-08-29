@@ -17,23 +17,40 @@ internal sealed class FakeGatewayHandler : HttpMessageHandler
     public List<RecordedRequest> Requests { get; } = [];
 
     /// <summary>Registers a handler for requests matching <paramref name="predicate"/>.</summary>
-    public FakeGatewayHandler On(Func<HttpRequestMessage, bool> predicate, Func<HttpRequestMessage, HttpResponseMessage> respond)
+    public FakeGatewayHandler On(
+        Func<HttpRequestMessage, bool> predicate,
+        Func<HttpRequestMessage, HttpResponseMessage> respond
+    )
     {
         _routes.Add(new Route(predicate, respond));
         return this;
     }
 
     /// <summary>Registers a JSON response for a method + path-suffix match.</summary>
-    public FakeGatewayHandler OnJson(HttpMethod method, string pathEndsWith, string json, HttpStatusCode status = HttpStatusCode.OK) =>
+    public FakeGatewayHandler OnJson(
+        HttpMethod method,
+        string pathEndsWith,
+        string json,
+        HttpStatusCode status = HttpStatusCode.OK
+    ) =>
         On(
-            req => req.Method == method && req.RequestUri is not null && req.RequestUri.AbsolutePath.EndsWith(pathEndsWith, StringComparison.Ordinal),
-            _ => new HttpResponseMessage(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") }
+            req =>
+                req.Method == method
+                && req.RequestUri is not null
+                && req.RequestUri.AbsolutePath.EndsWith(pathEndsWith, StringComparison.Ordinal),
+            _ => new HttpResponseMessage(status)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            }
         );
 
     /// <summary>Registers a bare-status (no body) response for a method + path-suffix match.</summary>
     public FakeGatewayHandler OnStatus(HttpMethod method, string pathEndsWith, HttpStatusCode status) =>
         On(
-            req => req.Method == method && req.RequestUri is not null && req.RequestUri.AbsolutePath.EndsWith(pathEndsWith, StringComparison.Ordinal),
+            req =>
+                req.Method == method
+                && req.RequestUri is not null
+                && req.RequestUri.AbsolutePath.EndsWith(pathEndsWith, StringComparison.Ordinal),
             _ => new HttpResponseMessage(status)
         );
 
@@ -44,9 +61,14 @@ internal sealed class FakeGatewayHandler : HttpMessageHandler
         return this;
     }
 
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken
+    )
     {
-        var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var body = request.Content is null
+            ? null
+            : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         Requests.Add(
             new RecordedRequest(
                 request.Method,
@@ -81,7 +103,10 @@ internal sealed class FakeGatewayHandler : HttpMessageHandler
     private static string? GetHeader(HttpRequestMessage request, string name) =>
         request.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;
 
-    private sealed record Route(Func<HttpRequestMessage, bool> Predicate, Func<HttpRequestMessage, HttpResponseMessage>? Respond);
+    private sealed record Route(
+        Func<HttpRequestMessage, bool> Predicate,
+        Func<HttpRequestMessage, HttpResponseMessage>? Respond
+    );
 
     /// <summary>A single observed outgoing request.</summary>
     internal sealed record RecordedRequest(

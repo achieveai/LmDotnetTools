@@ -404,7 +404,12 @@ public class JsonFragmentAccumulatorTests
             );
             foreach (var update in updates)
             {
-                TestContextLogger.LogDebug("Update emitted. Kind: {Kind}, Path: {Path}, Value: {Value}", update.Kind, update.Path, update.TextValue);
+                TestContextLogger.LogDebug(
+                    "Update emitted. Kind: {Kind}, Path: {Path}, Value: {Value}",
+                    update.Kind,
+                    update.Path,
+                    update.TextValue
+                );
             }
         }
 
@@ -480,7 +485,7 @@ public class JsonFragmentAccumulatorTests
 
         foreach (var update in updates)
         {
-            output.WriteLine($"{update.Kind,-15}: Path='{update.Path,-30}' Value='{update.TextValue ?? "null"}'");
+            output.WriteLine($"{update.Kind, -15}: Path='{update.Path, -30}' Value='{update.TextValue ?? "null"}'");
         }
     }
 

@@ -37,7 +37,8 @@ public sealed class ConversationsControllerS2SPipelineTests
             context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
             providerRegistry: null,
             conversationStore: null,
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var configData = new Dictionary<string, string?>();
         if (configuredSecret != null)
@@ -58,14 +59,16 @@ public sealed class ConversationsControllerS2SPipelineTests
                         _ = services.AddSingleton<IChatModeStore>(modeStore.Object);
                         _ = services.AddSingleton(Mock.Of<IWorkspaceStore>());
                         _ = services.AddSingleton(
-                            new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal());
+                            new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal()
+                        );
                         _ = services.AddSingleton(new ConversationStatusResolver(store, store));
                         _ = services.AddSingleton(TimeProvider.System);
                         _ = services.AddSingleton<LmStreaming.Sample.Services.WorkflowRunRegistry>();
                         _ = services.AddSingleton<SubAgentScanCoverageCache>();
                         _ = services.AddSingleton(sp => new ConversationDescendantScanner(
                             sp.GetRequiredService<IConversationStore>(),
-                            NullLogger<ConversationDescendantScanner>.Instance));
+                            NullLogger<ConversationDescendantScanner>.Instance
+                        ));
 
                         // Added when ConversationsController gained its authorization seam (#302).
                         // These tests are about the S2S marker/secret pipeline, which runs as a
@@ -73,9 +76,7 @@ public sealed class ConversationsControllerS2SPipelineTests
                         // authorizer is registered with enforcement OFF so every expectation here
                         // - including which requests are reachable - stays exactly as it was.
                         _ = services.AddSingleton(TestAuthorizers.Disabled());
-                        _ = services
-                            .AddControllers()
-                            .AddApplicationPart(typeof(ConversationsController).Assembly);
+                        _ = services.AddControllers().AddApplicationPart(typeof(ConversationsController).Assembly);
                     })
                     .Configure(app =>
                     {

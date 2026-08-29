@@ -37,7 +37,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         public FakeTranscripts(
             IReadOnlyList<ReviewAgentTranscriptEntry> descendant,
             IReadOnlyList<ReviewAgentTranscriptEntry>? root = null,
-            Exception? rootFailure = null)
+            Exception? rootFailure = null
+        )
         {
             _descendant = descendant;
             _root = root;
@@ -51,7 +52,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         public Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetTranscriptAsync(
             string rootThreadId,
             string agentId,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             RequestedAgentIds.Add(agentId);
             return Task.FromResult(_descendant);
@@ -59,7 +61,8 @@ public sealed class ReviewNotesArtifactBuilderTests
 
         public Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetRootTranscriptAsync(
             string rootThreadId,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             RootReads++;
             return _rootFailure is null
@@ -118,7 +121,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         string name,
         string? model,
         int? tier = null,
-        string? source = null) =>
+        string? source = null
+    ) =>
         Node(agentId, name) with
         {
             EffectiveModelId = model,
@@ -137,7 +141,8 @@ public sealed class ReviewNotesArtifactBuilderTests
             StoreRoot: "/store",
             NotesDir: "/store/PRs/lmdotnettools-250",
             PrevHeadSha: null,
-            Roster: new ReviewSubAgentTreeSnapshot(nodes));
+            Roster: new ReviewSubAgentTreeSnapshot(nodes)
+        );
 
     private static ReviewNotesArtifactBuilder NewBuilder(IReviewAgentTranscriptSource? transcripts) =>
         new(transcripts, NullLogger.Instance);
@@ -145,15 +150,22 @@ public sealed class ReviewNotesArtifactBuilderTests
     private static Task<ReviewNotesArtifacts> BuildFullAsync(
         ReviewNotesArtifactBuilder builder,
         ReviewNotesArtifactContext context,
-        string? shippedReviewBody = null) =>
+        string? shippedReviewBody = null
+    ) =>
         builder.BuildAsync(
-            NewRun(), NewRepo(), "PRs/lmdotnettools-250", context, CancellationToken.None, shippedReviewBody);
+            NewRun(),
+            NewRepo(),
+            "PRs/lmdotnettools-250",
+            context,
+            CancellationToken.None,
+            shippedReviewBody
+        );
 
     private static async Task<IReadOnlyList<ReviewArtifactFile>> BuildAsync(
         ReviewNotesArtifactBuilder builder,
         ReviewNotesArtifactContext context,
-        string? shippedReviewBody = null) =>
-        (await BuildFullAsync(builder, context, shippedReviewBody)).Files;
+        string? shippedReviewBody = null
+    ) => (await BuildFullAsync(builder, context, shippedReviewBody)).Files;
 
     private static ReviewArtifactFile Reconciliation(IReadOnlyList<ReviewArtifactFile> files) =>
         files.Single(f => f.RelativePath.EndsWith("PR_Reconciliation_01.md", StringComparison.Ordinal));
@@ -163,8 +175,7 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         // One conclusion buried in the keystroke log of how it was reached. Only the conclusion is worth
         // carrying into the next round's context window.
-        var transcripts = new FakeTranscripts(
-        [
+        var transcripts = new FakeTranscripts([
             Entry("ToolCallMessage", "{\"name\":\"Read\",\"path\":\"src/Foo.cs\"}"),
             Entry("ToolsCallResultMessage", "…4000 lines of file content…"),
             Entry("ToolsCallAggregateMessage", "grep results"),
@@ -188,11 +199,7 @@ public sealed class ReviewNotesArtifactBuilderTests
     [Fact]
     public async Task Empty_bodied_messages_do_not_become_empty_transcript_sections()
     {
-        var transcripts = new FakeTranscripts(
-        [
-            Entry("TextMessage", "   "),
-            Entry("TextMessage", "real content"),
-        ]);
+        var transcripts = new FakeTranscripts([Entry("TextMessage", "   "), Entry("TextMessage", "real content")]);
         var builder = NewBuilder(transcripts);
 
         var files = await BuildAsync(builder, NewContext(Node("agent-1", "tests")));
@@ -219,12 +226,15 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         var transcripts = new FakeTranscripts(
             descendant: [Entry("TextMessage", "specialist says")],
-            root: [Entry("TextMessage", "VERDICT: request changes — see finding 1.")]);
+            root: [Entry("TextMessage", "VERDICT: request changes — see finding 1.")]
+        );
         var builder = NewBuilder(transcripts);
 
         var files = await BuildAsync(builder, NewContext(Node("agent-1", "architecture")));
 
-        var lead = files.Single(f => f.RelativePath.EndsWith("PR_Findings_01_00_lead-reviewer.md", StringComparison.Ordinal));
+        var lead = files.Single(f =>
+            f.RelativePath.EndsWith("PR_Findings_01_00_lead-reviewer.md", StringComparison.Ordinal)
+        );
         lead.Content.Should().Contain("VERDICT: request changes");
         // The lead is not a node in the roster, so it must never be fetched by naming an agent id.
         transcripts.RootReads.Should().Be(1);
@@ -242,12 +252,15 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         var transcripts = new FakeTranscripts(
             descendant: [Entry("TextMessage", "specialist says")],
-            rootFailure: new InvalidOperationException("host returned 404"));
+            rootFailure: new InvalidOperationException("host returned 404")
+        );
         var builder = NewBuilder(transcripts);
 
         var files = await BuildAsync(builder, NewContext(Node("agent-1", "architecture")));
 
-        var lead = files.Single(f => f.RelativePath.EndsWith("PR_Findings_01_00_lead-reviewer.md", StringComparison.Ordinal));
+        var lead = files.Single(f =>
+            f.RelativePath.EndsWith("PR_Findings_01_00_lead-reviewer.md", StringComparison.Ordinal)
+        );
         lead.Content.Should().Contain("could not read this transcript");
         lead.Content.Should().Contain("host returned 404");
         // The gap is visible in the store's own manifest, not only in the daemon's log.
@@ -266,32 +279,37 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         var transcripts = new FakeTranscripts(
             descendant: [],
-            root: [Entry("TextMessage", "reviewed alone; no specialists needed")]);
+            root: [Entry("TextMessage", "reviewed alone; no specialists needed")]
+        );
         var builder = NewBuilder(transcripts);
 
         var files = await BuildAsync(builder, NewContext());
 
-        files.Select(f => f.RelativePath).Should().BeEquivalentTo(
-        [
-            "PRs/lmdotnettools-250/PR_Context_01.md",
-            "PRs/lmdotnettools-250/PR_Reconciliation_01.md",
-            "PRs/lmdotnettools-250/PR_Findings_01_00_lead-reviewer.md",
-        ]);
-        files.Single(f => f.RelativePath.Contains("lead-reviewer", StringComparison.Ordinal))
-            .Content.Should().Contain("no specialists needed");
+        files
+            .Select(f => f.RelativePath)
+            .Should()
+            .BeEquivalentTo([
+                "PRs/lmdotnettools-250/PR_Context_01.md",
+                "PRs/lmdotnettools-250/PR_Reconciliation_01.md",
+                "PRs/lmdotnettools-250/PR_Findings_01_00_lead-reviewer.md",
+            ]);
+        files
+            .Single(f => f.RelativePath.Contains("lead-reviewer", StringComparison.Ordinal))
+            .Content.Should()
+            .Contain("no specialists needed");
 
         // The reconciliation file is deliberately OUTSIDE the PR_Context_/PR_Findings_ prefix the next round
         // reads back. It is an audit of this round, not input to the next one; inside the prefix it would put
         // every finding into the following review's context a second time.
-        Reconciliation(files).RelativePath.Should().NotContain("/PR_Findings_")
-            .And.NotContain("/PR_Context_");
+        Reconciliation(files).RelativePath.Should().NotContain("/PR_Findings_").And.NotContain("/PR_Context_");
     }
 
     [Fact]
     public async Task Transcript_volume_is_bounded_so_one_verbose_reviewer_cannot_eat_the_next_rounds_context()
     {
         // Retained prose, not tool traffic — the budget has to hold even when every message is legitimate.
-        var entries = Enumerable.Range(0, 200)
+        var entries = Enumerable
+            .Range(0, 200)
             .Select(i => Entry("TextMessage", $"finding {i}: " + new string('x', 4_000)))
             .ToArray();
         var builder = NewBuilder(new FakeTranscripts(entries));
@@ -299,9 +317,12 @@ public sealed class ReviewNotesArtifactBuilderTests
         var files = await BuildAsync(builder, NewContext(Node("agent-1", "architecture")));
 
         var findings = files.Single(f => f.RelativePath.Contains("_01_architecture", StringComparison.Ordinal));
-        findings.Content.Length.Should().BeLessThan(
-            30_000,
-            "the whole notes directory is concatenated into the next round's prompt and the extractor's");
+        findings
+            .Content.Length.Should()
+            .BeLessThan(
+                30_000,
+                "the whole notes directory is concatenated into the next round's prompt and the extractor's"
+            );
         findings.Content.Should().Contain("budget reached");
     }
 
@@ -324,14 +345,14 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         var logs = new CapturingLogger<object>();
         var builder = new ReviewNotesArtifactBuilder(
-            new FakeTranscripts(
-            [
+            new FakeTranscripts([
                 Entry("ToolCallMessage", "{\"name\":\"Grep\",\"pattern\":\"await\"}", role: "user"),
                 Entry("ToolsCallResultMessage", "…900 matches…", role: "user"),
                 // Survives the tool-traffic filter, and is still not one word this agent wrote.
                 Entry("TextMessage", "REVIEW BRIEF: examine the telemetry module.", role: "user"),
             ]),
-            logs);
+            logs
+        );
 
         var files = await BuildAsync(builder, NewContext(Node("agent-1", "agentic-performance")));
         var findings = files.Single(f => f.RelativePath.Contains("_01_agentic-performance", StringComparison.Ordinal));
@@ -350,12 +371,14 @@ public sealed class ReviewNotesArtifactBuilderTests
 
         // Rendering three: the operator signal, naming the agent, its template, and the counts. Exactly one —
         // the lead's own read returned no messages at all, which is the other state and is not this warning.
-        logs.MessagesAtLevel(LogLevel.Warning).Should().ContainSingle()
+        logs.MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .ContainSingle()
             .Which.Should()
-                .Contain("READ SUCCESSFULLY but yielded no")
-                .And.Contain("agentic-performance")
-                .And.Contain("reviewer")
-                .And.Contain("2 of 3");
+            .Contain("READ SUCCESSFULLY but yielded no")
+            .And.Contain("agentic-performance")
+            .And.Contain("reviewer")
+            .And.Contain("2 of 3");
     }
 
     [Fact]
@@ -387,23 +410,25 @@ public sealed class ReviewNotesArtifactBuilderTests
     [Fact]
     public async Task A_finding_the_review_shipped_at_a_different_severity_records_BOTH_severities()
     {
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry(
-                "TextMessage",
-                "## Findings\n"
-                    + "#### [BLOCKER] High — module resolves its own dependencies\n"
-                    + "Problem: the module reaches into the container.\n"
-                    + $"Location: {DiCouplingSite}\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry(
+                    "TextMessage",
+                    "## Findings\n"
+                        + "#### [BLOCKER] High — module resolves its own dependencies\n"
+                        + "Problem: the module reaches into the container.\n"
+                        + $"Location: {DiCouplingSite}\n"
+                ),
+            ])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody:
-                "## Findings\n"
+            shippedReviewBody: "## Findings\n"
                 + "#### [MEDIUM] no test covers the module wiring\n"
-                + $"{DiCouplingSite} is untested.\n");
+                + $"{DiCouplingSite} is untested.\n"
+        );
 
         // BOTH severities on one row, with the outcome between them. The shipped severity alone is the state
         // we already had — a review that says MEDIUM and no record that a specialist called it a blocker.
@@ -413,23 +438,24 @@ public sealed class ReviewNotesArtifactBuilderTests
     [Fact]
     public async Task A_finding_the_shipped_review_never_cites_is_still_on_the_record_as_dropped()
     {
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry(
-                "TextMessage",
-                "#### [BLOCKER] High — unchecked cast\n"
-                    + "src/Foo.cs:10 casts without a type test.\n"
-                    + "\n"
-                    + "#### [MEDIUM] exception ignored\n"
-                    + "src/Telemetry/Exporter.cs:39-54 swallows the failure.\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry(
+                    "TextMessage",
+                    "#### [BLOCKER] High — unchecked cast\n"
+                        + "src/Foo.cs:10 casts without a type test.\n"
+                        + "\n"
+                        + "#### [MEDIUM] exception ignored\n"
+                        + "src/Telemetry/Exporter.cs:39-54 swallows the failure.\n"
+                ),
+            ])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "telemetry")),
-            shippedReviewBody:
-                "#### [BLOCKER] High — unchecked cast\n"
-                + "src/Foo.cs:10 must be guarded.\n");
+            shippedReviewBody: "#### [BLOCKER] High — unchecked cast\n" + "src/Foo.cs:10 must be guarded.\n"
+        );
 
         var reconciliation = Reconciliation(files).Content;
 
@@ -449,21 +475,22 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         // The live telemetry case: a [MEDIUM] exception-ignored finding came out under the review's context
         // questions. Same file:line, and nothing said the severity had stopped applying.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry(
-                "TextMessage",
-                "#### [MEDIUM] exception swallowed\n"
-                    + "src/Telemetry/Exporter.cs:39-54 discards the exception.\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry(
+                    "TextMessage",
+                    "#### [MEDIUM] exception swallowed\n" + "src/Telemetry/Exporter.cs:39-54 discards the exception.\n"
+                ),
+            ])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "telemetry")),
-            shippedReviewBody:
-                "## Context questions\n"
+            shippedReviewBody: "## Context questions\n"
                 + "#### [QUESTION] Is the discarded exception here deliberate?\n"
-                + "src/Telemetry/Exporter.cs:39-54\n");
+                + "src/Telemetry/Exporter.cs:39-54\n"
+        );
 
         Reconciliation(files).Content.Should().Contain("`reframed`");
     }
@@ -471,15 +498,17 @@ public sealed class ReviewNotesArtifactBuilderTests
     [Fact]
     public async Task Two_specialists_landing_on_one_shipped_finding_are_recorded_as_merged()
     {
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry("TextMessage", "#### [MEDIUM] duplicated guard\nsrc/Foo.cs:10 repeats the check.\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry("TextMessage", "#### [MEDIUM] duplicated guard\nsrc/Foo.cs:10 repeats the check.\n"),
+            ])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture"), Node("agent-2", "duplication")),
-            shippedReviewBody: "#### [MEDIUM] duplicated guard\nsrc/Foo.cs:10 repeats the check.\n");
+            shippedReviewBody: "#### [MEDIUM] duplicated guard\nsrc/Foo.cs:10 repeats the check.\n"
+        );
 
         Reconciliation(files).Content.Should().Contain("| `merged-into` | 2 |");
     }
@@ -489,15 +518,15 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         // The hardest constraint on this file. Where the synthesis states no reason there must be none — an
         // invented rationale would read exactly like a recorded one, which is worse than the nothing we had.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry("TextMessage", $"#### [BLOCKER] High — DI coupling\n{DiCouplingSite}\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([Entry("TextMessage", $"#### [BLOCKER] High — DI coupling\n{DiCouplingSite}\n")])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: $"#### [LOW] wiring detail\n{DiCouplingSite}\n");
+            shippedReviewBody: $"#### [LOW] wiring detail\n{DiCouplingSite}\n"
+        );
 
         var reconciliation = Reconciliation(files).Content;
         reconciliation.Should().Contain("| Blocker/High | `severity-changed` | Low |");
@@ -513,20 +542,20 @@ public sealed class ReviewNotesArtifactBuilderTests
     [Fact]
     public async Task A_reason_the_shipped_review_actually_stated_is_quoted_verbatim()
     {
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry("TextMessage", $"#### [BLOCKER] High — DI coupling\n{DiCouplingSite}\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([Entry("TextMessage", $"#### [BLOCKER] High — DI coupling\n{DiCouplingSite}\n")])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody:
-                "#### [MEDIUM] module wiring\n"
+            shippedReviewBody: "#### [MEDIUM] module wiring\n"
                 + $"{DiCouplingSite}\n"
-                + "Downgraded from blocker: the container registration is validated at startup.\n");
+                + "Downgraded from blocker: the container registration is validated at startup.\n"
+        );
 
-        Reconciliation(files).Content.Should()
+        Reconciliation(files)
+            .Content.Should()
             .Contain("Downgraded from blocker: the container registration is validated at startup.");
     }
 
@@ -535,10 +564,9 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         // "Not compared" and "not carried" are different facts, and only one of them is a loss. A build with
         // no review body to compare against must say so, never emit a page of dropped rows.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry("TextMessage", "#### [BLOCKER] High — unchecked cast\nsrc/Foo.cs:10\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([Entry("TextMessage", "#### [BLOCKER] High — unchecked cast\nsrc/Foo.cs:10\n")])
+        );
 
         var files = await BuildAsync(builder, NewContext(Node("agent-1", "architecture")));
 
@@ -556,19 +584,20 @@ public sealed class ReviewNotesArtifactBuilderTests
         // prompt's context window. The arithmetic is deliberately NOT bounded — a truncated table that also
         // truncated its own counts would be worse than no table.
         var specialist = string.Concat(
-            Enumerable.Range(0, 200).Select(
-                i => $"#### [MEDIUM] finding {i}\nsrc/Gen/File{i}.cs:{i + 1} is wrong.\n\n"));
+            Enumerable.Range(0, 200).Select(i => $"#### [MEDIUM] finding {i}\nsrc/Gen/File{i}.cs:{i + 1} is wrong.\n\n")
+        );
         var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", specialist)]));
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: "## Findings\n\nNothing worth reporting.\n");
+            shippedReviewBody: "## Findings\n\nNothing worth reporting.\n"
+        );
 
         var reconciliation = Reconciliation(files).Content;
-        reconciliation.Length.Should().BeLessThan(
-            20_000,
-            "the at-close extractor concatenates every file in this directory into one prompt");
+        reconciliation
+            .Length.Should()
+            .BeLessThan(20_000, "the at-close extractor concatenates every file in this directory into one prompt");
         reconciliation.Should().Contain("further row(s) omitted");
         reconciliation.Should().Contain("| `dropped` | 200 |");
         reconciliation.Should().Contain("| **total** | 200 |");
@@ -586,21 +615,23 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         // `Foo.cs` is a suffix of `src/BarFoo.cs` as a STRING, and a different file. Without the
         // segment-boundary clause these join and the finding is reported as carried when it was not.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry("TextMessage", "#### [BLOCKER] High — unchecked cast\nFoo.cs:10 casts without a type test.\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry("TextMessage", "#### [BLOCKER] High — unchecked cast\nFoo.cs:10 casts without a type test.\n"),
+            ])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: "#### [BLOCKER] High — unchecked cast\nsrc/BarFoo.cs:10 casts without a type test.\n");
+            shippedReviewBody: "#### [BLOCKER] High — unchecked cast\nsrc/BarFoo.cs:10 casts without a type test.\n"
+        );
 
         var reconciliation = Reconciliation(files).Content;
         reconciliation.Should().Contain("| `dropped` | 1 |");
-        reconciliation.Should().Contain(
-            "| `kept` | 0 |",
-            "a string-suffix collision must never be reported as the same location");
+        reconciliation
+            .Should()
+            .Contain("| `kept` | 0 |", "a string-suffix collision must never be reported as the same location");
     }
 
     [Fact]
@@ -608,21 +639,23 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         // Same path, disjoint lines. Without the range-overlap clause every finding in a file would join
         // every other finding in that file — the most permissive wrong answer available.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry("TextMessage", "#### [BLOCKER] High — unchecked cast\nsrc/Foo.cs:10 casts without a test.\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry("TextMessage", "#### [BLOCKER] High — unchecked cast\nsrc/Foo.cs:10 casts without a test.\n"),
+            ])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: "#### [BLOCKER] High — missing dispose\nsrc/Foo.cs:200 leaks the handle.\n");
+            shippedReviewBody: "#### [BLOCKER] High — missing dispose\nsrc/Foo.cs:200 leaks the handle.\n"
+        );
 
         var reconciliation = Reconciliation(files).Content;
         reconciliation.Should().Contain("| `dropped` | 1 |");
-        reconciliation.Should().Contain(
-            "| `kept` | 0 |",
-            "two findings in one file at unrelated lines are not the same finding");
+        reconciliation
+            .Should()
+            .Contain("| `kept` | 0 |", "two findings in one file at unrelated lines are not the same finding");
     }
 
     // ── The parse stage must not manufacture findings ─────────────────────────────────────────────────
@@ -635,23 +668,26 @@ public sealed class ReviewNotesArtifactBuilderTests
     [Fact]
     public async Task A_count_of_findings_is_not_itself_a_finding()
     {
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry(
-                "TextMessage",
-                "## Summary\n"
-                + "- **3 HIGH/BLOCKER findings**\n"
-                + "- **1 MEDIUM finding**\n"
-                + "\n"
-                + "## Findings\n"
-                + "#### [BLOCKER] High — unchecked cast\n"
-                + "src/Foo.cs:10 casts without a type test.\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry(
+                    "TextMessage",
+                    "## Summary\n"
+                        + "- **3 HIGH/BLOCKER findings**\n"
+                        + "- **1 MEDIUM finding**\n"
+                        + "\n"
+                        + "## Findings\n"
+                        + "#### [BLOCKER] High — unchecked cast\n"
+                        + "src/Foo.cs:10 casts without a type test.\n"
+                ),
+            ])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: "#### [BLOCKER] High — unchecked cast\nsrc/Foo.cs:10 must be guarded.\n");
+            shippedReviewBody: "#### [BLOCKER] High — unchecked cast\nsrc/Foo.cs:10 must be guarded.\n"
+        );
 
         var reconciliation = Reconciliation(files).Content;
         // Exactly the one real finding. The two tally bullets carry severity words and cite nothing, so
@@ -667,18 +703,21 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         // The live shape: a severity-bearing lead line whose prose happens to use the word. Treating it as a
         // question marker both invented a finding and mislabelled its outcome.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry(
-                "TextMessage",
-                "#### [MEDIUM] analyzer version-skew question remains unresolved\n"
-                + "src/Foo.cs:10 pins an older analyzer.\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry(
+                    "TextMessage",
+                    "#### [MEDIUM] analyzer version-skew question remains unresolved\n"
+                        + "src/Foo.cs:10 pins an older analyzer.\n"
+                ),
+            ])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: "#### [MEDIUM] analyzer version skew\nsrc/Foo.cs:10 pins an older analyzer.\n");
+            shippedReviewBody: "#### [MEDIUM] analyzer version skew\nsrc/Foo.cs:10 pins an older analyzer.\n"
+        );
 
         var reconciliation = Reconciliation(files).Content;
         // Medium on both sides, so this is `kept`. If the word made it a question the specialist severity
@@ -693,18 +732,19 @@ public sealed class ReviewNotesArtifactBuilderTests
         // `reframed` exists to surface a finding that shipped as a question. Of 283 real rows exactly one
         // landed here and it was ALREADY a [QUESTION] in the source — so the entire observed population of
         // the label was the no-op case. Two different things must not share one label.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry("TextMessage", "#### [QUESTION] Is the discarded exception deliberate?\nsrc/Foo.cs:10\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry("TextMessage", "#### [QUESTION] Is the discarded exception deliberate?\nsrc/Foo.cs:10\n"),
+            ])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "telemetry")),
-            shippedReviewBody:
-                "## Context questions\n"
+            shippedReviewBody: "## Context questions\n"
                 + "#### [QUESTION] Is the discarded exception deliberate?\n"
-                + "src/Foo.cs:10\n");
+                + "src/Foo.cs:10\n"
+        );
 
         var reconciliation = Reconciliation(files).Content;
         reconciliation.Should().Contain("| `reframed` | 0 |");
@@ -717,18 +757,19 @@ public sealed class ReviewNotesArtifactBuilderTests
         // The live false positive: a bare `deduplicat` marker quoted "exact duplicate rows continue to
         // deduplicate." — a sentence about what the CODE does — as though it were a decision about this
         // finding. A reason column that is sometimes about something else is worse than a blank one.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry("TextMessage", "#### [BLOCKER] High — duplicate rows\nsrc/Foo.cs:10 inserts twice.\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry("TextMessage", "#### [BLOCKER] High — duplicate rows\nsrc/Foo.cs:10 inserts twice.\n"),
+            ])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody:
-                "#### [MEDIUM] duplicate rows\n"
+            shippedReviewBody: "#### [MEDIUM] duplicate rows\n"
                 + "src/Foo.cs:10 inserts twice.\n"
-                + "- exact duplicate rows continue to deduplicate.\n");
+                + "- exact duplicate rows continue to deduplicate.\n"
+        );
 
         var reconciliation = Reconciliation(files).Content;
         reconciliation.Should().Contain("| Blocker/High | `severity-changed` | Medium |");
@@ -751,7 +792,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         // continuing into its own description was not — so the commonest form of the tally got through.
         ReviewFindingReconciler
             .ParseFindings("- **2 HIGH/BLOCKER findings**: the allocation path has no executable test.\n")
-            .Should().BeEmpty();
+            .Should()
+            .BeEmpty();
     }
 
     [Fact]
@@ -759,9 +801,7 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         // Three counts on one line, and no other rule can see it: there is no leading digit for the tally
         // rule, and the counts are non-zero so the none-of-severity rule does not fire either.
-        ReviewFindingReconciler
-            .ParseFindings("## Findings: 0 Critical, 2 High, 1 Medium\n")
-            .Should().BeEmpty();
+        ReviewFindingReconciler.ParseFindings("## Findings: 0 Critical, 2 High, 1 Medium\n").Should().BeEmpty();
     }
 
     [Fact]
@@ -769,9 +809,7 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         // The most perverse row the old parse produced: a statement that nothing was found, recorded as a
         // finding that was then dropped.
-        ReviewFindingReconciler
-            .ParseFindings("## No high findings in the changed files\n")
-            .Should().BeEmpty();
+        ReviewFindingReconciler.ParseFindings("## No high findings in the changed files\n").Should().BeEmpty();
     }
 
     [Fact]
@@ -781,16 +819,15 @@ public sealed class ReviewNotesArtifactBuilderTests
         // never as a finding of its own, or the artifact reports the grading pass as a discarded finding.
         ReviewFindingReconciler
             .ParseFindings("- The review-grader confirmed the convention-path issue as HIGH.\n")
-            .Should().BeEmpty();
+            .Should()
+            .BeEmpty();
     }
 
     [Fact]
     public void A_bare_severity_label_with_no_text_is_not_a_finding()
     {
         // A label with nothing attached to it. Both forms appear in the corpus as section scaffolding.
-        ReviewFindingReconciler
-            .ParseFindings("- **MEDIUM**\n- **[QUESTION]**\n")
-            .Should().BeEmpty();
+        ReviewFindingReconciler.ParseFindings("- **MEDIUM**\n- **[QUESTION]**\n").Should().BeEmpty();
     }
 
     [Fact]
@@ -802,7 +839,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         // Every surviving token carries real labels (`blocker` 250/270, `high` 318/373, `medium` 264/304).
         ReviewFindingReconciler
             .ParseFindings("- Two additional informational compatibility notes were identified.\n")
-            .Should().BeEmpty();
+            .Should()
+            .BeEmpty();
     }
 
     [Fact]
@@ -812,7 +850,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         // recognised those items produced no row at all and nothing was logged — the silent kind of miss,
         // which is precisely the failure family this artifact exists to end.
         var findings = ReviewFindingReconciler.ParseFindings(
-            "#### **Question:** does the retry budget reset per attempt?\nsrc/Foo.cs:10\n");
+            "#### **Question:** does the retry budget reset per attempt?\nsrc/Foo.cs:10\n"
+        );
 
         findings.Should().ContainSingle();
         findings[0].IsQuestion.Should().BeTrue();
@@ -827,7 +866,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         // names no finding, and its `from … to …` lands on version numbers rather than severities.
         ReviewFindingReconciler
             .IsDispositionStatement("The dependency was downgraded from 1.25.1 to 1.24.1.")
-            .Should().BeFalse();
+            .Should()
+            .BeFalse();
     }
 
     [Fact]
@@ -837,7 +877,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         // covered by", "subsumed by", "not raised as a separate finding" — not "superseded by".
         ReviewFindingReconciler
             .IsDispositionStatement("The rollout concern is already covered by the existing unresolved thread.")
-            .Should().BeTrue();
+            .Should()
+            .BeTrue();
     }
 
     [Fact]
@@ -847,7 +888,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         // is the clause that keeps the honest "escalated to HIGH" sentences from needing a noun.
         ReviewFindingReconciler
             .IsDispositionStatement("Escalated to HIGH after checking the call sites.")
-            .Should().BeTrue();
+            .Should()
+            .BeTrue();
     }
 
     [Fact]
@@ -857,19 +899,18 @@ public sealed class ReviewNotesArtifactBuilderTests
         // attach one to about 1 row in 250, because reviewers write it in a review-level grading section
         // rather than inside the finding. So the statement is quoted UNATTACHED. Welding it onto the
         // nearest row would be a guess, and a guessed attribution reads exactly like a recorded one.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry("TextMessage", $"#### [BLOCKER] High — DI coupling\n{DiCouplingSite}\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([Entry("TextMessage", $"#### [BLOCKER] High — DI coupling\n{DiCouplingSite}\n")])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody:
-                $"#### [LOW] wiring detail\n{DiCouplingSite}\n"
+            shippedReviewBody: $"#### [LOW] wiring detail\n{DiCouplingSite}\n"
                 + "\n"
                 + "## Grading\n"
-                + "Two performance concerns were consolidated into the wiring finding.\n");
+                + "Two performance concerns were consolidated into the wiring finding.\n"
+        );
 
         var reconciliation = Reconciliation(files).Content;
         reconciliation.Should().Contain("## Disposition statements not tied to a row");
@@ -883,17 +924,20 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         // An absent section is indistinguishable from a section that failed to build. The blank case has
         // to be stated, for the same reason the whole artifact exists.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry("TextMessage", "#### [BLOCKER] High — unchecked cast\nsrc/Foo.cs:10 casts without a test.\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry("TextMessage", "#### [BLOCKER] High — unchecked cast\nsrc/Foo.cs:10 casts without a test.\n"),
+            ])
+        );
 
         var files = await BuildAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: "#### [BLOCKER] High — unchecked cast\nsrc/Foo.cs:10 must be guarded.\n");
+            shippedReviewBody: "#### [BLOCKER] High — unchecked cast\nsrc/Foo.cs:10 must be guarded.\n"
+        );
 
-        Reconciliation(files).Content.Should()
+        Reconciliation(files)
+            .Content.Should()
             .Contain("The shipped review stated no disposition anywhere outside the findings above.");
     }
 
@@ -907,13 +951,17 @@ public sealed class ReviewNotesArtifactBuilderTests
         var logs = new CapturingLogger<object>();
         var builder = new ReviewNotesArtifactBuilder(
             new FakeTranscripts(descendant: [], root: [Entry("TextMessage", "reviewed alone")]),
-            logs);
+            logs
+        );
 
         await BuildAsync(builder, NewContext(), shippedReviewBody: "## Review\nNothing worth reporting.\n");
 
-        logs.MessagesAtLevel(LogLevel.Information).Should().ContainSingle(
-            m => m.Contains("reconciled 0 specialist finding(s)", StringComparison.Ordinal),
-            "the tally is logged on every build, including the one where there was nothing to tally");
+        logs.MessagesAtLevel(LogLevel.Information)
+            .Should()
+            .ContainSingle(
+                m => m.Contains("reconciled 0 specialist finding(s)", StringComparison.Ordinal),
+                "the tally is logged on every build, including the one where there was nothing to tally"
+            );
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -960,7 +1008,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         var built = await BuildFullAsync(
             builder,
             NewContext(Node("agent-1", "architecture"), Node("agent-2", "tests")),
-            shippedReviewBody: ThreeShipped);
+            shippedReviewBody: ThreeShipped
+        );
 
         var findings = built.Findings;
         findings.Compared.Should().BeTrue();
@@ -995,22 +1044,33 @@ public sealed class ReviewNotesArtifactBuilderTests
         var built = await BuildFullAsync(
             builder,
             NewContext(Node("agent-1", "architecture"), Node("agent-2", "architecture")),
-            shippedReviewBody: ThreeShipped);
+            shippedReviewBody: ThreeShipped
+        );
 
         var findings = built.Findings;
         findings.RecordedCount.Should().Be(6, "two reviewers contributed three findings each");
         findings.Sources.Should().HaveCount(2, "two roster nodes reviewed, whatever they are called");
 
-        findings.Sources.Sum(s => s.Recorded).Should().Be(
-            findings.RecordedCount,
-            "the per-source counts must partition the record — a row belongs to exactly one reviewer, so "
-                + "double-counting one reviewer's rows against another inflates the sum past the total");
-        findings.Sources.Should().OnlyContain(
-            s => s.Recorded <= s.Parsed,
-            "no reviewer can contribute more rows than it had findings parsed out of it");
-        findings.Sources.Should().OnlyContain(
-            s => s.Parsed == 3 && s.Recorded == 3,
-            "each of the two reviewers is credited with its own three findings and none of the other's");
+        findings
+            .Sources.Sum(s => s.Recorded)
+            .Should()
+            .Be(
+                findings.RecordedCount,
+                "the per-source counts must partition the record — a row belongs to exactly one reviewer, so "
+                    + "double-counting one reviewer's rows against another inflates the sum past the total"
+            );
+        findings
+            .Sources.Should()
+            .OnlyContain(
+                s => s.Recorded <= s.Parsed,
+                "no reviewer can contribute more rows than it had findings parsed out of it"
+            );
+        findings
+            .Sources.Should()
+            .OnlyContain(
+                s => s.Parsed == 3 && s.Recorded == 3,
+                "each of the two reviewers is credited with its own three findings and none of the other's"
+            );
     }
 
     [Fact]
@@ -1025,7 +1085,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         var built = await BuildFullAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: ThreeShipped);
+            shippedReviewBody: ThreeShipped
+        );
 
         var blocker = built.Findings.Findings.Single(f => f.Location == DiCouplingSite);
         blocker.Source.Should().Be("architecture", "the row is attributed to the reviewer that raised it");
@@ -1046,10 +1107,11 @@ public sealed class ReviewNotesArtifactBuilderTests
         var built = await BuildFullAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: ThreeShipped);
+            shippedReviewBody: ThreeShipped
+        );
 
-        var buckets = built.Findings.Findings
-            .SelectMany(f => f.SeverityTokens)
+        var buckets = built
+            .Findings.Findings.SelectMany(f => f.SeverityTokens)
             .GroupBy(t => t, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
 
@@ -1063,15 +1125,17 @@ public sealed class ReviewNotesArtifactBuilderTests
     {
         // A demotion is the single most interesting event in a review and the one prose loses first. Both
         // severities must be on the row, or the record can say a change happened but not what it was.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry("TextMessage", $"#### [BLOCKER] High — DI coupling\n{DiCouplingSite} resolves directly.\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry("TextMessage", $"#### [BLOCKER] High — DI coupling\n{DiCouplingSite} resolves directly.\n"),
+            ])
+        );
 
         var built = await BuildFullAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: $"#### [MEDIUM] — DI coupling\n{DiCouplingSite} is a wiring detail.\n");
+            shippedReviewBody: $"#### [MEDIUM] — DI coupling\n{DiCouplingSite} is a wiring detail.\n"
+        );
 
         var row = built.Findings.Findings.Should().ContainSingle().Subject;
         row.Outcome.Should().Be("severity-changed");
@@ -1090,7 +1154,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         var built = await BuildFullAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: ThreeShipped);
+            shippedReviewBody: ThreeShipped
+        );
 
         var table = Reconciliation(built.Files).Content;
         foreach (var row in built.Findings.Findings)
@@ -1128,7 +1193,8 @@ public sealed class ReviewNotesArtifactBuilderTests
         var built = await BuildFullAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: "No blocking issues.\n");
+            shippedReviewBody: "No blocking issues.\n"
+        );
 
         built.Findings.Round.Should().Be(1);
         built.Findings.Compared.Should().BeTrue();
@@ -1148,24 +1214,27 @@ public sealed class ReviewNotesArtifactBuilderTests
         // StartsFinding is only consulted on heading and top-level list-item lines, and every other fixture
         // here surrounds its findings with prose body lines, which cannot start a block however wide the
         // predicate gets. Only a fixture whose non-findings are themselves headings and bullets can see it.
-        var builder = NewBuilder(new FakeTranscripts(
-        [
-            Entry(
-                "TextMessage",
-                "## Summary\n"
-                + "- reviewed the DI wiring and the cast sites\n"
-                + "- ran the tests locally\n"
-                + "\n"
-                + ThreeFindings
-                + "\n"
-                + "### Notes\n"
-                + "- no further concerns\n"),
-        ]));
+        var builder = NewBuilder(
+            new FakeTranscripts([
+                Entry(
+                    "TextMessage",
+                    "## Summary\n"
+                        + "- reviewed the DI wiring and the cast sites\n"
+                        + "- ran the tests locally\n"
+                        + "\n"
+                        + ThreeFindings
+                        + "\n"
+                        + "### Notes\n"
+                        + "- no further concerns\n"
+                ),
+            ])
+        );
 
         var built = await BuildFullAsync(
             builder,
             NewContext(Node("agent-1", "architecture")),
-            shippedReviewBody: ThreeShipped);
+            shippedReviewBody: ThreeShipped
+        );
 
         built.Findings.ParsedCount.Should().Be(3, "five of the eight structural lines carry no severity");
         built.Findings.RecordedCount.Should().Be(3);
@@ -1185,15 +1254,15 @@ public sealed class ReviewNotesArtifactBuilderTests
         var built = await BuildFullAsync(
             builder,
             NewContext(Node("agent-1", "architecture"), Node("agent-2", "tests")),
-            shippedReviewBody: ThreeShipped);
+            shippedReviewBody: ThreeShipped
+        );
 
         var table = Reconciliation(built.Files).Content;
 
         // Same population: one numbered data row per record, no more and no fewer.
         var dataRows = table
             .Split('\n')
-            .Count(l => l.StartsWith("| ", StringComparison.Ordinal)
-                && char.IsDigit(l.AsSpan(2)[0]));
+            .Count(l => l.StartsWith("| ", StringComparison.Ordinal) && char.IsDigit(l.AsSpan(2)[0]));
         dataRows.Should().Be(built.Findings.RecordedCount);
 
         // Same content: every record's location, reviewer and outcome spelling is on the table it was
@@ -1219,13 +1288,19 @@ public sealed class ReviewNotesArtifactBuilderTests
         // A non-null hash on the run, so this assertion can fail. With the fixture's default null it would
         // pass against a Build() that hardcoded null and never read the run at all.
         var built = await builder.BuildAsync(
-            NewRun("tpl-sha256-abc123"), NewRepo(), "PRs/lmdotnettools-250",
-            NewContext(Node("agent-1", "architecture")), CancellationToken.None, ThreeShipped);
+            NewRun("tpl-sha256-abc123"),
+            NewRepo(),
+            "PRs/lmdotnettools-250",
+            NewContext(Node("agent-1", "architecture")),
+            CancellationToken.None,
+            ThreeShipped
+        );
 
         var captured = DateTimeOffset.Parse(
             built.Findings.CapturedAtUtc,
             CultureInfo.InvariantCulture,
-            DateTimeStyles.RoundtripKind);
+            DateTimeStyles.RoundtripKind
+        );
         captured.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5));
         built.Findings.PromptTemplateHash.Should().Be("tpl-sha256-abc123");
 
@@ -1248,14 +1323,18 @@ public sealed class ReviewNotesArtifactBuilderTests
 
         var files = await BuildAsync(
             builder,
-            NewContext(NodeOnModel("agent-1", "architecture", "gpt-5.6-sol", tier: 3, source: "template-tier")));
+            NewContext(NodeOnModel("agent-1", "architecture", "gpt-5.6-sol", tier: 3, source: "template-tier"))
+        );
 
         var findings = files.Single(f => f.RelativePath.Contains("_01_architecture", StringComparison.Ordinal));
         findings.Content.Should().Contain("| Model | gpt-5.6-sol |");
         findings.Content.Should().Contain("| Model tier | 3 |");
-        findings.Content.Should().Contain(
-            "| Model source | template-tier |",
-            "the model id alone cannot tell a tier that resolved to it from a caller that named it outright");
+        findings
+            .Content.Should()
+            .Contain(
+                "| Model source | template-tier |",
+                "the model id alone cannot tell a tier that resolved to it from a caller that named it outright"
+            );
 
         var contextFile = files.Single(f => f.RelativePath.EndsWith("PR_Context_01.md", StringComparison.Ordinal));
         contextFile.Content.Should().Contain("| # | Agent | Model | Template | Status | Findings file |");
@@ -1274,8 +1353,9 @@ public sealed class ReviewNotesArtifactBuilderTests
 
         var findings = files.Single(f => f.RelativePath.Contains("_01_architecture", StringComparison.Ordinal));
         findings.Content.Should().Contain("| Model | (unrecorded) |");
-        findings.Content.Should().NotContain(
-            "| Model | test-model |", "test-model is the RUN's model and this agent's is not recorded");
+        findings
+            .Content.Should()
+            .NotContain("| Model | test-model |", "test-model is the RUN's model and this agent's is not recorded");
         findings.Content.Should().Contain("| Model tier | (unrecorded) |");
         findings.Content.Should().Contain("| Model source | (unrecorded) |");
 
@@ -1293,13 +1373,17 @@ public sealed class ReviewNotesArtifactBuilderTests
 
         var files = await BuildAsync(
             builder,
-            NewContext(NodeOnModel("agent-1", "architecture", "test-model", source: "parent")));
+            NewContext(NodeOnModel("agent-1", "architecture", "test-model", source: "parent"))
+        );
 
         var findings = files.Single(f => f.RelativePath.Contains("_01_architecture", StringComparison.Ordinal));
         findings.Content.Should().Contain("| Model | test-model |");
         findings.Content.Should().NotContain("| Model | (unrecorded) |");
-        findings.Content.Should().Contain(
-            "| Model source | parent |",
-            "'parent' against every node is what says the fan-out inherited and no per-agent routing ran");
+        findings
+            .Content.Should()
+            .Contain(
+                "| Model source | parent |",
+                "'parent' against every node is what says the fan-out inherited and no per-agent routing ran"
+            );
     }
 }

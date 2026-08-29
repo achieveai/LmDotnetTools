@@ -52,11 +52,7 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
     public async Task<IReadOnlyList<Workspace>> GetAllAsync(CancellationToken ct = default)
     {
         var userWorkspaces = await LoadUserWorkspacesAsync(ct);
-        return
-        [
-            _defaultWorkspace,
-            .. userWorkspaces.OrderBy(w => w.Name, StringComparer.OrdinalIgnoreCase),
-        ];
+        return [_defaultWorkspace, .. userWorkspaces.OrderBy(w => w.Name, StringComparer.OrdinalIgnoreCase)];
     }
 
     /// <inheritdoc />
@@ -88,9 +84,7 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
         var directory = SanitizeDirectory(rawDir);
         if (string.IsNullOrEmpty(directory))
         {
-            throw new InvalidOperationException(
-                $"Could not derive a valid workspace directory from '{rawDir}'."
-            );
+            throw new InvalidOperationException($"Could not derive a valid workspace directory from '{rawDir}'.");
         }
 
         await _lock.WaitAsync(ct);
@@ -105,9 +99,7 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
                 );
             if (collision)
             {
-                throw new InvalidOperationException(
-                    $"A workspace with directory '{directory}' already exists."
-                );
+                throw new InvalidOperationException($"A workspace with directory '{directory}' already exists.");
             }
 
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -162,10 +154,7 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
 
             if (dto.PluginSelection.IsSet)
             {
-                WorkspaceRevisionConflictException.ThrowIfMismatch(
-                    id,
-                    dto.PluginsRevision,
-                    existing.PluginsRevision);
+                WorkspaceRevisionConflictException.ThrowIfMismatch(id, dto.PluginsRevision, existing.PluginsRevision);
             }
 
             var updatedWorkspace = existing with
@@ -281,7 +270,9 @@ public sealed class WorkspaceRevisionConflictException : Exception
     /// <param name="expectedRevision">The revision the caller supplied, or <c>-1</c> when omitted.</param>
     /// <param name="actualRevision">The workspace's current revision.</param>
     public WorkspaceRevisionConflictException(string workspaceId, int expectedRevision, int actualRevision)
-        : base($"Workspace '{workspaceId}' plugins revision conflict: expected {expectedRevision}, actual {actualRevision}.")
+        : base(
+            $"Workspace '{workspaceId}' plugins revision conflict: expected {expectedRevision}, actual {actualRevision}."
+        )
     {
         WorkspaceId = workspaceId;
         ExpectedRevision = expectedRevision;

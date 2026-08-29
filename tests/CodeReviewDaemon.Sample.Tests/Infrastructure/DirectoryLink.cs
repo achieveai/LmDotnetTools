@@ -22,7 +22,8 @@ internal static class DirectoryLink
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
-                })!;
+                }
+            )!;
             mklink.WaitForExit();
         }
         else
@@ -30,8 +31,10 @@ internal static class DirectoryLink
             Directory.CreateSymbolicLink(link, target);
         }
 
-        new DirectoryInfo(link).Attributes.HasFlag(FileAttributes.ReparsePoint).Should().BeTrue(
-            $"the test needs '{link}' to actually redirect a walk");
+        new DirectoryInfo(link)
+            .Attributes.HasFlag(FileAttributes.ReparsePoint)
+            .Should()
+            .BeTrue($"the test needs '{link}' to actually redirect a walk");
     }
 
     /// <summary>

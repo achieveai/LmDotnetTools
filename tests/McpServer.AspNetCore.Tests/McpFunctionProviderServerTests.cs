@@ -34,7 +34,8 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
     /// </summary>
     private static McpFunctionProviderServer CreateServer(
         IEnumerable<IFunctionProvider> providers,
-        Action<McpFunctionProviderServerOptions>? configure = null)
+        Action<McpFunctionProviderServerOptions>? configure = null
+    )
     {
         var services = new ServiceCollection();
 
@@ -59,22 +60,16 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
             return string.Empty;
         }
 
-        return string.Join(Environment.NewLine,
-            result.Content
-                .Where(c => c is TextContentBlock)
-                .Cast<TextContentBlock>()
-                .Select(tb => tb.Text));
+        return string.Join(
+            Environment.NewLine,
+            result.Content.Where(c => c is TextContentBlock).Cast<TextContentBlock>().Select(tb => tb.Text)
+        );
     }
 
     public async Task InitializeAsync()
     {
         // Create server with sample tools using DI
-        _server = CreateServer(
-            [
-                new WeatherTool(),
-                new CalculatorTool(),
-                new FileInfoTool()
-            ]);
+        _server = CreateServer([new WeatherTool(), new CalculatorTool(), new FileInfoTool()]);
 
         // Start the server
         await _server.StartAsync();
@@ -86,7 +81,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
         var transportOptions = new HttpClientTransportOptions
         {
             Endpoint = new Uri(_server.McpEndpointUrl!),
-            Name = "test-client"
+            Name = "test-client",
         };
 
         var transport = new HttpClientTransport(transportOptions);
@@ -131,7 +126,9 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
         // Assert
         tools.Should().NotBeNull();
         tools.Should().NotBeEmpty();
-        tools.Should().HaveCount(4, "we registered 4 tools: get_weather, Calculator-add, Calculator-multiply, get_file_info");
+        tools
+            .Should()
+            .HaveCount(4, "we registered 4 tools: get_weather, Calculator-add, Calculator-multiply, get_file_info");
 
         // Verify tool names
         var toolNames = tools.Select(t => t.Name).ToList();
@@ -151,11 +148,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
     public async Task CallTool_GetWeather_Should_Return_Weather_Data()
     {
         // Arrange
-        var arguments = new Dictionary<string, object?>
-        {
-            ["city"] = "London",
-            ["unit"] = "celsius"
-        };
+        var arguments = new Dictionary<string, object?> { ["city"] = "London", ["unit"] = "celsius" };
 
         // Act
         var result = await _client!.CallToolAsync("get_weather", arguments);
@@ -176,11 +169,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
     public async Task CallTool_CalculatorAdd_Should_Return_Sum()
     {
         // Arrange
-        var arguments = new Dictionary<string, object?>
-        {
-            ["a"] = 15.5,
-            ["b"] = 24.5
-        };
+        var arguments = new Dictionary<string, object?> { ["a"] = 15.5, ["b"] = 24.5 };
 
         // Act
         var result = await _client!.CallToolAsync("Calculator-add", arguments);
@@ -202,11 +191,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
     public async Task CallTool_CalculatorMultiply_Should_Return_Product()
     {
         // Arrange
-        var arguments = new Dictionary<string, object?>
-        {
-            ["a"] = 6.0,
-            ["b"] = 7.0
-        };
+        var arguments = new Dictionary<string, object?> { ["a"] = 6.0, ["b"] = 7.0 };
 
         // Act
         var result = await _client!.CallToolAsync("Calculator-multiply", arguments);
@@ -231,10 +216,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
         {
             File.WriteAllText(testFilePath, "Test content");
 
-            var arguments = new Dictionary<string, object?>
-            {
-                ["path"] = testFilePath
-            };
+            var arguments = new Dictionary<string, object?> { ["path"] = testFilePath };
 
             // Act
             var result = await _client!.CallToolAsync("get_file_info", arguments);
@@ -302,9 +284,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
     {
         try
         {
-            using var listener = new System.Net.Sockets.TcpListener(
-                System.Net.IPAddress.Loopback,
-                port);
+            using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
             listener.Start();
             listener.Stop();
             return true; // Port is available

@@ -55,7 +55,9 @@ public sealed class DaemonPromptUrlEncodingTests
             priorNotesFiles: [],
             buildTooling: new DaemonReviewStageExecutor.BuildToolingFacts(
                 DaemonReviewStageExecutor.BuildToolingState.Indeterminate,
-                "No build tooling was probed."));
+                "No build tooling was probed."
+            )
+        );
 
     [Fact]
     public void The_ado_url_identity_variables_are_url_encoded_path_segments()
@@ -77,17 +79,20 @@ public sealed class DaemonPromptUrlEncodingTests
     {
         var prompt = DaemonAgentFactory.CreateSynthesisPrompt(
             Variables(SpacedAdoRepo),
-            "- code-reviewer:architecture-review (architecture) — completed");
+            "- code-reviewer:architecture-review (architecture) — completed"
+        );
 
         var url = Regex.Match(prompt, @"https://dev\.azure\.com/\S*");
         url.Success.Should().BeTrue("the ADO posting contract must render its base URL");
 
         // The match stops at the first whitespace. If any segment carried a raw space the URL would be
         // truncated there — so a complete URL is the proof that curl receives one argument, not several.
-        url.Value.Should().Be(
-            "https://dev.azure.com/contoso%20org/MCQdb%20Development/_apis/git/repositories/My%20Repo"
-                + "/pullRequests/118",
-            "curl rejects a raw space in a URL argument before it ever sends the request");
+        url.Value.Should()
+            .Be(
+                "https://dev.azure.com/contoso%20org/MCQdb%20Development/_apis/git/repositories/My%20Repo"
+                    + "/pullRequests/118",
+                "curl rejects a raw space in a URL argument before it ever sends the request"
+            );
     }
 
     /// <summary>
@@ -118,16 +123,19 @@ public sealed class DaemonPromptUrlEncodingTests
     {
         var prompt = DaemonAgentFactory.CreateSynthesisPrompt(
             Variables(SpacedGitHubRepo),
-            "- code-reviewer:architecture-review (architecture) — completed");
+            "- code-reviewer:architecture-review (architecture) — completed"
+        );
 
         var url = Regex.Match(prompt, @"https://api\.github\.com/\S*");
         url.Success.Should().BeTrue("the GitHub posting contract must render its review URL");
 
         // The match stops at the first whitespace, so a complete URL is the proof that curl receives one
         // argument. A raw space in the OWNER truncates it after "repos/contoso".
-        url.Value.Should().Be(
-            "https://api.github.com/repos/contoso%20org/My%20Repo/pulls/118/reviews",
-            "curl rejects a raw space in a URL argument before it ever sends the request");
+        url.Value.Should()
+            .Be(
+                "https://api.github.com/repos/contoso%20org/My%20Repo/pulls/118/reviews",
+                "curl rejects a raw space in a URL argument before it ever sends the request"
+            );
     }
 
     /// <summary>
@@ -137,14 +145,16 @@ public sealed class DaemonPromptUrlEncodingTests
     [Fact]
     public void Ordinary_ado_names_are_unchanged_by_the_encoding()
     {
-        var vars = Variables(new RepoIdentity
-        {
-            Provider = "azure-devops",
-            OrgOrOwner = "mcqdbdev",
-            Project = "MCQdb_Development",
-            RepoName = "MCQdbDEV",
-            RepoStableId = "repo-guid-2",
-        });
+        var vars = Variables(
+            new RepoIdentity
+            {
+                Provider = "azure-devops",
+                OrgOrOwner = "mcqdbdev",
+                Project = "MCQdb_Development",
+                RepoName = "MCQdbDEV",
+                RepoStableId = "repo-guid-2",
+            }
+        );
 
         vars["ado_org"].Should().Be("mcqdbdev");
         vars["ado_project"].Should().Be("MCQdb_Development");
@@ -173,14 +183,16 @@ public sealed class DaemonPromptUrlEncodingTests
     [InlineData("github", false)]
     public void Is_ado_uses_the_shared_provider_classifier(string provider, bool expected)
     {
-        var vars = Variables(new RepoIdentity
-        {
-            Provider = provider,
-            OrgOrOwner = "contoso",
-            Project = "Platform",
-            RepoName = "widgets",
-            RepoStableId = "repo-guid-ado",
-        });
+        var vars = Variables(
+            new RepoIdentity
+            {
+                Provider = provider,
+                OrgOrOwner = "contoso",
+                Project = "Platform",
+                RepoName = "widgets",
+                RepoStableId = "repo-guid-ado",
+            }
+        );
 
         vars["is_ado"].Should().Be(expected);
     }
@@ -192,14 +204,16 @@ public sealed class DaemonPromptUrlEncodingTests
     [Fact]
     public void A_separator_in_a_repo_name_cannot_open_a_new_url_path_segment()
     {
-        var vars = Variables(new RepoIdentity
-        {
-            Provider = "azure-devops",
-            OrgOrOwner = "contoso",
-            Project = "Platform",
-            RepoName = "widgets/../../other",
-            RepoStableId = "repo-guid-3",
-        });
+        var vars = Variables(
+            new RepoIdentity
+            {
+                Provider = "azure-devops",
+                OrgOrOwner = "contoso",
+                Project = "Platform",
+                RepoName = "widgets/../../other",
+                RepoStableId = "repo-guid-3",
+            }
+        );
 
         vars["ado_repo"].Should().Be("widgets%2F..%2F..%2Fother");
         vars["ado_repo"].ToString().Should().NotContain("/");

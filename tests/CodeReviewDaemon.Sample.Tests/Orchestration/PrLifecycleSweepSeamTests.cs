@@ -16,7 +16,15 @@ public sealed class PrLifecycleSweepSeamTests
     public void MapReviewedPr_names_the_github_notes_branch_the_same_way_commit_notes_does()
     {
         var row = new ReviewedPrRow(
-            new RepoIdentity { Provider = "github", OrgOrOwner = "acme", RepoName = "widgets" }, "github", "42");
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "acme",
+                RepoName = "widgets",
+            },
+            "github",
+            "42"
+        );
 
         var pr = PrLifecycleSweepSeam.MapReviewedPr(row);
 
@@ -30,14 +38,23 @@ public sealed class PrLifecycleSweepSeamTests
     public void MapReviewedPr_maps_azure_devops_to_the_ado_branch_and_poll_namespace()
     {
         var row = new ReviewedPrRow(
-            new RepoIdentity { Provider = "azure-devops", OrgOrOwner = "acme", Project = "Platform", RepoName = "widgets" },
+            new RepoIdentity
+            {
+                Provider = "azure-devops",
+                OrgOrOwner = "acme",
+                Project = "Platform",
+                RepoName = "widgets",
+            },
             "azure-devops",
-            "7");
+            "7"
+        );
 
         var pr = PrLifecycleSweepSeam.MapReviewedPr(row);
 
         pr.Should().NotBeNull();
-        pr!.Provider.Should().Be("ado", "the sweeper polls/branches under 'ado', not the 'azure-devops' storage namespace");
+        pr!
+            .Provider.Should()
+            .Be("ado", "the sweeper polls/branches under 'ado', not the 'azure-devops' storage namespace");
         pr.Branch.Should().Be("review/widgets-7");
     }
 
@@ -45,7 +62,15 @@ public sealed class PrLifecycleSweepSeamTests
     public void MapReviewedPr_skips_a_non_numeric_pr_id_that_cannot_name_a_branch()
     {
         var row = new ReviewedPrRow(
-            new RepoIdentity { Provider = "github", OrgOrOwner = "acme", RepoName = "widgets" }, "github", "not-a-number");
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "acme",
+                RepoName = "widgets",
+            },
+            "github",
+            "not-a-number"
+        );
 
         PrLifecycleSweepSeam.MapReviewedPr(row).Should().BeNull();
     }
@@ -56,12 +81,23 @@ public sealed class PrLifecycleSweepSeamTests
         var github = new MockPrProvider("github", [], Cursor("github")) { PrState = PrLifecycle.Merged };
         var ado = new MockPrProvider("ado", [], Cursor("ado")) { PrState = PrLifecycle.Abandoned };
         IReadOnlyList<IPrProvider> providers = [github, ado];
-        var repo = new RepoIdentity { Provider = "github", OrgOrOwner = "acme", RepoName = "widgets" };
+        var repo = new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "acme",
+            RepoName = "widgets",
+        };
 
         var githubState = await PrLifecycleSweepSeam.ResolveLifecycleAsync(
-            providers, new ReviewedPr(repo, "github", "42", "review/widgets-42"), CancellationToken.None);
+            providers,
+            new ReviewedPr(repo, "github", "42", "review/widgets-42"),
+            CancellationToken.None
+        );
         var adoState = await PrLifecycleSweepSeam.ResolveLifecycleAsync(
-            providers, new ReviewedPr(repo, "ado", "7", "review/widgets-7"), CancellationToken.None);
+            providers,
+            new ReviewedPr(repo, "ado", "7", "review/widgets-7"),
+            CancellationToken.None
+        );
 
         githubState.Should().Be(PrLifecycle.Merged, "the github PR routes to the github provider's state");
         adoState.Should().Be(PrLifecycle.Abandoned, "the ado PR routes to the ado provider's state");
@@ -71,19 +107,29 @@ public sealed class PrLifecycleSweepSeamTests
     public async Task ResolveLifecycleAsync_throws_when_no_provider_matches()
     {
         IReadOnlyList<IPrProvider> providers = [new MockPrProvider("github", [], Cursor("github"))];
-        var repo = new RepoIdentity { Provider = "github", OrgOrOwner = "acme", RepoName = "widgets" };
+        var repo = new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "acme",
+            RepoName = "widgets",
+        };
 
-        var act = () => PrLifecycleSweepSeam.ResolveLifecycleAsync(
-            providers, new ReviewedPr(repo, "ado", "7", "review/widgets-7"), CancellationToken.None);
+        var act = () =>
+            PrLifecycleSweepSeam.ResolveLifecycleAsync(
+                providers,
+                new ReviewedPr(repo, "ado", "7", "review/widgets-7"),
+                CancellationToken.None
+            );
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*ado*");
     }
 
-    private static OpaqueCursor Cursor(string provider) => new()
-    {
-        Provider = provider,
-        Scope = "scope",
-        CursorVersion = 1,
-        CursorPayload = "{}",
-    };
+    private static OpaqueCursor Cursor(string provider) =>
+        new()
+        {
+            Provider = provider,
+            Scope = "scope",
+            CursorVersion = 1,
+            CursorPayload = "{}",
+        };
 }

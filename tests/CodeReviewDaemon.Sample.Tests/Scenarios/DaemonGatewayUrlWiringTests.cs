@@ -31,7 +31,8 @@ public sealed class DaemonGatewayUrlWiringTests
             Assert.Fail(
                 $"CRD_SANDBOX_GATEWAY is set to '{env}' in this process's environment. It overrides the "
                     + "profile value these tests configure, so they cannot observe the profile path. Unset it "
-                    + "and re-run.");
+                    + "and re-run."
+            );
         }
     }
 
@@ -42,13 +43,17 @@ public sealed class DaemonGatewayUrlWiringTests
 
         using var factory = new DaemonWebAppFactory();
         using var configured = factory.WithWebHostBuilder(builder =>
-            builder.UseSetting("SandboxGateway:BaseUrl", ProfileGatewayUrl));
+            builder.UseSetting("SandboxGateway:BaseUrl", ProfileGatewayUrl)
+        );
 
         var adapter = configured.Services.GetRequiredService<SandboxSessionAdapter>();
 
-        adapter.GatewayBaseUrl.Should().Be(
-            ProfileGatewayUrl,
-            "a profile-only gateway URL must reach the boot adapter, not just the rest of the graph");
+        adapter
+            .GatewayBaseUrl.Should()
+            .Be(
+                ProfileGatewayUrl,
+                "a profile-only gateway URL must reach the boot adapter, not just the rest of the graph"
+            );
     }
 
     [Fact]
@@ -58,7 +63,8 @@ public sealed class DaemonGatewayUrlWiringTests
 
         using var factory = new DaemonWebAppFactory();
         using var configured = factory.WithWebHostBuilder(builder =>
-            builder.UseSetting("SandboxGateway:BaseUrl", ProfileGatewayUrl));
+            builder.UseSetting("SandboxGateway:BaseUrl", ProfileGatewayUrl)
+        );
 
         var adapter = configured.Services.GetRequiredService<SandboxSessionAdapter>();
         var provisioner = configured.Services.GetRequiredService<IReviewSessionProvisioner>();
@@ -66,8 +72,11 @@ public sealed class DaemonGatewayUrlWiringTests
         // The provisioner is constructed from the single resolved `gatewayBaseUrl`; the adapter must share
         // it. Comparing the two consumers (rather than either against a literal) is what pins "one source of
         // truth" regardless of which source the resolution order happened to pick.
-        adapter.GatewayBaseUrl.Should().Be(
-            ((ReviewSessionProvisioner)provisioner).GatewayBaseUrl,
-            "every gateway consumer must be handed the same resolved gateway URL");
+        adapter
+            .GatewayBaseUrl.Should()
+            .Be(
+                ((ReviewSessionProvisioner)provisioner).GatewayBaseUrl,
+                "every gateway consumer must be handed the same resolved gateway URL"
+            );
     }
 }

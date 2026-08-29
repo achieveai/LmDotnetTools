@@ -38,7 +38,8 @@ public sealed class WebhookVerificationMiddlewareTests
         long? declaredContentLength = null,
         long maxBodyBytes = 1_048_576,
         DeliveryReplayCache? replayCache = null,
-        bool signValidly = true)
+        bool signValidly = true
+    )
     {
         body ??= Body;
 
@@ -46,9 +47,7 @@ public sealed class WebhookVerificationMiddlewareTests
         // clock rather than a fixture constant — freshness is the verifier's concern, tested there.
         timestamp ??= DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
         var secret = new WebhookSigningSecret(Secret);
-        signature ??= signValidly && deliveryId is not null
-            ? secret.ComputeHex(timestamp, deliveryId, body)
-            : "00";
+        signature ??= signValidly && deliveryId is not null ? secret.ComputeHex(timestamp, deliveryId, body) : "00";
 
         var context = new DefaultHttpContext();
         context.Request.Method = method;
@@ -78,7 +77,8 @@ public sealed class WebhookVerificationMiddlewareTests
             new WebhookRequestVerifier(secret, ["github", "ado"], TimeSpan.FromMinutes(5), maxBodyBytes),
             replayCache ?? new DeliveryReplayCache(TimeSpan.FromMinutes(10)),
             new WebhookVerificationLimits { MaxBodyBytes = maxBodyBytes },
-            NullLogger<WebhookVerificationMiddleware>.Instance);
+            NullLogger<WebhookVerificationMiddleware>.Instance
+        );
 
         await middleware.InvokeAsync(context).ConfigureAwait(false);
 
@@ -86,7 +86,8 @@ public sealed class WebhookVerificationMiddlewareTests
             context.Response.StatusCode,
             Encoding.UTF8.GetString(responseBody.ToArray()),
             reachedNext,
-            bodySeenDownstream);
+            bodySeenDownstream
+        );
     }
 
     [Fact]
@@ -112,8 +113,8 @@ public sealed class WebhookVerificationMiddlewareTests
     }
 
     [Theory]
-    [InlineData("/api/auth/webhook")]              // no provider segment
-    [InlineData("/api/auth/webhook/")]             // empty provider segment
+    [InlineData("/api/auth/webhook")] // no provider segment
+    [InlineData("/api/auth/webhook/")] // empty provider segment
     [InlineData("/api/auth/webhook/github/extra")] // suffix path — must not consume a delivery id
     public async Task A_near_miss_route_is_not_verified(string path)
     {
@@ -230,10 +231,16 @@ public sealed class WebhookVerificationMiddlewareTests
 
         var middleware = new WebhookVerificationMiddleware(
             _ => Task.CompletedTask,
-            new WebhookRequestVerifier(new WebhookSigningSecret(Secret), ["github"], TimeSpan.FromMinutes(5), 1_048_576),
+            new WebhookRequestVerifier(
+                new WebhookSigningSecret(Secret),
+                ["github"],
+                TimeSpan.FromMinutes(5),
+                1_048_576
+            ),
             new DeliveryReplayCache(TimeSpan.FromMinutes(10)),
             new WebhookVerificationLimits(),
-            NullLogger<WebhookVerificationMiddleware>.Instance);
+            NullLogger<WebhookVerificationMiddleware>.Instance
+        );
 
         await middleware.InvokeAsync(context);
 
@@ -252,22 +259,34 @@ public sealed class WebhookVerificationMiddlewareTests
         }
 
         WebhookVerificationMiddleware.IsWebhookRoute(Request("POST", "/api/auth/webhook/github")).Should().BeTrue();
-        WebhookVerificationMiddleware.IsWebhookRoute(Request("POST", "/API/Auth/Webhook/github")).Should().BeTrue("the prefix match is case-insensitive");
+        WebhookVerificationMiddleware
+            .IsWebhookRoute(Request("POST", "/API/Auth/Webhook/github"))
+            .Should()
+            .BeTrue("the prefix match is case-insensitive");
         WebhookVerificationMiddleware.IsWebhookRoute(Request("GET", "/api/auth/webhook/github")).Should().BeFalse();
         WebhookVerificationMiddleware.IsWebhookRoute(Request("POST", "/api/auth/webhook")).Should().BeFalse();
-        WebhookVerificationMiddleware.IsWebhookRoute(Request("POST", "/api/auth/webhook/github/extra")).Should().BeFalse();
+        WebhookVerificationMiddleware
+            .IsWebhookRoute(Request("POST", "/api/auth/webhook/github/extra"))
+            .Should()
+            .BeFalse();
     }
 
     [Fact]
     public void The_middleware_rejects_null_collaborators()
     {
-        var verifier = new WebhookRequestVerifier(new WebhookSigningSecret(Secret), ["github"], TimeSpan.FromMinutes(5), 16);
+        var verifier = new WebhookRequestVerifier(
+            new WebhookSigningSecret(Secret),
+            ["github"],
+            TimeSpan.FromMinutes(5),
+            16
+        );
         var cache = new DeliveryReplayCache(TimeSpan.FromMinutes(10));
         var limits = new WebhookVerificationLimits();
         var logger = NullLogger<WebhookVerificationMiddleware>.Instance;
 
         var nullNext = () => new WebhookVerificationMiddleware(null!, verifier, cache, limits, logger);
-        var nullLimits = () => new WebhookVerificationMiddleware(_ => Task.CompletedTask, verifier, cache, null!, logger);
+        var nullLimits = () =>
+            new WebhookVerificationMiddleware(_ => Task.CompletedTask, verifier, cache, null!, logger);
 
         nullNext.Should().Throw<ArgumentNullException>().WithParameterName("next");
         nullLimits.Should().Throw<ArgumentNullException>().WithParameterName("limits");

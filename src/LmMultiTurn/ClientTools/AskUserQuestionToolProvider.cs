@@ -55,10 +55,12 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
             {
                 ["label"] = JsonSchemaObject.String("Display text for this choice."),
                 ["value"] = JsonSchemaObject.String(
-                    "Stable identifier echoed back in the answer. Defaults to 'label' when omitted."),
+                    "Stable identifier echoed back in the answer. Defaults to 'label' when omitted."
+                ),
                 ["description"] = JsonSchemaObject.String("Optional short explanation shown under the label."),
                 ["preview"] = JsonSchemaObject.String(
-                    "Optional markdown preview (code, diagram, mockup) shown when this option is focused."),
+                    "Optional markdown preview (code, diagram, mockup) shown when this option is focused."
+                ),
             },
         };
 
@@ -70,12 +72,14 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
             Properties = new Dictionary<string, JsonSchemaObject>
             {
                 ["id"] = JsonSchemaObject.String(
-                    "Optional stable id echoed back in the answer. Defaults to \"q{index}\" (0-based)."),
+                    "Optional stable id echoed back in the answer. Defaults to \"q{index}\" (0-based)."
+                ),
                 ["prompt"] = JsonSchemaObject.String("The question text."),
                 ["description"] = JsonSchemaObject.String("Optional additional context for this question."),
                 ["allowMultiple"] = JsonSchemaObject.Boolean("Allow selecting more than one option. Default false."),
                 ["allowOther"] = JsonSchemaObject.Boolean(
-                    "Allow a free-text \"Other\" answer alongside/instead of the listed options. Default false."),
+                    "Allow a free-text \"Other\" answer alongside/instead of the listed options. Default false."
+                ),
                 ["options"] = JsonSchemaObject.Array(optionSchema, "One or more selectable choices."),
             },
         };
@@ -110,13 +114,15 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
     private Task<ToolHandlerResult> HandleAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (string.IsNullOrEmpty(context.ToolCallId))
         {
             return FromError(
                 "missing_tool_call_id",
-                "AskUserQuestion requires a tool_call_id to correlate the deferred answer.");
+                "AskUserQuestion requires a tool_call_id to correlate the deferred answer."
+            );
         }
 
         if (!TryParseArgs(argsJson, out var parsed, out var errorCode, out var errorMessage))
@@ -138,7 +144,8 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
         string? argsJson,
         out AskUserQuestionArgs? parsed,
         out string? errorCode,
-        out string? errorMessage)
+        out string? errorMessage
+    )
     {
         parsed = null;
         errorCode = null;
@@ -173,10 +180,10 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
                 return false;
             }
 
-            var contextText = root.TryGetProperty("context", out var contextEl)
-                && contextEl.ValueKind == JsonValueKind.String
-                ? contextEl.GetString()
-                : null;
+            var contextText =
+                root.TryGetProperty("context", out var contextEl) && contextEl.ValueKind == JsonValueKind.String
+                    ? contextEl.GetString()
+                    : null;
             if (string.IsNullOrWhiteSpace(contextText))
             {
                 errorCode = "missing_context";
@@ -184,8 +191,7 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
                 return false;
             }
 
-            if (!root.TryGetProperty("questions", out var questionsEl)
-                || questionsEl.ValueKind != JsonValueKind.Array)
+            if (!root.TryGetProperty("questions", out var questionsEl) || questionsEl.ValueKind != JsonValueKind.Array)
             {
                 errorCode = "invalid_question_count";
                 errorMessage = "AskUserQuestion requires a non-empty 'questions' array (1-4 entries).";
@@ -219,9 +225,11 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
                     return false;
                 }
 
-                if (!qEl.TryGetProperty("options", out var optionsEl)
+                if (
+                    !qEl.TryGetProperty("options", out var optionsEl)
                     || optionsEl.ValueKind != JsonValueKind.Array
-                    || optionsEl.GetArrayLength() == 0)
+                    || optionsEl.GetArrayLength() == 0
+                )
                 {
                     errorCode = "no_options";
                     errorMessage = $"Question at index {i} ('{prompt}') requires at least one option.";
@@ -250,21 +258,27 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
                         return false;
                     }
 
-                    options.Add(new AskUserQuestionOptionSpec(
-                        label,
-                        effectiveValue,
-                        GetString(optEl, "description"),
-                        GetString(optEl, "preview")));
+                    options.Add(
+                        new AskUserQuestionOptionSpec(
+                            label,
+                            effectiveValue,
+                            GetString(optEl, "description"),
+                            GetString(optEl, "preview")
+                        )
+                    );
                 }
 
                 var id = GetString(qEl, "id");
-                questions.Add(new AskUserQuestionSpec(
-                    string.IsNullOrWhiteSpace(id) ? $"q{i}" : id,
-                    prompt,
-                    GetString(qEl, "description"),
-                    GetBool(qEl, "allowMultiple"),
-                    GetBool(qEl, "allowOther"),
-                    options));
+                questions.Add(
+                    new AskUserQuestionSpec(
+                        string.IsNullOrWhiteSpace(id) ? $"q{i}" : id,
+                        prompt,
+                        GetString(qEl, "description"),
+                        GetBool(qEl, "allowMultiple"),
+                        GetBool(qEl, "allowOther"),
+                        options
+                    )
+                );
             }
 
             parsed = new AskUserQuestionArgs(contextText, questions);
@@ -275,13 +289,20 @@ public sealed class AskUserQuestionToolProvider : IFunctionProvider
     private static Task<ToolHandlerResult> FromError(string code, string message) =>
         Task.FromResult<ToolHandlerResult>(
             ToolHandlerResult.FromError(
-                JsonSerializer.Serialize(new { status = "rejected", reason = code, message }),
-                code));
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        status = "rejected",
+                        reason = code,
+                        message,
+                    }
+                ),
+                code
+            )
+        );
 
     private static string? GetString(JsonElement el, string name) =>
-        el.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
+        el.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
     private static bool GetBool(JsonElement el, string name) =>
         el.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
@@ -297,11 +318,8 @@ internal sealed record AskUserQuestionSpec(
     string? Description,
     bool AllowMultiple,
     bool AllowOther,
-    IReadOnlyList<AskUserQuestionOptionSpec> Options);
+    IReadOnlyList<AskUserQuestionOptionSpec> Options
+);
 
 /// <summary>One selectable option within a question.</summary>
-internal sealed record AskUserQuestionOptionSpec(
-    string Label,
-    string Value,
-    string? Description,
-    string? Preview);
+internal sealed record AskUserQuestionOptionSpec(string Label, string Value, string? Description, string? Preview);

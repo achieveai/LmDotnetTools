@@ -17,8 +17,10 @@ public class UsageRecordMapperTests
     [Fact]
     public void FromUsageMessage_MapsCacheCreationTokens_FromClrInt()
     {
-        var usage = new Usage { PromptTokens = 100, CompletionTokens = 40 }
-            .SetExtraProperty("cache_creation_input_tokens", 25);
+        var usage = new Usage { PromptTokens = 100, CompletionTokens = 40 }.SetExtraProperty(
+            "cache_creation_input_tokens",
+            25
+        );
         var message = new UsageMessage { Usage = usage, GenerationId = "gen-1" };
 
         var record = UsageRecordMapper.FromUsageMessage(message, "root", UsageExecutionKind.Primary, "model-A");
@@ -32,8 +34,10 @@ public class UsageRecordMapperTests
     {
         // Providers/persistence re-hydrate ExtraProperties values as JsonElement — the mapper must read the
         // cache-creation count in that shape too.
-        var usage = new Usage { PromptTokens = 100, CompletionTokens = 40 }
-            .SetExtraProperty("cache_creation_input_tokens", JsonSerializer.SerializeToElement(25));
+        var usage = new Usage { PromptTokens = 100, CompletionTokens = 40 }.SetExtraProperty(
+            "cache_creation_input_tokens",
+            JsonSerializer.SerializeToElement(25)
+        );
         var message = new UsageMessage { Usage = usage, GenerationId = "gen-1" };
 
         var record = UsageRecordMapper.FromUsageMessage(message, "root", UsageExecutionKind.Primary, "model-A");
@@ -44,7 +48,12 @@ public class UsageRecordMapperTests
     [Fact]
     public void FromUsageMessage_StampsProviderReportedProvenance_WhenProviderCostPresent()
     {
-        var usage = new Usage { PromptTokens = 100, CompletionTokens = 40, TotalCost = 0.01 };
+        var usage = new Usage
+        {
+            PromptTokens = 100,
+            CompletionTokens = 40,
+            TotalCost = 0.01,
+        };
         var message = new UsageMessage { Usage = usage, GenerationId = "gen-1" };
 
         var record = UsageRecordMapper.FromUsageMessage(message, "root", UsageExecutionKind.Primary, "model-A");
@@ -69,16 +78,21 @@ public class UsageRecordMapperTests
     public void CacheCreationTokens_FoldAdditively_IntoAggregateTotal()
     {
         var ledger = new UsageLedger("root");
-        ledger.RecordUsage(UsageRecordMapper.FromUsageMessage(
-            new UsageMessage
-            {
-                Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 }
-                    .SetExtraProperty("cache_creation_input_tokens", 25),
-                GenerationId = "gen-1",
-            },
-            "root",
-            UsageExecutionKind.Primary,
-            "model-A"));
+        ledger.RecordUsage(
+            UsageRecordMapper.FromUsageMessage(
+                new UsageMessage
+                {
+                    Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 }.SetExtraProperty(
+                        "cache_creation_input_tokens",
+                        25
+                    ),
+                    GenerationId = "gen-1",
+                },
+                "root",
+                UsageExecutionKind.Primary,
+                "model-A"
+            )
+        );
 
         var snapshot = ledger.Snapshot();
         snapshot.PerModel.Should().ContainSingle();
@@ -91,8 +105,14 @@ public class UsageRecordMapperTests
     {
         // Two separate provider calls arriving without a generation/run id but with different usage must NOT
         // be merged into one attempt by a shared constant key — that would MAX-collapse and undercount (#196).
-        var first = new UsageMessage { Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 } };
-        var second = new UsageMessage { Usage = new Usage { PromptTokens = 30, CompletionTokens = 10 } };
+        var first = new UsageMessage
+        {
+            Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+        };
+        var second = new UsageMessage
+        {
+            Usage = new Usage { PromptTokens = 30, CompletionTokens = 10 },
+        };
 
         var ledger = new UsageLedger("root");
         ledger.RecordUsage(UsageRecordMapper.FromUsageMessage(first, "root", UsageExecutionKind.Primary, "m"));
@@ -108,7 +128,10 @@ public class UsageRecordMapperTests
     public void FromUsageMessage_WithoutIds_SameObservationDedups()
     {
         // An exact replay of the same id-less observation must still resolve to one attempt.
-        var message = new UsageMessage { Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 } };
+        var message = new UsageMessage
+        {
+            Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+        };
 
         var first = UsageRecordMapper.FromUsageMessage(message, "root", UsageExecutionKind.Primary, "m");
         var second = UsageRecordMapper.FromUsageMessage(message, "root", UsageExecutionKind.Primary, "m");
@@ -129,8 +152,7 @@ public class UsageRecordMapperTests
             GenerationId = "gen-1",
         };
 
-        var record = UsageRecordMapper.FromUsageMessage(
-            message, "root", UsageExecutionKind.Primary, "model-A", clock);
+        var record = UsageRecordMapper.FromUsageMessage(message, "root", UsageExecutionKind.Primary, "model-A", clock);
 
         record.OccurredAtUtc.Should().Be(clock.Now);
     }
@@ -142,10 +164,15 @@ public class UsageRecordMapperTests
         // unstamped record is indistinguishable from a legacy one and drops out of the rollup entirely.
         var before = DateTimeOffset.UtcNow;
         var record = UsageRecordMapper.FromUsageMessage(
-            new UsageMessage { Usage = new Usage { PromptTokens = 1 }, GenerationId = "gen-1" },
+            new UsageMessage
+            {
+                Usage = new Usage { PromptTokens = 1 },
+                GenerationId = "gen-1",
+            },
             "root",
             UsageExecutionKind.Primary,
-            "model-A");
+            "model-A"
+        );
         var after = DateTimeOffset.UtcNow;
 
         record.OccurredAtUtc.Should().NotBeNull();

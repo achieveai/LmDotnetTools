@@ -29,8 +29,9 @@ public sealed class GatewaySkillSupportGateTests
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
         var factory = new FakeReviewAgentLoopFactory();
-        var probe = new FakeGatewaySkillProbe(new GatewaySkillSupport(
-            HasReviewSkill: false, ReviewerAgentCount: 16, MarketplaceErrors: []));
+        var probe = new FakeGatewaySkillProbe(
+            new GatewaySkillSupport(HasReviewSkill: false, ReviewerAgentCount: 16, MarketplaceErrors: [])
+        );
         var lifetime = new RecordingHostLifetime();
         var executor = BuildExecutor(store, factory, S2SOptions(), probe, lifetime);
         var run = SeedRunWithContext(store, prId: "118");
@@ -41,11 +42,15 @@ public sealed class GatewaySkillSupportGateTests
         // same way, so the operator has to be told to fix the marketplace rather than left with a churn of
         // empty runs.
         (await act.Should().ThrowAsync<InvalidOperationException>())
-            .Which.Message.Should().Contain("RequireSkillSupport").And.Contain("MISSING");
+            .Which.Message.Should()
+            .Contain("RequireSkillSupport")
+            .And.Contain("MISSING");
         lifetime.StopCalls.Should().Be(1);
         factory.ToolContexts.Should().BeEmpty("no review loop may be built once the prerequisite check fails");
-        store.GetArtifacts(run.Id)
-            .Should().NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        store
+            .GetArtifacts(run.Id)
+            .Should()
+            .NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     [Fact]
@@ -53,8 +58,9 @@ public sealed class GatewaySkillSupportGateTests
     {
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
-        var probe = new FakeGatewaySkillProbe(new GatewaySkillSupport(
-            HasReviewSkill: true, ReviewerAgentCount: 0, MarketplaceErrors: []));
+        var probe = new FakeGatewaySkillProbe(
+            new GatewaySkillSupport(HasReviewSkill: true, ReviewerAgentCount: 0, MarketplaceErrors: [])
+        );
         var lifetime = new RecordingHostLifetime();
         var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), S2SOptions(), probe, lifetime);
         var run = SeedRunWithContext(store, prId: "118");
@@ -64,7 +70,8 @@ public sealed class GatewaySkillSupportGateTests
         // The mirror of the case above: the review procedure is there but there is nothing to dispatch the
         // deep passes to, so the review collapses to one agent reading a diff.
         (await act.Should().ThrowAsync<InvalidOperationException>())
-            .Which.Message.Should().Contain("sub-agents=0");
+            .Which.Message.Should()
+            .Contain("sub-agents=0");
         lifetime.StopCalls.Should().Be(1);
     }
 
@@ -73,12 +80,20 @@ public sealed class GatewaySkillSupportGateTests
     {
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
-        var probe = new FakeGatewaySkillProbe(new GatewaySkillSupport(
-            HasReviewSkill: false,
-            ReviewerAgentCount: 0,
-            MarketplaceErrors: ["gb-plugins: clone failed: authentication required"]));
+        var probe = new FakeGatewaySkillProbe(
+            new GatewaySkillSupport(
+                HasReviewSkill: false,
+                ReviewerAgentCount: 0,
+                MarketplaceErrors: ["gb-plugins: clone failed: authentication required"]
+            )
+        );
         var executor = BuildExecutor(
-            store, new FakeReviewAgentLoopFactory(), S2SOptions(), probe, new RecordingHostLifetime());
+            store,
+            new FakeReviewAgentLoopFactory(),
+            S2SOptions(),
+            probe,
+            new RecordingHostLifetime()
+        );
         var run = SeedRunWithContext(store, prId: "118");
 
         var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -87,7 +102,8 @@ public sealed class GatewaySkillSupportGateTests
         // fixes, so the gateway's own reason has to reach the operator rather than being flattened into the
         // former.
         (await act.Should().ThrowAsync<InvalidOperationException>())
-            .Which.Message.Should().Contain("authentication required");
+            .Which.Message.Should()
+            .Contain("authentication required");
     }
 
     [Fact]
@@ -96,8 +112,9 @@ public sealed class GatewaySkillSupportGateTests
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
         var factory = new FakeReviewAgentLoopFactory();
-        var probe = new FakeGatewaySkillProbe(new GatewaySkillSupport(
-            HasReviewSkill: true, ReviewerAgentCount: 16, MarketplaceErrors: []));
+        var probe = new FakeGatewaySkillProbe(
+            new GatewaySkillSupport(HasReviewSkill: true, ReviewerAgentCount: 16, MarketplaceErrors: [])
+        );
         var lifetime = new RecordingHostLifetime();
         var executor = BuildExecutor(store, factory, S2SOptions(), probe, lifetime);
         var first = SeedRunWithContext(store, prId: "118");
@@ -107,10 +124,17 @@ public sealed class GatewaySkillSupportGateTests
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, second, CancellationToken.None);
 
         lifetime.StopCalls.Should().Be(0);
-        store.GetArtifacts(first.Id)
-            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
-        factory.ToolContexts.Should().HaveCount(2).And.OnlyContain(c => c == null,
-            "S2S builds no daemon-side tool context — the tools live in the hosted conversation");
+        store
+            .GetArtifacts(first.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        factory
+            .ToolContexts.Should()
+            .HaveCount(2)
+            .And.OnlyContain(
+                c => c == null,
+                "S2S builds no daemon-side tool context — the tools live in the hosted conversation"
+            );
         // The catalog is process-lifetime gateway configuration, so re-reading it per review would add a
         // blocking gateway round-trip to every run for an answer that cannot have changed.
         probe.Calls.Should().Be(1);
@@ -137,8 +161,10 @@ public sealed class GatewaySkillSupportGateTests
         // provision its session. So: no stop, and the verdict stays uncached so the next run re-probes.
         lifetime.StopCalls.Should().Be(0);
         probe.Calls.Should().Be(2, "a read failure must not be cached as a verdict");
-        store.GetArtifacts(first.Id)
-            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        store
+            .GetArtifacts(first.Id)
+            .Should()
+            .Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
     [Fact]
@@ -170,7 +196,8 @@ public sealed class GatewaySkillSupportGateTests
             new FakeReviewAgentLoopFactory(),
             S2SOptions(requireSkillSupport: false),
             probe,
-            new RecordingHostLifetime());
+            new RecordingHostLifetime()
+        );
         var run = SeedRunWithContext(store, prId: "118");
 
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -192,7 +219,8 @@ public sealed class GatewaySkillSupportGateTests
             new FakeReviewAgentLoopFactory(),
             S2SOptions(enableToolAssistedReview: false),
             probe,
-            lifetime);
+            lifetime
+        );
         var run = SeedRunWithContext(store, prId: "118");
 
         var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -225,7 +253,9 @@ public sealed class GatewaySkillSupportGateTests
     }
 
     private static CodeReviewDaemonOptions S2SOptions(
-        bool requireSkillSupport = true, bool enableToolAssistedReview = true) =>
+        bool requireSkillSupport = true,
+        bool enableToolAssistedReview = true
+    ) =>
         new()
         {
             UseS2SReviewAgent = true,
@@ -240,7 +270,8 @@ public sealed class GatewaySkillSupportGateTests
         FakeReviewAgentLoopFactory factory,
         CodeReviewDaemonOptions options,
         IGatewaySkillProbe probe,
-        IHostApplicationLifetime lifetime)
+        IHostApplicationLifetime lifetime
+    )
     {
         // Only the HOSTED path's turns are durable, and the executor refuses an S2S review whose loop cannot
         // checkpoint them — so the double is resumable on exactly the path production is, and no other.
@@ -254,7 +285,8 @@ public sealed class GatewaySkillSupportGateTests
             [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
             appLifetime: lifetime,
-            skillProbe: probe);
+            skillProbe: probe
+        );
     }
 
     /// <summary>
@@ -263,37 +295,49 @@ public sealed class GatewaySkillSupportGateTests
     /// </summary>
     private static ReviewRun SeedRunWithContext(ReviewStore store, string prId)
     {
-        var repoId = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "repo-stable-1",
-        });
-        var run = store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = prId,
-            HeadSha = $"head-{prId}",
-            BaseSha = $"base-{prId}",
-            TriggerWatermark = $"wm-{prId}",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "collect-only",
-            Stage = ReviewStage.Discovered,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        });
+        var repoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-stable-1",
+            }
+        );
+        var run = store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = prId,
+                HeadSha = $"head-{prId}",
+                BaseSha = $"base-{prId}",
+                TriggerWatermark = $"wm-{prId}",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Running,
+                PrLifecycleState = PrLifecycleState.Open,
+            }
+        );
 
-        _ = store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.ContextArtifactKind,
-            Provider = "github",
-            Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
-                run.PrId, run.BaseSha, run.HeadSha, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;")),
-        });
+        _ = store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ContextArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new ContextArtifactPayload(
+                        run.PrId,
+                        run.BaseSha,
+                        run.HeadSha,
+                        "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;"
+                    )
+                ),
+            }
+        );
 
         return run;
     }

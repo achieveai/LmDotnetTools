@@ -55,7 +55,10 @@ public class JinaWebProviderTests
     [Fact]
     public async Task FetchAsync_WithKey_SendsAuthorization()
     {
-        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler("{\"data\":{\"content\":\"x\"}}", out var captured);
+        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler(
+            "{\"data\":{\"content\":\"x\"}}",
+            out var captured
+        );
         var provider = CreateProvider(handler, new WebToolsOptions { JinaApiKey = "secret-key-123" });
 
         _ = await provider.FetchAsync("https://example.com", new WebFetchOptions(), CancellationToken.None);
@@ -68,7 +71,10 @@ public class JinaWebProviderTests
     [Fact]
     public async Task FetchAsync_WithoutKey_OmitsAuthorization()
     {
-        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler("{\"data\":{\"content\":\"x\"}}", out var captured);
+        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler(
+            "{\"data\":{\"content\":\"x\"}}",
+            out var captured
+        );
         var provider = CreateProvider(handler, new WebToolsOptions());
 
         _ = await provider.FetchAsync("https://example.com", new WebFetchOptions(), CancellationToken.None);
@@ -79,7 +85,10 @@ public class JinaWebProviderTests
     [Fact]
     public async Task FetchAsync_TargetSelectorAndNoCache_SetHeaders()
     {
-        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler("{\"data\":{\"content\":\"x\"}}", out var captured);
+        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler(
+            "{\"data\":{\"content\":\"x\"}}",
+            out var captured
+        );
         var provider = CreateProvider(handler);
 
         _ = await provider.FetchAsync(
@@ -95,7 +104,10 @@ public class JinaWebProviderTests
     [Fact]
     public async Task FetchAsync_NoOptionalOptions_OmitsOptionalHeaders()
     {
-        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler("{\"data\":{\"content\":\"x\"}}", out var captured);
+        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler(
+            "{\"data\":{\"content\":\"x\"}}",
+            out var captured
+        );
         var provider = CreateProvider(handler);
 
         _ = await provider.FetchAsync("https://example.com", new WebFetchOptions(), CancellationToken.None);

@@ -25,7 +25,11 @@ public sealed class CodexSdkClient : ICodexSdkClient
     private CodexAppServerTransport? _transport;
     private ActiveRunState? _activeRun;
     private CodexBridgeInitOptions? _startupOptions;
-    private Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? _dynamicToolExecutor;
+    private Func<
+        CodexDynamicToolCallRequest,
+        CancellationToken,
+        Task<CodexDynamicToolCallResponse>
+    >? _dynamicToolExecutor;
     private int _isShuttingDown;
     private bool _disposed;
 
@@ -37,20 +41,16 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
     public string DependencyState { get; private set; } = "unknown";
 
-    public CodexSdkClient(
-        CodexSdkOptions options,
-        ILogger<CodexSdkClient>? logger = null)
+    public CodexSdkClient(CodexSdkOptions options, ILogger<CodexSdkClient>? logger = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger;
-        _json = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        };
+        _json = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     }
 
     public void ConfigureDynamicToolExecutor(
-        Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor)
+        Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor
+    )
     {
         _dynamicToolExecutor = executor;
     }
@@ -81,11 +81,11 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 _options.CodexCliPath,
                 _options.CodexCliMinVersion,
                 timeout,
-                ct);
+                ct
+            );
 
-            var workingDirectory = effectiveOptions.WorkingDirectory
-                ?? _options.WorkingDirectory
-                ?? Directory.GetCurrentDirectory();
+            var workingDirectory =
+                effectiveOptions.WorkingDirectory ?? _options.WorkingDirectory ?? Directory.GetCurrentDirectory();
             var transport = new CodexAppServerTransport(_options, _logger);
             transport.Closed += OnTransportClosed;
 
@@ -95,7 +95,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 effectiveOptions.BaseUrl,
                 HandleServerRequestAsync,
                 HandleServerNotification,
-                ct);
+                ct
+            );
 
             _transport = transport;
             _startupOptions = effectiveOptions;
@@ -105,30 +106,18 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 "initialize",
                 new
                 {
-                    clientInfo = new
-                    {
-                        name = "lm-dotnet-tools-codex-client",
-                        version = "0.3.0",
-                    },
-                    capabilities = new
-                    {
-                        experimentalApi = true,
-                    },
+                    clientInfo = new { name = "lm-dotnet-tools-codex-client", version = "0.3.0" },
+                    capabilities = new { experimentalApi = true },
                 },
                 ct,
-                startupTimeout);
+                startupTimeout
+            );
 
             await transport.SendNotificationAsync("initialized", null, ct);
 
             var threadResponse = !string.IsNullOrWhiteSpace(effectiveOptions.ThreadId)
-                ? await transport.SendRequestAsync(
-                    "thread/resume",
-                    BuildThreadResumeParams(effectiveOptions),
-                    ct)
-                : await transport.SendRequestAsync(
-                    "thread/start",
-                    BuildThreadStartParams(effectiveOptions),
-                    ct);
+                ? await transport.SendRequestAsync("thread/resume", BuildThreadResumeParams(effectiveOptions), ct)
+                : await transport.SendRequestAsync("thread/start", BuildThreadStartParams(effectiveOptions), ct);
             CurrentCodexThreadId = CodexEventParser.ExtractThreadId(threadResponse) ?? effectiveOptions.ThreadId;
             CurrentTurnId = null;
             DependencyState = "ready";
@@ -141,7 +130,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 _options.ProviderMode,
                 _options.CodexCliPath,
                 codexCliVersion,
-                CurrentCodexThreadId);
+                CurrentCodexThreadId
+            );
         }
         catch
         {
@@ -157,14 +147,17 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
     public async IAsyncEnumerable<CodexTurnEventEnvelope> RunStreamingAsync(
         string input,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(input);
 
         var transport = _transport;
         if (transport is null || !transport.IsRunning)
         {
-            throw new InvalidOperationException("Codex app-server is not running. Call StartOrResumeThreadAsync first.");
+            throw new InvalidOperationException(
+                "Codex app-server is not running. Call StartOrResumeThreadAsync first."
+            );
         }
 
         if (string.IsNullOrWhiteSpace(CurrentCodexThreadId))
@@ -188,7 +181,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
             _options.Provider,
             _options.ProviderMode,
             requestId,
-            CurrentCodexThreadId);
+            CurrentCodexThreadId
+        );
 
         var runTask = ExecuteTurnAsync(transport, input, runState, requestId, start, ct);
         try
@@ -212,14 +206,16 @@ public sealed class CodexSdkClient : ICodexSdkClient
         ActiveRunState runState,
         string requestId,
         Stopwatch start,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         try
         {
             var turnStart = await transport.SendRequestAsync(
                 "turn/start",
                 BuildTurnStartParams(CurrentCodexThreadId!, input),
-                ct);
+                ct
+            );
 
             var turnId = CodexEventParser.ExtractTurnId(turnStart);
             if (!string.IsNullOrWhiteSpace(turnId))
@@ -238,7 +234,9 @@ public sealed class CodexSdkClient : ICodexSdkClient
             {
                 if (CodexEventParser.IsTurnFailureStatus(immediateStatus))
                 {
-                    throw new InvalidOperationException(CodexEventParser.ExtractTurnErrorMessage(turnStart) ?? "Codex turn failed.");
+                    throw new InvalidOperationException(
+                        CodexEventParser.ExtractTurnErrorMessage(turnStart) ?? "Codex turn failed."
+                    );
                 }
 
                 runState.TryComplete(turnId);
@@ -258,7 +256,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 _options.ProviderMode,
                 requestId,
                 CurrentCodexThreadId,
-                start.ElapsedMilliseconds);
+                start.ElapsedMilliseconds
+            );
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -279,7 +278,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 requestId,
                 CurrentCodexThreadId,
                 "run_failed",
-                start.ElapsedMilliseconds);
+                start.ElapsedMilliseconds
+            );
             throw;
         }
     }
@@ -370,7 +370,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 _options.Provider,
                 _options.ProviderMode,
                 CurrentCodexThreadId,
-                CurrentTurnId);
+                CurrentTurnId
+            );
 
             _ = Interlocked.Exchange(ref _isShuttingDown, 0);
         }
@@ -391,7 +392,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                     "completed",
                     _options.Provider,
                     _options.ProviderMode,
-                    "app_server_stopped");
+                    "app_server_stopped"
+                );
             }
             else
             {
@@ -403,7 +405,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                     "failed",
                     _options.Provider,
                     _options.ProviderMode,
-                    "app_server_exited");
+                    "app_server_exited"
+                );
             }
         }
 
@@ -417,8 +420,10 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
     private void HandleServerNotification(string method, JsonElement? parameters)
     {
-        if (string.Equals(method, "thread/started", StringComparison.Ordinal)
-            || string.Equals(method, "thread.started", StringComparison.Ordinal))
+        if (
+            string.Equals(method, "thread/started", StringComparison.Ordinal)
+            || string.Equals(method, "thread.started", StringComparison.Ordinal)
+        )
         {
             var threadId = CodexEventParser.ExtractThreadId(parameters);
             if (!string.IsNullOrWhiteSpace(threadId))
@@ -433,8 +438,10 @@ public sealed class CodexSdkClient : ICodexSdkClient
             return;
         }
 
-        if (string.Equals(method, "turn/started", StringComparison.Ordinal)
-            || string.Equals(method, "turn.started", StringComparison.Ordinal))
+        if (
+            string.Equals(method, "turn/started", StringComparison.Ordinal)
+            || string.Equals(method, "turn.started", StringComparison.Ordinal)
+        )
         {
             var turnId = CodexEventParser.ExtractTurnId(parameters);
             if (!string.IsNullOrWhiteSpace(turnId))
@@ -470,22 +477,30 @@ public sealed class CodexSdkClient : ICodexSdkClient
             CurrentTurnId = eventTurnId;
         }
 
-        run.TryWriteEvent(new CodexTurnEventEnvelope
-        {
-            Type = "event",
-            Event = CreateRunEvent(method, parameters),
-            RequestId = run.RequestId,
-            ThreadId = CurrentCodexThreadId,
-            TurnId = eventTurnId,
-        });
+        run.TryWriteEvent(
+            new CodexTurnEventEnvelope
+            {
+                Type = "event",
+                Event = CreateRunEvent(method, parameters),
+                RequestId = run.RequestId,
+                ThreadId = CurrentCodexThreadId,
+                TurnId = eventTurnId,
+            }
+        );
 
-        if (string.Equals(method, "turn/completed", StringComparison.Ordinal)
-            || string.Equals(method, "turn.completed", StringComparison.Ordinal))
+        if (
+            string.Equals(method, "turn/completed", StringComparison.Ordinal)
+            || string.Equals(method, "turn.completed", StringComparison.Ordinal)
+        )
         {
             var status = CodexEventParser.ExtractTurnStatus(parameters);
             if (CodexEventParser.IsTurnFailureStatus(status))
             {
-                run.TryFail(new InvalidOperationException(CodexEventParser.ExtractTurnErrorMessage(parameters) ?? "Codex turn failed."));
+                run.TryFail(
+                    new InvalidOperationException(
+                        CodexEventParser.ExtractTurnErrorMessage(parameters) ?? "Codex turn failed."
+                    )
+                );
             }
             else
             {
@@ -494,17 +509,27 @@ public sealed class CodexSdkClient : ICodexSdkClient
         }
         else if (CodexEventParser.IsTurnFailureNotification(method))
         {
-            run.TryFail(new InvalidOperationException(CodexEventParser.ExtractTurnErrorMessage(parameters) ?? "Codex turn failed."));
+            run.TryFail(
+                new InvalidOperationException(
+                    CodexEventParser.ExtractTurnErrorMessage(parameters) ?? "Codex turn failed."
+                )
+            );
         }
-        else if (string.Equals(method, "turn/updated", StringComparison.Ordinal)
-                 || string.Equals(method, "turn.updated", StringComparison.Ordinal))
+        else if (
+            string.Equals(method, "turn/updated", StringComparison.Ordinal)
+            || string.Equals(method, "turn.updated", StringComparison.Ordinal)
+        )
         {
             var status = CodexEventParser.ExtractTurnStatus(parameters);
             if (!string.IsNullOrWhiteSpace(status) && CodexEventParser.IsTerminalTurnStatus(status))
             {
                 if (CodexEventParser.IsTurnFailureStatus(status))
                 {
-                    run.TryFail(new InvalidOperationException(CodexEventParser.ExtractTurnErrorMessage(parameters) ?? $"Codex turn {status}."));
+                    run.TryFail(
+                        new InvalidOperationException(
+                            CodexEventParser.ExtractTurnErrorMessage(parameters) ?? $"Codex turn {status}."
+                        )
+                    );
                 }
                 else
                 {
@@ -514,12 +539,20 @@ public sealed class CodexSdkClient : ICodexSdkClient
         }
     }
 
-    private async Task<JsonElement> HandleServerRequestAsync(string method, JsonElement? parameters, CancellationToken ct)
+    private async Task<JsonElement> HandleServerRequestAsync(
+        string method,
+        JsonElement? parameters,
+        CancellationToken ct
+    )
     {
         return method switch
         {
-            "item/commandExecution/requestApproval" => SerializeToElement(new { decision = BuildDefaultCommandApprovalDecision() }),
-            "item/fileChange/requestApproval" => SerializeToElement(new { decision = BuildDefaultFileApprovalDecision() }),
+            "item/commandExecution/requestApproval" => SerializeToElement(
+                new { decision = BuildDefaultCommandApprovalDecision() }
+            ),
+            "item/fileChange/requestApproval" => SerializeToElement(
+                new { decision = BuildDefaultFileApprovalDecision() }
+            ),
             "item/tool/requestUserInput" => SerializeToElement(new { answers = new Dictionary<string, string>() }),
             "item/tool/call" => await HandleDynamicToolCallAsync(parameters, ct),
             "account/chatgptAuthTokens/refresh" => CodexEventParser.CreateEmptyObject(),
@@ -537,7 +570,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
             TurnId = CodexEventParser.GetPropertyString(parameters, "turnId"),
             CallId = CodexEventParser.GetPropertyString(parameters, "callId"),
             Tool = toolName,
-            Arguments = CodexEventParser.GetPropertyElement(parameters, "arguments") ?? CodexEventParser.CreateEmptyObject(),
+            Arguments =
+                CodexEventParser.GetPropertyElement(parameters, "arguments") ?? CodexEventParser.CreateEmptyObject(),
         };
         EmitDynamicToolLifecycleEvent("item/started", request, null, null);
 
@@ -550,7 +584,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
             toolName,
             request.CallId,
             request.ThreadId,
-            request.TurnId);
+            request.TurnId
+        );
 
         CodexDynamicToolCallResponse response;
         if (_dynamicToolExecutor == null)
@@ -572,7 +607,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                     "failed",
                     _options.Provider,
                     _options.ProviderMode,
-                    toolName);
+                    toolName
+                );
 
                 response = BuildToolBridgeFailure(ex.Message);
             }
@@ -589,17 +625,20 @@ public sealed class CodexSdkClient : ICodexSdkClient
             request.ThreadId,
             request.TurnId,
             response.Success ? "allow" : "deny",
-            stopwatch.ElapsedMilliseconds);
+            stopwatch.ElapsedMilliseconds
+        );
         EmitDynamicToolLifecycleEvent("item/completed", request, response, stopwatch.ElapsedMilliseconds);
 
-        return SerializeToElement(new
-        {
-            success = response.Success,
-            contentItems = NormalizeToolResponseItems(response.ContentItems),
-        });
+        return SerializeToElement(
+            new { success = response.Success, contentItems = NormalizeToolResponseItems(response.ContentItems) }
+        );
     }
 
-    private async Task TryInterruptTurnInternalAsync(CodexAppServerTransport transport, string turnId, CancellationToken ct)
+    private async Task TryInterruptTurnInternalAsync(
+        CodexAppServerTransport transport,
+        string turnId,
+        CancellationToken ct
+    )
     {
         if (string.IsNullOrWhiteSpace(CurrentCodexThreadId) || string.IsNullOrWhiteSpace(turnId))
         {
@@ -610,13 +649,10 @@ public sealed class CodexSdkClient : ICodexSdkClient
         {
             _ = await transport.SendRequestAsync(
                 "turn/interrupt",
-                new
-                {
-                    threadId = CurrentCodexThreadId,
-                    turnId,
-                },
+                new { threadId = CurrentCodexThreadId, turnId },
                 ct,
-                TimeSpan.FromSeconds(30));
+                TimeSpan.FromSeconds(30)
+            );
         }
         catch (Exception ex)
         {
@@ -627,7 +663,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 "failed",
                 _options.Provider,
                 _options.ProviderMode,
-                turnId);
+                turnId
+            );
         }
     }
 
@@ -636,17 +673,29 @@ public sealed class CodexSdkClient : ICodexSdkClient
         return options with
         {
             Model = string.IsNullOrWhiteSpace(options.Model) ? _options.Model : options.Model,
-            ApprovalPolicy = string.IsNullOrWhiteSpace(options.ApprovalPolicy) ? _options.ApprovalPolicy : options.ApprovalPolicy,
+            ApprovalPolicy = string.IsNullOrWhiteSpace(options.ApprovalPolicy)
+                ? _options.ApprovalPolicy
+                : options.ApprovalPolicy,
             SandboxMode = string.IsNullOrWhiteSpace(options.SandboxMode) ? _options.SandboxMode : options.SandboxMode,
-            WebSearchMode = string.IsNullOrWhiteSpace(options.WebSearchMode) ? _options.WebSearchMode : options.WebSearchMode,
-            WorkingDirectory = string.IsNullOrWhiteSpace(options.WorkingDirectory) ? _options.WorkingDirectory : options.WorkingDirectory,
+            WebSearchMode = string.IsNullOrWhiteSpace(options.WebSearchMode)
+                ? _options.WebSearchMode
+                : options.WebSearchMode,
+            WorkingDirectory = string.IsNullOrWhiteSpace(options.WorkingDirectory)
+                ? _options.WorkingDirectory
+                : options.WorkingDirectory,
             BaseInstructions = string.IsNullOrWhiteSpace(options.BaseInstructions) ? null : options.BaseInstructions,
-            DeveloperInstructions = string.IsNullOrWhiteSpace(options.DeveloperInstructions) ? null : options.DeveloperInstructions,
-            ModelInstructionsFile = string.IsNullOrWhiteSpace(options.ModelInstructionsFile) ? null : options.ModelInstructionsFile,
+            DeveloperInstructions = string.IsNullOrWhiteSpace(options.DeveloperInstructions)
+                ? null
+                : options.DeveloperInstructions,
+            ModelInstructionsFile = string.IsNullOrWhiteSpace(options.ModelInstructionsFile)
+                ? null
+                : options.ModelInstructionsFile,
             BaseUrl = string.IsNullOrWhiteSpace(options.BaseUrl) ? _options.BaseUrl : options.BaseUrl,
             ApiKey = string.IsNullOrWhiteSpace(options.ApiKey) ? _options.ApiKey : options.ApiKey,
             DisabledFeatures = options.DisabledFeatures ?? _options.DisabledFeatures,
-            ReasoningEffort = string.IsNullOrWhiteSpace(options.ReasoningEffort) ? _options.ReasoningEffort : options.ReasoningEffort,
+            ReasoningEffort = string.IsNullOrWhiteSpace(options.ReasoningEffort)
+                ? _options.ReasoningEffort
+                : options.ReasoningEffort,
         };
     }
 
@@ -668,23 +717,22 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
         if (options.DynamicTools is { Count: > 0 })
         {
-            parameters["dynamicTools"] = options.DynamicTools.Select(tool =>
-            {
-                object inputSchema = tool.InputSchema.ValueKind == JsonValueKind.Undefined
-                    ? new Dictionary<string, object?>
-                    {
-                        ["type"] = "object",
-                        ["additionalProperties"] = true,
-                    }
-                    : tool.InputSchema;
-
-                return new Dictionary<string, object?>
+            parameters["dynamicTools"] = options
+                .DynamicTools.Select(tool =>
                 {
-                    ["name"] = tool.Name,
-                    ["description"] = tool.Description ?? string.Empty,
-                    ["inputSchema"] = inputSchema,
-                };
-            }).ToArray();
+                    object inputSchema =
+                        tool.InputSchema.ValueKind == JsonValueKind.Undefined
+                            ? new Dictionary<string, object?> { ["type"] = "object", ["additionalProperties"] = true }
+                            : tool.InputSchema;
+
+                    return new Dictionary<string, object?>
+                    {
+                        ["name"] = tool.Name,
+                        ["description"] = tool.Description ?? string.Empty,
+                        ["inputSchema"] = inputSchema,
+                    };
+                })
+                .ToArray();
         }
 
         return parameters;
@@ -728,7 +776,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
     private static void ApplyModelProviderOverride(
         Dictionary<string, object?> parameters,
-        CodexBridgeInitOptions options)
+        CodexBridgeInitOptions options
+    )
     {
         if (!string.IsNullOrWhiteSpace(options.BaseUrl))
         {
@@ -740,10 +789,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
     {
         var config = new Dictionary<string, object?>
         {
-            ["sandbox_workspace_write"] = new
-            {
-                network_access = options.NetworkAccessEnabled,
-            },
+            ["sandbox_workspace_write"] = new { network_access = options.NetworkAccessEnabled },
         };
 
         AddResponsesModelProviderConfig(config, options);
@@ -789,7 +835,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
     private static void AddResponsesModelProviderConfig(
         Dictionary<string, object?> config,
-        CodexBridgeInitOptions options)
+        CodexBridgeInitOptions options
+    )
     {
         if (string.IsNullOrWhiteSpace(options.BaseUrl))
         {
@@ -811,26 +858,19 @@ public sealed class CodexSdkClient : ICodexSdkClient
         }
 
         config["model_provider"] = ResponsesModelProviderId;
-        config["model_providers"] = new Dictionary<string, object?>
-        {
-            [ResponsesModelProviderId] = provider,
-        };
+        config["model_providers"] = new Dictionary<string, object?> { [ResponsesModelProviderId] = provider };
     }
 
     private string BuildDefaultCommandApprovalDecision()
     {
         var policy = _startupOptions?.ApprovalPolicy ?? _options.ApprovalPolicy;
-        return string.Equals(policy, "never", StringComparison.OrdinalIgnoreCase)
-            ? "decline"
-            : "acceptForSession";
+        return string.Equals(policy, "never", StringComparison.OrdinalIgnoreCase) ? "decline" : "acceptForSession";
     }
 
     private string BuildDefaultFileApprovalDecision()
     {
         var policy = _startupOptions?.ApprovalPolicy ?? _options.ApprovalPolicy;
-        return string.Equals(policy, "never", StringComparison.OrdinalIgnoreCase)
-            ? "decline"
-            : "acceptForSession";
+        return string.Equals(policy, "never", StringComparison.OrdinalIgnoreCase) ? "decline" : "acceptForSession";
     }
 
     private bool TryHandleInternalToolNotification(string method, JsonElement? parameters, ActiveRunState run)
@@ -842,7 +882,14 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
         if (CodexEventParser.IsItemStartedMethod(method) || CodexEventParser.IsItemCompletedMethod(method))
         {
-            if (!CodexEventParser.TryParseInternalToolItem(parameters, out var item, out var toolName, out var toolCallId))
+            if (
+                !CodexEventParser.TryParseInternalToolItem(
+                    parameters,
+                    out var item,
+                    out var toolName,
+                    out var toolCallId
+                )
+            )
             {
                 return false;
             }
@@ -870,7 +917,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                     completion.Error,
                     sourceMethod,
                     eventThreadId,
-                    eventTurnId);
+                    eventTurnId
+                );
             }
 
             return true;
@@ -878,13 +926,15 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
         if (CodexEventParser.IsWebSearchBeginMethod(method) || CodexEventParser.IsWebSearchEndMethod(method))
         {
-            var eventPayload = CodexEventParser.GetPropertyElement(parameters, "msg")
-                               ?? CodexEventParser.GetPropertyElement(parameters, "event")
-                               ?? parameters?.Clone()
-                               ?? CodexEventParser.CreateEmptyObject();
-            var toolCallId = CodexEventParser.GetPropertyString(eventPayload, "call_id")
-                             ?? CodexEventParser.GetPropertyString(eventPayload, "callId")
-                             ?? CodexEventParser.GetPropertyString(eventPayload, "id");
+            var eventPayload =
+                CodexEventParser.GetPropertyElement(parameters, "msg")
+                ?? CodexEventParser.GetPropertyElement(parameters, "event")
+                ?? parameters?.Clone()
+                ?? CodexEventParser.CreateEmptyObject();
+            var toolCallId =
+                CodexEventParser.GetPropertyString(eventPayload, "call_id")
+                ?? CodexEventParser.GetPropertyString(eventPayload, "callId")
+                ?? CodexEventParser.GetPropertyString(eventPayload, "id");
             if (string.IsNullOrWhiteSpace(toolCallId))
             {
                 _logger?.LogWarning(
@@ -894,7 +944,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                     _options.Provider,
                     _options.ProviderMode,
                     method,
-                    "missing_call_id");
+                    "missing_call_id"
+                );
                 return false;
             }
 
@@ -912,7 +963,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                     arguments,
                     "codex/event/web_search_begin",
                     eventThreadId,
-                    eventTurnId);
+                    eventTurnId
+                );
             }
             else
             {
@@ -928,7 +980,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                     completion.Error,
                     "codex/event/web_search_end",
                     eventThreadId,
-                    eventTurnId);
+                    eventTurnId
+                );
             }
         }
 
@@ -942,7 +995,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
         JsonElement arguments,
         string sourceMethod,
         string? threadId,
-        string? turnId)
+        string? turnId
+    )
     {
         InternalToolSpan span;
         var now = DateTimeOffset.UtcNow;
@@ -950,11 +1004,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
         {
             if (!_internalToolSpans.TryGetValue(toolCallId, out span!))
             {
-                span = new InternalToolSpan
-                {
-                    ToolCallId = toolCallId,
-                    ToolName = toolName,
-                };
+                span = new InternalToolSpan { ToolCallId = toolCallId, ToolName = toolName };
                 _internalToolSpans[toolCallId] = span;
             }
 
@@ -972,7 +1022,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                     _options.ProviderMode,
                     toolName,
                     toolCallId,
-                    sourceMethod);
+                    sourceMethod
+                );
                 return;
             }
 
@@ -991,7 +1042,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
             toolCallId,
             threadId,
             turnId,
-            sourceMethod);
+            sourceMethod
+        );
 
         EmitInternalToolLifecycleEvent(
             run,
@@ -1002,7 +1054,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
             result: null,
             error: null,
             threadId,
-            turnId);
+            turnId
+        );
     }
 
     private void EmitInternalToolResult(
@@ -1015,7 +1068,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
         JsonElement? error,
         string sourceMethod,
         string? threadId,
-        string? turnId)
+        string? turnId
+    )
     {
         InternalToolSpan span;
         var now = DateTimeOffset.UtcNow;
@@ -1024,11 +1078,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
         {
             if (!_internalToolSpans.TryGetValue(toolCallId, out span!))
             {
-                span = new InternalToolSpan
-                {
-                    ToolCallId = toolCallId,
-                    ToolName = toolName,
-                };
+                span = new InternalToolSpan { ToolCallId = toolCallId, ToolName = toolName };
                 _internalToolSpans[toolCallId] = span;
             }
 
@@ -1057,7 +1107,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                     _options.ProviderMode,
                     toolName,
                     toolCallId,
-                    sourceMethod);
+                    sourceMethod
+                );
                 return;
             }
 
@@ -1081,7 +1132,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 toolCallId,
                 threadId,
                 turnId,
-                sourceMethod);
+                sourceMethod
+            );
 
             EmitInternalToolLifecycleEvent(
                 run,
@@ -1092,15 +1144,15 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 result: null,
                 error: null,
                 threadId,
-                turnId);
+                turnId
+            );
         }
 
         var normalizedStatus = string.Equals(status, "success", StringComparison.OrdinalIgnoreCase)
             ? "completed"
             : "failed";
-        var elapsedMs = span.StartedAt == default
-            ? 0L
-            : Math.Max(0L, (long)(span.CompletedAt - span.StartedAt).TotalMilliseconds);
+        var elapsedMs =
+            span.StartedAt == default ? 0L : Math.Max(0L, (long)(span.CompletedAt - span.StartedAt).TotalMilliseconds);
 
         _logger?.LogInformation(
             "{event_type} {event_status} {provider} {provider_mode} {tool_name} {tool_call_id} {thread_id} {turn_id} {source_event} {status} {latency_ms}",
@@ -1114,7 +1166,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
             turnId,
             sourceMethod,
             status,
-            elapsedMs);
+            elapsedMs
+        );
 
         EmitInternalToolLifecycleEvent(
             run,
@@ -1126,7 +1179,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
             error,
             threadId,
             turnId,
-            normalizedStatus);
+            normalizedStatus
+        );
     }
 
     private void EmitInternalToolLifecycleEvent(
@@ -1139,57 +1193,66 @@ public sealed class CodexSdkClient : ICodexSdkClient
         JsonElement? error,
         string? threadId,
         string? turnId,
-        string status = "inProgress")
+        string status = "inProgress"
+    )
     {
         var eventThreadId = threadId ?? CurrentCodexThreadId;
         var eventTurnId = turnId ?? run.TurnId;
         object? resultValue = result.HasValue ? result.Value : null;
         object? errorValue = error.HasValue ? error.Value : null;
 
-        var eventParams = SerializeToElement(new
-        {
-            threadId = eventThreadId,
-            turnId = eventTurnId,
-            item = new
+        var eventParams = SerializeToElement(
+            new
             {
-                type = "toolCall",
-                id = toolCallId,
-                tool = toolName,
-                server = "codex_internal",
-                status,
-                arguments,
-                result = resultValue,
-                error = errorValue,
-            },
-        });
+                threadId = eventThreadId,
+                turnId = eventTurnId,
+                item = new
+                {
+                    type = "toolCall",
+                    id = toolCallId,
+                    tool = toolName,
+                    server = "codex_internal",
+                    status,
+                    arguments,
+                    result = resultValue,
+                    error = errorValue,
+                },
+            }
+        );
 
         if (!ShouldForwardToActiveRun(eventType, eventParams, run))
         {
             return;
         }
 
-        run.TryWriteEvent(new CodexTurnEventEnvelope
-        {
-            Type = "event",
-            Event = CreateRunEvent(eventType, eventParams),
-            RequestId = run.RequestId,
-            ThreadId = eventThreadId,
-            TurnId = eventTurnId,
-        });
+        run.TryWriteEvent(
+            new CodexTurnEventEnvelope
+            {
+                Type = "event",
+                Event = CreateRunEvent(eventType, eventParams),
+                RequestId = run.RequestId,
+                ThreadId = eventThreadId,
+                TurnId = eventTurnId,
+            }
+        );
     }
 
-    private InternalToolCompletion BuildInternalToolCompletion(string toolName, JsonElement payload, string sourceMethod)
+    private InternalToolCompletion BuildInternalToolCompletion(
+        string toolName,
+        JsonElement payload,
+        string sourceMethod
+    )
     {
-        var hasError = CodexEventParser.TryGetProperty(payload, "error", out var errorElement)
-                       && errorElement.ValueKind != JsonValueKind.Null
-                       && errorElement.ValueKind != JsonValueKind.Undefined;
-        var status = CodexEventParser.NormalizeInternalToolStatus(CodexEventParser.GetPropertyString(payload, "status"), hasError);
+        var hasError =
+            CodexEventParser.TryGetProperty(payload, "error", out var errorElement)
+            && errorElement.ValueKind != JsonValueKind.Null
+            && errorElement.ValueKind != JsonValueKind.Undefined;
+        var status = CodexEventParser.NormalizeInternalToolStatus(
+            CodexEventParser.GetPropertyString(payload, "status"),
+            hasError
+        );
 
-        var result = new Dictionary<string, object?>
-        {
-            ["status"] = status,
-            ["source"] = sourceMethod,
-        };
+        var result = new Dictionary<string, object?> { ["status"] = status, ["source"] = sourceMethod };
 
         CodexEventParser.AddToolSpecificFields(result, toolName, payload, isResultPayload: true);
         result["raw"] = payload;
@@ -1197,13 +1260,10 @@ public sealed class CodexSdkClient : ICodexSdkClient
         JsonElement? error = null;
         if (!string.Equals(status, "success", StringComparison.OrdinalIgnoreCase))
         {
-            var message = CodexEventParser.ExtractErrorMessage(payload)
-                          ?? $"Codex internal tool '{toolName}' completed with status '{status}'.";
-            var errorObject = new Dictionary<string, object?>
-            {
-                ["message"] = message,
-                ["status"] = status,
-            };
+            var message =
+                CodexEventParser.ExtractErrorMessage(payload)
+                ?? $"Codex internal tool '{toolName}' completed with status '{status}'.";
+            var errorObject = new Dictionary<string, object?> { ["message"] = message, ["status"] = status };
             if (hasError)
             {
                 errorObject["raw"] = errorElement;
@@ -1222,10 +1282,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
     private JsonElement BuildInternalToolArguments(string toolName, JsonElement payload, string sourceMethod)
     {
-        var arguments = new Dictionary<string, object?>
-        {
-            ["source"] = sourceMethod,
-        };
+        var arguments = new Dictionary<string, object?> { ["source"] = sourceMethod };
 
         CodexEventParser.AddToolSpecificFields(arguments, toolName, payload, isResultPayload: false);
         arguments["raw"] = payload;
@@ -1235,9 +1292,11 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
     private bool ShouldForwardToActiveRun(string method, JsonElement? parameters, ActiveRunState run)
     {
-        if (string.Equals(method, "thread/started", StringComparison.Ordinal)
+        if (
+            string.Equals(method, "thread/started", StringComparison.Ordinal)
             || string.Equals(method, "thread.started", StringComparison.Ordinal)
-            || string.Equals(method, "error", StringComparison.Ordinal))
+            || string.Equals(method, "error", StringComparison.Ordinal)
+        )
         {
             return true;
         }
@@ -1249,8 +1308,9 @@ public sealed class CodexSdkClient : ICodexSdkClient
         }
 
         var activeTurnId = run.TurnId;
-        var shouldForward = string.IsNullOrWhiteSpace(activeTurnId)
-                            || string.Equals(activeTurnId, eventTurnId, StringComparison.Ordinal);
+        var shouldForward =
+            string.IsNullOrWhiteSpace(activeTurnId)
+            || string.Equals(activeTurnId, eventTurnId, StringComparison.Ordinal);
         if (!shouldForward)
         {
             _logger?.LogWarning(
@@ -1262,7 +1322,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 method,
                 "turn_mismatch",
                 activeTurnId,
-                eventTurnId);
+                eventTurnId
+            );
         }
 
         return shouldForward;
@@ -1273,7 +1334,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
         ActiveRunState runState,
         string? turnId,
         string requestId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var timeout = TimeSpan.FromMilliseconds(Math.Max(_options.TurnCompletionTimeoutMs, 1_000));
         using var timeoutCts = new CancellationTokenSource(timeout);
@@ -1293,7 +1355,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 _options.ProviderMode,
                 requestId,
                 activeTurnId,
-                timeout.TotalMilliseconds);
+                timeout.TotalMilliseconds
+            );
 
             if (!string.IsNullOrWhiteSpace(activeTurnId))
             {
@@ -1310,8 +1373,9 @@ public sealed class CodexSdkClient : ICodexSdkClient
             catch (OperationCanceledException) when (graceCts.IsCancellationRequested && !ct.IsCancellationRequested)
             {
                 throw new TimeoutException(
-                    $"Codex turn '{activeTurnId ?? "unknown"}' did not complete after timeout {timeout.TotalMilliseconds}ms " +
-                    $"and interrupt grace {gracePeriod.TotalMilliseconds}ms.");
+                    $"Codex turn '{activeTurnId ?? "unknown"}' did not complete after timeout {timeout.TotalMilliseconds}ms "
+                        + $"and interrupt grace {gracePeriod.TotalMilliseconds}ms."
+                );
             }
         }
     }
@@ -1402,36 +1466,26 @@ public sealed class CodexSdkClient : ICodexSdkClient
         var normalized = new List<object>();
         foreach (var item in items)
         {
-            if (string.Equals(item.Type, "input_image", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(item.Type, "inputImage", StringComparison.OrdinalIgnoreCase))
+            if (
+                string.Equals(item.Type, "input_image", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(item.Type, "inputImage", StringComparison.OrdinalIgnoreCase)
+            )
             {
                 if (string.IsNullOrWhiteSpace(item.ImageUrl))
                 {
                     continue;
                 }
 
-                normalized.Add(new
-                {
-                    type = "inputImage",
-                    imageUrl = item.ImageUrl,
-                });
+                normalized.Add(new { type = "inputImage", imageUrl = item.ImageUrl });
                 continue;
             }
 
-            normalized.Add(new
-            {
-                type = "inputText",
-                text = item.Text ?? string.Empty,
-            });
+            normalized.Add(new { type = "inputText", text = item.Text ?? string.Empty });
         }
 
         if (normalized.Count == 0)
         {
-            normalized.Add(new
-            {
-                type = "inputText",
-                text = string.Empty,
-            });
+            normalized.Add(new { type = "inputText", text = string.Empty });
         }
 
         return normalized;
@@ -1441,7 +1495,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
         string eventType,
         CodexDynamicToolCallRequest request,
         CodexDynamicToolCallResponse? response,
-        long? durationMs)
+        long? durationMs
+    )
     {
         var run = GetActiveRun();
         if (run == null)
@@ -1451,62 +1506,58 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
         var eventTurnId = request.TurnId ?? run.TurnId;
         var eventThreadId = request.ThreadId ?? CurrentCodexThreadId;
-        var callId = string.IsNullOrWhiteSpace(request.CallId)
-            ? $"dynamic-call-{Guid.NewGuid():N}"
-            : request.CallId;
+        var callId = string.IsNullOrWhiteSpace(request.CallId) ? $"dynamic-call-{Guid.NewGuid():N}" : request.CallId;
 
-        var eventParams = SerializeToElement(new
-        {
-            threadId = eventThreadId,
-            turnId = eventTurnId,
-            item = new
+        var eventParams = SerializeToElement(
+            new
             {
-                type = "dynamicToolCall",
-                id = callId,
-                tool = request.Tool,
-                status = response == null ? "inProgress" : response.Success ? "completed" : "failed",
-                arguments = request.Arguments,
-                result = response is { Success: true } ? BuildDynamicToolResultPayload(response) : null,
-                error = response is { Success: false } ? BuildDynamicToolErrorPayload(response) : null,
-                durationMs = response == null ? null : durationMs,
-            },
-        });
+                threadId = eventThreadId,
+                turnId = eventTurnId,
+                item = new
+                {
+                    type = "dynamicToolCall",
+                    id = callId,
+                    tool = request.Tool,
+                    status = response == null ? "inProgress"
+                    : response.Success ? "completed"
+                    : "failed",
+                    arguments = request.Arguments,
+                    result = response is { Success: true } ? BuildDynamicToolResultPayload(response) : null,
+                    error = response is { Success: false } ? BuildDynamicToolErrorPayload(response) : null,
+                    durationMs = response == null ? null : durationMs,
+                },
+            }
+        );
 
         if (!ShouldForwardToActiveRun(eventType, eventParams, run))
         {
             return;
         }
 
-        run.TryWriteEvent(new CodexTurnEventEnvelope
-        {
-            Type = "event",
-            Event = CreateRunEvent(eventType, eventParams),
-            RequestId = run.RequestId,
-            ThreadId = eventThreadId,
-            TurnId = eventTurnId,
-        });
+        run.TryWriteEvent(
+            new CodexTurnEventEnvelope
+            {
+                Type = "event",
+                Event = CreateRunEvent(eventType, eventParams),
+                RequestId = run.RequestId,
+                ThreadId = eventThreadId,
+                TurnId = eventTurnId,
+            }
+        );
     }
 
     private static object BuildDynamicToolResultPayload(CodexDynamicToolCallResponse response)
     {
-        return new
-        {
-            content = NormalizeToolResponseItems(response.ContentItems),
-            structuredContent = (object?)null,
-        };
+        return new { content = NormalizeToolResponseItems(response.ContentItems), structuredContent = (object?)null };
     }
 
     private static object BuildDynamicToolErrorPayload(CodexDynamicToolCallResponse response)
     {
-        var message = response.ContentItems
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item.Text))
-            ?.Text
+        var message =
+            response.ContentItems.FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item.Text))?.Text
             ?? "Dynamic tool call failed.";
 
-        return new
-        {
-            message,
-        };
+        return new { message };
     }
 
     private static CodexDynamicToolCallResponse BuildToolBridgeFailure(string message)
@@ -1514,14 +1565,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
         return new CodexDynamicToolCallResponse
         {
             Success = false,
-            ContentItems =
-            [
-                new CodexDynamicToolContentItem
-                {
-                    Type = "input_text",
-                    Text = message,
-                },
-            ],
+            ContentItems = [new CodexDynamicToolContentItem { Type = "input_text", Text = message }],
         };
     }
 
@@ -1567,11 +1611,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
     {
         private readonly object _stateLock = new();
         private readonly Channel<CodexTurnEventEnvelope> _events = Channel.CreateUnbounded<CodexTurnEventEnvelope>(
-            new UnboundedChannelOptions
-            {
-                SingleReader = true,
-                SingleWriter = false,
-            });
+            new UnboundedChannelOptions { SingleReader = true, SingleWriter = false }
+        );
 
         private bool _completed;
         private bool _pendingInterrupt;

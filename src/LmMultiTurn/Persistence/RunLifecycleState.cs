@@ -187,6 +187,5 @@ public sealed record RunLifecycleState
     /// </summary>
     /// <remarks>Derived from <see cref="DeferredToolCalls"/>; never persisted separately.</remarks>
     [JsonIgnore]
-    public IEnumerable<DeferredToolCallRecord> UnresolvedToolCalls =>
-        DeferredToolCalls.Where(d => !d.IsResolved);
+    public IEnumerable<DeferredToolCallRecord> UnresolvedToolCalls => DeferredToolCalls.Where(d => !d.IsResolved);
 }

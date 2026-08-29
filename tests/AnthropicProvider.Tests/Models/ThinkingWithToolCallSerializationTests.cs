@@ -84,7 +84,8 @@ public class ThinkingWithToolCallSerializationTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-3-7-sonnet-20250219",
-            ExtraProperties = ImmutableDictionary.Create<string, object?>()
+            ExtraProperties = ImmutableDictionary
+                .Create<string, object?>()
                 .Add("Thinking", new AnthropicThinking(2048)),
         };
 
@@ -268,7 +269,10 @@ public class ThinkingWithToolCallSerializationTests
         Assert.Equal("Answer.", assistantMsg.Content[2].Text);
 
         // Crucially: no unsigned thinking block survives (that's what the backend rejects).
-        Assert.DoesNotContain(assistantMsg.Content, c => c.Type == "thinking" && string.IsNullOrEmpty(c.ThinkingSignature));
+        Assert.DoesNotContain(
+            assistantMsg.Content,
+            c => c.Type == "thinking" && string.IsNullOrEmpty(c.ThinkingSignature)
+        );
     }
 
     /// <summary>
@@ -436,13 +440,15 @@ public class ThinkingWithToolCallSerializationTests
         var request = AnthropicRequest.FromMessages(messages);
 
         var assistant = request.Messages.First(m =>
-            m.Role == "assistant" && m.Content.Any(c => c.Type is "tool_use" or "server_tool_use"));
+            m.Role == "assistant" && m.Content.Any(c => c.Type is "tool_use" or "server_tool_use")
+        );
 
         // No text/thinking block may appear after any tool_use block (Anthropic requires tool_use last).
         var firstToolIdx = assistant.Content.FindIndex(c => c.Type is "tool_use" or "server_tool_use");
         var lastNonToolIdx = assistant.Content.FindLastIndex(c => c.Type is not ("tool_use" or "server_tool_use"));
         Assert.True(
             firstToolIdx > lastNonToolIdx,
-            $"tool_use must come after all text/thinking blocks; got: [{string.Join(", ", assistant.Content.Select(c => c.Type))}]");
+            $"tool_use must come after all text/thinking blocks; got: [{string.Join(", ", assistant.Content.Select(c => c.Type))}]"
+        );
     }
 }

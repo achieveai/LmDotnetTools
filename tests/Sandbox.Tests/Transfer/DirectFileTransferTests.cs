@@ -44,7 +44,9 @@ public class DirectFileTransferTests
 
     /// <summary>A terminal <c>succeeded</c> exit-0 operation snapshot echoing the submitted operation id.</summary>
     private static HttpResponseMessage MkdirSucceeded(HttpRequestMessage request) =>
-        JsonResponse("{\"operation_id\":\"" + OperationIdFrom(request) + "\",\"status\":\"succeeded\",\"exit_code\":0}");
+        JsonResponse(
+            "{\"operation_id\":\"" + OperationIdFrom(request) + "\",\"status\":\"succeeded\",\"exit_code\":0}"
+        );
 
     [Fact]
     public async Task WriteThenRead_Utf8RoundTrip_ReturnsExactBytes()
@@ -56,7 +58,9 @@ public class DirectFileTransferTests
         // The PUT captures the exact bytes the SDK sent; the GET echoes back exactly those bytes, so
         // a passing round-trip proves byte-exactness end-to-end rather than just "no exception thrown".
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             req =>
             {
                 stored = req.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
@@ -64,7 +68,9 @@ public class DirectFileTransferTests
             }
         );
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(stored!) }
         );
 
@@ -106,7 +112,9 @@ public class DirectFileTransferTests
         byte[]? stored = null;
 
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             req =>
             {
                 stored = req.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
@@ -114,7 +122,9 @@ public class DirectFileTransferTests
             }
         );
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(stored!) }
         );
 
@@ -134,7 +144,9 @@ public class DirectFileTransferTests
         byte[]? stored = null;
 
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             req =>
             {
                 stored = req.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
@@ -142,7 +154,9 @@ public class DirectFileTransferTests
             }
         );
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(stored!) }
         );
 
@@ -167,7 +181,9 @@ public class DirectFileTransferTests
         // repeated write would mean the SDK re-sent a side-effecting request it must only send once.
         handler.Requests.Count(r => r.Method == HttpMethod.Put).Should().Be(1);
         handler
-            .Requests.Count(r => r.Method == HttpMethod.Get && r.Uri.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal))
+            .Requests.Count(r =>
+                r.Method == HttpMethod.Get && r.Uri.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal)
+            )
             .Should()
             .Be(1);
     }
@@ -204,7 +220,9 @@ public class DirectFileTransferTests
         // The predecessor design framed listings as newline-delimited text, where such a name would split
         // into two bogus entries; the shipped JSON listing must return each name as one exact string.
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal),
             _ =>
                 JsonResponse(
                     """
@@ -231,7 +249,9 @@ public class DirectFileTransferTests
         byte[]? sentBody = null;
 
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             req =>
             {
                 sentBody = req.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
@@ -247,7 +267,9 @@ public class DirectFileTransferTests
         // A top-level (parentless) write is a single PUT — it must never trigger a mkdir operation.
         handler
             .Requests.Should()
-            .NotContain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
+            .NotContain(r =>
+                r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+            );
     }
 
     [Fact]
@@ -259,7 +281,9 @@ public class DirectFileTransferTests
         var putCount = 0;
         byte[]? stored = null;
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             req =>
             {
                 putCount++;
@@ -278,7 +302,9 @@ public class DirectFileTransferTests
             }
         );
         handler.On(
-            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
             MkdirSucceeded
         );
 
@@ -292,7 +318,9 @@ public class DirectFileTransferTests
 
         var mkdirRequest = handler
             .Requests.Should()
-            .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal))
+            .ContainSingle(r =>
+                r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+            )
             .Which;
         var op = JsonDocument.Parse(mkdirRequest.Body!).RootElement;
         op.GetProperty("executable").GetString().Should().Be("mkdir");
@@ -310,7 +338,9 @@ public class DirectFileTransferTests
         var putCount = 0;
         byte[]? stored = null;
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             req =>
             {
                 putCount++;
@@ -327,7 +357,9 @@ public class DirectFileTransferTests
             }
         );
         handler.On(
-            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
             MkdirSucceeded
         );
 
@@ -341,7 +373,9 @@ public class DirectFileTransferTests
 
         var mkdirRequest = handler
             .Requests.Should()
-            .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal))
+            .ContainSingle(r =>
+                r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+            )
             .Which;
         var op = JsonDocument.Parse(mkdirRequest.Body!).RootElement;
         op.GetProperty("args").EnumerateArray().Select(e => e.GetString()).Should().Equal("-p", "--", "-m");
@@ -355,7 +389,9 @@ public class DirectFileTransferTests
 
         var putCount = 0;
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ =>
             {
                 putCount++;
@@ -372,7 +408,9 @@ public class DirectFileTransferTests
         putCount.Should().Be(1); // one PUT, no retry
         handler
             .Requests.Should()
-            .NotContain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
+            .NotContain(r =>
+                r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+            );
     }
 
     [Fact]
@@ -382,22 +420,28 @@ public class DirectFileTransferTests
         using var _ = client;
 
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
-            _ => JsonResponse(
-                """{"error":"path not found","code":404,"error_code":"path_not_found","retryable":false}""",
-                HttpStatusCode.NotFound
-            )
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ =>
+                JsonResponse(
+                    """{"error":"path not found","code":404,"error_code":"path_not_found","retryable":false}""",
+                    HttpStatusCode.NotFound
+                )
         );
         // mkdir -p ran but FAILED (e.g. a read-only parent): a terminal non-zero exit with a stderr
         // artifact. Echo the submitted operation id so the correlation check passes and we reach the
         // artifact download / OperationFailed path.
         handler.On(
-            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
-            req => JsonResponse(
-                "{\"operation_id\":\""
-                    + OperationIdFrom(req)
-                    + "\",\"status\":\"failed\",\"exit_code\":1,\"artifacts\":{\"mount_id\":7,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}"
-            )
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            req =>
+                JsonResponse(
+                    "{\"operation_id\":\""
+                        + OperationIdFrom(req)
+                        + "\",\"status\":\"failed\",\"exit_code\":1,\"artifacts\":{\"mount_id\":7,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}"
+                )
         );
         handler.On(
             req => req.Method == HttpMethod.Get && req.RequestUri!.Query.Contains("path=out", StringComparison.Ordinal),
@@ -405,7 +449,10 @@ public class DirectFileTransferTests
         );
         handler.On(
             req => req.Method == HttpMethod.Get && req.RequestUri!.Query.Contains("path=err", StringComparison.Ordinal),
-            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("mkdir: cannot create directory: Read-only file system") }
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("mkdir: cannot create directory: Read-only file system"),
+            }
         );
 
         Func<Task> act = () => client.WriteTextFileAsync(Session, "nested/dir/greeting.txt", "z");
@@ -427,7 +474,9 @@ public class DirectFileTransferTests
 
         var putCount = 0;
         handler.On(
-            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Put
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ =>
             {
                 putCount++;
@@ -440,12 +489,15 @@ public class DirectFileTransferTests
         // mkdir returns a MALFORMED terminal: status succeeded but no exit_code. The self-heal must NOT read
         // that as a false exit 0 and retry the write — it must surface Protocol.
         handler.On(
-            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
-            req => JsonResponse(
-                "{\"operation_id\":\""
-                    + OperationIdFrom(req)
-                    + "\",\"status\":\"succeeded\",\"artifacts\":{\"mount_id\":7,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}"
-            )
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            req =>
+                JsonResponse(
+                    "{\"operation_id\":\""
+                        + OperationIdFrom(req)
+                        + "\",\"status\":\"succeeded\",\"artifacts\":{\"mount_id\":7,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}"
+                )
         );
 
         Func<Task> act = () => client.WriteTextFileAsync(Session, "nested/dir/greeting.txt", "z");
@@ -503,8 +555,10 @@ public class DirectFileTransferTests
         var names = await client.ListDirectoryAsync(Session, "");
 
         names.Should().Equal("a b.txt", ".hidden", "sub");
-        handler.Requests.Count(r =>
-                r.Method == HttpMethod.Get && r.Uri.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal)
+        handler
+            .Requests.Count(r =>
+                r.Method == HttpMethod.Get
+                && r.Uri.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal)
             )
             .Should()
             .Be(2);
@@ -537,7 +591,9 @@ public class DirectFileTransferTests
         using var _ = client;
         // Every page hands back the SAME next_cursor — the SDK must reject the repeat rather than loop.
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal),
             _ => JsonResponse("""{"entries":[{"name":"a","type":"file"}],"next_cursor":"loop"}""")
         );
 
@@ -555,7 +611,9 @@ public class DirectFileTransferTests
         // total page cap must, rather than looping/growing unbounded.
         var page = 0;
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal),
             _ => JsonResponse("{\"entries\":[],\"next_cursor\":\"c" + Interlocked.Increment(ref page) + "\"}")
         );
 
@@ -570,7 +628,9 @@ public class DirectFileTransferTests
         var (client, handler) = CreateClient();
         using var _ = client;
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ =>
             {
                 var redirect = new HttpResponseMessage(HttpStatusCode.Found);
@@ -619,7 +679,9 @@ public class DirectFileTransferTests
         // substituting U+FFFD replacement characters.
         var invalidUtf8 = new byte[] { 0xFF, 0xFE, 0x00, 0x80 };
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(invalidUtf8) }
         );
 
@@ -639,7 +701,9 @@ public class DirectFileTransferTests
         // surface as a plain OperationCanceledException — the documented cancellation contract — NOT be
         // masked as a SandboxException.
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ => new HttpResponseMessage(HttpStatusCode.Conflict)
             {
                 Content = new CancelOnReadContent(
@@ -670,7 +734,9 @@ public class DirectFileTransferTests
         // an already-received gateway error is never lost to an SDK-internal timeout, and this must NOT
         // surface as cancellation.
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ => new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new NeverEndingContent() }
         );
 
@@ -703,7 +769,11 @@ public class DirectFileTransferTests
         var serverAddress = TestSupport.NewLoopbackAddress();
         var clock = new ManualTimeProvider();
         var handler = new BudgetExhaustingHeaderHandler(errorBody, clock);
-        using var httpClient = new HttpClient(handler) { BaseAddress = serverAddress, Timeout = Timeout.InfiniteTimeSpan };
+        using var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = serverAddress,
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
         var options = new SandboxClientOptions(
             serverAddress,
             "app-1",
@@ -737,8 +807,13 @@ public class DirectFileTransferTests
         // it by its declared Content-Length BEFORE buffering a single byte (the content below would
         // otherwise never actually produce those bytes).
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
-            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new OversizedContent(SandboxClient.MaxDirectReadBytes + 1) }
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new OversizedContent(SandboxClient.MaxDirectReadBytes + 1),
+            }
         );
 
         Func<Task> act = () => client.ReadTextFileAsync(Session, "huge.bin");
@@ -757,8 +832,13 @@ public class DirectFileTransferTests
         // than buffering the whole thing. The stream produces zero bytes lazily, so nothing is allocated
         // up front.
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
-            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new UnsizedStreamContent(SandboxClient.MaxDirectReadBytes + 1) }
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new UnsizedStreamContent(SandboxClient.MaxDirectReadBytes + 1),
+            }
         );
 
         Func<Task> act = () => client.ReadTextFileAsync(Session, "huge-chunked.bin");
@@ -858,11 +938,14 @@ public class DirectFileTransferTests
     /// </summary>
     private sealed class NeverEndingContent : HttpContent
     {
-        public NeverEndingContent() => Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        public NeverEndingContent() =>
+            Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
 
-        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new NeverEndingStream());
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new NeverEndingStream());
 
-        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => Task.Delay(Timeout.Infinite);
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            Task.Delay(Timeout.Infinite);
 
         protected override bool TryComputeLength(out long length)
         {
@@ -878,16 +961,27 @@ public class DirectFileTransferTests
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => throw new NotSupportedException();
-        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
 
-        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default
+        )
         {
             await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
             return 0;
         }
 
-        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
-            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken
+        ) => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
 
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
@@ -918,7 +1012,10 @@ public class DirectFileTransferTests
         /// <summary>True only if the transport token fired BEFORE the file-GET headers were delivered — the precondition every assertion here rests on.</summary>
         public bool BudgetExpiredBeforeHeaders { get; private set; }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
         {
             var path = request.RequestUri!.AbsolutePath;
             if (request.Method == HttpMethod.Get && path.Contains("/files/", StringComparison.Ordinal))
@@ -1070,9 +1167,11 @@ public class DirectFileTransferTests
             Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
         }
 
-        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new BudgetGatedStream(_bytes));
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new BudgetGatedStream(_bytes));
 
-        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => stream.WriteAsync(_bytes, 0, _bytes.Length);
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            stream.WriteAsync(_bytes, 0, _bytes.Length);
 
         protected override bool TryComputeLength(out long length)
         {
@@ -1090,7 +1189,11 @@ public class DirectFileTransferTests
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => throw new NotSupportedException();
-        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
 
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
@@ -1101,8 +1204,12 @@ public class DirectFileTransferTests
             return ValueTask.FromResult(produced);
         }
 
-        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
-            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken
+        ) => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
 
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
@@ -1130,7 +1237,8 @@ public class DirectFileTransferTests
         protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
             new ZeroStream(_length).CopyToAsync(stream);
 
-        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new ZeroStream(_length));
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new ZeroStream(_length));
 
         protected override bool TryComputeLength(out long length)
         {
@@ -1148,7 +1256,11 @@ public class DirectFileTransferTests
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => throw new NotSupportedException();
-        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
 
         public override int Read(byte[] buffer, int offset, int count)
         {

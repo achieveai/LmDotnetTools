@@ -33,8 +33,14 @@ public class SandboxClientLifecycleTests
         var request = new SandboxCreateRequest(
             "my-workspace",
             marketplaces: ["official"],
-            authProviders: [new SandboxAuthProvider("github-auth", "webhook", "https://app/cb", "shared-secret", 300, ["repo"])],
-            networkRules: [new SandboxNetworkRule("github", "allow", hosts: ["github.com"], ports: [443], priority: 100)],
+            authProviders:
+            [
+                new SandboxAuthProvider("github-auth", "webhook", "https://app/cb", "shared-secret", 300, ["repo"]),
+            ],
+            networkRules:
+            [
+                new SandboxNetworkRule("github", "allow", hosts: ["github.com"], ports: [443], priority: 100),
+            ],
             discovery: new SandboxDiscoverySettings("https://app/discovery", "discovery-secret")
         );
 
@@ -93,7 +99,10 @@ public class SandboxClientLifecycleTests
 
         var request = new SandboxCreateRequest(
             "my-workspace",
-            networkRules: [new SandboxNetworkRule("github", "allow", hosts: ["github.com"], authProvider: "github-auth")]
+            networkRules:
+            [
+                new SandboxNetworkRule("github", "allow", hosts: ["github.com"], authProvider: "github-auth"),
+            ]
         );
 
         _ = await client.CreateAsync(request);
@@ -212,7 +221,11 @@ public class SandboxClientLifecycleTests
         // session_id is null, which is a valid-but-omitted case). Reading entry.SessionId off a null
         // element would otherwise throw a raw NullReferenceException; it must map to Protocol.
         var (client, handler) = TestSupport.CreateBorrowedClient();
-        handler.OnJson(HttpMethod.Get, "/api/v1/sandboxes", """{"sandboxes":[{"id":"c1","session_id":"sess-1"},null]}""");
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes",
+            """{"sandboxes":[{"id":"c1","session_id":"sess-1"},null]}"""
+        );
 
         var exception = await Record.ExceptionAsync(() => client.ListAsync());
 
@@ -240,7 +253,8 @@ public class SandboxClientLifecycleTests
         handler.OnStatus(HttpMethod.Get, "/api/v1/sandboxes/missing", HttpStatusCode.NotFound);
         handler.OnStatus(HttpMethod.Delete, "/api/v1/sandboxes/missing", HttpStatusCode.NotFound);
 
-        Func<Task> act = operation == "GetAsync" ? () => client.GetAsync("missing") : () => client.DeleteAsync("missing");
+        Func<Task> act =
+            operation == "GetAsync" ? () => client.GetAsync("missing") : () => client.DeleteAsync("missing");
 
         var exception = await act.Should().ThrowAsync<SandboxException>();
         exception.Which.Kind.Should().Be(SandboxErrorKind.NotFound);
@@ -254,8 +268,18 @@ public class SandboxClientLifecycleTests
         // different app id — the SDK must classify both identically without trying to distinguish
         // them from response content.
         var (client, handler) = TestSupport.CreateBorrowedClient();
-        handler.OnJson(HttpMethod.Get, "/api/v1/sandboxes/missing", """{"error":"session not found"}""", HttpStatusCode.NotFound);
-        handler.OnJson(HttpMethod.Get, "/api/v1/sandboxes/foreign", """{"error":"session not found"}""", HttpStatusCode.NotFound);
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/missing",
+            """{"error":"session not found"}""",
+            HttpStatusCode.NotFound
+        );
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/foreign",
+            """{"error":"session not found"}""",
+            HttpStatusCode.NotFound
+        );
 
         var missing = await Record.ExceptionAsync(() => client.GetAsync("missing"));
         var foreign = await Record.ExceptionAsync(() => client.GetAsync("foreign"));
@@ -311,8 +335,13 @@ public class SandboxClientLifecycleTests
         // A control-plane 2xx that declares a body far larger than the read cap must be refused by its
         // declared Content-Length before it is buffered whole — the same bound as the direct downloads.
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal),
-            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new OversizedContent(SandboxClient.MaxDirectReadBytes + 1) }
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new OversizedContent(SandboxClient.MaxDirectReadBytes + 1),
+            }
         );
 
         var exception = await Record.ExceptionAsync(() => client.ListAsync());
@@ -329,8 +358,13 @@ public class SandboxClientLifecycleTests
         // precheck can't catch it, so the streamed running-byte-count cap must reject it mid-stream. The
         // lazy zero-stream produces the bytes without allocating them up front.
         handler.On(
-            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal),
-            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new UnsizedStreamContent(SandboxClient.MaxDirectReadBytes + 1) }
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new UnsizedStreamContent(SandboxClient.MaxDirectReadBytes + 1),
+            }
         );
 
         var exception = await Record.ExceptionAsync(() => client.ListAsync());
@@ -521,18 +555,30 @@ public class SandboxClientLifecycleTests
     {
         var thrown = await CreateWithResolutionAsync("""{"supported":true,"effective":[null]}""");
 
-        thrown.Should().BeOfType<SandboxException>("a malformed 2xx payload is a protocol defect, not an unhandled NullReferenceException");
+        thrown
+            .Should()
+            .BeOfType<SandboxException>(
+                "a malformed 2xx payload is a protocol defect, not an unhandled NullReferenceException"
+            );
         var sandboxException = (SandboxException)thrown;
         sandboxException.Kind.Should().Be(SandboxErrorKind.Protocol);
-        sandboxException.Message.Should().Contain("effective", "a bare 'malformed response' leaves the next reader to bisect three arrays");
+        sandboxException
+            .Message.Should()
+            .Contain("effective", "a bare 'malformed response' leaves the next reader to bisect three arrays");
     }
 
     [Fact]
     public async Task CreateAsync_PluginResolutionEntryWithNullField_ThrowsProtocolNamingTheArray()
     {
-        var thrown = await CreateWithResolutionAsync("""{"supported":true,"requested":[{"marketplace":null,"plugin":"code-review"}]}""");
+        var thrown = await CreateWithResolutionAsync(
+            """{"supported":true,"requested":[{"marketplace":null,"plugin":"code-review"}]}"""
+        );
 
-        thrown.Should().BeOfType<SandboxException>("SandboxPluginRef's own guard throws ArgumentNullException, which is not this SDK's error contract");
+        thrown
+            .Should()
+            .BeOfType<SandboxException>(
+                "SandboxPluginRef's own guard throws ArgumentNullException, which is not this SDK's error contract"
+            );
         var sandboxException = (SandboxException)thrown;
         sandboxException.Kind.Should().Be(SandboxErrorKind.Protocol);
         sandboxException.Message.Should().Contain("requested");
@@ -541,7 +587,9 @@ public class SandboxClientLifecycleTests
     [Fact]
     public async Task CreateAsync_PluginResolutionEntryWithBlankField_ThrowsProtocolNamingTheArray()
     {
-        var thrown = await CreateWithResolutionAsync("""{"supported":true,"failed":[{"marketplace":"official","plugin":"   "}]}""");
+        var thrown = await CreateWithResolutionAsync(
+            """{"supported":true,"failed":[{"marketplace":"official","plugin":"   "}]}"""
+        );
 
         thrown.Should().BeOfType<SandboxException>("a whitespace-only plugin id is as unusable as a missing one");
         var sandboxException = (SandboxException)thrown;
@@ -593,7 +641,8 @@ public class SandboxClientLifecycleTests
 
         info.PluginResolution!.Requested.Should().HaveCount(2);
         info.PluginResolution.Requested![1].Plugin.Should().Be("docs");
-        info.PluginResolution.Effective.Should().ContainSingle(r => r.Marketplace == "official" && r.Plugin == "code-review");
+        info.PluginResolution.Effective.Should()
+            .ContainSingle(r => r.Marketplace == "official" && r.Plugin == "code-review");
         info.PluginResolution.Failed.Should().ContainSingle(r => r.Plugin == "docs");
     }
 
@@ -629,7 +678,8 @@ public class SandboxClientLifecycleTests
         protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
             new ZeroStream(_length).CopyToAsync(stream);
 
-        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new ZeroStream(_length));
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new ZeroStream(_length));
 
         protected override bool TryComputeLength(out long length)
         {
@@ -647,7 +697,11 @@ public class SandboxClientLifecycleTests
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => throw new NotSupportedException();
-        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
 
         public override int Read(byte[] buffer, int offset, int count)
         {

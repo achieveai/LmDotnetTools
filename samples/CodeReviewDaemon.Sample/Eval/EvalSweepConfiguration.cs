@@ -54,12 +54,13 @@ internal static class EvalSweepConfiguration
         {
             throw new InvalidOperationException(
                 $"{CodeReviewDaemonOptions.SectionName}:{nameof(CodeReviewDaemonOptions.EvalCorpusSweepIntervalMinutes)} "
-                + $"is {minutes.ToString(System.Globalization.CultureInfo.InvariantCulture)}, which is not a cadence. "
-                + "Zero — the default — switches the sweep off; anything else must be a positive, finite number of "
-                + "minutes no larger than "
-                + $"{TimeSpan.MaxValue.TotalMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)}. "
-                + "It is refused rather than read as off, because a sweep nobody asked to disable would "
-                + "then never run and never say so.");
+                    + $"is {minutes.ToString(System.Globalization.CultureInfo.InvariantCulture)}, which is not a cadence. "
+                    + "Zero — the default — switches the sweep off; anything else must be a positive, finite number of "
+                    + "minutes no larger than "
+                    + $"{TimeSpan.MaxValue.TotalMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)}. "
+                    + "It is refused rather than read as off, because a sweep nobody asked to disable would "
+                    + "then never run and never say so."
+            );
         }
 
         if (minutes == 0)
@@ -71,8 +72,9 @@ internal static class EvalSweepConfiguration
         {
             throw new InvalidOperationException(
                 $"{CodeReviewDaemonOptions.SectionName}:{nameof(CodeReviewDaemonOptions.EvalCorpusSweepWindow)} "
-                + "must be positive when a sweep interval is configured; a window of zero would make every "
-                + "sweep report an empty corpus while the store fills up.");
+                    + "must be positive when a sweep interval is configured; a window of zero would make every "
+                    + "sweep report an empty corpus while the store fills up."
+            );
         }
 
         return (TimeSpan.FromMinutes(minutes), options.EvalCorpusSweepWindow);

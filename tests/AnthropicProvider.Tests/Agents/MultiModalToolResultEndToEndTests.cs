@@ -17,9 +17,8 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 /// </summary>
 public class MultiModalToolResultEndToEndTests : LoggingTestBase
 {
-    public MultiModalToolResultEndToEndTests(ITestOutputHelper output) : base(output)
-    {
-    }
+    public MultiModalToolResultEndToEndTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Fact]
     public async Task MultiModalToolResult_SentToAnthropicWithImageContentBlocks()
@@ -27,7 +26,10 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
         // Arrange: create agent with request capture to inspect outbound HTTP bodies
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0);
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
+        );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
 
@@ -51,17 +53,16 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
         // content blocks travel through the payload struct.
         var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["search_tool"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                ToolHandlerResult.FromMultiModal(
-                    "Here is a medical diagram:",
-                    [
-                        new TextToolResultBlock { Text = "Here is a medical diagram:" },
-                        new ImageToolResultBlock
-                        {
-                            Data = CreateMinimalPngBase64(),
-                            MimeType = "image/png",
-                        },
-                    ])),
+            ["search_tool"] = (_, _, _) =>
+                Task.FromResult<ToolHandlerResult>(
+                    ToolHandlerResult.FromMultiModal(
+                        "Here is a medical diagram:",
+                        [
+                            new TextToolResultBlock { Text = "Here is a medical diagram:" },
+                            new ImageToolResultBlock { Data = CreateMinimalPngBase64(), MimeType = "image/png" },
+                        ]
+                    )
+                ),
         };
 
         // Build middleware and wrap agent for the full pipeline
@@ -84,18 +85,15 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
             <|instruction_end|>
             """;
 
-        var options = new GenerateReplyOptions
-        {
-            ModelId = "claude-sonnet-4-20250514",
-            Functions = [toolContract],
-        };
+        var options = new GenerateReplyOptions { ModelId = "claude-sonnet-4-20250514", Functions = [toolContract] };
 
         // Act - Turn 1: user message -> LLM returns tool_use -> middleware executes
         // multimodal handler -> returns ToolsCallAggregateMessage with image content
         Logger.LogInformation("Turn 1: Sending user message to trigger tool_use");
         var turn1Response = await agentWithMiddleware.GenerateReplyAsync(
             [new TextMessage { Role = Role.User, Text = userMessage }],
-            options);
+            options
+        );
 
         var turn1Messages = turn1Response.ToList();
         Logger.LogInformation("Turn 1 returned {Count} messages", turn1Messages.Count);
@@ -103,25 +101,27 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
         // Verify turn 1 produced a ToolsCallAggregateMessage
         var aggregateMsg = turn1Messages.OfType<ToolsCallAggregateMessage>().FirstOrDefault();
         Assert.NotNull(aggregateMsg);
-        Logger.LogDebug("Turn 1: Got ToolsCallAggregateMessage with {Count} tool results",
-            aggregateMsg.ToolsCallResult.ToolCallResults.Count);
+        Logger.LogDebug(
+            "Turn 1: Got ToolsCallAggregateMessage with {Count} tool results",
+            aggregateMsg.ToolsCallResult.ToolCallResults.Count
+        );
 
         // Act - Turn 2: send conversation history (user + aggregate) back to agent.
         // This triggers HTTP request #2, which contains the tool_result with images.
         Logger.LogInformation("Turn 2: Sending conversation with tool_result to LLM");
         var turn2Response = await agentWithMiddleware.GenerateReplyAsync(
-            [
-                new TextMessage { Role = Role.User, Text = userMessage },
-                aggregateMsg,
-            ],
-            options);
+            [new TextMessage { Role = Role.User, Text = userMessage }, aggregateMsg],
+            options
+        );
 
         var turn2Messages = turn2Response.ToList();
         Logger.LogInformation("Turn 2 returned {Count} messages", turn2Messages.Count);
 
         // Assert: at least 2 HTTP requests were made (turn 1 + turn 2)
-        Assert.True(requestCapture.RequestCount >= 2,
-            $"Expected >= 2 HTTP requests, got {requestCapture.RequestCount}");
+        Assert.True(
+            requestCapture.RequestCount >= 2,
+            $"Expected >= 2 HTTP requests, got {requestCapture.RequestCount}"
+        );
 
         // Inspect the 2nd HTTP request body, which carries the tool_result
         var secondRequestBody = requestCapture.RequestBodies[1];
@@ -138,22 +138,18 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
         // Verify tool_result "content" is an array (multimodal format, not string)
         var toolContent = toolResultBlock.Value.GetProperty("content");
         Assert.Equal(JsonValueKind.Array, toolContent.ValueKind);
-        Logger.LogDebug("tool_result content is array with {Count} elements",
-            toolContent.GetArrayLength());
+        Logger.LogDebug("tool_result content is array with {Count} elements", toolContent.GetArrayLength());
 
         // Verify text block is present with correct content
-        var textBlock = toolContent.EnumerateArray()
-            .First(b => b.GetProperty("type").GetString() == "text");
+        var textBlock = toolContent.EnumerateArray().First(b => b.GetProperty("type").GetString() == "text");
         Assert.Equal("Here is a medical diagram:", textBlock.GetProperty("text").GetString());
 
         // Verify image block has correct base64 source structure
-        var imageBlock = toolContent.EnumerateArray()
-            .First(b => b.GetProperty("type").GetString() == "image");
+        var imageBlock = toolContent.EnumerateArray().First(b => b.GetProperty("type").GetString() == "image");
         var source = imageBlock.GetProperty("source");
         Assert.Equal("base64", source.GetProperty("type").GetString());
         Assert.Equal("image/png", source.GetProperty("media_type").GetString());
-        Assert.False(string.IsNullOrEmpty(source.GetProperty("data").GetString()),
-            "Image data should not be empty");
+        Assert.False(string.IsNullOrEmpty(source.GetProperty("data").GetString()), "Image data should not be empty");
 
         Logger.LogInformation("All assertions passed: multimodal tool_result correctly formatted");
     }
@@ -170,16 +166,14 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
                 continue;
             }
 
-            if (!msg.TryGetProperty("content", out var content)
-                || content.ValueKind != JsonValueKind.Array)
+            if (!msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
             {
                 continue;
             }
 
             foreach (var block in content.EnumerateArray())
             {
-                if (block.TryGetProperty("type", out var t)
-                    && t.GetString() == "tool_result")
+                if (block.TryGetProperty("type", out var t) && t.GetString() == "tool_result")
                 {
                     return block;
                 }
@@ -197,15 +191,72 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
     {
         byte[] png =
         [
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
-            0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
-            0x54, 0x78, 0x9C, 0x62, 0x00, 0x00, 0x00, 0x02,
-            0x00, 0x01, 0xE5, 0x27, 0xDE, 0xFC, 0x00, 0x00,
-            0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42,
-            0x60, 0x82,
+            0x89,
+            0x50,
+            0x4E,
+            0x47,
+            0x0D,
+            0x0A,
+            0x1A,
+            0x0A,
+            0x00,
+            0x00,
+            0x00,
+            0x0D,
+            0x49,
+            0x48,
+            0x44,
+            0x52,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x08,
+            0x06,
+            0x00,
+            0x00,
+            0x00,
+            0x1F,
+            0x15,
+            0xC4,
+            0x89,
+            0x00,
+            0x00,
+            0x00,
+            0x0A,
+            0x49,
+            0x44,
+            0x41,
+            0x54,
+            0x78,
+            0x9C,
+            0x62,
+            0x00,
+            0x00,
+            0x00,
+            0x02,
+            0x00,
+            0x01,
+            0xE5,
+            0x27,
+            0xDE,
+            0xFC,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x49,
+            0x45,
+            0x4E,
+            0x44,
+            0xAE,
+            0x42,
+            0x60,
+            0x82,
         ];
         return Convert.ToBase64String(png);
     }

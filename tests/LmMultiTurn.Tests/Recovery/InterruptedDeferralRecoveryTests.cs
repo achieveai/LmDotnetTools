@@ -41,27 +41,39 @@ public class InterruptedDeferralRecoveryTests
         // flight with a human on the other end of it; nothing the provider could be asked next is
         // answerable until it comes back.
         await using var harness = await Harness.StartAsync(
-            (attempt, ct) => attempt == 1
-                ? Emit([DeferringToolCall()], ResponseEnded(), ct)
-                : Emit([new TextMessage { Text = "Your favourite colour is blue.", Role = Role.Assistant }], null, ct));
+            (attempt, ct) =>
+                attempt == 1
+                    ? Emit([DeferringToolCall()], ResponseEnded(), ct)
+                    : Emit(
+                        [new TextMessage { Text = "Your favourite colour is blue.", Role = Role.Assistant }],
+                        null,
+                        ct
+                    )
+        );
 
         // THE point of the fix, in two parts. Without the park, recovery fires here: it reissues the
         // request while the tool result is still a placeholder, which the turn precondition rejects —
         // so the count alone stays at 1 and only the run's OUTCOME tells the two apart. A parked run
         // ends cleanly, waiting; a recovered one ends in an error the user never should have seen.
-        harness.ProviderCallCount.Should().Be(
-            1,
-            "an interrupted turn holding an unresolved deferral parks; it does not launch a continuation");
-        harness.LastRunFailed.Should().BeFalse(
-            "parking is a normal, successful end to a run — the conversation is waiting, not broken");
+        harness
+            .ProviderCallCount.Should()
+            .Be(1, "an interrupted turn holding an unresolved deferral parks; it does not launch a continuation");
+        harness
+            .LastRunFailed.Should()
+            .BeFalse("parking is a normal, successful end to a run — the conversation is waiting, not broken");
         harness.LastRunError.Should().BeNull();
         harness.ToolInvocations.Should().Be(1, "the deferring handler ran once and is awaiting its answer");
-        harness.Messages.OfType<GenerationAbandonedMessage>().Should().ContainSingle(
-            "the client is still told to drop the abandoned generation's partial output");
+        harness
+            .Messages.OfType<GenerationAbandonedMessage>()
+            .Should()
+            .ContainSingle("the client is still told to drop the abandoned generation's partial output");
 
-        (await harness.Loop.GetDeferredToolCallsAsync()).Should().ContainSingle(
-            p => p.ToolCallId == DeferringToolCallId,
-            "the call the stream died on is still outstanding, not lost with the attempt");
+        (await harness.Loop.GetDeferredToolCallsAsync())
+            .Should()
+            .ContainSingle(
+                p => p.ToolCallId == DeferringToolCallId,
+                "the call the stream died on is still outstanding, not lost with the attempt"
+            );
 
         // The answer arrives. It resumes in a child run, which is where the conversation continues.
         await harness.ResolveAndWaitAsync("blue");
@@ -69,9 +81,9 @@ public class InterruptedDeferralRecoveryTests
         harness.ProviderCallCount.Should().Be(2, "the resolution is what continues the conversation");
         harness.ToolInvocations.Should().Be(1, "a completed effect is never re-executed by recovery");
         harness.SecondRequest.Should().NotBeNull();
-        ToolResultIds(harness.SecondRequest!).Should().Contain(
-            DeferringToolCallId,
-            "the continuation carries the answer rather than re-asking for it");
+        ToolResultIds(harness.SecondRequest!)
+            .Should()
+            .Contain(DeferringToolCallId, "the continuation carries the answer rather than re-asking for it");
         harness.LastRunFailed.Should().BeFalse();
     }
 
@@ -84,20 +96,19 @@ public class InterruptedDeferralRecoveryTests
         // attempt: a logical input that can refill its budget by parking can loop forever against a
         // broken transport, one client round-trip at a time.
         await using var harness = await Harness.StartAsync(
-            (attempt, ct) => attempt == 1
-                ? Emit([DeferringToolCall()], ResponseEnded(), ct)
-                : Emit(
-                    [new TextUpdateMessage { Text = "still ", Role = Role.Assistant }],
-                    ResponseEnded(),
-                    ct));
+            (attempt, ct) =>
+                attempt == 1
+                    ? Emit([DeferringToolCall()], ResponseEnded(), ct)
+                    : Emit([new TextUpdateMessage { Text = "still ", Role = Role.Assistant }], ResponseEnded(), ct)
+        );
 
         harness.ProviderCallCount.Should().Be(1);
 
         await harness.ResolveAndWaitAsync("blue");
 
-        harness.ProviderCallCount.Should().Be(
-            2,
-            "the child run inherits the spent budget, so its own interruption buys no further attempt");
+        harness
+            .ProviderCallCount.Should()
+            .Be(2, "the child run inherits the spent budget, so its own interruption buys no further attempt");
         harness.LastRunFailed.Should().BeTrue();
         harness.LastRunError.Should().Contain("stream_interrupted_after_recovery");
     }
@@ -112,12 +123,11 @@ public class InterruptedDeferralRecoveryTests
         // recovery and issues a second provider call for a turn that already ran, and it can do so
         // once per restart, forever.
         await using var harness = await Harness.StartAsync(
-            (attempt, ct) => attempt == 1
-                ? Emit([DeferringToolCall()], ResponseEnded(), ct)
-                : Emit(
-                    [new TextUpdateMessage { Text = "still ", Role = Role.Assistant }],
-                    ResponseEnded(),
-                    ct));
+            (attempt, ct) =>
+                attempt == 1
+                    ? Emit([DeferringToolCall()], ResponseEnded(), ct)
+                    : Emit([new TextUpdateMessage { Text = "still ", Role = Role.Assistant }], ResponseEnded(), ct)
+        );
 
         harness.ProviderCallCount.Should().Be(1, "the parked run spent this input's one recovery");
 
@@ -126,9 +136,9 @@ public class InterruptedDeferralRecoveryTests
 
         await harness.ResolveAndWaitAsync("blue");
 
-        harness.ProviderCallCount.Should().Be(
-            2,
-            "a restart must not refund the budget — the resumed input is still allowed only one recovery");
+        harness
+            .ProviderCallCount.Should()
+            .Be(2, "a restart must not refund the budget — the resumed input is still allowed only one recovery");
         harness.LastRunFailed.Should().BeTrue();
         harness.LastRunError.Should().Contain("stream_interrupted_after_recovery");
         harness.ToolInvocations.Should().Be(1, "a completed client effect is never re-executed");
@@ -148,17 +158,20 @@ public class InterruptedDeferralRecoveryTests
 
     /// <summary>Every tool call id answered by a result in <paramref name="request"/>, either shape.</summary>
     private static IEnumerable<string?> ToolResultIds(IEnumerable<IMessage> request) =>
-        request.SelectMany(m => m switch
-        {
-            ToolCallResultMessage single => [single.ToolCallId],
-            ToolsCallResultMessage aggregate => aggregate.ToolCallResults.Select(r => r.ToolCallId),
-            _ => [],
-        });
+        request.SelectMany(m =>
+            m switch
+            {
+                ToolCallResultMessage single => [single.ToolCallId],
+                ToolsCallResultMessage aggregate => aggregate.ToolCallResults.Select(r => r.ToolCallId),
+                _ => [],
+            }
+        );
 
     private static async IAsyncEnumerable<IMessage> Emit(
         IEnumerable<IMessage> messages,
         Exception? endWith,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var message in messages)
         {
@@ -195,12 +208,13 @@ public class InterruptedDeferralRecoveryTests
         private readonly string _threadId = $"thread-{Guid.NewGuid():N}";
         private readonly Func<int, CancellationToken, IAsyncEnumerable<IMessage>> _attemptScript;
         private readonly StrongBox<int> _toolInvocations = new();
-        private TaskCompletionSource<RunCompletedMessage> _runCompleted =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource<RunCompletedMessage> _runCompleted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
         private int _providerCallCount;
 
-        private Harness(Func<int, CancellationToken, IAsyncEnumerable<IMessage>> attemptScript)
-            => _attemptScript = attemptScript;
+        private Harness(Func<int, CancellationToken, IAsyncEnumerable<IMessage>> attemptScript) =>
+            _attemptScript = attemptScript;
 
         public MultiTurnAgentLoop Loop { get; private set; } = null!;
 
@@ -228,18 +242,19 @@ public class InterruptedDeferralRecoveryTests
         }
 
         public static async Task<Harness> StartAsync(
-            Func<int, CancellationToken, IAsyncEnumerable<IMessage>> attemptScript)
+            Func<int, CancellationToken, IAsyncEnumerable<IMessage>> attemptScript
+        )
         {
             var harness = new Harness(attemptScript);
             harness.Start();
 
             var parked = harness.NextRunCompletion();
-            await harness.Loop.SendAsync(
-                [new TextMessage { Text = "What is my favourite colour?", Role = Role.User }]);
+            await harness.Loop.SendAsync([new TextMessage { Text = "What is my favourite colour?", Role = Role.User }]);
             await parked.WaitAsync(TimeSpan.FromSeconds(10));
 
-            (await harness.Loop.GetDeferredToolCallsAsync()).Should().NotBeEmpty(
-                "every test here starts from a run parked on a deferral");
+            (await harness.Loop.GetDeferredToolCallsAsync())
+                .Should()
+                .NotBeEmpty("every test here starts from a run parked on a deferral");
             return harness;
         }
 
@@ -251,8 +266,9 @@ public class InterruptedDeferralRecoveryTests
         {
             await Loop.DisposeAsync();
             Start();
-            _ = (await Loop.RecoverAsync()).Should().BeTrue(
-                "the successor process has a parked conversation to pick up");
+            _ = (await Loop.RecoverAsync())
+                .Should()
+                .BeTrue("the successor process has a parked conversation to pick up");
         }
 
         /// <summary>Answers the outstanding deferral and waits for the child run it causes to finish.</summary>
@@ -283,23 +299,29 @@ public class InterruptedDeferralRecoveryTests
                 {
                     Interlocked.Increment(ref _toolInvocations.Value);
                     return Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred());
-                });
+                }
+            );
 
             mockAgent
-                .Setup(a => a.GenerateReplyStreamingAsync(
-                    It.IsAny<IEnumerable<IMessage>>(),
-                    It.IsAny<GenerateReplyOptions>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((sent, _, ct) =>
-                {
-                    var attempt = Interlocked.Increment(ref _providerCallCount);
-                    if (attempt == 2)
+                .Setup(a =>
+                    a.GenerateReplyStreamingAsync(
+                        It.IsAny<IEnumerable<IMessage>>(),
+                        It.IsAny<GenerateReplyOptions>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                    (sent, _, ct) =>
                     {
-                        SecondRequest = [.. sent];
-                    }
+                        var attempt = Interlocked.Increment(ref _providerCallCount);
+                        if (attempt == 2)
+                        {
+                            SecondRequest = [.. sent];
+                        }
 
-                    return Task.FromResult(_attemptScript(attempt, ct));
-                });
+                        return Task.FromResult(_attemptScript(attempt, ct));
+                    }
+                );
 
             Loop = new MultiTurnAgentLoop(mockAgent.Object, registry, _threadId, store: _store);
             Observe();
@@ -310,7 +332,8 @@ public class InterruptedDeferralRecoveryTests
         private Task<RunCompletedMessage> NextRunCompletion()
         {
             var pending = new TaskCompletionSource<RunCompletedMessage>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
+                TaskCreationOptions.RunContinuationsAsynchronously
+            );
             Volatile.Write(ref _runCompleted, pending);
             return pending.Task;
         }
@@ -323,37 +346,40 @@ public class InterruptedDeferralRecoveryTests
             // Not the harness token: a cancelled one would skip the body and leave the pending move
             // unobserved. Enumerating starts on this thread so the subscription is attached before
             // anything is sent — a late subscriber gets no replay and would wait forever.
-            _ = Task.Run(async () =>
-            {
-                try
+            _ = Task.Run(
+                async () =>
                 {
-                    for (var has = await first; has; has = await messages.MoveNextAsync())
+                    try
                     {
-                        var current = messages.Current;
-                        lock (_gate)
+                        for (var has = await first; has; has = await messages.MoveNextAsync())
                         {
-                            _messages.Add(current);
-                        }
+                            var current = messages.Current;
+                            lock (_gate)
+                            {
+                                _messages.Add(current);
+                            }
 
-                        if (current is not RunCompletedMessage completed)
-                        {
-                            continue;
-                        }
+                            if (current is not RunCompletedMessage completed)
+                            {
+                                continue;
+                            }
 
-                        LastRunFailed = completed.IsError;
-                        LastRunError = completed.ErrorMessage;
-                        Volatile.Read(ref _runCompleted).TrySetResult(completed);
+                            LastRunFailed = completed.IsError;
+                            LastRunError = completed.ErrorMessage;
+                            Volatile.Read(ref _runCompleted).TrySetResult(completed);
+                        }
                     }
-                }
-                catch (OperationCanceledException)
-                {
-                    // Cancelling the token is how the harness ends the subscription.
-                }
-                finally
-                {
-                    await messages.DisposeAsync();
-                }
-            }, CancellationToken.None);
+                    catch (OperationCanceledException)
+                    {
+                        // Cancelling the token is how the harness ends the subscription.
+                    }
+                    finally
+                    {
+                        await messages.DisposeAsync();
+                    }
+                },
+                CancellationToken.None
+            );
         }
 
         public async ValueTask DisposeAsync()

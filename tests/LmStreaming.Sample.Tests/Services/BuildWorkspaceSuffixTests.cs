@@ -25,10 +25,7 @@ public class BuildWorkspaceSuffixTests
     [Fact]
     public void NarrowedSelection_NamesOnlyTheToolsTheModeHas()
     {
-        var suffix = Program.BuildWorkspaceSuffix(
-            HostPath,
-            new HashSet<string> { "Read", "Grep", "Skill" }
-        );
+        var suffix = Program.BuildWorkspaceSuffix(HostPath, new HashSet<string> { "Read", "Grep", "Skill" });
 
         suffix.Should().Contain(HostPath);
         suffix.Should().Contain("Read");
@@ -60,10 +57,7 @@ public class BuildWorkspaceSuffixTests
     {
         // A HashSet has no order; an unstable suffix would churn the system prompt (and any prompt
         // cache keyed on it) between restarts for a mode nobody edited.
-        var suffix = Program.BuildWorkspaceSuffix(
-            HostPath,
-            new HashSet<string> { "Skill", "Grep", "Read" }
-        );
+        var suffix = Program.BuildWorkspaceSuffix(HostPath, new HashSet<string> { "Skill", "Grep", "Read" });
 
         suffix.Should().Contain("Grep, Read and Skill");
     }

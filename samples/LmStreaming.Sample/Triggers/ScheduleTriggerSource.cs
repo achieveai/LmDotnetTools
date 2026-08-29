@@ -29,7 +29,8 @@ public sealed class ScheduleTriggerSource : ITriggerSource
     public ValueTask<IArmedTrigger> ArmAsync(
         TriggerArmRequest request,
         ITriggerEventSink eventSink,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(eventSink);
@@ -86,12 +87,12 @@ public sealed class ScheduleTriggerSource : ITriggerSource
                 throw new ArgumentException("schedule args must be a JSON object.");
             }
 
-            var cron = root.TryGetProperty("cron", out var c) && c.ValueKind == JsonValueKind.String
-                ? c.GetString()
-                : null;
-            int? interval = root.TryGetProperty("intervalSeconds", out var i) && i.ValueKind == JsonValueKind.Number
-                ? i.GetInt32()
-                : null;
+            var cron =
+                root.TryGetProperty("cron", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : null;
+            int? interval =
+                root.TryGetProperty("intervalSeconds", out var i) && i.ValueKind == JsonValueKind.Number
+                    ? i.GetInt32()
+                    : null;
             return (cron, interval);
         }
     }
@@ -112,7 +113,8 @@ public sealed class ScheduleTriggerSource : ITriggerSource
             CronExpression? expr,
             int? intervalSeconds,
             DateTimeOffset armedAt,
-            ITriggerEventSink sink)
+            ITriggerEventSink sink
+        )
         {
             WaitId = waitId;
             _loop = RunAsync(expr, intervalSeconds, armedAt, sink, _cts.Token);
@@ -125,7 +127,8 @@ public sealed class ScheduleTriggerSource : ITriggerSource
             int? intervalSeconds,
             DateTimeOffset armedAt,
             ITriggerEventSink sink,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             // Yield first so the fire is always asynchronous — never synchronous within ArmAsync.
             await Task.Yield();

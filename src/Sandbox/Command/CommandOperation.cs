@@ -39,7 +39,10 @@ internal static class CommandOperation
 
         if (canonical.Length == 0)
         {
-            throw new ArgumentException("Operation id must not be empty (after trimming surrounding whitespace).", paramName);
+            throw new ArgumentException(
+                "Operation id must not be empty (after trimming surrounding whitespace).",
+                paramName
+            );
         }
 
         if (canonical.Length > MaxOperationIdLength)

@@ -23,8 +23,7 @@ namespace AchieveAi.LmDotnetTools.LmEval.Tests;
 /// </summary>
 public class BaselineSourceBoundsTests
 {
-    private static GateDecision Inconclusive(string gateId) =>
-        GateDecision.Inconclusive(gateId, nameof(IOException));
+    private static GateDecision Inconclusive(string gateId) => GateDecision.Inconclusive(gateId, nameof(IOException));
 
     /// <summary>An item that scored a clean pass, carrying whatever the gates did.</summary>
     private static EvalItemResult Scored(string id, params GateDecision[] gates) =>
@@ -95,8 +94,7 @@ public class BaselineSourceBoundsTests
         };
 
     /// <summary><paramref name="size"/> clean passes, no gates and no faults.</summary>
-    private static EvalRun CleanRun(int size) =>
-        Run([.. Enumerable.Range(0, size).Select(i => Scored($"i{i}"))]);
+    private static EvalRun CleanRun(int size) => Run([.. Enumerable.Range(0, size).Select(i => Scored($"i{i}"))]);
 
     /// <summary>
     /// <paramref name="faulted"/> of <paramref name="size"/> items faulted; the rest scored. Nothing
@@ -136,25 +134,16 @@ public class BaselineSourceBoundsTests
 
         // Guards. Without them this test could be passing for any of three other reasons.
         outage.FaultRate.Should().Be(0.5);
-        outage
-            .MeanScore.Should()
-            .NotBeNull("the scored-nothing arm must NOT be what refuses this run");
-        outage
-            .InconclusiveGateRate.Should()
-            .BeNull("no gate decision exists, so the gate bound cannot preempt");
-        outage
-            .Coverage.Should()
-            .Be(0.5, "and the floor below is set to admit exactly this coverage");
+        outage.MeanScore.Should().NotBeNull("the scored-nothing arm must NOT be what refuses this run");
+        outage.InconclusiveGateRate.Should().BeNull("no gate decision exists, so the gate bound cannot preempt");
+        outage.Coverage.Should().Be(0.5, "and the floor below is set to admit exactly this coverage");
 
         var freeze = () => EvalBaseline.From("base-1", outage, minCoverage: 0.5);
 
         freeze
             .Should()
             .Throw<ArgumentException>()
-            .WithMessage(
-                "*fault rate*",
-                "the refusal names the cause, as the comparison refusal does"
-            );
+            .WithMessage("*fault rate*", "the refusal names the cause, as the comparison refusal does");
     }
 
     /// <summary>
@@ -201,15 +190,12 @@ public class BaselineSourceBoundsTests
         impaired.FaultRate.Should().Be(0.5);
 
         var widened = EvalBaseline.From("base-1", impaired, minCoverage: 0.5, maxFaultRate: 0.6);
-        widened
-            .MaxFaultRate.Should()
-            .Be(0.6, "the accepted run's baseline carries the bound it was accepted under");
+        widened.MaxFaultRate.Should().Be(0.6, "the accepted run's baseline carries the bound it was accepted under");
 
         var atDefault = () => EvalBaseline.From("base-1", impaired, minCoverage: 0.5);
         atDefault.Should().Throw<ArgumentException>();
 
-        var tightened = () =>
-            EvalBaseline.From("base-1", impaired, minCoverage: 0.5, maxFaultRate: 0.49);
+        var tightened = () => EvalBaseline.From("base-1", impaired, minCoverage: 0.5, maxFaultRate: 0.49);
         tightened.Should().Throw<ArgumentException>();
     }
 
@@ -277,12 +263,10 @@ public class BaselineSourceBoundsTests
     [Fact]
     public void A_run_that_both_faulted_and_lost_its_gates_is_refused_for_the_faults()
     {
-        var both = Run(
-            [
-                .. Enumerable.Range(0, 10).Select(i => Faulted($"f{i}")),
-                .. Enumerable.Range(0, 10).Select(i => Scored($"i{i}", Inconclusive("schema"))),
-            ]
-        );
+        var both = Run([
+            .. Enumerable.Range(0, 10).Select(i => Faulted($"f{i}")),
+            .. Enumerable.Range(0, 10).Select(i => Scored($"i{i}", Inconclusive("schema"))),
+        ]);
 
         both.FaultRate.Should().Be(0.5, "both bounds must genuinely break or the order is untested");
         both.InconclusiveGateRate.Should().Be(0.5);
@@ -333,12 +317,10 @@ public class BaselineSourceBoundsTests
     [Fact]
     public void A_gate_outage_below_the_coverage_floor_is_refused_for_the_outage()
     {
-        var both = Run(
-            [
-                .. Enumerable.Range(0, 12).Select(i => Scored($"i{i}", Inconclusive("schema"))),
-                .. Enumerable.Range(0, 8).Select(i => Undecided($"u{i}")),
-            ]
-        );
+        var both = Run([
+            .. Enumerable.Range(0, 12).Select(i => Scored($"i{i}", Inconclusive("schema"))),
+            .. Enumerable.Range(0, 8).Select(i => Undecided($"u{i}")),
+        ]);
 
         both.FaultRate.Should().Be(0.0, "the fault bound must not be what refuses this");
         both.InconclusiveGateRate.Should().BeApproximately(0.6, 1e-9);

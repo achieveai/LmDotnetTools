@@ -27,11 +27,11 @@ public class CopilotModelAllowlistProbeTests
     private static Action InvokeEnsureModelAllowed(
         CopilotSdkClient client,
         JsonElement initializeResponse,
-        string? requestedModel)
+        string? requestedModel
+    )
     {
-        var method = typeof(CopilotSdkClient).GetMethod(
-            "EnsureModelAllowed",
-            BindingFlags.Instance | BindingFlags.NonPublic)
+        var method =
+            typeof(CopilotSdkClient).GetMethod("EnsureModelAllowed", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("EnsureModelAllowed not found");
 
         return () =>
@@ -63,7 +63,8 @@ public class CopilotModelAllowlistProbeTests
         var response = Parse("""{"models": ["gpt-4o"]}""");
 
         InvokeEnsureModelAllowed(client, response, "gpt-5")
-            .Should().Throw<InvalidOperationException>()
+            .Should()
+            .Throw<InvalidOperationException>()
             .WithMessage("*gpt-5*gpt-4o*");
     }
 
@@ -103,8 +104,7 @@ public class CopilotModelAllowlistProbeTests
         var response = Parse("""{"supportedModels": ["gpt-5"]}""");
 
         InvokeEnsureModelAllowed(client, response, "gpt-5").Should().NotThrow();
-        InvokeEnsureModelAllowed(client, response, "claude-3-opus")
-            .Should().Throw<InvalidOperationException>();
+        InvokeEnsureModelAllowed(client, response, "claude-3-opus").Should().Throw<InvalidOperationException>();
     }
 
     [Fact]
@@ -123,8 +123,7 @@ public class CopilotModelAllowlistProbeTests
         var response = Parse("""{"models": [{"id": "gpt-5"}, {"id": "gpt-4o"}]}""");
 
         InvokeEnsureModelAllowed(client, response, "gpt-5").Should().NotThrow();
-        InvokeEnsureModelAllowed(client, response, "not-there")
-            .Should().Throw<InvalidOperationException>();
+        InvokeEnsureModelAllowed(client, response, "not-there").Should().Throw<InvalidOperationException>();
     }
 
     [Fact]

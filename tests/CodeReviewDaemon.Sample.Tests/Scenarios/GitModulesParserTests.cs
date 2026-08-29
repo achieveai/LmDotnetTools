@@ -25,7 +25,9 @@ public sealed class GitModulesParserTests
         var entries = GitModulesParser.Parse(content);
 
         entries.Should().HaveCount(2);
-        entries[0].Should().Be(new SubmoduleEntry("vendor/shared-lib", "vendor/shared-lib", "https://github.com/acme/shared-lib.git"));
+        entries[0]
+            .Should()
+            .Be(new SubmoduleEntry("vendor/shared-lib", "vendor/shared-lib", "https://github.com/acme/shared-lib.git"));
         entries[1].Should().Be(new SubmoduleEntry("vendor/utils", "vendor/utils", "../utils.git"));
     }
 

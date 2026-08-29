@@ -1,8 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace LmStreaming.Sample.Auth;
@@ -25,7 +25,8 @@ public sealed class SandboxAuthWebhookForwarder(
     SandboxSessionRegistry sessionRegistry,
     IConversationStore conversationStore,
     HttpClient httpClient,
-    ILogger<SandboxAuthWebhookForwarder> logger) : IAuthWebhookForwarder
+    ILogger<SandboxAuthWebhookForwarder> logger
+) : IAuthWebhookForwarder
 {
     private const string WebhookUrlKey = "sample.authWebhookUrl";
     private const string WebhookProviderIdKey = "sample.authWebhookProviderId";
@@ -38,7 +39,8 @@ public sealed class SandboxAuthWebhookForwarder(
         string providerId,
         string signinUrl,
         string reason,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var target = await ResolveTargetAsync(sessionId, providerId, ct).ConfigureAwait(false);
         if (target is null)
@@ -46,28 +48,36 @@ public sealed class SandboxAuthWebhookForwarder(
             logger.LogInformation(
                 "Auth-webhook forward: no eligible thread registered for session {SessionId}, provider {ProviderId}; nothing to forward.",
                 sessionId,
-                providerId);
+                providerId
+            );
             return null;
         }
 
         await PostAsync(
-            target.WebhookUrl,
-            new AuthWebhookForwardPayload
-            {
-                Type = "auth_required",
-                SessionId = sessionId,
-                ThreadId = target.ThreadId,
-                RunId = target.RunId,
-                ProviderId = providerId,
-                SigninUrl = signinUrl,
-                Reason = reason,
-            },
-            ct).ConfigureAwait(false);
+                target.WebhookUrl,
+                new AuthWebhookForwardPayload
+                {
+                    Type = "auth_required",
+                    SessionId = sessionId,
+                    ThreadId = target.ThreadId,
+                    RunId = target.RunId,
+                    ProviderId = providerId,
+                    SigninUrl = signinUrl,
+                    Reason = reason,
+                },
+                ct
+            )
+            .ConfigureAwait(false);
 
         return target;
     }
 
-    public Task NotifyAuthCompletedAsync(AuthWebhookTarget? target, string sessionId, string providerId, CancellationToken ct)
+    public Task NotifyAuthCompletedAsync(
+        AuthWebhookTarget? target,
+        string sessionId,
+        string providerId,
+        CancellationToken ct
+    )
     {
         if (target is null)
         {
@@ -84,10 +94,17 @@ public sealed class SandboxAuthWebhookForwarder(
                 RunId = target.RunId,
                 ProviderId = providerId,
             },
-            ct);
+            ct
+        );
     }
 
-    public Task NotifyAuthDeniedAsync(AuthWebhookTarget? target, string sessionId, string providerId, string reason, CancellationToken ct)
+    public Task NotifyAuthDeniedAsync(
+        AuthWebhookTarget? target,
+        string sessionId,
+        string providerId,
+        string reason,
+        CancellationToken ct
+    )
     {
         if (target is null)
         {
@@ -105,7 +122,8 @@ public sealed class SandboxAuthWebhookForwarder(
                 ProviderId = providerId,
                 Reason = reason,
             },
-            ct);
+            ct
+        );
     }
 
     /// <summary>
@@ -131,10 +149,14 @@ public sealed class SandboxAuthWebhookForwarder(
                 continue;
             }
 
-            if (best is null
+            if (
+                best is null
                 || candidate.Value.RegisteredAt < best.Value.RegisteredAt
-                || (candidate.Value.RegisteredAt == best.Value.RegisteredAt
-                    && string.CompareOrdinal(candidate.Value.ThreadId, best.Value.ThreadId) < 0))
+                || (
+                    candidate.Value.RegisteredAt == best.Value.RegisteredAt
+                    && string.CompareOrdinal(candidate.Value.ThreadId, best.Value.ThreadId) < 0
+                )
+            )
             {
                 best = candidate;
             }
@@ -145,20 +167,25 @@ public sealed class SandboxAuthWebhookForwarder(
 
     private static (string ThreadId, string? RunId, string WebhookUrl, long RegisteredAt)? TryBuildCandidate(
         ThreadMetadata? metadata,
-        string providerId)
+        string providerId
+    )
     {
         if (metadata?.Properties is not { } properties)
         {
             return null;
         }
 
-        if (!properties.TryGetValue(WebhookUrlKey, out var urlObj) || AsString(urlObj) is not { Length: > 0 } webhookUrl)
+        if (
+            !properties.TryGetValue(WebhookUrlKey, out var urlObj) || AsString(urlObj) is not { Length: > 0 } webhookUrl
+        )
         {
             return null;
         }
 
-        if (!properties.TryGetValue(WebhookProviderIdKey, out var providerObj)
-            || !string.Equals(AsString(providerObj), providerId, StringComparison.OrdinalIgnoreCase))
+        if (
+            !properties.TryGetValue(WebhookProviderIdKey, out var providerObj)
+            || !string.Equals(AsString(providerObj), providerId, StringComparison.OrdinalIgnoreCase)
+        )
         {
             return null;
         }
@@ -175,22 +202,24 @@ public sealed class SandboxAuthWebhookForwarder(
     /// <see cref="string"/> (in-memory store) or a <see cref="JsonElement"/> (file/SQLite stores,
     /// which round-trip <c>Properties</c> through JSON).
     /// </summary>
-    private static string? AsString(object? value) => value switch
-    {
-        string s => s,
-        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
-        null => null,
-        _ => value.ToString(),
-    };
+    private static string? AsString(object? value) =>
+        value switch
+        {
+            string s => s,
+            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+            null => null,
+            _ => value.ToString(),
+        };
 
     /// <summary>Same normalization as <see cref="AsString"/>, for the numeric registered-at timestamp.</summary>
-    private static long? AsInt64(object? value) => value switch
-    {
-        long l => l,
-        int i => i,
-        JsonElement { ValueKind: JsonValueKind.Number } je => je.GetInt64(),
-        _ => null,
-    };
+    private static long? AsInt64(object? value) =>
+        value switch
+        {
+            long l => l,
+            int i => i,
+            JsonElement { ValueKind: JsonValueKind.Number } je => je.GetInt64(),
+            _ => null,
+        };
 
     private async Task PostAsync(string webhookUrl, AuthWebhookForwardPayload payload, CancellationToken ct)
     {
@@ -209,7 +238,8 @@ public sealed class SandboxAuthWebhookForwarder(
                     payload.Type,
                     payload.ThreadId,
                     payload.ProviderId,
-                    (int)response.StatusCode);
+                    (int)response.StatusCode
+                );
             }
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
@@ -219,7 +249,8 @@ public sealed class SandboxAuthWebhookForwarder(
                 "Auth-webhook forward ({Type}) for thread {ThreadId}, provider {ProviderId} timed out.",
                 payload.Type,
                 payload.ThreadId,
-                payload.ProviderId);
+                payload.ProviderId
+            );
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -236,7 +267,8 @@ public sealed class SandboxAuthWebhookForwarder(
                 payload.Type,
                 payload.ThreadId,
                 payload.ProviderId,
-                SafeHost(webhookUrl));
+                SafeHost(webhookUrl)
+            );
         }
     }
 

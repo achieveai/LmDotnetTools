@@ -78,9 +78,7 @@ public class WorkflowPersistenceOrderingTests
     {
         private readonly object _lock = new();
         private readonly List<int> _completedSeqs = [];
-        private readonly TaskCompletionSource _gate = new(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
+        private readonly TaskCompletionSource _gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly int? _throwOnSeq;
         private int _concurrent;
 
@@ -140,13 +138,10 @@ public class WorkflowPersistenceOrderingTests
             }
         }
 
-        public Task<WorkflowInstanceSnapshot?> LoadAsync(
-            string instanceId,
-            CancellationToken ct = default
-        ) => Task.FromResult<WorkflowInstanceSnapshot?>(null);
+        public Task<WorkflowInstanceSnapshot?> LoadAsync(string instanceId, CancellationToken ct = default) =>
+            Task.FromResult<WorkflowInstanceSnapshot?>(null);
 
-        public Task DeleteAsync(string instanceId, CancellationToken ct = default) =>
-            Task.CompletedTask;
+        public Task DeleteAsync(string instanceId, CancellationToken ct = default) => Task.CompletedTask;
 
         public Task<IReadOnlyList<string>> ListAsync(CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<string>>([]);

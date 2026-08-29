@@ -14,10 +14,7 @@ public interface IConversationStore
     /// <param name="threadId">The thread identifier.</param>
     /// <param name="messages">Messages to append.</param>
     /// <param name="ct">Cancellation token.</param>
-    Task AppendMessagesAsync(
-        string threadId,
-        IReadOnlyList<PersistedMessage> messages,
-        CancellationToken ct = default);
+    Task AppendMessagesAsync(string threadId, IReadOnlyList<PersistedMessage> messages, CancellationToken ct = default);
 
     /// <summary>
     /// Loads all messages for a thread, ordered by timestamp.
@@ -25,9 +22,7 @@ public interface IConversationStore
     /// <param name="threadId">The thread identifier.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>All messages for the thread, or empty list if thread not found.</returns>
-    Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
-        string threadId,
-        CancellationToken ct = default);
+    Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default);
 
     /// <summary>
     /// Replaces a single previously-appended message identified by its persisted Id.
@@ -44,10 +39,7 @@ public interface IConversationStore
     /// <param name="replacement">The replacement message. Its <see cref="PersistedMessage.Id"/>
     /// is the lookup key.</param>
     /// <param name="ct">Cancellation token.</param>
-    Task ReplaceMessageAsync(
-        string threadId,
-        PersistedMessage replacement,
-        CancellationToken ct = default);
+    Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default);
 
     // === Metadata (property bag for state, session mappings, etc.) ===
 
@@ -57,10 +49,7 @@ public interface IConversationStore
     /// <param name="threadId">The thread identifier.</param>
     /// <param name="metadata">Metadata to save.</param>
     /// <param name="ct">Cancellation token.</param>
-    Task SaveMetadataAsync(
-        string threadId,
-        ThreadMetadata metadata,
-        CancellationToken ct = default);
+    Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default);
 
     /// <summary>
     /// Loads thread metadata.
@@ -68,9 +57,7 @@ public interface IConversationStore
     /// <param name="threadId">The thread identifier.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Metadata for the thread, or null if not found.</returns>
-    Task<ThreadMetadata?> LoadMetadataAsync(
-        string threadId,
-        CancellationToken ct = default);
+    Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default);
 
     /// <summary>
     /// Atomically reads the current metadata, applies <paramref name="update"/> to it, and saves the
@@ -89,7 +76,8 @@ public interface IConversationStore
     Task UpdateMetadataAsync(
         string threadId,
         Func<ThreadMetadata?, ThreadMetadata> update,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     // === Lifecycle ===
 
@@ -99,9 +87,7 @@ public interface IConversationStore
     /// </summary>
     /// <param name="threadId">The thread identifier.</param>
     /// <param name="ct">Cancellation token.</param>
-    Task DeleteThreadAsync(
-        string threadId,
-        CancellationToken ct = default);
+    Task DeleteThreadAsync(string threadId, CancellationToken ct = default);
 
     // === Listing ===
 
@@ -128,7 +114,8 @@ public interface IConversationStore
         int limit = 50,
         int offset = 0,
         ConversationListOptions? options = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Lists the threads one principal may read, ordered by last updated descending.
@@ -174,7 +161,9 @@ public interface IConversationStore
         int limit = 50,
         int offset = 0,
         ConversationListOptions? options = null,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         throw new NotSupportedException(
-            $"{GetType().Name} does not implement scoped conversation listing (P1 spec 7.5).");
+            $"{GetType().Name} does not implement scoped conversation listing (P1 spec 7.5)."
+        );
 }

@@ -28,7 +28,8 @@ internal sealed record ReviewFindingRecord(
     string Outcome,
     string? ShippedSeverity,
     string? ShippedTitle,
-    string? SynthesisNote);
+    string? SynthesisNote
+);
 
 /// <summary>
 /// Per-reviewer accounting for the round trip: how many finding blocks were extracted from this reviewer's
@@ -86,7 +87,8 @@ internal sealed record ReviewFindingsArtifactPayload(
     int ParsedCount,
     int RecordedCount,
     IReadOnlyList<ReviewFindingSourceTotal> Sources,
-    IReadOnlyList<ReviewFindingRecord> Findings)
+    IReadOnlyList<ReviewFindingRecord> Findings
+)
 {
     /// <summary>
     /// Where these rows came from, recorded as a stable token because the answer is about to become
@@ -119,7 +121,8 @@ internal sealed record ReviewFindingsArtifactPayload(
         IReadOnlyList<ReviewFindingSource> sources,
         IReadOnlyList<ReconciledFinding> reconciled,
         bool compared,
-        string? promptTemplateHash)
+        string? promptTemplateHash
+    )
     {
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(reconciled);
@@ -132,16 +135,15 @@ internal sealed record ReviewFindingsArtifactPayload(
         // the whole group's rows — the per-reviewer counts then sum past RecordedCount and can exceed the
         // reviewer's own Parsed, while the global totals stay right and the shortfall warning never fires.
         // Silent, and permanent: the transcripts these rows came from are not kept.
-        var recordedBySource = reconciled
-            .GroupBy(r => r.SourceIndex)
-            .ToDictionary(g => g.Key, g => g.Count());
+        var recordedBySource = reconciled.GroupBy(r => r.SourceIndex).ToDictionary(g => g.Key, g => g.Count());
 
         var totals = parsed
             .Select(p => new ReviewFindingSourceTotal(
                 p.Label,
                 p.Template,
                 p.Parsed,
-                recordedBySource.TryGetValue(p.Index, out var recorded) ? recorded : 0))
+                recordedBySource.TryGetValue(p.Index, out var recorded) ? recorded : 0
+            ))
             .ToArray();
 
         var rows = reconciled
@@ -155,7 +157,8 @@ internal sealed record ReviewFindingsArtifactPayload(
                 ReviewFindingReconciler.Wire(r.Outcome),
                 r.ShippedSeverity,
                 r.ShippedTitle,
-                r.SynthesisNote))
+                r.SynthesisNote
+            ))
             .ToArray();
 
         return new ReviewFindingsArtifactPayload(
@@ -166,6 +169,7 @@ internal sealed record ReviewFindingsArtifactPayload(
             parsed.Sum(p => p.Parsed),
             rows.Length,
             totals,
-            rows);
+            rows
+        );
     }
 }

@@ -55,7 +55,8 @@ internal static class SubAgentScanScope
     public static async Task<ConversationListScope?> ForRootAsync(
         IConversationStore store,
         string rootThreadId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentException.ThrowIfNullOrWhiteSpace(rootThreadId);

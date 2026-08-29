@@ -168,7 +168,8 @@ public sealed class WebhookSigningSecret
                 newSecret,
                 Encoding.UTF8.GetBytes(newSecret),
                 outgoing.CurrentKey,
-                _timeProvider.GetUtcNow() + overlap);
+                _timeProvider.GetUtcNow() + overlap
+            );
         }
     }
 
@@ -215,7 +216,8 @@ public sealed class WebhookSigningSecret
         string currentSecret,
         byte[] currentKey,
         byte[]? previousKey,
-        DateTimeOffset previousExpiresAtUtc)
+        DateTimeOffset previousExpiresAtUtc
+    )
     {
         public string CurrentSecret { get; } = currentSecret;
 

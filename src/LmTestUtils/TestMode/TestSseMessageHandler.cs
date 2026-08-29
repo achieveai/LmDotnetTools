@@ -226,9 +226,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             }
             else if (message.ExplicitText != null && message.ExplicitText.StartsWith("__TOOL_SCHEMA__"))
             {
-                var toolName = message.ExplicitText.Contains(':')
-                    ? message.ExplicitText.Split(':', 2)[1]
-                    : null;
+                var toolName = message.ExplicitText.Contains(':') ? message.ExplicitText.Split(':', 2)[1] : null;
                 message.ExplicitText = ExtractToolSchema(requestRoot, toolName);
             }
             else if (message.ExplicitText == "__REQUEST_URL__")
@@ -283,9 +281,11 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                 {
                     foreach (var item in content.EnumerateArray())
                     {
-                        if (item.TryGetProperty("type", out var type)
+                        if (
+                            item.TryGetProperty("type", out var type)
                             && type.GetString() == "text"
-                            && item.TryGetProperty("text", out var text))
+                            && item.TryGetProperty("text", out var text)
+                        )
                         {
                             return text.GetString() ?? "No system prompt configured";
                         }
@@ -348,11 +348,13 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
         var lines = new List<string>();
         foreach (var tool in tools.EnumerateArray())
         {
-            if (tool.ValueKind != JsonValueKind.Object
+            if (
+                tool.ValueKind != JsonValueKind.Object
                 || !tool.TryGetProperty("function", out var fn)
                 || fn.ValueKind != JsonValueKind.Object
                 || !fn.TryGetProperty("name", out var name)
-                || name.ValueKind != JsonValueKind.String)
+                || name.ValueKind != JsonValueKind.String
+            )
             {
                 continue;
             }
@@ -363,9 +365,10 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                 continue;
             }
 
-            var description = fn.TryGetProperty("description", out var desc) && desc.ValueKind == JsonValueKind.String
-                ? desc.GetString() ?? string.Empty
-                : string.Empty;
+            var description =
+                fn.TryGetProperty("description", out var desc) && desc.ValueKind == JsonValueKind.String
+                    ? desc.GetString() ?? string.Empty
+                    : string.Empty;
             lines.Add($"{toolName}: {description}");
         }
 
@@ -497,11 +500,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                     {
                         id = $"call_{Guid.NewGuid():N}",
                         type = "function",
-                        function = new
-                        {
-                            name = toolCall.Name,
-                            arguments = toolCall.ArgsJson,
-                        },
+                        function = new { name = toolCall.Name, arguments = toolCall.ArgsJson },
                     }
                 );
             }

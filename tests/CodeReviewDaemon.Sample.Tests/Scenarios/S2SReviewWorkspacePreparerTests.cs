@@ -30,9 +30,7 @@ public sealed class S2SReviewWorkspacePreparerTests
     [InlineData("..", "review-github-achieveai-lmdotnettools-pr")] // '..' removed then trailing '-' trimmed
     public void DeriveLeaf_produces_a_sanitize_stable_single_segment_leaf(string prId, string expected)
     {
-        S2SReviewWorkspacePreparer
-            .DeriveLeaf(MakeRepo("github", project: null), "github", prId)
-            .Should().Be(expected);
+        S2SReviewWorkspacePreparer.DeriveLeaf(MakeRepo("github", project: null), "github", prId).Should().Be(expected);
     }
 
     [Fact]
@@ -51,7 +49,8 @@ public sealed class S2SReviewWorkspacePreparerTests
                 RepoStableId = "repo-stable-2",
             },
             "github",
-            "42");
+            "42"
+        );
 
         other.Should().NotBe(target, "the leaf carries provider + owner + repo, not just the PR number");
     }
@@ -61,62 +60,94 @@ public sealed class S2SReviewWorkspacePreparerTests
     {
         // A fresh host dir: the rev-parse probe fails, so the preparer must clone → fetch the exact base+head
         // → force-checkout the head. Fetch/checkout succeed via the runner's default result.
-        var git = new FakeSandboxCommandRunner()
-            .OnArgvContains("rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a repo"));
+        var git = new FakeSandboxCommandRunner().OnArgvContains(
+            "rev-parse --is-inside-work-tree",
+            new SandboxCommandResult(1, string.Empty, "not a repo")
+        );
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "api/workspaces", "[]")
             .OnJson(
                 HttpMethod.Post,
                 "api/workspaces",
-                "{\"id\":\"ws-new\",\"name\":\"Review PR #118\",\"directoryRelPath\":\"" + GithubLeaf + "\","
-                    + "\"marketplaces\":[\"code-reviewer\"]}");
+                "{\"id\":\"ws-new\",\"name\":\"Review PR #118\",\"directoryRelPath\":\""
+                    + GithubLeaf
+                    + "\","
+                    + "\"marketplaces\":[\"code-reviewer\"]}"
+            );
         using var http = NewHttp(handler);
         var preparer = NewPreparer(http, git);
 
         var prepared = await preparer.PrepareAsync(
-            MakeRun("118"), MakeRepo("github", project: null), "github", CancellationToken.None);
+            MakeRun("118"),
+            MakeRepo("github", project: null),
+            "github",
+            CancellationToken.None
+        );
 
         prepared.Leaf.Should().Be(GithubLeaf);
         prepared.WorkspaceId.Should().Be("ws-new");
 
         var commands = git.Commands.Select(c => string.Join(" ", c.Argv)).ToList();
-        commands.Should().Contain(
-            c => c.Contains("clone")
-                && c.Contains("https://github.com/achieveai/LmDotnetTools.git")
-                && c.Contains($"{BasePath}/{GithubLeaf}"),
-            "the checkout is host-cloned into {base}/{leaf}");
-        commands.Should().Contain(c => c.Contains("fetch origin base-sha head-sha"), "the exact PR commits are fetched");
+        commands
+            .Should()
+            .Contain(
+                c =>
+                    c.Contains("clone")
+                    && c.Contains("https://github.com/achieveai/LmDotnetTools.git")
+                    && c.Contains($"{BasePath}/{GithubLeaf}"),
+                "the checkout is host-cloned into {base}/{leaf}"
+            );
+        commands
+            .Should()
+            .Contain(c => c.Contains("fetch origin base-sha head-sha"), "the exact PR commits are fetched");
         commands.Should().Contain(c => c.Contains("checkout --force head-sha"), "the PR head is force-checked-out");
 
-        var createBody = handler.Requests
-            .Single(r => r.Method == HttpMethod.Post && r.Uri.ToString().Contains("api/workspaces", StringComparison.Ordinal))
+        var createBody = handler
+            .Requests.Single(r =>
+                r.Method == HttpMethod.Post && r.Uri.ToString().Contains("api/workspaces", StringComparison.Ordinal)
+            )
             .Body;
-        createBody.Should().Contain($"\"directoryRelPath\":\"{GithubLeaf}\"")
-            .And.Contain("\"marketplaces\":[\"code-reviewer\"]", "the code-reviewer marketplace surfaces the sub-agent tree");
+        createBody
+            .Should()
+            .Contain($"\"directoryRelPath\":\"{GithubLeaf}\"")
+            .And.Contain(
+                "\"marketplaces\":[\"code-reviewer\"]",
+                "the code-reviewer marketplace surfaces the sub-agent tree"
+            );
     }
 
     [Fact]
     public async Task PrepareAsync_builds_the_ado_dev_azure_remote_from_org_project_and_repo()
     {
-        var git = new FakeSandboxCommandRunner()
-            .OnArgvContains("rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a repo"));
+        var git = new FakeSandboxCommandRunner().OnArgvContains(
+            "rev-parse --is-inside-work-tree",
+            new SandboxCommandResult(1, string.Empty, "not a repo")
+        );
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "api/workspaces", "[]")
             .OnJson(
                 HttpMethod.Post,
                 "api/workspaces",
                 "{\"id\":\"ws-ado\",\"name\":\"Review PR #200\","
-                    + "\"directoryRelPath\":\"review-ado-achieveai-lmdotnettools-pr-200\",\"marketplaces\":[]}");
+                    + "\"directoryRelPath\":\"review-ado-achieveai-lmdotnettools-pr-200\",\"marketplaces\":[]}"
+            );
         using var http = NewHttp(handler);
         var preparer = NewPreparer(http, git);
 
         _ = await preparer.PrepareAsync(
-            MakeRun("200"), MakeRepo("ado", project: "Platform"), "ado", CancellationToken.None);
+            MakeRun("200"),
+            MakeRepo("ado", project: "Platform"),
+            "ado",
+            CancellationToken.None
+        );
 
         var commands = git.Commands.Select(c => string.Join(" ", c.Argv)).ToList();
-        commands.Should().Contain(
-            c => c.Contains("clone") && c.Contains("https://dev.azure.com/achieveai/Platform/_git/LmDotnetTools"),
-            "ADO clones from dev.azure.com/{org}/{project}/_git/{repo}");
+        commands
+            .Should()
+            .Contain(
+                c => c.Contains("clone") && c.Contains("https://dev.azure.com/achieveai/Platform/_git/LmDotnetTools"),
+                "ADO clones from dev.azure.com/{org}/{project}/_git/{repo}"
+            );
     }
 
     /// <summary>
@@ -130,15 +161,18 @@ public sealed class S2SReviewWorkspacePreparerTests
     [Fact]
     public async Task PrepareAsync_url_encodes_each_ado_remote_segment_so_a_spaced_org_still_clones()
     {
-        var git = new FakeSandboxCommandRunner()
-            .OnArgvContains("rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a repo"));
+        var git = new FakeSandboxCommandRunner().OnArgvContains(
+            "rev-parse --is-inside-work-tree",
+            new SandboxCommandResult(1, string.Empty, "not a repo")
+        );
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "api/workspaces", "[]")
             .OnJson(
                 HttpMethod.Post,
                 "api/workspaces",
                 "{\"id\":\"ws-ado-spaced\",\"name\":\"Review PR #201\","
-                    + "\"directoryRelPath\":\"review-ado-contoso-org-my-repo-pr-201\",\"marketplaces\":[]}");
+                    + "\"directoryRelPath\":\"review-ado-contoso-org-my-repo-pr-201\",\"marketplaces\":[]}"
+            );
         using var http = NewHttp(handler);
         var preparer = NewPreparer(http, git);
         var spaced = new RepoIdentity
@@ -157,7 +191,8 @@ public sealed class S2SReviewWorkspacePreparerTests
             .Argv.Should()
             .Contain(
                 "https://dev.azure.com/contoso%20org/MCQdb%20Development/_git/My%20Repo",
-                "each segment is encoded, so the remote stays a well-formed URL and one segment per name");
+                "each segment is encoded, so the remote stays a well-formed URL and one segment per name"
+            );
     }
 
     [Fact]
@@ -167,22 +202,28 @@ public sealed class S2SReviewWorkspacePreparerTests
         var git = new FakeSandboxCommandRunner()
             .OnArgvContains(
                 "rev-parse --is-inside-work-tree",
-                new SandboxCommandResult(128, string.Empty, "fatal: unsafe repository ownership"))
-            .OnArgvContains(
-                $"ls -1A -- {hostDir}",
-                new SandboxCommandResult(0, "existing-file\n", string.Empty));
+                new SandboxCommandResult(128, string.Empty, "fatal: unsafe repository ownership")
+            )
+            .OnArgvContains($"ls -1A -- {hostDir}", new SandboxCommandResult(0, "existing-file\n", string.Empty));
         var handler = new FakeHttpMessageHandler();
         using var http = NewHttp(handler);
         var preparer = NewPreparer(http, git);
 
-        Func<Task> act = async () => _ = await preparer.PrepareAsync(
-            MakeRun("118"), MakeRepo("github", project: null), "github", CancellationToken.None);
+        Func<Task> act = async () =>
+            _ = await preparer.PrepareAsync(
+                MakeRun("118"),
+                MakeRepo("github", project: null),
+                "github",
+                CancellationToken.None
+            );
 
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*unsafe repository ownership*");
-        git.Commands.Select(c => string.Join(" ", c.Argv)).Should().NotContain(
-            command => command.Contains(" clone ", StringComparison.Ordinal),
-            "cloning cannot repair or explain a nonempty checkout whose probe failed");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*unsafe repository ownership*");
+        git.Commands.Select(c => string.Join(" ", c.Argv))
+            .Should()
+            .NotContain(
+                command => command.Contains(" clone ", StringComparison.Ordinal),
+                "cloning cannot repair or explain a nonempty checkout whose probe failed"
+            );
         handler.Requests.Should().BeEmpty("the checkout fails before a workspace is created");
     }
 
@@ -192,22 +233,29 @@ public sealed class S2SReviewWorkspacePreparerTests
         // The probe succeeds (default result) so no clone happens; the existing workspace whose DirectoryRelPath
         // matches the derived leaf is reused — so only ONE api/workspaces call (the GET), never a POST.
         var git = new FakeSandboxCommandRunner();
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "api/workspaces",
-                "[{\"id\":\"ws-existing\",\"name\":\"Review PR #118\",\"directoryRelPath\":\"" + GithubLeaf + "\","
-                    + "\"marketplaces\":[\"code-reviewer\"]}]");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "api/workspaces",
+            "[{\"id\":\"ws-existing\",\"name\":\"Review PR #118\",\"directoryRelPath\":\""
+                + GithubLeaf
+                + "\","
+                + "\"marketplaces\":[\"code-reviewer\"]}]"
+        );
         using var http = NewHttp(handler);
         var preparer = NewPreparer(http, git);
 
         var prepared = await preparer.PrepareAsync(
-            MakeRun("118"), MakeRepo("github", project: null), "github", CancellationToken.None);
+            MakeRun("118"),
+            MakeRepo("github", project: null),
+            "github",
+            CancellationToken.None
+        );
 
         prepared.WorkspaceId.Should().Be("ws-existing", "the workspace pointing at the leaf is reused, not recreated");
-        handler.Requests
-            .Where(r => r.Uri.ToString().Contains("api/workspaces", StringComparison.Ordinal))
-            .Should().OnlyContain(r => r.Method == HttpMethod.Get, "reuse must not POST a duplicate workspace");
+        handler
+            .Requests.Where(r => r.Uri.ToString().Contains("api/workspaces", StringComparison.Ordinal))
+            .Should()
+            .OnlyContain(r => r.Method == HttpMethod.Get, "reuse must not POST a duplicate workspace");
     }
 
     [Fact]
@@ -224,11 +272,16 @@ public sealed class S2SReviewWorkspacePreparerTests
                 HttpMethod.Post,
                 "api/workspaces",
                 "{\"id\":\"ws-slot-0\",\"name\":\"Review slot 0\",\"directoryRelPath\":\"review-slot-0\","
-                    + "\"marketplaces\":[\"code-reviewer\"]}");
+                    + "\"marketplaces\":[\"code-reviewer\"]}"
+            );
         using var http = NewHttp(handler);
         var preparer = NewPreparer(http, git);
 
-        var prepared = await preparer.AdoptSlotAsync(MakeSlot(0, "review-slot-0"), MakeRun("118"), CancellationToken.None);
+        var prepared = await preparer.AdoptSlotAsync(
+            MakeSlot(0, "review-slot-0"),
+            MakeRun("118"),
+            CancellationToken.None
+        );
 
         prepared.Leaf.Should().Be("review-slot-0", "the slot's directory name IS the workspace leaf");
         prepared.WorkspaceId.Should().Be("ws-slot-0");
@@ -242,21 +295,26 @@ public sealed class S2SReviewWorkspacePreparerTests
         // Slots are warm and recycled: the second review to lease slot 1 must reuse slot 1's workspace
         // rather than minting a duplicate pointing at the same directory.
         var git = new FakeSandboxCommandRunner();
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "api/workspaces",
-                "[{\"id\":\"ws-slot-1\",\"name\":\"Review slot 1\",\"directoryRelPath\":\"review-slot-1\","
-                    + "\"marketplaces\":[\"code-reviewer\"]}]");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "api/workspaces",
+            "[{\"id\":\"ws-slot-1\",\"name\":\"Review slot 1\",\"directoryRelPath\":\"review-slot-1\","
+                + "\"marketplaces\":[\"code-reviewer\"]}]"
+        );
         using var http = NewHttp(handler);
         var preparer = NewPreparer(http, git);
 
-        var prepared = await preparer.AdoptSlotAsync(MakeSlot(1, "review-slot-1"), MakeRun("222"), CancellationToken.None);
+        var prepared = await preparer.AdoptSlotAsync(
+            MakeSlot(1, "review-slot-1"),
+            MakeRun("222"),
+            CancellationToken.None
+        );
 
         prepared.WorkspaceId.Should().Be("ws-slot-1");
-        handler.Requests
-            .Where(r => r.Uri.ToString().Contains("api/workspaces", StringComparison.Ordinal))
-            .Should().OnlyContain(r => r.Method == HttpMethod.Get, "a recycled slot must not POST a duplicate workspace");
+        handler
+            .Requests.Where(r => r.Uri.ToString().Contains("api/workspaces", StringComparison.Ordinal))
+            .Should()
+            .OnlyContain(r => r.Method == HttpMethod.Get, "a recycled slot must not POST a duplicate workspace");
     }
 
     [Fact]
@@ -268,10 +326,12 @@ public sealed class S2SReviewWorkspacePreparerTests
         using var http = NewHttp(handler);
         var preparer = NewPreparer(http, new FakeSandboxCommandRunner());
 
-        var adopt = async () => await preparer.AdoptSlotAsync(
-            MakeSlot(0, "Review Slot 0"), MakeRun("118"), CancellationToken.None);
+        var adopt = async () =>
+            await preparer.AdoptSlotAsync(MakeSlot(0, "Review Slot 0"), MakeRun("118"), CancellationToken.None);
 
-        _ = await adopt.Should().ThrowAsync<InvalidOperationException>()
+        _ = await adopt
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
             .WithMessage("*review-slot-0*", "the failure names what the leaf would silently become");
         handler.Requests.Should().BeEmpty("it fails before naming anything to LmStreaming");
     }
@@ -291,7 +351,8 @@ public sealed class S2SReviewWorkspacePreparerTests
             new GitRunner(git),
             BasePath,
             reviewMarketplace: "code-reviewer",
-            NullLogger<S2SReviewWorkspacePreparer>.Instance);
+            NullLogger<S2SReviewWorkspacePreparer>.Instance
+        );
 
     private static ReviewRun MakeRun(string prId) =>
         new()

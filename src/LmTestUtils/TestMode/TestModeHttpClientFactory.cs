@@ -87,7 +87,7 @@ public static class TestModeHttpClientFactory
         )
         {
             EmbeddingSize = embeddingSize,
-            Delay = delay
+            Delay = delay,
         };
 
         if (statusSequence is { Length: > 0 })
@@ -117,7 +117,7 @@ public static class TestModeHttpClientFactory
             loggerFactory.CreateLogger<TestRerankMessageHandler>()
         )
         {
-            Delay = delay
+            Delay = delay,
         };
 
         if (statusSequence is { Length: > 0 })
@@ -176,10 +176,7 @@ internal sealed class StatusSequenceDelegatingHandler : DelegatingHandler
             var statusCode = _statusSequence[currentIndex];
             if (statusCode != HttpStatusCode.OK)
             {
-                return new HttpResponseMessage(statusCode)
-                {
-                    Content = new StringContent($"Error {(int)statusCode}"),
-                };
+                return new HttpResponseMessage(statusCode) { Content = new StringContent($"Error {(int)statusCode}") };
             }
         }
 

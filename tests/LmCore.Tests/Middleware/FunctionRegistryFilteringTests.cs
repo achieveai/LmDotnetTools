@@ -257,7 +257,8 @@ public class FunctionRegistryFilteringTests
                         ClassName = useClassName ? providerName : null,
                         Description = $"Test function {name} from {providerName}",
                     },
-                    Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"Result from {name}")),
+                    Handler = (_, _, _) =>
+                        Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"Result from {name}")),
                     ProviderName = ProviderName,
                 }),
             ];
@@ -488,7 +489,9 @@ public class FunctionRegistryFilteringTests
         // Arrange
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
-        _ = registry.AddProvider(new TestFunctionProvider("VeryLongProviderName", true, ["func1", "func2", "blockedFunc"]));
+        _ = registry.AddProvider(
+            new TestFunctionProvider("VeryLongProviderName", true, ["func1", "func2", "blockedFunc"])
+        );
         _ = registry.AddProvider(new TestFunctionProvider("AnotherLongName", true, ["func1", "func3", "blockedFunc"]));
 
         var filterConfig = new FunctionFilterConfig

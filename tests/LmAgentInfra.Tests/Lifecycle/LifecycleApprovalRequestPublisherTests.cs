@@ -40,8 +40,7 @@ public sealed class LifecycleApprovalRequestPublisherTests
     {
         var harness = new Harness(options => options.AllowedCallbackHosts = ["elsewhere.example.com"]);
 
-        var act = async () =>
-            await harness.Publisher.PublishAsync(Subscriber(), Request(), CancellationToken.None);
+        var act = async () => await harness.Publisher.PublishAsync(Subscriber(), Request(), CancellationToken.None);
 
         // The third of ADR 0005's three re-authorization moments. The subscription was admitted under
         // whatever allow-list was configured then; an operator narrowing it around an incident must
@@ -93,9 +92,7 @@ public sealed class LifecycleApprovalRequestPublisherTests
     [InlineData(LifecycleDeliveryOutcome.Retryable)]
     [InlineData(LifecycleDeliveryOutcome.Permanent)]
     [InlineData(LifecycleDeliveryOutcome.Gone)]
-    public async Task An_approver_that_does_not_accept_the_request_counts_as_unasked(
-        LifecycleDeliveryOutcome outcome
-    )
+    public async Task An_approver_that_does_not_accept_the_request_counts_as_unasked(LifecycleDeliveryOutcome outcome)
     {
         var harness = new Harness();
         harness.Sender.Result = outcome switch
@@ -105,8 +102,7 @@ public sealed class LifecycleApprovalRequestPublisherTests
             _ => LifecycleDeliveryResult.Gone(410),
         };
 
-        var act = async () =>
-            await harness.Publisher.PublishAsync(Subscriber(), Request(), CancellationToken.None);
+        var act = async () => await harness.Publisher.PublishAsync(Subscriber(), Request(), CancellationToken.None);
 
         // Retryable is included deliberately. This publisher does not retry — its caller is already
         // looping over approvers, and an approval request carries its own expiry, so a retry that
@@ -203,11 +199,7 @@ public sealed class LifecycleApprovalRequestPublisherTests
     {
         internal Harness(Action<LifecycleDeliveryOptions>? configure = null)
         {
-            Options = new LifecycleDeliveryOptions
-            {
-                Enabled = true,
-                AllowedCallbackHosts = [CallbackHost],
-            };
+            Options = new LifecycleDeliveryOptions { Enabled = true, AllowedCallbackHosts = [CallbackHost] };
             configure?.Invoke(Options);
             Options.Validate();
 
@@ -285,10 +277,6 @@ public sealed class LifecycleApprovalRequestPublisherTests
                 }
             });
 
-        internal sealed record Attempt(
-            LifecycleSubscription Subscription,
-            string DeliveryId,
-            byte[] Body
-        );
+        internal sealed record Attempt(LifecycleSubscription Subscription, string DeliveryId, byte[] Body);
     }
 }

@@ -60,7 +60,8 @@ public sealed class SqliteResourceGrantStore : IResourceGrantStore
         ResourceRef resource,
         string subjectId,
         DateTimeOffset now,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
         ArgumentException.ThrowIfNullOrWhiteSpace(subjectId);
@@ -93,7 +94,8 @@ public sealed class SqliteResourceGrantStore : IResourceGrantStore
         string subjectId,
         string resourceType,
         DateTimeOffset now,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
         ArgumentException.ThrowIfNullOrWhiteSpace(subjectId);
@@ -129,7 +131,8 @@ public sealed class SqliteResourceGrantStore : IResourceGrantStore
     public async Task<IReadOnlyList<ResourceGrant>> ListGrantsForResourceAsync(
         string tenantId,
         ResourceRef resource,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
 
@@ -163,18 +166,18 @@ public sealed class SqliteResourceGrantStore : IResourceGrantStore
                 continue;
             }
 
-            grants.Add(new ResourceGrant
-            {
-                TenantId = tenantId,
-                Resource = resource,
-                SubjectId = reader.GetString(0),
-                Role = role,
-                GrantedBy = reader.GetString(2),
-                GrantedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
-                ExpiresAt = reader.IsDBNull(4)
-                    ? null
-                    : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
-            });
+            grants.Add(
+                new ResourceGrant
+                {
+                    TenantId = tenantId,
+                    Resource = resource,
+                    SubjectId = reader.GetString(0),
+                    Role = role,
+                    GrantedBy = reader.GetString(2),
+                    GrantedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
+                    ExpiresAt = reader.IsDBNull(4) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
+                }
+            );
         }
 
         return grants;
@@ -210,7 +213,9 @@ public sealed class SqliteResourceGrantStore : IResourceGrantStore
         _ = command.Parameters.AddWithValue("$grantedBy", grant.GrantedBy);
         _ = command.Parameters.AddWithValue("$grantedAt", grant.GrantedAt.ToUnixTimeMilliseconds());
         _ = command.Parameters.AddWithValue(
-            "$expiresAt", (object?)grant.ExpiresAt?.ToUnixTimeMilliseconds() ?? DBNull.Value);
+            "$expiresAt",
+            (object?)grant.ExpiresAt?.ToUnixTimeMilliseconds() ?? DBNull.Value
+        );
 
         _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
@@ -220,7 +225,8 @@ public sealed class SqliteResourceGrantStore : IResourceGrantStore
         string tenantId,
         ResourceRef resource,
         string subjectId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
         ArgumentException.ThrowIfNullOrWhiteSpace(subjectId);
@@ -249,7 +255,8 @@ public sealed class SqliteResourceGrantStore : IResourceGrantStore
         string tenantId,
         ResourceRef resource,
         DateTimeOffset now,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
 
@@ -273,18 +280,18 @@ public sealed class SqliteResourceGrantStore : IResourceGrantStore
         return Convert.ToInt64(count, CultureInfo.InvariantCulture) > 0;
     }
 
-    private static string FormatRole(GrantRole role) =>
-        role == GrantRole.Editor ? RoleEditor : RoleViewer;
+    private static string FormatRole(GrantRole role) => role == GrantRole.Editor ? RoleEditor : RoleViewer;
 
     /// <summary>
     /// Reads a stored role. An unrecognised value reads as null - no grant - rather than as
     /// <see cref="GrantRole.Viewer"/>: a value the CHECK constraint should have refused must fail
     /// closed, never confer anything.
     /// </summary>
-    private static GrantRole? ParseRole(string role) => role switch
-    {
-        RoleEditor => GrantRole.Editor,
-        RoleViewer => GrantRole.Viewer,
-        _ => null,
-    };
+    private static GrantRole? ParseRole(string role) =>
+        role switch
+        {
+            RoleEditor => GrantRole.Editor,
+            RoleViewer => GrantRole.Viewer,
+            _ => null,
+        };
 }

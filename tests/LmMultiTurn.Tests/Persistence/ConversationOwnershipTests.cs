@@ -74,8 +74,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         switch (kind)
         {
             case "sqlite":
-                var sqlite = new SqliteConversationStore(
-                    Path.Combine(_root, $"conv_{Guid.NewGuid():N}.db"));
+                var sqlite = new SqliteConversationStore(Path.Combine(_root, $"conv_{Guid.NewGuid():N}.db"));
                 _disposables.Add(sqlite);
                 return sqlite;
             case "file":
@@ -94,7 +93,8 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         string? ownerUserId = null,
         string? ownerAppId = null,
         Visibility? visibility = null,
-        long lastUpdated = 1_000) =>
+        long lastUpdated = 1_000
+    ) =>
         await store.UpdateMetadataAsync(
             threadId,
             _ => new ThreadMetadata
@@ -106,14 +106,16 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
                 OwnerAppId = ownerAppId,
                 Visibility = visibility,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
     private static ConversationListScope Scope(
         string tenantId,
         string? userId = null,
         string? appId = null,
         bool isTenantAdmin = false,
-        params string[] granted) =>
+        params string[] granted
+    ) =>
         new()
         {
             TenantId = tenantId,
@@ -167,11 +169,12 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
         var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["subagent-", "workflow-"] };
 
-        var listed = await store.ListThreadsAsync(
-            Scope(TenantA, UserA), 10, 0, options, ct: CancellationToken.None);
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 10, 0, options, ct: CancellationToken.None);
 
         _ = listed.Should().HaveCount(10);
-        _ = listed.Select(t => t.ThreadId).Should()
+        _ = listed
+            .Select(t => t.ThreadId)
+            .Should()
             .OnlyContain(id => id.StartsWith("thread-1", StringComparison.Ordinal));
     }
 
@@ -198,8 +201,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
         var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["a%b-"] };
 
-        var listed = await store.ListThreadsAsync(
-            Scope(TenantA, UserA), 50, 0, options, ct: CancellationToken.None);
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, options, ct: CancellationToken.None);
 
         _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["axb-kept", "ab-kept"]);
     }
@@ -234,7 +236,9 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         var listed = await store.ListThreadsAsync(10, 0, options, ct: CancellationToken.None);
 
         _ = listed.Should().HaveCount(10);
-        _ = listed.Select(t => t.ThreadId).Should()
+        _ = listed
+            .Select(t => t.ThreadId)
+            .Should()
             .OnlyContain(id => id.StartsWith("thread-1", StringComparison.Ordinal));
     }
 
@@ -264,17 +268,16 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
         if (kind == "sqlite")
         {
-            var refusal = await Assert.ThrowsAsync<NotSupportedException>(
-                () => store.ListThreadsAsync(
-                    Scope(TenantA, UserA), 50, 0, options, ct: CancellationToken.None));
+            var refusal = await Assert.ThrowsAsync<NotSupportedException>(() =>
+                store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, options, ct: CancellationToken.None)
+            );
 
             _ = refusal.Message.Should().Contain("created_at");
             _ = refusal.Message.Should().Contain(nameof(ConversationListOptions.CreationTimestampOf));
             return;
         }
 
-        var listed = await store.ListThreadsAsync(
-            Scope(TenantA, UserA), 50, 0, options, ct: CancellationToken.None);
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, options, ct: CancellationToken.None);
 
         _ = listed.Select(t => t.ThreadId).Should().Equal("thread-2000-bbb", "thread-1000-aaa");
     }
@@ -313,16 +316,19 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
             await WriteAsync(store, $"thread-5000-{suffix}", TenantA, UserA, lastUpdated: 5_000);
         }
 
-        var listed = await store.ListThreadsAsync(
-            Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
 
-        _ = listed.Select(t => t.ThreadId).Should().Equal(
-            "thread-5000-fff",
-            "thread-5000-eee",
-            "thread-5000-ddd",
-            "thread-5000-ccc",
-            "thread-5000-bbb",
-            "thread-5000-aaa");
+        _ = listed
+            .Select(t => t.ThreadId)
+            .Should()
+            .Equal(
+                "thread-5000-fff",
+                "thread-5000-eee",
+                "thread-5000-ddd",
+                "thread-5000-ccc",
+                "thread-5000-bbb",
+                "thread-5000-aaa"
+            );
     }
 
     #endregion
@@ -385,9 +391,12 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         await WriteAsync(store, "untenanted", tenantId: null, ownerUserId: UserA);
 
         var scanned = await store.ListThreadsAsync(
-            ConversationListScope.ForTenantIncludingUntenanted(TenantA), 50, 0, ct: CancellationToken.None);
-        var asCaller = await store.ListThreadsAsync(
-            Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
+            ConversationListScope.ForTenantIncludingUntenanted(TenantA),
+            50,
+            0,
+            ct: CancellationToken.None
+        );
+        var asCaller = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
 
         _ = scanned.Select(t => t.ThreadId).Should().BeEquivalentTo(["tenanted", "untenanted"]);
         _ = asCaller.Select(t => t.ThreadId).Should().BeEquivalentTo(["tenanted"]);
@@ -407,7 +416,11 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
         var asUser = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
         var asApp = await store.ListThreadsAsync(
-            Scope(TenantA, userId: null, appId: null), 50, 0, ct: CancellationToken.None);
+            Scope(TenantA, userId: null, appId: null),
+            50,
+            0,
+            ct: CancellationToken.None
+        );
 
         _ = asUser.Should().BeEmpty();
         _ = asApp.Should().BeEmpty();
@@ -439,9 +452,12 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         await WriteAsync(store, "shared", TenantA, UserA2, visibility: Visibility.Shared);
 
         var withGrant = await store.ListThreadsAsync(
-            Scope(TenantA, UserA, granted: "shared"), 50, 0, ct: CancellationToken.None);
-        var withoutGrant = await store.ListThreadsAsync(
-            Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
+            Scope(TenantA, UserA, granted: "shared"),
+            50,
+            0,
+            ct: CancellationToken.None
+        );
+        var withoutGrant = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
 
         _ = withGrant.Select(t => t.ThreadId).Should().BeEquivalentTo(["shared"]);
         _ = withoutGrant.Should().BeEmpty();
@@ -461,7 +477,11 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         await WriteAsync(store, "b1", TenantB, UserB);
 
         var listed = await store.ListThreadsAsync(
-            Scope(TenantA, UserA, isTenantAdmin: true), 50, 0, ct: CancellationToken.None);
+            Scope(TenantA, UserA, isTenantAdmin: true),
+            50,
+            0,
+            ct: CancellationToken.None
+        );
 
         _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["a1", "a2"]);
     }
@@ -482,7 +502,8 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
             Scope(TenantA, userId: null, appId: "app-1", granted: "user-owned"),
             50,
             0,
-            ct: CancellationToken.None);
+            ct: CancellationToken.None
+        );
 
         _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["app-owned"]);
     }
@@ -493,8 +514,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
     /// </summary>
     [Theory]
     [MemberData(nameof(StoreKinds))]
-    public async Task Listing_IncludesATenantPublishedConversation_TheCallerNeitherOwnsNorHoldsAGrantOn(
-        string kind)
+    public async Task Listing_IncludesATenantPublishedConversation_TheCallerNeitherOwnsNorHoldsAGrantOn(string kind)
     {
         // The listing predicate has to mirror EVERY allow branch of spec 7.4, and the
         // tenant-published branch had no counterpart here. The point read already allows this row
@@ -512,8 +532,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
     [Theory]
     [MemberData(nameof(StoreKinds))]
-    public async Task Listing_StillExcludesAPrivateConversation_OwnedByAnotherMemberOfTheSameTenant(
-        string kind)
+    public async Task Listing_StillExcludesAPrivateConversation_OwnedByAnotherMemberOfTheSameTenant(string kind)
     {
         // Non-vacuity for the test above. A branch that admitted every same-tenant row - rather
         // than only the published ones - would satisfy it while handing every member's private
@@ -580,10 +599,8 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         var stamped = await ownership.StampUnownedThreadsAsync("tnt_quarantine", CancellationToken.None);
 
         _ = stamped.Should().Be(2);
-        _ = (await store.LoadMetadataAsync("legacy-1", CancellationToken.None))!.TenantId
-            .Should().Be("tnt_quarantine");
-        _ = (await store.LoadMetadataAsync("already", CancellationToken.None))!.TenantId
-            .Should().Be(TenantA);
+        _ = (await store.LoadMetadataAsync("legacy-1", CancellationToken.None))!.TenantId.Should().Be("tnt_quarantine");
+        _ = (await store.LoadMetadataAsync("already", CancellationToken.None))!.TenantId.Should().Be(TenantA);
     }
 
     /// <summary>
@@ -601,10 +618,8 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         await WriteAsync(store, "q1", "tnt_quarantine");
         await WriteAsync(store, "q2", "tnt_quarantine");
 
-        var first = await ownership.AdoptThreadsAsync(
-            "tnt_quarantine", TenantA, UserA, null, CancellationToken.None);
-        var second = await ownership.AdoptThreadsAsync(
-            "tnt_quarantine", TenantB, UserB, null, CancellationToken.None);
+        var first = await ownership.AdoptThreadsAsync("tnt_quarantine", TenantA, UserA, null, CancellationToken.None);
+        var second = await ownership.AdoptThreadsAsync("tnt_quarantine", TenantB, UserB, null, CancellationToken.None);
 
         _ = first.Should().Be(2);
         _ = second.Should().Be(0);
@@ -628,12 +643,10 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
         await WriteAsync(store, "q1", "tnt_quarantine");
 
-        var affected = await ownership.AdoptThreadsAsync(
-            "tnt_quarantine", TenantA, UserA, [], CancellationToken.None);
+        var affected = await ownership.AdoptThreadsAsync("tnt_quarantine", TenantA, UserA, [], CancellationToken.None);
 
         _ = affected.Should().Be(0);
-        _ = (await store.LoadMetadataAsync("q1", CancellationToken.None))!.TenantId
-            .Should().Be("tnt_quarantine");
+        _ = (await store.LoadMetadataAsync("q1", CancellationToken.None))!.TenantId.Should().Be("tnt_quarantine");
     }
 
     /// <summary>
@@ -651,10 +664,8 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         await WriteAsync(store, "q2", "tnt_quarantine");
         await WriteAsync(store, "real", TenantA, UserA);
 
-        var rehearsed = await ownership.ListThreadIdsByTenantAsync(
-            "tnt_quarantine", null, CancellationToken.None);
-        var applied = await ownership.AdoptThreadsAsync(
-            "tnt_quarantine", TenantA, null, null, CancellationToken.None);
+        var rehearsed = await ownership.ListThreadIdsByTenantAsync("tnt_quarantine", null, CancellationToken.None);
+        var applied = await ownership.AdoptThreadsAsync("tnt_quarantine", TenantA, null, null, CancellationToken.None);
 
         _ = rehearsed.Should().BeEquivalentTo(["q1", "q2"]);
         _ = applied.Should().Be(rehearsed.Count);
@@ -700,7 +711,11 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         }
 
         var listed = await store.ListThreadsAsync(
-            Scope(TenantA, UserA, granted: [.. granted]), 50, 0, ct: CancellationToken.None);
+            Scope(TenantA, UserA, granted: [.. granted]),
+            50,
+            0,
+            ct: CancellationToken.None
+        );
 
         // Both halves matter. The first says the oversized call completed at all; the second says
         // it still filtered - a clause that collapsed to "match everything" under the new shape
@@ -723,16 +738,19 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
             selection.Add(FormattableString.Invariant($"absent-{i}"));
         }
 
-        var rehearsed = await ownership.ListThreadIdsByTenantAsync(
-            "tnt_quarantine", selection, CancellationToken.None);
+        var rehearsed = await ownership.ListThreadIdsByTenantAsync("tnt_quarantine", selection, CancellationToken.None);
         var applied = await ownership.AdoptThreadsAsync(
-            "tnt_quarantine", TenantA, UserA, selection, CancellationToken.None);
+            "tnt_quarantine",
+            TenantA,
+            UserA,
+            selection,
+            CancellationToken.None
+        );
 
         // q2 is the non-vacuity partner: it is in the source tenant and NOT in the selection, so a
         // restriction that silently stopped restricting would adopt it too.
         _ = rehearsed.Should().BeEquivalentTo(["q1"]);
         _ = applied.Should().Be(1);
-        _ = (await store.LoadMetadataAsync("q2", CancellationToken.None))!.TenantId
-            .Should().Be("tnt_quarantine");
+        _ = (await store.LoadMetadataAsync("q2", CancellationToken.None))!.TenantId.Should().Be("tnt_quarantine");
     }
 }

@@ -25,10 +25,7 @@ public static class LifecycleSerializer
     public static byte[] SerializeToUtf8Bytes(LifecycleEventEnvelope envelope)
     {
         ArgumentNullException.ThrowIfNull(envelope);
-        return JsonSerializer.SerializeToUtf8Bytes(
-            envelope,
-            LifecycleJsonContext.Default.LifecycleEventEnvelope
-        );
+        return JsonSerializer.SerializeToUtf8Bytes(envelope, LifecycleJsonContext.Default.LifecycleEventEnvelope);
     }
 
     /// <summary>Encodes an event to its canonical JSON text.</summary>
@@ -38,10 +35,7 @@ public static class LifecycleSerializer
     public static string Serialize(LifecycleEventEnvelope envelope)
     {
         ArgumentNullException.ThrowIfNull(envelope);
-        return JsonSerializer.Serialize(
-            envelope,
-            LifecycleJsonContext.Default.LifecycleEventEnvelope
-        );
+        return JsonSerializer.Serialize(envelope, LifecycleJsonContext.Default.LifecycleEventEnvelope);
     }
 
     /// <summary>Encodes a delivery to its canonical UTF-8 bytes.</summary>
@@ -51,10 +45,7 @@ public static class LifecycleSerializer
     public static byte[] SerializeToUtf8Bytes(LifecycleDeliveryEnvelope delivery)
     {
         ArgumentNullException.ThrowIfNull(delivery);
-        return JsonSerializer.SerializeToUtf8Bytes(
-            delivery,
-            LifecycleJsonContext.Default.LifecycleDeliveryEnvelope
-        );
+        return JsonSerializer.SerializeToUtf8Bytes(delivery, LifecycleJsonContext.Default.LifecycleDeliveryEnvelope);
     }
 
     /// <summary>Encodes a delivery to its canonical JSON text.</summary>
@@ -64,10 +55,7 @@ public static class LifecycleSerializer
     public static string Serialize(LifecycleDeliveryEnvelope delivery)
     {
         ArgumentNullException.ThrowIfNull(delivery);
-        return JsonSerializer.Serialize(
-            delivery,
-            LifecycleJsonContext.Default.LifecycleDeliveryEnvelope
-        );
+        return JsonSerializer.Serialize(delivery, LifecycleJsonContext.Default.LifecycleDeliveryEnvelope);
     }
 
     /// <summary>Decodes an event from UTF-8 bytes.</summary>
@@ -81,10 +69,8 @@ public static class LifecycleSerializer
     {
         try
         {
-            return JsonSerializer.Deserialize(
-                    utf8Json,
-                    LifecycleJsonContext.Default.LifecycleEventEnvelope
-                ) ?? throw new LifecycleContractException("Event body decoded to null.");
+            return JsonSerializer.Deserialize(utf8Json, LifecycleJsonContext.Default.LifecycleEventEnvelope)
+                ?? throw new LifecycleContractException("Event body decoded to null.");
         }
         catch (JsonException ex)
         {
@@ -102,10 +88,8 @@ public static class LifecycleSerializer
         ArgumentNullException.ThrowIfNull(json);
         try
         {
-            return JsonSerializer.Deserialize(
-                    json,
-                    LifecycleJsonContext.Default.LifecycleEventEnvelope
-                ) ?? throw new LifecycleContractException("Event body decoded to null.");
+            return JsonSerializer.Deserialize(json, LifecycleJsonContext.Default.LifecycleEventEnvelope)
+                ?? throw new LifecycleContractException("Event body decoded to null.");
         }
         catch (JsonException ex)
         {
@@ -121,10 +105,8 @@ public static class LifecycleSerializer
     {
         try
         {
-            return JsonSerializer.Deserialize(
-                    utf8Json,
-                    LifecycleJsonContext.Default.LifecycleDeliveryEnvelope
-                ) ?? throw new LifecycleContractException("Delivery body decoded to null.");
+            return JsonSerializer.Deserialize(utf8Json, LifecycleJsonContext.Default.LifecycleDeliveryEnvelope)
+                ?? throw new LifecycleContractException("Delivery body decoded to null.");
         }
         catch (JsonException ex)
         {
@@ -142,10 +124,8 @@ public static class LifecycleSerializer
         ArgumentNullException.ThrowIfNull(json);
         try
         {
-            return JsonSerializer.Deserialize(
-                    json,
-                    LifecycleJsonContext.Default.LifecycleDeliveryEnvelope
-                ) ?? throw new LifecycleContractException("Delivery body decoded to null.");
+            return JsonSerializer.Deserialize(json, LifecycleJsonContext.Default.LifecycleDeliveryEnvelope)
+                ?? throw new LifecycleContractException("Delivery body decoded to null.");
         }
         catch (JsonException ex)
         {

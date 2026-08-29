@@ -88,9 +88,9 @@ public sealed class GitRemoteUrlTests
         // exact same (Host, RepoPath) as the modern dev.azure.com/{org}/{project}/_git/{repo} — org is a PATH
         // segment — so the per-run allow-list (always dev.azure.com) matches either URL form.
         var legacy = GitRemoteUrl.CanonicalizeAdoLegacyHost(
-            GitRemoteUrl.Parse("https://mcqdbdev.visualstudio.com/MCQdb_Development/_git/LibProfiler"));
-        var modern = GitRemoteUrl.Parse(
-            "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/LibProfiler");
+            GitRemoteUrl.Parse("https://mcqdbdev.visualstudio.com/MCQdb_Development/_git/LibProfiler")
+        );
+        var modern = GitRemoteUrl.Parse("https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/LibProfiler");
 
         legacy.Kind.Should().Be(GitUrlKind.Https);
         legacy.Host.Should().Be("dev.azure.com");
@@ -104,7 +104,8 @@ public sealed class GitRemoteUrlTests
         // Parse does NOT URL-decode, so the encoded space stays %20 — the config allow-list value must match
         // this exact spelling (proven in SubmoduleInitializerTests).
         var canonical = GitRemoteUrl.CanonicalizeAdoLegacyHost(
-            GitRemoteUrl.Parse("https://mcqdbdev.visualstudio.com/MCQdb_Development/_git/Microsoft%20Orleans"));
+            GitRemoteUrl.Parse("https://mcqdbdev.visualstudio.com/MCQdb_Development/_git/Microsoft%20Orleans")
+        );
 
         canonical.Host.Should().Be("dev.azure.com");
         canonical.RepoPath.Should().Be("/mcqdbdev/MCQdb_Development/_git/Microsoft%20Orleans");
@@ -112,10 +113,16 @@ public sealed class GitRemoteUrlTests
 
     [Theory]
     [InlineData("https://github.com/acme/widgets.git", "github.com", "/acme/widgets")]
-    [InlineData("https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/LibProfiler",
-        "dev.azure.com", "/mcqdbdev/MCQdb_Development/_git/LibProfiler")]
+    [InlineData(
+        "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/LibProfiler",
+        "dev.azure.com",
+        "/mcqdbdev/MCQdb_Development/_git/LibProfiler"
+    )]
     public void CanonicalizeAdoLegacyHost_leaves_non_legacy_urls_untouched(
-        string raw, string expectedHost, string expectedPath)
+        string raw,
+        string expectedHost,
+        string expectedPath
+    )
     {
         var canonical = GitRemoteUrl.CanonicalizeAdoLegacyHost(GitRemoteUrl.Parse(raw));
 
@@ -138,16 +145,23 @@ public sealed class GitRemoteUrlTests
     [InlineData("github", "acme", null, "widgets")]
     [InlineData("github", "acme org", null, "my widgets")]
     public void The_clone_url_reparses_onto_exactly_the_allow_list_path(
-        string provider, string org, string? project, string repoName)
+        string provider,
+        string org,
+        string? project,
+        string repoName
+    )
     {
         var parsed = GitRemoteUrl.Parse(GitRemoteUrl.CloneUrlFor(provider, org, project, repoName));
 
         parsed.Kind.Should().Be(GitUrlKind.Https);
         parsed.Host.Should().Be(GitRemoteUrl.HostFor(provider));
-        parsed.RepoPath.Should().Be(
-            GitRemoteUrl.RepoPathFor(provider, org, project, repoName),
-            "the allow-list rule and the URL actually cloned must be the same path, or the matcher gates "
-                + "nothing while looking like it does");
+        parsed
+            .RepoPath.Should()
+            .Be(
+                GitRemoteUrl.RepoPathFor(provider, org, project, repoName),
+                "the allow-list rule and the URL actually cloned must be the same path, or the matcher gates "
+                    + "nothing while looking like it does"
+            );
     }
 
     /// <summary>
@@ -158,8 +172,10 @@ public sealed class GitRemoteUrlTests
     [Fact]
     public void A_spaced_ado_identity_produces_a_well_formed_clone_url()
     {
-        GitRemoteUrl.CloneUrlFor("ado", "contoso org", "MCQdb Development", "My Repo")
-            .Should().Be("https://dev.azure.com/contoso%20org/MCQdb%20Development/_git/My%20Repo");
+        GitRemoteUrl
+            .CloneUrlFor("ado", "contoso org", "MCQdb Development", "My Repo")
+            .Should()
+            .Be("https://dev.azure.com/contoso%20org/MCQdb%20Development/_git/My%20Repo");
     }
 
     /// <summary>
@@ -201,7 +217,9 @@ public sealed class GitRemoteUrlTests
     [Fact]
     public void A_configured_url_form_submodule_name_is_not_encoded_again_under_an_encoded_prefix()
     {
-        GitRemoteUrl.RepoPathForUrlSegment("ado", "contoso org", "MCQdb Development", "Microsoft%20Orleans")
-            .Should().Be("/contoso%20org/MCQdb%20Development/_git/Microsoft%20Orleans");
+        GitRemoteUrl
+            .RepoPathForUrlSegment("ado", "contoso org", "MCQdb Development", "Microsoft%20Orleans")
+            .Should()
+            .Be("/contoso%20org/MCQdb%20Development/_git/Microsoft%20Orleans");
     }
 }

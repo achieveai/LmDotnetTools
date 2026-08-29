@@ -89,6 +89,7 @@ public sealed class WebhookRequestSigner
         return new WebhookSignatureHeaders(
             _signingSecret.ComputeHex(timestamp, deliveryId, body),
             timestamp,
-            deliveryId);
+            deliveryId
+        );
     }
 }

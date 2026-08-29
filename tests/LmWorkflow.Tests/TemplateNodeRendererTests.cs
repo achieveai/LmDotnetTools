@@ -47,15 +47,14 @@ public class TemplateNodeRendererTests
     {
         var ctx = Context();
 
-        TemplateNodeRenderer.Render(JsonValue.Create("{{state.arr}}"), ctx)
+        TemplateNodeRenderer
+            .Render(JsonValue.Create("{{state.arr}}"), ctx)
             .Should()
             .BeOfType<JsonArray>()
             .Which.Should()
             .HaveCount(3);
 
-        TemplateNodeRenderer.Render(JsonValue.Create("{{state.num}}"), ctx)!.GetValue<int>()
-            .Should()
-            .Be(42);
+        TemplateNodeRenderer.Render(JsonValue.Create("{{state.num}}"), ctx)!.GetValue<int>().Should().Be(42);
     }
 
     [Fact]
@@ -113,7 +112,9 @@ public class TemplateNodeRendererTests
         TemplateNodeRenderer.Render(JsonValue.Create("{{state.missing}}"), ctx).Should().BeNull();
 
         // An embedded binding to an absent path renders the absent value as an empty substring.
-        TemplateNodeRenderer.Render(JsonValue.Create("x={{state.missing}}!"), ctx)!.GetValue<string>()
+        TemplateNodeRenderer
+            .Render(JsonValue.Create("x={{state.missing}}!"), ctx)!
+            .GetValue<string>()
             .Should()
             .Be("x=!");
     }

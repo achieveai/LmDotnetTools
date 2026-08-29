@@ -11,6 +11,6 @@ public sealed class DeferredInteractiveAuthPolicy(PendingAuthCoordinator pending
     public Task<OAuthAccessToken?> ResolveAsync(
         IOAuthTokenProvider provider,
         IReadOnlyList<string>? scopes,
-        CancellationToken cancellationToken) =>
-        pendingAuth.WaitForTokenAsync(provider, scopes, cancellationToken);
+        CancellationToken cancellationToken
+    ) => pendingAuth.WaitForTokenAsync(provider, scopes, cancellationToken);
 }

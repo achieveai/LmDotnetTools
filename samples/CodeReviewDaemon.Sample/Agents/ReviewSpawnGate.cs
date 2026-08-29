@@ -29,10 +29,8 @@ internal static class PostingCapableTemplates
         // The one actually observed: 11 of 161 specialist findings files on a collect-only notes branch
         // carried this template, each on a run whose manifest reads "| Mode | collect-only |".
         "ado-devops-assistant",
-
         // The skill whose entire job is publishing review findings to a PR, on either provider.
         "post-pr-review",
-
         // The ADO workflows that open, update or merge a PR as a matter of course.
         "ado-publish-pr",
         "ado-babysit-pr",
@@ -126,16 +124,20 @@ internal sealed class ReviewSpawnGate
             runId,
             template,
             marker,
-            where ?? "(unknown)");
+            where ?? "(unknown)"
+        );
 
-        _refusals?.Record(new PolicyRefusalRecord(
-            DateTimeOffset.UtcNow,
-            PolicyRefusalKind.SubAgentSpawn,
-            "daemon",
-            template ?? string.Empty,
-            "spawn",
-            where ?? $"run {runId}",
-            reason));
+        _refusals?.Record(
+            new PolicyRefusalRecord(
+                DateTimeOffset.UtcNow,
+                PolicyRefusalKind.SubAgentSpawn,
+                "daemon",
+                template ?? string.Empty,
+                "spawn",
+                where ?? $"run {runId}",
+                reason
+            )
+        );
 
         return false;
     }

@@ -37,9 +37,9 @@ public class SimpleTestAgent : IAgent
         // Return the injected message, or a default if none was provided
         return _injectedMessage != null
             ? Task.FromResult<IEnumerable<IMessage>>([_injectedMessage])
-            : Task.FromResult<IEnumerable<IMessage>>(
-                [new TextMessage { Text = "Default response", Role = Role.Assistant }]
-            );
+            : Task.FromResult<IEnumerable<IMessage>>([
+                new TextMessage { Text = "Default response", Role = Role.Assistant },
+            ]);
     }
 
     /// <summary>

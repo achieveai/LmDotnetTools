@@ -28,7 +28,8 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
     public AdoReviewCommentPublisher(
         HttpClient httpClient,
         IOAuthTokenProvider tokenProvider,
-        ILogger<AdoReviewCommentPublisher> logger)
+        ILogger<AdoReviewCommentPublisher> logger
+    )
     {
         _httpClient = httpClient;
         _tokenProvider = tokenProvider;
@@ -40,12 +41,17 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
     public async Task<PostedComment?> FindPostedCommentAsync(
         ReviewCommentTarget target,
         string idempotencyKey,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(target);
 
         using var request = await BuildRequestAsync(
-            HttpMethod.Get, ThreadsUrl(target), SandboxOperation.ReadProviderMetadata, cancellationToken);
+            HttpMethod.Get,
+            ThreadsUrl(target),
+            SandboxOperation.ReadProviderMetadata,
+            cancellationToken
+        );
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
 
@@ -75,18 +81,24 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
         ReviewCommentTarget target,
         string idempotencyKey,
         string body,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(target);
 
         using var request = await BuildRequestAsync(
-            HttpMethod.Post, ThreadsUrl(target), SandboxOperation.PostReviewComment, cancellationToken);
+            HttpMethod.Post,
+            ThreadsUrl(target),
+            SandboxOperation.PostReviewComment,
+            cancellationToken
+        );
         request.Content = JsonContent.Create(
             new
             {
                 comments = new[] { new { content = IdempotencyMarker.Embed(body, idempotencyKey), commentType = 1 } },
                 status = 1,
-            });
+            }
+        );
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
@@ -104,12 +116,17 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
 
     public async Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
         ReviewCommentTarget target,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(target);
 
         using var request = await BuildRequestAsync(
-            HttpMethod.Get, ThreadsUrl(target), SandboxOperation.ReadProviderMetadata, cancellationToken);
+            HttpMethod.Get,
+            ThreadsUrl(target),
+            SandboxOperation.ReadProviderMetadata,
+            cancellationToken
+        );
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
 
@@ -134,16 +151,26 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
                     continue; // ADO system activity (votes/merges/reviewer updates) + deleted comments — not discussion.
                 }
 
-                var content = comment.TryGetProperty("content", out var c) && c.ValueKind is JsonValueKind.String
-                    ? c.GetString()
-                    : null;
+                var content =
+                    comment.TryGetProperty("content", out var c) && c.ValueKind is JsonValueKind.String
+                        ? c.GetString()
+                        : null;
                 if (string.IsNullOrWhiteSpace(content))
                 {
                     continue;
                 }
 
-                results.Add(new ExistingReviewComment(
-                    path, line, Trim(content), AuthorOf(comment), isActive, PublishedAtOf(comment), threadId));
+                results.Add(
+                    new ExistingReviewComment(
+                        path,
+                        line,
+                        Trim(content),
+                        AuthorOf(comment),
+                        isActive,
+                        PublishedAtOf(comment),
+                        threadId
+                    )
+                );
             }
         }
 
@@ -160,15 +187,23 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
             return false;
         }
 
-        return !(comment.TryGetProperty("commentType", out var ct) && ct.ValueKind is JsonValueKind.String
-            && string.Equals(ct.GetString(), "system", StringComparison.OrdinalIgnoreCase));
+        return !(
+            comment.TryGetProperty("commentType", out var ct)
+            && ct.ValueKind is JsonValueKind.String
+            && string.Equals(ct.GetString(), "system", StringComparison.OrdinalIgnoreCase)
+        );
     }
 
     /// <summary>Reads the comment's <c>publishedDate</c> (ISO-8601) — used to order past vs. new comments.</summary>
     private static DateTimeOffset? PublishedAtOf(JsonElement comment) =>
-        comment.TryGetProperty("publishedDate", out var p) && p.ValueKind is JsonValueKind.String
-            && DateTimeOffset.TryParse(p.GetString(), CultureInfo.InvariantCulture,
-                DateTimeStyles.RoundtripKind, out var dt)
+        comment.TryGetProperty("publishedDate", out var p)
+        && p.ValueKind is JsonValueKind.String
+        && DateTimeOffset.TryParse(
+            p.GetString(),
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out var dt
+        )
             ? dt
             : null;
 
@@ -200,10 +235,15 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
             return (null, null);
         }
 
-        var path = ctx.TryGetProperty("filePath", out var fp) && fp.ValueKind is JsonValueKind.String ? fp.GetString() : null;
+        var path =
+            ctx.TryGetProperty("filePath", out var fp) && fp.ValueKind is JsonValueKind.String ? fp.GetString() : null;
         string? line = null;
-        if (ctx.TryGetProperty("rightFileStart", out var rs) && rs.ValueKind is JsonValueKind.Object
-            && rs.TryGetProperty("line", out var ln) && ln.ValueKind is JsonValueKind.Number)
+        if (
+            ctx.TryGetProperty("rightFileStart", out var rs)
+            && rs.ValueKind is JsonValueKind.Object
+            && rs.TryGetProperty("line", out var ln)
+            && ln.ValueKind is JsonValueKind.Number
+        )
         {
             line = ln.GetInt32().ToString(CultureInfo.InvariantCulture);
         }
@@ -212,8 +252,10 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
     }
 
     private static string? AuthorOf(JsonElement comment) =>
-        comment.TryGetProperty("author", out var a) && a.ValueKind is JsonValueKind.Object
-            && a.TryGetProperty("displayName", out var dn) && dn.ValueKind is JsonValueKind.String
+        comment.TryGetProperty("author", out var a)
+        && a.ValueKind is JsonValueKind.Object
+        && a.TryGetProperty("displayName", out var dn)
+        && dn.ValueKind is JsonValueKind.String
             ? dn.GetString()
             : null;
 
@@ -224,7 +266,11 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
     private static string Trim(string content) => ExistingCommentBody.Summarize(content);
 
     private async Task<HttpRequestMessage> BuildRequestAsync(
-        HttpMethod method, string url, SandboxOperation operation, CancellationToken cancellationToken)
+        HttpMethod method,
+        string url,
+        SandboxOperation operation,
+        CancellationToken cancellationToken
+    )
     {
         var request = new HttpRequestMessage(method, url).WithOperation(operation);
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);

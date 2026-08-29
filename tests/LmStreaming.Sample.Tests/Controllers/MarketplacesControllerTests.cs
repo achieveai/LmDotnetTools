@@ -16,14 +16,16 @@ public class MarketplacesControllerTests
     {
         var catalog = new MarketplaceCatalog(
             Selected: ["official"],
-            Marketplaces: [new CatalogMarketplace("official", Error: null, Plugins: [])]);
+            Marketplaces: [new CatalogMarketplace("official", Error: null, Plugins: [])]
+        );
         var controller = new MarketplacesController(
-            new FakeCatalogClient(catalog), NullLogger<MarketplacesController>.Instance);
+            new FakeCatalogClient(catalog),
+            NullLogger<MarketplacesController>.Instance
+        );
 
         var result = await controller.List(marketplaces: null, CancellationToken.None);
 
-        result.Should().BeOfType<OkObjectResult>()
-            .Which.Value.Should().BeSameAs(catalog);
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(catalog);
     }
 
     [Fact]
@@ -53,12 +55,12 @@ public class MarketplacesControllerTests
     {
         var controller = new MarketplacesController(
             new FakeCatalogClient(new MarketplaceCatalogUnavailableException("gateway offline")),
-            NullLogger<MarketplacesController>.Instance);
+            NullLogger<MarketplacesController>.Instance
+        );
 
         var result = await controller.List(marketplaces: null, CancellationToken.None);
 
-        result.Should().BeOfType<ObjectResult>()
-            .Which.StatusCode.Should().Be(StatusCodes.Status503ServiceUnavailable);
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status503ServiceUnavailable);
     }
 
     /// <summary>
@@ -72,18 +74,18 @@ public class MarketplacesControllerTests
         private readonly MarketplaceCatalogUnavailableException? _error;
 
         public FakeCatalogClient(MarketplaceCatalog catalog) => _catalog = catalog;
+
         public FakeCatalogClient(MarketplaceCatalogUnavailableException error) => _error = error;
 
         public IReadOnlyList<string>? LastRequestedAliases { get; private set; }
 
         public Task<MarketplaceCatalog> GetCatalogAsync(
             IReadOnlyList<string>? marketplaces = null,
-            CancellationToken ct = default)
+            CancellationToken ct = default
+        )
         {
             LastRequestedAliases = marketplaces;
-            return _error is not null
-                ? Task.FromException<MarketplaceCatalog>(_error)
-                : Task.FromResult(_catalog!);
+            return _error is not null ? Task.FromException<MarketplaceCatalog>(_error) : Task.FromResult(_catalog!);
         }
     }
 }

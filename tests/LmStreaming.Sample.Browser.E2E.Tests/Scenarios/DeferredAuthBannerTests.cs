@@ -57,7 +57,8 @@ public sealed class DeferredAuthBannerTests
         var tokenStoreDir = Path.Combine(
             Path.GetTempPath(),
             "lm-streaming-deferred-auth-e2e",
-            Guid.NewGuid().ToString("N"));
+            Guid.NewGuid().ToString("N")
+        );
         Directory.CreateDirectory(tokenStoreDir);
 
         // Per-session secrets: the app's SessionSecretStore lives under
@@ -66,18 +67,21 @@ public sealed class DeferredAuthBannerTests
         // store's on-disk format directly" trick used below for the OAuth token store.
         var sessionSecretStore = new SessionSecretStore(
             Path.Combine(tokenStoreDir, "session-secrets"),
-            NullLogger<SessionSecretStore>.Instance);
+            NullLogger<SessionSecretStore>.Instance
+        );
         await sessionSecretStore.SaveAsync(SessionId, SharedSecret);
 
         // Config-by-env: the Kestrel-hosted factory does not expose DI Services, so the test
         // pins the shared secret and points the token store at a private temp dir it can seed
         // directly. The scope restores prior values on dispose; tests run serialized.
-        using var env = new EnvironmentVariableScope(new Dictionary<string, string?>(StringComparer.Ordinal)
-        {
-            ["Auth__TokenStoreDir"] = tokenStoreDir,
-            ["Auth__Webhook__HoldTimeoutSeconds"] = "60",
-            ["Auth__Webhook__PollIntervalSeconds"] = "0.25",
-        });
+        using var env = new EnvironmentVariableScope(
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Auth__TokenStoreDir"] = tokenStoreDir,
+                ["Auth__Webhook__HoldTimeoutSeconds"] = "60",
+                ["Auth__Webhook__PollIntervalSeconds"] = "0.25",
+            }
+        );
 
         try
         {
@@ -98,7 +102,8 @@ public sealed class DeferredAuthBannerTests
             using var gatewayClient = new HttpClient();
             using var webhookRequest = new HttpRequestMessage(
                 HttpMethod.Post,
-                $"{session.Factory.ServerAddress.TrimEnd('/')}/api/auth/webhook/github")
+                $"{session.Factory.ServerAddress.TrimEnd('/')}/api/auth/webhook/github"
+            )
             {
                 Content = new StringContent(WebhookBody, Encoding.UTF8, "application/json"),
             };
@@ -106,38 +111,34 @@ public sealed class DeferredAuthBannerTests
             var webhookTask = gatewayClient.SendAsync(webhookRequest);
 
             // The auth_required frame must surface as a banner in the chat UI.
-            await page.AuthRequiredBanner().WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Visible,
-                Timeout = 15_000,
-            });
+            await page.AuthRequiredBanner()
+                .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 15_000 });
             (await page.AuthRequiredBanner().GetAttributeAsync("data-provider-id")).Should().Be("github");
             (await page.AuthRequiredBanner().InnerTextAsync()).Should().Contain("github");
             webhookTask.IsCompleted.Should().BeFalse("the webhook must stay held while the user is prompted");
 
             // Sign-in button opens the same-origin landing page in a popup.
-            var popup = await session.Context.RunAndWaitForPageAsync(
-                () => page.AuthSigninButton().ClickAsync());
+            var popup = await session.Context.RunAndWaitForPageAsync(() => page.AuthSigninButton().ClickAsync());
             await popup.WaitForLoadStateAsync();
             popup.Url.Should().Contain("/auth/github");
 
             // User closes the popup without signing in — the prompt must persist.
             await popup.CloseAsync();
-            await page.AuthRequiredBanner().WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Visible,
-                Timeout = 5_000,
-            });
+            await page.AuthRequiredBanner()
+                .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 5_000 });
 
             // "User signs in": seed the token store the backend's hold is polling.
             var store = new FileOAuthTokenStore(tokenStoreDir, NullLogger<FileOAuthTokenStore>.Instance);
-            await store.SaveAsync(new OAuthTokenRecord(
-                Provider: "github",
-                Account: "octocat",
-                RefreshToken: string.Empty,
-                AccessToken: "browser-e2e-token",
-                AccessTokenExpiresAtUtc: DateTimeOffset.UtcNow.AddYears(1),
-                Scopes: ["repo", "read:org"]));
+            await store.SaveAsync(
+                new OAuthTokenRecord(
+                    Provider: "github",
+                    Account: "octocat",
+                    RefreshToken: string.Empty,
+                    AccessToken: "browser-e2e-token",
+                    AccessTokenExpiresAtUtc: DateTimeOffset.UtcNow.AddYears(1),
+                    Scopes: ["repo", "read:org"]
+                )
+            );
 
             // The held webhook resolves allow with the injected Bearer header.
             using var webhookResponse = await webhookTask.WaitAsync(TimeSpan.FromSeconds(30));
@@ -153,11 +154,8 @@ public sealed class DeferredAuthBannerTests
 
             // Banner dismisses via the auth_completed frame (provider Status never flipped to
             // SignedIn here, so the fallback status polling could not have dismissed it).
-            await page.AuthRequiredBanner().WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Hidden,
-                Timeout = 15_000,
-            });
+            await page.AuthRequiredBanner()
+                .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden, Timeout = 15_000 });
 
             await session.SaveSuccessScreenshotAsync("DeferredAuth.Banner_clears_after_token_seeded");
         }

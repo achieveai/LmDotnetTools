@@ -13,7 +13,8 @@ public interface ICodexSdkClient : IAsyncDisposable
     string DependencyState { get; }
 
     void ConfigureDynamicToolExecutor(
-        Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor);
+        Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor
+    );
 
     Task StartOrResumeThreadAsync(CodexBridgeInitOptions options, CancellationToken ct = default);
 

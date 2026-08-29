@@ -16,8 +16,7 @@ namespace CodeReviewDaemon.Sample.Tests.Workspace;
 /// </summary>
 public sealed class SlotHygieneTests : IDisposable
 {
-    private readonly string _root =
-        Path.Combine(Path.GetTempPath(), "crd-hygiene-" + Guid.NewGuid().ToString("N"));
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "crd-hygiene-" + Guid.NewGuid().ToString("N"));
 
     /// <summary>
     /// What <c>git status --porcelain -b -z</c> prepends in the pooled store, which the daemon keeps DETACHED.
@@ -54,7 +53,10 @@ public sealed class SlotHygieneTests : IDisposable
         File.WriteAllText(moduleLock, string.Empty);
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None);
+            new GitRunner(new FakeSandboxCommandRunner()),
+            store,
+            CancellationToken.None
+        );
 
         File.Exists(storeLock).Should().BeFalse("a stale store index.lock is cleared on entry");
         File.Exists(moduleLock).Should().BeFalse("a stale submodule-gitdir lock is cleared on entry");
@@ -70,7 +72,10 @@ public sealed class SlotHygieneTests : IDisposable
         Directory.CreateDirectory(Path.Combine(gitDir, "rebase-merge"));
 
         await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None);
+            new GitRunner(new FakeSandboxCommandRunner()),
+            store,
+            CancellationToken.None
+        );
 
         File.Exists(Path.Combine(gitDir, "MERGE_HEAD")).Should().BeFalse();
         Directory.Exists(Path.Combine(gitDir, "rebase-merge")).Should().BeFalse();
@@ -93,14 +98,23 @@ public sealed class SlotHygieneTests : IDisposable
         runner.OnArgvContains("find ", new SandboxCommandResult(1, string.Empty, "'find' is not recognized"));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(runner), store, CancellationToken.None, NullLogger.Instance, new HostFileSystem());
+            new GitRunner(runner),
+            store,
+            CancellationToken.None,
+            NullLogger.Instance,
+            new HostFileSystem()
+        );
 
         File.Exists(storeLock).Should().BeFalse("a stale lock is cleared with host filesystem APIs");
         File.Exists(Path.Combine(gitDir, "MERGE_HEAD")).Should().BeFalse();
         Directory.Exists(Path.Combine(gitDir, "rebase-merge")).Should().BeFalse();
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.StartsWith("find ", StringComparison.Ordinal),
-            "the daemon host has no POSIX find");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                command => command.StartsWith("find ", StringComparison.Ordinal),
+                "the daemon host has no POSIX find"
+            );
         verdict.Should().Be(HygieneVerdict.Clean);
     }
 
@@ -121,7 +135,12 @@ public sealed class SlotHygieneTests : IDisposable
         runner.OnArgvContains("find ", new SandboxCommandResult(1, string.Empty, "'find' is not recognized"));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(runner), store, CancellationToken.None, NullLogger.Instance, new HostFileSystem());
+            new GitRunner(runner),
+            store,
+            CancellationToken.None,
+            NullLogger.Instance,
+            new HostFileSystem()
+        );
 
         File.Exists(shoutingLock)
             .Should()
@@ -158,9 +177,12 @@ public sealed class SlotHygieneTests : IDisposable
         await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(
-            a => a.Contains("submodule update") && a.Contains("--recursive") && a.Contains("--force"),
-            "submodule checkouts must be restored to the recorded gitlink so a warm slot is not re-cloned");
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains("submodule update") && a.Contains("--recursive") && a.Contains("--force"),
+                "submodule checkouts must be restored to the recorded gitlink so a warm slot is not re-cloned"
+            );
     }
 
     [Fact]
@@ -177,16 +199,20 @@ public sealed class SlotHygieneTests : IDisposable
 
         await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
-        var submoduleUpdates = runner.Commands
-            .Select(c => string.Join(' ', c.Argv))
+        var submoduleUpdates = runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
             .Where(a => a.Contains("submodule update"))
             .ToList();
         submoduleUpdates.Should().NotBeEmpty();
-        submoduleUpdates.Should().OnlyContain(
-            a => a.Contains("protocol.https.allow=never")
-                && a.Contains("protocol.allow=never")
-                && a.Contains("--no-fetch"),
-            "hygiene must deny all transports so it cannot clone/fetch through the host's broad credentials");
+        submoduleUpdates
+            .Should()
+            .OnlyContain(
+                a =>
+                    a.Contains("protocol.https.allow=never")
+                    && a.Contains("protocol.allow=never")
+                    && a.Contains("--no-fetch"),
+                "hygiene must deny all transports so it cannot clone/fetch through the host's broad credentials"
+            );
     }
 
     [Fact]
@@ -196,7 +222,10 @@ public sealed class SlotHygieneTests : IDisposable
         Directory.CreateDirectory(store); // no .git — never cloned / blown away
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None);
+            new GitRunner(new FakeSandboxCommandRunner()),
+            store,
+            CancellationToken.None
+        );
 
         verdict.Should().Be(HygieneVerdict.NeedsReclone);
     }
@@ -207,7 +236,9 @@ public sealed class SlotHygieneTests : IDisposable
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
-            "rev-parse --git-dir", new SandboxCommandResult(128, string.Empty, "fatal: not a git repository"));
+            "rev-parse --git-dir",
+            new SandboxCommandResult(128, string.Empty, "fatal: not a git repository")
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -223,8 +254,8 @@ public sealed class SlotHygieneTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "status --porcelain",
-            new SandboxCommandResult(
-                0, DetachedHeader + " M src/Foo.cs\0?? leftover.tmp\0", string.Empty));
+            new SandboxCommandResult(0, DetachedHeader + " M src/Foo.cs\0?? leftover.tmp\0", string.Empty)
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -244,17 +275,22 @@ public sealed class SlotHygieneTests : IDisposable
     {
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
-        runner.OnArgvContains(
-            "status --porcelain", new SandboxCommandResult(0, string.Empty, string.Empty));
+        runner.OnArgvContains("status --porcelain", new SandboxCommandResult(0, string.Empty, string.Empty));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
-        verdict.Should().Be(
-            HygieneVerdict.ProbeUnanswered,
-            "an exit-0 probe with no branch header did not answer, and a non-answer is not a clean tree");
-        verdict.Should().NotBe(
-            HygieneVerdict.NeedsReclone,
-            "nothing about a lost answer says the store's CONTENT is the problem, and a re-clone costs minutes");
+        verdict
+            .Should()
+            .Be(
+                HygieneVerdict.ProbeUnanswered,
+                "an exit-0 probe with no branch header did not answer, and a non-answer is not a clean tree"
+            );
+        verdict
+            .Should()
+            .NotBe(
+                HygieneVerdict.NeedsReclone,
+                "nothing about a lost answer says the store's CONTENT is the problem, and a re-clone costs minutes"
+            );
     }
 
     /// <summary>
@@ -269,7 +305,8 @@ public sealed class SlotHygieneTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "status --porcelain",
-            new SandboxCommandResult(128, string.Empty, "fatal: unable to read the index"));
+            new SandboxCommandResult(128, string.Empty, "fatal: unable to read the index")
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -289,13 +326,13 @@ public sealed class SlotHygieneTests : IDisposable
         runner.OnArgvContainsSequence(
             "status --porcelain",
             new SandboxCommandResult(0, string.Empty, string.Empty),
-            new SandboxCommandResult(0, DetachedHeader, string.Empty));
+            new SandboxCommandResult(0, DetachedHeader, string.Empty)
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.Clean, "the second probe answered, and answered clean");
-        CountStoreResets(runner).Should().Be(
-            2, "an unanswered probe is retried before any verdict is drawn from it");
+        CountStoreResets(runner).Should().Be(2, "an unanswered probe is retried before any verdict is drawn from it");
     }
 
     /// <summary>
@@ -314,21 +351,29 @@ public sealed class SlotHygieneTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "status --porcelain",
-            new SandboxCommandResult(0, DetachedHeader + $" M {NormalizedPath}\0", string.Empty));
+            new SandboxCommandResult(0, DetachedHeader + $" M {NormalizedPath}\0", string.Empty)
+        );
         runner.OnArgvContains(
-            $"rev-parse :{NormalizedPath}", new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty));
+            $"rev-parse :{NormalizedPath}",
+            new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty)
+        );
         runner.OnArgvContains(
             $"hash-object --no-filters -- {NormalizedPath}",
-            new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty));
+            new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty)
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
-        verdict.Should().Be(
-            HygieneVerdict.Clean,
-            "the bytes on disk ARE the recorded blob, so this is the repo's own eol attributes disagreeing "
-                + "with what was committed, not contamination a re-clone could remove");
-        CountStoreResets(runner).Should().Be(
-            1, "a condition no reset can settle must not buy itself a second reset on every lease");
+        verdict
+            .Should()
+            .Be(
+                HygieneVerdict.Clean,
+                "the bytes on disk ARE the recorded blob, so this is the repo's own eol attributes disagreeing "
+                    + "with what was committed, not contamination a re-clone could remove"
+            );
+        CountStoreResets(runner)
+            .Should()
+            .Be(1, "a condition no reset can settle must not buy itself a second reset on every lease");
     }
 
     /// <summary>
@@ -344,12 +389,19 @@ public sealed class SlotHygieneTests : IDisposable
         runner.OnArgvContains(
             "status --porcelain",
             new SandboxCommandResult(
-                0, DetachedHeader + $" M {NormalizedPath}\0?? artifacts/agent-scratch.log\0", string.Empty));
+                0,
+                DetachedHeader + $" M {NormalizedPath}\0?? artifacts/agent-scratch.log\0",
+                string.Empty
+            )
+        );
         runner.OnArgvContains(
-            $"rev-parse :{NormalizedPath}", new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty));
+            $"rev-parse :{NormalizedPath}",
+            new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty)
+        );
         runner.OnArgvContains(
             $"hash-object --no-filters -- {NormalizedPath}",
-            new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty));
+            new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty)
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -365,21 +417,21 @@ public sealed class SlotHygieneTests : IDisposable
     {
         var store = SeedStore();
         var paths = string.Concat(
-            Enumerable
-                .Range(0, WorktreeStatusProbe.MaxClassifiedLeftovers + 1)
-                .Select(i => $" M src/File{i}.cs\0"));
+            Enumerable.Range(0, WorktreeStatusProbe.MaxClassifiedLeftovers + 1).Select(i => $" M src/File{i}.cs\0")
+        );
         var runner = new FakeSandboxCommandRunner();
-        runner.OnArgvContains(
-            "status --porcelain", new SandboxCommandResult(0, DetachedHeader + paths, string.Empty));
+        runner.OnArgvContains("status --porcelain", new SandboxCommandResult(0, DetachedHeader + paths, string.Empty));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.NeedsReclone);
-        runner.Commands.Select(c => string.Join(' ', c.Argv))
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
             .Should()
             .NotContain(
                 a => a.Contains("hash-object", StringComparison.Ordinal),
-                "a tree this wrong is refused without paying two git invocations per path to explain itself");
+                "a tree this wrong is refused without paying two git invocations per path to explain itself"
+            );
     }
 
     /// <summary>
@@ -395,13 +447,18 @@ public sealed class SlotHygieneTests : IDisposable
 
         await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
-        runner.Commands.Select(c => string.Join(' ', c.Argv))
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
             .Should()
             .Contain(
-                a => a.EndsWith(
-                    $"-C {store} status --porcelain -b -z --ignore-submodules=all", StringComparison.Ordinal),
+                a =>
+                    a.EndsWith(
+                        $"-C {store} status --porcelain -b -z --ignore-submodules=all",
+                        StringComparison.Ordinal
+                    ),
                 "without -b a lost answer is the same empty string as a clean tree, and without -z an "
-                    + "awkward path arrives quoted and never matches its index entry");
+                    + "awkward path arrives quoted and never matches its index entry"
+            );
     }
 
     [Fact]
@@ -412,7 +469,9 @@ public sealed class SlotHygieneTests : IDisposable
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
-            "clean -ffdx", new SandboxCommandResult(1, string.Empty, "warning: failed to remove leftover.tmp"));
+            "clean -ffdx",
+            new SandboxCommandResult(1, string.Empty, "warning: failed to remove leftover.tmp")
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -430,7 +489,12 @@ public sealed class SlotHygieneTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "submodule update --recursive",
-            new SandboxCommandResult(1, string.Empty, "fatal: Unable to checkout 'deadbeef' in submodule path 'repos/X'"));
+            new SandboxCommandResult(
+                1,
+                string.Empty,
+                "fatal: Unable to checkout 'deadbeef' in submodule path 'repos/X'"
+            )
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -446,7 +510,12 @@ public sealed class SlotHygieneTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "submodule update --recursive",
-            new SandboxCommandResult(1, string.Empty, "error: object file .git/modules/repos/X/objects/de/adbeef is empty"));
+            new SandboxCommandResult(
+                1,
+                string.Empty,
+                "error: object file .git/modules/repos/X/objects/de/adbeef is empty"
+            )
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -465,7 +534,11 @@ public sealed class SlotHygieneTests : IDisposable
         runner.OnArgvContains(
             "submodule foreach --recursive",
             new SandboxCommandResult(
-                1, string.Empty, "fatal: No url found for submodule path 'PRs/x-11182/repo' in .gitmodules"));
+                1,
+                string.Empty,
+                "fatal: No url found for submodule path 'PRs/x-11182/repo' in .gitmodules"
+            )
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -495,19 +568,24 @@ public sealed class SlotHygieneTests : IDisposable
                 1,
                 string.Empty,
                 "fatal: cannot create directory at 'Samples/2.0/ServiceFabricMesh/VotingApp/VotingWeb/wwwroot/lib'"
-                    + ": Filename too long\nfatal: run_command returned non-zero status for repos/MCQdbDEV"));
+                    + ": Filename too long\nfatal: run_command returned non-zero status for repos/MCQdbDEV"
+            )
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.Clean);
-        var storeStatusProbes = runner.Commands.Select(c => string.Join(' ', c.Argv))
+        var storeStatusProbes = runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
             .Where(a => a.Contains($"-C {store} status --porcelain"))
             .ToList();
         storeStatusProbes.Should().NotBeEmpty("the superproject status gate is what this test is about");
-        storeStatusProbes.Should()
+        storeStatusProbes
+            .Should()
             .OnlyContain(
                 a => a.Contains("--ignore-submodules=all"),
-                "submodule state must never gate the verdict — a re-clone reproduces it byte for byte");
+                "submodule state must never gate the verdict — a re-clone reproduces it byte for byte"
+            );
     }
 
     [Fact]
@@ -522,7 +600,9 @@ public sealed class SlotHygieneTests : IDisposable
             new SandboxCommandResult(
                 1,
                 string.Empty,
-                "fatal: Unable to create '/store/.git/modules/repos/X/index.lock': File exists."));
+                "fatal: Unable to create '/store/.git/modules/repos/X/index.lock': File exists."
+            )
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -541,20 +621,30 @@ public sealed class SlotHygieneTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "submodule foreach --recursive",
-            new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First"));
+            new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First")
+        );
         ScriptOneSubmodule(
-            runner, store, new SandboxCommandResult(0, "?? notes-from-the-last-review.md\n", string.Empty));
+            runner,
+            store,
+            new SandboxCommandResult(0, "?? notes-from-the-last-review.md\n", string.Empty)
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.NeedsReclone);
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(
-            a => a.Contains("ls-files -s"),
-            "the re-sweep must read its list from the INDEX, which no broken submodule can interrupt");
-        commands.Should().Contain(
-            a => a.Contains($"-C {OnlySubmodulePath(store)} clean -ffdx"),
-            "the re-sweep must reach the submodules AFTER the one that aborted the first walk");
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains("ls-files -s"),
+                "the re-sweep must read its list from the INDEX, which no broken submodule can interrupt"
+            );
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains($"-C {OnlySubmodulePath(store)} clean -ffdx"),
+                "the re-sweep must reach the submodules AFTER the one that aborted the first walk"
+            );
     }
 
     [Fact]
@@ -568,9 +658,13 @@ public sealed class SlotHygieneTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "submodule foreach --recursive",
-            new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First"));
+            new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First")
+        );
         ScriptOneSubmodule(
-            runner, store, new SandboxCommandResult(1, string.Empty, "fatal: unable to read index file"));
+            runner,
+            store,
+            new SandboxCommandResult(1, string.Empty, "fatal: unable to read index file")
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -593,38 +687,53 @@ public sealed class SlotHygieneTests : IDisposable
         // run in that path, which is what distinguishes a gate that skipped from a probe that was tolerated.
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
-        const string deinitialized =
-            "fatal: not a git repository: repos/First/../.git/modules/repos/First";
+        const string deinitialized = "fatal: not a git repository: repos/First/../.git/modules/repos/First";
         runner.OnArgvContains(
             "submodule foreach --recursive",
-            new SandboxCommandResult(1, string.Empty, deinitialized));
-        runner.OnArgvContains(
-            "rev-parse --show-toplevel", new SandboxCommandResult(128, string.Empty, deinitialized));
+            new SandboxCommandResult(1, string.Empty, deinitialized)
+        );
+        runner.OnArgvContains("rev-parse --show-toplevel", new SandboxCommandResult(128, string.Empty, deinitialized));
         ScriptOneSubmodule(
-            runner, store, new SandboxCommandResult(0, "?? would-have-condemned-the-slot.md\n", string.Empty));
+            runner,
+            store,
+            new SandboxCommandResult(0, "?? would-have-condemned-the-slot.md\n", string.Empty)
+        );
         var logs = new CapturingLoggerFactory();
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(runner), store, CancellationToken.None, logs.Capturing);
+            new GitRunner(runner),
+            store,
+            CancellationToken.None,
+            logs.Capturing
+        );
 
         verdict.Should().Be(HygieneVerdict.Clean);
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(
-            a => a.Contains($"-C {OnlySubmodulePath(store)} rev-parse --show-toplevel"),
-            "the walk must have REACHED this path — a Clean verdict from a walk that enumerated nothing would"
-                + " assert the same thing while proving none of it");
-        commands.Should().NotContain(
-            a => a.Contains($"-C {OnlySubmodulePath(store)} clean")
-                || a.Contains($"-C {OnlySubmodulePath(store)} status"),
-            "a path that cannot answer for itself is skipped, not swept and not probed");
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains($"-C {OnlySubmodulePath(store)} rev-parse --show-toplevel"),
+                "the walk must have REACHED this path — a Clean verdict from a walk that enumerated nothing would"
+                    + " assert the same thing while proving none of it"
+            );
+        commands
+            .Should()
+            .NotContain(
+                a =>
+                    a.Contains($"-C {OnlySubmodulePath(store)} clean")
+                    || a.Contains($"-C {OnlySubmodulePath(store)} status"),
+                "a path that cannot answer for itself is skipped, not swept and not probed"
+            );
 
         // Skipping is the decision; being silent about it is not. Neither cleaned nor surfaced is the same
         // fail-quiet shape this PR closes, so the only thing standing between an operator and a store quietly
         // accumulating residue behind a broken gitlink is this line — and a line nothing asserts on rots away.
-        logs.Capturing.WarningCount(OnlySubmodulePath(store)).Should().Be(
-            1, "the skipped path is the one thing the operator cannot work out for themselves");
-        logs.Capturing.WarningCount("crosses into the next review").Should().Be(
-            1, "the log has to say what the skip COSTS, not merely that a probe returned nothing");
+        logs.Capturing.WarningCount(OnlySubmodulePath(store))
+            .Should()
+            .Be(1, "the skipped path is the one thing the operator cannot work out for themselves");
+        logs.Capturing.WarningCount("crosses into the next review")
+            .Should()
+            .Be(1, "the log has to say what the skip COSTS, not merely that a probe returned nothing");
     }
 
     [Fact]
@@ -638,9 +747,12 @@ public sealed class SlotHygieneTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "submodule foreach --recursive",
-            new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First"));
+            new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First")
+        );
         runner.OnArgvContains(
-            "ls-files -s", new SandboxCommandResult(128, string.Empty, "fatal: unable to read index file"));
+            "ls-files -s",
+            new SandboxCommandResult(128, string.Empty, "fatal: unable to read index file")
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -658,22 +770,28 @@ public sealed class SlotHygieneTests : IDisposable
         runner.OnArgvContains(
             "submodule foreach --recursive",
             new SandboxCommandResult(
-                1, string.Empty, "fatal: cannot create directory at 'VotingApp/VotingWeb/wwwroot/lib'"
-                    + ": Filename too long"));
+                1,
+                string.Empty,
+                "fatal: cannot create directory at 'VotingApp/VotingWeb/wwwroot/lib'" + ": Filename too long"
+            )
+        );
         ScriptOneSubmodule(
             runner,
             store,
-            new SandboxCommandResult(0, " D VotingApp/VotingWeb/wwwroot/lib/jquery.js\n", string.Empty));
+            new SandboxCommandResult(0, " D VotingApp/VotingWeb/wwwroot/lib/jquery.js\n", string.Empty)
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.Clean);
-        runner.Commands.Select(c => string.Join(' ', c.Argv))
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
             .Should()
             .Contain(
                 a => a.Contains($"-C {OnlySubmodulePath(store)} status --porcelain"),
                 "the tracked-damage line has to have been READ and judged harmless — a Clean verdict from a walk"
-                    + " that never probed anything would assert the same thing while proving none of it");
+                    + " that never probed anything would assert the same thing while proving none of it"
+            );
     }
 
     /// <summary>
@@ -690,23 +808,30 @@ public sealed class SlotHygieneTests : IDisposable
     /// each submodule it validates (that recursion is what replaces <c>foreach --recursive</c>), and a rule that
     /// answered every call with the same gitlink would describe a store that contains itself forever.
     /// </summary>
-    private static void ScriptOneSubmodule(
-        FakeSandboxCommandRunner runner, string store, SandboxCommandResult status)
+    private static void ScriptOneSubmodule(FakeSandboxCommandRunner runner, string store, SandboxCommandResult status)
     {
         runner.OnArgvContainsSequence(
             "ls-files -s",
-            new SandboxCommandResult(0, "160000 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 0\trepos/First\n", string.Empty),
-            new SandboxCommandResult(0, string.Empty, string.Empty));
+            new SandboxCommandResult(
+                0,
+                "160000 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 0\trepos/First\n",
+                string.Empty
+            ),
+            new SandboxCommandResult(0, string.Empty, string.Empty)
+        );
         runner.OnArgvContains(
             "rev-parse --show-toplevel",
-            new SandboxCommandResult(0, OnlySubmodulePath(store) + "\n", string.Empty));
+            new SandboxCommandResult(0, OnlySubmodulePath(store) + "\n", string.Empty)
+        );
 
         // The superproject's own status probe carries --ignore-submodules=all and must keep its own answer; only
         // the per-submodule probe is being scripted here.
         runner.On(
-            c => string.Join(' ', c.Argv).Contains("status --porcelain", StringComparison.Ordinal)
+            c =>
+                string.Join(' ', c.Argv).Contains("status --porcelain", StringComparison.Ordinal)
                 && !string.Join(' ', c.Argv).Contains("--ignore-submodules", StringComparison.Ordinal),
-            status);
+            status
+        );
     }
 
     [Fact]
@@ -719,7 +844,8 @@ public sealed class SlotHygieneTests : IDisposable
         runner.OnArgvContainsSequence(
             "status --porcelain",
             new SandboxCommandResult(0, DetachedHeader + " M src/Foo.cs\0", string.Empty),
-            new SandboxCommandResult(0, DetachedHeader, string.Empty));
+            new SandboxCommandResult(0, DetachedHeader, string.Empty)
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -739,14 +865,16 @@ public sealed class SlotHygieneTests : IDisposable
         runner.OnArgvContains(
             "submodule update --recursive",
             new SandboxCommandResult(
-                1, string.Empty, "fatal: Unable to checkout 'deadbeef' in submodule path 'repos/X'"));
+                1,
+                string.Empty,
+                "fatal: Unable to checkout 'deadbeef' in submodule path 'repos/X'"
+            )
+        );
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.Clean);
-        CountStoreResets(runner)
-            .Should()
-            .Be(1, "a deterministic non-corrupt failure must not trigger a second pass");
+        CountStoreResets(runner).Should().Be(1, "a deterministic non-corrupt failure must not trigger a second pass");
     }
 
     /// <summary>
@@ -757,8 +885,7 @@ public sealed class SlotHygieneTests : IDisposable
     /// reset has.
     /// </summary>
     private static int CountStoreResets(FakeSandboxCommandRunner runner) =>
-        runner.Commands.Count(c =>
-            c.Argv.Count >= 2 && c.Argv[^2] == "reset" && c.Argv[^1] == "--hard");
+        runner.Commands.Count(c => c.Argv.Count >= 2 && c.Argv[^2] == "reset" && c.Argv[^1] == "--hard");
 
     [WindowsOnlyFact("only Git for Windows refuses to create a path at or beyond MAX_PATH")]
     public async Task EnsureClean_settles_a_store_holding_a_path_beyond_MAX_PATH()
@@ -774,7 +901,12 @@ public sealed class SlotHygieneTests : IDisposable
         var store = await SetupStoreWithLongPathAsync(runner);
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(runner), store, CancellationToken.None, NullLogger.Instance, new HostFileSystem());
+            new GitRunner(runner),
+            store,
+            CancellationToken.None,
+            NullLogger.Instance,
+            new HostFileSystem()
+        );
 
         verdict.Should().Be(HygieneVerdict.Clean, "a long path must be checked out, not treated as contamination");
     }
@@ -795,12 +927,17 @@ public sealed class SlotHygieneTests : IDisposable
         DirectoryLink.Create(Path.Combine(store, ".git", "modules"), outside);
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None,
-            NullLogger.Instance, new HostFileSystem());
+            new GitRunner(new FakeSandboxCommandRunner()),
+            store,
+            CancellationToken.None,
+            NullLogger.Instance,
+            new HostFileSystem()
+        );
 
         File.Exists(victim).Should().BeTrue("the sweep must not delete through a link out of the store");
-        verdict.Should().Be(
-            HygieneVerdict.NeedsReclone, "a store that redirects its own cleanup is not a store worth cleaning");
+        verdict
+            .Should()
+            .Be(HygieneVerdict.NeedsReclone, "a store that redirects its own cleanup is not a store worth cleaning");
     }
 
     [Fact]
@@ -809,9 +946,12 @@ public sealed class SlotHygieneTests : IDisposable
         // Issue #276, one side of the split, reachable WITHOUT an OS-privilege-gated unreadable entry. A
         // redirected entry is unlinked by the re-clone's wipe (removed by name, never followed), so the fresh
         // clone lands clean — a re-clone genuinely repairs it.
-        SlotHygiene.VerdictForBlockedSweep(
-                new HostPathRefusal(Path.Combine(_root, ".git", "modules"), HostPathVerdict.Redirected))
-            .Should().Be(HygieneVerdict.NeedsReclone);
+        SlotHygiene
+            .VerdictForBlockedSweep(
+                new HostPathRefusal(Path.Combine(_root, ".git", "modules"), HostPathVerdict.Redirected)
+            )
+            .Should()
+            .Be(HygieneVerdict.NeedsReclone);
     }
 
     [Fact]
@@ -822,9 +962,12 @@ public sealed class SlotHygieneTests : IDisposable
         // replace nothing. The verdict must therefore NOT be NeedsReclone: it is HostPathUnreadable, which the
         // preparer raises as a refusal so the address is retired. This is the deciding line, and the mutation
         // that collapses the split (returning NeedsReclone here) turns green only if this assertion is absent.
-        SlotHygiene.VerdictForBlockedSweep(
-                new HostPathRefusal(Path.Combine(_root, ".git", "objects"), HostPathVerdict.Unreadable))
-            .Should().Be(HygieneVerdict.HostPathUnreadable);
+        SlotHygiene
+            .VerdictForBlockedSweep(
+                new HostPathRefusal(Path.Combine(_root, ".git", "objects"), HostPathVerdict.Unreadable)
+            )
+            .Should()
+            .Be(HygieneVerdict.HostPathUnreadable);
     }
 
     [Fact]
@@ -843,14 +986,24 @@ public sealed class SlotHygieneTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(runner), store, CancellationToken.None, NullLogger.Instance, new HostFileSystem());
+            new GitRunner(runner),
+            store,
+            CancellationToken.None,
+            NullLogger.Instance,
+            new HostFileSystem()
+        );
 
         verdict.Should().Be(HygieneVerdict.NeedsReclone);
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().HaveCount(
-            1, "nothing after the sweep can change the verdict, so nothing after the sweep should run");
-        commands[0].Should().EndWith(
-            "rev-parse --git-dir", "the structural probe precedes the sweep — it is the one command that must run");
+        commands
+            .Should()
+            .HaveCount(1, "nothing after the sweep can change the verdict, so nothing after the sweep should run");
+        commands[0]
+            .Should()
+            .EndWith(
+                "rev-parse --git-dir",
+                "the structural probe precedes the sweep — it is the one command that must run"
+            );
     }
 
     [Fact]
@@ -893,17 +1046,27 @@ public sealed class SlotHygieneTests : IDisposable
         using var denied = UnreadableEntry.UnlistableDirectory(moduleDir);
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None,
-            NullLogger.Instance, new HostFileSystem());
+            new GitRunner(new FakeSandboxCommandRunner()),
+            store,
+            CancellationToken.None,
+            NullLogger.Instance,
+            new HostFileSystem()
+        );
 
-        verdict.Should().Be(
-            HygieneVerdict.HostPathUnreadable,
-            "the sweep could not establish that this store is clean, and a store whose cleanup it cannot walk is "
-                + "one a re-clone cannot walk either -- the wipe refuses on the same unreadable entry, so the slot "
-                + "is retired rather than re-cloned into the same wall");
-        File.Exists(missedLock).Should().BeTrue(
-            "the point is that the sweep never reached this lock: it is still there, and every git step "
-                + "reported success, so nothing downstream would have reported it either");
+        verdict
+            .Should()
+            .Be(
+                HygieneVerdict.HostPathUnreadable,
+                "the sweep could not establish that this store is clean, and a store whose cleanup it cannot walk is "
+                    + "one a re-clone cannot walk either -- the wipe refuses on the same unreadable entry, so the slot "
+                    + "is retired rather than re-cloned into the same wall"
+            );
+        File.Exists(missedLock)
+            .Should()
+            .BeTrue(
+                "the point is that the sweep never reached this lock: it is still there, and every git step "
+                    + "reported success, so nothing downstream would have reported it either"
+            );
     }
 
     [RequiresUnreadableEntryFact("a listable directory cannot show the difference between empty and unreadable")]
@@ -914,16 +1077,23 @@ public sealed class SlotHygieneTests : IDisposable
         // assertion that would catch a fix which merely LOGGED the unreadable directory and swept on.
         var store = SeedStore();
         using var denied = UnreadableEntry.UnlistableDirectory(
-            Directory.CreateDirectory(Path.Combine(store, ".git", "modules")).FullName);
+            Directory.CreateDirectory(Path.Combine(store, ".git", "modules")).FullName
+        );
         var runner = new FakeSandboxCommandRunner();
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(runner), store, CancellationToken.None, NullLogger.Instance, new HostFileSystem());
+            new GitRunner(runner),
+            store,
+            CancellationToken.None,
+            NullLogger.Instance,
+            new HostFileSystem()
+        );
 
         verdict.Should().Be(HygieneVerdict.HostPathUnreadable);
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().HaveCount(
-            1, "nothing after the sweep can change the verdict, so nothing after the sweep should run");
+        commands
+            .Should()
+            .HaveCount(1, "nothing after the sweep can change the verdict, so nothing after the sweep should run");
         commands[0].Should().EndWith("rev-parse --git-dir");
     }
 
@@ -935,7 +1105,8 @@ public sealed class SlotHygieneTests : IDisposable
         // pristine by anything the strip does.
         var store = SeedStore();
         using var denied = UnreadableEntry.UnlistableDirectory(
-            Directory.CreateDirectory(Path.Combine(store, ".git", "modules")).FullName);
+            Directory.CreateDirectory(Path.Combine(store, ".git", "modules")).FullName
+        );
         var runner = new FakeSandboxCommandRunner();
 
         await SlotHygiene.StripAsync(new GitRunner(runner), store, CancellationToken.None);
@@ -957,16 +1128,23 @@ public sealed class SlotHygieneTests : IDisposable
         var logs = new CapturingLoggerFactory();
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None,
-            logs.Capturing, new HostFileSystem());
+            new GitRunner(new FakeSandboxCommandRunner()),
+            store,
+            CancellationToken.None,
+            logs.Capturing,
+            new HostFileSystem()
+        );
 
         verdict.Should().Be(HygieneVerdict.HostPathUnreadable);
-        logs.Capturing.WarningCount(moduleDir).Should().Be(
-            1, "the address that stopped the sweep is the one thing the operator cannot work out for themselves");
-        logs.Capturing.WarningCount("cannot be read well enough to tell").Should().Be(
-            1, "the reason has to be the one that is actually true of this entry");
-        logs.Capturing.WarningCount("symlink or junction").Should().Be(
-            0, "nothing here was redirected, and a refusal naming a link starts a hunt for one nobody planted");
+        logs.Capturing.WarningCount(moduleDir)
+            .Should()
+            .Be(1, "the address that stopped the sweep is the one thing the operator cannot work out for themselves");
+        logs.Capturing.WarningCount("cannot be read well enough to tell")
+            .Should()
+            .Be(1, "the reason has to be the one that is actually true of this entry");
+        logs.Capturing.WarningCount("symlink or junction")
+            .Should()
+            .Be(0, "nothing here was redirected, and a refusal naming a link starts a hunt for one nobody planted");
     }
 
     [Fact]
@@ -983,8 +1161,12 @@ public sealed class SlotHygieneTests : IDisposable
         await File.WriteAllTextAsync(staleLock, string.Empty);
 
         var verdict = await SlotHygiene.EnsureCleanAsync(
-            new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None,
-            NullLogger.Instance, new HostFileSystem());
+            new GitRunner(new FakeSandboxCommandRunner()),
+            store,
+            CancellationToken.None,
+            NullLogger.Instance,
+            new HostFileSystem()
+        );
 
         verdict.Should().Be(HygieneVerdict.Clean);
         File.Exists(staleLock).Should().BeFalse("an empty directory is a readable one, and the sweep goes on");
@@ -1061,13 +1243,18 @@ public sealed class SlotHygieneTests : IDisposable
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), super, CancellationToken.None);
 
-        File.Exists(residues.AfterBroken).Should().BeFalse(
-            "a submodule ordered AFTER the one that stops `foreach` must still be swept");
-        File.Exists(residues.NestedAfterBroken).Should().BeFalse(
-            "the replacement sweep must keep the `--recursive` reach it replaces, not just the top level");
-        verdict.Should().Be(
-            HygieneVerdict.Clean,
-            "the residue was cleaned rather than merely surfaced, so nothing is left to condemn the slot for");
+        File.Exists(residues.AfterBroken)
+            .Should()
+            .BeFalse("a submodule ordered AFTER the one that stops `foreach` must still be swept");
+        File.Exists(residues.NestedAfterBroken)
+            .Should()
+            .BeFalse("the replacement sweep must keep the `--recursive` reach it replaces, not just the top level");
+        verdict
+            .Should()
+            .Be(
+                HygieneVerdict.Clean,
+                "the residue was cleaned rather than merely surfaced, so nothing is left to condemn the slot for"
+            );
     }
 
     /// <summary>
@@ -1077,8 +1264,10 @@ public sealed class SlotHygieneTests : IDisposable
     /// aborts the walk — its worktree and its <c>.git</c> FILE retained, the <c>.git/modules/first</c> gitdir it
     /// points at removed. Returns the store and the two residue paths that must not survive hygiene.
     /// </summary>
-    private async Task<(string Super, (string AfterBroken, string NestedAfterBroken) Residues)>
-        SetupOrderedSubmoduleResidueStoreAsync(HostGitCommandRunner runner)
+    private async Task<(
+        string Super,
+        (string AfterBroken, string NestedAfterBroken) Residues
+    )> SetupOrderedSubmoduleResidueStoreAsync(HostGitCommandRunner runner)
     {
         var super = Path.Combine(_root, "super");
         Directory.CreateDirectory(_root);
@@ -1105,8 +1294,20 @@ public sealed class SlotHygieneTests : IDisposable
         var firstSrc = await Source("first");
         var nestedSrc = await Source("nested");
         var secondSrc = await Source("second");
-        await Git(secondSrc, "-c", "protocol.file.allow=always", "-c", "user.email=a@b", "-c", "user.name=a",
-            "submodule", "add", "-q", nestedSrc, "nested");
+        await Git(
+            secondSrc,
+            "-c",
+            "protocol.file.allow=always",
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=a",
+            "submodule",
+            "add",
+            "-q",
+            nestedSrc,
+            "nested"
+        );
         await Git(secondSrc, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "addnested");
 
         await Git(super, "init", "-q", ".");
@@ -1115,8 +1316,20 @@ public sealed class SlotHygieneTests : IDisposable
         await Git(super, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "seed");
         foreach (var (name, source) in new[] { ("first", firstSrc), ("second", secondSrc) })
         {
-            await Git(super, "-c", "protocol.file.allow=always", "-c", "user.email=a@b", "-c", "user.name=a",
-                "submodule", "add", "-q", source, name);
+            await Git(
+                super,
+                "-c",
+                "protocol.file.allow=always",
+                "-c",
+                "user.email=a@b",
+                "-c",
+                "user.name=a",
+                "submodule",
+                "add",
+                "-q",
+                source,
+                name
+            );
         }
 
         await Git(super, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q");
@@ -1131,8 +1344,9 @@ public sealed class SlotHygieneTests : IDisposable
         // the shape that ABORTS the walk. (Deleting the `.git` file too gives the other deinit shape, which
         // `foreach` merely skips — it would not reproduce this defect.)
         DeleteRecursive(Path.Combine(super, ".git", "modules", "first"));
-        File.Exists(Path.Combine(super, "first", ".git")).Should().BeTrue(
-            "the aborting shape needs the dangling gitfile — without it `foreach` skips instead of dying");
+        File.Exists(Path.Combine(super, "first", ".git"))
+            .Should()
+            .BeTrue("the aborting shape needs the dangling gitfile — without it `foreach` skips instead of dying");
         return (super, (afterBroken, nestedAfterBroken));
     }
 
@@ -1173,8 +1387,20 @@ public sealed class SlotHygieneTests : IDisposable
         await Git(seed, "push", "-q", "origin", "HEAD:master");
         // Superproject with the remote as a (file://) submodule — setup explicitly allows the local transport.
         await Git(_root, "init", "-q", "super");
-        await Git(super, "-c", "protocol.file.allow=always", "-c", "user.email=a@b", "-c", "user.name=a",
-            "submodule", "add", "-q", remote, "sub");
+        await Git(
+            super,
+            "-c",
+            "protocol.file.allow=always",
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=a",
+            "submodule",
+            "add",
+            "-q",
+            remote,
+            "sub"
+        );
         await Git(super, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "addsub");
 
         // DEINIT: remove the submodule worktree + gitdir, KEEP its URL in .git/config — the exploitable state.
@@ -1246,8 +1472,9 @@ public sealed class SlotHygieneTests : IDisposable
 
         var segment = new string('p', 40);
         var longPath = string.Join('/', Enumerable.Repeat(segment, 5)) + "/beyond-max-path.txt";
-        (store.Length + 1 + longPath.Length).Should().BeGreaterThan(
-            260, "the regression only exists past MAX_PATH — a shorter temp root would silently pass");
+        (store.Length + 1 + longPath.Length)
+            .Should()
+            .BeGreaterThan(260, "the regression only exists past MAX_PATH — a shorter temp root would silently pass");
 
         var blob = (await Git("rev-parse", "HEAD:seed.txt")).Stdout.Trim();
         await Git("update-index", "--add", "--cacheinfo", $"100644,{blob},{longPath}");

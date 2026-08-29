@@ -27,37 +27,36 @@ public sealed class SubAgentToolUseTests
     {
         const string WeatherSubAgentMarker = "You are the weather sub-agent";
 
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("weather-sub", ctx => ctx.SystemPromptContains(WeatherSubAgentMarker))
-                .Turn(t => t.ToolCall("get_weather", new { location = "Seattle" }))
-                .Turn(t => t.Text("Seattle weather captured."))
+            .Turn(t => t.ToolCall("get_weather", new { location = "Seattle" }))
+            .Turn(t => t.Text("Seattle weather captured."))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.ToolCall(
-                    "Agent",
-                    new { subagent_type = "weather_sub", prompt = "check Seattle weather" }))
-                .Turn(t => t.Text("Parent: sub-agent completed the weather check."))
+            .Turn(t => t.ToolCall("Agent", new { subagent_type = "weather_sub", prompt = "check Seattle weather" }))
+            .Turn(t => t.Text("Parent: sub-agent completed the weather check."))
             .Build();
 
-        var handler = providerMode == "test-anthropic"
-            ? responder.AsAnthropicHandler()
-            : responder.AsOpenAiHandler();
+        var handler = providerMode == "test-anthropic" ? responder.AsAnthropicHandler() : responder.AsOpenAiHandler();
 
         var builder = new ScriptedBuilder(
             handler,
-            subAgentFactory: (_, providerAgentFactory) => new SubAgentOptions
-            {
-                Templates = new Dictionary<string, SubAgentTemplate>
+            subAgentFactory: (_, providerAgentFactory) =>
+                new SubAgentOptions
                 {
-                    ["weather_sub"] = new SubAgentTemplate
+                    Templates = new Dictionary<string, SubAgentTemplate>
                     {
-                        Name = "WeatherSub",
-                        SystemPrompt = WeatherSubAgentMarker,
-                        AgentFactory = providerAgentFactory,
-                        MaxTurnsPerRun = 5,
+                        ["weather_sub"] = new SubAgentTemplate
+                        {
+                            Name = "WeatherSub",
+                            SystemPrompt = WeatherSubAgentMarker,
+                            AgentFactory = providerAgentFactory,
+                            MaxTurnsPerRun = 5,
+                        },
                     },
-                },
-                MaxConcurrentSubAgents = 5,
-            });
+                    MaxConcurrentSubAgents = 5,
+                }
+        );
 
         using var factory = new E2EWebAppFactory(providerMode, builder);
 
@@ -78,7 +77,9 @@ public sealed class SubAgentToolUseTests
         // time the parent produces its summary the sub-agent has deterministically consumed
         // BOTH of its turns (the get_weather tool call AND the final text). No background relay,
         // no race — the queue is fully drained.
-        responder.RemainingTurns["weather-sub"].Should()
+        responder
+            .RemainingTurns["weather-sub"]
+            .Should()
             .Be(0, "the parent awaits the sub-agent's full run, draining both of its turns");
 
         var streamedText = frames.ConcatText();

@@ -32,14 +32,8 @@ public sealed class CodexAppServerRequestConfigTests
         var config = parameters["config"].Should().BeAssignableTo<Dictionary<string, object?>>().Subject;
         config["model_provider"].Should().Be(ProviderId);
 
-        var modelProviders = config["model_providers"]
-            .Should()
-            .BeAssignableTo<Dictionary<string, object?>>()
-            .Subject;
-        var provider = modelProviders[ProviderId]
-            .Should()
-            .BeAssignableTo<Dictionary<string, object?>>()
-            .Subject;
+        var modelProviders = config["model_providers"].Should().BeAssignableTo<Dictionary<string, object?>>().Subject;
+        var provider = modelProviders[ProviderId].Should().BeAssignableTo<Dictionary<string, object?>>().Subject;
 
         provider["name"].Should().Be("LmDotnetTools OpenAI Responses");
         provider["base_url"].Should().Be("http://127.0.0.1:5099/v1");
@@ -53,41 +47,23 @@ public sealed class CodexAppServerRequestConfigTests
     [Fact]
     public void BuildThreadParams_BaseUrlWithoutApiKey_DoesNotRequireEnvKey()
     {
-        var options = new CodexBridgeInitOptions
-        {
-            Model = "gpt-5.3-codex",
-            BaseUrl = "http://127.0.0.1:5099/v1",
-        };
+        var options = new CodexBridgeInitOptions { Model = "gpt-5.3-codex", BaseUrl = "http://127.0.0.1:5099/v1" };
 
         var parameters = InvokeThreadParams("BuildThreadStartParams", options);
         var config = parameters["config"].Should().BeAssignableTo<Dictionary<string, object?>>().Subject;
-        var modelProviders = config["model_providers"]
-            .Should()
-            .BeAssignableTo<Dictionary<string, object?>>()
-            .Subject;
-        var provider = modelProviders[ProviderId]
-            .Should()
-            .BeAssignableTo<Dictionary<string, object?>>()
-            .Subject;
+        var modelProviders = config["model_providers"].Should().BeAssignableTo<Dictionary<string, object?>>().Subject;
+        var provider = modelProviders[ProviderId].Should().BeAssignableTo<Dictionary<string, object?>>().Subject;
 
         provider.Should().NotContainKey("env_key");
     }
 
-    private static Dictionary<string, object?> InvokeThreadParams(
-        string methodName,
-        CodexBridgeInitOptions options)
+    private static Dictionary<string, object?> InvokeThreadParams(string methodName, CodexBridgeInitOptions options)
     {
-        var client = new CodexSdkClient(
-            new CodexSdkOptions(),
-            NullLogger<CodexSdkClient>.Instance);
-        var method = typeof(CodexSdkClient).GetMethod(
-            methodName,
-            BindingFlags.Instance | BindingFlags.NonPublic)
+        var client = new CodexSdkClient(new CodexSdkOptions(), NullLogger<CodexSdkClient>.Instance);
+        var method =
+            typeof(CodexSdkClient).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new MissingMethodException(nameof(CodexSdkClient), methodName);
 
-        return method.Invoke(client, [options])
-                .Should()
-                .BeAssignableTo<Dictionary<string, object?>>()
-                .Subject;
+        return method.Invoke(client, [options]).Should().BeAssignableTo<Dictionary<string, object?>>().Subject;
     }
 }

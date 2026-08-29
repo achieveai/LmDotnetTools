@@ -18,8 +18,7 @@ public class SimpleWorkflowTranslationTests
 {
     private static readonly JsonSerializerOptions LlmJson = new() { PropertyNameCaseInsensitive = true };
 
-    private static SimpleWorkflow Parse(string json) =>
-        JsonSerializer.Deserialize<SimpleWorkflow>(json, LlmJson)!;
+    private static SimpleWorkflow Parse(string json) => JsonSerializer.Deserialize<SimpleWorkflow>(json, LlmJson)!;
 
     [Fact]
     public void RealisticPipeline_AuthoredAsFlatJson_TranslatesAndPassesTheValidator()
@@ -214,14 +213,15 @@ public class SimpleWorkflowTranslationTests
     public void OmittedNext_OnTheLastStep_BecomesTerminal_ReusingTheDeclaredEnd()
     {
         var def = Parse(
-            """
-            { "objective": "o", "steps": [
-              { "id": "s", "kind": "start", "next": "a" },
-              { "id": "done", "kind": "end" },
-              { "id": "a", "kind": "agent", "agent": "general-purpose", "prompt": "work" }
-            ] }
-            """
-        ).ToDefinition();
+                """
+                { "objective": "o", "steps": [
+                  { "id": "s", "kind": "start", "next": "a" },
+                  { "id": "done", "kind": "end" },
+                  { "id": "a", "kind": "agent", "agent": "general-purpose", "prompt": "work" }
+                ] }
+                """
+            )
+            .ToDefinition();
 
         new WorkflowValidator().ValidateAndThrow(def);
 
@@ -233,13 +233,14 @@ public class SimpleWorkflowTranslationTests
     public void OmittedNext_OnTheLastStep_SynthesizesATerminal_WhenNoneWasDeclared()
     {
         var def = Parse(
-            """
-            { "objective": "o", "steps": [
-              { "id": "s", "kind": "start", "next": "a" },
-              { "id": "a", "kind": "agent", "agent": "general-purpose", "prompt": "work" }
-            ] }
-            """
-        ).ToDefinition();
+                """
+                { "objective": "o", "steps": [
+                  { "id": "s", "kind": "start", "next": "a" },
+                  { "id": "a", "kind": "agent", "agent": "general-purpose", "prompt": "work" }
+                ] }
+                """
+            )
+            .ToDefinition();
 
         new WorkflowValidator().ValidateAndThrow(def);
 
@@ -251,17 +252,18 @@ public class SimpleWorkflowTranslationTests
     public void OmittedAgent_DefaultsToGeneralPurpose_OnAgentStepsAndParallelMembers()
     {
         var def = Parse(
-            """
-            { "objective": "o", "steps": [
-              { "id": "s", "kind": "start", "next": "a" },
-              { "id": "a", "kind": "agent", "prompt": "solo work", "next": "p" },
-              { "id": "p", "kind": "parallel", "next": "e", "agents": [
-                  { "prompt": "member work" }
-                ] },
-              { "id": "e", "kind": "end" }
-            ] }
-            """
-        ).ToDefinition();
+                """
+                { "objective": "o", "steps": [
+                  { "id": "s", "kind": "start", "next": "a" },
+                  { "id": "a", "kind": "agent", "prompt": "solo work", "next": "p" },
+                  { "id": "p", "kind": "parallel", "next": "e", "agents": [
+                      { "prompt": "member work" }
+                    ] },
+                  { "id": "e", "kind": "end" }
+                ] }
+                """
+            )
+            .ToDefinition();
 
         new WorkflowValidator().ValidateAndThrow(def);
 
@@ -273,16 +275,17 @@ public class SimpleWorkflowTranslationTests
     public void OmittedElse_OnABranch_FallsThroughToTheNextDeclaredStep()
     {
         var def = Parse(
-            """
-            { "objective": "o", "steps": [
-              { "id": "s", "kind": "start", "next": "b" },
-              { "id": "b", "kind": "branch",
-                "branches": [ { "when": "blocking findings", "goto": "blocked" } ] },
-              { "id": "cleanup", "kind": "agent", "agent": "general-purpose", "prompt": "clean up", "next": "blocked" },
-              { "id": "blocked", "kind": "end" }
-            ] }
-            """
-        ).ToDefinition();
+                """
+                { "objective": "o", "steps": [
+                  { "id": "s", "kind": "start", "next": "b" },
+                  { "id": "b", "kind": "branch",
+                    "branches": [ { "when": "blocking findings", "goto": "blocked" } ] },
+                  { "id": "cleanup", "kind": "agent", "agent": "general-purpose", "prompt": "clean up", "next": "blocked" },
+                  { "id": "blocked", "kind": "end" }
+                ] }
+                """
+            )
+            .ToDefinition();
 
         new WorkflowValidator().ValidateAndThrow(def);
 
@@ -320,7 +323,8 @@ public class SimpleWorkflowTranslationTests
 
         // A faithful DSL round-trip preserves every authored tier (both directions of the translator).
         var roundTripped = SimpleWorkflowTranslator.FromDefinition(def);
-        JsonSerializer.Serialize(roundTripped, SimpleWorkflow.OutputJsonOptions)
+        JsonSerializer
+            .Serialize(roundTripped, SimpleWorkflow.OutputJsonOptions)
             .Should()
             .Be(JsonSerializer.Serialize(original, SimpleWorkflow.OutputJsonOptions));
     }
@@ -330,14 +334,15 @@ public class SimpleWorkflowTranslationTests
     {
         // Omission must remain omission — a tier-less task keeps its parent-inherited model, never a spurious 0.
         var def = Parse(
-            """
-            { "objective": "o", "steps": [
-              { "id": "s", "kind": "start", "next": "a" },
-              { "id": "a", "kind": "agent", "agent": "researcher", "prompt": "Do X.", "next": "e" },
-              { "id": "e", "kind": "end" }
-            ] }
-            """
-        ).ToDefinition();
+                """
+                { "objective": "o", "steps": [
+                  { "id": "s", "kind": "start", "next": "a" },
+                  { "id": "a", "kind": "agent", "agent": "researcher", "prompt": "Do X.", "next": "e" },
+                  { "id": "e", "kind": "end" }
+                ] }
+                """
+            )
+            .ToDefinition();
 
         Task(def, "a").ModelIntelligence.Should().BeNull();
     }
@@ -348,15 +353,16 @@ public class SimpleWorkflowTranslationTests
         // The full #3 spine end-to-end: DSL tier -> WorkflowTask -> SpawnUnit -> the controller-visible
         // projection, so the controller can forward it as the Agent tool's modelIntelligence argument.
         var def = Parse(
-            """
-            { "objective": "o", "steps": [
-              { "id": "start", "kind": "start", "next": "a" },
-              { "id": "a", "kind": "agent", "agent": "researcher", "prompt": "Do X.",
-                "modelIntelligence": 4, "next": "e" },
-              { "id": "e", "kind": "end" }
-            ] }
-            """
-        ).ToDefinition();
+                """
+                { "objective": "o", "steps": [
+                  { "id": "start", "kind": "start", "next": "a" },
+                  { "id": "a", "kind": "agent", "agent": "researcher", "prompt": "Do X.",
+                    "modelIntelligence": 4, "next": "e" },
+                  { "id": "e", "kind": "end" }
+                ] }
+                """
+            )
+            .ToDefinition();
 
         var runtime = new WorkflowRuntime();
         runtime.LoadDefinition(def);
@@ -404,20 +410,21 @@ public class SimpleWorkflowTranslationTests
     {
         // The "dispatch specialists" case done right: three DIFFERENT agents in one node, joined together.
         var def = Parse(
-            """
-            { "objective": "review", "steps": [
-              { "id": "start", "kind": "start", "next": "review" },
-              { "id": "review", "kind": "parallel", "next": "merge", "agents": [
-                { "agent": "correctness", "prompt": "Check correctness of {{state.diff}}", "saveAs": "c" },
-                { "agent": "security",    "prompt": "Check security of {{state.diff}}",    "saveAs": "s" },
-                { "agent": "tests",       "prompt": "Check tests of {{state.diff}}",       "saveAs": "t" }
-              ] },
-              { "id": "merge", "kind": "agent", "agent": "gp",
-                "prompt": "Merge {{state.c}} {{state.s}} {{state.t}}", "next": "done" },
-              { "id": "done", "kind": "end" }
-            ] }
-            """
-        ).ToDefinition();
+                """
+                { "objective": "review", "steps": [
+                  { "id": "start", "kind": "start", "next": "review" },
+                  { "id": "review", "kind": "parallel", "next": "merge", "agents": [
+                    { "agent": "correctness", "prompt": "Check correctness of {{state.diff}}", "saveAs": "c" },
+                    { "agent": "security",    "prompt": "Check security of {{state.diff}}",    "saveAs": "s" },
+                    { "agent": "tests",       "prompt": "Check tests of {{state.diff}}",       "saveAs": "t" }
+                  ] },
+                  { "id": "merge", "kind": "agent", "agent": "gp",
+                    "prompt": "Merge {{state.c}} {{state.s}} {{state.t}}", "next": "done" },
+                  { "id": "done", "kind": "end" }
+                ] }
+                """
+            )
+            .ToDefinition();
 
         new WorkflowValidator().ValidateAndThrow(def);
 
@@ -433,17 +440,18 @@ public class SimpleWorkflowTranslationTests
     public void ForEachStep_FansTheSameAgentOverACollection_Sequentially_AppendingResults()
     {
         var def = Parse(
-            """
-            { "objective": "review each file", "steps": [
-              { "id": "start", "kind": "start", "next": "list" },
-              { "id": "list", "kind": "agent", "agent": "finder", "prompt": "List changed files.",
-                "saveAs": "files", "next": "map" },
-              { "id": "map", "kind": "agent", "agent": "reviewer", "prompt": "Review {{item}}.",
-                "forEach": "state.files", "saveAs": "reviews", "next": "done" },
-              { "id": "done", "kind": "end" }
-            ] }
-            """
-        ).ToDefinition();
+                """
+                { "objective": "review each file", "steps": [
+                  { "id": "start", "kind": "start", "next": "list" },
+                  { "id": "list", "kind": "agent", "agent": "finder", "prompt": "List changed files.",
+                    "saveAs": "files", "next": "map" },
+                  { "id": "map", "kind": "agent", "agent": "reviewer", "prompt": "Review {{item}}.",
+                    "forEach": "state.files", "saveAs": "reviews", "next": "done" },
+                  { "id": "done", "kind": "end" }
+                ] }
+                """
+            )
+            .ToDefinition();
 
         new WorkflowValidator().ValidateAndThrow(def);
 
@@ -460,19 +468,20 @@ public class SimpleWorkflowTranslationTests
     {
         // A retry loop: work → check → (back to work | forward to done), with a hard visit cap + escape.
         var def = Parse(
-            """
-            { "objective": "retry until good", "steps": [
-              { "id": "start", "kind": "start", "next": "work" },
-              { "id": "work", "kind": "agent", "agent": "worker", "prompt": "Attempt the task.",
-                "saveAs": "attempt", "next": "check", "maxVisits": 3, "onMaxVisits": "giveup" },
-              { "id": "check", "kind": "branch",
-                "branches": [ { "when": "the attempt still needs work", "goto": "work" } ],
-                "else": "done" },
-              { "id": "done", "kind": "end" },
-              { "id": "giveup", "kind": "end" }
-            ] }
-            """
-        ).ToDefinition();
+                """
+                { "objective": "retry until good", "steps": [
+                  { "id": "start", "kind": "start", "next": "work" },
+                  { "id": "work", "kind": "agent", "agent": "worker", "prompt": "Attempt the task.",
+                    "saveAs": "attempt", "next": "check", "maxVisits": 3, "onMaxVisits": "giveup" },
+                  { "id": "check", "kind": "branch",
+                    "branches": [ { "when": "the attempt still needs work", "goto": "work" } ],
+                    "else": "done" },
+                  { "id": "done", "kind": "end" },
+                  { "id": "giveup", "kind": "end" }
+                ] }
+                """
+            )
+            .ToDefinition();
 
         // The loop (work → check → work) plus the maxVisits escape is a valid graph.
         new WorkflowValidator().ValidateAndThrow(def);
@@ -509,7 +518,8 @@ public class SimpleWorkflowTranslationTests
         var roundTripped = SimpleWorkflowTranslator.FromDefinition(original.ToDefinition());
 
         // Compare the canonical camelCase DSL rendering of both — a faithful round-trip is byte-identical.
-        JsonSerializer.Serialize(roundTripped, SimpleWorkflow.OutputJsonOptions)
+        JsonSerializer
+            .Serialize(roundTripped, SimpleWorkflow.OutputJsonOptions)
             .Should()
             .Be(JsonSerializer.Serialize(original, SimpleWorkflow.OutputJsonOptions));
     }

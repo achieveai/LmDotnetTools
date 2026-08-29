@@ -9,6 +9,4 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 ///     <see cref="ConversationUsageMessage" /> so the live usage banner can update mid-run without polluting
 ///     history, replay, or storage (#196).
 /// </summary>
-public interface ITransientMessage
-{
-}
+public interface ITransientMessage { }

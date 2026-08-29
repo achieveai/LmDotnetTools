@@ -32,10 +32,7 @@ internal sealed class Gate(TimeSpan? waitCeiling = null)
     /// <summary>Wakes every current waiter so each can re-evaluate its condition.</summary>
     internal void Signal() =>
         Interlocked
-            .Exchange(
-                ref _signal,
-                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
-            )
+            .Exchange(ref _signal, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
             .TrySetResult();
 
     /// <summary>Completes once <paramref name="condition"/> holds, or throws after the wait

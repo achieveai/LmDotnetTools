@@ -14,23 +14,14 @@ public sealed class JudgeReplyParserTests
     private static readonly Rubric SingleCriterion = HarnessFixtures.Rubric();
 
     private static Ballot Parse(string reply, Rubric? rubric = null) =>
-        JudgeReplyParser.Parse(
-            reply,
-            rubric ?? SingleCriterion,
-            judgeId: "j",
-            modelId: "m",
-            modelFamily: "f"
-        );
+        JudgeReplyParser.Parse(reply, rubric ?? SingleCriterion, judgeId: "j", modelId: "m", modelFamily: "f");
 
     // ---- the canonical harness shape ---------------------------------------------------------
 
     [Fact]
     public void A_canonical_reply_yields_per_criterion_scores_reasoning_and_confidence()
     {
-        var rubric = HarnessFixtures.Rubric(
-            HarnessFixtures.Criterion("evidence"),
-            HarnessFixtures.Criterion("noise")
-        );
+        var rubric = HarnessFixtures.Rubric(HarnessFixtures.Criterion("evidence"), HarnessFixtures.Criterion("noise"));
 
         var ballot = Parse(
             """{"reasoning":"cites every line","scores":{"evidence":8,"noise":6},"confidence":0.7}""",
@@ -70,10 +61,7 @@ public sealed class JudgeReplyParserTests
     [Fact]
     public void A_missing_criterion_abstains_rather_than_scoring_zero()
     {
-        var rubric = HarnessFixtures.Rubric(
-            HarnessFixtures.Criterion("evidence"),
-            HarnessFixtures.Criterion("noise")
-        );
+        var rubric = HarnessFixtures.Rubric(HarnessFixtures.Criterion("evidence"), HarnessFixtures.Criterion("noise"));
 
         var ballot = Parse("""{"scores":{"evidence":8},"reasoning":"partial"}""", rubric);
 
@@ -120,9 +108,7 @@ public sealed class JudgeReplyParserTests
     [Fact]
     public void A_fenced_json_reply_is_unwrapped()
     {
-        var ballot = Parse(
-            "Here is my verdict:\n```json\n{\"score\": 5, \"rationale\": \"Adequate.\"}\n```"
-        );
+        var ballot = Parse("Here is my verdict:\n```json\n{\"score\": 5, \"rationale\": \"Adequate.\"}\n```");
 
         ballot.WeightedScore.Should().Be(5.0);
         ballot.Reasoning.Should().Be("Adequate.");
@@ -209,10 +195,7 @@ public sealed class JudgeReplyParserTests
     [Fact]
     public void A_flat_score_on_a_multi_criterion_rubric_abstains()
     {
-        var rubric = HarnessFixtures.Rubric(
-            HarnessFixtures.Criterion("evidence"),
-            HarnessFixtures.Criterion("noise")
-        );
+        var rubric = HarnessFixtures.Rubric(HarnessFixtures.Criterion("evidence"), HarnessFixtures.Criterion("noise"));
 
         Parse("""{"score":8,"rationale":"r"}""", rubric).Abstained.Should().BeTrue();
     }
@@ -225,8 +208,6 @@ public sealed class JudgeReplyParserTests
         ballot.JudgeId.Should().Be("j");
         ballot.ModelId.Should().Be("m");
         ballot.ModelFamily.Should().Be("f");
-        ballot
-            .AppliedWeight.Should()
-            .BeNull("a judge cannot know its own weight — only the aggregator writes that");
+        ballot.AppliedWeight.Should().BeNull("a judge cannot know its own weight — only the aggregator writes that");
     }
 }

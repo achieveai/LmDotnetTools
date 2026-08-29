@@ -18,9 +18,8 @@ namespace LmStreaming.Sample.Controllers;
 /// internal state.
 /// </remarks>
 [ApiController]
-public sealed class AuthPagesController(
-    IEnumerable<IOAuthTokenProvider> providers,
-    ILogger<AuthPagesController> logger) : ControllerBase
+public sealed class AuthPagesController(IEnumerable<IOAuthTokenProvider> providers, ILogger<AuthPagesController> logger)
+    : ControllerBase
 {
     /// <summary>
     /// GET landing page for a provider. If already signed in, renders a success page; otherwise
@@ -30,7 +29,9 @@ public sealed class AuthPagesController(
     [HttpGet("auth/{providerId}")]
     public async Task<IActionResult> Page(string providerId, CancellationToken ct = default)
     {
-        var provider = providers.FirstOrDefault(p => string.Equals(p.ProviderId, providerId, StringComparison.OrdinalIgnoreCase));
+        var provider = providers.FirstOrDefault(p =>
+            string.Equals(p.ProviderId, providerId, StringComparison.OrdinalIgnoreCase)
+        );
         if (provider is null)
         {
             // 404 (not 400) to avoid leaking which provider ids are valid via differential responses.
@@ -92,7 +93,8 @@ public sealed class AuthPagesController(
 
         return Page(
             rawTitle: $"Signed in to {providerId}",
-            body: $"<h3>Signed in to {encoded}</h3><p>You can close this tab.</p>");
+            body: $"<h3>Signed in to {encoded}</h3><p>You can close this tab.</p>"
+        );
     }
 
     private static string BuildUnavailableHtml(string providerId, string error)
@@ -100,7 +102,8 @@ public sealed class AuthPagesController(
         var encoded = Encode(providerId);
         return Page(
             rawTitle: $"{providerId} unavailable",
-            body: $"<h3>{encoded} sign-in unavailable</h3><p>{Encode(error)}</p>");
+            body: $"<h3>{encoded} sign-in unavailable</h3><p>{Encode(error)}</p>"
+        );
     }
 
     private static string BuildPendingHtml(string providerId)
@@ -110,8 +113,11 @@ public sealed class AuthPagesController(
         // when the state changes. Self-contained (no external script tag, no token material).
         // providerId is embedded via System.Text.Json.JsonSerializer.Serialize so any unusual
         // character is escaped as a JSON string literal (not interpolated as raw JS).
-        var script = "<script>"
-            + "const PROVIDER=" + System.Text.Json.JsonSerializer.Serialize(providerId) + ";"
+        var script =
+            "<script>"
+            + "const PROVIDER="
+            + System.Text.Json.JsonSerializer.Serialize(providerId)
+            + ";"
             + "async function poll(){try{const r=await fetch('/api/auth/'+encodeURIComponent(PROVIDER)+'/status');if(!r.ok)return;"
             + "const s=await r.json();const el=document.getElementById('state');if(!el)return;"
             + "el.textContent=s.state;"
@@ -124,15 +130,19 @@ public sealed class AuthPagesController(
             body: $"<h3>Signing in to {encoded}</h3>"
                 + $"<p>Status: <code id=\"state\">Pending</code></p>"
                 + $"<p id=\"msg\">A browser window has been opened to complete sign-in. This page will update automatically.</p>"
-                + script);
+                + script
+        );
     }
 
     // rawTitle is raw text (HTML-encoded here exactly once); body is already-rendered HTML and
     // passes through unchanged.
     private static string Page(string rawTitle, string body) =>
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>" + Encode(rawTitle) + "</title></head>"
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>"
+        + Encode(rawTitle)
+        + "</title></head>"
         + "<body style=\"font-family:sans-serif;max-width:520px;margin:40px auto;color:#222\">"
-        + body + "</body></html>";
+        + body
+        + "</body></html>";
 
     private static string Encode(string value) => WebUtility.HtmlEncode(value ?? string.Empty);
 }

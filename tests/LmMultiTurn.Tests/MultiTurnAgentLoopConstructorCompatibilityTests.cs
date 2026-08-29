@@ -76,9 +76,11 @@ public class MultiTurnAgentLoopConstructorCompatibilityTests
     {
         var ctor = FindConstructor(PriorConstructorParameterTypes);
 
-        ctor.Should().NotBeNull(
-            "an already-compiled caller of the prior MultiTurnAgentLoop constructor must still bind "
-                + "to a constructor with this exact CLR signature, or it fails with MissingMethodException");
+        ctor.Should()
+            .NotBeNull(
+                "an already-compiled caller of the prior MultiTurnAgentLoop constructor must still bind "
+                    + "to a constructor with this exact CLR signature, or it fails with MissingMethodException"
+            );
     }
 
     [Fact]
@@ -131,28 +133,33 @@ public class MultiTurnAgentLoopConstructorCompatibilityTests
         {
             var parameters = ctor.GetParameters();
             return parameters.Length == PriorConstructorParameterTypes.Length + 3
-                && parameters.Any(p => p.Name == "includeAskUserQuestionTool" && p.ParameterType == typeof(bool) && !p.IsOptional)
-                && parameters.Any(p => p.Name == "includeNotifyClientTool" && p.ParameterType == typeof(bool) && !p.IsOptional)
+                && parameters.Any(p =>
+                    p.Name == "includeAskUserQuestionTool" && p.ParameterType == typeof(bool) && !p.IsOptional
+                )
+                && parameters.Any(p =>
+                    p.Name == "includeNotifyClientTool" && p.ParameterType == typeof(bool) && !p.IsOptional
+                )
                 && parameters.Any(p =>
                     p.Name == "descendantQuestionSink"
                     && p.ParameterType == typeof(Func<NotifyMessage, CancellationToken, ValueTask>)
                     && p.IsOptional
-                    && p.DefaultValue == null);
+                    && p.DefaultValue == null
+                );
         });
 
-        withFlags.Should().NotBeNull(
-            "callers that need to control browser-hosted client tool registration or supply a custom "
-                + "descendant-question sink must have a dedicated overload exposing "
-                + "includeAskUserQuestionTool/includeNotifyClientTool/descendantQuestionSink");
+        withFlags
+            .Should()
+            .NotBeNull(
+                "callers that need to control browser-hosted client tool registration or supply a custom "
+                    + "descendant-question sink must have a dedicated overload exposing "
+                    + "includeAskUserQuestionTool/includeNotifyClientTool/descendantQuestionSink"
+            );
     }
 
     [Fact]
     public void ExactlyTwoPublicConstructorsExist()
     {
         // Guards against a THIRD overload silently reintroducing an ambiguous or redundant shape.
-        typeof(MultiTurnAgentLoop)
-            .GetConstructors(BindingFlags.Public | BindingFlags.Instance)
-            .Should()
-            .HaveCount(2);
+        typeof(MultiTurnAgentLoop).GetConstructors(BindingFlags.Public | BindingFlags.Instance).Should().HaveCount(2);
     }
 }

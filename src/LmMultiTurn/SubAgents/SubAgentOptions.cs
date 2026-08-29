@@ -62,9 +62,12 @@ public record SubAgentOptions
     /// fall back to <see cref="DefaultConversationStoreFactory"/>, unchanged for every existing host.
     /// </para>
     /// </summary>
-    public Func<string, string?, Func<string, SubAgentSnapshot?>, IConversationStore>?
-        ProvenanceAwareConversationStoreFactory
-    { get; init; }
+    public Func<
+        string,
+        string?,
+        Func<string, SubAgentSnapshot?>,
+        IConversationStore
+    >? ProvenanceAwareConversationStoreFactory { get; init; }
 
     /// <summary>
     /// Tool names that a spawned sub-agent must NOT inherit from the parent, even when its

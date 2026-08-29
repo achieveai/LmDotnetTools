@@ -24,7 +24,8 @@ public sealed class IMessageWebSocketHandler
     public IMessageWebSocketHandler(
         IWebSocketConnectionManager connectionManager,
         ILogger<IMessageWebSocketHandler> logger,
-        IOptions<LmStreamingOptions> options)
+        IOptions<LmStreamingOptions> options
+    )
     {
         ArgumentNullException.ThrowIfNull(options);
         _connectionManager = connectionManager;
@@ -61,7 +62,12 @@ public sealed class IMessageWebSocketHandler
 
             await ReceiveMessagesAsync(webSocket, connectionId, cancellationToken);
 
-            await CloseWebSocketAsync(webSocket, WebSocketCloseStatus.NormalClosure, "Connection closed", cancellationToken);
+            await CloseWebSocketAsync(
+                webSocket,
+                WebSocketCloseStatus.NormalClosure,
+                "Connection closed",
+                cancellationToken
+            );
         }
         catch (WebSocketException ex)
         {
@@ -77,7 +83,12 @@ public sealed class IMessageWebSocketHandler
 
             if (webSocket != null && webSocket.State == WebSocketState.Open)
             {
-                await CloseWebSocketAsync(webSocket, WebSocketCloseStatus.InternalServerError, "Server error", cancellationToken);
+                await CloseWebSocketAsync(
+                    webSocket,
+                    WebSocketCloseStatus.InternalServerError,
+                    "Server error",
+                    cancellationToken
+                );
             }
         }
         finally
@@ -113,7 +124,8 @@ public sealed class IMessageWebSocketHandler
     public async Task StreamMessagesAsync(
         string connectionId,
         IAsyncEnumerable<IMessage> messages,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var webSocket = _connectionManager.GetConnection(connectionId);
         if (webSocket == null || webSocket.State != WebSocketState.Open)
@@ -151,7 +163,8 @@ public sealed class IMessageWebSocketHandler
                 new ArraySegment<byte>(bytes),
                 WebSocketMessageType.Text,
                 true,
-                cancellationToken);
+                cancellationToken
+            );
 
             _logger.LogDebug("Sent message type: {MessageType}", message.GetType().Name);
         }
@@ -161,7 +174,11 @@ public sealed class IMessageWebSocketHandler
         }
     }
 
-    private async Task ReceiveMessagesAsync(WebSocket webSocket, string connectionId, CancellationToken cancellationToken)
+    private async Task ReceiveMessagesAsync(
+        WebSocket webSocket,
+        string connectionId,
+        CancellationToken cancellationToken
+    )
     {
         var buffer = ArrayPool<byte>.Shared.Rent(4096);
         try
@@ -212,7 +229,11 @@ public sealed class IMessageWebSocketHandler
             var message = JsonSerializer.Deserialize<IMessage>(json, _jsonOptions);
             if (message != null)
             {
-                _logger.LogDebug("Received message type: {MessageType} from {ConnectionId}", message.GetType().Name, connectionId);
+                _logger.LogDebug(
+                    "Received message type: {MessageType} from {ConnectionId}",
+                    message.GetType().Name,
+                    connectionId
+                );
                 OnMessageReceived?.Invoke(this, new MessageReceivedEventArgs(connectionId, message));
             }
         }
@@ -226,7 +247,8 @@ public sealed class IMessageWebSocketHandler
         WebSocket webSocket,
         WebSocketCloseStatus status,
         string description,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (webSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
         {

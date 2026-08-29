@@ -22,7 +22,7 @@ public class JsonlStreamParser
         {
             PropertyNameCaseInsensitive = true,
             PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-            AllowTrailingCommas = true
+            AllowTrailingCommas = true,
         };
     }
 
@@ -59,7 +59,8 @@ public class JsonlStreamParser
         _logger?.LogTrace(
             "ConvertToMessages(AssistantMessageEvent) entry: Uuid={Uuid}, ContentBlockCount={ContentBlockCount}",
             assistantEvent.Uuid,
-            assistantEvent.Message.Content.Count);
+            assistantEvent.Message.Content.Count
+        );
 
         var messages = new List<IMessage>();
 
@@ -77,7 +78,8 @@ public class JsonlStreamParser
                 "Processing content block: Type={Type}, HasId={HasId}, HasName={HasName}",
                 contentBlock.Type,
                 contentBlock.Id != null,
-                contentBlock.Name != null);
+                contentBlock.Name != null
+            );
 
             var message = ConvertContentBlock(contentBlock, role, generationId, runId, parentRunId, threadId);
             if (message != null)
@@ -86,7 +88,8 @@ public class JsonlStreamParser
                 _logger?.LogDebug(
                     "Converted content block to message: Type={MessageType}, Role={Role}",
                     message.GetType().Name,
-                    role);
+                    role
+                );
             }
         }
 
@@ -105,12 +108,11 @@ public class JsonlStreamParser
             _logger?.LogDebug(
                 "Added usage message: InputTokens={InputTokens}, OutputTokens={OutputTokens}",
                 assistantEvent.Message.Usage.InputTokens,
-                assistantEvent.Message.Usage.OutputTokens);
+                assistantEvent.Message.Usage.OutputTokens
+            );
         }
 
-        _logger?.LogTrace(
-            "ConvertToMessages(AssistantMessageEvent) exit: MessageCount={MessageCount}",
-            messages.Count);
+        _logger?.LogTrace("ConvertToMessages(AssistantMessageEvent) exit: MessageCount={MessageCount}", messages.Count);
 
         return messages;
     }
@@ -126,7 +128,8 @@ public class JsonlStreamParser
         _logger?.LogTrace(
             "ConvertToMessages(UserMessageEvent) entry: Uuid={Uuid}, ContentValueKind={ContentValueKind}",
             userEvent.Uuid,
-            userEvent.Message.Content.ValueKind);
+            userEvent.Message.Content.ValueKind
+        );
 
         var messages = new List<IMessage>();
 
@@ -149,7 +152,8 @@ public class JsonlStreamParser
 
             _logger?.LogDebug(
                 "UserMessageEvent has array content with {BlockCount} blocks",
-                contentBlocks?.Length ?? 0);
+                contentBlocks?.Length ?? 0
+            );
 
             if (contentBlocks != null)
             {
@@ -184,9 +188,7 @@ public class JsonlStreamParser
             }
         }
 
-        _logger?.LogTrace(
-            "ConvertToMessages(UserMessageEvent) exit: MessageCount={MessageCount}",
-            messages.Count);
+        _logger?.LogTrace("ConvertToMessages(UserMessageEvent) exit: MessageCount={MessageCount}", messages.Count);
 
         return messages;
     }
@@ -206,7 +208,8 @@ public class JsonlStreamParser
         _logger?.LogTrace(
             "ConvertContentBlock: Type={Type}, ToolUseId={ToolUseId}",
             contentBlock.Type,
-            contentBlock.ToolUseId);
+            contentBlock.ToolUseId
+        );
 
         return contentBlock.Type switch
         {
@@ -280,7 +283,8 @@ public class JsonlStreamParser
             "ConvertImageContentBlock: SourceType={SourceType}, HasData={HasData}, HasUrl={HasUrl}",
             source.Type,
             !string.IsNullOrEmpty(source.Data),
-            !string.IsNullOrEmpty(source.Url));
+            !string.IsNullOrEmpty(source.Url)
+        );
 
         // Handle base64 encoded images
         if (source.Type == "base64" && !string.IsNullOrEmpty(source.Data))
@@ -298,14 +302,16 @@ public class JsonlStreamParser
                         "Image MIME type corrected: Declared={DeclaredType}, Detected={DetectedType}, ByteLength={ByteLength}",
                         declaredMediaType,
                         detectedMediaType,
-                        imageBytes.Length);
+                        imageBytes.Length
+                    );
                 }
                 else
                 {
                     _logger?.LogDebug(
                         "Image block converted: MimeType={MimeType}, ByteLength={ByteLength}",
                         detectedMediaType,
-                        imageBytes.Length);
+                        imageBytes.Length
+                    );
                 }
 
                 var binaryData = BinaryData.FromBytes(imageBytes, detectedMediaType);
@@ -348,9 +354,7 @@ public class JsonlStreamParser
             };
         }
 
-        _logger?.LogWarning(
-            "Unsupported image source type: Type={Type}",
-            source.Type);
+        _logger?.LogWarning("Unsupported image source type: Type={Type}", source.Type);
         return null;
     }
 
@@ -368,7 +372,8 @@ public class JsonlStreamParser
         _logger?.LogTrace(
             "ConvertToolResultContentBlock entry: ToolUseId={ToolUseId}, HasContent={HasContent}",
             contentBlock.ToolUseId,
-            contentBlock.Content.HasValue);
+            contentBlock.Content.HasValue
+        );
 
         var textParts = new List<string>();
         var contentBlocks = new List<ToolResultContentBlock>();
@@ -383,7 +388,8 @@ public class JsonlStreamParser
             _logger?.LogDebug(
                 "tool_result content: ValueKind={ValueKind}, ToolUseId={ToolUseId}",
                 content.ValueKind,
-                contentBlock.ToolUseId);
+                contentBlock.ToolUseId
+            );
 
             if (content.ValueKind == JsonValueKind.Array)
             {
@@ -391,14 +397,13 @@ public class JsonlStreamParser
                 _logger?.LogDebug(
                     "Multimodal tool_result detected: ArrayLength={ArrayLength}, ToolUseId={ToolUseId}",
                     arrayLength,
-                    contentBlock.ToolUseId);
+                    contentBlock.ToolUseId
+                );
 
                 // Multimodal content - parse each element
                 foreach (var element in content.EnumerateArray())
                 {
-                    var type = element.TryGetProperty("type", out var typeElement)
-                        ? typeElement.GetString()
-                        : null;
+                    var type = element.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : null;
 
                     _logger?.LogTrace("Processing tool_result element: Type={Type}", type);
 
@@ -425,9 +430,11 @@ public class JsonlStreamParser
 
                                 _logger?.LogTrace("Image source type: {SourceType}", sourceType);
 
-                                if (sourceType == "base64" &&
-                                    sourceElement.TryGetProperty("data", out var dataElement) &&
-                                    sourceElement.TryGetProperty("media_type", out var mediaTypeElement))
+                                if (
+                                    sourceType == "base64"
+                                    && sourceElement.TryGetProperty("data", out var dataElement)
+                                    && sourceElement.TryGetProperty("media_type", out var mediaTypeElement)
+                                )
                                 {
                                     var data = dataElement.GetString();
                                     var mediaType = mediaTypeElement.GetString();
@@ -438,7 +445,10 @@ public class JsonlStreamParser
                                         try
                                         {
                                             var bytes = Convert.FromBase64String(data);
-                                            var detectedMimeType = ImageMessageExtensions.DetectImageMimeType(bytes, mediaType);
+                                            var detectedMimeType = ImageMessageExtensions.DetectImageMimeType(
+                                                bytes,
+                                                mediaType
+                                            );
 
                                             if (detectedMimeType != mediaType)
                                             {
@@ -446,21 +456,21 @@ public class JsonlStreamParser
                                                     "MIME type corrected from header: Header={HeaderMimeType}, Detected={DetectedMimeType}, ByteLength={ByteLength}",
                                                     mediaType,
                                                     detectedMimeType,
-                                                    bytes.Length);
+                                                    bytes.Length
+                                                );
                                             }
                                             else
                                             {
                                                 _logger?.LogDebug(
                                                     "Image parsed successfully: MimeType={MimeType}, ByteLength={ByteLength}",
                                                     detectedMimeType,
-                                                    bytes.Length);
+                                                    bytes.Length
+                                                );
                                             }
 
-                                            contentBlocks.Add(new ImageToolResultBlock
-                                            {
-                                                Data = data,
-                                                MimeType = detectedMimeType
-                                            });
+                                            contentBlocks.Add(
+                                                new ImageToolResultBlock { Data = data, MimeType = detectedMimeType }
+                                            );
                                             imageCount++;
                                         }
                                         catch (FormatException ex)
@@ -469,7 +479,8 @@ public class JsonlStreamParser
                                                 ex,
                                                 "Invalid base64 data in tool_result image: ToolUseId={ToolUseId}, DataLength={DataLength}",
                                                 contentBlock.ToolUseId,
-                                                data?.Length ?? 0);
+                                                data?.Length ?? 0
+                                            );
                                         }
                                     }
                                     else
@@ -478,21 +489,24 @@ public class JsonlStreamParser
                                             "Image block missing data or media_type: ToolUseId={ToolUseId}, HasData={HasData}, HasMediaType={HasMediaType}",
                                             contentBlock.ToolUseId,
                                             !string.IsNullOrEmpty(data),
-                                            !string.IsNullOrEmpty(mediaType));
+                                            !string.IsNullOrEmpty(mediaType)
+                                        );
                                     }
                                 }
                                 else
                                 {
                                     _logger?.LogDebug(
                                         "Image source not base64 or missing properties: SourceType={SourceType}",
-                                        sourceType);
+                                        sourceType
+                                    );
                                 }
                             }
                             else
                             {
                                 _logger?.LogWarning(
                                     "Image block missing 'source' property: ToolUseId={ToolUseId}",
-                                    contentBlock.ToolUseId);
+                                    contentBlock.ToolUseId
+                                );
                             }
                             break;
 
@@ -510,7 +524,8 @@ public class JsonlStreamParser
                 _logger?.LogDebug(
                     "tool_result has simple string content: Length={Length}, ToolUseId={ToolUseId}",
                     stringContent.Length,
-                    contentBlock.ToolUseId);
+                    contentBlock.ToolUseId
+                );
             }
             else
             {
@@ -520,7 +535,8 @@ public class JsonlStreamParser
                 _logger?.LogDebug(
                     "tool_result has non-string/non-array content: ValueKind={ValueKind}, RawLength={RawLength}",
                     content.ValueKind,
-                    rawText.Length);
+                    rawText.Length
+                );
             }
         }
         else
@@ -529,9 +545,10 @@ public class JsonlStreamParser
         }
 
         // Build the Result string (for backward compatibility)
-        var result = textParts.Count > 0
-            ? string.Join(Environment.NewLine, textParts)
-            : contentBlock.Content?.GetRawText() ?? "";
+        var result =
+            textParts.Count > 0
+                ? string.Join(Environment.NewLine, textParts)
+                : contentBlock.Content?.GetRawText() ?? "";
 
         // Only include ContentBlocks if we have image content
         var hasImages = contentBlocks.OfType<ImageToolResultBlock>().Any();
@@ -542,7 +559,8 @@ public class JsonlStreamParser
             textBlockCount,
             imageCount,
             hasImages,
-            result.Length);
+            result.Length
+        );
 
         return new ToolCallResultMessage
         {
@@ -573,7 +591,8 @@ public class JsonlStreamParser
         _logger?.LogTrace(
             "ConvertUsage: InputTokens={InputTokens}, OutputTokens={OutputTokens}",
             usageInfo.InputTokens,
-            usageInfo.OutputTokens);
+            usageInfo.OutputTokens
+        );
 
         var usage = new LmModels.Usage
         {

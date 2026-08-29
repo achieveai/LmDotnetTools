@@ -24,7 +24,8 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
         HttpMethod method,
         string urlContains,
         string response,
-        HttpStatusCode status = HttpStatusCode.OK)
+        HttpStatusCode status = HttpStatusCode.OK
+    )
     {
         return OnJsonSequence(method, urlContains, status, response);
     }
@@ -34,10 +35,7 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
     /// request gets <paramref name="responses"/>[0], the next [1], … and once exhausted the last body
     /// repeats. Lets a test drive a poll whose observed state changes across successive reads.
     /// </summary>
-    public FakeHttpMessageHandler OnJsonSequence(
-        HttpMethod method,
-        string urlContains,
-        params string[] responses)
+    public FakeHttpMessageHandler OnJsonSequence(HttpMethod method, string urlContains, params string[] responses)
     {
         return OnJsonSequence(method, urlContains, HttpStatusCode.OK, responses);
     }
@@ -47,7 +45,8 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
         HttpMethod method,
         string urlContains,
         HttpStatusCode status,
-        params string[] responses)
+        params string[] responses
+    )
     {
         if (responses.Length == 0)
         {
@@ -63,8 +62,11 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
                         Content = new StringContent(
                             responses[Math.Min(matchIndex, responses.Length - 1)],
                             Encoding.UTF8,
-                            "application/json"),
-                    }));
+                            "application/json"
+                        ),
+                    }
+            )
+        );
         return this;
     }
 
@@ -78,20 +80,17 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
     /// <summary>Number of requests observed whose URL contains <paramref name="urlContains"/>.</summary>
     public int CountRequests(string urlContains)
     {
-        return Requests.Count(r =>
-            r.Uri.ToString().Contains(urlContains, StringComparison.Ordinal));
+        return Requests.Count(r => r.Uri.ToString().Contains(urlContains, StringComparison.Ordinal));
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var body =
-            request.Content is null
-                ? null
-                : await request.Content.ReadAsStringAsync(cancellationToken);
+        var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
         Requests.Add(new RecordedRequest(request.Method, request.RequestUri!, body));
 
         foreach (var route in _routes)
@@ -121,7 +120,8 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 
         public Route(
             Func<HttpRequestMessage, bool> predicate,
-            Func<HttpRequestMessage, int, HttpResponseMessage> respond)
+            Func<HttpRequestMessage, int, HttpResponseMessage> respond
+        )
         {
             Predicate = predicate;
             Respond = respond;

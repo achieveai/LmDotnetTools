@@ -79,7 +79,13 @@ public static class CopilotResponsesAgentFactory
         HttpMessageHandler? innerHandler = null
     )
     {
-        var httpClient = CopilotHttpClientFactory.Create(host, tokenProvider, context, options, innerHandler: innerHandler);
+        var httpClient = CopilotHttpClientFactory.Create(
+            host,
+            tokenProvider,
+            context,
+            options,
+            innerHandler: innerHandler
+        );
         // Forward the factory's logger (an ILogger<OpenAiResponsesAgent> IS an ILogger) so the SSE
         // pre-stream retries are visible, and the shared retry configuration.
         return new OpenAiResponsesClient(

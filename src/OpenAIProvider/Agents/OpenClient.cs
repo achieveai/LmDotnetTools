@@ -391,10 +391,8 @@ public class OpenClient : BaseHttpService, IOpenClient
                             {
                                 Role = RoleEnum.Assistant,
                                 Content =
-                                    res.Choices[0].Delta?.Content ?? new Union<
-                                        string,
-                                        Union<TextContent, ImageContent>[]
-                                    >(string.Empty),
+                                    res.Choices[0].Delta?.Content
+                                    ?? new Union<string, Union<TextContent, ImageContent>[]>(string.Empty),
                             };
                         }
                     }

@@ -173,20 +173,23 @@ public sealed class WaitToolProvider : IFunctionProvider
     private async Task<ToolHandlerResult> HandleWaitAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (string.IsNullOrEmpty(context.ToolCallId))
         {
             return ToolHandlerResult.FromError(
                 Reject("missing_tool_call_id", "Wait requires a tool_call_id to correlate the deferred result."),
-                "missing_tool_call_id");
+                "missing_tool_call_id"
+            );
         }
 
         if (!WaitToolArgs.TryParse(argsJson, out var parsed))
         {
             return ToolHandlerResult.FromError(
                 Reject("invalid_args", "Wait requires 'kind' and 'timeout'."),
-                "invalid_args");
+                "invalid_args"
+            );
         }
 
         var result = await _runtime.ArmAsync(
@@ -197,27 +200,33 @@ public sealed class WaitToolProvider : IFunctionProvider
             parsed.Label,
             parsed.Mode,
             parsed.MaxFires,
-            cancellationToken);
+            cancellationToken
+        );
 
         if (!result.IsArmed)
         {
             return ToolHandlerResult.FromError(
                 Reject(result.Reason ?? "rejected", result.Message ?? "Wait was rejected."),
-                result.Reason);
+                result.Reason
+            );
         }
 
         if (parsed.Mode == WaitMode.Notify)
         {
             // Notify arms do NOT park the run; acknowledge immediately. Fires arrive later as
             // <trigger> turns via the loop's queue gate.
-            return ToolHandlerResult.FromText(JsonSerializer.Serialize(new
-            {
-                status = "armed",
-                mode = "notify",
-                waitId = context.ToolCallId,
-                kind = parsed.Kind,
-                maxFires = parsed.MaxFires,
-            }));
+            return ToolHandlerResult.FromText(
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        status = "armed",
+                        mode = "notify",
+                        waitId = context.ToolCallId,
+                        kind = parsed.Kind,
+                        maxFires = parsed.MaxFires,
+                    }
+                )
+            );
         }
 
         // Block mode: park the run; the runtime resolves this tool call when the wait terminates.
@@ -227,25 +236,22 @@ public sealed class WaitToolProvider : IFunctionProvider
     private async Task<ToolHandlerResult> HandleCancelWaitAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var (id, label, kind) = ParseCancelArgs(argsJson);
         var cancelled = await _runtime.CancelWaitsAsync(id, label, kind, cancellationToken);
-        return ToolHandlerResult.FromText(
-            JsonSerializer.Serialize(new { status = "resolved", cancelled }));
+        return ToolHandlerResult.FromText(JsonSerializer.Serialize(new { status = "resolved", cancelled }));
     }
 
     private Task<ToolHandlerResult> HandleListWaitsAsync(
         string argsJson,
         ToolCallContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var waits = _runtime.ListWaits();
-        var payload = JsonSerializer.Serialize(new
-        {
-            waits,
-            registeredKinds = _runtime.RegisteredKinds,
-        });
+        var payload = JsonSerializer.Serialize(new { waits, registeredKinds = _runtime.RegisteredKinds });
         return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(payload));
     }
 
@@ -273,11 +279,16 @@ public sealed class WaitToolProvider : IFunctionProvider
         }
 
         static string? Get(JsonElement root, string name) =>
-            root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String
-                ? el.GetString()
-                : null;
+            root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String ? el.GetString() : null;
     }
 
     private static string Reject(string reason, string message) =>
-        JsonSerializer.Serialize(new { status = "rejected", reason, message });
+        JsonSerializer.Serialize(
+            new
+            {
+                status = "rejected",
+                reason,
+                message,
+            }
+        );
 }

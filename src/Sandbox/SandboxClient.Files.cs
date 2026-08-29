@@ -157,12 +157,7 @@ public sealed partial class SandboxClient
     /// Refused locally, before anything is sent: the target file is left untouched.
     /// </exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
-    public async Task WriteTextFileAsync(
-      string sessionId,
-      string path,
-      string content,
-      CancellationToken ct = default
-    )
+    public async Task WriteTextFileAsync(string sessionId, string path, string content, CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -212,12 +207,7 @@ public sealed partial class SandboxClient
     /// or malformed the request (<see cref="SandboxErrorKind.Protocol"/>).
     /// </exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
-    public async Task WriteFileBytesAsync(
-      string sessionId,
-      string path,
-      byte[] bytes,
-      CancellationToken ct = default
-    )
+    public async Task WriteFileBytesAsync(string sessionId, string path, byte[] bytes, CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -280,23 +270,24 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"writing file '{displayPath}'", sessionId, ct).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"writing file '{displayPath}'", sessionId, ct)
+                .ConfigureAwait(false);
         }
 
         WriteFileResponseDto? written;
         try
         {
-            written = await response.Content
-                .ReadFromJsonAsync<WriteFileResponseDto>(SandboxJson.RestOptions, ct)
+            written = await response
+                .Content.ReadFromJsonAsync<WriteFileResponseDto>(SandboxJson.RestOptions, ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is JsonException or NotSupportedException)
         {
             throw new SandboxException(
-              SandboxErrorKind.Protocol,
-              $"Sandbox gateway returned a malformed write response for '{displayPath}'.",
-              (int)response.StatusCode,
-              ex
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned a malformed write response for '{displayPath}'.",
+                (int)response.StatusCode,
+                ex
             );
         }
 
@@ -305,8 +296,8 @@ public sealed partial class SandboxClient
         if (written is null || written.BytesWritten != bytes.Length)
         {
             throw new SandboxException(
-              SandboxErrorKind.Protocol,
-              $"Sandbox gateway reported an unexpected byte count writing '{displayPath}'."
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway reported an unexpected byte count writing '{displayPath}'."
             );
         }
     }
@@ -320,7 +311,12 @@ public sealed partial class SandboxClient
     /// carrying the exit code + a bounded stderr snippet + the operation id; only a malformed/unrecognized
     /// operation status stays <see cref="SandboxErrorKind.Protocol"/>.
     /// </summary>
-    private async Task CreateDirectoryAsync(string sessionId, long mountId, string relativeDirectory, CancellationToken ct)
+    private async Task CreateDirectoryAsync(
+        string sessionId,
+        long mountId,
+        string relativeDirectory,
+        CancellationToken ct
+    )
     {
         var operationId = CommandOperation.ResolveOperationId(null);
         // `--` terminates option parsing so a parent whose first component begins with `-` (e.g. "-m",
@@ -356,9 +352,8 @@ public sealed partial class SandboxClient
         // Protocol.
         var result = await ResolveResultAsync(sessionId, operationId, status, ct).ConfigureAwait(false);
         var stderr = result.StandardError.Trim();
-        var stderrSuffix = stderr.Length == 0
-            ? string.Empty
-            : $" stderr: {(stderr.Length > 500 ? stderr[..500] : stderr)}";
+        var stderrSuffix =
+            stderr.Length == 0 ? string.Empty : $" stderr: {(stderr.Length > 500 ? stderr[..500] : stderr)}";
         throw new SandboxException(
             SandboxErrorKind.OperationFailed,
             $"Sandbox gateway could not create the parent directory '{relativeDirectory}' before a nested "
@@ -399,9 +394,9 @@ public sealed partial class SandboxClient
     /// </exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
     public async Task<IReadOnlyList<string>> ListDirectoryAsync(
-      string sessionId,
-      string path,
-      CancellationToken ct = default
+        string sessionId,
+        string path,
+        CancellationToken ct = default
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -418,10 +413,10 @@ public sealed partial class SandboxClient
         {
             names.Add(
                 entry.Name
-                ?? throw new SandboxException(
-                    SandboxErrorKind.Protocol,
-                    $"Sandbox gateway returned a directory entry with no name for {operation}."
-                )
+                    ?? throw new SandboxException(
+                        SandboxErrorKind.Protocol,
+                        $"Sandbox gateway returned a directory entry with no name for {operation}."
+                    )
             );
         }
 
@@ -447,9 +442,9 @@ public sealed partial class SandboxClient
     /// </exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
     public async Task<IReadOnlyList<SandboxDirectoryEntry>> ListDirectoryEntriesAsync(
-      string sessionId,
-      string path,
-      CancellationToken ct = default
+        string sessionId,
+        string path,
+        CancellationToken ct = default
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -470,7 +465,14 @@ public sealed partial class SandboxClient
                     SandboxErrorKind.Protocol,
                     $"Sandbox gateway returned a directory entry with no name for {operation}."
                 );
-            result.Add(new SandboxDirectoryEntry(name, MapEntryType(entry.Type, operation), entry.Size, entry.NameLossy ?? false));
+            result.Add(
+                new SandboxDirectoryEntry(
+                    name,
+                    MapEntryType(entry.Type, operation),
+                    entry.Size,
+                    entry.NameLossy ?? false
+                )
+            );
         }
 
         return result;
@@ -509,14 +511,14 @@ public sealed partial class SandboxClient
             }
 
             var relativeUri =
-              $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/directories/{mountId}?path={Uri.EscapeDataString(relativePath)}";
+                $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/directories/{mountId}?path={Uri.EscapeDataString(relativePath)}";
             if (cursor is not null)
             {
                 relativeUri += $"&cursor={Uri.EscapeDataString(cursor)}";
             }
 
             using var response = await SendDirectAsync(HttpMethod.Get, relativeUri, content: null, sessionId, ct)
-              .ConfigureAwait(false);
+                .ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -527,25 +529,27 @@ public sealed partial class SandboxClient
             try
             {
                 page =
-                  await response.Content
-                    .ReadFromJsonAsync<ListDirectoryResponseDto>(SandboxJson.RestOptions, ct)
-                    .ConfigureAwait(false)
-                  ?? throw new SandboxException(
-                    SandboxErrorKind.Protocol,
-                    $"Sandbox gateway returned an empty response for {operation}."
-                  );
+                    await response
+                        .Content.ReadFromJsonAsync<ListDirectoryResponseDto>(SandboxJson.RestOptions, ct)
+                        .ConfigureAwait(false)
+                    ?? throw new SandboxException(
+                        SandboxErrorKind.Protocol,
+                        $"Sandbox gateway returned an empty response for {operation}."
+                    );
             }
             catch (Exception ex) when (ex is JsonException or NotSupportedException)
             {
                 throw new SandboxException(
-                  SandboxErrorKind.Protocol,
-                  $"Sandbox gateway returned a malformed directory listing for {operation}.",
-                  (int)response.StatusCode,
-                  ex
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned a malformed directory listing for {operation}.",
+                    (int)response.StatusCode,
+                    ex
                 );
             }
 
-            entries.AddRange(SelectNonNullOrThrow(page.Entries, static entry => entry, operation, (int)response.StatusCode));
+            entries.AddRange(
+                SelectNonNullOrThrow(page.Entries, static entry => entry, operation, (int)response.StatusCode)
+            );
 
             cursor = string.IsNullOrEmpty(page.NextCursor) ? null : page.NextCursor;
             if (cursor is not null && !seenCursors.Add(cursor))
@@ -611,8 +615,8 @@ public sealed partial class SandboxClient
         catch (DecoderFallbackException)
         {
             throw new SandboxException(
-              SandboxErrorKind.Integrity,
-              $"Sandbox {description} is not valid UTF-8; file reads expose UTF-8 text only."
+                SandboxErrorKind.Integrity,
+                $"Sandbox {description} is not valid UTF-8; file reads expose UTF-8 text only."
             );
         }
     }

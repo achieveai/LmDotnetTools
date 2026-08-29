@@ -28,16 +28,16 @@ internal sealed class StubTenantStore : ITenantStore
     public Task<TenantProvisionOutcome> ProvisionAsync(
         TenantRecord tenant,
         string firstAdminUpn,
-        CancellationToken ct = default) =>
-        Task.FromResult(TenantProvisionOutcome.Created);
+        CancellationToken ct = default
+    ) => Task.FromResult(TenantProvisionOutcome.Created);
 
     public Task<bool> TryBindFirstAdminAsync(
         string tenantId,
         string upn,
         string userId,
         DateTimeOffset boundAt,
-        CancellationToken ct = default) =>
-        Task.FromResult(false);
+        CancellationToken ct = default
+    ) => Task.FromResult(false);
 
     public Task<bool> IsTenantAdminAsync(string tenantId, string userId, CancellationToken ct = default) =>
         Task.FromResult(false);
@@ -48,8 +48,8 @@ internal sealed class StubTenantStore : ITenantStore
     public Task<bool> TryEnsureQuarantineTenantAsync(
         string tenantId,
         DateTimeOffset createdAt,
-        CancellationToken ct = default) =>
-        Task.FromResult(true);
+        CancellationToken ct = default
+    ) => Task.FromResult(true);
 }
 
 /// <summary>
@@ -87,53 +87,60 @@ public sealed class IdentityMiddlewareTests
     private static async Task<TestServer> StartAsync(
         bool enforce,
         PrincipalResolution? stashedResolution = null,
-        ClaimsPrincipal? preAuthenticated = null)
+        ClaimsPrincipal? preAuthenticated = null
+    )
     {
         var host = await new HostBuilder()
-            .ConfigureWebHost(webHost => webHost
-                .UseTestServer()
-                .ConfigureServices(services =>
-                {
-                    _ = services.Configure<IdentityOptions>(o => o.Enforce = enforce);
-                    _ = services.AddSingleton(TimeProvider.System);
-                    _ = services.AddSingleton<ITenantStore, StubTenantStore>();
-                    _ = services.AddSingleton<IAuditSink>(new RecordingAuditSink());
-                    _ = services.AddSingleton(sp => new PrincipalFactory(
-                        sp.GetRequiredService<ITenantStore>(),
-                        sp.GetRequiredService<IAuditSink>(),
-                        sp.GetRequiredService<IOptions<IdentityOptions>>(),
-                        TimeProvider.System,
-                        sp.GetRequiredService<ILogger<PrincipalFactory>>()));
-                })
-                .Configure(app =>
-                {
-                    if (stashedResolution is not null || preAuthenticated is not null)
+            .ConfigureWebHost(webHost =>
+                webHost
+                    .UseTestServer()
+                    .ConfigureServices(services =>
                     {
-                        app.Use(async (context, next) =>
+                        _ = services.Configure<IdentityOptions>(o => o.Enforce = enforce);
+                        _ = services.AddSingleton(TimeProvider.System);
+                        _ = services.AddSingleton<ITenantStore, StubTenantStore>();
+                        _ = services.AddSingleton<IAuditSink>(new RecordingAuditSink());
+                        _ = services.AddSingleton(sp => new PrincipalFactory(
+                            sp.GetRequiredService<ITenantStore>(),
+                            sp.GetRequiredService<IAuditSink>(),
+                            sp.GetRequiredService<IOptions<IdentityOptions>>(),
+                            TimeProvider.System,
+                            sp.GetRequiredService<ILogger<PrincipalFactory>>()
+                        ));
+                    })
+                    .Configure(app =>
+                    {
+                        if (stashedResolution is not null || preAuthenticated is not null)
                         {
-                            if (stashedResolution is not null)
-                            {
-                                context.Items[IdentityHttpItems.ResolutionKey] = stashedResolution;
-                            }
+                            app.Use(
+                                async (context, next) =>
+                                {
+                                    if (stashedResolution is not null)
+                                    {
+                                        context.Items[IdentityHttpItems.ResolutionKey] = stashedResolution;
+                                    }
 
-                            if (preAuthenticated is not null)
-                            {
-                                context.User = preAuthenticated;
-                            }
+                                    if (preAuthenticated is not null)
+                                    {
+                                        context.User = preAuthenticated;
+                                    }
 
-                            await next(context);
+                                    await next(context);
+                                }
+                            );
+                        }
+
+                        _ = app.UseMiddleware<IdentityMiddleware>();
+                        app.Run(async context =>
+                        {
+                            var principal = context.Items[IdentityHttpItems.PrincipalKey] as Principal;
+                            await context.Response.WriteAsync(
+                                $"{ReachedBody}:{principal?.TenantId ?? "<none>"}:{principal?.Actor.Id ?? "<none>"}"
+                                    + $"|{DescribeUser(context.User)}"
+                            );
                         });
-                    }
-
-                    _ = app.UseMiddleware<IdentityMiddleware>();
-                    app.Run(async context =>
-                    {
-                        var principal = context.Items[IdentityHttpItems.PrincipalKey] as Principal;
-                        await context.Response.WriteAsync(
-                            $"{ReachedBody}:{principal?.TenantId ?? "<none>"}:{principal?.Actor.Id ?? "<none>"}"
-                                + $"|{DescribeUser(context.User)}");
-                    });
-                }))
+                    })
+            )
             .StartAsync();
 
         return host.GetTestServer();
@@ -175,8 +182,7 @@ public sealed class IdentityMiddlewareTests
         // The trailing segment is the #424 bridge's regression gate on this same path: the
         // development principal names no app, so nothing is projected onto User and an anonymous
         // request stays anonymous to everything that reads a claims principal.
-        _ = (await response.Content.ReadAsStringAsync())
-            .Should().Be($"{ReachedBody}:legacy:dev:local|<anonymous>");
+        _ = (await response.Content.ReadAsStringAsync()).Should().Be($"{ReachedBody}:legacy:dev:local|<anonymous>");
     }
 
     [Fact]
@@ -253,7 +259,8 @@ public sealed class IdentityMiddlewareTests
         // defect.
         var rejection = PrincipalResolution.Reject(
             PrincipalResolution.IdentityUnavailable,
-            StatusCodes.Status503ServiceUnavailable);
+            StatusCodes.Status503ServiceUnavailable
+        );
         using var server = await StartAsync(enforce: true, rejection);
 
         var response = await server.CreateClient().GetAsync(new Uri("/api/conversations", UriKind.Relative));
@@ -268,7 +275,8 @@ public sealed class IdentityMiddlewareTests
     [InlineData(StatusCodes.Status403Forbidden, "forbidden")]
     public async Task ARefusalLabel_StillMatchesItsStatus_ForTheTwoAuthorizationOutcomes(
         int statusCode,
-        string expectedLabel)
+        string expectedLabel
+    )
     {
         // The companion to the 503 case above. Deriving the label from the status must not be a
         // blanket rename: 401 and 403 keep the labels the SPA and the S2S guard already answer with,
@@ -378,8 +386,12 @@ public sealed class IdentityMiddlewareTests
 
         // The SPA routes every /api call through one helper, and that helper has to classify a
         // refusal without reading the body - the body belongs to whichever caller made the request.
-        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader)
-            .Should().ContainSingle().Which.Should().Be(code);
+        _ = response
+            .Headers.GetValues(IdentityMiddleware.RefusalCodeHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(code);
     }
 
     [Fact]
@@ -387,7 +399,8 @@ public sealed class IdentityMiddlewareTests
     {
         var rejection = PrincipalResolution.Reject(
             PrincipalResolution.TenantNotProvisioned,
-            StatusCodes.Status403Forbidden);
+            StatusCodes.Status403Forbidden
+        );
         using var server = await StartAsync(enforce: false, rejection);
 
         var response = await server.CreateClient().GetAsync(new Uri("/api/conversations", UriKind.Relative));
@@ -434,7 +447,8 @@ public sealed class IdentityMiddlewareTests
         var request = WebSocketRequest(
             "/ws",
             $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}token-abc, "
-                + IdentityMiddleware.WebSocketSubProtocol);
+                + IdentityMiddleware.WebSocketSubProtocol
+        );
 
         _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeTrue();
 
@@ -442,10 +456,11 @@ public sealed class IdentityMiddlewareTests
 
         // Removed, not merely ignored: a token left in a request header travels into every request
         // log and diagnostic dump downstream, and the accept must never echo it back either.
-        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
-            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
-        _ = IdentityMiddleware.NegotiateWebSocketSubProtocol(request)
-            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString().Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = IdentityMiddleware
+            .NegotiateWebSocketSubProtocol(request)
+            .Should()
+            .Be(IdentityMiddleware.WebSocketSubProtocol);
     }
 
     /// <summary>
@@ -461,7 +476,8 @@ public sealed class IdentityMiddlewareTests
         var request = WebSocketRequest(
             "/ws",
             $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}attacker-token, "
-                + IdentityMiddleware.WebSocketSubProtocol);
+                + IdentityMiddleware.WebSocketSubProtocol
+        );
         request.Headers.Authorization = "Bearer real-token";
 
         _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
@@ -470,10 +486,8 @@ public sealed class IdentityMiddlewareTests
         // The credential is gone from the offered list even though it was not promoted. Whether a
         // token is honoured and whether it travels onward into logs, diagnostics and the accept's
         // echo are unrelated questions, and the second answer must not depend on the first.
-        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
-            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
-        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
-            .Should().NotContain("attacker-token");
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString().Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString().Should().NotContain("attacker-token");
     }
 
     /// <summary>
@@ -494,7 +508,8 @@ public sealed class IdentityMiddlewareTests
             "/ws",
             $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}first-token, "
                 + $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}second-token, "
-                + IdentityMiddleware.WebSocketSubProtocol);
+                + IdentityMiddleware.WebSocketSubProtocol
+        );
 
         _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeTrue();
         _ = request.Headers.Authorization.ToString().Should().Be("Bearer first-token");
@@ -521,8 +536,8 @@ public sealed class IdentityMiddlewareTests
     {
         var request = WebSocketRequest(
             "/ws",
-            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}, "
-                + IdentityMiddleware.WebSocketSubProtocol);
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}, " + IdentityMiddleware.WebSocketSubProtocol
+        );
 
         // Nothing to promote, so the return value is false - and the header is still cleaned.
         _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
@@ -538,7 +553,8 @@ public sealed class IdentityMiddlewareTests
     {
         var request = WebSocketRequest(
             "/api/conversations",
-            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}token-abc");
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}token-abc"
+        );
 
         // The promotion exists because a browser cannot set a header on a handshake. Everywhere else
         // it can, so honouring the subprotocol would add a second, weaker way to present a credential
@@ -554,16 +570,13 @@ public sealed class IdentityMiddlewareTests
 
         _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
         _ = request.Headers.Authorization.ToString().Should().BeEmpty();
-        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
-            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString().Should().Be(IdentityMiddleware.WebSocketSubProtocol);
     }
 
     [Fact]
     public void AHandshakeOfferingOnlyTheCredential_LeavesNothingForTheAcceptToSelect()
     {
-        var request = WebSocketRequest(
-            "/ws",
-            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}token-abc");
+        var request = WebSocketRequest("/ws", $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}token-abc");
 
         _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeTrue();
 
@@ -594,12 +607,14 @@ public sealed class IdentityMiddlewareTests
     [Fact]
     public async Task AResolvedPrincipal_IsPublishedForTheRequestToRead()
     {
-        var resolution = PrincipalResolution.Success(new Principal
-        {
-            TenantId = "tnt_acme",
-            Actor = new PrincipalRef(PrincipalKind.EndUser, "tid-1:oid-1"),
-            Source = PrincipalSource.Interactive,
-        });
+        var resolution = PrincipalResolution.Success(
+            new Principal
+            {
+                TenantId = "tnt_acme",
+                Actor = new PrincipalRef(PrincipalKind.EndUser, "tid-1:oid-1"),
+                Source = PrincipalSource.Interactive,
+            }
+        );
         using var server = await StartAsync(enforce: true, resolution);
 
         var response = await server.CreateClient().GetAsync(new Uri("/api/conversations", UriKind.Relative));
@@ -607,8 +622,7 @@ public sealed class IdentityMiddlewareTests
         _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
 
         // An end-user principal names no app either, so it too is published on Items alone.
-        _ = (await response.Content.ReadAsStringAsync())
-            .Should().Be($"{ReachedBody}:tnt_acme:tid-1:oid-1|<anonymous>");
+        _ = (await response.Content.ReadAsStringAsync()).Should().Be($"{ReachedBody}:tnt_acme:tid-1:oid-1|<anonymous>");
     }
 
     [Fact]
@@ -620,19 +634,25 @@ public sealed class IdentityMiddlewareTests
         // unauthenticated. The name identifier is asserted by VALUE because that is what the plane
         // resolves an owner from: a projection that carried the tenant, or a constant, would still
         // be "authenticated" and would silently file every app's subscriptions under one owner.
-        using var server = await StartAsync(enforce: true, PrincipalResolution.Success(new Principal
-        {
-            TenantId = "tnt_daemon",
-            Actor = new PrincipalRef(PrincipalKind.App, "review-daemon"),
-            AppId = "review-daemon",
-            Source = PrincipalSource.AppOnly,
-        }));
+        using var server = await StartAsync(
+            enforce: true,
+            PrincipalResolution.Success(
+                new Principal
+                {
+                    TenantId = "tnt_daemon",
+                    Actor = new PrincipalRef(PrincipalKind.App, "review-daemon"),
+                    AppId = "review-daemon",
+                    Source = PrincipalSource.AppOnly,
+                }
+            )
+        );
 
         var response = await server.CreateClient().GetAsync(new Uri("/api/conversations", UriKind.Relative));
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
         _ = (await response.Content.ReadAsStringAsync())
-            .Should().EndWith($"|{PrincipalFactory.BridgedAuthenticationType}:review-daemon");
+            .Should()
+            .EndWith($"|{PrincipalFactory.BridgedAuthenticationType}:review-daemon");
     }
 
     [Fact]
@@ -652,27 +672,27 @@ public sealed class IdentityMiddlewareTests
         // not read it as evidence that an app-shaped principal reaches the interactive stash in
         // production - it does not.
         var bearerIdentity = new ClaimsIdentity(
-            [
-                new Claim(ClaimTypes.NameIdentifier, "entra-object-id"),
-                new Claim("scp", "Conversations.ReadWrite"),
-            ],
-            "Bearer");
+            [new Claim(ClaimTypes.NameIdentifier, "entra-object-id"), new Claim("scp", "Conversations.ReadWrite")],
+            "Bearer"
+        );
 
         using var server = await StartAsync(
             enforce: true,
-            PrincipalResolution.Success(new Principal
-            {
-                TenantId = "tnt_daemon",
-                Actor = new PrincipalRef(PrincipalKind.App, "review-daemon"),
-                AppId = "review-daemon",
-                Source = PrincipalSource.AppOnly,
-            }),
-            new ClaimsPrincipal(bearerIdentity));
+            PrincipalResolution.Success(
+                new Principal
+                {
+                    TenantId = "tnt_daemon",
+                    Actor = new PrincipalRef(PrincipalKind.App, "review-daemon"),
+                    AppId = "review-daemon",
+                    Source = PrincipalSource.AppOnly,
+                }
+            ),
+            new ClaimsPrincipal(bearerIdentity)
+        );
 
         var response = await server.CreateClient().GetAsync(new Uri("/api/conversations", UriKind.Relative));
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
-        _ = (await response.Content.ReadAsStringAsync())
-            .Should().EndWith("|Bearer:entra-object-id");
+        _ = (await response.Content.ReadAsStringAsync()).Should().EndWith("|Bearer:entra-object-id");
     }
 }

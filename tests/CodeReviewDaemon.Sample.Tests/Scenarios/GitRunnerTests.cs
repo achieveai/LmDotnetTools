@@ -19,8 +19,7 @@ public sealed class GitRunnerTests
         await runner.RunAsync(["status"], "/work/repo", CancellationToken.None);
 
         var argv = fake.Commands.Single().Argv;
-        argv
-            .Should()
+        argv.Should()
             .Equal(
                 "git",
                 "-c",
@@ -35,7 +34,8 @@ public sealed class GitRunnerTests
                 "user.name=AchieveAi Review Bot",
                 "-c",
                 "user.email=review-bot@achieveai.local",
-                "status");
+                "status"
+            );
     }
 
     [Fact]
@@ -71,10 +71,7 @@ public sealed class GitRunnerTests
         var fake = new FakeSandboxCommandRunner();
         var runner = new GitRunner(fake);
 
-        await runner.RunAsync(
-            ["checkout", "--", "feature/$(rm -rf ~)"],
-            "/work/repo",
-            CancellationToken.None);
+        await runner.RunAsync(["checkout", "--", "feature/$(rm -rf ~)"], "/work/repo", CancellationToken.None);
 
         // The dangerous token must remain a single, separate argv element (quoted at the boundary),
         // never concatenated into a command string here.

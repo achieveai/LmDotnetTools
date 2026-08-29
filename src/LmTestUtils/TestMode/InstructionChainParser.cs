@@ -215,10 +215,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
             }
 
             // Check for explicit text content: {"text": "some string"}
-            if (
-                item.TryGetProperty("text", out var explicitTextEl)
-                && explicitTextEl.ValueKind == JsonValueKind.String
-            )
+            if (item.TryGetProperty("text", out var explicitTextEl) && explicitTextEl.ValueKind == JsonValueKind.String)
             {
                 var explicitText = explicitTextEl.GetString();
                 if (!string.IsNullOrEmpty(explicitText))
@@ -263,7 +260,10 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
             }
 
             // Check for tool_schema - returns description + parameter schema for a single named tool
-            if (item.TryGetProperty("tool_schema", out var toolSchemaEl) && toolSchemaEl.ValueKind == JsonValueKind.Object)
+            if (
+                item.TryGetProperty("tool_schema", out var toolSchemaEl)
+                && toolSchemaEl.ValueKind == JsonValueKind.Object
+            )
             {
                 var toolName =
                     toolSchemaEl.TryGetProperty("name", out var toolNameEl)
@@ -271,9 +271,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                         ? toolNameEl.GetString()
                         : null;
 
-                var placeholder = string.IsNullOrEmpty(toolName)
-                    ? "__TOOL_SCHEMA__"
-                    : $"__TOOL_SCHEMA__:{toolName}";
+                var placeholder = string.IsNullOrEmpty(toolName) ? "__TOOL_SCHEMA__" : $"__TOOL_SCHEMA__:{toolName}";
                 messages.Add(InstructionMessage.ForExplicitText(placeholder));
                 continue;
             }
@@ -304,10 +302,13 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                     && fieldsEl.ValueKind == JsonValueKind.Array
                 )
                 {
-                    fields = [.. fieldsEl
-                        .EnumerateArray()
-                        .Where(f => f.ValueKind == JsonValueKind.String)
-                        .Select(f => f.GetString()!)];
+                    fields =
+                    [
+                        .. fieldsEl
+                            .EnumerateArray()
+                            .Where(f => f.ValueKind == JsonValueKind.String)
+                            .Select(f => f.GetString()!),
+                    ];
                 }
 
                 var placeholder =
@@ -383,7 +384,12 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
 
         JsonElement? input = element.TryGetProperty("input", out var inputEl) ? inputEl.Clone() : null;
 
-        return new InstructionServerToolUse { Id = id, Name = name, Input = input };
+        return new InstructionServerToolUse
+        {
+            Id = id,
+            Name = name,
+            Input = input,
+        };
     }
 
     private static InstructionServerToolResult? ParseServerToolResult(JsonElement element)
@@ -471,17 +477,29 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                         : null;
 
                 var citedText =
-                    citationEl.TryGetProperty("cited_text", out var citedEl) && citedEl.ValueKind == JsonValueKind.String
+                    citationEl.TryGetProperty("cited_text", out var citedEl)
+                    && citedEl.ValueKind == JsonValueKind.String
                         ? citedEl.GetString()
                         : null;
 
                 citations.Add(
-                    new InstructionCitation { Type = type, Url = url, Title = title, CitedText = citedText }
+                    new InstructionCitation
+                    {
+                        Type = type,
+                        Url = url,
+                        Title = title,
+                        CitedText = citedText,
+                    }
                 );
             }
         }
 
-        return new InstructionTextWithCitations { Text = text, Length = length, Citations = citations };
+        return new InstructionTextWithCitations
+        {
+            Text = text,
+            Length = length,
+            Citations = citations,
+        };
     }
 
     private static List<InstructionToolCall> ParseToolCalls(JsonElement toolCallsElement)

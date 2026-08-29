@@ -14,14 +14,16 @@ namespace LmStreaming.Sample.Tests.Services;
 public sealed class SubAgentScanCoverageCacheTests
 {
     private static IReadOnlyList<SubAgentSummary> Rows(params string[] agentIds) =>
-        [.. agentIds.Select(id => new SubAgentSummary
-        {
-            AgentId = id,
-            Template = "worker",
-            Task = "task",
-            Status = "completed",
-            ThreadId = $"subagent-{id}",
-        })];
+        [
+            .. agentIds.Select(id => new SubAgentSummary
+            {
+                AgentId = id,
+                Template = "worker",
+                Task = "task",
+                Status = "completed",
+                ThreadId = $"subagent-{id}",
+            }),
+        ];
 
     [Fact]
     public void TryGetRecovered_ReturnsFalse_WhenNoEntryWasEverRecorded()
@@ -62,8 +64,9 @@ public sealed class SubAgentScanCoverageCacheTests
 
         var hitWithNewOwner = cache.TryGetRecovered("thread-1", ownerAfterReset, out var rows);
 
-        hitWithNewOwner.Should().BeFalse(
-            "a different owner reference means the live manager was reset since the entry was recorded");
+        hitWithNewOwner
+            .Should()
+            .BeFalse("a different owner reference means the live manager was reset since the entry was recorded");
         rows.Should().BeEmpty();
     }
 
@@ -82,10 +85,14 @@ public sealed class SubAgentScanCoverageCacheTests
         cache.RecordRecovered("thread-1", generation2, Rows("gen1-child", "gen2-child"));
         cache.RecordRecovered("thread-1", generation3, Rows("gen1-child", "gen2-child", "gen3-child"));
 
-        cache.TryGetRecovered("thread-1", generation1, out _).Should().BeFalse(
-            "generation 1's owner reference no longer matches the recorded entry after two more resets");
-        cache.TryGetRecovered("thread-1", generation2, out _).Should().BeFalse(
-            "generation 2's owner reference no longer matches the recorded entry after the third reset");
+        cache
+            .TryGetRecovered("thread-1", generation1, out _)
+            .Should()
+            .BeFalse("generation 1's owner reference no longer matches the recorded entry after two more resets");
+        cache
+            .TryGetRecovered("thread-1", generation2, out _)
+            .Should()
+            .BeFalse("generation 2's owner reference no longer matches the recorded entry after the third reset");
 
         var hit = cache.TryGetRecovered("thread-1", generation3, out var rows);
         hit.Should().BeTrue();
@@ -121,8 +128,10 @@ public sealed class SubAgentScanCoverageCacheTests
 
         cache.Forget("thread-1");
 
-        cache.TryGetRecovered("thread-1", owner, out var rows).Should().BeFalse(
-            "Forget must evict the entry outright, not merely require a different owner");
+        cache
+            .TryGetRecovered("thread-1", owner, out var rows)
+            .Should()
+            .BeFalse("Forget must evict the entry outright, not merely require a different owner");
         rows.Should().BeEmpty();
     }
 
@@ -153,8 +162,10 @@ public sealed class SubAgentScanCoverageCacheTests
         // by last write) must be evicted first, deterministically, not thread-2 or thread-3.
         cache.RecordRecovered("thread-4", owner4, Rows("d"));
 
-        cache.TryGetRecovered("thread-1", owner1, out _).Should().BeFalse(
-            "thread-1 was the oldest entry by last write and must be evicted once capacity is exceeded");
+        cache
+            .TryGetRecovered("thread-1", owner1, out _)
+            .Should()
+            .BeFalse("thread-1 was the oldest entry by last write and must be evicted once capacity is exceeded");
         cache.TryGetRecovered("thread-2", owner2, out var rows2).Should().BeTrue();
         rows2.Select(r => r.AgentId).Should().BeEquivalentTo(["b"]);
         cache.TryGetRecovered("thread-3", owner3, out var rows3).Should().BeTrue();
@@ -179,13 +190,19 @@ public sealed class SubAgentScanCoverageCacheTests
         cache.RecordRecovered("thread-1", owner1, Rows("a", "a2"));
         cache.RecordRecovered("thread-3", owner3, Rows("c"));
 
-        cache.TryGetRecovered("thread-1", owner1, out var rows1).Should().BeTrue(
-            "thread-1 was re-written after thread-2, so it should survive the eviction thread-2 triggers");
+        cache
+            .TryGetRecovered("thread-1", owner1, out var rows1)
+            .Should()
+            .BeTrue("thread-1 was re-written after thread-2, so it should survive the eviction thread-2 triggers");
         rows1.Select(r => r.AgentId).Should().BeEquivalentTo(["a", "a2"]);
 
-        cache.TryGetRecovered("thread-2", owner2, out _).Should().BeFalse(
-            "thread-2 became the oldest entry by last write once thread-1 was re-recorded, so capacity "
-                + "eviction removes it, not thread-1");
+        cache
+            .TryGetRecovered("thread-2", owner2, out _)
+            .Should()
+            .BeFalse(
+                "thread-2 became the oldest entry by last write once thread-1 was re-recorded, so capacity "
+                    + "eviction removes it, not thread-1"
+            );
 
         cache.TryGetRecovered("thread-3", owner3, out var rows3).Should().BeTrue();
         rows3.Select(r => r.AgentId).Should().BeEquivalentTo(["c"]);
@@ -240,13 +257,16 @@ public sealed class SubAgentScanCoverageCacheTests
         using var ready = new CountdownEvent(distinctThreads);
         using var start = new ManualResetEventSlim(initialState: false);
 
-        var writeTasks = Enumerable.Range(0, distinctThreads)
-            .Select(i => Task.Run(() =>
-            {
-                ready.Signal();
-                start.Wait();
-                cache.RecordRecovered($"thread-{i}", owners[i], expectedRows[i]);
-            }))
+        var writeTasks = Enumerable
+            .Range(0, distinctThreads)
+            .Select(i =>
+                Task.Run(() =>
+                {
+                    ready.Signal();
+                    start.Wait();
+                    cache.RecordRecovered($"thread-{i}", owners[i], expectedRows[i]);
+                })
+            )
             .ToArray();
 
         ready.Wait();
@@ -258,12 +278,15 @@ public sealed class SubAgentScanCoverageCacheTests
         // Read back concurrently too, and collect results instead of asserting inside the task bodies —
         // an xUnit assertion failure thrown on a background Task can be swallowed by Task.WhenAll.
         var observations = new ConcurrentBag<(int Index, bool Hit, IReadOnlyList<SubAgentSummary> Rows)>();
-        var readTasks = Enumerable.Range(0, distinctThreads)
-            .Select(i => Task.Run(() =>
-            {
-                var hit = cache.TryGetRecovered($"thread-{i}", owners[i], out var rows);
-                observations.Add((i, hit, rows));
-            }))
+        var readTasks = Enumerable
+            .Range(0, distinctThreads)
+            .Select(i =>
+                Task.Run(() =>
+                {
+                    var hit = cache.TryGetRecovered($"thread-{i}", owners[i], out var rows);
+                    observations.Add((i, hit, rows));
+                })
+            )
             .ToArray();
 
         var readException = await Record.ExceptionAsync(() => Task.WhenAll(readTasks));
@@ -276,18 +299,23 @@ public sealed class SubAgentScanCoverageCacheTests
         // (eviction runs under the same lock as the write that triggers it) and never fewer (every write
         // that lands is a real, retrievable entry until IT is the one evicted). Deliberately not
         // asserting WHICH indices survive — that outcome is a genuine, non-deterministic race.
-        hits.Should().HaveCount(
-            capacity,
-            "exactly `capacity` distinct threads must survive concurrent eviction, regardless of which ones");
+        hits.Should()
+            .HaveCount(
+                capacity,
+                "exactly `capacity` distinct threads must survive concurrent eviction, regardless of which ones"
+            );
 
         // No cross-contamination: every surviving hit must return precisely the rows recorded under its
         // OWN owner, never another thread's rows (which a shared-state race on the dictionary/list would
         // produce).
         foreach (var (index, _, rows) in hits)
         {
-            rows.Select(r => r.AgentId).Should().BeEquivalentTo(
-                expectedRows[index].Select(r => r.AgentId),
-                $"thread-{index}'s surviving entry must return exactly its own recorded rows, never another thread's");
+            rows.Select(r => r.AgentId)
+                .Should()
+                .BeEquivalentTo(
+                    expectedRows[index].Select(r => r.AgentId),
+                    $"thread-{index}'s surviving entry must return exactly its own recorded rows, never another thread's"
+                );
         }
     }
 }

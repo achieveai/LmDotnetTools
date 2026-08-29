@@ -17,7 +17,8 @@ public class CodexToolPolicyEngineTests
                     EnabledTools = ["calculate", "get_weather"],
                     DisabledTools = ["get_weather"],
                 },
-            });
+            }
+        );
 
         policy.IsMcpToolAllowed("sample", "calculate").Should().BeTrue();
         policy.IsMcpToolAllowed("sample", "get_weather").Should().BeFalse();
@@ -28,7 +29,8 @@ public class CodexToolPolicyEngineTests
     {
         var policy = new CodexToolPolicyEngine(
             dynamicToolNames: ["calculate", "get_weather"],
-            enabledTools: ["calculate"]);
+            enabledTools: ["calculate"]
+        );
 
         policy.IsDynamicToolAllowed("calculate").Should().BeTrue();
         policy.IsDynamicToolAllowed("get_weather").Should().BeFalse();

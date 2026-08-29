@@ -52,15 +52,23 @@ public class DataDrivenFunctionToolTests
 
         if (testName.Contains("MultiFunctionTool", StringComparison.Ordinal))
         {
-            Assert.Contains(toolCalls, tc => tc.FunctionName == "python_mcp-list_directory" && tc.FunctionArgs == "{\"relative_path\":\".\"}");
             Assert.Contains(
                 toolCalls,
-                tc => tc.FunctionName == "python_mcp-get_directory_tree" && tc.FunctionArgs == "{\"relative_path\":\"code\"}"
+                tc => tc.FunctionName == "python_mcp-list_directory" && tc.FunctionArgs == "{\"relative_path\":\".\"}"
+            );
+            Assert.Contains(
+                toolCalls,
+                tc =>
+                    tc.FunctionName == "python_mcp-get_directory_tree"
+                    && tc.FunctionArgs == "{\"relative_path\":\"code\"}"
             );
         }
         else
         {
-            Assert.Contains(toolCalls, tc => tc.FunctionName == "getWeather" && tc.FunctionArgs == "{\"location\":\"San Francisco\"}");
+            Assert.Contains(
+                toolCalls,
+                tc => tc.FunctionName == "getWeather" && tc.FunctionArgs == "{\"location\":\"San Francisco\"}"
+            );
         }
 
         Debug.WriteLine($"Test {testName} completed successfully");
@@ -76,11 +84,11 @@ public class DataDrivenFunctionToolTests
 
         var instruction = testName.Contains("MultiFunctionTool", StringComparison.Ordinal)
             ? """
-              <|instruction_start|>{"instruction_chain":[{"id_message":"multi-tool","messages":[{"tool_call":[{"name":"python_mcp-list_directory","args":{"relative_path":"."}},{"name":"python_mcp-get_directory_tree","args":{"relative_path":"code"}}]}]}]}<|instruction_end|>
-              """
+                <|instruction_start|>{"instruction_chain":[{"id_message":"multi-tool","messages":[{"tool_call":[{"name":"python_mcp-list_directory","args":{"relative_path":"."}},{"name":"python_mcp-get_directory_tree","args":{"relative_path":"code"}}]}]}]}<|instruction_end|>
+                """
             : """
-              <|instruction_start|>{"instruction_chain":[{"id_message":"weather-tool","messages":[{"tool_call":[{"name":"getWeather","args":{"location":"San Francisco"}}]}]}]}<|instruction_end|>
-              """;
+                <|instruction_start|>{"instruction_chain":[{"id_message":"weather-tool","messages":[{"tool_call":[{"name":"getWeather","args":{"location":"San Francisco"}}]}]}]}<|instruction_end|>
+                """;
 
         var rewritten = messages.ToArray();
         rewritten[userIndex] = userMessage with { Text = $"{userMessage.Text}\n{instruction}" };

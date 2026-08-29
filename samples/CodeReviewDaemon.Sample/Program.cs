@@ -33,22 +33,26 @@ if (args is ["reviewbot", "init", ..])
 // vars are required. Absent the flag, the environment resolves as usual (DOTNET_ENVIRONMENT/default).
 var (reviewProfile, maxPrAgeDaysOverride, hostArgs) = ReviewProfileArgs.Extract(args);
 
-var builder = WebApplication.CreateBuilder(new WebApplicationOptions
-{
-    Args = hostArgs,
-    EnvironmentName = reviewProfile, // null ⇒ default environment resolution (base appsettings only)
-});
+var builder = WebApplication.CreateBuilder(
+    new WebApplicationOptions
+    {
+        Args = hostArgs,
+        EnvironmentName = reviewProfile, // null ⇒ default environment resolution (base appsettings only)
+    }
+);
 
 // A `--days N` / `--max-pr-age-days N` flag overrides the profile's CodeReviewDaemon:MaxPrAgeDays recency
 // bound for this run. Injected as the last (highest-precedence) config source so it wins over appsettings,
 // and BEFORE the section is bound below.
 if (maxPrAgeDaysOverride is int maxPrAgeDaysFlag)
 {
-    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
-    {
-        [$"{CodeReviewDaemonOptions.SectionName}:{nameof(CodeReviewDaemonOptions.MaxPrAgeDays)}"] =
-            maxPrAgeDaysFlag.ToString(System.Globalization.CultureInfo.InvariantCulture),
-    });
+    builder.Configuration.AddInMemoryCollection(
+        new Dictionary<string, string?>
+        {
+            [$"{CodeReviewDaemonOptions.SectionName}:{nameof(CodeReviewDaemonOptions.MaxPrAgeDays)}"] =
+                maxPrAgeDaysFlag.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        }
+    );
 }
 
 // ── Feature flags ────────────────────────────────────────────────────────────────────────────────
@@ -86,10 +90,12 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.LogFilePath))
 // X-Sbx-App-Id/X-Sbx-App-Key headers. A present-but-invalid key fails fast at boot (redacted); an
 // absent key is the keyless AUTH_ENFORCE=off dev path, logged once as a warning after the host is
 // built (never blocking startup, and never logging the key itself).
-var daemonAppId = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_ID")
-    ?? builder.Configuration["SandboxGateway:AppId"] ?? "codereview-daemon";
-var daemonAppKey = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_KEY")
-    ?? builder.Configuration["SandboxGateway:AppKey"];
+var daemonAppId =
+    Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_ID")
+    ?? builder.Configuration["SandboxGateway:AppId"]
+    ?? "codereview-daemon";
+var daemonAppKey =
+    Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_KEY") ?? builder.Configuration["SandboxGateway:AppKey"];
 var daemonKeyMissing = string.IsNullOrWhiteSpace(daemonAppKey);
 if (!daemonKeyMissing)
 {
@@ -100,16 +106,17 @@ var daemonCredential = new SandboxCredential(daemonAppId, daemonAppKey ?? string
 // The already-running sandbox gateway's base URL, resolved once (env overrides config, then the
 // 3000 default). Threaded into every gateway consumer so a profile can set SandboxGateway:BaseUrl
 // and nothing needs CRD_SANDBOX_GATEWAY in env.
-var gatewayBaseUrl = Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
-    ?? builder.Configuration["SandboxGateway:BaseUrl"] ?? "http://127.0.0.1:3000";
+var gatewayBaseUrl =
+    Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
+    ?? builder.Configuration["SandboxGateway:BaseUrl"]
+    ?? "http://127.0.0.1:3000";
 
 // ── OAuth auth-provider services ───────────────────────────────────────────────────────────────
 // Shared with LmStreaming.Sample (see its Program.cs): the sandbox gateway calls back into the
 // auth webhook to obtain a per-provider bearer/basic credential for an outbound request, and these
 // providers mint it. The daemon reviews GitHub PRs by default; Azure DevOps is opt-in via
 // CodeReviewDaemon:EnableAdoProvider.
-var authOptions =
-    builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
+var authOptions = builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
 builder.Services.AddSingleton(authOptions);
 
 var oauthTokenDir = string.IsNullOrWhiteSpace(authOptions.TokenStoreDir)
@@ -117,10 +124,12 @@ var oauthTokenDir = string.IsNullOrWhiteSpace(authOptions.TokenStoreDir)
     : authOptions.TokenStoreDir;
 builder.Services.AddSingleton<IOAuthTokenStore>(sp => new FileOAuthTokenStore(
     oauthTokenDir,
-    sp.GetRequiredService<ILogger<FileOAuthTokenStore>>()));
+    sp.GetRequiredService<ILogger<FileOAuthTokenStore>>()
+));
 builder.Services.AddSingleton(sp => new SessionSecretStore(
     Path.Combine(oauthTokenDir, "session-secrets"),
-    sp.GetRequiredService<ILogger<SessionSecretStore>>()));
+    sp.GetRequiredService<ILogger<SessionSecretStore>>()
+));
 
 // Dual-register each provider (concrete + IOAuthTokenProvider alias-to-concrete) so the
 // enumerable-consuming callers (AuthWebhookController, OAuthTokenHydrator) and any concrete-typed
@@ -129,7 +138,8 @@ builder.Services.AddSingleton(sp => new GitHubOAuthProvider(
     authOptions.Github,
     sp.GetRequiredService<IOAuthTokenStore>(),
     new HttpClient(),
-    sp.GetRequiredService<ILogger<GitHubOAuthProvider>>()));
+    sp.GetRequiredService<ILogger<GitHubOAuthProvider>>()
+));
 builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<GitHubOAuthProvider>());
 
 // Startup diagnostics: log the GitHub Copilot model catalog the daemon's credential can see (raw catalog
@@ -144,7 +154,8 @@ if (daemonOptions.EnableAdoProvider)
     builder.Services.AddSingleton(sp => new AdoOAuthProvider(
         authOptions.Ado,
         Path.Combine(oauthTokenDir, "msal-ado.bin"),
-        sp.GetRequiredService<ILogger<AdoOAuthProvider>>()));
+        sp.GetRequiredService<ILogger<AdoOAuthProvider>>()
+    ));
     builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<AdoOAuthProvider>());
 }
 
@@ -157,6 +168,7 @@ builder.Services.AddHostedService<OAuthTokenHydrator>();
 // interactive sign-in that no one is present to complete.
 builder.Services.AddSingleton<IAuthEventNotifier, DaemonAuthEventNotifier>();
 builder.Services.AddSingleton<IAuthResolutionPolicy, FailFastDaemonAuthPolicy>();
+
 // The daemon has no chat sessions/threads to forward to (that's LmStreaming.Sample-only); the
 // shared AuthWebhookController still requires an IAuthWebhookForwarder, so wire the no-op.
 builder.Services.AddSingleton<IAuthWebhookForwarder, NoOpAuthWebhookForwarder>();
@@ -180,6 +192,7 @@ var databasePath = string.IsNullOrWhiteSpace(daemonOptions.DatabasePath)
     ? Path.Combine(AppContext.BaseDirectory, "review.db")
     : daemonOptions.DatabasePath;
 var dbConnectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
+
 // Singleton: ReviewStore wraps one SqliteConnection. Its single accessor is still the serial
 // PrPollingService loop (each PR is orchestrated to completion before the next), so concurrent use does
 // not arise today — but the store now serializes access itself (every operation runs under an internal
@@ -195,7 +208,8 @@ builder.Services.AddSingleton(_ => new ReviewStore(dbConnectionString));
 // distinction an operator is trying to draw when they ask whether collect-only held.
 builder.Services.AddSingleton<IPolicyRefusalRecorder>(sp => new StorePolicyRefusalRecorder(
     sp.GetRequiredService<ReviewStore>(),
-    sp.GetRequiredService<ILogger<StorePolicyRefusalRecorder>>()));
+    sp.GetRequiredService<ILogger<StorePolicyRefusalRecorder>>()
+));
 
 // Sandbox: all deterministic git/fs work runs in the gateway via the typed SandboxClient SDK, wrapped
 // by SandboxSessionAdapter. The client is lazy (built on first command), so registering it does no work
@@ -216,7 +230,8 @@ builder.Services.AddSingleton(sp => new SandboxSessionAdapter(
     Environment.GetEnvironmentVariable("CRD_SANDBOX_SESSION") ?? Guid.NewGuid().ToString("N"),
     sp.GetRequiredService<ILogger<SandboxSessionAdapter>>(),
     daemonCredential,
-    daemonOptions.Limits));
+    daemonOptions.Limits
+));
 builder.Services.AddSingleton<ISandboxCommandRunner>(sp => sp.GetRequiredService<SandboxSessionAdapter>());
 builder.Services.AddSingleton<ISandboxFileSystem>(sp => sp.GetRequiredService<SandboxSessionAdapter>());
 
@@ -235,7 +250,8 @@ var sandboxGatewayOptions = new SandboxGatewayOptions
     // per-run provisioner mounts a distinct leaf (review-run-{id}) under this base, so it MUST be set or
     // session-create fails with "no workspace base path is configured". Sourced from env/config so it
     // tracks whatever the adopted gateway actually mounts (e.g. B:/sandbox-workspaces/workspaces).
-    WorkspaceBasePath = Environment.GetEnvironmentVariable("CRD_WORKSPACE_BASE_PATH")
+    WorkspaceBasePath =
+        Environment.GetEnvironmentVariable("CRD_WORKSPACE_BASE_PATH")
         ?? builder.Configuration["SandboxGateway:WorkspaceBasePath"],
     // Per-app bearer identity (ADR 0029) — the daemon's own identity, distinct from LmStreaming.Sample so
     // its sandbox sessions are scoped to their own app tree under an AUTH_ENFORCE gateway, and so the
@@ -244,31 +260,48 @@ var sandboxGatewayOptions = new SandboxGatewayOptions
     AppId = daemonAppId,
     AppKey = daemonKeyMissing ? null : daemonAppKey,
 };
+
 // Per-app workspace rooting (gateway ADR 0028): when the adopted gateway roots workspaces at
 // WORKSPACE_BASE_PATH/<app-dir>/<workspace>, the daemon prepares its store + measures slot paths under that
 // same <app-dir> (derived from AppId) so the app-dir-less workspace field it sends re-roots to the prepared
 // store. Off by default (flat, pre-ADR-0028). sandboxGatewayOptions.WorkspaceBasePath stays the CONFIGURED
 // base (the gateway's own WORKSPACE_BASE_PATH); only the daemon-side prep/relative base gains <app-dir>.
 var effectiveWorkspaceBase = SandboxAppDir.EffectiveBase(
-    sandboxGatewayOptions.WorkspaceBasePath, daemonAppId, daemonOptions.PerAppWorkspaceRooting);
+    sandboxGatewayOptions.WorkspaceBasePath,
+    daemonAppId,
+    daemonOptions.PerAppWorkspaceRooting
+);
 builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
     new SandboxGatewayLifetime(
         sandboxGatewayOptions,
         sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
-        new HttpClient(new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey) { InnerHandler = new HttpClientHandler { AllowAutoRedirect = false } })),
+        new HttpClient(
+            new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey)
+            {
+                InnerHandler = new HttpClientHandler { AllowAutoRedirect = false },
+            }
+        )
+    ),
     sandboxGatewayOptions,
     sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
     // Bounds the gateway create/destroy calls (mirrors LmStreaming.Sample's registration); the handler
     // attaches the per-app bearer headers to every gateway REST call. Auto-redirect is disabled so a
     // cross-origin 3xx can never replay the X-Sbx-* credential headers to a redirect target.
-    new HttpClient(new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey) { InnerHandler = new HttpClientHandler { AllowAutoRedirect = false } })
+    new HttpClient(
+        new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey)
+        {
+            InnerHandler = new HttpClientHandler { AllowAutoRedirect = false },
+        }
+    )
     {
         Timeout = TimeSpan.FromSeconds(30),
     },
     authOptions,
-    sp.GetRequiredService<SessionSecretStore>()));
-builder.Services.AddSingleton<ISandboxSessionSource>(sp =>
-    new RegistrySessionSource(sp.GetRequiredService<SandboxSessionRegistry>()));
+    sp.GetRequiredService<SessionSecretStore>()
+));
+builder.Services.AddSingleton<ISandboxSessionSource>(sp => new RegistrySessionSource(
+    sp.GetRequiredService<SandboxSessionRegistry>()
+));
 builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSessionProvisioner(
     sp.GetRequiredService<ISandboxSessionSource>(),
     daemonOptions,
@@ -279,13 +312,15 @@ builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSession
     // pool root is defaulted under it below so the slot always resolves to a path inside the base. Under
     // per-app rooting this base already includes <app-dir> (see effectiveWorkspaceBase above).
     effectiveWorkspaceBase,
-    gatewayBaseUrl));
+    gatewayBaseUrl
+));
 
 // Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
 // narrow-adapter pattern as ISandboxSessionSource above, so it never depends on the registry's full
 // surface directly.
-builder.Services.AddSingleton<IDiscoveredItemsSource>(sp =>
-    new RegistryDiscoverySource(sp.GetRequiredService<SandboxSessionRegistry>()));
+builder.Services.AddSingleton<IDiscoveredItemsSource>(sp => new RegistryDiscoverySource(
+    sp.GetRequiredService<SandboxSessionRegistry>()
+));
 
 // Optional conversation persistence: when ConversationStorePath is set, the S2S review host persists its
 // full message history. The daemon retains the path for log auditing references.
@@ -299,14 +334,16 @@ if (!daemonOptions.UseS2SReviewAgent)
 {
     throw new InvalidOperationException(
         "UseS2SReviewAgent must be true; the in-process review path (LiveReviewAgentLoopFactory) has been removed. "
-        + "Set CodeReviewDaemon:UseS2SReviewAgent=true and configure LmStreamingBaseUrl.");
+            + "Set CodeReviewDaemon:UseS2SReviewAgent=true and configure LmStreamingBaseUrl."
+    );
 }
 
 if (string.IsNullOrWhiteSpace(daemonOptions.LmStreamingBaseUrl))
 {
     throw new InvalidOperationException(
         "UseS2SReviewAgent is on but LmStreamingBaseUrl is not configured; set it to the LmStreaming review "
-        + "host base URL (e.g. http://localhost:5051).");
+            + "host base URL (e.g. http://localhost:5051)."
+    );
 }
 
 // JudgeModelId is deliberately NOT validated here. It used to be refused outright on this path, because
@@ -326,15 +363,14 @@ if (string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
 {
     throw new InvalidOperationException(
         "UseS2SReviewAgent is on but no workspace base path is configured "
-        + "(SandboxGateway:WorkspaceBasePath / CRD_WORKSPACE_BASE_PATH); the S2S review preparer clones the "
-        + "PR checkout under it, and the review host must mount the same base.");
+            + "(SandboxGateway:WorkspaceBasePath / CRD_WORKSPACE_BASE_PATH); the S2S review preparer clones the "
+            + "PR checkout under it, and the review host must mount the same base."
+    );
 }
 
 // Normalize to a host-root base with a trailing slash so the client's relative paths ("api/workspaces",
 // "api/conversations") resolve correctly against HttpClient.BaseAddress.
-var lmStreamingBaseUri = new Uri(
-    daemonOptions.LmStreamingBaseUrl.TrimEnd('/') + "/",
-    UriKind.Absolute);
+var lmStreamingBaseUri = new Uri(daemonOptions.LmStreamingBaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
 
 // Outbound S2S client over the review host. The raw HttpClient is intentionally long-lived (mirrors the
 // gateway HttpClients above); it forwards the daemon's own gateway identity (X-Sbx-App-*) so the sandbox
@@ -343,7 +379,8 @@ builder.Services.AddSingleton(sp => new LmStreamingS2SClient(
     new HttpClient { BaseAddress = lmStreamingBaseUri },
     daemonOptions.LmStreamingS2SSecret,
     daemonAppId,
-    daemonKeyMissing ? null : daemonAppKey));
+    daemonKeyMissing ? null : daemonAppKey
+));
 
 // Completion-source seam for the recursive review completion barrier: reads the review host's versioned
 // recursive sub-agent tree over the same S2S client. IMPORTANT — the review host (LmStreaming.Sample) must
@@ -353,39 +390,48 @@ builder.Services.AddSingleton(sp => new LmStreamingS2SClient(
 // once the barrier hands back a settled roster, the notes artifacts fetch each named agent's transcript to
 // write per-reviewer findings files. Registered concrete-first so both interfaces share ONE instance —
 // two factory registrations would silently give the barrier and the artifact builder separate objects.
-builder.Services.AddSingleton(sp =>
-    new S2SReviewSubAgentCompletionSource(sp.GetRequiredService<LmStreamingS2SClient>()));
+builder.Services.AddSingleton(sp => new S2SReviewSubAgentCompletionSource(
+    sp.GetRequiredService<LmStreamingS2SClient>()
+));
 builder.Services.AddSingleton<IReviewSubAgentCompletionSource>(sp =>
-    sp.GetRequiredService<S2SReviewSubAgentCompletionSource>());
+    sp.GetRequiredService<S2SReviewSubAgentCompletionSource>()
+);
 builder.Services.AddSingleton<IReviewAgentTranscriptSource>(sp =>
-    sp.GetRequiredService<S2SReviewSubAgentCompletionSource>());
+    sp.GetRequiredService<S2SReviewSubAgentCompletionSource>()
+);
 
 // Host-side workspace preparer: clones the PR checkout under the shared WORKSPACE_BASE_PATH and ensures
 // the LmStreaming workspace points at that leaf. Uses the SAME host-backed GitRunner the pooled path uses
 // (privileged, credentialed, never the sandbox runner).
 builder.Services.AddSingleton(sp => new S2SReviewWorkspacePreparer(
     sp.GetRequiredService<LmStreamingS2SClient>(),
-    new GitRunner(new HostGitCommandRunner(
-        BuildHostGitCredentialsSource(sp),
-        sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
-        hostGitAdoOrgs)),
+    new GitRunner(
+        new HostGitCommandRunner(
+            BuildHostGitCredentialsSource(sp),
+            sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
+            hostGitAdoOrgs
+        )
+    ),
     effectiveWorkspaceBase!,
     daemonOptions.LmStreamingReviewMarketplace,
-    sp.GetRequiredService<ILogger<S2SReviewWorkspacePreparer>>()));
+    sp.GetRequiredService<ILogger<S2SReviewWorkspacePreparer>>()
+));
 
 // Gateway prerequisite probe (RequireSkillSupport). The review runs in a conversation the review host
 // provisions, so the equivalent check reads the gateway's marketplace catalog directly.
 builder.Services.AddSingleton<IGatewaySkillProbe>(sp => new GatewaySkillProbe(
     gatewayBaseUrl,
     daemonCredential,
-    sp.GetRequiredService<ILogger<GatewaySkillProbe>>()));
+    sp.GetRequiredService<ILogger<GatewaySkillProbe>>()
+));
 
 // Deep-link retention ceiling. Every posted comment carries ?threadId=, so the hosted conversation must
 // OUTLIVE its review — but not forever. When a window is configured, each minted conversation is recorded
 // in the ledger and discarded once it has aged past it.
-var deepLinkRetention = daemonOptions.DeepLinkRetentionHours > 0
-    ? TimeSpan.FromHours(daemonOptions.DeepLinkRetentionHours)
-    : (TimeSpan?)null;
+var deepLinkRetention =
+    daemonOptions.DeepLinkRetentionHours > 0
+        ? TimeSpan.FromHours(daemonOptions.DeepLinkRetentionHours)
+        : (TimeSpan?)null;
 
 if (deepLinkRetention is { } retentionWindow)
 {
@@ -393,7 +439,8 @@ if (deepLinkRetention is { } retentionWindow)
         sp.GetRequiredService<ReviewStore>(),
         sp.GetRequiredService<LmStreamingS2SClient>(),
         retentionWindow,
-        sp.GetRequiredService<ILogger<DeepLinkRetentionSweeper>>()));
+        sp.GetRequiredService<ILogger<DeepLinkRetentionSweeper>>()
+    ));
 }
 
 builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp =>
@@ -405,9 +452,9 @@ builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp =>
         sp.GetRequiredService<ILoggerFactory>(),
         onConversationMinted: deepLinkRetention is null
             ? null
-            : (threadId, title) => store.RecordDeepLinkConversation(threadId, title));
+            : (threadId, title) => store.RecordDeepLinkConversation(threadId, title)
+    );
 });
-
 
 // PR read providers + comment publishers. GitHub is always registered; ADO is opt-in (mirrors the
 // OAuth provider registration above). Each resolves the matching concrete OAuth provider for its token.
@@ -424,7 +471,8 @@ builder.Services.AddSingleton<IPrProvider>(sp => new GitHubPrProvider(
     // The per-poll coverage bounds (issue #537). Both were declared-but-unread before this: the provider
     // carried its own private const, so an operator raising MaxPagesPerPoll changed nothing.
     daemonOptions.MaxPagesPerPoll,
-    daemonOptions.MaxPrsPerPage));
+    daemonOptions.MaxPrsPerPage
+));
 
 // GitHub review posting is host-side (like ADO below). Agent-owned posting via code-reviewer:post-pr-review was
 // abandoned — the agent loaded the skill but never actually posted — so DaemonReviewStageExecutor.PostAsync posts
@@ -432,7 +480,8 @@ builder.Services.AddSingleton<IPrProvider>(sp => new GitHubPrProvider(
 builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCommentPublisher(
     sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
     sp.GetRequiredService<GitHubOAuthProvider>(),
-    sp.GetRequiredService<ILogger<GitHubReviewCommentPublisher>>()));
+    sp.GetRequiredService<ILogger<GitHubReviewCommentPublisher>>()
+));
 
 if (daemonOptions.EnableAdoProvider)
 {
@@ -444,7 +493,8 @@ if (daemonOptions.EnableAdoProvider)
         // $top the endpoint returns its own default of 101 and no continuation token, so the page loop
         // could never iterate however high MaxPagesPerPoll was set.
         daemonOptions.MaxPagesPerPoll,
-        daemonOptions.MaxPrsPerPage));
+        daemonOptions.MaxPrsPerPage
+    ));
 
     // ADO review posting is host-side (like GitHub above): DaemonReviewStageExecutor.PostAsync posts ADO
     // reviews through this publisher. Resolve the CONCRETE AdoOAuthProvider, not IOAuthTokenProvider, which is
@@ -452,7 +502,8 @@ if (daemonOptions.EnableAdoProvider)
     builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new AdoReviewCommentPublisher(
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
-        sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
+        sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()
+    ));
 
     // What the PR was ASKED to do — its linked work items, walked up to the Epic — injected into the review
     // brief by DaemonReviewStageExecutor (ActivatorUtilities picks this up through the optional constructor
@@ -464,7 +515,8 @@ if (daemonOptions.EnableAdoProvider)
     builder.Services.AddSingleton(sp => new AdoWorkItemContextReader(
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
-        sp.GetRequiredService<ILogger<AdoWorkItemContextReader>>()));
+        sp.GetRequiredService<ILogger<AdoWorkItemContextReader>>()
+    ));
 }
 
 // Host-side git authenticates to every OAuth provider the daemon is signed in to — GitHub for github.com
@@ -482,8 +534,10 @@ static IReadOnlyList<string> DeriveAdoOrgs(CodeReviewDaemonOptions options)
 
     foreach (var entry in options.EnabledRepos)
     {
-        var segments = (entry ?? string.Empty)
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var segments = (entry ?? string.Empty).Split(
+            '/',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+        );
         if (segments.Length == 3)
         {
             orgs.Add(segments[0]); // {org}/{project}/{repo}
@@ -575,7 +629,8 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ReviewBotRepoUrl))
         var runner = new HostGitCommandRunner(
             BuildHostGitCredentialsSource(sp),
             sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
-            hostGitAdoOrgs);
+            hostGitAdoOrgs
+        );
         return new HostRetentionWorkspace(runner, new HostFileSystem(), Path.Combine(hostRoot, "reviewbot"));
     });
 }
@@ -585,9 +640,11 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ReviewBotRepoUrl))
 // Otherwise DaemonReviewStageExecutor's null-fallback keeps the per-run/diff-only checkout and no sweeper
 // runs. The pool, preparer, and sweeper share ONE host-side git runner (privileged, with the write
 // credential) — never the sandbox the untrusted review agent shares (design §4.7).
-if (daemonOptions.EnableToolAssistedReview
+if (
+    daemonOptions.EnableToolAssistedReview
     && daemonOptions.EnableReviewerWrites
-    && !string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
+    && !string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl)
+)
 {
     string storeUrl = daemonOptions.ResolvedStoreUrl;
     // The pool root MUST sit under the gateway's WorkspaceBasePath so a leased slot can be mounted at
@@ -602,13 +659,12 @@ if (daemonOptions.EnableToolAssistedReview
     var poolLeaf = string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
         ? "review-pool"
         : Path.GetFileName(daemonOptions.ReviewPoolHostRoot.TrimEnd('/', '\\'));
-    var poolRoot = daemonOptions.PerAppWorkspaceRooting && !string.IsNullOrWhiteSpace(effectiveWorkspaceBase)
-        ? $"{effectiveWorkspaceBase!.TrimEnd('/', '\\')}/{poolLeaf}"
-        : !string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
-            ? daemonOptions.ReviewPoolHostRoot
-            : !string.IsNullOrWhiteSpace(effectiveWorkspaceBase)
-                ? Path.Combine(effectiveWorkspaceBase, "review-pool")
-                : Path.Combine(AppContext.BaseDirectory, "review-pool");
+    var poolRoot =
+        daemonOptions.PerAppWorkspaceRooting && !string.IsNullOrWhiteSpace(effectiveWorkspaceBase)
+            ? $"{effectiveWorkspaceBase!.TrimEnd('/', '\\')}/{poolLeaf}"
+        : !string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot) ? daemonOptions.ReviewPoolHostRoot
+        : !string.IsNullOrWhiteSpace(effectiveWorkspaceBase) ? Path.Combine(effectiveWorkspaceBase, "review-pool")
+        : Path.Combine(AppContext.BaseDirectory, "review-pool");
 
     var slotDirPrefix = "slot-";
     // S2S flattens the slot to ONE segment directly under the base. The gateway re-roots a workspace by a
@@ -634,7 +690,8 @@ if (daemonOptions.EnableToolAssistedReview
         var hostRunner = new HostGitCommandRunner(
             BuildHostGitCredentialsSource(sp),
             sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
-            hostGitAdoOrgs);
+            hostGitAdoOrgs
+        );
         var hostFileSystem = new HostFileSystem();
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
 
@@ -643,7 +700,8 @@ if (daemonOptions.EnableToolAssistedReview
             poolRoot,
             daemonOptions.ScratchDirName,
             loggerFactory.CreateLogger<ReviewSlotPool>(),
-            slotDirPrefix);
+            slotDirPrefix
+        );
 
         // A slot directory whose name does not survive LmStreaming's workspace-directory sanitizer unchanged
         // would be mounted as a DIFFERENT, empty directory — a failure that looks like success: the agent finds
@@ -660,24 +718,35 @@ if (daemonOptions.EnableToolAssistedReview
                         $"Review slot directory '{slotDir}' is not stable under LmStreaming's workspace-directory "
                             + $"sanitizer (it becomes '{sanitized}'), so the hosted conversation would be mounted on "
                             + "a different, empty directory. Choose a slot prefix of lowercase letters, digits and "
-                            + "dashes only.");
+                            + "dashes only."
+                    );
                 }
             }
         }
 
         // The store is a GitHub superproject (AchieveAiReviews); its submodule URLs resolve under "github".
-        var hostPreparer = new ReviewSlotPreparer(new GitRunner(hostRunner), hostFileSystem, "github", loggerFactory);
+        var hostPreparer = new ReviewSlotPreparer(
+            new GitRunner(hostRunner),
+            hostFileSystem,
+            "github",
+            loggerFactory,
+            enableObjectStoreMaintenance: daemonOptions.EnableObjectStoreMaintenance
+        );
         return new ReviewSlotWorkspace(
             pool,
             hostPreparer,
-            (session, provider) => new ReviewSlotPreparer(
-                new GitRunner(session.CommandRunner),
-                session.FileSystem,
-                provider,
-                loggerFactory,
-                requireSdkOwnershipMarker: true),
+            (session, provider) =>
+                new ReviewSlotPreparer(
+                    new GitRunner(session.CommandRunner),
+                    session.FileSystem,
+                    provider,
+                    loggerFactory,
+                    requireSdkOwnershipMarker: true,
+                    enableObjectStoreMaintenance: daemonOptions.EnableObjectStoreMaintenance
+                ),
             hostRunner,
-            hostFileSystem);
+            hostFileSystem
+        );
     });
 
     builder.Services.AddSingleton(sp =>
@@ -693,13 +762,19 @@ if (daemonOptions.EnableToolAssistedReview
         // ReviewBranchManager.RebuildDerivedKnowledgeAsync for why a merge commit can un-index entries it
         // kept (issue #218 item 6).
         var listingRegenerator = new KnowledgeIndexRegenerator(
-            slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeIndexRegenerator>());
+            slots.HostFileSystem,
+            loggerFactory.CreateLogger<KnowledgeIndexRegenerator>()
+        );
         var branchManager = new ReviewBranchManager(
             hostGit,
             slots.HostFileSystem,
             loggerFactory.CreateLogger<ReviewBranchManager>(),
-            (repoRoot, ct) => listingRegenerator.RegenerateAsync(
-                $"{repoRoot.TrimEnd('/')}/{KnowledgeIndexRegenerator.KnowledgeBaseDirectory}", ct));
+            (repoRoot, ct) =>
+                listingRegenerator.RegenerateAsync(
+                    $"{repoRoot.TrimEnd('/')}/{KnowledgeIndexRegenerator.KnowledgeBaseDirectory}",
+                    ct
+                )
+        );
         var sweepLogger = loggerFactory.CreateLogger("pr-lifecycle-sweep");
         // The configured repos (full identity + provider) let the sweep resolve an orphaned review/* branch —
         // whose new-scheme name carries only the repo slug + PR number — back to a pollable PR.
@@ -725,7 +800,10 @@ if (daemonOptions.EnableToolAssistedReview
             // default branch: check the notes branch out, run extraction, and — only when it wrote an entry —
             // commit + push KnowledgeBase/ onto that branch so MergeToDefaultAsync fast-forwards it into main.
             var committer = new KnowledgeExtractionCommitter(
-                hostGit, sweeperRepoRoot, loggerFactory.CreateLogger<KnowledgeExtractionCommitter>());
+                hostGit,
+                sweeperRepoRoot,
+                loggerFactory.CreateLogger<KnowledgeExtractionCommitter>()
+            );
             // KnowledgeModelId (empty ⇒ null ⇒ inherit ReviewModelId) lets the extraction passes run on a
             // dedicated model, e.g. claude-opus-4.8, independent of the gpt-* dispatcher.
             var knowledgeModelId = string.IsNullOrWhiteSpace(daemonOptions.KnowledgeModelId)
@@ -750,17 +828,27 @@ if (daemonOptions.EnableToolAssistedReview
             }
 
             async Task<KnowledgeExtractionResult> ExtractCuratedKnowledgeAsync(
-                ReviewedPr pr, string notesInput, string sourcePrRef, string todayUtc, CancellationToken ct)
+                ReviewedPr pr,
+                string notesInput,
+                string sourcePrRef,
+                string todayUtc,
+                CancellationToken ct
+            )
             {
                 var workspace = await EnsureExtractionWorkspaceAsync(pr, ct).ConfigureAwait(false);
                 await using var loop = loopFactory.Create(
                     DaemonAgentFactory.CreateKnowledgeExtractionProfile(),
                     modelId: knowledgeModelId,
                     threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}",
-                    reviewWorkspace: workspace);
+                    reviewWorkspace: workspace
+                );
                 var agent = new KnowledgeAgent(
-                    loop, slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeAgent>());
-                return await agent.TryExtractAsync(sweeperRepoRoot, notesInput, sourcePrRef, todayUtc, ct)
+                    loop,
+                    slots.HostFileSystem,
+                    loggerFactory.CreateLogger<KnowledgeAgent>()
+                );
+                return await agent
+                    .TryExtractAsync(sweeperRepoRoot, notesInput, sourcePrRef, todayUtc, ct)
                     .ConfigureAwait(false);
             }
 
@@ -768,16 +856,25 @@ if (daemonOptions.EnableToolAssistedReview
             // on its own conversation so neither pass sees the other's reply — the curated-knowledge prompt
             // forbids naming people and this one is entirely about one person.
             async Task<KnowledgeExtractionResult> ExtractReviewFeedbackAsync(
-                ReviewedPr pr, string notesInput, string sourcePrRef, string todayUtc, CancellationToken ct)
+                ReviewedPr pr,
+                string notesInput,
+                string sourcePrRef,
+                string todayUtc,
+                CancellationToken ct
+            )
             {
                 var workspace = await EnsureExtractionWorkspaceAsync(pr, ct).ConfigureAwait(false);
                 await using var loop = loopFactory.Create(
                     DaemonAgentFactory.CreateReviewFeedbackExtractionProfile(),
                     modelId: knowledgeModelId,
                     threadId: $"feedback-extract-{pr.Provider}-{pr.PrId}",
-                    reviewWorkspace: workspace);
+                    reviewWorkspace: workspace
+                );
                 var agent = new ReviewFeedbackAgent(
-                    loop, slots.HostFileSystem, loggerFactory.CreateLogger<ReviewFeedbackAgent>());
+                    loop,
+                    slots.HostFileSystem,
+                    loggerFactory.CreateLogger<ReviewFeedbackAgent>()
+                );
                 return await agent
                     .TryExtractAsync(sweeperRepoRoot, pr.Author, notesInput, sourcePrRef, todayUtc, ct)
                     .ConfigureAwait(false);
@@ -788,61 +885,82 @@ if (daemonOptions.EnableToolAssistedReview
                 // sourcePrRef is a stable, human-readable id for the source PR; todayUtc is daemon-supplied
                 // (deterministic — never the model) and stamped into the entry's `updated` frontmatter.
                 var sourcePrRef = $"{pr.Provider}/{pr.Repo.NormalizedKey}/{pr.PrId}";
-                return committer.RunAsync(pr.Branch, sourcePrRef, async innerCt =>
-                {
-                    // Both passes read the SAME notes and write under KnowledgeBase/ on the same notes branch,
-                    // so they share one committer run: one checkout, one commit, one push.
-                    var notesInput = await ReadPrNotesFromBranchAsync(hostGit, sweeperRepoRoot, pr.Branch, innerCt)
-                        .ConfigureAwait(false);
-                    var todayUtc = DateTime.UtcNow.ToString(
-                        "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-
-                    var knowledge = daemonOptions.EnableKnowledgeAgent
-                        ? await ExtractCuratedKnowledgeAsync(pr, notesInput, sourcePrRef, todayUtc, innerCt)
-                            .ConfigureAwait(false)
-                        : KnowledgeExtractionResult.Declined(null);
-                    var feedback = daemonOptions.EnableReviewFeedbackAgent
-                        ? await ExtractReviewFeedbackAsync(pr, notesInput, sourcePrRef, todayUtc, innerCt)
-                            .ConfigureAwait(false)
-                        : KnowledgeExtractionResult.Declined(null);
-
-                    // Wrote > Failed > Declined, and a write is committed even when the other pass failed —
-                    // see AtCloseExtractionSeam.Combine for why holding the commit back would be worse.
-                    var combined = AtCloseExtractionSeam.Combine(knowledge, feedback);
-                    if (combined.DroppedPass is { } dropped)
+                return committer.RunAsync(
+                    pr.Branch,
+                    sourcePrRef,
+                    async innerCt =>
                     {
-                        extractionLogger.LogWarning(
-                            "At-close extraction for {SourcePr}: the {Pass} pass failed while the other wrote; "
-                                + "committing the write and dropping the failed pass for this PR.",
-                            sourcePrRef,
-                            dropped);
-                    }
+                        // Both passes read the SAME notes and write under KnowledgeBase/ on the same notes branch,
+                        // so they share one committer run: one checkout, one commit, one push.
+                        var notesInput = await ReadPrNotesFromBranchAsync(hostGit, sweeperRepoRoot, pr.Branch, innerCt)
+                            .ConfigureAwait(false);
+                        var todayUtc = DateTime.UtcNow.ToString(
+                            "yyyy-MM-dd",
+                            System.Globalization.CultureInfo.InvariantCulture
+                        );
 
-                    return combined.Result;
-                }, ct);
+                        var knowledge = daemonOptions.EnableKnowledgeAgent
+                            ? await ExtractCuratedKnowledgeAsync(pr, notesInput, sourcePrRef, todayUtc, innerCt)
+                                .ConfigureAwait(false)
+                            : KnowledgeExtractionResult.Declined(null);
+                        var feedback = daemonOptions.EnableReviewFeedbackAgent
+                            ? await ExtractReviewFeedbackAsync(pr, notesInput, sourcePrRef, todayUtc, innerCt)
+                                .ConfigureAwait(false)
+                            : KnowledgeExtractionResult.Declined(null);
+
+                        // Wrote > Failed > Declined, and a write is committed even when the other pass failed —
+                        // see AtCloseExtractionSeam.Combine for why holding the commit back would be worse.
+                        var combined = AtCloseExtractionSeam.Combine(knowledge, feedback);
+                        if (combined.DroppedPass is { } dropped)
+                        {
+                            extractionLogger.LogWarning(
+                                "At-close extraction for {SourcePr}: the {Pass} pass failed while the other wrote; "
+                                    + "committing the write and dropping the failed pass for this PR.",
+                                sourcePrRef,
+                                dropped
+                            );
+                        }
+
+                        return combined.Result;
+                    },
+                    ct
+                );
             };
         }
 
         // Lists the store's persistent review/* branches straight from origin (fresh each sweep) so orphaned
         // notes branches are reconciled regardless of this daemon's DB state. A failure degrades to the DB set.
         static async Task<IReadOnlyList<string>> ListRemoteReviewBranchesAsync(
-            GitRunner git, string repoRoot, ILogger logger, CancellationToken cancellationToken)
+            GitRunner git,
+            string repoRoot,
+            ILogger logger,
+            CancellationToken cancellationToken
+        )
         {
-            var result = await git
-                .RunAsync(["-C", repoRoot, "ls-remote", "--heads", "origin", "review/*"], repoRoot, cancellationToken)
+            var result = await git.RunAsync(
+                    ["-C", repoRoot, "ls-remote", "--heads", "origin", "review/*"],
+                    repoRoot,
+                    cancellationToken
+                )
                 .ConfigureAwait(false);
             if (!result.Succeeded)
             {
                 logger.LogWarning(
                     "PR-lifecycle sweep: listing review/* branches failed (exit {Exit}): {Err}; sweeping the DB set only.",
-                    result.ExitCode, result.Stderr);
+                    result.ExitCode,
+                    result.Stderr
+                );
                 return [];
             }
 
             const string headsPrefix = "refs/heads/";
             var branches = new List<string>();
-            foreach (var line in result.Stdout.Split(
-                '\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            foreach (
+                var line in result.Stdout.Split(
+                    '\n',
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+                )
+            )
             {
                 var tab = line.IndexOf('\t');
                 var refName = tab >= 0 ? line[(tab + 1)..] : line;
@@ -872,20 +990,29 @@ if (daemonOptions.EnableToolAssistedReview
                 {
                     sweepLogger.LogWarning(
                         "PR-lifecycle sweep skipped: store checkout unavailable ({Kind}): {Message}",
-                        cloneFailure.Kind, cloneFailure.Message);
+                        cloneFailure.Kind,
+                        cloneFailure.Message
+                    );
                     return [];
                 }
 
                 var rows = await store.ListReviewedPrsAsync(ct).ConfigureAwait(false);
                 IReadOnlyList<ReviewedPr> reviewed =
-                    [.. rows.Select(PrLifecycleSweepSeam.MapReviewedPr).Where(pr => pr is not null).Select(pr => pr!)];
+                [
+                    .. rows.Select(PrLifecycleSweepSeam.MapReviewedPr).Where(pr => pr is not null).Select(pr => pr!),
+                ];
 
                 // Reconcile against the store's actual review/* branches so a PR whose review row is absent
                 // from this daemon's DB (fresh DB / churn) still has its notes branch resolved when it closes.
                 var reviewBranches = await ListRemoteReviewBranchesAsync(hostGit, sweeperRepoRoot, sweepLogger, ct)
                     .ConfigureAwait(false);
                 return OrphanBranchReconciler.Reconcile(
-                    reviewed, reviewBranches, sweepPollTargets, sweepLogger, warnedOrphanBranches);
+                    reviewed,
+                    reviewBranches,
+                    sweepPollTargets,
+                    sweepLogger,
+                    warnedOrphanBranches
+                );
             },
             (pr, ct) => PrLifecycleSweepSeam.ResolveLifecycleAsync(providers, pr, ct),
             branchManager,
@@ -893,7 +1020,8 @@ if (daemonOptions.EnableToolAssistedReview
             "main",
             daemonOptions.MergeNotesBranchOnClose,
             loggerFactory.CreateLogger<PrLifecycleSweeper>(),
-            extractKnowledgeAsync);
+            extractKnowledgeAsync
+        );
     });
 
     // Reads a merged PR's accumulated review notes off its persistent notes branch (they live on
@@ -902,7 +1030,11 @@ if (daemonOptions.EnableToolAssistedReview
     // PRs/<p>/<slug>/<pr>). Best-effort: an unreadable/absent notes tree yields a short placeholder rather
     // than throwing — extraction must never block the lifecycle (design §6).
     static async Task<string> ReadPrNotesFromBranchAsync(
-        GitRunner git, string repoRoot, string branch, CancellationToken ct)
+        GitRunner git,
+        string repoRoot,
+        string branch,
+        CancellationToken ct
+    )
     {
         _ = await git.RunAsync(["-C", repoRoot, "fetch", "origin"], repoRoot, ct).ConfigureAwait(false);
 
@@ -911,8 +1043,11 @@ if (daemonOptions.EnableToolAssistedReview
             ? "PRs/" + branch["review/".Length..]
             : branch;
 
-        var listed = await git
-            .RunAsync(["-C", repoRoot, "ls-tree", "-r", "--name-only", remoteRef, "--", notesRelPath], repoRoot, ct)
+        var listed = await git.RunAsync(
+                ["-C", repoRoot, "ls-tree", "-r", "--name-only", remoteRef, "--", notesRelPath],
+                repoRoot,
+                ct
+            )
             .ConfigureAwait(false);
         if (!listed.Succeeded || string.IsNullOrWhiteSpace(listed.Stdout))
         {
@@ -920,7 +1055,12 @@ if (daemonOptions.EnableToolAssistedReview
         }
 
         var builder = new System.Text.StringBuilder();
-        foreach (var file in listed.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (
+            var file in listed.Stdout.Split(
+                '\n',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+            )
+        )
         {
             var show = await git.RunAsync(["-C", repoRoot, "show", $"{remoteRef}:{file}"], repoRoot, ct)
                 .ConfigureAwait(false);
@@ -939,8 +1079,10 @@ if (daemonOptions.EnableToolAssistedReview
 // SandboxCredential is a value type, so it cannot be a DI singleton; pass the daemon identity explicitly
 // via ActivatorUtilities (its ctor param is the trailing, type-matched arg) while the rest resolves from DI.
 builder.Services.AddSingleton<IReviewStageExecutor>(sp =>
-    ActivatorUtilities.CreateInstance<DaemonReviewStageExecutor>(sp, daemonCredential, gatewayBaseUrl));
+    ActivatorUtilities.CreateInstance<DaemonReviewStageExecutor>(sp, daemonCredential, gatewayBaseUrl)
+);
 builder.Services.AddSingleton<ReviewProgressReporter>();
+
 // In-memory retry governance for the orchestrator: attempt-counting + exponential backoff + park-after-K,
 // so a stuck ContextReady backs off (not the old ~30s hot-loop) and a genuinely stuck commit is parked +
 // alerted. Not persisted — a restart resets it, so a restart retries parked runs.
@@ -949,8 +1091,10 @@ builder.Services.AddSingleton(sp => new RetryGovernor(
     TimeSpan.FromSeconds(daemonOptions.RetryBackoffBaseSeconds),
     TimeSpan.FromSeconds(daemonOptions.RetryBackoffCapSeconds),
     () => DateTimeOffset.UtcNow,
-    sp.GetRequiredService<ILogger<RetryGovernor>>()));
+    sp.GetRequiredService<ILogger<RetryGovernor>>()
+));
 builder.Services.AddSingleton<PrOrchestrator>();
+
 // The route back for a run the poll can no longer reach. The poll only ever enumerates OPEN PRs inside its
 // recency window, so a run left non-terminal when its PR merges, closes, or goes quiet is never retried by
 // anything again. Registered unless the operator disables it by zeroing the grace period.
@@ -969,16 +1113,20 @@ if (daemonOptions.StrandedRunGraceHours > 0)
         // cap, so this knob widens WHEN a retry-pending run is picked up, never HOW MANY run at once.
         var grace = TimeSpan.FromHours(daemonOptions.StrandedRunGraceHours);
         var retryPendingGrace = StrandedRunReconciler.ResolveRetryPendingGrace(
-            daemonOptions.StrandedRunRetryPendingGraceMinutes, grace);
+            daemonOptions.StrandedRunRetryPendingGraceMinutes,
+            grace
+        );
 
         return new StrandedRunReconciler(
             listStrandedRuns: store.ListStrandedRuns,
-            getPrLifecycleAsync: (row, ct) => PrLifecycleSweepSeam.ResolveLifecycleAsync(
-                providers,
-                row.Repo,
-                PrLifecycleSweepSeam.MapProviderNamespace(row.Repo.Provider),
-                row.Run.PrId,
-                ct),
+            getPrLifecycleAsync: (row, ct) =>
+                PrLifecycleSweepSeam.ResolveLifecycleAsync(
+                    providers,
+                    row.Repo,
+                    PrLifecycleSweepSeam.MapProviderNamespace(row.Repo.Provider),
+                    row.Run.PrId,
+                    ct
+                ),
             resumeAsync: orchestrator.ReconcileAsync,
             updateRunState: store.UpdateReviewRunState,
             timeProvider: TimeProvider.System,
@@ -987,9 +1135,11 @@ if (daemonOptions.StrandedRunGraceHours > 0)
             maxResumesPerPass: daemonOptions.StrandedRunMaxResumesPerSweep,
             logger: sp.GetRequiredService<ILogger<StrandedRunReconciler>>(),
             listRetryPendingRuns: retryPendingGrace > TimeSpan.Zero ? store.ListRetryPendingRuns : null,
-            retryPendingGrace: retryPendingGrace);
+            retryPendingGrace: retryPendingGrace
+        );
     });
 }
+
 // ── eval corpus sweep (#400) ───────────────────────────────────────────────────────────────────
 // The corpus reader, its persisted window and the consumer that joins the two, registered only when
 // an operator has set a cadence. Until this existed, all three were complete, tested and constructed
@@ -1021,19 +1171,18 @@ if (EvalSweepConfiguration.Resolve(daemonOptions) is { } evalSweep)
             // would discard is never materialised (#453). Memoised for the last run read, which is
             // all the memory a window's worth of contiguous candidates needs.
             EvalCorpusSweep.GradeArtifactReader(store),
-            new DaemonCorpusReader(
-                store,
-                ModelFamilies.Of,
-                loggerFactory.CreateLogger<DaemonCorpusReader>()),
+            new DaemonCorpusReader(store, ModelFamilies.Of, loggerFactory.CreateLogger<DaemonCorpusReader>()),
             new EvalCorpusWatermark(store, loggerFactory.CreateLogger<EvalCorpusWatermark>()),
             evalSweepWindow,
-            loggerFactory.CreateLogger<EvalCorpusSweep>());
+            loggerFactory.CreateLogger<EvalCorpusSweep>()
+        );
 
         return new EvalCorpusSweepSchedule(
             sweep.SweepOnceAsync,
             evalSweepInterval,
             TimeProvider.System,
-            loggerFactory.CreateLogger<EvalCorpusSweepSchedule>());
+            loggerFactory.CreateLogger<EvalCorpusSweepSchedule>()
+        );
     });
 }
 
@@ -1053,16 +1202,30 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     // so it observes the state this cycle's polls left behind, and the eval sweep runs last because it
     // only reads: nothing downstream of it depends on when in the cycle it happened.
     sweepAsync: ComposeMaintenanceSweep(
-        ("PR-lifecycle", sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null),
-        ("deep-link retention", sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null),
-        ("stranded-run", sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null),
-        ("eval-corpus", sp.GetService<EvalCorpusSweepSchedule>() is { } evalCorpusSweep ? evalCorpusSweep.SweepAsync : null)),
+        (
+            "PR-lifecycle",
+            sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null
+        ),
+        (
+            "deep-link retention",
+            sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null
+        ),
+        (
+            "stranded-run",
+            sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null
+        ),
+        (
+            "eval-corpus",
+            sp.GetService<EvalCorpusSweepSchedule>() is { } evalCorpusSweep ? evalCorpusSweep.SweepAsync : null
+        )
+    ),
     // The reporter is passed so the startup no-change-on-a-first-review rate reaches the CONSOLE, which is
     // filtered to Warning for every category except this one. GetRequiredService, not GetService: a missing
     // registration must fail at startup rather than leave the standing check silently inert, which is the
     // exact failure mode — a control that is present and does nothing — this check exists to catch.
     progress: sp.GetRequiredService<ReviewProgressReporter>(),
-    firstReviewLookbackDays: daemonOptions.FirstReviewSentinelLookbackDays));
+    firstReviewLookbackDays: daemonOptions.FirstReviewSentinelLookbackDays
+));
 
 // Chains the optional maintenance sweeps into the poller's single seam, in the order they were introduced:
 // the lifecycle sweep first, so its today's-semantics timing is unchanged by the sweeps landing behind it.
@@ -1077,7 +1240,8 @@ builder.Services.AddHostedService(sp => new PrPollingService(
 // registered sweep is named too — and cancellation is passed through untouched, so a clean shutdown is
 // still told from a failure by type rather than logged as an error.
 static Func<CancellationToken, Task>? ComposeMaintenanceSweep(
-    params (string Name, Func<CancellationToken, Task>? Sweep)[] sweeps)
+    params (string Name, Func<CancellationToken, Task>? Sweep)[] sweeps
+)
 {
     var present = sweeps.Where(s => s.Sweep is not null).ToArray();
     if (present.Length == 0)
@@ -1106,8 +1270,8 @@ static Func<CancellationToken, Task>? ComposeMaintenanceSweep(
 // secret: POST /api/auth/webhook/{provider} (post-auth callback) and POST /api/discovery/context_discovery
 // (context-discovery callback — returns 200 accept-and-ignore so a non-2xx never tears down the sandbox
 // session). MVC discovery is filtered to exactly those two controllers so no other route can leak in.
-builder.Services
-    .AddControllers()
+builder
+    .Services.AddControllers()
     .ConfigureApplicationPartManager(apm =>
     {
         // AuthWebhookController lives in LmAgentInfra (a referenced library, not auto-discovered), and
@@ -1120,7 +1284,11 @@ builder.Services
         {
             apm.ApplicationParts.Add(new AssemblyPart(daemonAssembly));
         }
-        foreach (var existing in apm.FeatureProviders.OfType<Microsoft.AspNetCore.Mvc.Controllers.ControllerFeatureProvider>().ToList())
+        foreach (
+            var existing in apm
+                .FeatureProviders.OfType<Microsoft.AspNetCore.Mvc.Controllers.ControllerFeatureProvider>()
+                .ToList()
+        )
         {
             _ = apm.FeatureProviders.Remove(existing);
         }
@@ -1136,7 +1304,8 @@ if (daemonKeyMissing)
     app.Logger.LogWarning(
         "CRD_SANDBOX_APP_KEY is not set; connecting to the sandbox gateway as app '{AppId}' with no key "
             + "(keyless AUTH_ENFORCE=off dev path). Set CRD_SANDBOX_APP_KEY for a gateway that enforces auth.",
-        daemonAppId);
+        daemonAppId
+    );
 }
 
 // The gateway↔webhook boundary is the shared secret the shared AuthWebhookController verifies (see the

@@ -50,10 +50,11 @@ public sealed class SentinelAuthorizationTests
         await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        _ = (await act.Should().ThrowAsync<InvalidOperationException>())
-            .WithMessage("*no earlier primary round*");
-        store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind).Should().BeNull(
-            "a claim the run is not entitled to make must not survive the run that made it");
+        _ = (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*no earlier primary round*");
+        store
+            .TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind)
+            .Should()
+            .BeNull("a claim the run is not entitled to make must not survive the run that made it");
     }
 
     /// <summary>
@@ -205,23 +206,37 @@ public sealed class SentinelAuthorizationTests
             TimeSpan.FromSeconds(30),
             TimeSpan.FromSeconds(900),
             () => new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero),
-            NullLogger<RetryGovernor>.Instance);
+            NullLogger<RetryGovernor>.Instance
+        );
         var orchestrator = new PrOrchestrator(
-            store, Executor(store, factory), NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+            store,
+            Executor(store, factory),
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor
+        );
         var seed = RunSeed(EnsureRepo(store), "head-sha", "wm-1", ReviewStage.Discovered);
 
         var poll = async () => await orchestrator.RunAsync(seed, CancellationToken.None);
-        _ = await poll.Should().ThrowAsync<SentinelUnauthorizedException>(
-            "the refusal carries its own type so the governor can charge it");
+        _ = await poll.Should()
+            .ThrowAsync<SentinelUnauthorizedException>(
+                "the refusal carries its own type so the governor can charge it"
+            );
         var reviewsAfterFirstPoll = factory.CreatedProfileIds.Count;
-        reviewsAfterFirstPoll.Should().BeGreaterThan(
-            0, "the first poll paid for a full review before the refusal — that is the cost being bounded");
+        reviewsAfterFirstPoll
+            .Should()
+            .BeGreaterThan(
+                0,
+                "the first poll paid for a full review before the refusal — that is the cost being bounded"
+            );
 
         _ = await orchestrator.RunAsync(seed, CancellationToken.None);
 
-        factory.CreatedProfileIds.Count.Should().Be(
-            reviewsAfterFirstPoll,
-            "the budget is spent, so the run parks instead of buying the identical review again every poll");
+        factory
+            .CreatedProfileIds.Count.Should()
+            .Be(
+                reviewsAfterFirstPoll,
+                "the budget is spent, so the run parks instead of buying the identical review again every poll"
+            );
     }
 
     /// <summary>
@@ -250,8 +265,10 @@ public sealed class SentinelAuthorizationTests
 
         var artifact = store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind);
         artifact.Should().NotBeNull("a review that reports findings is a review, whatever it opens with");
-        JsonSerializer.Deserialize<ReviewArtifactPayload>(artifact!.Payload)!.ReviewText
-            .Should().Be(OpensWithThePhrase, "and it is kept verbatim, not trimmed to the part that survived");
+        JsonSerializer
+            .Deserialize<ReviewArtifactPayload>(artifact!.Payload)!
+            .ReviewText.Should()
+            .Be(OpensWithThePhrase, "and it is kept verbatim, not trimmed to the part that survived");
     }
 
     // ── the standing population check ─────────────────────────────────────────────────────────────
@@ -267,8 +284,7 @@ public sealed class SentinelAuthorizationTests
         using var store = new ReviewStore(db.ConnectionString);
         _ = SeedPriorRound(store, EnsureRepo(store), ReviewStage.Posted, Sentinel);
 
-        var payloads = store.GetFirstReviewPayloadsSince(
-            EpochStart, DaemonReviewStageExecutor.ReviewArtifactKind);
+        var payloads = store.GetFirstReviewPayloadsSince(EpochStart, DaemonReviewStageExecutor.ReviewArtifactKind);
 
         payloads.Should().ContainSingle();
         DaemonReviewStageExecutor.IsNoNewFindingsSentinel(ReviewTextOf(payloads[0])).Should().BeTrue();
@@ -287,17 +303,18 @@ public sealed class SentinelAuthorizationTests
         _ = SeedPriorRound(store, repoId, ReviewStage.Posted, RealFindings);
 
         var later = store.CreateOrGetReviewRun(RunSeed(repoId, "head-sha", "wm-1", ReviewStage.Posted));
-        _ = store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = later.Id,
-            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
-            Provider = "github",
-            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(Sentinel, "later-run", "primary")),
-        });
+        _ = store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = later.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(Sentinel, "later-run", "primary")),
+            }
+        );
 
-        var payloads = store.GetFirstReviewPayloadsSince(
-            EpochStart, DaemonReviewStageExecutor.ReviewArtifactKind);
+        var payloads = store.GetFirstReviewPayloadsSince(EpochStart, DaemonReviewStageExecutor.ReviewArtifactKind);
 
         payloads.Should().ContainSingle("only the PR's first review counts");
         DaemonReviewStageExecutor.IsNoNewFindingsSentinel(ReviewTextOf(payloads[0])).Should().BeFalse();
@@ -320,7 +337,9 @@ public sealed class SentinelAuthorizationTests
         // a day from now leaves the row it just wrote outside it, which is the same relation as a row written a
         // fortnight before a seven-day window.
         var payloads = store.GetFirstReviewPayloadsSince(
-            DateTimeOffset.UtcNow.AddDays(1), DaemonReviewStageExecutor.ReviewArtifactKind);
+            DateTimeOffset.UtcNow.AddDays(1),
+            DaemonReviewStageExecutor.ReviewArtifactKind
+        );
 
         payloads.Should().BeEmpty("a first review from before the window says nothing about the fleet today");
     }
@@ -332,7 +351,8 @@ public sealed class SentinelAuthorizationTests
 
     private static string? ReviewTextOf(string payload) =>
         JsonSerializer
-            .Deserialize<ReviewArtifactPayload>(payload, DaemonReviewStageExecutor.PayloadOptions)?.ReviewText;
+            .Deserialize<ReviewArtifactPayload>(payload, DaemonReviewStageExecutor.PayloadOptions)
+            ?.ReviewText;
 
     // ── fixtures ──────────────────────────────────────────────────────────────────────────────────
 
@@ -344,10 +364,12 @@ public sealed class SentinelAuthorizationTests
         var sandbox = new FakeSandboxCommandRunner()
             .OnArgvContains(
                 "rev-parse --is-inside-work-tree",
-                new SandboxCommandResult(1, string.Empty, "not a git repo"))
+                new SandboxCommandResult(1, string.Empty, "not a git repo")
+            )
             .OnArgvContains(
                 "diff",
-                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty));
+                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty)
+            );
 
         return new DaemonReviewStageExecutor(
             store,
@@ -356,17 +378,20 @@ public sealed class SentinelAuthorizationTests
             new FakeSandboxFileSystem(),
             new CodeReviewDaemonOptions(),
             [new FakeReviewCommentPublisher("github")],
-            NullLoggerFactory.Instance);
+            NullLoggerFactory.Instance
+        );
     }
 
     private static long EnsureRepo(ReviewStore store) =>
-        store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "repo-stable-1",
-        });
+        store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-stable-1",
+            }
+        );
 
     private static ReviewRun SeedRun(ReviewStore store) =>
         store.CreateOrGetReviewRun(RunSeed(EnsureRepo(store), "head-sha", "wm-1", ReviewStage.Discovered));
@@ -376,24 +401,21 @@ public sealed class SentinelAuthorizationTests
     /// means it persisted no review artifact — a run that was discovered and then died, which is the state
     /// all six of the live prior runs were in.
     /// </summary>
-    private static ReviewRun SeedPriorRound(
-        ReviewStore store,
-        long repoId,
-        ReviewStage stage,
-        string? reviewText)
+    private static ReviewRun SeedPriorRound(ReviewStore store, long repoId, ReviewStage stage, string? reviewText)
     {
         var prior = store.CreateOrGetReviewRun(RunSeed(repoId, "old-head-sha", "wm-0", stage));
         if (reviewText is not null)
         {
-            _ = store.AddArtifact(new ReviewArtifact
-            {
-                ReviewRunId = prior.Id,
-                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
-                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
-                Provider = "github",
-                Payload = JsonSerializer.Serialize(
-                    new ReviewArtifactPayload(reviewText, "prior-run", "primary")),
-            });
+            _ = store.AddArtifact(
+                new ReviewArtifact
+                {
+                    ReviewRunId = prior.Id,
+                    ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                    ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                    Provider = "github",
+                    Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(reviewText, "prior-run", "primary")),
+                }
+            );
         }
 
         return prior;

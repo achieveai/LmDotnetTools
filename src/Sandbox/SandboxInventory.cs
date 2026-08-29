@@ -53,16 +53,18 @@ public sealed class SandboxInventory
         var confirmed = string.Equals(status, SandboxInventoryStatuses.Confirmed, StringComparison.Ordinal);
         Status = confirmed ? SandboxInventoryStatuses.Confirmed : SandboxInventoryStatuses.Unavailable;
         Items = confirmed && items is not null ? [.. items] : [];
-        UnavailableReason = confirmed
-            ? null
-            : unavailableReason is { Length: > 0 } reason ? reason : DefaultReasonFor(status);
+        UnavailableReason =
+            confirmed ? null
+            : unavailableReason is { Length: > 0 } reason ? reason
+            : DefaultReasonFor(status);
     }
 
     /// <summary>
     /// The inventory reported when the gateway said nothing at all — the shape every pre-inventory
     /// gateway produces, and the default a create result carries when the block is absent.
     /// </summary>
-    public static SandboxInventory Unavailable(string reason) => new(status: null, unavailableReason: reason, items: null);
+    public static SandboxInventory Unavailable(string reason) =>
+        new(status: null, unavailableReason: reason, items: null);
 
     /// <summary>
     /// The reason a result carries when the gateway said nothing about inventory at all — an older

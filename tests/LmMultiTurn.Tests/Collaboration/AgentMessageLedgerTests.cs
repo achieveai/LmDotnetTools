@@ -92,10 +92,7 @@ public class AgentMessageLedgerTests
             _ => null,
         };
 
-        var result = ledger.TryAdmit(
-            Request(messageType, inResponseTo: inResponseTo),
-            new AgentInbox(8)
-        );
+        var result = ledger.TryAdmit(Request(messageType, inResponseTo: inResponseTo), new AgentInbox(8));
 
         // Whether a sender is blocked is a property of the kind of message it sent, not something a
         // caller may assert about itself.
@@ -135,10 +132,7 @@ public class AgentMessageLedgerTests
 
         // A null inbox is how the directory says "no such agent"; the ledger declines rather than
         // inventing a queue for an identifier nobody is reading.
-        ledger
-            .TryAdmit(Request(), targetInbox: null)
-            .FailureCode.Should()
-            .Be(AgentMessageFailureCodes.UnknownTarget);
+        ledger.TryAdmit(Request(), targetInbox: null).FailureCode.Should().Be(AgentMessageFailureCodes.UnknownTarget);
         ledger.Count.Should().Be(0);
     }
 
@@ -166,10 +160,7 @@ public class AgentMessageLedgerTests
         var senderInbox = new AgentInbox(8);
         var question = ledger.TryAdmit(Request(), targetInbox).MessageId!;
 
-        var answer = ledger.TryAdmit(
-            Request(AgentMessageType.Response, Target, Sender, question),
-            senderInbox
-        );
+        var answer = ledger.TryAdmit(Request(AgentMessageType.Response, Target, Sender, question), senderInbox);
 
         // Admission is a claim, not a closure: the asker has not been told anything yet.
         var claimed = ledger.Find(question)!;
@@ -257,19 +248,14 @@ public class AgentMessageLedgerTests
 
         // This is the idempotency guarantee. A retried reply must not deliver a second answer to a
         // sender that already resumed on the first one.
-        ledger
-            .TryAdmit(reply, new AgentInbox(8))
-            .FailureCode.Should()
-            .Be(AgentMessageFailureCodes.CorrelationClosed);
+        ledger.TryAdmit(reply, new AgentInbox(8)).FailureCode.Should().Be(AgentMessageFailureCodes.CorrelationClosed);
     }
 
     [Fact]
     public void TryAdmit_LeavesADelegationOpenWhileProgressIsReported()
     {
         var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
-        var delegation = ledger
-            .TryAdmit(Request(AgentMessageType.DelegateTask), new AgentInbox(8))
-            .MessageId!;
+        var delegation = ledger.TryAdmit(Request(AgentMessageType.DelegateTask), new AgentInbox(8)).MessageId!;
 
         var update = ledger.TryAdmit(
             Request(AgentMessageType.TaskUpdate, Target, Sender, delegation),
@@ -280,10 +266,7 @@ public class AgentMessageLedgerTests
         // the delegate is still doing it.
         update.Succeeded.Should().BeTrue();
         ledger.Find(delegation)!.IsClosed.Should().BeFalse();
-        ledger
-            .GetOpenInbound(Target)
-            .Should()
-            .ContainSingle(entry => entry.MessageId == delegation);
+        ledger.GetOpenInbound(Target).Should().ContainSingle(entry => entry.MessageId == delegation);
     }
 
     [Fact]
@@ -293,10 +276,7 @@ public class AgentMessageLedgerTests
         var question = ledger.TryAdmit(Request(), new AgentInbox(8)).MessageId!;
         var inbox = new AgentInbox(8);
 
-        var update = ledger.TryAdmit(
-            Request(AgentMessageType.TaskUpdate, Target, Sender, question),
-            inbox
-        );
+        var update = ledger.TryAdmit(Request(AgentMessageType.TaskUpdate, Target, Sender, question), inbox);
 
         // A question is answered, not progressed. Admitting an update against one would leave the
         // asker holding a question that closes nothing could ever close, short of the target leaving.
@@ -315,10 +295,7 @@ public class AgentMessageLedgerTests
         var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
 
         ledger
-            .TryAdmit(
-                Request(AgentMessageType.Response, Target, Sender, "agentmsg-missing"),
-                new AgentInbox(8)
-            )
+            .TryAdmit(Request(AgentMessageType.Response, Target, Sender, "agentmsg-missing"), new AgentInbox(8))
             .FailureCode.Should()
             .Be(AgentMessageFailureCodes.UnknownCorrelation);
     }
@@ -332,10 +309,7 @@ public class AgentMessageLedgerTests
         // Otherwise a bystander could close somebody else's question, and the real target's answer
         // would then be refused as a duplicate.
         ledger
-            .TryAdmit(
-                Request(AgentMessageType.Response, "agent-c", Sender, question),
-                new AgentInbox(8)
-            )
+            .TryAdmit(Request(AgentMessageType.Response, "agent-c", Sender, question), new AgentInbox(8))
             .FailureCode.Should()
             .Be(AgentMessageFailureCodes.CorrelationNotAddressedToSender);
     }
@@ -347,10 +321,7 @@ public class AgentMessageLedgerTests
         var question = ledger.TryAdmit(Request(), new AgentInbox(8)).MessageId!;
 
         ledger
-            .TryAdmit(
-                Request(AgentMessageType.Response, Target, "agent-c", question),
-                new AgentInbox(8)
-            )
+            .TryAdmit(Request(AgentMessageType.Response, Target, "agent-c", question), new AgentInbox(8))
             .FailureCode.Should()
             .Be(AgentMessageFailureCodes.CorrelationNotAddressedToSender);
     }
@@ -488,16 +459,8 @@ public class AgentMessageLedgerTests
         clock.Advance(TimeSpan.FromSeconds(5));
         var second = ledger.TryAdmit(Request(), new AgentInbox(8)).MessageId!;
 
-        ledger
-            .GetOpenOutbound(Sender)
-            .Select(entry => entry.MessageId)
-            .Should()
-            .Equal(first, second);
-        ledger
-            .GetOpenInbound(Target)
-            .Select(entry => entry.MessageId)
-            .Should()
-            .Equal(first, second);
+        ledger.GetOpenOutbound(Sender).Select(entry => entry.MessageId).Should().Equal(first, second);
+        ledger.GetOpenInbound(Target).Select(entry => entry.MessageId).Should().Equal(first, second);
         ledger.GetOpenInbound(Sender).Should().BeEmpty();
     }
 
@@ -527,20 +490,14 @@ public class AgentMessageLedgerTests
     {
         var clock = new ManualClock();
         var ledger = new AgentMessageLedger(
-            new AgentCollaborationOptions
-            {
-                MaxClosedEntries = 1,
-                ClosedEntryRetention = TimeSpan.FromHours(1),
-            },
+            new AgentCollaborationOptions { MaxClosedEntries = 1, ClosedEntryRetention = TimeSpan.FromHours(1) },
             clock
         );
 
         var closed = new List<string>();
         for (var i = 0; i < 3; i++)
         {
-            var messageId = ledger
-                .TryAdmit(Request(AgentMessageType.Steer), new AgentInbox(8))
-                .MessageId!;
+            var messageId = ledger.TryAdmit(Request(AgentMessageType.Steer), new AgentInbox(8)).MessageId!;
             _ = ledger.MarkDelivered(messageId);
             closed.Add(messageId);
         }

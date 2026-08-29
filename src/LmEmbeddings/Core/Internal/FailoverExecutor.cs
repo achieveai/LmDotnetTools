@@ -3,7 +3,8 @@ using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core.Internal;
 
-internal class FailoverExecutor<TService> where TService : class
+internal class FailoverExecutor<TService>
+    where TService : class
 {
     private readonly TService _primary;
     private readonly TService _backup;
@@ -17,7 +18,8 @@ internal class FailoverExecutor<TService> where TService : class
         TService backup,
         FailoverOptions options,
         ILogger logger,
-        string serviceName)
+        string serviceName
+    )
     {
         _primary = primary;
         _backup = backup;
@@ -29,18 +31,26 @@ internal class FailoverExecutor<TService> where TService : class
 
     public async Task<T> ExecuteAsync<T>(
         Func<TService, CancellationToken, Task<T>> operation,
-        CancellationToken callerToken)
+        CancellationToken callerToken
+    )
     {
         if (!_stateController.ShouldUsePrimary())
         {
-            _logger.LogDebug("Primary {ServiceName} marked unhealthy; routing request directly to backup.", _serviceName);
+            _logger.LogDebug(
+                "Primary {ServiceName} marked unhealthy; routing request directly to backup.",
+                _serviceName
+            );
             try
             {
                 return await operation(_backup, callerToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !callerToken.IsCancellationRequested)
             {
-                _logger.LogError(ex, "Backup {ServiceName} failed while primary is in cooldown. Both services may be unhealthy.", _serviceName);
+                _logger.LogError(
+                    ex,
+                    "Backup {ServiceName} failed while primary is in cooldown. Both services may be unhealthy.",
+                    _serviceName
+                );
                 throw;
             }
         }
@@ -64,13 +74,15 @@ internal class FailoverExecutor<TService> where TService : class
                 return await operation(_backup, callerToken).ConfigureAwait(false);
             }
             // Let caller-initiated cancellation propagate unwrapped; wrap all other failures.
-            catch (Exception backupEx) when (backupEx is not OperationCanceledException || !callerToken.IsCancellationRequested)
+            catch (Exception backupEx)
+                when (backupEx is not OperationCanceledException || !callerToken.IsCancellationRequested)
             {
                 _logger.LogError(backupEx, "Backup {ServiceName} also failed after primary failure.", _serviceName);
                 throw new PrimaryBackupFailoverException(
                     $"Both primary and backup {_serviceName}s failed.",
                     primaryEx,
-                    backupEx);
+                    backupEx
+                );
             }
         }
         catch (Exception unexpectedEx) when (!callerToken.IsCancellationRequested)
@@ -83,7 +95,8 @@ internal class FailoverExecutor<TService> where TService : class
                 unexpectedEx,
                 "Primary {ServiceName} failed with unexpected error type {ErrorType}. Marking unhealthy but not failing over.",
                 _serviceName,
-                unexpectedEx.GetType().Name);
+                unexpectedEx.GetType().Name
+            );
             throw;
         }
     }
@@ -91,8 +104,10 @@ internal class FailoverExecutor<TService> where TService : class
     private bool IsFailoverTrigger(Exception ex, CancellationToken callerToken)
     {
         return !callerToken.IsCancellationRequested
-            && (ex is OperationCanceledException or TimeoutException
-                || (_options.FailoverOnHttpError && ex is HttpRequestException));
+            && (
+                ex is OperationCanceledException or TimeoutException
+                || (_options.FailoverOnHttpError && ex is HttpRequestException)
+            );
     }
 
     public void ResetToPrimary()

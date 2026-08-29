@@ -22,7 +22,8 @@ public sealed class ModeToolSelection
     private ModeToolSelection(
         bool isLegacy,
         Dictionary<string, HashSet<string>> byGroup,
-        HashSet<string> wildcardGroups)
+        HashSet<string> wildcardGroups
+    )
     {
         IsLegacy = isLegacy;
         _byGroup = byGroup;
@@ -100,9 +101,7 @@ public sealed class ModeToolSelection
             return null;
         }
 
-        return _byGroup.TryGetValue(group, out var names)
-            ? names
-            : new HashSet<string>(StringComparer.Ordinal);
+        return _byGroup.TryGetValue(group, out var names) ? names : new HashSet<string>(StringComparer.Ordinal);
     }
 
     /// <summary>

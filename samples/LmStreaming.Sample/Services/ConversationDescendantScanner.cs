@@ -105,7 +105,8 @@ public sealed class ConversationDescendantScanner
     public ConversationDescendantScanner(
         IConversationStore store,
         ILogger<ConversationDescendantScanner> logger,
-        int capacity = DefaultCapacity)
+        int capacity = DefaultCapacity
+    )
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(capacity, 1);
         _store = store;
@@ -119,9 +120,7 @@ public sealed class ConversationDescendantScanner
     ///     ordinal). Always pays for a full store scan; callers that poll should use
     ///     <see cref="GetOrScanAsync"/> instead.
     /// </summary>
-    public async Task<IReadOnlyList<SubAgentSummary>> ScanAsync(
-        string rootThreadId,
-        CancellationToken ct = default)
+    public async Task<IReadOnlyList<SubAgentSummary>> ScanAsync(string rootThreadId, CancellationToken ct = default)
     {
         var allNodes = await ScanAllPersistedSubAgentNodesAsync(rootThreadId, ct);
         var childrenByParent = allNodes
@@ -153,7 +152,8 @@ public sealed class ConversationDescendantScanner
                             + "{ThreadId} (parent {ParentThreadId})",
                         rootThreadId,
                         child.ThreadId,
-                        parentId);
+                        parentId
+                    );
                     continue;
                 }
 
@@ -180,7 +180,8 @@ public sealed class ConversationDescendantScanner
     /// </summary>
     public async Task<IReadOnlyList<SubAgentSummary>> GetOrScanAsync(
         string rootThreadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         RootState observed;
         long observedVersion;
@@ -212,8 +213,7 @@ public sealed class ConversationDescendantScanner
             // Looked up rather than GetOrAddState'd on purpose: when the original slot is gone there is
             // nothing this answer may be written into, and creating one only to discard the result would
             // grow the cache and can bound-evict a live root for nothing.
-            if (_byRoot.TryGetValue(rootThreadId, out var node)
-                && ReferenceEquals(node.Value.Value, observed))
+            if (_byRoot.TryGetValue(rootThreadId, out var node) && ReferenceEquals(node.Value.Value, observed))
             {
                 // A completed write-back is USE, so the slot is renewed even when the answer is stale.
                 Renew(node);
@@ -280,8 +280,7 @@ public sealed class ConversationDescendantScanner
         }
 
         var state = new RootState();
-        _byRoot[rootThreadId] = _usageOrder.AddLast(
-            new KeyValuePair<string, RootState>(rootThreadId, state));
+        _byRoot[rootThreadId] = _usageOrder.AddLast(new KeyValuePair<string, RootState>(rootThreadId, state));
 
         while (_byRoot.Count > _capacity)
         {
@@ -330,16 +329,20 @@ public sealed class ConversationDescendantScanner
     /// </remarks>
     private async Task<IReadOnlyList<SubAgentSummary>> ScanAllPersistedSubAgentNodesAsync(
         string requestingThreadId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         // Narrowed by the database, not in memory (#388a). The scope comes from the ROOT row's own
         // tenant - see SubAgentScanScope for why a principal is not available here and would be the
         // wrong thing to use if it were. A root with no tenant falls back to the unscoped overload
         // rather than guessing at a sentinel one.
         var scope = await SubAgentScanScope.ForRootAsync(_store, requestingThreadId, ct);
-        var threads = (scope is null
-            ? await _store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct: ct)
-            : await _store.ListThreadsAsync(scope, SubAgentScanMaxThreads + 1, 0, ct: ct)) ?? [];
+        var threads =
+            (
+                scope is null
+                    ? await _store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct: ct)
+                    : await _store.ListThreadsAsync(scope, SubAgentScanMaxThreads + 1, 0, ct: ct)
+            ) ?? [];
 
         var scanned = Math.Min(threads.Count, SubAgentScanMaxThreads);
         var found = new List<SubAgentSummary>();
@@ -358,7 +361,8 @@ public sealed class ConversationDescendantScanner
                 "Sub-agent scan for {ThreadId} stopped at the {MaxThreads}-thread cap; "
                     + "children persisted beyond that point are not listed.",
                 requestingThreadId,
-                SubAgentScanMaxThreads);
+                SubAgentScanMaxThreads
+            );
         }
 
         return found;

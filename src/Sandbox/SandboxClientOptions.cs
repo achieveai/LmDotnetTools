@@ -119,12 +119,20 @@ public sealed class SandboxClientOptions
 
         if (executionTimeout <= TimeSpan.Zero)
         {
-            throw new ArgumentOutOfRangeException(nameof(executionTimeout), executionTimeout, "Execution timeout must be positive.");
+            throw new ArgumentOutOfRangeException(
+                nameof(executionTimeout),
+                executionTimeout,
+                "Execution timeout must be positive."
+            );
         }
 
         if (transportTimeout <= TimeSpan.Zero)
         {
-            throw new ArgumentOutOfRangeException(nameof(transportTimeout), transportTimeout, "Transport timeout must be positive.");
+            throw new ArgumentOutOfRangeException(
+                nameof(transportTimeout),
+                transportTimeout,
+                "Transport timeout must be positive."
+            );
         }
 
         ServerAddress = serverAddress;
@@ -142,9 +150,9 @@ public sealed class SandboxClientOptions
     /// </summary>
     public override string ToString() =>
         $"SandboxClientOptions {{ ServerAddress = {ServerAddress}, AppId = {AppId}, "
-            + $"ClientSecret = [REDACTED], ExecutionTimeout = {ExecutionTimeout}, "
-            + $"TransportTimeout = {TransportTimeout}, "
-            + $"AllowInsecureDevelopmentTransport = {AllowInsecureDevelopmentTransport} }}";
+        + $"ClientSecret = [REDACTED], ExecutionTimeout = {ExecutionTimeout}, "
+        + $"TransportTimeout = {TransportTimeout}, "
+        + $"AllowInsecureDevelopmentTransport = {AllowInsecureDevelopmentTransport} }}";
 
     /// <summary>
     /// Validates that a NON-blank <paramref name="clientSecret"/> decodes as STANDARD base64 (never

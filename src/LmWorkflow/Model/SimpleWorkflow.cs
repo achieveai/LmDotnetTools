@@ -246,9 +246,7 @@ public static class SimpleWorkflowTranslator
                 return endOfWorkflowId;
             }
 
-            var declared = steps.FirstOrDefault(s =>
-                IsTerminalKind(s.Kind) && !string.IsNullOrWhiteSpace(s.Id)
-            );
+            var declared = steps.FirstOrDefault(s => IsTerminalKind(s.Kind) && !string.IsNullOrWhiteSpace(s.Id));
             if (declared is not null)
             {
                 return endOfWorkflowId = declared.Id;
@@ -369,7 +367,12 @@ public static class SimpleWorkflowTranslator
         switch (kind)
         {
             case "start":
-                return new StartNode { Id = id, Title = title, Next = ToList(ResolveNext(step.Next, fallThrough)) };
+                return new StartNode
+                {
+                    Id = id,
+                    Title = title,
+                    Next = ToList(ResolveNext(step.Next, fallThrough)),
+                };
 
             case "noop":
                 return new ProceduralNode
@@ -521,7 +524,13 @@ public static class SimpleWorkflowTranslator
         switch (node)
         {
             case StartNode start:
-                return new SimpleStep { Id = start.Id, Title = title, Kind = "start", Next = start.Next.FirstOrDefault() };
+                return new SimpleStep
+                {
+                    Id = start.Id,
+                    Title = title,
+                    Kind = "start",
+                    Next = start.Next.FirstOrDefault(),
+                };
 
             case ProceduralNode { TaskList.Count: > 1 } parallel:
                 return new SimpleStep
@@ -584,18 +593,26 @@ public static class SimpleWorkflowTranslator
                 };
 
             case TerminalNode terminal:
-                return new SimpleStep { Id = terminal.Id, Title = title, Kind = "end" };
+                return new SimpleStep
+                {
+                    Id = terminal.Id,
+                    Title = title,
+                    Kind = "end",
+                };
 
             default:
-                return new SimpleStep { Id = node.Id, Title = title, Kind = node.Type.ToString().ToLowerInvariant() };
+                return new SimpleStep
+                {
+                    Id = node.Id,
+                    Title = title,
+                    Kind = node.Type.ToString().ToLowerInvariant(),
+                };
         }
     }
 
     /// <summary>The <c>saveAs</c> name recovered from a task write into <c>state.&lt;name&gt;</c>, or null.</summary>
     private static string? SaveAsOf(WorkflowTask task) =>
-        task.Writes?.To is { } to && to.StartsWith("state.", StringComparison.Ordinal)
-            ? to["state.".Length..]
-            : null;
+        task.Writes?.To is { } to && to.StartsWith("state.", StringComparison.Ordinal) ? to["state.".Length..] : null;
 
     /// <summary>A branch condition as a prose string (unwrapping a JSON string; serializing a structured one).</summary>
     private static string WhenText(JsonNode? when) =>
@@ -648,11 +665,9 @@ public static class SimpleWorkflowTranslator
         }
     }
 
-    private static IReadOnlyList<string> ToList(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? [] : [value];
+    private static IReadOnlyList<string> ToList(string? value) => string.IsNullOrWhiteSpace(value) ? [] : [value];
 
-    private static string? NullIfBlank(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value;
+    private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static WriteSpec? MakeWrites(string? saveAs, bool fanOut) =>
         string.IsNullOrWhiteSpace(saveAs)

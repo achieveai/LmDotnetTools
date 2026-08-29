@@ -344,7 +344,8 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
             workspaceId,
             existing with
             {
-                Marketplaces = MarketplaceAliases.ResolveEffective(dto.Marketplaces, _gatewayOptions.Marketplaces) ?? [],
+                Marketplaces =
+                    MarketplaceAliases.ResolveEffective(dto.Marketplaces, _gatewayOptions.Marketplaces) ?? [],
                 PluginSelection = dto.PluginSelection.Value,
             }
         );
@@ -460,7 +461,10 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
             await AbortAllAsync(candidates);
             throw;
         }
-        var uncommittedIds = new HashSet<string>(uncommitted.Select(session => session.SessionId), StringComparer.Ordinal);
+        var uncommittedIds = new HashSet<string>(
+            uncommitted.Select(session => session.SessionId),
+            StringComparer.Ordinal
+        );
 
         var work = new PostCommitWork(
             Uncommitted: uncommitted,

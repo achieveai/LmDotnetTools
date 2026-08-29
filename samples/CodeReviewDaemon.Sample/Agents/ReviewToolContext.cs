@@ -45,7 +45,8 @@ internal sealed record ReviewToolContext(
     string GatewayBaseUrl,
     string SessionId,
     IReadOnlyList<string> ReadOnlyToolAllowList,
-    SandboxCredential Credential);
+    SandboxCredential Credential
+);
 
 /// <summary>
 /// Copies ONLY the allow-listed tool contracts+handlers from a source registry into the loop's registry:

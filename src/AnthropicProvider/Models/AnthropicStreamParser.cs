@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 /// <summary>
@@ -170,10 +171,7 @@ public class AnthropicStreamParser
             try
             {
                 var citationsJson = contentBlock["citations"]!.ToJsonString();
-                _logger.LogDebug(
-                    "Parsing citations from content_block_start: {CitationsJson}",
-                    citationsJson
-                );
+                _logger.LogDebug("Parsing citations from content_block_start: {CitationsJson}", citationsJson);
                 _contentBlocks[index].Citations = JsonSerializer.Deserialize<List<Citation>>(
                     citationsJson,
                     _jsonOptions
@@ -246,8 +244,8 @@ public class AnthropicStreamParser
                 FunctionName = _contentBlocks[index].Name ?? string.Empty,
                 // For streaming server_tool_use blocks, do not emit "{}" as a placeholder.
                 // A placeholder gets concatenated with later JSON delta fragments (e.g. "{}{...}").
-                FunctionArgs = contentBlock["input"] is { } inputNode
-                    && inputNode.AsObject().Count > 0
+                FunctionArgs =
+                    contentBlock["input"] is { } inputNode && inputNode.AsObject().Count > 0
                         ? inputNode.ToJsonString()
                         : null,
                 ExecutionTarget = ExecutionTarget.ProviderServer,
@@ -302,10 +300,11 @@ public class AnthropicStreamParser
 
     private static bool IsServerToolResultType(string blockType)
     {
-        return blockType is "web_search_tool_result"
-            or "web_fetch_tool_result"
-            or "bash_code_execution_tool_result"
-            or "text_editor_code_execution_tool_result";
+        return blockType
+            is "web_search_tool_result"
+                or "web_fetch_tool_result"
+                or "bash_code_execution_tool_result"
+                or "text_editor_code_execution_tool_result";
     }
 
     private static string GetToolNameFromResultType(string resultType)
@@ -342,77 +341,74 @@ public class AnthropicStreamParser
         switch (deltaType)
         {
             case "text_delta":
+            {
+                var text = delta["text"]?.GetValue<string>() ?? string.Empty;
+                block.Text += text;
+
+                // Return a TextUpdateMessage for the delta
+                var textUpdate = new TextUpdateMessage
                 {
-                    var text = delta["text"]?.GetValue<string>() ?? string.Empty;
-                    block.Text += text;
+                    Text = text,
+                    Role = ParseRole(_role),
+                    FromAgent = _messageId,
+                    GenerationId = _messageId,
+                    IsThinking = false,
+                };
 
-                    // Return a TextUpdateMessage for the delta
-                    var textUpdate = new TextUpdateMessage
-                    {
-                        Text = text,
-                        Role = ParseRole(_role),
-                        FromAgent = _messageId,
-                        GenerationId = _messageId,
-                        IsThinking = false,
-                    };
-
-                    return [textUpdate];
-                }
+                return [textUpdate];
+            }
 
             case "thinking_delta":
+            {
+                var thinkingText = delta["thinking"]?.GetValue<string>() ?? string.Empty;
+                block.Text += thinkingText;
+
+                // Return a ReasoningUpdateMessage so UI can render thinking as metadata pills
+                var thinkingUpdate = new ReasoningUpdateMessage
                 {
-                    var thinkingText = delta["thinking"]?.GetValue<string>() ?? string.Empty;
-                    block.Text += thinkingText;
+                    Reasoning = thinkingText,
+                    Visibility = ReasoningVisibility.Plain,
+                    Role = ParseRole(_role),
+                    FromAgent = _messageId,
+                    GenerationId = _messageId,
+                };
 
-                    // Return a ReasoningUpdateMessage so UI can render thinking as metadata pills
-                    var thinkingUpdate = new ReasoningUpdateMessage
-                    {
-                        Reasoning = thinkingText,
-                        Visibility = ReasoningVisibility.Plain,
-                        Role = ParseRole(_role),
-                        FromAgent = _messageId,
-                        GenerationId = _messageId,
-                    };
-
-                    return [thinkingUpdate];
-                }
+                return [thinkingUpdate];
+            }
 
             case "signature_delta":
-                {
-                    var signature = delta["signature"]?.GetValue<string>() ?? string.Empty;
-                    return HandleSignatureDelta(block, signature);
-                }
+            {
+                var signature = delta["signature"]?.GetValue<string>() ?? string.Empty;
+                return HandleSignatureDelta(block, signature);
+            }
 
             case "input_json_delta":
-                {
-                    return HandleJsonDelta(block, delta["partial_json"]?.GetValue<string>() ?? string.Empty);
-                }
+            {
+                return HandleJsonDelta(block, delta["partial_json"]?.GetValue<string>() ?? string.Empty);
+            }
 
             case "citations_delta":
+            {
+                var citationNode = delta["citation"];
+                if (citationNode != null)
                 {
-                    var citationNode = delta["citation"];
-                    if (citationNode != null)
+                    try
                     {
-                        try
+                        var citation = JsonSerializer.Deserialize<Citation>(citationNode.ToJsonString(), _jsonOptions);
+                        if (citation != null)
                         {
-                            var citation = JsonSerializer.Deserialize<Citation>(
-                                citationNode.ToJsonString(),
-                                _jsonOptions
-                            );
-                            if (citation != null)
-                            {
-                                block.Citations ??= [];
-                                block.Citations.Add(citation);
-                            }
-                        }
-                        catch (JsonException ex)
-                        {
-                            _logger.LogWarning(ex, "Failed to parse citation from citations_delta");
+                            block.Citations ??= [];
+                            block.Citations.Add(citation);
                         }
                     }
-
-                    return [];
+                    catch (JsonException ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to parse citation from citations_delta");
+                    }
                 }
+
+                return [];
+            }
 
             default:
                 // Unknown delta type, ignore
@@ -428,8 +424,8 @@ public class AnthropicStreamParser
         if (!_contentBlocks.TryGetValue(index, out var block))
         {
             _logger.LogWarning(
-                "content_block_stop received for unknown block index {Index}. " +
-                "This may indicate a dropped content_block_start event.",
+                "content_block_stop received for unknown block index {Index}. "
+                    + "This may indicate a dropped content_block_start event.",
                 index
             );
             return [];
@@ -456,8 +452,9 @@ public class AnthropicStreamParser
                 var citationsMessage = new TextWithCitationsMessage
                 {
                     Text = block.Text,
-                    Citations = [.. block.Citations
-                        .Select(c => new CitationInfo
+                    Citations =
+                    [
+                        .. block.Citations.Select(c => new CitationInfo
                         {
                             Type = c.Type,
                             Url = c.Url,
@@ -465,7 +462,8 @@ public class AnthropicStreamParser
                             CitedText = c.CitedText,
                             StartIndex = c.StartCharIndex,
                             EndIndex = c.EndCharIndex,
-                        })],
+                        }),
+                    ],
                     Role = ParseRole(_role),
                     FromAgent = _messageId,
                     GenerationId = _messageId,
@@ -648,9 +646,7 @@ public class AnthropicStreamParser
             PromptTokens = inputTokens,
             CompletionTokens = _usage.OutputTokens,
             TotalTokens = inputTokens + _usage.OutputTokens,
-            InputTokenDetails = _cacheReadTokens > 0
-                ? new InputTokenDetails { CachedTokens = _cacheReadTokens }
-                : null,
+            InputTokenDetails = _cacheReadTokens > 0 ? new InputTokenDetails { CachedTokens = _cacheReadTokens } : null,
         };
 
         if (_cacheCreationTokens > 0)
@@ -774,8 +770,8 @@ public class AnthropicStreamParser
             else
             {
                 _logger.LogDebug(
-                    "JsonAccumulator was complete but returned null for block {Index}. " +
-                    "Keeping input from content_block_start.",
+                    "JsonAccumulator was complete but returned null for block {Index}. "
+                        + "Keeping input from content_block_start.",
                     block.Index
                 );
             }
@@ -802,8 +798,8 @@ public class AnthropicStreamParser
             {
                 _logger.LogWarning(
                     ex,
-                    "Failed to convert input JsonNode for server_tool_use block {Index} (tool: {ToolName}). " +
-                    "This may indicate a stale JsonElement from SSE document disposal.",
+                    "Failed to convert input JsonNode for server_tool_use block {Index} (tool: {ToolName}). "
+                        + "This may indicate a stale JsonElement from SSE document disposal.",
                     block.Index,
                     block.Name ?? "unknown"
                 );
@@ -811,9 +807,8 @@ public class AnthropicStreamParser
             }
         }
 
-        var finalArgs = inputElement.ValueKind != JsonValueKind.Undefined
-            ? JsonSerializer.Serialize(inputElement)
-            : "{}";
+        var finalArgs =
+            inputElement.ValueKind != JsonValueKind.Undefined ? JsonSerializer.Serialize(inputElement) : "{}";
 
         // Add finalized ToolCallMessage to _messages for GetAllMessages() (joined history).
         var serverToolUse = new ToolCallMessage
@@ -1025,7 +1020,8 @@ public class AnthropicStreamParser
                 FunctionName = serverToolUseContent.Name,
                 // For streaming server_tool_use blocks, do not emit "{}" as a placeholder.
                 // A placeholder gets concatenated with later JSON delta fragments (e.g. "{}{...}").
-                FunctionArgs = serverToolUseContent.Input.ValueKind != JsonValueKind.Undefined
+                FunctionArgs =
+                    serverToolUseContent.Input.ValueKind != JsonValueKind.Undefined
                     && serverToolUseContent.Input.GetPropertyCount() > 0
                         ? serverToolUseContent.Input.ToString()
                         : null,
@@ -1045,9 +1041,10 @@ public class AnthropicStreamParser
             {
                 ToolCallId = ResolveServerToolUseId(webSearchResult.ToolUseId, "web_search"),
                 ToolName = "web_search",
-                Result = webSearchResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? webSearchResult.Content.GetRawText()
-                    : "{}",
+                Result =
+                    webSearchResult.Content.ValueKind != JsonValueKind.Undefined
+                        ? webSearchResult.Content.GetRawText()
+                        : "{}",
                 IsError = IsServerToolResultError(webSearchResult.Content),
                 ErrorCode = GetErrorCodeFromResult(webSearchResult.Content),
                 ExecutionTarget = ExecutionTarget.ProviderServer,
@@ -1067,9 +1064,10 @@ public class AnthropicStreamParser
             {
                 ToolCallId = ResolveServerToolUseId(webFetchResult.ToolUseId, "web_fetch"),
                 ToolName = "web_fetch",
-                Result = webFetchResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? webFetchResult.Content.GetRawText()
-                    : "{}",
+                Result =
+                    webFetchResult.Content.ValueKind != JsonValueKind.Undefined
+                        ? webFetchResult.Content.GetRawText()
+                        : "{}",
                 IsError = IsServerToolResultError(webFetchResult.Content),
                 ErrorCode = GetErrorCodeFromResult(webFetchResult.Content),
                 ExecutionTarget = ExecutionTarget.ProviderServer,
@@ -1089,9 +1087,8 @@ public class AnthropicStreamParser
             {
                 ToolCallId = ResolveServerToolUseId(bashResult.ToolUseId, "bash_code_execution"),
                 ToolName = "bash_code_execution",
-                Result = bashResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? bashResult.Content.GetRawText()
-                    : "{}",
+                Result =
+                    bashResult.Content.ValueKind != JsonValueKind.Undefined ? bashResult.Content.GetRawText() : "{}",
                 IsError = IsServerToolResultError(bashResult.Content),
                 ErrorCode = GetErrorCodeFromResult(bashResult.Content),
                 ExecutionTarget = ExecutionTarget.ProviderServer,
@@ -1111,9 +1108,10 @@ public class AnthropicStreamParser
             {
                 ToolCallId = ResolveServerToolUseId(textEditorResult.ToolUseId, "text_editor_code_execution"),
                 ToolName = "text_editor_code_execution",
-                Result = textEditorResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? textEditorResult.Content.GetRawText()
-                    : "{}",
+                Result =
+                    textEditorResult.Content.ValueKind != JsonValueKind.Undefined
+                        ? textEditorResult.Content.GetRawText()
+                        : "{}",
                 IsError = IsServerToolResultError(textEditorResult.Content),
                 ErrorCode = GetErrorCodeFromResult(textEditorResult.Content),
                 ExecutionTarget = ExecutionTarget.ProviderServer,
@@ -1216,17 +1214,17 @@ public class AnthropicStreamParser
         return HandleJsonDelta(block, inputJsonDelta.PartialJson);
     }
 
-    private static List<IMessage> HandleCitationsDelta(StreamingContentBlock block, AnthropicCitationsDelta citationsDelta)
+    private static List<IMessage> HandleCitationsDelta(
+        StreamingContentBlock block,
+        AnthropicCitationsDelta citationsDelta
+    )
     {
         block.Citations ??= [];
         block.Citations.Add(citationsDelta.Citation);
         return [];
     }
 
-    private List<IMessage> HandleSignatureDelta(
-        StreamingContentBlock block,
-        AnthropicSignatureDelta signatureDelta
-    )
+    private List<IMessage> HandleSignatureDelta(StreamingContentBlock block, AnthropicSignatureDelta signatureDelta)
     {
         return HandleSignatureDelta(block, signatureDelta.Signature);
     }
@@ -1294,8 +1292,8 @@ public class AnthropicStreamParser
         if (!_contentBlocks.TryGetValue(index, out var block))
         {
             _logger.LogWarning(
-                "content_block_stop received for unknown block index {Index}. " +
-                "This may indicate a dropped content_block_start event.",
+                "content_block_stop received for unknown block index {Index}. "
+                    + "This may indicate a dropped content_block_start event.",
                 index
             );
             return [];
@@ -1322,8 +1320,9 @@ public class AnthropicStreamParser
                 var citationsMessage = new TextWithCitationsMessage
                 {
                     Text = block.Text,
-                    Citations = [.. block.Citations
-                        .Select(c => new CitationInfo
+                    Citations =
+                    [
+                        .. block.Citations.Select(c => new CitationInfo
                         {
                             Type = c.Type,
                             Url = c.Url,
@@ -1331,7 +1330,8 @@ public class AnthropicStreamParser
                             CitedText = c.CitedText,
                             StartIndex = c.StartCharIndex,
                             EndIndex = c.EndCharIndex,
-                        })],
+                        }),
+                    ],
                     Role = ParseRole(_role),
                     FromAgent = _messageId,
                     GenerationId = _messageId,
@@ -1506,10 +1506,12 @@ public class AnthropicStreamParser
         // since providers may provide different IDs in the result vs use blocks
         foreach (var block in _contentBlocks.Values)
         {
-            if (block.Type == "server_tool_use"
+            if (
+                block.Type == "server_tool_use"
                 && block.Name == toolName
                 && !string.IsNullOrEmpty(block.ToolUseId)
-                && !block.ToolUseIdConsumed)
+                && !block.ToolUseIdConsumed
+            )
             {
                 block.ToolUseIdConsumed = true;
                 if (!string.IsNullOrEmpty(toolUseId) && toolUseId != block.ToolUseId)

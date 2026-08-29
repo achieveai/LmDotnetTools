@@ -15,17 +15,18 @@ public class SandboxSessionRegistryListDiscoveredTests
     private const string GatewayBaseUrl = "http://localhost:3000";
 
     private static (SandboxSessionRegistry Registry, StubHandler Handler) CreateRegistry(
-        Func<HttpRequestMessage, HttpResponseMessage> respond)
+        Func<HttpRequestMessage, HttpResponseMessage> respond
+    )
     {
         var handler = new StubHandler(respond);
         // SandboxGatewayLifetime needs an HttpClient too; give it the same stub since this test
         // only exercises ListDiscoveredAsync and never calls EnsureReadyAsync.
-        var gatewayLifetimeClient = new HttpClient(new StubHandler(_ =>
-            new HttpResponseMessage(HttpStatusCode.OK)));
+        var gatewayLifetimeClient = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            gatewayLifetimeClient);
+            gatewayLifetimeClient
+        );
 
         var registry = new SandboxSessionRegistry(
             gateway,
@@ -35,7 +36,9 @@ public class SandboxSessionRegistryListDiscoveredTests
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
 
         return (registry, handler);
     }
@@ -70,7 +73,10 @@ public class SandboxSessionRegistryListDiscoveredTests
         items[1].QualifiedName.Should().BeNull();
 
         handler.LastRequest.Should().NotBeNull();
-        handler.LastRequest!.RequestUri!.ToString().Should().Be($"{GatewayBaseUrl}/api/v1/sandboxes/{SessionId}/discovered");
+        handler
+            .LastRequest!.RequestUri!.ToString()
+            .Should()
+            .Be($"{GatewayBaseUrl}/api/v1/sandboxes/{SessionId}/discovered");
         handler.LastRequest!.Method.Should().Be(HttpMethod.Get);
     }
 
@@ -161,7 +167,8 @@ public class SandboxSessionRegistryListDiscoveredTests
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             LastRequest = request;
             return Task.FromResult(_respond(request));

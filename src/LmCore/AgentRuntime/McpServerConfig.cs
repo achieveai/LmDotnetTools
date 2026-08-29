@@ -42,19 +42,28 @@ public record McpServerConfig
     public static McpServerConfig CreateStdio(
         string command,
         IReadOnlyList<string> args,
-        IReadOnlyDictionary<string, string>? env = null)
+        IReadOnlyDictionary<string, string>? env = null
+    )
     {
-        return new McpServerConfig { Type = "stdio", Command = command, Args = args, Env = env };
+        return new McpServerConfig
+        {
+            Type = "stdio",
+            Command = command,
+            Args = args,
+            Env = env,
+        };
     }
 
     /// <summary>
     ///     Creates an HTTP-based MCP server configuration.
     /// </summary>
-    public static McpServerConfig CreateHttp(
-        string url,
-        IReadOnlyDictionary<string, string>? headers = null)
+    public static McpServerConfig CreateHttp(string url, IReadOnlyDictionary<string, string>? headers = null)
     {
-        return new McpServerConfig { Type = "http", Url = url, Headers = headers };
+        return new McpServerConfig
+        {
+            Type = "http",
+            Url = url,
+            Headers = headers,
+        };
     }
 }
-

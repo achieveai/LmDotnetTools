@@ -197,7 +197,14 @@ public static class HttpRetryHelper
     )
     {
         var options = new RetryOptions { MaxRetries = maxRetries };
-        return ExecuteHttpWithRetryAsync(httpOperation, responseProcessor, logger, options, cancellationToken, checkDisposed);
+        return ExecuteHttpWithRetryAsync(
+            httpOperation,
+            responseProcessor,
+            logger,
+            options,
+            cancellationToken,
+            checkDisposed
+        );
     }
 
     /// <summary>
@@ -269,9 +276,11 @@ public static class HttpRetryHelper
         }
 
         // Check for rate limiting (429)
-        if (message.Contains("429", StringComparison.OrdinalIgnoreCase)
+        if (
+            message.Contains("429", StringComparison.OrdinalIgnoreCase)
             || message.Contains("TooManyRequests", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("Too Many Requests", StringComparison.OrdinalIgnoreCase))
+            || message.Contains("Too Many Requests", StringComparison.OrdinalIgnoreCase)
+        )
         {
             return true;
         }

@@ -10,24 +10,25 @@ internal sealed record ProposedPattern(
     [property: JsonPropertyName("title")] string Title,
     [property: JsonPropertyName("whatItIs")] string WhatItIs,
     [property: JsonPropertyName("whyItMatters")] string WhyItMatters,
-    [property: JsonPropertyName("howToAvoid")] string HowToAvoid);
+    [property: JsonPropertyName("howToAvoid")] string HowToAvoid
+);
 
 /// <summary>One finding's classification. Exactly one of the two pattern routes is populated.</summary>
 internal sealed record FindingClassification(
     [property: JsonPropertyName("findingRef")] string FindingRef,
     [property: JsonPropertyName("isRecurringRisk")] bool IsRecurringRisk,
     [property: JsonPropertyName("patternId")] string? PatternId,
-    [property: JsonPropertyName("newPattern")] ProposedPattern? NewPattern);
+    [property: JsonPropertyName("newPattern")] ProposedPattern? NewPattern
+);
 
 /// <summary>The model's whole reply.</summary>
 internal sealed record ClassificationReply(
     [property: JsonPropertyName("schemaVersion")] int SchemaVersion,
-    [property: JsonPropertyName("classifications")] IReadOnlyList<FindingClassification> Classifications);
+    [property: JsonPropertyName("classifications")] IReadOnlyList<FindingClassification> Classifications
+);
 
 /// <summary>Accepted classifications, or the reason the whole reply was refused.</summary>
-internal sealed record ClassificationOutcome(
-    IReadOnlyList<FindingClassification> Accepted,
-    string? RejectionReason)
+internal sealed record ClassificationOutcome(IReadOnlyList<FindingClassification> Accepted, string? RejectionReason)
 {
     public bool Rejected => RejectionReason is not null;
 }
@@ -74,7 +75,8 @@ internal static partial class ClassificationValidator
             + @"|\b(?:active|resolved|watch|unjudgeable|regressed|provisional)\b"
             + @"|\boccurrence(?:s)?\b"
             + @"|\bclean\s+streak\b",
-        RegexOptions.IgnoreCase)]
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex DaemonOwnedFact();
 
     /// <summary>Longest description field. Prose, not a document.</summary>
@@ -90,7 +92,8 @@ internal static partial class ClassificationValidator
     public static ClassificationOutcome Validate(
         string? json,
         IReadOnlySet<string> knownFindingRefs,
-        IReadOnlySet<string> knownPatternIds)
+        IReadOnlySet<string> knownPatternIds
+    )
     {
         ArgumentNullException.ThrowIfNull(knownFindingRefs);
         ArgumentNullException.ThrowIfNull(knownPatternIds);
@@ -118,7 +121,9 @@ internal static partial class ClassificationValidator
         if (reply.SchemaVersion != DeveloperObservation.CurrentSchemaVersion)
         {
             return new ClassificationOutcome(
-                [], $"schemaVersion {reply.SchemaVersion} is not the expected {DeveloperObservation.CurrentSchemaVersion}");
+                [],
+                $"schemaVersion {reply.SchemaVersion} is not the expected {DeveloperObservation.CurrentSchemaVersion}"
+            );
         }
 
         var accepted = new List<FindingClassification>();
@@ -128,7 +133,9 @@ internal static partial class ClassificationValidator
             if (item.FindingRef is null || !knownFindingRefs.Contains(item.FindingRef))
             {
                 return new ClassificationOutcome(
-                    [], $"findingRef '{item.FindingRef ?? "(null)"}' was not one this PR handed out");
+                    [],
+                    $"findingRef '{item.FindingRef ?? "(null)"}' was not one this PR handed out"
+                );
             }
 
             // Not every finding is a learning. A one-off or environmental finding must be droppable, or the
@@ -138,7 +145,9 @@ internal static partial class ClassificationValidator
                 if (item.PatternId is not null || item.NewPattern is not null)
                 {
                     return new ClassificationOutcome(
-                        [], $"findingRef '{item.FindingRef}' is not a recurring risk yet named a pattern");
+                        [],
+                        $"findingRef '{item.FindingRef}' is not a recurring risk yet named a pattern"
+                    );
                 }
 
                 accepted.Add(item);
@@ -150,7 +159,9 @@ internal static partial class ClassificationValidator
             if (hasId == hasNew)
             {
                 return new ClassificationOutcome(
-                    [], $"findingRef '{item.FindingRef}' must set exactly one of patternId / newPattern");
+                    [],
+                    $"findingRef '{item.FindingRef}' must set exactly one of patternId / newPattern"
+                );
             }
 
             if (hasId)
@@ -160,7 +171,9 @@ internal static partial class ClassificationValidator
                 if (!knownPatternIds.Contains(item.PatternId!))
                 {
                     return new ClassificationOutcome(
-                        [], $"patternId '{item.PatternId}' is not one of this developer's known patterns");
+                        [],
+                        $"patternId '{item.PatternId}' is not one of this developer's known patterns"
+                    );
                 }
 
                 accepted.Add(item);
@@ -171,20 +184,26 @@ internal static partial class ClassificationValidator
             if (proposed.Slug is null || !SlugShape().IsMatch(proposed.Slug))
             {
                 return new ClassificationOutcome(
-                    [], $"proposed slug '{proposed.Slug ?? "(null)"}' is not a legal pattern slug");
+                    [],
+                    $"proposed slug '{proposed.Slug ?? "(null)"}' is not a legal pattern slug"
+                );
             }
 
             if (knownPatternIds.Contains(proposed.Slug) || !claimedSlugs.Add(proposed.Slug))
             {
                 return new ClassificationOutcome(
-                    [], $"proposed slug '{proposed.Slug}' collides with a pattern that already exists");
+                    [],
+                    $"proposed slug '{proposed.Slug}' collides with a pattern that already exists"
+                );
             }
 
             var offending = FirstDaemonOwnedFact(proposed);
             if (offending is not null)
             {
                 return new ClassificationOutcome(
-                    [], $"proposed pattern '{proposed.Slug}' stated a fact the daemon owns: {offending}");
+                    [],
+                    $"proposed pattern '{proposed.Slug}' stated a fact the daemon owns: {offending}"
+                );
             }
 
             accepted.Add(item);
@@ -196,13 +215,15 @@ internal static partial class ClassificationValidator
     /// <summary>The first description field that overstepped, described, or null when all three are clean.</summary>
     private static string? FirstDaemonOwnedFact(ProposedPattern proposed)
     {
-        foreach (var (name, text) in new[]
-        {
-            ("title", proposed.Title),
-            ("whatItIs", proposed.WhatItIs),
-            ("whyItMatters", proposed.WhyItMatters),
-            ("howToAvoid", proposed.HowToAvoid),
-        })
+        foreach (
+            var (name, text) in new[]
+            {
+                ("title", proposed.Title),
+                ("whatItIs", proposed.WhatItIs),
+                ("whyItMatters", proposed.WhyItMatters),
+                ("howToAvoid", proposed.HowToAvoid),
+            }
+        )
         {
             if (string.IsNullOrWhiteSpace(text))
             {

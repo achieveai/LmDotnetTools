@@ -48,19 +48,9 @@ public class LifecycleForwardCompatibilityTests
         var element = payload!.Value;
         element.GetProperty("kind").GetString().Should().Be("brand_new_kind");
         element.GetProperty("limits").GetProperty("hard").GetInt32().Should().Be(100);
-        element
-            .GetProperty("limits")
-            .GetProperty("soft")
-            .ValueKind.Should()
-            .Be(JsonValueKind.Null);
+        element.GetProperty("limits").GetProperty("soft").ValueKind.Should().Be(JsonValueKind.Null);
         element.GetProperty("tags").GetArrayLength().Should().Be(2);
-        element
-            .GetProperty("nested")
-            .GetProperty("deep")
-            .GetProperty("deeper")
-            .GetBoolean()
-            .Should()
-            .BeTrue();
+        element.GetProperty("nested").GetProperty("deep").GetProperty("deeper").GetBoolean().Should().BeTrue();
     }
 
     [Fact]
@@ -68,9 +58,7 @@ public class LifecycleForwardCompatibilityTests
     {
         var decoded = LifecycleSerializer.DeserializeEvent(FutureEventJson);
 
-        LifecycleSerializer.TryReadPayload<RunStartedPayload>(decoded, out var payload)
-            .Should()
-            .BeFalse();
+        LifecycleSerializer.TryReadPayload<RunStartedPayload>(decoded, out var payload).Should().BeFalse();
         payload.Should().BeNull();
     }
 
@@ -84,9 +72,7 @@ public class LifecycleForwardCompatibilityTests
             EventType = LifecycleEventTypes.SandboxCreated,
         };
 
-        LifecycleSerializer.TryReadPayload<RunStartedPayload>(mislabelled, out var asRunStarted)
-            .Should()
-            .BeFalse();
+        LifecycleSerializer.TryReadPayload<RunStartedPayload>(mislabelled, out var asRunStarted).Should().BeFalse();
         asRunStarted.Should().BeNull();
 
         LifecycleSerializer
@@ -101,10 +87,7 @@ public class LifecycleForwardCompatibilityTests
     {
         LifecycleSerializer.GetPayloadType("quota_exhausted").Should().BeNull();
         LifecycleSerializer.GetPayloadType(null).Should().BeNull();
-        LifecycleSerializer
-            .GetPayloadType(LifecycleEventTypes.RunStarted)
-            .Should()
-            .Be(typeof(RunStartedPayload));
+        LifecycleSerializer.GetPayloadType(LifecycleEventTypes.RunStarted).Should().Be(typeof(RunStartedPayload));
     }
 
     [Fact]
@@ -123,9 +106,7 @@ public class LifecycleForwardCompatibilityTests
 
         var decoded = LifecycleSerializer.DeserializeEvent(LifecycleSerializer.Serialize(envelope));
 
-        LifecycleSerializer.TryReadPayload<RunStartedPayload>(decoded, out var payload)
-            .Should()
-            .BeTrue();
+        LifecycleSerializer.TryReadPayload<RunStartedPayload>(decoded, out var payload).Should().BeTrue();
         payload!.AgentKind.Should().Be("agent_kind_from_the_future");
         payload.Cause.Kind.Should().Be("cause_from_the_future");
     }

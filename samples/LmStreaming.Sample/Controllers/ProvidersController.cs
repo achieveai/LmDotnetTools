@@ -15,6 +15,4 @@ public sealed class ProvidersController(ProviderRegistry registry) : ControllerB
     }
 }
 
-public sealed record ProvidersResponse(
-    IReadOnlyList<ProviderDescriptor> Providers,
-    string Default);
+public sealed record ProvidersResponse(IReadOnlyList<ProviderDescriptor> Providers, string Default);

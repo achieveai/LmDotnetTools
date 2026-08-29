@@ -16,7 +16,8 @@ public sealed class OpenAiResponsesClientSseEdgeTests
     [Fact]
     public async Task ReadSseAsync_done_sentinel_terminates_stream()
     {
-        var sse = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"
+        var sse =
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"
             + "data: [DONE]\n\n"
             + "data: {\"type\":\"response.completed\",\"response\":{}}\n\n";
 
@@ -30,7 +31,8 @@ public sealed class OpenAiResponsesClientSseEdgeTests
     [Fact]
     public async Task ReadSseAsync_skips_comment_lines()
     {
-        var sse = ": keep-alive\n\n"
+        var sse =
+            ": keep-alive\n\n"
             + "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"
             + ": another comment\n"
             + "data: {\"type\":\"response.completed\",\"response\":{}}\n\n";
@@ -46,7 +48,8 @@ public sealed class OpenAiResponsesClientSseEdgeTests
     public async Task ReadSseAsync_dispatches_final_data_block_without_trailing_blank_line()
     {
         // No "\n\n" terminator on the last event — server closed early.
-        var sse = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"
+        var sse =
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"
             + "data: {\"type\":\"response.completed\",\"response\":{}}";
 
         var events = await ReadAllAsync(sse);
@@ -58,8 +61,7 @@ public sealed class OpenAiResponsesClientSseEdgeTests
     [Fact]
     public async Task ReadSseAsync_done_sentinel_at_eof_without_blank_line_does_not_dispatch()
     {
-        var sse = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"
-            + "data: [DONE]";
+        var sse = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n" + "data: [DONE]";
 
         var events = await ReadAllAsync(sse);
 

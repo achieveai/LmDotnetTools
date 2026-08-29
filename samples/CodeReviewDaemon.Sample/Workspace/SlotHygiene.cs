@@ -71,13 +71,20 @@ internal static class SlotHygiene
     /// </summary>
     private static readonly string[] DenyNetworkArgs =
     [
-        "-c", "protocol.allow=never",
-        "-c", "protocol.http.allow=never",
-        "-c", "protocol.https.allow=never",
-        "-c", "protocol.ssh.allow=never",
-        "-c", "protocol.git.allow=never",
-        "-c", "protocol.ftp.allow=never",
-        "-c", "protocol.ftps.allow=never",
+        "-c",
+        "protocol.allow=never",
+        "-c",
+        "protocol.http.allow=never",
+        "-c",
+        "protocol.https.allow=never",
+        "-c",
+        "protocol.ssh.allow=never",
+        "-c",
+        "protocol.git.allow=never",
+        "-c",
+        "protocol.ftp.allow=never",
+        "-c",
+        "protocol.ftps.allow=never",
     ];
 
     /// <summary>
@@ -90,7 +97,8 @@ internal static class SlotHygiene
         string storePath,
         CancellationToken ct,
         ILogger? logger = null,
-        ISandboxFileSystem? fileSystem = null)
+        ISandboxFileSystem? fileSystem = null
+    )
     {
         ArgumentNullException.ThrowIfNull(git);
         ArgumentException.ThrowIfNullOrWhiteSpace(storePath);
@@ -101,7 +109,9 @@ internal static class SlotHygiene
         {
             logger?.LogWarning(
                 "Slot hygiene at {StorePath}: re-cloning — the store has no readable git dir ({Stderr}).",
-                storePath, structuralProbe.Stderr);
+                storePath,
+                structuralProbe.Stderr
+            );
             return HygieneVerdict.NeedsReclone;
         }
 
@@ -140,7 +150,8 @@ internal static class SlotHygiene
                 storePath,
                 verdict == HygieneVerdict.NeedsReclone ? "re-cloning" : "retiring the slot",
                 blocked.Path,
-                blocked.Reason);
+                blocked.Reason
+            );
             return verdict;
         }
 
@@ -152,8 +163,13 @@ internal static class SlotHygiene
                 "Slot hygiene at {StorePath}: first pass left the store unsettled (reset: {ResetErr}; clean: "
                     + "{CleanErr}; restore: {RestoreErr}; foreach: {ForeachErr}; status: {Status}); force-resetting "
                     + "once more before condemning it.",
-                storePath, pass.Reset.Stderr, pass.Clean.Stderr, pass.Restore.Stderr, pass.Foreach.Stderr,
-                status.Result.Stdout);
+                storePath,
+                pass.Reset.Stderr,
+                pass.Clean.Stderr,
+                pass.Restore.Stderr,
+                pass.Foreach.Stderr,
+                status.Result.Stdout
+            );
             pass = await ForceResetAsync(git, storePath, ct, fileSystem).ConfigureAwait(false);
             status = await SuperprojectStatusAsync(git, storePath, ct).ConfigureAwait(false);
         }
@@ -174,7 +190,10 @@ internal static class SlotHygiene
             logger?.LogWarning(
                 "Slot hygiene at {StorePath}: re-cloning — the superproject would not reset/clean even after a "
                     + "force reset (reset: {ResetErr}; clean: {CleanErr}).",
-                storePath, pass.Reset.Stderr, pass.Clean.Stderr);
+                storePath,
+                pass.Reset.Stderr,
+                pass.Clean.Stderr
+            );
             return HygieneVerdict.NeedsReclone;
         }
 
@@ -184,14 +203,18 @@ internal static class SlotHygiene
             {
                 logger?.LogWarning(
                     "Slot hygiene at {StorePath}: submodule restore failed with CORRUPTION; re-cloning: {Stderr}",
-                    storePath, pass.Restore.Stderr);
+                    storePath,
+                    pass.Restore.Stderr
+                );
                 return HygieneVerdict.NeedsReclone;
             }
 
             logger?.LogInformation(
                 "Slot hygiene at {StorePath}: submodule restore did not complete locally ({Stderr}); proceeding — "
                     + "the review re-establishes submodules with permitted fetches.",
-                storePath, pass.Restore.Stderr);
+                storePath,
+                pass.Restore.Stderr
+            );
         }
 
         var probe = await git.RunAsync(["-C", storePath, "rev-parse", "--git-dir"], storePath, ct)
@@ -200,7 +223,9 @@ internal static class SlotHygiene
         {
             logger?.LogWarning(
                 "Slot hygiene at {StorePath}: re-cloning — the git dir became unreadable while cleaning ({Stderr}).",
-                storePath, probe.Stderr);
+                storePath,
+                probe.Stderr
+            );
             return HygieneVerdict.NeedsReclone;
         }
 
@@ -221,7 +246,9 @@ internal static class SlotHygiene
                 logger?.LogWarning(
                     "Slot hygiene at {StorePath}: `git submodule foreach` cleanup failed with CORRUPTION that "
                         + "survived a force reset; re-cloning: {Stderr}",
-                    storePath, pass.Foreach.Stderr);
+                    storePath,
+                    pass.Foreach.Stderr
+                );
                 return HygieneVerdict.NeedsReclone;
             }
 
@@ -242,7 +269,10 @@ internal static class SlotHygiene
                     "Slot hygiene at {StorePath}: re-cloning — `git submodule foreach` cleanup failed ({Stderr}) "
                         + "and untracked content is still in a submodule after a second sweep, so it would cross "
                         + "into the next review: {Residue}",
-                    storePath, pass.Foreach.Stderr, left);
+                    storePath,
+                    pass.Foreach.Stderr,
+                    left
+                );
                 return HygieneVerdict.NeedsReclone;
             }
 
@@ -250,7 +280,9 @@ internal static class SlotHygiene
                 "Slot hygiene at {StorePath}: `git submodule foreach` cleanup failed but left no untracked residue "
                     + "(continuing — a re-clone cannot fix committed content, and the review overwrites the "
                     + "reviewed submodule with an explicit checkout of the PR head): {Stderr}",
-                storePath, pass.Foreach.Stderr);
+                storePath,
+                pass.Foreach.Stderr
+            );
         }
 
         // Superproject status gate. Submodule state is deliberately ignored (`--ignore-submodules=all`): a moved
@@ -276,7 +308,11 @@ internal static class SlotHygiene
                     + "stdout {Stdout}, stderr {Stderr}). `status --porcelain -b` always emits a branch header, "
                     + "so this is indistinguishable from a probe that never ran and is NOT being read as a clean "
                     + "tree. Leaving the store untouched for the next lease to re-probe.",
-                storePath, status.Result.ExitCode, status.Result.Stdout, status.Result.Stderr);
+                storePath,
+                status.Result.ExitCode,
+                status.Result.Stdout,
+                status.Result.Stderr
+            );
             return HygieneVerdict.ProbeUnanswered;
         }
 
@@ -286,7 +322,10 @@ internal static class SlotHygiene
                 "Slot hygiene at {StorePath}: {Count} path(s) report as modified while holding bytes identical "
                     + "to the blob the index records for them, so they are the committed content and not "
                     + "leftovers from a prior lease: {Paths}",
-                storePath, classified.Normalized.Count, string.Join(", ", classified.Normalized));
+                storePath,
+                classified.Normalized.Count,
+                string.Join(", ", classified.Normalized)
+            );
         }
 
         if (classified.Leftovers.Count > 0)
@@ -294,7 +333,10 @@ internal static class SlotHygiene
             logger?.LogWarning(
                 "Slot hygiene at {StorePath}: re-cloning — the superproject is still dirty after a force reset "
                     + "({Status}{Stderr}).",
-                storePath, string.Join(", ", classified.Leftovers), status.Result.Stderr);
+                storePath,
+                string.Join(", ", classified.Leftovers),
+                status.Result.Stderr
+            );
             return HygieneVerdict.NeedsReclone;
         }
 
@@ -316,9 +358,7 @@ internal static class SlotHygiene
     /// host entry (an OS-privilege-gated input) to reach it through the sweep.
     /// </summary>
     internal static HygieneVerdict VerdictForBlockedSweep(HostPathRefusal refusal) =>
-        refusal.Verdict == HostPathVerdict.Unreadable
-            ? HygieneVerdict.HostPathUnreadable
-            : HygieneVerdict.NeedsReclone;
+        refusal.Verdict == HostPathVerdict.Unreadable ? HygieneVerdict.HostPathUnreadable : HygieneVerdict.NeedsReclone;
 
     /// <summary>
     /// The raw result of one superproject status probe together with what it MEANS, or a null
@@ -328,7 +368,8 @@ internal static class SlotHygiene
     /// </summary>
     private readonly record struct SuperprojectStatus(
         SandboxCommandResult Result,
-        WorktreeStatusProbe.StatusClassification? Classification);
+        WorktreeStatusProbe.StatusClassification? Classification
+    );
 
     /// <summary>
     /// Reads the SUPERPROJECT's working-tree status, ignoring submodule state (see the gate in
@@ -344,10 +385,16 @@ internal static class SlotHygiene
     /// </para>
     /// </summary>
     private static async Task<SuperprojectStatus> SuperprojectStatusAsync(
-        GitRunner git, string storePath, CancellationToken ct)
+        GitRunner git,
+        string storePath,
+        CancellationToken ct
+    )
     {
         var result = await git.RunAsync(
-                ["-C", storePath, "status", "--porcelain", "-b", "-z", "--ignore-submodules=all"], storePath, ct)
+                ["-C", storePath, "status", "--porcelain", "-b", "-z", "--ignore-submodules=all"],
+                storePath,
+                ct
+            )
             .ConfigureAwait(false);
         if (!result.Succeeded || !WorktreeStatusProbe.Reported(result.Stdout))
         {
@@ -445,7 +492,11 @@ internal static class SlotHygiene
     /// </para>
     /// </summary>
     private static async Task<string?> SubmoduleResidueAsync(
-        GitRunner git, string storePath, CancellationToken ct, ILogger? logger)
+        GitRunner git,
+        string storePath,
+        CancellationToken ct,
+        ILogger? logger
+    )
     {
         var pending = new Queue<string>();
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -483,12 +534,13 @@ internal static class SlotHygiene
                     continue;
                 }
 
-                var toplevel = await git.RunAsync(
-                        ["-C", submodule, "rev-parse", "--show-toplevel"], submodule, ct)
+                var toplevel = await git.RunAsync(["-C", submodule, "rev-parse", "--show-toplevel"], submodule, ct)
                     .ConfigureAwait(false);
-                if (!toplevel.Succeeded
-                    || !NormalizePath(toplevel.Stdout ?? string.Empty).Equals(
-                        submodule, StringComparison.OrdinalIgnoreCase))
+                if (
+                    !toplevel.Succeeded
+                    || !NormalizePath(toplevel.Stdout ?? string.Empty)
+                        .Equals(submodule, StringComparison.OrdinalIgnoreCase)
+                )
                 {
                     // Skipping is the deliberate choice (see the doc); being SILENT about it is not. This path is
                     // neither cleaned nor reported, so without this line the only trace of a store accumulating
@@ -501,7 +553,12 @@ internal static class SlotHygiene
                             + "lease and crosses into the next review. A re-clone would clear it; this pass "
                             + "deliberately does not condemn the slot for it. (`rev-parse --show-toplevel` exit "
                             + "{ExitCode}, stdout {Stdout}, stderr {Stderr}.)",
-                        storePath, submodule, toplevel.ExitCode, toplevel.Stdout, toplevel.Stderr);
+                        storePath,
+                        submodule,
+                        toplevel.ExitCode,
+                        toplevel.Stdout,
+                        toplevel.Stderr
+                    );
                     continue;
                 }
 
@@ -514,8 +571,8 @@ internal static class SlotHygiene
                     continue;
                 }
 
-                residue ??= status.Stdout
-                    ?.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                residue ??= status
+                    .Stdout?.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .FirstOrDefault(line => line.StartsWith("??", StringComparison.Ordinal));
                 pending.Enqueue(submodule);
             }
@@ -532,8 +589,12 @@ internal static class SlotHygiene
     /// </summary>
     private static IEnumerable<string?> GitlinkPaths(string? listing)
     {
-        foreach (var line in (listing ?? string.Empty).Split(
-                     '\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (
+            var line in (listing ?? string.Empty).Split(
+                '\n',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+            )
+        )
         {
             var tab = line.IndexOf('\t', StringComparison.Ordinal);
             if (tab < 0 || !line.StartsWith("160000 ", StringComparison.Ordinal))
@@ -553,8 +614,7 @@ internal static class SlotHygiene
     /// which would rewrite a sandbox-container path like <c>/workspace/store</c> into a host-rooted one and make
     /// every comparison in the container fail.
     /// </summary>
-    private static string NormalizePath(string path) =>
-        path.Trim().Replace('\\', '/').TrimEnd('/');
+    private static string NormalizePath(string path) => path.Trim().Replace('\\', '/').TrimEnd('/');
 
     /// <summary>
     /// Is a second force-reset pass worth its cost? Only when the failure is one a repeated sweep-and-reset can
@@ -576,10 +636,8 @@ internal static class SlotHygiene
         || !pass.Clean.Succeeded
         || status.Classification is not { } classified
         || classified.Leftovers.Count > 0
-        || (!pass.Restore.Succeeded
-            && GitFailureClassifier.Classify(pass.Restore.Stderr) == GitFailureKind.Corrupt)
-        || (!pass.Foreach.Succeeded
-            && GitFailureClassifier.Classify(pass.Foreach.Stderr) == GitFailureKind.Corrupt);
+        || (!pass.Restore.Succeeded && GitFailureClassifier.Classify(pass.Restore.Stderr) == GitFailureKind.Corrupt)
+        || (!pass.Foreach.Succeeded && GitFailureClassifier.Classify(pass.Foreach.Stderr) == GitFailureKind.Corrupt);
 
     /// <summary>The git steps of one force-reset pass, kept together so the verdict can classify each one.
     /// <paramref name="Blocked"/> is the entry that stopped the stale-state sweep before it ran (see
@@ -589,7 +647,8 @@ internal static class SlotHygiene
         SandboxCommandResult Clean,
         SandboxCommandResult Restore,
         SandboxCommandResult Foreach,
-        HostPathRefusal? Blocked);
+        HostPathRefusal? Blocked
+    );
 
     /// <summary>
     /// Stands in for a git step that was never run because the sweep ahead of it refused. It reports FAILURE
@@ -599,7 +658,10 @@ internal static class SlotHygiene
     /// produces is not logged as a git failure that never happened.
     /// </summary>
     private static readonly SandboxCommandResult NotRun = new(
-        1, "", "not run: the stale-state sweep refused to cross an entry, so nothing in this store was touched");
+        1,
+        "",
+        "not run: the stale-state sweep refused to cross an entry, so nothing in this store was touched"
+    );
 
     /// <summary>
     /// One force-reset pass: clear stale locks and abandoned operation markers, then reset and clean the
@@ -607,7 +669,11 @@ internal static class SlotHygiene
     /// trees. Idempotent by construction, so the caller can run it twice.
     /// </summary>
     private static async Task<ResetPass> ForceResetAsync(
-        GitRunner git, string storePath, CancellationToken ct, ISandboxFileSystem? fileSystem)
+        GitRunner git,
+        string storePath,
+        CancellationToken ct,
+        ISandboxFileSystem? fileSystem
+    )
     {
         var refusal = await SweepStaleStateAsync(git, storePath, ct, fileSystem).ConfigureAwait(false);
 
@@ -644,13 +710,26 @@ internal static class SlotHygiene
         var reset = await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
         var clean = await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
         var restore = await git.RunAsync(
-                ["-C", storePath, .. DenyNetworkArgs,
-                    "submodule", "update", "--recursive", "--no-fetch", "--checkout", "--force"],
-                storePath, ct)
+                [
+                    "-C",
+                    storePath,
+                    .. DenyNetworkArgs,
+                    "submodule",
+                    "update",
+                    "--recursive",
+                    "--no-fetch",
+                    "--checkout",
+                    "--force",
+                ],
+                storePath,
+                ct
+            )
             .ConfigureAwait(false);
         var foreachResult = await git.RunAsync(
                 ["-C", storePath, "submodule", "foreach", "--recursive", "git reset --hard && git clean -ffdx"],
-                storePath, ct)
+                storePath,
+                ct
+            )
             .ConfigureAwait(false);
 
         return new ResetPass(reset, clean, restore, foreachResult, Blocked: null);
@@ -670,7 +749,11 @@ internal static class SlotHygiene
     /// </para>
     /// </summary>
     private static async Task<HostPathRefusal?> SweepStaleStateAsync(
-        GitRunner git, string storePath, CancellationToken ct, ISandboxFileSystem? fileSystem)
+        GitRunner git,
+        string storePath,
+        CancellationToken ct,
+        ISandboxFileSystem? fileSystem
+    )
     {
         if (fileSystem is HostFileSystem)
         {
@@ -678,53 +761,55 @@ internal static class SlotHygiene
             return RemoveStaleLocks(gitDir) ?? AbortInProgress(gitDir);
         }
 
-        await git.CommandRunner.RunAsync(
-                new SandboxCommand(
-                    [
-                        "find",
-                        $"{storePath}/.git",
-                        "-type",
-                        "f",
-                        "(",
-                        "-name",
-                        "*.lock",
-                        "-o",
-                        "-name",
-                        "MERGE_HEAD",
-                        "-o",
-                        "-name",
-                        "CHERRY_PICK_HEAD",
-                        "-o",
-                        "-name",
-                        "REVERT_HEAD",
-                        ")",
-                        "-delete",
-                    ]),
-                ct)
+        await git
+            .CommandRunner.RunAsync(
+                new SandboxCommand([
+                    "find",
+                    $"{storePath}/.git",
+                    "-type",
+                    "f",
+                    "(",
+                    "-name",
+                    "*.lock",
+                    "-o",
+                    "-name",
+                    "MERGE_HEAD",
+                    "-o",
+                    "-name",
+                    "CHERRY_PICK_HEAD",
+                    "-o",
+                    "-name",
+                    "REVERT_HEAD",
+                    ")",
+                    "-delete",
+                ]),
+                ct
+            )
             .ConfigureAwait(false);
-        await git.CommandRunner.RunAsync(
-                new SandboxCommand(
-                    [
-                        "find",
-                        $"{storePath}/.git",
-                        "-type",
-                        "d",
-                        "(",
-                        "-name",
-                        "rebase-merge",
-                        "-o",
-                        "-name",
-                        "rebase-apply",
-                        ")",
-                        "-prune",
-                        "-exec",
-                        "rm",
-                        "-rf",
-                        "--",
-                        "{}",
-                        "+",
-                    ]),
-                ct)
+        await git
+            .CommandRunner.RunAsync(
+                new SandboxCommand([
+                    "find",
+                    $"{storePath}/.git",
+                    "-type",
+                    "d",
+                    "(",
+                    "-name",
+                    "rebase-merge",
+                    "-o",
+                    "-name",
+                    "rebase-apply",
+                    ")",
+                    "-prune",
+                    "-exec",
+                    "rm",
+                    "-rf",
+                    "--",
+                    "{}",
+                    "+",
+                ]),
+                ct
+            )
             .ConfigureAwait(false);
         return null;
     }
@@ -769,13 +854,26 @@ internal static class SlotHygiene
         // DenyNetworkArgs (+ --no-fetch) is REQUIRED (same reason as step 3): hygiene must never contact a remote
         // through the host's broad credentials outside a review's policy-enforced allow-list.
         await git.RunAsync(
-                ["-C", storePath, .. DenyNetworkArgs,
-                    "submodule", "update", "--recursive", "--no-fetch", "--checkout", "--force"],
-                storePath, ct)
+                [
+                    "-C",
+                    storePath,
+                    .. DenyNetworkArgs,
+                    "submodule",
+                    "update",
+                    "--recursive",
+                    "--no-fetch",
+                    "--checkout",
+                    "--force",
+                ],
+                storePath,
+                ct
+            )
             .ConfigureAwait(false);
         await git.RunAsync(
                 ["-C", storePath, "submodule", "foreach", "--recursive", "git reset --hard && git clean -ffdx"],
-                storePath, ct)
+                storePath,
+                ct
+            )
             .ConfigureAwait(false);
     }
 

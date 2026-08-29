@@ -16,11 +16,12 @@ public sealed class WorkspaceSubAgentLoaderIntelligenceTests
     public async Task LoadOneAsync_ResolvesTierLogsParserDiagnosticsAndAttachesFactory()
     {
         var logger = new CapturingLogger<WorkspaceSubAgentLoader>();
-        var characteristicsAgentFactory =
-            new Func<SubAgentCharacteristics, SubAgentProviderAgent>(_ =>
-                new SubAgentProviderAgent(
-                    new Mock<IStreamingAgent>().Object,
-                    System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty));
+        var characteristicsAgentFactory = new Func<SubAgentCharacteristics, SubAgentProviderAgent>(
+            _ => new SubAgentProviderAgent(
+                new Mock<IStreamingAgent>().Object,
+                System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty
+            )
+        );
         var loader = CreateLoader(logger);
         var item = new SandboxSessionRegistry.DiscoveredItem(
             "subagent",
@@ -34,32 +35,39 @@ public sealed class WorkspaceSubAgentLoaderIntelligenceTests
             effort: invalid
             ---
             Handle the task.
-            """);
+            """
+        );
 
         var template = await loader.LoadOneWithCharacteristicsAsync(
             new SandboxSession("default", "session", "default", "workspace"),
             item,
             () => new Mock<IStreamingAgent>().Object,
-            characteristicsAgentFactory);
+            characteristicsAgentFactory
+        );
 
         template.Should().NotBeNull();
         template!.DefaultOptions!.ModelId.Should().Be("routable-model");
-        template.GetType().GetProperty("ModelIntelligence")
-            .Should().NotBeNull("the authored tier must remain available for effective-routing observability");
+        template
+            .GetType()
+            .GetProperty("ModelIntelligence")
+            .Should()
+            .NotBeNull("the authored tier must remain available for effective-routing observability");
         template.GetType().GetProperty("ModelIntelligence")!.GetValue(template).Should().Be(3);
         template.IsModelExplicitlySelected.Should().BeFalse();
         template.IsModelTierResolved.Should().BeTrue();
         template.CharacteristicsAgentFactory.Should().BeSameAs(characteristicsAgentFactory);
-        logger.Entries.Should().ContainSingle(entry =>
-            entry.Level == LogLevel.Warning
-            && entry.Message.Contains("effort must be one of", StringComparison.Ordinal));
+        logger
+            .Entries.Should()
+            .ContainSingle(entry =>
+                entry.Level == LogLevel.Warning
+                && entry.Message.Contains("effort must be one of", StringComparison.Ordinal)
+            );
     }
 
     [Fact]
     public async Task LoadOneAsync_UnresolvedTierRemainsInherited()
     {
-        var loader = CreateLoader(
-            new CapturingLogger<WorkspaceSubAgentLoader>());
+        var loader = CreateLoader(new CapturingLogger<WorkspaceSubAgentLoader>());
         var item = new SandboxSessionRegistry.DiscoveredItem(
             "subagent",
             "tiered",
@@ -71,13 +79,15 @@ public sealed class WorkspaceSubAgentLoaderIntelligenceTests
             modelintelligence: 99
             ---
             Handle the task.
-            """);
+            """
+        );
 
         var template = await loader.LoadOneWithCharacteristicsAsync(
             new SandboxSession("default", "session", "default", "workspace"),
             item,
             () => new Mock<IStreamingAgent>().Object,
-            _ => throw new InvalidOperationException("Factory should not run while loading."));
+            _ => throw new InvalidOperationException("Factory should not run while loading.")
+        );
 
         template.Should().NotBeNull();
         template!.DefaultOptions.Should().BeNull();
@@ -85,13 +95,13 @@ public sealed class WorkspaceSubAgentLoaderIntelligenceTests
         template.IsModelTierResolved.Should().BeFalse();
     }
 
-    private static WorkspaceSubAgentLoader CreateLoader(
-        ILogger<WorkspaceSubAgentLoader> logger)
+    private static WorkspaceSubAgentLoader CreateLoader(ILogger<WorkspaceSubAgentLoader> logger)
     {
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler()));
+            new HttpClient(new StubHandler())
+        );
         var registry = new SandboxSessionRegistry(
             gateway,
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
@@ -100,23 +110,25 @@ public sealed class WorkspaceSubAgentLoaderIntelligenceTests
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
         var catalog = new ProviderRegistry(
             [
                 new CopilotModelInfo(
                     "routable-model",
                     "Routable",
                     CopilotModelVendor.OpenAI,
-                    CopilotModelTransport.Responses),
+                    CopilotModelTransport.Responses
+                ),
             ],
-            new Mock<IFileSystemProbe>().Object);
+            new Mock<IFileSystemProbe>().Object
+        );
         var resolver = new SubAgentModelResolver(
             catalog,
-            new SubAgentIntelligenceOptions
-            {
-                Tiers = new Dictionary<int, string[]> { [3] = ["routable-model"] },
-            },
-            new CapturingLogger<SubAgentModelResolver>());
+            new SubAgentIntelligenceOptions { Tiers = new Dictionary<int, string[]> { [3] = ["routable-model"] } },
+            new CapturingLogger<SubAgentModelResolver>()
+        );
 
         return new WorkspaceSubAgentLoader(registry, logger, resolver);
     }
@@ -125,7 +137,7 @@ public sealed class WorkspaceSubAgentLoaderIntelligenceTests
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("HTTP is not expected");
+            CancellationToken cancellationToken
+        ) => throw new InvalidOperationException("HTTP is not expected");
     }
 }

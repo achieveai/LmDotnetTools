@@ -27,6 +27,7 @@ public sealed class RecordingProcessLauncher : IProcessLauncher
             $"{nameof(RecordingProcessLauncher)} captured a launch request but no "
                 + $"{nameof(HandleFactory)} was provided. Inspect "
                 + $"{nameof(LastRequest)} and avoid driving full provider startup, "
-                + "or supply a fake handle.");
+                + "or supply a fake handle."
+        );
     }
 }

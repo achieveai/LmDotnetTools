@@ -16,11 +16,10 @@ public class CodexMcpServerLifetimeTests
                 Interlocked.Increment(ref startCount);
                 return await startGate.Task;
             },
-            NullLogger<CodexMcpServerLifetime>.Instance);
+            NullLogger<CodexMcpServerLifetime>.Instance
+        );
 
-        var tasks = Enumerable.Range(0, 16)
-            .Select(_ => lifetime.EnsureStartedAsync())
-            .ToArray();
+        var tasks = Enumerable.Range(0, 16).Select(_ => lifetime.EnsureStartedAsync()).ToArray();
 
         startGate.SetResult("http://localhost:1234/mcp");
 
@@ -40,7 +39,8 @@ public class CodexMcpServerLifetimeTests
                 Interlocked.Increment(ref startCount);
                 return Task.FromException<string>(new InvalidOperationException("boom"));
             },
-            NullLogger<CodexMcpServerLifetime>.Instance);
+            NullLogger<CodexMcpServerLifetime>.Instance
+        );
 
         var first = await Record.ExceptionAsync(() => lifetime.EnsureStartedAsync());
         var second = await Record.ExceptionAsync(() => lifetime.EnsureStartedAsync());
@@ -56,7 +56,8 @@ public class CodexMcpServerLifetimeTests
         const string endpoint = "http://localhost:9999/mcp";
         await using var lifetime = new CodexMcpServerLifetime(
             () => Task.FromResult(endpoint),
-            NullLogger<CodexMcpServerLifetime>.Instance);
+            NullLogger<CodexMcpServerLifetime>.Instance
+        );
 
         var a = await lifetime.EnsureStartedAsync();
         var b = await lifetime.EnsureStartedAsync();
@@ -70,7 +71,8 @@ public class CodexMcpServerLifetimeTests
     {
         var lifetime = new CodexMcpServerLifetime(
             () => Task.FromException<string>(new InvalidOperationException("boom")),
-            NullLogger<CodexMcpServerLifetime>.Instance);
+            NullLogger<CodexMcpServerLifetime>.Instance
+        );
 
         _ = await Record.ExceptionAsync(() => lifetime.EnsureStartedAsync());
 
@@ -88,7 +90,8 @@ public class CodexMcpServerLifetimeTests
                 Interlocked.Increment(ref startCount);
                 return Task.FromResult("http://localhost:1234/mcp");
             },
-            NullLogger<CodexMcpServerLifetime>.Instance);
+            NullLogger<CodexMcpServerLifetime>.Instance
+        );
 
         await lifetime.DisposeAsync();
 

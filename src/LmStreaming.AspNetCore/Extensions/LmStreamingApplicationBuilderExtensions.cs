@@ -37,10 +37,7 @@ public static class LmStreamingApplicationBuilderExtensions
         var options = app.ApplicationServices.GetRequiredService<IOptions<LmStreamingOptions>>().Value;
 
         // Enable WebSockets
-        _ = app.UseWebSockets(new WebSocketOptions
-        {
-            KeepAliveInterval = options.KeepAliveInterval,
-        });
+        _ = app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = options.KeepAliveInterval });
 
         return app.UseLmStreamingCors();
     }
@@ -94,10 +91,8 @@ public static class LmStreamingApplicationBuilderExtensions
         return app.UseCors(builder =>
             _ = options.AllowedOrigins.Contains("*")
                 ? builder.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()
-                : builder.WithOrigins([.. options.AllowedOrigins])
-                       .AllowAnyMethod()
-                       .AllowAnyHeader()
-                       .AllowCredentials());
+                : builder.WithOrigins([.. options.AllowedOrigins]).AllowAnyMethod().AllowAnyHeader().AllowCredentials()
+        );
     }
 
     /// <summary>
@@ -111,11 +106,14 @@ public static class LmStreamingApplicationBuilderExtensions
 
         var options = endpoints.ServiceProvider.GetRequiredService<IOptions<LmStreamingOptions>>().Value;
 
-        _ = endpoints.Map(options.WebSocketPath, async context =>
-        {
-            var handler = context.RequestServices.GetRequiredService<IMessageWebSocketHandler>();
-            await handler.HandleWebSocketAsync(context, context.RequestAborted);
-        });
+        _ = endpoints.Map(
+            options.WebSocketPath,
+            async context =>
+            {
+                var handler = context.RequestServices.GetRequiredService<IMessageWebSocketHandler>();
+                await handler.HandleWebSocketAsync(context, context.RequestAborted);
+            }
+        );
 
         return endpoints;
     }

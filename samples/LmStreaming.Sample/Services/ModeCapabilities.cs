@@ -80,11 +80,11 @@ public sealed record ModeCapabilities
     ///     asks for the collaboration surface.
     /// </summary>
     public static readonly IReadOnlyList<string> CollaborationToolNames =
-        [
-            SubAgentToolProvider.CheckAgentsToolName,
-            SubAgentToolProvider.WaitForAgentsToolName,
-            SubAgentToolProvider.GetAgentsToolName,
-        ];
+    [
+        SubAgentToolProvider.CheckAgentsToolName,
+        SubAgentToolProvider.WaitForAgentsToolName,
+        SubAgentToolProvider.GetAgentsToolName,
+    ];
 
     /// <summary>
     ///     What every mode got before capability selection existed: sub-agents, nothing else. A mode
@@ -144,9 +144,7 @@ public sealed record ModeCapabilities
 
     /// <summary>Null-aware, order-independent set comparison. Null and empty stay DISTINCT.</summary>
     private static bool SameSet(IReadOnlySet<string>? left, IReadOnlySet<string>? right) =>
-        left is null
-            ? right is null
-            : right is not null && left.Count == right.Count && left.All(right.Contains);
+        left is null ? right is null : right is not null && left.Count == right.Count && left.All(right.Contains);
 
     /// <summary>Order-independent set hash, so equal sets built in any order agree.</summary>
     private static void AddSet(ref HashCode hash, IReadOnlySet<string>? set)
@@ -185,14 +183,8 @@ public sealed record ModeCapabilities
 
         var needsSandbox = selection.IsEnabled(ToolGroups.Sandbox);
         var needsSubAgents = selection.IsEnabled(ToolGroups.SubAgents);
-        var workflowAuthoring = selection.AnySelected(
-            ToolGroups.Workflow,
-            WorkflowToolProvider.AllToolNames
-        );
-        var startWorkflow = selection.AnySelected(
-            ToolGroups.Workflow,
-            StartWorkflowToolProvider.ToolNames
-        );
+        var workflowAuthoring = selection.AnySelected(ToolGroups.Workflow, WorkflowToolProvider.AllToolNames);
+        var startWorkflow = selection.AnySelected(ToolGroups.Workflow, StartWorkflowToolProvider.ToolNames);
 
         return new ModeCapabilities
         {
@@ -205,13 +197,10 @@ public sealed record ModeCapabilities
             // Same null-means-everything contract as the sandbox allow-list, and null whenever no
             // workflow tool is wanted at all so a caller cannot read an empty set as "expose nothing
             // from a provider that was never registered".
-            WorkflowToolAllowList = workflowAuthoring || startWorkflow
-                ? selection.AllowListFor(ToolGroups.Workflow)
-                : null,
+            WorkflowToolAllowList =
+                workflowAuthoring || startWorkflow ? selection.AllowListFor(ToolGroups.Workflow) : null,
             SubAgents = needsSubAgents,
-            SubAgentToolAllowList = needsSubAgents
-                ? selection.AllowListFor(ToolGroups.SubAgents)
-                : null,
+            SubAgentToolAllowList = needsSubAgents ? selection.AllowListFor(ToolGroups.SubAgents) : null,
             Collaboration = selection.AnySelected(ToolGroups.SubAgents, CollaborationToolNames),
         };
     }

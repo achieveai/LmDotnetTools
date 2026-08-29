@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -7,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -36,11 +36,14 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
     public Task InitializeAsync()
     {
         _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         return Task.CompletedTask;
@@ -67,10 +70,7 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         var createdAgents = new List<ObservableFakeAgent>();
         var agentCallCount = 0;
 
-        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        });
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") });
 
         manager.TestAgentFactoryOverride = (agentId, _) =>
         {
@@ -82,17 +82,18 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
                 // text + completion. Each instance blocks its subscriptions open after its messages
                 // until the instance is disposed (mirrors MultiTurnAgentBase completing subscriber
                 // channels on DisposeAsync).
-                RunMessages = idx == 1
-                    ?
-                    [
-                        new TextMessage { Text = firstText, Role = Role.Assistant },
-                        new RunCompletedMessage { CompletedRunId = "run-1" },
-                    ]
-                    :
-                    [
-                        new TextMessage { Text = secondText, Role = Role.Assistant },
-                        new RunCompletedMessage { CompletedRunId = "run-2" },
-                    ],
+                RunMessages =
+                    idx == 1
+                        ?
+                        [
+                            new TextMessage { Text = firstText, Role = Role.Assistant },
+                            new RunCompletedMessage { CompletedRunId = "run-1" },
+                        ]
+                        :
+                        [
+                            new TextMessage { Text = secondText, Role = Role.Assistant },
+                            new RunCompletedMessage { CompletedRunId = "run-2" },
+                        ],
             };
             lock (createdAgents)
             {
@@ -115,10 +116,10 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             // "not yet". The non-throwing variant makes the not-yet-registered case a value instead
             // of an exception, so nothing has to be swallowed to express it.
             () =>
-                manager.TryPeek(agentId, out var status)
-                && status.Contains("\"completed\"", StringComparison.Ordinal),
+                manager.TryPeek(agentId, out var status) && status.Contains("\"completed\"", StringComparison.Ordinal),
             "the sub-agent reported completed",
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
 
         using var observeCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var collected = new List<IMessage>();
@@ -127,27 +128,30 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
 
         // Start the restart-spanning observer BEFORE the follow-up. It subscribes to the finished
         // instance (getting run 1), stays attached, and must transparently pick up the replacement.
-        var observerTask = Task.Run(async () =>
-        {
-            await foreach (var msg in manager.SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token))
+        var observerTask = Task.Run(
+            async () =>
             {
-                lock (collected)
+                await foreach (var msg in manager.SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token))
                 {
-                    collected.Add(msg);
-                }
+                    lock (collected)
+                    {
+                        collected.Add(msg);
+                    }
 
-                if (msg is TextMessage tm && tm.Text == firstText)
-                {
-                    _ = sawFirst.TrySetResult();
-                }
+                    if (msg is TextMessage tm && tm.Text == firstText)
+                    {
+                        _ = sawFirst.TrySetResult();
+                    }
 
-                if (msg is TextMessage tm2 && tm2.Text == secondText)
-                {
-                    _ = sawSecond.TrySetResult();
-                    return; // seen the restarted turn spanning the swap — done.
+                    if (msg is TextMessage tm2 && tm2.Text == secondText)
+                    {
+                        _ = sawSecond.TrySetResult();
+                        return; // seen the restarted turn spanning the swap — done.
+                    }
                 }
-            }
-        }, observeCts.Token);
+            },
+            observeCts.Token
+        );
 
         // Gate the follow-up on the observer having attached to and drained run 1, so the swap is
         // genuinely observed mid-subscription (not a post-hoc re-resolve).
@@ -178,15 +182,21 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         }
 
         snapshot.OfType<TextMessage>().Select(t => t.Text).Should().Contain(firstText);
-        snapshot.OfType<TextMessage>().Select(t => t.Text).Should().Contain(
-            secondText,
-            "the observer must follow the child across the owned-provider restart swap and stream run 2");
+        snapshot
+            .OfType<TextMessage>()
+            .Select(t => t.Text)
+            .Should()
+            .Contain(
+                secondText,
+                "the observer must follow the child across the owned-provider restart swap and stream run 2"
+            );
 
         // The run-1 text must precede the run-2 text in a single uninterrupted enumeration (no early end).
         var firstIndex = snapshot.FindIndex(m => m is TextMessage t && t.Text == firstText);
         var secondIndex = snapshot.FindIndex(m => m is TextMessage t && t.Text == secondText);
-        secondIndex.Should().BeGreaterThan(
-            firstIndex, "the second run's text arrives after the first on the same continuous stream");
+        secondIndex
+            .Should()
+            .BeGreaterThan(firstIndex, "the second run's text arrives after the first on the same continuous stream");
     }
 
     [Fact]
@@ -200,10 +210,7 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         const string attachedSentinel = "attached-sentinel";
         ObservableFakeAgent? liveAgent = null;
 
-        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        });
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") });
 
         manager.TestAgentFactoryOverride = (agentId, _) =>
         {
@@ -221,16 +228,19 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         using var observeCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var attached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var observerTask = Task.Run(async () =>
-        {
-            await foreach (var msg in manager.SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token))
+        var observerTask = Task.Run(
+            async () =>
             {
-                if (msg is TextMessage tm && tm.Text == attachedSentinel)
+                await foreach (var msg in manager.SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token))
                 {
-                    _ = attached.TrySetResult();
+                    if (msg is TextMessage tm && tm.Text == attachedSentinel)
+                    {
+                        _ = attached.TrySetResult();
+                    }
                 }
-            }
-        }, observeCts.Token);
+            },
+            observeCts.Token
+        );
 
         await attached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -240,8 +250,12 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         // The observer must end promptly via the deterministic EndStream decision (not hang), and NOT
         // because its own token cancelled.
         var completed = await Task.WhenAny(observerTask, Task.Delay(TimeSpan.FromSeconds(10)));
-        completed.Should().BeSameAs(
-            observerTask, "a dropped subscriber with no replacement signal and no restart in flight must end");
+        completed
+            .Should()
+            .BeSameAs(
+                observerTask,
+                "a dropped subscriber with no replacement signal and no restart in flight must end"
+            );
         await observerTask;
         observeCts.IsCancellationRequested.Should().BeFalse();
 
@@ -258,19 +272,17 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         // hanging forever waiting for a swap that will never come).
         const string attachedSentinel = "attached-sentinel";
 
-        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        });
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") });
 
-        manager.TestAgentFactoryOverride = (agentId, _) => new ObservableFakeAgent
-        {
-            ThreadId = $"subagent-{agentId}",
-            // One non-terminal sentinel, then the subscription blocks open until teardown. The sentinel
-            // lets the observer prove (deterministically, no sleep) it has captured the replacement
-            // awaitable and is actively subscribed before we dispose.
-            RunMessages = [new TextMessage { Text = attachedSentinel, Role = Role.Assistant }],
-        };
+        manager.TestAgentFactoryOverride = (agentId, _) =>
+            new ObservableFakeAgent
+            {
+                ThreadId = $"subagent-{agentId}",
+                // One non-terminal sentinel, then the subscription blocks open until teardown. The sentinel
+                // lets the observer prove (deterministically, no sleep) it has captured the replacement
+                // awaitable and is actively subscribed before we dispose.
+                RunMessages = [new TextMessage { Text = attachedSentinel, Role = Role.Assistant }],
+            };
 
         var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
@@ -278,18 +290,21 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         using var observeCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var attached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var observerTask = Task.Run(async () =>
-        {
-            await foreach (var msg in manager.SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token))
+        var observerTask = Task.Run(
+            async () =>
             {
-                if (msg is TextMessage tm && tm.Text == attachedSentinel)
+                await foreach (var msg in manager.SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token))
                 {
-                    // The observer has captured the replacement awaitable and is subscribed to the
-                    // running child — safe to tear down and assert the teardown ends the stream.
-                    _ = attached.TrySetResult();
+                    if (msg is TextMessage tm && tm.Text == attachedSentinel)
+                    {
+                        // The observer has captured the replacement awaitable and is subscribed to the
+                        // running child — safe to tear down and assert the teardown ends the stream.
+                        _ = attached.TrySetResult();
+                    }
                 }
-            }
-        }, observeCts.Token);
+            },
+            observeCts.Token
+        );
 
         await attached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -298,8 +313,9 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         _manager = null; // already disposed; avoid a double dispose in DisposeAsync().
 
         var completed = await Task.WhenAny(observerTask, Task.Delay(TimeSpan.FromSeconds(10)));
-        completed.Should().BeSameAs(
-            observerTask, "manager teardown signals a null replacement so the observer ends cleanly");
+        completed
+            .Should()
+            .BeSameAs(observerTask, "manager teardown signals a null replacement so the observer ends cleanly");
 
         // Surface any fault and confirm the observer was not force-cancelled (it ended via the null signal).
         await observerTask;
@@ -326,8 +342,9 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         state.SwapLiveAgentAndSignalReplaced(a1);
 
         s0.AgentReplaced.IsCompletedSuccessfully.Should().BeTrue();
-        (await s0.AgentReplaced).Should().BeSameAs(
-            a1, "the signal captured with a0 resolves to a0's replacement, never to a0 itself");
+        (await s0.AgentReplaced)
+            .Should()
+            .BeSameAs(a1, "the signal captured with a0 resolves to a0's replacement, never to a0 itself");
 
         var s1 = state.SnapshotForObservation();
         s1.Agent.Should().BeSameAs(a1);
@@ -382,8 +399,9 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
 
         await Task.WhenAll(swapper, observer);
 
-        tornPairs.Should().Be(
-            0, "an atomic snapshot never pairs an agent with a signal that already resolved to that same agent");
+        tornPairs
+            .Should()
+            .Be(0, "an atomic snapshot never pairs an agent with a signal that already resolved to that same agent");
     }
 
     [Fact]
@@ -443,8 +461,10 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         var (_, nextReplaced) = state.SnapshotForObservation();
         nextReplaced.IsCompleted.Should().BeFalse("a fresh signal is installed for the new epoch");
 
-        state.DecideAfterStreamEnd(nextReplaced).Should().Be(
-            ObservationContinuation.EndStream, "the swap cleared the restart flag");
+        state
+            .DecideAfterStreamEnd(nextReplaced)
+            .Should()
+            .Be(ObservationContinuation.EndStream, "the swap cleared the restart flag");
     }
 
     [Fact]
@@ -457,8 +477,10 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         state.SignalAgentReplaced(null);
 
         var (_, nextReplaced) = state.SnapshotForObservation();
-        state.DecideAfterStreamEnd(nextReplaced).Should().Be(
-            ObservationContinuation.EndStream, "teardown cleared the restart flag");
+        state
+            .DecideAfterStreamEnd(nextReplaced)
+            .Should()
+            .Be(ObservationContinuation.EndStream, "teardown cleared the restart flag");
     }
 
     [Fact]
@@ -488,10 +510,7 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         // guard only covers the paths that never reach it.
         using var gateRelease = new DisposeGateRelease(disposeGate);
 
-        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        });
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") });
 
         manager.TestAgentFactoryOverride = (agentId, _) =>
         {
@@ -499,17 +518,18 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             var agent = new ObservableFakeAgent
             {
                 ThreadId = $"subagent-{agentId}",
-                RunMessages = idx == 1
-                    ?
-                    [
-                        new TextMessage { Text = firstText, Role = Role.Assistant },
-                        new RunCompletedMessage { CompletedRunId = "run-1" },
-                    ]
-                    :
-                    [
-                        new TextMessage { Text = secondText, Role = Role.Assistant },
-                        new RunCompletedMessage { CompletedRunId = "run-2" },
-                    ],
+                RunMessages =
+                    idx == 1
+                        ?
+                        [
+                            new TextMessage { Text = firstText, Role = Role.Assistant },
+                            new RunCompletedMessage { CompletedRunId = "run-1" },
+                        ]
+                        :
+                        [
+                            new TextMessage { Text = secondText, Role = Role.Assistant },
+                            new RunCompletedMessage { CompletedRunId = "run-2" },
+                        ],
                 // Only the first instance's dispose is gated (it is the one the restart disposes).
                 DisposeGate = idx == 1 ? disposeGate : null,
             };
@@ -532,31 +552,34 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             // "not yet". The non-throwing variant makes the not-yet-registered case a value instead
             // of an exception, so nothing has to be swallowed to express it.
             () =>
-                manager.TryPeek(agentId, out var status)
-                && status.Contains("\"completed\"", StringComparison.Ordinal),
+                manager.TryPeek(agentId, out var status) && status.Contains("\"completed\"", StringComparison.Ordinal),
             "the sub-agent reported completed",
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
 
         using var observeCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var sawFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var sawSecond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var observerTask = Task.Run(async () =>
-        {
-            await foreach (var msg in manager.SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token))
+        var observerTask = Task.Run(
+            async () =>
             {
-                if (msg is TextMessage tm && tm.Text == firstText)
+                await foreach (var msg in manager.SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token))
                 {
-                    _ = sawFirst.TrySetResult();
-                }
+                    if (msg is TextMessage tm && tm.Text == firstText)
+                    {
+                        _ = sawFirst.TrySetResult();
+                    }
 
-                if (msg is TextMessage tm2 && tm2.Text == secondText)
-                {
-                    _ = sawSecond.TrySetResult();
-                    return;
+                    if (msg is TextMessage tm2 && tm2.Text == secondText)
+                    {
+                        _ = sawSecond.TrySetResult();
+                        return;
+                    }
                 }
-            }
-        }, observeCts.Token);
+            },
+            observeCts.Token
+        );
 
         await sawFirst.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -578,8 +601,9 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         // The observer's run-1 stream has ended and no replacement has arrived, yet — because a restart is
         // in flight — it must be AWAITING the replacement, not ended. The old 2s grace would eventually
         // have ended it here; the explicit signal never does.
-        observerTask.IsCompleted.Should().BeFalse(
-            "a restart in flight must keep the observer awaiting the replacement, not terminate the stream");
+        observerTask
+            .IsCompleted.Should()
+            .BeFalse("a restart in flight must keep the observer awaiting the replacement, not terminate the stream");
         sawSecond.Task.IsCompleted.Should().BeFalse("the swap has not delivered the second run yet");
 
         // Release the gated dispose -> restart proceeds to the swap -> `replaced` completes -> the observer
@@ -595,8 +619,9 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             createdAgents.Should().HaveCount(2, "the restart created exactly one replacement instance");
         }
 
-        observeCts.IsCancellationRequested.Should().BeFalse(
-            "the observer followed the slow restart via the signal, not via cancellation");
+        observeCts
+            .IsCancellationRequested.Should()
+            .BeFalse("the observer followed the slow restart via the signal, not via cancellation");
     }
 
     [Fact]
@@ -627,10 +652,7 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         // guard only covers the paths that never reach it.
         using var gateRelease = new DisposeGateRelease(disposeGate);
 
-        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        });
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") });
 
         manager.TestAgentFactoryOverride = (agentId, _) =>
         {
@@ -638,17 +660,18 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             var agent = new ObservableFakeAgent
             {
                 ThreadId = $"subagent-{agentId}",
-                RunMessages = idx == 1
-                    ?
-                    [
-                        new TextMessage { Text = firstText, Role = Role.Assistant },
-                        new RunCompletedMessage { CompletedRunId = "run-1" },
-                    ]
-                    :
-                    [
-                        new TextMessage { Text = secondText, Role = Role.Assistant },
-                        new RunCompletedMessage { CompletedRunId = "run-2" },
-                    ],
+                RunMessages =
+                    idx == 1
+                        ?
+                        [
+                            new TextMessage { Text = firstText, Role = Role.Assistant },
+                            new RunCompletedMessage { CompletedRunId = "run-1" },
+                        ]
+                        :
+                        [
+                            new TextMessage { Text = secondText, Role = Role.Assistant },
+                            new RunCompletedMessage { CompletedRunId = "run-2" },
+                        ],
                 DisposeGate = idx == 1 ? disposeGate : null,
             };
             lock (createdAgents)
@@ -670,19 +693,26 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             // "not yet". The non-throwing variant makes the not-yet-registered case a value instead
             // of an exception, so nothing has to be swallowed to express it.
             () =>
-                manager.TryPeek(agentId, out var status)
-                && status.Contains("\"completed\"", StringComparison.Ordinal),
+                manager.TryPeek(agentId, out var status) && status.Contains("\"completed\"", StringComparison.Ordinal),
             "the sub-agent reported completed",
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
 
         // Drive the restart off the test thread: it blocks inside the gated dispose.
         var sendTask = Task.Run(() => manager.SendMessageAsync(agentId, "continue", runInBackground: true));
 
         ObservableFakeAgent firstAgent;
         await Wait.UntilAsync(
-            () => { lock (createdAgents) { return createdAgents.Count >= 1; } },
+            () =>
+            {
+                lock (createdAgents)
+                {
+                    return createdAgents.Count >= 1;
+                }
+            },
             "the first agent instance was created",
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
         lock (createdAgents)
         {
             firstAgent = createdAgents[0];
@@ -710,9 +740,12 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
 
         disposeGate.SetResult();
 
-        attachCompletedSynchronously.Should().BeFalse(
-            "a subscribe onto a registered-but-disposed instance is an ordinary restart transition: it "
-            + "must park on the replacement signal, not fault the stream");
+        attachCompletedSynchronously
+            .Should()
+            .BeFalse(
+                "a subscribe onto a registered-but-disposed instance is an ordinary restart transition: it "
+                    + "must park on the replacement signal, not fault the stream"
+            );
 
         var seen = new List<string>();
         for (var more = await attach; more; more = await observer.MoveNextAsync())
@@ -729,12 +762,15 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
 
         await sendTask.WaitAsync(TimeSpan.FromSeconds(10));
 
-        seen.Should().Equal(
-            [secondText],
-            "the observer followed the swap onto the replacement and streamed its run — and received "
-            + "nothing from the disposed instance it attached to");
-        observeCts.IsCancellationRequested.Should().BeFalse(
-            "the transition was handled as a stream end, not by cancelling the observer");
+        seen.Should()
+            .Equal(
+                [secondText],
+                "the observer followed the swap onto the replacement and streamed its run — and received "
+                    + "nothing from the disposed instance it attached to"
+            );
+        observeCts
+            .IsCancellationRequested.Should()
+            .BeFalse("the transition was handled as a stream end, not by cancelling the observer");
     }
 
     [Fact]
@@ -765,7 +801,8 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         // manager parked in a gated dispose. Hence the try opens HERE, not once the wedge is set up.
         var manager = CreateManager(
             new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") },
-            registerForTeardown: false);
+            registerForTeardown: false
+        );
 
         Task? wedged = null;
         Task? relay = null;
@@ -807,7 +844,8 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
                     manager.TryPeek(agentId, out var status)
                     && status.Contains("\"completed\"", StringComparison.Ordinal),
                 "the sub-agent reported completed",
-                TimeSpan.FromSeconds(10));
+                TimeSpan.FromSeconds(10)
+            );
 
             // Park the restart inside the gated dispose. This is the wedge: from here until the gate
             // opens, the manager's own DisposeAsync cannot return.
@@ -821,27 +859,38 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             // long we allow — the outcome does not depend on timing at all.
             var ceiling = TimeSpan.FromSeconds(2);
             var failure = await FluentActions
-                .Awaiting(() => Wait.ForTeardownAsync(
-                    () => new ValueTask(wedged),
-                    "the sub-agent manager whose registered instance is parked in a gated dispose",
-                    ceiling))
+                .Awaiting(() =>
+                    Wait.ForTeardownAsync(
+                        () => new ValueTask(wedged),
+                        "the sub-agent manager whose registered instance is parked in a gated dispose",
+                        ceiling
+                    )
+                )
                 .Should()
                 .ThrowAsync<TimeoutException>(
-                    "an unreleased gate must fail the teardown by name rather than block it forever");
+                    "an unreleased gate must fail the teardown by name rather than block it forever"
+                );
 
-            failure.Which.Message.Should().Contain(
-                "the sub-agent manager whose registered instance is parked in a gated dispose",
-                "the message must name WHAT was being torn down — a bare timeout tells the next reader "
-                + "nothing the stack trace did not");
-            failure.Which.Message.Should().Contain(
-                nameof(Teardown_WhenABodyThrowsBeforeReleasingAGatedDispose_FailsByNameInsteadOfWedgingTheRun),
-                "the message must name the caller whose teardown stalled");
+            failure
+                .Which.Message.Should()
+                .Contain(
+                    "the sub-agent manager whose registered instance is parked in a gated dispose",
+                    "the message must name WHAT was being torn down — a bare timeout tells the next reader "
+                        + "nothing the stack trace did not"
+                );
+            failure
+                .Which.Message.Should()
+                .Contain(
+                    nameof(Teardown_WhenABodyThrowsBeforeReleasingAGatedDispose_FailsByNameInsteadOfWedgingTheRun),
+                    "the message must name the caller whose teardown stalled"
+                );
 
             // The teardown really is still blocked — the bound abandoned it, it did not cancel it.
             // That is the structural difference between a bound and a fix, and it is why the gate has
             // to be released too rather than only bounded.
-            wedged.IsCompleted.Should().BeFalse(
-                "the bound reports the stall; only opening the gate can actually finish the teardown");
+            wedged
+                .IsCompleted.Should()
+                .BeFalse("the bound reports the stall; only opening the gate can actually finish the teardown");
 
             bodyCompleted = true;
         }
@@ -864,7 +913,8 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
                     static c => _ = c.Exception,
                     CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
+                    TaskScheduler.Default
+                );
             }
         }
     }
@@ -873,10 +923,7 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
     /// Finishes off the proof test's deliberately-unregistered manager: drains the disposal it already
     /// started (or disposes it if it never got that far) and then the relay raced against it.
     /// </summary>
-    private static async Task ReleaseOwnedManagerAsync(
-        SubAgentManager manager,
-        Task? wedged,
-        Task? relay)
+    private static async Task ReleaseOwnedManagerAsync(SubAgentManager manager, Task? wedged, Task? relay)
     {
         if (wedged is not null)
         {
@@ -911,8 +958,7 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         {
             await sendTask.WaitAsync(TimeSpan.FromSeconds(30));
         }
-        catch (Exception ex)
-            when (ex is ObjectDisposedException or OperationCanceledException)
+        catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
         {
             // Disposing the manager mid-relay ends the relay. Anything else is a real failure and
             // must reach the runner.
@@ -931,18 +977,16 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         // failure into a stream that hangs until the connection dies.
         const string attachedSentinel = "attached-sentinel";
 
-        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        });
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") });
 
-        manager.TestAgentFactoryOverride = (agentId, _) => new ObservableFakeAgent
-        {
-            ThreadId = $"subagent-{agentId}",
-            // One sentinel proves the observer is really streaming this instance before it faults.
-            RunMessages = [new TextMessage { Text = attachedSentinel, Role = Role.Assistant }],
-            SubscribeFault = (Exception)Activator.CreateInstance(faultType)!,
-        };
+        manager.TestAgentFactoryOverride = (agentId, _) =>
+            new ObservableFakeAgent
+            {
+                ThreadId = $"subagent-{agentId}",
+                // One sentinel proves the observer is really streaming this instance before it faults.
+                RunMessages = [new TextMessage { Text = attachedSentinel, Role = Role.Assistant }],
+                SubscribeFault = (Exception)Activator.CreateInstance(faultType)!,
+            };
 
         var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
@@ -992,20 +1036,18 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
     private SubAgentManager CreateManager(
         IReadOnlyDictionary<string, SubAgentTemplate> templates,
         int maxConcurrent = 5,
-        bool registerForTeardown = true)
+        bool registerForTeardown = true
+    )
     {
-        var options = new SubAgentOptions
-        {
-            Templates = templates,
-            MaxConcurrentSubAgents = maxConcurrent,
-        };
+        var options = new SubAgentOptions { Templates = templates, MaxConcurrentSubAgents = maxConcurrent };
 
         var manager = new SubAgentManager(
             parentAgent: _parentMock.Object,
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: new MutableSubAgentTemplateSource(options.Templates));
+            source: new MutableSubAgentTemplateSource(options.Templates)
+        );
         if (registerForTeardown)
         {
             _manager = manager;
@@ -1024,8 +1066,8 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         {
             Name = name,
             SystemPrompt = "You are a test agent.",
-            AgentFactory = () => throw new NotSupportedException(
-                "Bypassed by TestAgentFactoryOverride; should never be invoked."),
+            AgentFactory = () =>
+                throw new NotSupportedException("Bypassed by TestAgentFactoryOverride; should never be invoked."),
         };
     }
 
@@ -1034,7 +1076,6 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         using var doc = JsonDocument.Parse(spawnJson);
         return doc.RootElement.GetProperty("agent_id").GetString()!;
     }
-
 
     #endregion
 }
@@ -1048,21 +1089,18 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
 /// </summary>
 internal sealed class ObservableFakeAgent : IMultiTurnAgent
 {
-    private readonly TaskCompletionSource _disposed =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     // Ends an active subscription WITHOUT disposing the instance — simulates
     // MultiTurnAgentBase.PublishToSubscriber dropping a slow subscriber under backpressure (the
     // instance stays alive/registered and no replacement is signalled).
-    private readonly TaskCompletionSource _dropped =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _dropped = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     // Completes the instant DisposeAsync is entered and has already ended open subscriptions (set
     // _disposed) — before it awaits DisposeGate. Lets a test know the observer's OLD stream has been
     // closed (so the restart-in-progress flag is already set and the observer is about to decide) before
     // it releases the gate, WITHOUT any wall-clock delay.
-    private readonly TaskCompletionSource _disposeEntered =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _disposeEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public required IReadOnlyList<IMessage> RunMessages { get; init; }
 
@@ -1098,30 +1136,30 @@ internal sealed class ObservableFakeAgent : IMultiTurnAgent
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         return new ValueTask<SendReceipt>(
-            new SendReceipt(Guid.NewGuid().ToString("N"), inputId, DateTimeOffset.UtcNow));
+            new SendReceipt(Guid.NewGuid().ToString("N"), inputId, DateTimeOffset.UtcNow)
+        );
     }
 
     public ValueTask<SendReceipt?> TrySendAsync(
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         throw new NotSupportedException("Not used by these tests.");
     }
 
-    public IAsyncEnumerable<IMessage> ExecuteRunAsync(
-        UserInput userInput,
-        CancellationToken ct = default)
+    public IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default)
     {
         throw new NotSupportedException("Not used by these tests.");
     }
 
-    public async IAsyncEnumerable<IMessage> SubscribeAsync(
-        [EnumeratorCancellation] CancellationToken ct = default)
+    public async IAsyncEnumerable<IMessage> SubscribeAsync([EnumeratorCancellation] CancellationToken ct = default)
     {
         // Faithful to MultiTurnAgentBase.SubscribeAsync's admission gate: subscribing to an instance
         // that is ALREADY disposed throws. Because the iterator is lazy this surfaces at the caller's

@@ -43,7 +43,8 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     public GitHubReviewCommentPublisher(
         HttpClient httpClient,
         IOAuthTokenProvider tokenProvider,
-        ILogger<GitHubReviewCommentPublisher> logger)
+        ILogger<GitHubReviewCommentPublisher> logger
+    )
     {
         _httpClient = httpClient;
         _tokenProvider = tokenProvider;
@@ -55,7 +56,8 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     public async Task<PostedComment?> FindPostedCommentAsync(
         ReviewCommentTarget target,
         string idempotencyKey,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(target);
 
@@ -80,12 +82,17 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         ReviewCommentTarget target,
         string idempotencyKey,
         string body,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(target);
 
         using var request = await BuildRequestAsync(
-            HttpMethod.Post, CommentsUrl(target), SandboxOperation.PostReviewComment, cancellationToken);
+            HttpMethod.Post,
+            CommentsUrl(target),
+            SandboxOperation.PostReviewComment,
+            cancellationToken
+        );
         request.Content = JsonContent.Create(new { body = IdempotencyMarker.Embed(body, idempotencyKey) });
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);
@@ -103,7 +110,8 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
 
     public async Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
         ReviewCommentTarget target,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(target);
 
@@ -133,8 +141,16 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
             var body = GetString(review, "body");
             if (!string.IsNullOrWhiteSpace(body))
             {
-                results.Add(new ExistingReviewComment(
-                    null, null, Trim(body), AuthorOf(review), IsActive: true, PublishedAt: TimeOf(review, "submitted_at")));
+                results.Add(
+                    new ExistingReviewComment(
+                        null,
+                        null,
+                        Trim(body),
+                        AuthorOf(review),
+                        IsActive: true,
+                        PublishedAt: TimeOf(review, "submitted_at")
+                    )
+                );
             }
         }
 
@@ -146,8 +162,9 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         // pull_request_review_id belongs to a PENDING draft (above) is skipped — GitHub still returns the draft's
         // per-line comments to the authenticated author, and letting one seed dedup would suppress its valid
         // submitted replacement.
-        await foreach (var comment in EnumeratePagedAsync(
-            $"{pullsBase}/comments?sort=created&direction=desc", cancellationToken))
+        await foreach (
+            var comment in EnumeratePagedAsync($"{pullsBase}/comments?sort=created&direction=desc", cancellationToken)
+        )
         {
             var body = GetString(comment, "body");
             if (string.IsNullOrWhiteSpace(body))
@@ -160,9 +177,17 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
                 continue; // belongs to an unsubmitted draft review
             }
 
-            results.Add(new ExistingReviewComment(
-                GetString(comment, "path"), LineOf(comment), Trim(body), AuthorOf(comment),
-                IsActive: true, PublishedAt: TimeOf(comment, "created_at"), ThreadId: ThreadIdOf(comment)));
+            results.Add(
+                new ExistingReviewComment(
+                    GetString(comment, "path"),
+                    LineOf(comment),
+                    Trim(body),
+                    AuthorOf(comment),
+                    IsActive: true,
+                    PublishedAt: TimeOf(comment, "created_at"),
+                    ThreadId: ThreadIdOf(comment)
+                )
+            );
         }
 
         // Ordinary PR-conversation (issue) comments — this publisher posts its summaries via /issues/{pr}/comments,
@@ -172,15 +197,24 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         // this is the listing that carries the bot's own prior summaries and any question addressed to it, so
         // keeping the OLDEST window is what makes the daemon repost a resolved finding or leave a question
         // unanswered — precisely the discussion still under argument is what a forward walk drops.
-        await foreach (var comment in EnumerateNewestFirstAsync(
-            $"{repoBase}/issues/{target.PrId}/comments", cancellationToken))
+        await foreach (
+            var comment in EnumerateNewestFirstAsync($"{repoBase}/issues/{target.PrId}/comments", cancellationToken)
+        )
         {
             var body = GetString(comment, "body");
             if (!string.IsNullOrWhiteSpace(body))
             {
-                results.Add(new ExistingReviewComment(
-                    null, null, Trim(body), AuthorOf(comment), IsActive: true,
-                    PublishedAt: TimeOf(comment, "created_at"), ThreadId: ThreadIdOf(comment)));
+                results.Add(
+                    new ExistingReviewComment(
+                        null,
+                        null,
+                        Trim(body),
+                        AuthorOf(comment),
+                        IsActive: true,
+                        PublishedAt: TimeOf(comment, "created_at"),
+                        ThreadId: ThreadIdOf(comment)
+                    )
+                );
             }
         }
 
@@ -213,7 +247,8 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     /// </summary>
     private async IAsyncEnumerable<JsonElement> EnumeratePagedAsync(
         string url,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken
+    )
     {
         for (var page = 1; page <= MaxListPages; page++)
         {
@@ -253,7 +288,8 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     /// </summary>
     private async IAsyncEnumerable<JsonElement> EnumerateNewestFirstAsync(
         string url,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken
+    )
     {
         using var first = await FetchPageAsync(url, 1, cancellationToken);
         var lastPage = first.LastPage;
@@ -290,14 +326,17 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         public void Dispose() => Document.Dispose();
     }
 
-    private async Task<ListPage> FetchPageAsync(
-        string url, int page, CancellationToken cancellationToken)
+    private async Task<ListPage> FetchPageAsync(string url, int page, CancellationToken cancellationToken)
     {
         var separator = url.Contains('?', StringComparison.Ordinal) ? '&' : '?';
         var pagedUrl = $"{url}{separator}per_page={PageSize}&page={page}";
 
         using var request = await BuildRequestAsync(
-            HttpMethod.Get, pagedUrl, SandboxOperation.ReadProviderMetadata, cancellationToken);
+            HttpMethod.Get,
+            pagedUrl,
+            SandboxOperation.ReadProviderMetadata,
+            cancellationToken
+        );
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
 
@@ -347,10 +386,11 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
                 end++;
             }
 
-            if (end > offset
-                && int.TryParse(
-                    segment.AsSpan(offset, end - offset), CultureInfo.InvariantCulture, out var parsed)
-                && parsed >= 1)
+            if (
+                end > offset
+                && int.TryParse(segment.AsSpan(offset, end - offset), CultureInfo.InvariantCulture, out var parsed)
+                && parsed >= 1
+            )
             {
                 return parsed;
             }
@@ -372,18 +412,23 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     private static string? LineOf(JsonElement comment) =>
         comment.TryGetProperty("line", out var l) && l.ValueKind is JsonValueKind.Number
             ? l.GetInt32().ToString(CultureInfo.InvariantCulture)
-            : comment.TryGetProperty("original_line", out var ol) && ol.ValueKind is JsonValueKind.Number
-                ? ol.GetInt32().ToString(CultureInfo.InvariantCulture)
-                : null;
+        : comment.TryGetProperty("original_line", out var ol) && ol.ValueKind is JsonValueKind.Number
+            ? ol.GetInt32().ToString(CultureInfo.InvariantCulture)
+        : null;
 
     private static string? AuthorOf(JsonElement element) =>
         element.TryGetProperty("user", out var u) && u.ValueKind is JsonValueKind.Object ? GetString(u, "login") : null;
 
     /// <summary>Reads an ISO-8601 timestamp field (e.g. <c>created_at</c>/<c>submitted_at</c>) — orders past vs. new.</summary>
     private static DateTimeOffset? TimeOf(JsonElement element, string name) =>
-        element.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.String
-            && DateTimeOffset.TryParse(v.GetString(), CultureInfo.InvariantCulture,
-                DateTimeStyles.RoundtripKind, out var dt)
+        element.TryGetProperty(name, out var v)
+        && v.ValueKind is JsonValueKind.String
+        && DateTimeOffset.TryParse(
+            v.GetString(),
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out var dt
+        )
             ? dt
             : null;
 
@@ -410,7 +455,11 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     private static string Trim(string body) => ExistingCommentBody.Summarize(body);
 
     private async Task<HttpRequestMessage> BuildRequestAsync(
-        HttpMethod method, string url, SandboxOperation operation, CancellationToken cancellationToken)
+        HttpMethod method,
+        string url,
+        SandboxOperation operation,
+        CancellationToken cancellationToken
+    )
     {
         var request = new HttpRequestMessage(method, url).WithOperation(operation);
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);

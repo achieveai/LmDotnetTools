@@ -51,8 +51,7 @@ public sealed record MultiTurnLifecycleServices
     /// allocator, so a host that forgets to supply one still gets ordered events — they are just
     /// ordered within this bundle rather than within the process.
     /// </summary>
-    public ILifecycleSequenceAllocator SequenceAllocator { get; init; } =
-        new InMemoryLifecycleSequenceAllocator();
+    public ILifecycleSequenceAllocator SequenceAllocator { get; init; } = new InMemoryLifecycleSequenceAllocator();
 
     /// <summary>
     /// Durable lifecycle state, when the host wants runs to survive a restart.
@@ -117,10 +116,15 @@ public sealed record MultiTurnLifecycleServices
     public static MultiTurnLifecycleServices ForAgent(
         MultiTurnLifecycleServices? services,
         string agentKind,
-        string? modelId = null) =>
+        string? modelId = null
+    ) =>
         services == null || ReferenceEquals(services, Disabled)
             ? Disabled
-            : services with { AgentKind = agentKind, ModelId = services.ModelId ?? modelId };
+            : services with
+            {
+                AgentKind = agentKind,
+                ModelId = services.ModelId ?? modelId,
+            };
 
     /// <summary>
     /// Derives the bundle for an agent this one is spawning.
@@ -144,15 +148,17 @@ public sealed record MultiTurnLifecycleServices
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="lineage"/> is <see langword="null"/>.</exception>
-    public static MultiTurnLifecycleServices ForSpawnedAgent(
-        MultiTurnLifecycleServices? parent,
-        AgentLineage lineage)
+    public static MultiTurnLifecycleServices ForSpawnedAgent(MultiTurnLifecycleServices? parent, AgentLineage lineage)
     {
         ArgumentNullException.ThrowIfNull(lineage);
 
         return parent == null || ReferenceEquals(parent, Disabled)
             ? Disabled
-            : parent with { Lineage = lineage, ModelId = null };
+            : parent with
+            {
+                Lineage = lineage,
+                ModelId = null,
+            };
     }
 
     /// <summary>

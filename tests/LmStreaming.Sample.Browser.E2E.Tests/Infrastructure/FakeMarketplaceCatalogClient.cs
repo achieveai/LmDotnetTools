@@ -16,35 +16,46 @@ public sealed class FakeMarketplaceCatalogClient : IMarketplaceCatalogClient
 
     /// <summary>A small, representative catalog (one marketplace, one plugin with a skill + agent).</summary>
     public static FakeMarketplaceCatalogClient WithSampleCatalog() =>
-        new(new MarketplaceCatalog(
-            Selected: ["ClaudePlugins"],
-            Marketplaces:
-            [
-                new CatalogMarketplace(
-                    Alias: "ClaudePlugins",
-                    Error: null,
-                    Plugins:
-                    [
-                        new CatalogPlugin(
-                            Name: "orleans-dev",
-                            Version: "1.0.2",
-                            Description: "Orleans patterns, best practices, and code review.",
-                            Skills:
-                            [
-                                new CatalogSkill(
-                                    "orleans-patterns", "Orleans patterns and rules", "orleans-dev",
-                                    "ClaudePlugins", "/marketplaces/ClaudePlugins/orleans-dev/skills/orleans-patterns/")
-                            ],
-                            Agents:
-                            [
-                                new CatalogAgent(
-                                    "orleans-reviewer", "Senior Orleans code reviewer", "orleans-dev",
-                                    "ClaudePlugins", "/marketplaces/ClaudePlugins/orleans-dev/agents/orleans-reviewer.md")
-                            ]
-                        )
-                    ]
-                )
-            ]));
+        new(
+            new MarketplaceCatalog(
+                Selected: ["ClaudePlugins"],
+                Marketplaces:
+                [
+                    new CatalogMarketplace(
+                        Alias: "ClaudePlugins",
+                        Error: null,
+                        Plugins:
+                        [
+                            new CatalogPlugin(
+                                Name: "orleans-dev",
+                                Version: "1.0.2",
+                                Description: "Orleans patterns, best practices, and code review.",
+                                Skills:
+                                [
+                                    new CatalogSkill(
+                                        "orleans-patterns",
+                                        "Orleans patterns and rules",
+                                        "orleans-dev",
+                                        "ClaudePlugins",
+                                        "/marketplaces/ClaudePlugins/orleans-dev/skills/orleans-patterns/"
+                                    ),
+                                ],
+                                Agents:
+                                [
+                                    new CatalogAgent(
+                                        "orleans-reviewer",
+                                        "Senior Orleans code reviewer",
+                                        "orleans-dev",
+                                        "ClaudePlugins",
+                                        "/marketplaces/ClaudePlugins/orleans-dev/agents/orleans-reviewer.md"
+                                    ),
+                                ]
+                            ),
+                        ]
+                    ),
+                ]
+            )
+        );
 
     /// <summary>
     /// A catalog whose marketplaces publish named plugins, alongside an explicit gateway capability
@@ -61,7 +72,8 @@ public sealed class FakeMarketplaceCatalogClient : IMarketplaceCatalogClient
     /// <param name="marketplaces">Alias and the plugin names it publishes, in render order.</param>
     public static FakeMarketplaceCatalogClient WithPlugins(
         bool? pluginFiltering,
-        params (string Alias, string[] Plugins)[] marketplaces)
+        params (string Alias, string[] Plugins)[] marketplaces
+    )
     {
         ArgumentNullException.ThrowIfNull(marketplaces);
         var catalog = new MarketplaceCatalog(
@@ -78,9 +90,12 @@ public sealed class FakeMarketplaceCatalogClient : IMarketplaceCatalogClient
                             Version: "1.0.0",
                             Description: $"{p} (E2E fake)",
                             Skills: [],
-                            Agents: []))
-                    ]))
-            ])
+                            Agents: []
+                        )),
+                    ]
+                )),
+            ]
+        )
         {
             // Capabilities is init-only with a fail-closed default, so forgetting it here is silent:
             // that is exactly how the per-plugin UI came to render in ZERO E2E tests. A SECOND
@@ -101,20 +116,25 @@ public sealed class FakeMarketplaceCatalogClient : IMarketplaceCatalogClient
 
     /// <summary>Returns an alias-only catalog for scenarios that validate workspace selections.</summary>
     public static FakeMarketplaceCatalogClient WithAliases(params string[] aliases) =>
-        new(new MarketplaceCatalog(
-            Selected: aliases,
-            Marketplaces: [.. aliases.Select(alias => new CatalogMarketplace(alias, null, []))]));
+        new(
+            new MarketplaceCatalog(
+                Selected: aliases,
+                Marketplaces: [.. aliases.Select(alias => new CatalogMarketplace(alias, null, []))]
+            )
+        );
 
     /// <summary>Simulates the gateway being unreachable, driving the UI's offline state.</summary>
     public static FakeMarketplaceCatalogClient Offline() => new(catalog: null);
 
     public Task<MarketplaceCatalog> GetCatalogAsync(
         IReadOnlyList<string>? marketplaces = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         return _catalog is null
             ? Task.FromException<MarketplaceCatalog>(
-                new MarketplaceCatalogUnavailableException("gateway offline (E2E fake)"))
+                new MarketplaceCatalogUnavailableException("gateway offline (E2E fake)")
+            )
             : Task.FromResult(_catalog);
     }
 }

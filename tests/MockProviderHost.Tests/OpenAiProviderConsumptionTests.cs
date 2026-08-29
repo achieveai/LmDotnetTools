@@ -15,9 +15,10 @@ public sealed class OpenAiProviderConsumptionTests
     [Fact]
     public async Task OpenClient_streams_scripted_text_through_the_host()
     {
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.Text("hello from the mock host"))
+            .Turn(t => t.Text("hello from the mock host"))
             .Build();
 
         await using var fixture = await EphemeralHostFixture.StartAsync(responder);
@@ -27,9 +28,14 @@ public sealed class OpenAiProviderConsumptionTests
         var request = new ChatCompletionRequest(
             "gpt-test",
             [
-                new ChatMessage { Role = RoleEnum.System, Content = ChatMessage.CreateContent("You are a helpful assistant.") },
+                new ChatMessage
+                {
+                    Role = RoleEnum.System,
+                    Content = ChatMessage.CreateContent("You are a helpful assistant."),
+                },
                 new ChatMessage { Role = RoleEnum.User, Content = ChatMessage.CreateContent("say hello") },
-            ])
+            ]
+        )
         {
             Stream = true,
         };

@@ -20,9 +20,8 @@ namespace LmMultiTurn.Tests;
 
 public class CopilotAgentLoopTests : LoggingTestBase
 {
-    public CopilotAgentLoopTests(ITestOutputHelper output) : base(output)
-    {
-    }
+    public CopilotAgentLoopTests(ITestOutputHelper output)
+        : base(output) { }
 
     /// <summary>
     /// Emits an incremental text chunk, a thought chunk, a tool_call + tool_call_update,
@@ -37,36 +36,51 @@ public class CopilotAgentLoopTests : LoggingTestBase
             sessionId: "sess_copilot_1",
             events:
             [
-                SessionUpdate("sess_copilot_1", """
+                SessionUpdate(
+                    "sess_copilot_1",
+                    """
                     {"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Thinking..."}}
-                    """),
-                SessionUpdate("sess_copilot_1", """
+                    """
+                ),
+                SessionUpdate(
+                    "sess_copilot_1",
+                    """
                     {"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hel"}}
-                    """),
-                SessionUpdate("sess_copilot_1", """
+                    """
+                ),
+                SessionUpdate(
+                    "sess_copilot_1",
+                    """
                     {"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"lo"}}
-                    """),
-                SessionUpdate("sess_copilot_1", """
+                    """
+                ),
+                SessionUpdate(
+                    "sess_copilot_1",
+                    """
                     {"sessionUpdate":"tool_call","toolCallId":"tool_1","title":"calculate","rawInput":{"a":2,"b":5}}
-                    """),
-                SessionUpdate("sess_copilot_1", """
+                    """
+                ),
+                SessionUpdate(
+                    "sess_copilot_1",
+                    """
                     {"sessionUpdate":"tool_call_update","toolCallId":"tool_1","status":"completed","content":[{"type":"text","text":"10"}]}
-                    """),
+                    """
+                ),
                 PromptCompleted("""{"usage":{"inputTokens":4,"outputTokens":2,"cachedInputTokens":1}}"""),
-            ]);
+            ]
+        );
 
         await using var loop = new CopilotAgentLoop(
             new CopilotSdkOptions(),
             threadId: "thread-copilot-1",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>()
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var input = new UserInput([
-            new TextMessage { Role = Role.User, Text = "say hello" },
-        ]);
+        var input = new UserInput([new TextMessage { Role = Role.User, Text = "say hello" }]);
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
@@ -79,29 +93,49 @@ public class CopilotAgentLoopTests : LoggingTestBase
         messages.OfType<TextUpdateMessage>().Select(m => m.Text).Should().ContainInOrder("Hel", "lo");
         messages.OfType<TextMessage>().Should().ContainSingle(m => m.Text == "Hello");
 
-        messages.OfType<ReasoningUpdateMessage>().Should().ContainSingle(m =>
-            m.Reasoning == "Thinking..."
-            && m.Visibility == ReasoningVisibility.Summary);
+        messages
+            .OfType<ReasoningUpdateMessage>()
+            .Should()
+            .ContainSingle(m => m.Reasoning == "Thinking..." && m.Visibility == ReasoningVisibility.Summary);
         messages.OfType<ReasoningMessage>().Should().ContainSingle(m => m.Reasoning == "Thinking...");
 
-        messages.OfType<ToolCallMessage>().Should().ContainSingle(m =>
-            m.ToolCallId == "tool_1"
-            && m.FunctionName == "calculate"
-            && m.ExecutionTarget == ExecutionTarget.ProviderServer);
-        messages.OfType<ToolCallResultMessage>().Should().ContainSingle(m =>
-            m.ToolCallId == "tool_1"
-            && !m.IsError
-            && m.Result.Contains("10", StringComparison.Ordinal));
+        messages
+            .OfType<ToolCallMessage>()
+            .Should()
+            .ContainSingle(m =>
+                m.ToolCallId == "tool_1"
+                && m.FunctionName == "calculate"
+                && m.ExecutionTarget == ExecutionTarget.ProviderServer
+            );
+        messages
+            .OfType<ToolCallResultMessage>()
+            .Should()
+            .ContainSingle(m =>
+                m.ToolCallId == "tool_1" && !m.IsError && m.Result.Contains("10", StringComparison.Ordinal)
+            );
 
-        messages.OfType<UsageMessage>().Should().ContainSingle(m =>
-            m.Usage.PromptTokens == 4
-            && m.Usage.CompletionTokens == 2
-            && m.Usage.InputTokenDetails!.CachedTokens == 1);
+        messages
+            .OfType<UsageMessage>()
+            .Should()
+            .ContainSingle(m =>
+                m.Usage.PromptTokens == 4
+                && m.Usage.CompletionTokens == 2
+                && m.Usage.InputTokenDetails!.CachedTokens == 1
+            );
 
         messages.OfType<RunCompletedMessage>().Should().ContainSingle(m => !m.IsError);
 
         messages
-            .Where(m => m is TextMessage or TextUpdateMessage or ReasoningMessage or ReasoningUpdateMessage or ToolCallMessage or ToolCallResultMessage or UsageMessage)
+            .Where(m =>
+                m
+                    is TextMessage
+                        or TextUpdateMessage
+                        or ReasoningMessage
+                        or ReasoningUpdateMessage
+                        or ToolCallMessage
+                        or ToolCallResultMessage
+                        or UsageMessage
+            )
             .Should()
             .OnlyContain(m => m.MessageOrderIdx.HasValue);
 
@@ -119,27 +153,33 @@ public class CopilotAgentLoopTests : LoggingTestBase
             sessionId: "sess_tool_fail",
             events:
             [
-                SessionUpdate("sess_tool_fail", """
+                SessionUpdate(
+                    "sess_tool_fail",
+                    """
                     {"sessionUpdate":"tool_call","toolCallId":"t1","title":"broken","rawInput":{}}
-                    """),
-                SessionUpdate("sess_tool_fail", """
+                    """
+                ),
+                SessionUpdate(
+                    "sess_tool_fail",
+                    """
                     {"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"failed","content":[{"type":"text","text":"kaboom"}]}
-                    """),
+                    """
+                ),
                 PromptCompleted("""{"usage":{"inputTokens":1,"outputTokens":0}}"""),
-            ]);
+            ]
+        );
 
         await using var loop = new CopilotAgentLoop(
             new CopilotSdkOptions(),
             threadId: "thread-copilot-tool-fail",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>()
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var input = new UserInput([
-            new TextMessage { Role = Role.User, Text = "break something" },
-        ]);
+        var input = new UserInput([new TextMessage { Role = Role.User, Text = "break something" }]);
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
@@ -147,10 +187,10 @@ public class CopilotAgentLoopTests : LoggingTestBase
             messages.Add(msg);
         }
 
-        messages.OfType<ToolCallResultMessage>().Should().ContainSingle(m =>
-            m.ToolCallId == "t1"
-            && m.IsError
-            && m.ErrorCode == "copilot_tool_failed");
+        messages
+            .OfType<ToolCallResultMessage>()
+            .Should()
+            .ContainSingle(m => m.ToolCallId == "t1" && m.IsError && m.ErrorCode == "copilot_tool_failed");
         messages.OfType<RunCompletedMessage>().Should().ContainSingle();
 
         await cts.CancelAsync();
@@ -165,25 +205,23 @@ public class CopilotAgentLoopTests : LoggingTestBase
     {
         var fakeClient = new FakeCopilotClient(
             sessionId: "sess_prompt_check",
-            events: [PromptCompleted("""{"usage":{"inputTokens":1,"outputTokens":1}}""")]);
+            events: [PromptCompleted("""{"usage":{"inputTokens":1,"outputTokens":1}}""")]
+        );
 
         await using var loop = new CopilotAgentLoop(
             new CopilotSdkOptions(),
             threadId: "thread-copilot-prompt",
             systemPrompt: "developer prompt goes here",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>()
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var input = new UserInput([
-            new TextMessage { Role = Role.User, Text = "user question" },
-        ]);
+        var input = new UserInput([new TextMessage { Role = Role.User, Text = "user question" }]);
 
-        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token))
-        {
-        }
+        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token)) { }
 
         fakeClient.LastStartOptions.Should().NotBeNull();
         fakeClient.LastStartOptions!.DeveloperInstructions.Should().Be("developer prompt goes here");
@@ -203,11 +241,15 @@ public class CopilotAgentLoopTests : LoggingTestBase
             sessionId: "sess_persist_1",
             events:
             [
-                SessionUpdate("sess_persist_1", """
+                SessionUpdate(
+                    "sess_persist_1",
+                    """
                     {"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Ack"}}
-                    """),
+                    """
+                ),
                 PromptCompleted("""{"usage":{"inputTokens":1,"outputTokens":1}}"""),
-            ]);
+            ]
+        );
 
         var store = new InMemoryConversationStore();
         await using var loop = new CopilotAgentLoop(
@@ -215,14 +257,13 @@ public class CopilotAgentLoopTests : LoggingTestBase
             threadId: "thread-copilot-persist-1",
             store: store,
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>()
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var input = new UserInput([
-            new TextMessage { Role = Role.User, Text = "hello" },
-        ]);
+        var input = new UserInput([new TextMessage { Role = Role.User, Text = "hello" }]);
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
@@ -256,12 +297,19 @@ public class CopilotAgentLoopTests : LoggingTestBase
     {
         var fakeClient = new FakeCopilotClient(
             sessionId: "sess_no_client_tools",
-            events: [PromptCompleted("""{"usage":{"inputTokens":1,"outputTokens":1}}""")]);
+            events: [PromptCompleted("""{"usage":{"inputTokens":1,"outputTokens":1}}""")]
+        );
 
         var registry = new FunctionRegistry();
         _ = registry.AddFunction(
-            new FunctionContract { Name = "ordinary_tool", Description = "An ordinary tool", Parameters = [] },
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")));
+            new FunctionContract
+            {
+                Name = "ordinary_tool",
+                Description = "An ordinary tool",
+                Parameters = [],
+            },
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok"))
+        );
 
         await using var loop = new CopilotAgentLoop(
             new CopilotSdkOptions(),
@@ -269,29 +317,31 @@ public class CopilotAgentLoopTests : LoggingTestBase
             enabledTools: null,
             threadId: "thread-copilot-no-client-tools",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>()
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var input = new UserInput([
-            new TextMessage { Role = Role.User, Text = "hello" },
-        ]);
+        var input = new UserInput([new TextMessage { Role = Role.User, Text = "hello" }]);
 
-        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token))
-        {
-        }
+        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token)) { }
 
         fakeClient.LastStartOptions.Should().NotBeNull();
-        var toolNames = fakeClient.LastStartOptions!.Tools?.Select(t => t.Name).ToList()
-            ?? [];
+        var toolNames = fakeClient.LastStartOptions!.Tools?.Select(t => t.Name).ToList() ?? [];
         toolNames.Should().Contain("ordinary_tool", "the explicitly registered tool must still bridge through");
-        toolNames.Should().NotContain(
-            AskUserQuestionToolProvider.ToolName,
-            "CopilotAgentLoop must never advertise the client-only AskUserQuestion tool itself");
-        toolNames.Should().NotContain(
-            NotifyClientToolProvider.ToolName,
-            "CopilotAgentLoop must never advertise the client-only NotifyClient tool itself");
+        toolNames
+            .Should()
+            .NotContain(
+                AskUserQuestionToolProvider.ToolName,
+                "CopilotAgentLoop must never advertise the client-only AskUserQuestion tool itself"
+            );
+        toolNames
+            .Should()
+            .NotContain(
+                NotifyClientToolProvider.ToolName,
+                "CopilotAgentLoop must never advertise the client-only NotifyClient tool itself"
+            );
 
         await cts.CancelAsync();
     }
@@ -378,9 +428,8 @@ public class CopilotAgentLoopTests : LoggingTestBase
         public string DependencyState => "ready";
 
         public void ConfigureDynamicToolExecutor(
-            Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor)
-        {
-        }
+            Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor
+        ) { }
 
         public Task StartOrResumeSessionAsync(CopilotBridgeInitOptions options, CancellationToken ct = default)
         {
@@ -397,7 +446,8 @@ public class CopilotAgentLoopTests : LoggingTestBase
 
         public async IAsyncEnumerable<CopilotTurnEventEnvelope> RunStreamingAsync(
             string input,
-            [EnumeratorCancellation] CancellationToken ct = default)
+            [EnumeratorCancellation] CancellationToken ct = default
+        )
         {
             LastRunInput = input;
             foreach (var item in _events)

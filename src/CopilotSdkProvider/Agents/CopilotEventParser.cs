@@ -17,12 +17,12 @@ internal static class CopilotEventParser
 
         return root.Value.TryGetProperty("sessionId", out var sessionIdProp)
             && sessionIdProp.ValueKind == JsonValueKind.String
-            ? sessionIdProp.GetString()
+                ? sessionIdProp.GetString()
             : root.Value.TryGetProperty("session", out var sessionProp)
             && sessionProp.ValueKind == JsonValueKind.Object
             && sessionProp.TryGetProperty("id", out var idProp)
             && idProp.ValueKind == JsonValueKind.String
-            ? idProp.GetString()
+                ? idProp.GetString()
             : null;
     }
 
@@ -39,22 +39,22 @@ internal static class CopilotEventParser
             return false;
         }
 
-        if (!root.Value.TryGetProperty("agentCapabilities", out var capabilities)
-            || capabilities.ValueKind != JsonValueKind.Object)
+        if (
+            !root.Value.TryGetProperty("agentCapabilities", out var capabilities)
+            || capabilities.ValueKind != JsonValueKind.Object
+        )
         {
             return false;
         }
 
-        if (!capabilities.TryGetProperty("sessions", out var sessions)
-            || sessions.ValueKind != JsonValueKind.Object)
+        if (!capabilities.TryGetProperty("sessions", out var sessions) || sessions.ValueKind != JsonValueKind.Object)
         {
             // Older Copilot CLI flattens the capability as agentCapabilities.loadSession.
             return capabilities.TryGetProperty("loadSession", out var loadFlag)
                 && (loadFlag.ValueKind == JsonValueKind.True);
         }
 
-        return sessions.TryGetProperty("load", out var loadProp)
-            && loadProp.ValueKind == JsonValueKind.True;
+        return sessions.TryGetProperty("load", out var loadProp) && loadProp.ValueKind == JsonValueKind.True;
     }
 
     public static string? ExtractErrorMessage(JsonElement payload)
@@ -66,15 +66,18 @@ internal static class CopilotEventParser
                 return error.GetString();
             }
 
-            if (error.ValueKind == JsonValueKind.Object
+            if (
+                error.ValueKind == JsonValueKind.Object
                 && TryGetProperty(error, "message", out var message)
-                && message.ValueKind == JsonValueKind.String)
+                && message.ValueKind == JsonValueKind.String
+            )
             {
                 return message.GetString();
             }
         }
 
-        return TryGetProperty(payload, "message", out var fallbackMessage)
+        return
+            TryGetProperty(payload, "message", out var fallbackMessage)
             && fallbackMessage.ValueKind == JsonValueKind.String
             ? fallbackMessage.GetString()
             : null;
@@ -82,19 +85,17 @@ internal static class CopilotEventParser
 
     public static string? GetPropertyString(JsonElement? root, string propertyName)
     {
-        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object
-            ? null
-            : root.Value.TryGetProperty(propertyName, out var property)
-            && property.ValueKind == JsonValueKind.String
-            ? property.GetString()
+        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object ? null
+            : root.Value.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
             : null;
     }
 
     public static JsonElement? GetPropertyElement(JsonElement? root, string propertyName)
     {
-        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object
-            ? null
-            : root.Value.TryGetProperty(propertyName, out var property) ? property.Clone() : null;
+        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object ? null
+            : root.Value.TryGetProperty(propertyName, out var property) ? property.Clone()
+            : null;
     }
 
     public static bool TryGetProperty(JsonElement root, string propertyName, out JsonElement value)
@@ -116,15 +117,18 @@ internal static class CopilotEventParser
             return null;
         }
 
-        if (parameters.Value.TryGetProperty("update", out var updateProp)
+        if (
+            parameters.Value.TryGetProperty("update", out var updateProp)
             && updateProp.ValueKind == JsonValueKind.Object
             && updateProp.TryGetProperty("sessionUpdate", out var kindProp)
-            && kindProp.ValueKind == JsonValueKind.String)
+            && kindProp.ValueKind == JsonValueKind.String
+        )
         {
             return kindProp.GetString();
         }
 
-        return parameters.Value.TryGetProperty("sessionUpdate", out var directKindProp)
+        return
+            parameters.Value.TryGetProperty("sessionUpdate", out var directKindProp)
             && directKindProp.ValueKind == JsonValueKind.String
             ? directKindProp.GetString()
             : null;
@@ -137,7 +141,8 @@ internal static class CopilotEventParser
             return null;
         }
 
-        return parameters.Value.TryGetProperty("update", out var updateProp)
+        return
+            parameters.Value.TryGetProperty("update", out var updateProp)
             && updateProp.ValueKind == JsonValueKind.Object
             ? updateProp.Clone()
             : parameters.Value.Clone();
@@ -151,6 +156,8 @@ internal static class CopilotEventParser
 
     public static string Truncate(string value)
     {
-        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Length <= 2_000 ? value : value[..2_000];
+        return string.IsNullOrWhiteSpace(value) ? string.Empty
+            : value.Length <= 2_000 ? value
+            : value[..2_000];
     }
 }

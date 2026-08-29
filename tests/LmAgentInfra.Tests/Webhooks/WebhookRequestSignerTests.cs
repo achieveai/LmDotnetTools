@@ -21,7 +21,8 @@ public sealed class WebhookRequestSignerTests
         WebhookRequestVerifier verifier,
         WebhookSignatureHeaders headers,
         DateTimeOffset nowUtc,
-        byte[]? body = null) =>
+        byte[]? body = null
+    ) =>
         verifier.Verify(
             new WebhookVerificationInput(
                 "github",
@@ -29,8 +30,10 @@ public sealed class WebhookRequestSignerTests
                 body ?? Body,
                 headers.Signature,
                 headers.Timestamp,
-                headers.DeliveryId),
-            nowUtc);
+                headers.DeliveryId
+            ),
+            nowUtc
+        );
 
     [Fact]
     public void What_the_signer_produces_is_what_the_verifier_accepts()
@@ -65,8 +68,9 @@ public sealed class WebhookRequestSignerTests
 
         var tampered = Encoding.UTF8.GetBytes("""{"event":"run.started","run_id":"r-2"}""");
 
-        VerifyOnTheWire(Verifier(secret), headers, Now, tampered).Rejection
-            .Should().Be(WebhookRejection.InvalidSignature);
+        VerifyOnTheWire(Verifier(secret), headers, Now, tampered)
+            .Rejection.Should()
+            .Be(WebhookRejection.InvalidSignature);
     }
 
     [Fact]
@@ -78,8 +82,9 @@ public sealed class WebhookRequestSignerTests
         var clock = new ManualTimeProvider(Now);
         var headers = new WebhookRequestSigner(secret, clock).Sign(Body, "delivery-1");
 
-        VerifyOnTheWire(Verifier(secret), headers, Now.AddMinutes(10)).Rejection
-            .Should().Be(WebhookRejection.StaleTimestamp);
+        VerifyOnTheWire(Verifier(secret), headers, Now.AddMinutes(10))
+            .Rejection.Should()
+            .Be(WebhookRejection.StaleTimestamp);
     }
 
     [Fact]
@@ -106,8 +111,18 @@ public sealed class WebhookRequestSignerTests
         headers.ApplyTo(request);
 
         request.Headers.GetValues(WebhookHeaderNames.Signature).Should().ContainSingle().Which.Should().Be("deadbeef");
-        request.Headers.GetValues(WebhookHeaderNames.Timestamp).Should().ContainSingle().Which.Should().Be("1750000000");
-        request.Headers.GetValues(WebhookHeaderNames.DeliveryId).Should().ContainSingle().Which.Should().Be("delivery-1");
+        request
+            .Headers.GetValues(WebhookHeaderNames.Timestamp)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("1750000000");
+        request
+            .Headers.GetValues(WebhookHeaderNames.DeliveryId)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("delivery-1");
     }
 
     [Fact]

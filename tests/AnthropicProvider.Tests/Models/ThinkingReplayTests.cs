@@ -19,7 +19,9 @@ public class ThinkingReplayTests
         new()
         {
             ModelId = "kimi-for-coding",
-            ExtraProperties = ImmutableDictionary.Create<string, object?>().Add("Thinking", new AnthropicThinking(2048)),
+            ExtraProperties = ImmutableDictionary
+                .Create<string, object?>()
+                .Add("Thinking", new AnthropicThinking(2048)),
         };
 
     /// <summary>Every <c>thinking</c> block in the rebuilt request must carry a non-empty signature.</summary>

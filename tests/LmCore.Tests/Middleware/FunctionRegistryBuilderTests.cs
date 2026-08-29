@@ -376,7 +376,8 @@ public class FunctionRegistryBuilderTests
                     Description = $"Test function {name}",
                     Parameters = [],
                 },
-                Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
+                Handler = (_, _, _) =>
+                    Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
                 ProviderName = ProviderName,
             });
         }

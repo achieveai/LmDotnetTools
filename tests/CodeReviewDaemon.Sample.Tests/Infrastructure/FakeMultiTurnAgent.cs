@@ -35,8 +35,7 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 /// in <see cref="ResumableFakeLoop"/>, which is what the S2S fixture does.
 /// </para>
 /// </summary>
-internal sealed class FakeMultiTurnAgent
-    : IMultiTurnAgent, IDeadlineBoundedReviewLoop, IReviewLoopSubAgentSurface
+internal sealed class FakeMultiTurnAgent : IMultiTurnAgent, IDeadlineBoundedReviewLoop, IReviewLoopSubAgentSurface
 {
     /// <summary><see cref="Lifecycle"/> entry appended at the start of every <see cref="ExecuteRunAsync"/>.</summary>
     public const string RunEvent = "run";

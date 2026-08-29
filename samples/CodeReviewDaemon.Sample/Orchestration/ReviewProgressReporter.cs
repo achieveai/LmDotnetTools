@@ -40,8 +40,7 @@ internal sealed class ReviewProgressReporter
     /// <summary>The run reached a terminal state. <paramref name="outcome"/> is e.g.
     /// "complete (collect-only)", "complete (posted)", "halted (PR Merged)", or "failed at Reviewed".</summary>
     public void Finished(ReviewRun run, string outcome, TimeSpan elapsed) =>
-        _logger.LogInformation(
-            "PR #{PrId}: done - {Outcome} ({Seconds:F0}s)", run.PrId, outcome, elapsed.TotalSeconds);
+        _logger.LogInformation("PR #{PrId}: done - {Outcome} ({Seconds:F0}s)", run.PrId, outcome, elapsed.TotalSeconds);
 
     /// <summary>
     /// Reported once per daemon start: how many recent first-ever reviews answered that nothing had changed.
@@ -66,7 +65,8 @@ internal sealed class ReviewProgressReporter
             _logger.LogInformation(
                 "startup - no first reviews in the last {LookbackDays}d, so the no-change-on-a-first-review "
                     + "rate has nothing to report yet.",
-                lookbackDays);
+                lookbackDays
+            );
             return;
         }
 
@@ -75,7 +75,9 @@ internal sealed class ReviewProgressReporter
             _logger.LogInformation(
                 "startup - {FirstReviews} first review(s) in the last {LookbackDays}d, none of which claimed "
                     + "\"no new findings since the last review\". That is the healthy value.",
-                firstReviews, lookbackDays);
+                firstReviews,
+                lookbackDays
+            );
             return;
         }
 
@@ -83,6 +85,10 @@ internal sealed class ReviewProgressReporter
             "startup - {Sentinels} of {FirstReviews} first review(s) in the last {LookbackDays}d ({Percent:F1}%) "
                 + "answered \"no new findings since the last review\" on a PR that had no last review. Healthy "
                 + "is zero. This regressed once before at ~49% and delivered nothing on those PRs.",
-            sentinels, firstReviews, lookbackDays, 100.0 * sentinels / firstReviews);
+            sentinels,
+            firstReviews,
+            lookbackDays,
+            100.0 * sentinels / firstReviews
+        );
     }
 }

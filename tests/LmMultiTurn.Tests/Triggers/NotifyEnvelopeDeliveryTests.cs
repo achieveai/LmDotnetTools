@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -9,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -47,8 +47,10 @@ public class NotifyEnvelopeDeliveryTests
         // TextMessage whose Text contains "<trigger>" and the fire payload.
         var history = await RunNotifyScenarioAsync(fireCount: 1);
 
-        history.OfType<TextMessage>().Should().Contain(
-            m => m.Role == Role.User && m.Text.Contains("<trigger>") && m.Text.Contains("fire-1"));
+        history
+            .OfType<TextMessage>()
+            .Should()
+            .Contain(m => m.Role == Role.User && m.Text.Contains("<trigger>") && m.Text.Contains("fire-1"));
     }
 
     /// <summary>
@@ -77,28 +79,40 @@ public class NotifyEnvelopeDeliveryTests
         var waitCall = new ToolCallMessage
         {
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "manual", mode = "notify", timeout = "1h" }),
+            FunctionArgs = WaitArgs(
+                new
+                {
+                    kind = "manual",
+                    mode = "notify",
+                    timeout = "1h",
+                }
+            ),
             ToolCallId = "tc_notify",
             Role = Role.Assistant,
         };
 
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                if (callCount == 1)
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
                 {
-                    return Task.FromResult(ToAsyncEnumerable([waitCall]));
-                }
+                    callCount++;
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(ToAsyncEnumerable([waitCall]));
+                    }
 
-                var finalText = new TextMessage { Text = $"handled {callCount}", Role = Role.Assistant };
-                return Task.FromResult(ToAsyncEnumerable([finalText]));
-            });
+                    var finalText = new TextMessage { Text = $"handled {callCount}", Role = Role.Assistant };
+                    return Task.FromResult(ToAsyncEnumerable([finalText]));
+                }
+            );
 
         const string threadId = "notify-thread";
         var store = new InMemoryConversationStore();
@@ -109,7 +123,8 @@ public class NotifyEnvelopeDeliveryTests
             threadId,
             store: store,
             logger: _loggerMock.Object,
-            triggerOptions: options);
+            triggerOptions: options
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -141,14 +156,13 @@ public class NotifyEnvelopeDeliveryTests
         await Wait.UntilAsync(
             async () =>
             {
-                history = MessagePersistenceConverter.FromPersistedMessages(
-                    await store.LoadMessagesAsync(threadId));
-                return history.OfType<TextMessage>().Any(
-                    m => m.Role == Role.User && m.Text.Contains("<trigger>"));
+                history = MessagePersistenceConverter.FromPersistedMessages(await store.LoadMessagesAsync(threadId));
+                return history.OfType<TextMessage>().Any(m => m.Role == Role.User && m.Text.Contains("<trigger>"));
             },
             "the fire-and-forget AddToHistory write put a <trigger> envelope into persisted history",
             TimeSpan.FromSeconds(5),
-            TimeSpan.FromMilliseconds(50));
+            TimeSpan.FromMilliseconds(50)
+        );
 
         return history;
     }
@@ -162,9 +176,13 @@ public class NotifyEnvelopeDeliveryTests
     /// the replay buffer, and the late subscriber then sees nothing at all.
     /// </summary>
     private static List<TaskCompletionSource<bool>> SubscribeForRunCompletions(
-        MultiTurnAgentLoop loop, CancellationToken ct, int expectedCount)
+        MultiTurnAgentLoop loop,
+        CancellationToken ct,
+        int expectedCount
+    )
     {
-        var sources = Enumerable.Range(0, expectedCount)
+        var sources = Enumerable
+            .Range(0, expectedCount)
             .Select(_ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously))
             .ToList();
 
@@ -206,7 +224,8 @@ public class NotifyEnvelopeDeliveryTests
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

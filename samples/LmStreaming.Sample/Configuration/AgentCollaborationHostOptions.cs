@@ -105,13 +105,16 @@ public sealed class AgentCollaborationHostOptions
             return null;
         }
 
-        if (!Enum.TryParse<TranscriptVisibilityMode>(TranscriptVisibility, ignoreCase: true, out var mode)
-            || !Enum.IsDefined(mode))
+        if (
+            !Enum.TryParse<TranscriptVisibilityMode>(TranscriptVisibility, ignoreCase: true, out var mode)
+            || !Enum.IsDefined(mode)
+        )
         {
             throw new InvalidOperationException(
                 $"{SectionName}:{nameof(TranscriptVisibility)} must be one of "
-                + string.Join(", ", Enum.GetNames<TranscriptVisibilityMode>())
-                + $"; got '{TranscriptVisibility}'.");
+                    + string.Join(", ", Enum.GetNames<TranscriptVisibilityMode>())
+                    + $"; got '{TranscriptVisibility}'."
+            );
         }
 
         // Retention is converted before Validate() so a non-positive configured value is reported by

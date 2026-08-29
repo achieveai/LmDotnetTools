@@ -136,8 +136,7 @@ public record AgentMessage : IMessage, ICanGetText
     ///     Whether this message type asks for an answer, and therefore carries a reply instruction.
     /// </summary>
     [JsonIgnore]
-    public bool ExpectsReply =>
-        AgentMessageType is AgentMessageType.Question or AgentMessageType.DelegateTask;
+    public bool ExpectsReply => AgentMessageType is AgentMessageType.Question or AgentMessageType.DelegateTask;
 
     /// <inheritdoc />
     [JsonPropertyName("role")]
@@ -235,9 +234,7 @@ public record AgentMessage : IMessage, ICanGetText
 
         if (!string.IsNullOrEmpty(message.InResponseTo))
         {
-            _ = sb.Append(" in-response-to=\"")
-                .Append(EscapeAttribute(message.InResponseTo))
-                .Append('"');
+            _ = sb.Append(" in-response-to=\"").Append(EscapeAttribute(message.InResponseTo)).Append('"');
         }
 
         _ = sb.Append('>');
@@ -288,9 +285,7 @@ public record AgentMessage : IMessage, ICanGetText
                     .Append("\" final-msg-type=\"")
                     .Append(nameof(AgentMessageType.Response))
                     .Append('"')
-                : sb.Append(" reply-msg-type=\"")
-                    .Append(nameof(AgentMessageType.Response))
-                    .Append('"');
+                : sb.Append(" reply-msg-type=\"").Append(nameof(AgentMessageType.Response)).Append('"');
 
         _ = sb.Append("/>\n");
     }

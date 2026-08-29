@@ -692,6 +692,32 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>Default window for <see cref="FirstReviewSentinelLookbackDays"/>, in days.</summary>
     public const int DefaultFirstReviewSentinelLookbackDays = 7;
 
+    /// <summary>
+    /// Whether the daemon is allowed to run git housekeeping — currently the <c>repack</c> that follows a
+    /// deepening fetch — against the submodule object stores inside a review slot.
+    /// <b>Off, and it must stay off unless the operator turns it on deliberately.</b>
+    /// </summary>
+    /// <remarks>
+    /// This is NOT a performance toggle, and it is not off because the maintenance is unfinished or unsafe.
+    /// It is off because the owner of these machines instructed that local git packs not be touched, and
+    /// repack rewrites an object store in place, on disk, under a directory the daemon does not own.
+    /// Default-off is the requirement; treating it as a tuning knob to be flipped on for throughput would
+    /// break that instruction.
+    /// <para>
+    /// The cost of leaving it off is known and accepted: the deepening path adds a near-duplicate of the whole
+    /// store per round. Measured live, one store reached 50 packs and 30 GB, of which four packs held the same
+    /// object set four times over. Git's own defaults do not rescue this — <c>gc.autoPackLimit</c> defaults to
+    /// 50, so git's implicit post-fetch auto-gc had correctly decided there was nothing to do the entire time.
+    /// Leaving the store on those defaults is exactly the status quo being preserved.
+    /// </para>
+    /// <para>
+    /// Turning it on is safe from the daemon's side — see <c>MergeBaseResolver.CompactObjectStoreAsync</c> for
+    /// why the repack must carry <c>--keep-unreachable</c> (without it the PR's base commit, which only
+    /// <c>FETCH_HEAD</c> points at, is deleted outright). That was measured, not reasoned about.
+    /// </para>
+    /// </remarks>
+    public bool EnableObjectStoreMaintenance { get; init; }
+
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
     public string? ResolvedStoreUrl =>

@@ -60,19 +60,25 @@ internal sealed class McpJinaToolCatalog
 
         return
         [
-            .. Tools.Values
-                .Where(tool => !github.Contains(tool.Name))
+            .. Tools
+                .Values.Where(tool => !github.Contains(tool.Name))
                 .Where(tool => !hasAllowlist || allowlist.Contains(tool.Name))
                 .Where(tool => !exclusions.Contains(tool.Name)),
         ];
     }
 
-    private static McpLocalTool BuildTool(string name, AchieveAi.LmDotnetTools.LmCore.Core.FunctionContract contract, ToolHandler handler)
+    private static McpLocalTool BuildTool(
+        string name,
+        AchieveAi.LmDotnetTools.LmCore.Core.FunctionContract contract,
+        ToolHandler handler
+    )
     {
         var schema = contract.GetJsonSchema();
         var schemaNode = schema is null
             ? new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
-            : JsonNode.Parse(JsonSerializer.Serialize(schema, JsonSchemaValidator.SchemaSerializationOptions)) as JsonObject ?? [];
+            : JsonNode.Parse(JsonSerializer.Serialize(schema, JsonSchemaValidator.SchemaSerializationOptions))
+                as JsonObject
+                ?? [];
         var definition = new JsonObject
         {
             ["name"] = name,
@@ -84,10 +90,14 @@ internal sealed class McpJinaToolCatalog
 
     private static HashSet<string> ParseNames(Microsoft.Extensions.Primitives.StringValues values) =>
         values
-            .SelectMany(value => (value ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .SelectMany(value =>
+                (value ?? string.Empty).Split(
+                    ',',
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+                )
+            )
             .ToHashSet(StringComparer.Ordinal);
 
     private static bool IsTruthy(string? value) =>
-        !string.IsNullOrWhiteSpace(value)
-        && value.Trim() is not ("0" or "false" or "f" or "no" or "n" or "off");
+        !string.IsNullOrWhiteSpace(value) && value.Trim() is not ("0" or "false" or "f" or "no" or "n" or "off");
 }

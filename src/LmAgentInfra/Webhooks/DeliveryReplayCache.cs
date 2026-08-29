@@ -84,7 +84,8 @@ public sealed class DeliveryReplayCache
                 }
 
                 return nowUtc;
-            });
+            }
+        );
 
         return isNew;
     }
@@ -96,8 +97,10 @@ public sealed class DeliveryReplayCache
     /// </summary>
     private void SweepIfDue(DateTimeOffset nowUtc)
     {
-        if (Interlocked.Increment(ref _sinceLastSweep) < _sweepInterval
-            && nowUtc.UtcTicks < Interlocked.Read(ref _nextSweepAtUtcTicks))
+        if (
+            Interlocked.Increment(ref _sinceLastSweep) < _sweepInterval
+            && nowUtc.UtcTicks < Interlocked.Read(ref _nextSweepAtUtcTicks)
+        )
         {
             return;
         }

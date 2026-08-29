@@ -39,10 +39,10 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var socket = new FakeWebSocket();
         socket.EnqueueTextFrame(
             /*lang=json,strict*/
-            """{"$type":"client_tool_result","toolCallId":"tc_1","result":"blue","isError":false}""");
+            """{"$type":"client_tool_result","toolCallId":"tc_1","result":"blue","isError":false}"""
+        );
 
-        var handlerTask = manager.HandleConnectionAsync(
-            socket, threadId, null, null, null, null, ct.Token);
+        var handlerTask = manager.HandleConnectionAsync(socket, threadId, null, null, null, null, ct.Token);
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_ack"), ct.Token);
 
@@ -75,10 +75,10 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var socket = new FakeWebSocket();
         socket.EnqueueTextFrame(
             /*lang=json,strict*/
-            """{"$type":"client_tool_result","toolCallId":"tc_1","result":"blue","isError":false}""");
+            """{"$type":"client_tool_result","toolCallId":"tc_1","result":"blue","isError":false}"""
+        );
 
-        var handlerTask = manager.HandleConnectionAsync(
-            socket, threadId, null, null, null, null, ct.Token);
+        var handlerTask = manager.HandleConnectionAsync(socket, threadId, null, null, null, null, ct.Token);
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_ack"), ct.Token);
 
@@ -106,10 +106,10 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var socket = new FakeWebSocket();
         socket.EnqueueTextFrame(
             /*lang=json,strict*/
-            """{"$type":"client_tool_result","toolCallId":"tc_1","result":"red","isError":false}""");
+            """{"$type":"client_tool_result","toolCallId":"tc_1","result":"red","isError":false}"""
+        );
 
-        var handlerTask = manager.HandleConnectionAsync(
-            socket, threadId, null, null, null, null, ct.Token);
+        var handlerTask = manager.HandleConnectionAsync(socket, threadId, null, null, null, null, ct.Token);
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_error"), ct.Token);
 
@@ -136,7 +136,8 @@ public sealed class ChatWebSocketManagerClientToolResultTests
     {
         const string threadId = "ctr-primary-cancelled";
         const string toolCallId = "tc_1";
-        const string cancelBody = /*lang=json,strict*/ """{"error":"Question cancelled by user.","cancelled":true}""";
+        const string cancelBody = /*lang=json,strict*/
+            """{"error":"Question cancelled by user.","cancelled":true}""";
         using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var toolCall = new ToolCallMessage
@@ -151,14 +152,21 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var callCount = 0;
         var mockAgent = new Mock<IStreamingAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                IMessage msg = callCount == 1 ? toolCall : finalText;
-                return Task.FromResult(ToAsyncEnumerable([msg]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                {
+                    callCount++;
+                    IMessage msg = callCount == 1 ? toolCall : finalText;
+                    return Task.FromResult(ToAsyncEnumerable([msg]));
+                }
+            );
 
         var loop = new MultiTurnAgentLoop(mockAgent.Object, new FunctionRegistry(), threadId);
         var pool = CreatePoolReturning(loop);
@@ -168,26 +176,30 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var completions = 0;
         var firstRunCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondRunCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _ = ObserveAsync(loop, msg =>
-        {
-            if (msg is ToolCallResultMessage { IsDeferred: false } result && result.ToolCallId == toolCallId)
+        _ = ObserveAsync(
+            loop,
+            msg =>
             {
-                resolvedResult ??= result;
-            }
+                if (msg is ToolCallResultMessage { IsDeferred: false } result && result.ToolCallId == toolCallId)
+                {
+                    resolvedResult ??= result;
+                }
 
-            if (msg is RunCompletedMessage)
-            {
-                completions++;
-                if (completions == 1)
+                if (msg is RunCompletedMessage)
                 {
-                    firstRunCompleted.TrySetResult();
+                    completions++;
+                    if (completions == 1)
+                    {
+                        firstRunCompleted.TrySetResult();
+                    }
+                    else
+                    {
+                        secondRunCompleted.TrySetResult();
+                    }
                 }
-                else
-                {
-                    secondRunCompleted.TrySetResult();
-                }
-            }
-        }, ct.Token);
+            },
+            ct.Token
+        );
 
         await loop.SendAsync([new TextMessage { Text = "Which color should I use?", Role = Role.User }]);
         await firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct.Token);
@@ -195,17 +207,18 @@ public sealed class ChatWebSocketManagerClientToolResultTests
 
         var manager = CreateManager(pool);
         var socket = new FakeWebSocket();
-        var cancelFrame = JsonSerializer.Serialize(new Dictionary<string, object?>
-        {
-            ["$type"] = "client_tool_result",
-            ["toolCallId"] = toolCallId,
-            ["result"] = cancelBody,
-            ["isError"] = true,
-        });
+        var cancelFrame = JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["$type"] = "client_tool_result",
+                ["toolCallId"] = toolCallId,
+                ["result"] = cancelBody,
+                ["isError"] = true,
+            }
+        );
         socket.EnqueueTextFrame(cancelFrame);
 
-        var handlerTask = manager.HandleConnectionAsync(
-            socket, threadId, null, null, null, null, ct.Token);
+        var handlerTask = manager.HandleConnectionAsync(socket, threadId, null, null, null, null, ct.Token);
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_ack"), ct.Token);
         var ackFrame = socket.SentFrames.First(f => f.Contains("client_tool_result_ack"));
@@ -224,20 +237,25 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         // wake/continue the run a second time.
         var framesBeforeLateAnswer = socket.SentFrames.Count;
         socket.EnqueueTextFrame(
-            $$"""{"$type":"client_tool_result","toolCallId":"{{toolCallId}}","result":"blue","isError":false}""");
+            $$"""{"$type":"client_tool_result","toolCallId":"{{toolCallId}}","result":"blue","isError":false}"""
+        );
 
         await socket.WaitUntilAsync(
             () => socket.SentFrames.Skip(framesBeforeLateAnswer).Any(f => f.Contains("client_tool_result_error")),
-            ct.Token);
+            ct.Token
+        );
 
         await ct.CancelAsync();
         await handlerTask;
 
-        var lateFrame = socket.SentFrames.Skip(framesBeforeLateAnswer).First(f => f.Contains("client_tool_result_error"));
+        var lateFrame = socket
+            .SentFrames.Skip(framesBeforeLateAnswer)
+            .First(f => f.Contains("client_tool_result_error"));
         lateFrame.Should().Contain("\"code\":\"conflict\"");
 
-        callCount.Should().Be(
-            2, "a late answer arriving after the question was already cancelled must not resume the run");
+        callCount
+            .Should()
+            .Be(2, "a late answer arriving after the question was already cancelled must not resume the run");
     }
 
     [Fact]
@@ -252,10 +270,10 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var socket = new FakeWebSocket();
         socket.EnqueueTextFrame(
             /*lang=json,strict*/
-            """{"$type":"client_tool_result","toolCallId":"does-not-exist","result":"x","isError":false}""");
+            """{"$type":"client_tool_result","toolCallId":"does-not-exist","result":"x","isError":false}"""
+        );
 
-        var handlerTask = manager.HandleConnectionAsync(
-            socket, threadId, null, null, null, null, ct.Token);
+        var handlerTask = manager.HandleConnectionAsync(socket, threadId, null, null, null, null, ct.Token);
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_error"), ct.Token);
 
@@ -313,7 +331,8 @@ public sealed class ChatWebSocketManagerClientToolResultTests
             threadId,
             /*lang=json,strict*/
             $$"""{"$type":"client_tool_result","toolCallId":"{{toolCallId}}","result":"blue","isError":false}""",
-            ct.Token);
+            ct.Token
+        );
 
         var frame = socket.SentFrames.First(f => f.Contains("client_tool_result_error"));
         frame.Should().Contain($"\"toolCallId\":\"{toolCallId}\"");
@@ -330,10 +349,11 @@ public sealed class ChatWebSocketManagerClientToolResultTests
 
         var manager = CreateManager(pool);
         var socket = new FakeWebSocket();
-        socket.EnqueueTextFrame(/*lang=json,strict*/ """{"$type":"client_tool_result","result":"x"}""");
+        socket.EnqueueTextFrame( /*lang=json,strict*/
+            """{"$type":"client_tool_result","result":"x"}"""
+        );
 
-        var handlerTask = manager.HandleConnectionAsync(
-            socket, threadId, null, null, null, null, ct.Token);
+        var handlerTask = manager.HandleConnectionAsync(socket, threadId, null, null, null, null, ct.Token);
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_error"), ct.Token);
 
@@ -355,10 +375,10 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var manager = CreateManager(pool);
         var socket = new FakeWebSocket();
         socket.EnqueueTextFrame(
-            /*lang=json,strict*/ """{"$type":"client_tool_result","toolCallId":"tc_1"}""");
+            /*lang=json,strict*/"""{"$type":"client_tool_result","toolCallId":"tc_1"}"""
+        );
 
-        var handlerTask = manager.HandleConnectionAsync(
-            socket, threadId, null, null, null, null, ct.Token);
+        var handlerTask = manager.HandleConnectionAsync(socket, threadId, null, null, null, null, ct.Token);
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_error"), ct.Token);
 
@@ -377,13 +397,20 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         const string threadId = "ctr-primary-regression";
         var mockAgent = new Mock<IStreamingAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.FromResult(ToAsyncEnumerable(
-                [new TextMessage { Role = Role.Assistant, Text = "hi there" }])));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                Task.FromResult(ToAsyncEnumerable([new TextMessage { Role = Role.Assistant, Text = "hi there" }]))
+            );
 
         await using var pool = CreatePoolReturning(
-            new MultiTurnAgentLoop(mockAgent.Object, new FunctionRegistry(), threadId));
+            new MultiTurnAgentLoop(mockAgent.Object, new FunctionRegistry(), threadId)
+        );
         _ = pool.GetOrCreateAgent(threadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
         var manager = CreateManager(pool);
@@ -391,16 +418,17 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("hello")));
         using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var handlerTask = manager.HandleConnectionAsync(
-            socket, threadId, null, null, null, null, ct.Token);
+        var handlerTask = manager.HandleConnectionAsync(socket, threadId, null, null, null, null, ct.Token);
 
         await socket.WaitUntilAsync(() => socket.SentContains("hi there"), ct.Token);
 
         await ct.CancelAsync();
         await handlerTask;
 
-        socket.SentContains("client_tool_result").Should().BeFalse(
-            "an ordinary chat frame must never be treated as a client_tool_result");
+        socket
+            .SentContains("client_tool_result")
+            .Should()
+            .BeFalse("an ordinary chat frame must never be treated as a client_tool_result");
     }
 
     // ----- sub-agent path (HandleSubAgentConnectionAsync) -----
@@ -415,7 +443,11 @@ public sealed class ChatWebSocketManagerClientToolResultTests
 
         using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var spawnJson = await parentLoop.SubAgentManager!.SpawnAsync(
-            SubAgentTemplateName, "ask the user", name: "asker", runInBackground: true);
+            SubAgentTemplateName,
+            "ask the user",
+            name: "asker",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
 
         // The deferred AskUserQuestion call ends the child's run — wait for it before resolving.
@@ -425,14 +457,16 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var socket = new FakeWebSocket();
         socket.EnqueueTextFrame(
             /*lang=json,strict*/
-            $$"""{"$type":"client_tool_result","toolCallId":"{{toolCallId}}","result":"blue","isError":false}""");
+            $$"""{"$type":"client_tool_result","toolCallId":"{{toolCallId}}","result":"blue","isError":false}"""
+        );
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
             socket,
             SubAgentParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
-            ct.Token);
+            ct.Token
+        );
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_ack"), ct.Token);
 
@@ -454,7 +488,11 @@ public sealed class ChatWebSocketManagerClientToolResultTests
 
         using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var spawnJson = await parentLoop.SubAgentManager!.SpawnAsync(
-            SubAgentTemplateName, "ask the user", name: "asker2", runInBackground: true);
+            SubAgentTemplateName,
+            "ask the user",
+            name: "asker2",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
         await WaitUntilChildAwaitingQuestionAsync(parentLoop.SubAgentManager!, agentId, ct.Token);
 
@@ -462,14 +500,16 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var socket = new FakeWebSocket();
         socket.EnqueueTextFrame(
             /*lang=json,strict*/
-            """{"$type":"client_tool_result","toolCallId":"does-not-exist","result":"x","isError":false}""");
+            """{"$type":"client_tool_result","toolCallId":"does-not-exist","result":"x","isError":false}"""
+        );
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
             socket,
             SubAgentParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
-            ct.Token);
+            ct.Token
+        );
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_error"), ct.Token);
 
@@ -504,7 +544,11 @@ public sealed class ChatWebSocketManagerClientToolResultTests
 
         using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var spawnJson = await parentLoop.SubAgentManager!.SpawnAsync(
-            SubAgentTemplateName, "ask the user", name: "asker4", runInBackground: true);
+            SubAgentTemplateName,
+            "ask the user",
+            name: "asker4",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
         await WaitUntilChildAwaitingQuestionAsync(parentLoop.SubAgentManager!, agentId, ct.Token);
 
@@ -523,7 +567,8 @@ public sealed class ChatWebSocketManagerClientToolResultTests
             agentId,
             /*lang=json,strict*/
             $$"""{"$type":"client_tool_result","toolCallId":"{{toolCallId}}","result":"blue","isError":false}""",
-            ct.Token);
+            ct.Token
+        );
 
         var frame = socket.SentFrames.First(f => f.Contains("client_tool_result_error"));
         frame.Should().Contain("\"code\":\"not_found\"");
@@ -539,20 +584,27 @@ public sealed class ChatWebSocketManagerClientToolResultTests
 
         using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var spawnJson = await parentLoop.SubAgentManager!.SpawnAsync(
-            SubAgentTemplateName, "ask the user", name: "asker3", runInBackground: true);
+            SubAgentTemplateName,
+            "ask the user",
+            name: "asker3",
+            runInBackground: true
+        );
         var agentId = ParseAgentId(spawnJson);
         await WaitUntilChildAwaitingQuestionAsync(parentLoop.SubAgentManager!, agentId, ct.Token);
 
         var manager = CreateManager(pool);
         var socket = new FakeWebSocket();
-        socket.EnqueueTextFrame(/*lang=json,strict*/ """{"$type":"client_tool_result","result":"x"}""");
+        socket.EnqueueTextFrame( /*lang=json,strict*/
+            """{"$type":"client_tool_result","result":"x"}"""
+        );
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
             socket,
             SubAgentParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
-            ct.Token);
+            ct.Token
+        );
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_error"), ct.Token);
 
@@ -570,9 +622,14 @@ public sealed class ChatWebSocketManagerClientToolResultTests
             pool,
             new WebSocketConnectionRegistry(),
             new LmStreaming.Sample.Services.WorkflowRunRegistry(),
-            new PendingAuthCoordinator(Mock.Of<IAuthEventNotifier>(), new AuthOptions(), NullLogger<PendingAuthCoordinator>.Instance),
+            new PendingAuthCoordinator(
+                Mock.Of<IAuthEventNotifier>(),
+                new AuthOptions(),
+                NullLogger<PendingAuthCoordinator>.Instance
+            ),
             new InMemoryConversationStore(),
-            NullLogger<ChatWebSocketManager>.Instance);
+            NullLogger<ChatWebSocketManager>.Instance
+        );
 
     private static MultiTurnAgentPool CreatePoolReturning(IMultiTurnAgent agent) =>
         new((_, _, _) => new MultiTurnAgentPool.AgentCreationResult(agent), NullLogger<MultiTurnAgentPool>.Instance);
@@ -583,25 +640,33 @@ public sealed class ChatWebSocketManagerClientToolResultTests
     {
         var mockAgent = new Mock<IStreamingAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(EmptyStream()));
 
         return new MultiTurnAgentLoop(mockAgent.Object, new FunctionRegistry(), threadId);
     }
 
-    private static string AskUserQuestionArgs() => JsonSerializer.Serialize(new
-    {
-        context = "Need to know which color to use.",
-        questions = new[]
-        {
+    private static string AskUserQuestionArgs() =>
+        JsonSerializer.Serialize(
             new
             {
-                prompt = "Which color?",
-                options = new object[] { new { label = "Red" }, new { label = "Blue" } },
-            },
-        },
-    });
+                context = "Need to know which color to use.",
+                questions = new[]
+                {
+                    new
+                    {
+                        prompt = "Which color?",
+                        options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                    },
+                },
+            }
+        );
 
     /// <summary>
     /// Builds a pool-registered loop whose mock LLM emits a single <c>AskUserQuestion</c> tool call on
@@ -612,7 +677,10 @@ public sealed class ChatWebSocketManagerClientToolResultTests
     /// threadId reuses this same cached entry instead of starting a second, concurrent run loop.
     /// </summary>
     private static async Task<MultiTurnAgentPool> CreatePoolWithParkedAskUserQuestionAsync(
-        string threadId, string toolCallId, CancellationToken ct)
+        string threadId,
+        string toolCallId,
+        CancellationToken ct
+    )
     {
         var toolCall = new ToolCallMessage
         {
@@ -626,27 +694,38 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var callCount = 0;
         var mockAgent = new Mock<IStreamingAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                IMessage msg = callCount == 1 ? toolCall : finalText;
-                return Task.FromResult(ToAsyncEnumerable([msg]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                {
+                    callCount++;
+                    IMessage msg = callCount == 1 ? toolCall : finalText;
+                    return Task.FromResult(ToAsyncEnumerable([msg]));
+                }
+            );
 
         var loop = new MultiTurnAgentLoop(mockAgent.Object, new FunctionRegistry(), threadId);
         var pool = CreatePoolReturning(loop);
         _ = pool.GetOrCreateAgent(threadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
         var runCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _ = ObserveAsync(loop, msg =>
-        {
-            if (msg is RunCompletedMessage)
+        _ = ObserveAsync(
+            loop,
+            msg =>
             {
-                runCompleted.TrySetResult();
-            }
-        }, ct);
+                if (msg is RunCompletedMessage)
+                {
+                    runCompleted.TrySetResult();
+                }
+            },
+            ct
+        );
 
         await loop.SendAsync([new TextMessage { Text = "Which color should I use?", Role = Role.User }]);
         await runCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
@@ -672,33 +751,47 @@ public sealed class ChatWebSocketManagerClientToolResultTests
 
         var parentMockAgent = new Mock<IStreamingAgent>();
         parentMockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(EmptyStream()));
 
         return new MultiTurnAgentLoop(
             parentMockAgent.Object,
             new FunctionRegistry(),
             threadId: SubAgentParentThreadId,
-            subAgentOptions: options);
+            subAgentOptions: options
+        );
     }
 
     private static IStreamingAgent CreateAskUserQuestionChildAgent(string toolCallId)
     {
         var mockAgent = new Mock<IStreamingAgent>();
         mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.FromResult(ToAsyncEnumerable(
-            [
-                new ToolCallMessage
-                {
-                    FunctionName = AskUserQuestionToolProvider.ToolName,
-                    FunctionArgs = AskUserQuestionArgs(),
-                    ToolCallId = toolCallId,
-                    Role = Role.Assistant,
-                },
-            ])));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                Task.FromResult(
+                    ToAsyncEnumerable([
+                        new ToolCallMessage
+                        {
+                            FunctionName = AskUserQuestionToolProvider.ToolName,
+                            FunctionArgs = AskUserQuestionArgs(),
+                            ToolCallId = toolCallId,
+                            Role = Role.Assistant,
+                        },
+                    ])
+                )
+            );
         return mockAgent.Object;
     }
 
@@ -718,7 +811,10 @@ public sealed class ChatWebSocketManagerClientToolResultTests
     /// waiting on a completion that will never come.
     /// </summary>
     private static Task WaitUntilChildAwaitingQuestionAsync(
-        SubAgentManager subAgentManager, string agentId, CancellationToken ct)
+        SubAgentManager subAgentManager,
+        string agentId,
+        CancellationToken ct
+    )
     {
         return Wait.UntilAsync(
             async () =>
@@ -728,7 +824,8 @@ public sealed class ChatWebSocketManagerClientToolResultTests
             $"the spawned child '{agentId}' parked on its own AskUserQuestion, i.e. registered a deferred tool call",
             TimeSpan.FromSeconds(30),
             TimeSpan.FromMilliseconds(20),
-            cancellationToken: ct);
+            cancellationToken: ct
+        );
     }
 
     private static Task ObserveAsync(MultiTurnAgentLoop loop, Action<IMessage> onMessage, CancellationToken ct)
@@ -738,28 +835,33 @@ public sealed class ChatWebSocketManagerClientToolResultTests
 
         // Not `ct`: a cancelled token would skip this body entirely, leaving the subscription
         // attached and the pending move unobserved.
-        return Task.Run(async () =>
-        {
-            try
+        return Task.Run(
+            async () =>
             {
-                for (var hasMessage = await first; hasMessage; hasMessage = await messages.MoveNextAsync())
+                try
                 {
-                    onMessage(messages.Current);
+                    for (var hasMessage = await first; hasMessage; hasMessage = await messages.MoveNextAsync())
+                    {
+                        onMessage(messages.Current);
+                    }
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                // Cancelling the token is how these tests end the subscription.
-            }
-            finally
-            {
-                await messages.DisposeAsync();
-            }
-        }, CancellationToken.None);
+                catch (OperationCanceledException)
+                {
+                    // Cancelling the token is how these tests end the subscription.
+                }
+                finally
+                {
+                    await messages.DisposeAsync();
+                }
+            },
+            CancellationToken.None
+        );
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
-        IEnumerable<IMessage> messages, [EnumeratorCancellation] CancellationToken ct = default)
+        IEnumerable<IMessage> messages,
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

@@ -93,7 +93,8 @@ internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
     public Task<SubAgentContextDeliveryResult> TryDeliverContextAsync(
         string agentId,
         IReadOnlyList<IMessage> messages,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         _ = cancellationToken;
         lock (_lock)
@@ -123,7 +124,8 @@ internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         _ = parentRunId;
         _ = ct;
@@ -149,7 +151,8 @@ internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         return await SendAsync(messages, inputId, parentRunId, ct);
     }
@@ -157,15 +160,15 @@ internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
 #pragma warning disable CS1998, IDE0391
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         _ = userInput;
         _ = ct;
         yield break;
     }
 
-    public async IAsyncEnumerable<IMessage> SubscribeAsync(
-        [EnumeratorCancellation] CancellationToken ct = default)
+    public async IAsyncEnumerable<IMessage> SubscribeAsync([EnumeratorCancellation] CancellationToken ct = default)
     {
         _ = ct;
         yield break;

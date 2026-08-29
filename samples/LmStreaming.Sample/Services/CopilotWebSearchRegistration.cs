@@ -7,11 +7,7 @@ using ModelContextProtocol.Client;
 
 namespace LmStreaming.Sample.Services;
 
-internal sealed record CopilotWebSearchRegistrationResult(
-    bool Registered,
-    IAsyncDisposable? Resource,
-    string Status
-);
+internal sealed record CopilotWebSearchRegistrationResult(bool Registered, IAsyncDisposable? Resource, string Status);
 
 internal static class CopilotWebSearchRegistration
 {
@@ -79,10 +75,7 @@ internal static class CopilotWebSearchRegistration
                 .GetAwaiter()
                 .GetResult();
             var functions = provider.GetFunctions().ToList();
-            if (
-                functions.Count != 1
-                || !string.Equals(functions[0].Contract.Name, ToolName, StringComparison.Ordinal)
-            )
+            if (functions.Count != 1 || !string.Equals(functions[0].Contract.Name, ToolName, StringComparison.Ordinal))
             {
                 Dispose(client, transport);
                 return new(false, null, "Copilot web_search unavailable");

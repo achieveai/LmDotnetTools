@@ -55,7 +55,8 @@ public sealed class ServiceCallerPrincipalSource : IRequestPrincipalSource
         IOptions<IdentityOptions> options,
         IConfiguration configuration,
         IAuditSink auditSink,
-        ILogger<ServiceCallerPrincipalSource> logger)
+        ILogger<ServiceCallerPrincipalSource> logger
+    )
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -99,7 +100,8 @@ public sealed class ServiceCallerPrincipalSource : IRequestPrincipalSource
                     + "refused. Set {EnvVar} to onboard service callers.",
                 context.Request.Path.Value,
                 InboundS2SAuthAttribute.SecretConfigKey,
-                "LMSTREAMING_S2S_INBOUND_SECRET");
+                "LMSTREAMING_S2S_INBOUND_SECRET"
+            );
             return null;
         }
 
@@ -113,12 +115,12 @@ public sealed class ServiceCallerPrincipalSource : IRequestPrincipalSource
         }
 
         var appId = context.Request.Headers[SandboxCredential.AppIdHeader].ToString();
-        var registrationKey = string.IsNullOrWhiteSpace(appId)
-            ? IdentityOptions.DefaultServiceAppKey
-            : appId;
+        var registrationKey = string.IsNullOrWhiteSpace(appId) ? IdentityOptions.DefaultServiceAppKey : appId;
 
-        if (!_options.Value.Apps.TryGetValue(registrationKey, out var registration)
-            || string.IsNullOrWhiteSpace(registration?.TenantId))
+        if (
+            !_options.Value.Apps.TryGetValue(registrationKey, out var registration)
+            || string.IsNullOrWhiteSpace(registration?.TenantId)
+        )
         {
             // Logged before the refusal, symmetric with the quarantine-tenant path below. The audit
             // record captures THAT a refusal happened; only this line captures what an operator
@@ -137,7 +139,8 @@ public sealed class ServiceCallerPrincipalSource : IRequestPrincipalSource
                     ? "registered but its TenantId is empty"
                     : "not registered",
                 _options.Value.Apps.Count,
-                string.Join(", ", _options.Value.Apps.Keys.OrderBy(key => key, StringComparer.Ordinal)));
+                string.Join(", ", _options.Value.Apps.Keys.OrderBy(key => key, StringComparer.Ordinal))
+            );
 
             // 403, not 401: the caller DID authenticate. Retrying with the same credential cannot
             // help, and answering 401 would invite a client to go and get another one.
@@ -155,57 +158,64 @@ public sealed class ServiceCallerPrincipalSource : IRequestPrincipalSource
                     + "named by Identity:LegacyTenantId. No principal may carry it (spec 8.5.2), "
                     + "so the caller is refused. Onboard the app to a real tenant.",
                 registrationKey,
-                tenantId);
+                tenantId
+            );
             return Reject(AppTenantInvalidCode, StatusCodes.Status403Forbidden, registrationKey, tenantId);
         }
 
-        _auditSink.Write(new AuthenticationAuditRecord
-        {
-            FrontDoor = AuditFrontDoor.S2SObo,
-            ClaimedEntraTenantId = null,
-            ClaimedObjectId = null,
-            ClaimedUpn = null,
-            AppId = registrationKey,
-            ResolvedTenantId = tenantId,
-            Jti = null,
-            Outcome = AuthenticationOutcome.Accepted,
-            Reason = null,
-            CorrelationId = context.TraceIdentifier,
-            EventClass = AuditEventClass.Routine,
-        });
+        _auditSink.Write(
+            new AuthenticationAuditRecord
+            {
+                FrontDoor = AuditFrontDoor.S2SObo,
+                ClaimedEntraTenantId = null,
+                ClaimedObjectId = null,
+                ClaimedUpn = null,
+                AppId = registrationKey,
+                ResolvedTenantId = tenantId,
+                Jti = null,
+                Outcome = AuthenticationOutcome.Accepted,
+                Reason = null,
+                CorrelationId = context.TraceIdentifier,
+                EventClass = AuditEventClass.Routine,
+            }
+        );
 
-        return PrincipalResolution.Success(new Principal
-        {
-            TenantId = tenantId,
-            Actor = new PrincipalRef(PrincipalKind.App, registrationKey),
+        return PrincipalResolution.Success(
+            new Principal
+            {
+                TenantId = tenantId,
+                Actor = new PrincipalRef(PrincipalKind.App, registrationKey),
 
-            // Null, and it stays null until slice 5 (#305) validates an on-behalf-of token. The
-            // no-fallback rule of spec 4.2 step 3 lives with that work: a caller that ASSERTS a
-            // user and gets it wrong must fail rather than silently act as the app.
-            OnBehalfOf = null,
-            AppId = registrationKey,
-            Scopes = new HashSet<string>(registration.Scopes, StringComparer.Ordinal),
-            Roles = new HashSet<string>(StringComparer.Ordinal),
-            Source = PrincipalSource.AppOnly,
-        });
+                // Null, and it stays null until slice 5 (#305) validates an on-behalf-of token. The
+                // no-fallback rule of spec 4.2 step 3 lives with that work: a caller that ASSERTS a
+                // user and gets it wrong must fail rather than silently act as the app.
+                OnBehalfOf = null,
+                AppId = registrationKey,
+                Scopes = new HashSet<string>(registration.Scopes, StringComparer.Ordinal),
+                Roles = new HashSet<string>(StringComparer.Ordinal),
+                Source = PrincipalSource.AppOnly,
+            }
+        );
     }
 
     private PrincipalResolution Reject(string code, int statusCode, string appId, string? tenantId)
     {
-        _auditSink.Write(new AuthenticationAuditRecord
-        {
-            FrontDoor = AuditFrontDoor.S2SObo,
-            ClaimedEntraTenantId = null,
-            ClaimedObjectId = null,
-            ClaimedUpn = null,
-            AppId = appId,
-            ResolvedTenantId = tenantId,
-            Jti = null,
-            Outcome = AuthenticationOutcome.Rejected,
-            Reason = code,
-            CorrelationId = null,
-            EventClass = AuditEventClass.Security,
-        });
+        _auditSink.Write(
+            new AuthenticationAuditRecord
+            {
+                FrontDoor = AuditFrontDoor.S2SObo,
+                ClaimedEntraTenantId = null,
+                ClaimedObjectId = null,
+                ClaimedUpn = null,
+                AppId = appId,
+                ResolvedTenantId = tenantId,
+                Jti = null,
+                Outcome = AuthenticationOutcome.Rejected,
+                Reason = code,
+                CorrelationId = null,
+                EventClass = AuditEventClass.Security,
+            }
+        );
 
         return PrincipalResolution.Reject(code, statusCode);
     }

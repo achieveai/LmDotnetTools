@@ -56,7 +56,13 @@ public class McpJinaToolCatalogTests
             ["X-MCP-Exclude-Tools"] = "web_fetch",
         };
 
-        catalog.SelectInjectable(headers, []).Select(t => t.Name).Should().ContainSingle().Which.Should().Be("web_search");
+        catalog
+            .SelectInjectable(headers, [])
+            .Select(t => t.Name)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("web_search");
 
         headers["X-MCP-Lockdown"] = "true";
         catalog.SelectInjectable(headers, []).Should().BeEmpty();
@@ -67,9 +73,13 @@ public class McpJinaToolCatalogTests
     {
         var catalog = CreateCatalog(new WebToolsOptions { JinaApiKey = "secret" });
 
-        catalog.SelectInjectable(new HeaderDictionary(), ["web_search"])
+        catalog
+            .SelectInjectable(new HeaderDictionary(), ["web_search"])
             .Select(t => t.Name)
-            .Should().ContainSingle().Which.Should().Be("web_fetch");
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("web_fetch");
     }
 
     private static McpJinaToolCatalog CreateCatalog(WebToolsOptions options)
@@ -80,7 +90,9 @@ public class McpJinaToolCatalogTests
 
     private sealed class StubHandler : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        ) => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
     }
 }

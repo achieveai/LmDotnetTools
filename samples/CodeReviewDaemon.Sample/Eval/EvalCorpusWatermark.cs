@@ -71,10 +71,7 @@ internal sealed class EvalCorpusWatermark
         // everything. Zero is returned rather than thrown on for the reason the store resyncs
         // rather than throwing — a corrupt cursor must not wedge the daemon — but it is said out
         // loud, because a silent reset is indistinguishable from a cursor that never advanced.
-        if (
-            !TryParsePayload(cursor.CursorPayload, out var afterReviewRunId)
-            || afterReviewRunId < 0
-        )
+        if (!TryParsePayload(cursor.CursorPayload, out var afterReviewRunId) || afterReviewRunId < 0)
         {
             _logger?.LogWarning(
                 "Eval corpus cursor for '{CorpusId}' holds an unreadable payload; the next sweep "
@@ -101,9 +98,7 @@ internal sealed class EvalCorpusWatermark
                 Provider = CursorProvider,
                 Scope = corpusId,
                 CursorVersion = CursorVersion,
-                CursorPayload = JsonSerializer.Serialize(
-                    new EvalCursorPayload(afterReviewRunId)
-                ),
+                CursorPayload = JsonSerializer.Serialize(new EvalCursorPayload(afterReviewRunId)),
 
                 // The same number in a second column would be a second source of truth for one
                 // fact, and the two can disagree. The payload is the one ReadCursor validates

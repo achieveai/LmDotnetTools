@@ -23,8 +23,7 @@ public sealed class SqliteResourceGrantStoreTests : IAsyncLifetime
     private const string Tenant = "tnt_acme";
     private const string Subject = "entra-tid:subject-oid";
 
-    private static readonly ResourceRef Conversation =
-        new(ResourceTypes.Conversation, "thread-1");
+    private static readonly ResourceRef Conversation = new(ResourceTypes.Conversation, "thread-1");
 
     private string _databasePath = null!;
     private SqliteConnectionFactory _factory = null!;
@@ -75,12 +74,17 @@ public sealed class SqliteResourceGrantStoreTests : IAsyncLifetime
                 GrantedAt = DateTimeOffset.UnixEpoch,
                 ExpiresAt = null,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         var found = await _store.FindGrantAsync(
-            Tenant, Conversation, Subject, DateTimeOffset.UnixEpoch, CancellationToken.None);
-        var listed = await _store.ListGrantsForResourceAsync(
-            Tenant, Conversation, CancellationToken.None);
+            Tenant,
+            Conversation,
+            Subject,
+            DateTimeOffset.UnixEpoch,
+            CancellationToken.None
+        );
+        var listed = await _store.ListGrantsForResourceAsync(Tenant, Conversation, CancellationToken.None);
 
         _ = found.Should().Be(GrantRole.Editor);
         _ = listed.Should().ContainSingle().Which.Role.Should().Be(GrantRole.Editor);
@@ -94,18 +98,25 @@ public sealed class SqliteResourceGrantStoreTests : IAsyncLifetime
         await SeedRawRoleAsync("owner");
 
         var found = await _store.FindGrantAsync(
-            Tenant, Conversation, Subject, DateTimeOffset.UnixEpoch, CancellationToken.None);
-        var listed = await _store.ListGrantsForResourceAsync(
-            Tenant, Conversation, CancellationToken.None);
+            Tenant,
+            Conversation,
+            Subject,
+            DateTimeOffset.UnixEpoch,
+            CancellationToken.None
+        );
+        var listed = await _store.ListGrantsForResourceAsync(Tenant, Conversation, CancellationToken.None);
 
         _ = found.Should().BeNull("an unrecognised role confers nothing");
 
         // The listing used to answer Viewer here, disagreeing with the point read about the same
         // row. Presenting it as a viewer grant would also have been a lie to the owner reading the
         // share list: the point read denies it, so it grants nothing to anybody.
-        _ = listed.Should().BeEmpty(
-            "both readers must agree, and the fail-closed answer is the one that agrees with the "
-                + "documented contract of ParseRole");
+        _ = listed
+            .Should()
+            .BeEmpty(
+                "both readers must agree, and the fail-closed answer is the one that agrees with the "
+                    + "documented contract of ParseRole"
+            );
     }
 
     [Fact]
@@ -126,10 +137,10 @@ public sealed class SqliteResourceGrantStoreTests : IAsyncLifetime
                 GrantedAt = DateTimeOffset.UnixEpoch,
                 ExpiresAt = null,
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
-        var listed = await _store.ListGrantsForResourceAsync(
-            Tenant, Conversation, CancellationToken.None);
+        var listed = await _store.ListGrantsForResourceAsync(Tenant, Conversation, CancellationToken.None);
 
         _ = listed.Should().ContainSingle().Which.SubjectId.Should().Be("entra-tid:zzz-last");
     }
@@ -143,7 +154,12 @@ public sealed class SqliteResourceGrantStoreTests : IAsyncLifetime
         // Force the schema into existence through the store's own initializer first, so the table
         // this replaces is the real one.
         _ = await _store.FindGrantAsync(
-            Tenant, Conversation, subject, DateTimeOffset.UnixEpoch, CancellationToken.None);
+            Tenant,
+            Conversation,
+            subject,
+            DateTimeOffset.UnixEpoch,
+            CancellationToken.None
+        );
 
         await using var connection = await _factory.GetConnectionAsync(CancellationToken.None);
 

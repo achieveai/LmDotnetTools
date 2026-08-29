@@ -101,11 +101,8 @@ public class WorkflowHardeningTests
         var runtime = new WorkflowRuntime();
         var setState = Tool(runtime, "SetState");
 
-        (await Invoke(setState, Args("state.x", JsonValue.Create(1), "set"))).Payload.IsError.Should()
-            .BeFalse();
-        (await Invoke(setState, Args("state.arr", JsonValue.Create(2), "append"))).Payload.IsError
-            .Should()
-            .BeFalse();
+        (await Invoke(setState, Args("state.x", JsonValue.Create(1), "set"))).Payload.IsError.Should().BeFalse();
+        (await Invoke(setState, Args("state.arr", JsonValue.Create(2), "append"))).Payload.IsError.Should().BeFalse();
         (await Invoke(setState, Args("state.obj", JsonNode.Parse("""{ "a": 1 }"""), "merge")))
             .Payload.IsError.Should()
             .BeFalse();
@@ -228,9 +225,7 @@ public class WorkflowHardeningTests
 
         var args = new JsonObject
         {
-            ["node"] = JsonNode.Parse(
-                """{ "id": "extra", "kind": "agent", "prompt": "Inserted work." }"""
-            ),
+            ["node"] = JsonNode.Parse("""{ "id": "extra", "kind": "agent", "prompt": "Inserted work." }"""),
             ["previousNodeId"] = "start",
         };
         var result = await Invoke(Tool(runtime, "AddNode"), args.ToJsonString());
@@ -332,7 +327,10 @@ public class WorkflowHardeningTests
 
         result.Payload.IsError.Should().BeFalse();
         runtime.Definition!.Nodes.Should().Contain(n => n.Id == "start" && n is StartNode);
-        runtime.Definition!.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "work").TaskList!.Single()
+        runtime
+            .Definition!.Nodes.OfType<ProceduralNode>()
+            .Single(n => n.Id == "work")
+            .TaskList!.Single()
             .SubagentType.Should()
             .Be("gp");
     }
@@ -416,9 +414,7 @@ public class WorkflowHardeningTests
 
         var args = new JsonObject
         {
-            ["node"] = JsonNode.Parse(
-                """{ "id": "extra", "kind": "agent", "prompt": "Inserted work." }"""
-            ),
+            ["node"] = JsonNode.Parse("""{ "id": "extra", "kind": "agent", "prompt": "Inserted work." }"""),
             ["previousNodeId"] = "proc",
         };
 
@@ -464,10 +460,6 @@ public class WorkflowHardeningTests
     private static FunctionDescriptor Tool(WorkflowRuntime runtime, string name) =>
         new WorkflowToolProvider(runtime).GetFunctions().Single(f => f.Contract.Name == name);
 
-    private static async Task<ToolHandlerResult.Resolved> Invoke(
-        FunctionDescriptor tool,
-        string argsJson
-    ) =>
-        (ToolHandlerResult.Resolved)
-            await tool.Handler(argsJson, new ToolCallContext(), CancellationToken.None);
+    private static async Task<ToolHandlerResult.Resolved> Invoke(FunctionDescriptor tool, string argsJson) =>
+        (ToolHandlerResult.Resolved)await tool.Handler(argsJson, new ToolCallContext(), CancellationToken.None);
 }

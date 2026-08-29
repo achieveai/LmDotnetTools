@@ -185,7 +185,8 @@ public class TypeFunctionProvider : IFunctionProvider
             return typeof(string);
         }
 
-        return returnType.IsGenericType
+        return
+            returnType.IsGenericType
             && returnType.GetGenericTypeDefinition() == typeof(Task<>)
             && returnType.GetGenericArguments()[0] == typeof(FunctionResult)
             ? typeof(string)
@@ -337,16 +338,17 @@ public class TypeFunctionProvider : IFunctionProvider
 
                 // Reflective handlers always resolve synchronously — they don't have access to a
                 // ToolCallId or DeferralContext. Wrap the serialized result as Resolved.
-                var serialized = result != null && method.ReturnType != typeof(void)
-                    ? JsonSerializer.Serialize(
-                        result,
-                        new JsonSerializerOptions
-                        {
-                            WriteIndented = false,
-                            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                        }
-                    )
-                    : "{}";
+                var serialized =
+                    result != null && method.ReturnType != typeof(void)
+                        ? JsonSerializer.Serialize(
+                            result,
+                            new JsonSerializerOptions
+                            {
+                                WriteIndented = false,
+                                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                            }
+                        )
+                        : "{}";
 
                 return errorCode == null
                     ? ToolHandlerResult.FromText(serialized)

@@ -29,12 +29,7 @@ internal sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
     }
 
     /// <inheritdoc />
-    public override ITimer CreateTimer(
-        TimerCallback callback,
-        object? state,
-        TimeSpan dueTime,
-        TimeSpan period
-    )
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
         var timer = new FakeTimer(this, callback, state);
         lock (_sync)
@@ -70,8 +65,7 @@ internal sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
                 }
 
                 _utcNow = next.DueAt!.Value;
-                var periodic =
-                    next.Period > TimeSpan.Zero && next.Period != Timeout.InfiniteTimeSpan;
+                var periodic = next.Period > TimeSpan.Zero && next.Period != Timeout.InfiniteTimeSpan;
                 next.DueAt = periodic ? _utcNow + next.Period : null;
                 // A fired one-shot is no longer scheduled for anything; a periodic one is now armed
                 // for its period. Kept in step with DueAt so WaitForTimerAsync can never match a
@@ -139,8 +133,7 @@ internal sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
         }
     }
 
-    private sealed class FakeTimer(ManualTimeProvider owner, TimerCallback callback, object? state)
-        : ITimer
+    private sealed class FakeTimer(ManualTimeProvider owner, TimerCallback callback, object? state) : ITimer
     {
         internal DateTimeOffset? DueAt { get; set; }
 
@@ -155,8 +148,7 @@ internal sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
 
         internal void Fire() => callback(state);
 
-        public bool Change(TimeSpan dueTime, TimeSpan period) =>
-            owner.Schedule(this, dueTime, period);
+        public bool Change(TimeSpan dueTime, TimeSpan period) => owner.Schedule(this, dueTime, period);
 
         public void Dispose() => owner.Remove(this);
 

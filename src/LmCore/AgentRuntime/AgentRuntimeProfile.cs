@@ -37,6 +37,6 @@ public sealed record AgentRuntimeProfile
     ///     MCP log once and ignore. Supporting providers MUST merge with host-loaded
     ///     MCP config, with profile entries winning on key collision.
     /// </summary>
-    public IReadOnlyDictionary<string, McpServerConfig> McpServers { get; init; }
-        = ImmutableDictionary<string, McpServerConfig>.Empty;
+    public IReadOnlyDictionary<string, McpServerConfig> McpServers { get; init; } =
+        ImmutableDictionary<string, McpServerConfig>.Empty;
 }

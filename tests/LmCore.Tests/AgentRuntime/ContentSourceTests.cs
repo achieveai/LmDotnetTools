@@ -13,12 +13,13 @@ public class ContentSourceTests
         Assert.Equal("path:/tmp/skill.md", Render(fromPath));
         Assert.Equal("inline:inline body", Render(fromInline));
 
-        static string Render(ContentSource source) => source switch
-        {
-            ContentSource.FromPath p => $"path:{p.Value}",
-            ContentSource.FromInline i => $"inline:{i.Content}",
-            _ => throw new InvalidOperationException(),
-        };
+        static string Render(ContentSource source) =>
+            source switch
+            {
+                ContentSource.FromPath p => $"path:{p.Value}",
+                ContentSource.FromInline i => $"inline:{i.Content}",
+                _ => throw new InvalidOperationException(),
+            };
     }
 
     [Fact]

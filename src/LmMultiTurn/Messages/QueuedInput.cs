@@ -18,7 +18,8 @@ public record QueuedInput(
     string ReceiptId,
     DateTimeOffset QueuedAt,
     ResumeSentinel? Resume = null,
-    TriggerEnvelope? Trigger = null)
+    TriggerEnvelope? Trigger = null
+)
 {
     /// <summary>
     /// Binary-compatibility overload for the pre-<see cref="Trigger"/> 4-arg positional shape.
@@ -32,14 +33,8 @@ public record QueuedInput(
     /// (where it is unambiguously preferred, since it substitutes no optional parameters) while
     /// 3-arg calls still resolve — unambiguously — to the primary constructor.
     /// </remarks>
-    public QueuedInput(
-        UserInput input,
-        string receiptId,
-        DateTimeOffset queuedAt,
-        ResumeSentinel? resume)
-        : this(input, receiptId, queuedAt, resume, Trigger: null)
-    {
-    }
+    public QueuedInput(UserInput input, string receiptId, DateTimeOffset queuedAt, ResumeSentinel? resume)
+        : this(input, receiptId, queuedAt, resume, Trigger: null) { }
 
     /// <summary>
     /// Binary-compatibility 4-value deconstruction matching the pre-<see cref="Trigger"/> shape.
@@ -48,7 +43,8 @@ public record QueuedInput(
         out UserInput input,
         out string receiptId,
         out DateTimeOffset queuedAt,
-        out ResumeSentinel? resume)
+        out ResumeSentinel? resume
+    )
     {
         input = Input;
         receiptId = ReceiptId;

@@ -104,9 +104,7 @@ internal static class WebToolRegistrationPolicy
         }
 
         // Mirror ProviderRegistry.NormalizeId: trim + lowercase, case-insensitive allow-list lookup.
-        var normalized = string.IsNullOrWhiteSpace(providerId)
-            ? string.Empty
-            : providerId.Trim().ToLowerInvariant();
+        var normalized = string.IsNullOrWhiteSpace(providerId) ? string.Empty : providerId.Trim().ToLowerInvariant();
         if (!isCopilotBackedModel && !isAnthropicCompatModel && !FallbackProviderIds.Contains(normalized))
         {
             return statuses;

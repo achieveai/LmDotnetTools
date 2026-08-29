@@ -27,8 +27,7 @@ public static partial class TemplateRenderer
         ArgumentNullException.ThrowIfNull(template);
         ArgumentNullException.ThrowIfNull(context);
 
-        return BindingPattern()
-            .Replace(template, match => RenderBinding(match.Groups[1].Value, context));
+        return BindingPattern().Replace(template, match => RenderBinding(match.Groups[1].Value, context));
     }
 
     private static string RenderBinding(string expression, BindingContext context)
@@ -40,9 +39,7 @@ public static partial class TemplateRenderer
         }
 
         var text = JsonText.ToText(node);
-        return node.GetValueKind() is JsonValueKind.Object or JsonValueKind.Array
-            ? SizeGuard(text)
-            : text;
+        return node.GetValueKind() is JsonValueKind.Object or JsonValueKind.Array ? SizeGuard(text) : text;
     }
 
     private static string SizeGuard(string text)

@@ -29,8 +29,8 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     private ReviewSubAgentCompletionBarrier CreateBarrier(
         ScriptedCompletionSource source,
         FakeTimeProvider clock,
-        TimeSpan? quietPeriod = null) =>
-        new(source, quietPeriod ?? QuietPeriod, LoggerFactory.CreateLogger<ReviewSubAgentCompletionBarrier>(), clock);
+        TimeSpan? quietPeriod = null
+    ) => new(source, quietPeriod ?? QuietPeriod, LoggerFactory.CreateLogger<ReviewSubAgentCompletionBarrier>(), clock);
 
     /// <summary>
     /// Builds a barrier over any completion source with the unknown-node quiescence allowance configured,
@@ -40,8 +40,8 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         IReviewSubAgentCompletionSource source,
         FakeTimeProvider clock,
         TimeSpan unknownQuiescence,
-        CapturingLogger<ReviewSubAgentCompletionBarrier> logger) =>
-        new(source, QuietPeriod, logger, clock, unknownQuiescence);
+        CapturingLogger<ReviewSubAgentCompletionBarrier> logger
+    ) => new(source, QuietPeriod, logger, clock, unknownQuiescence);
 
     /// <summary>
     /// A clock that also reports WHEN the code under test has parked on its next wait. The barrier polls
@@ -55,11 +55,7 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     {
         private readonly SemaphoreSlim _waitsRegistered = new(0);
 
-        public override ITimer CreateTimer(
-            TimerCallback callback,
-            object? state,
-            TimeSpan dueTime,
-            TimeSpan period)
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             var timer = base.CreateTimer(callback, state, dueTime, period);
             _waitsRegistered.Release();
@@ -97,7 +93,8 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         int depth,
         ReviewSubAgentStatus status,
         string threadId = "",
-        DateTimeOffset? lastActivityUtc = null) =>
+        DateTimeOffset? lastActivityUtc = null
+    ) =>
         new()
         {
             AgentId = agentId,
@@ -120,7 +117,8 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         Task<T> task,
         ObservableFakeClock clock,
         TimeSpan step,
-        int maxSteps = 50)
+        int maxSteps = 50
+    )
     {
         // Bounds a genuine hang (the barrier stopped waiting AND stopped settling). It is never reached on
         // the happy path, where the registration has already been counted by the time it is asked for.
@@ -139,7 +137,8 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
             if (!await parked)
             {
                 throw new InvalidOperationException(
-                    $"The barrier neither settled nor registered another wait within {hangGuard}.");
+                    $"The barrier neither settled nor registered another wait within {hangGuard}."
+                );
             }
 
             clock.Advance(step);
@@ -148,7 +147,8 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         if (!task.IsCompleted)
         {
             throw new InvalidOperationException(
-                $"The barrier never settled within {maxSteps} wait steps of {step} — it is not re-polling as expected.");
+                $"The barrier never settled within {maxSteps} wait steps of {step} — it is not re-polling as expected."
+            );
         }
 
         return await task;
@@ -162,42 +162,32 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
         var source = new ScriptedCompletionSource(
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("a", "root", 1, ReviewSubAgentStatus.Running),
-                    Node("b", "root", 1, ReviewSubAgentStatus.Running),
-                    Node("c", "root", 1, ReviewSubAgentStatus.Running),
-                ]
-            ),
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("a", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("b", "root", 1, ReviewSubAgentStatus.Running),
-                    Node("c", "root", 1, ReviewSubAgentStatus.Running),
-                ]
-            ),
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("a", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("b", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("c", "root", 1, ReviewSubAgentStatus.Running),
-                ]
-            ),
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("a", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("b", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("c", "root", 1, ReviewSubAgentStatus.Completed),
-                ]
-            ),
+            new ReviewSubAgentTreeSnapshot([
+                Node("a", "root", 1, ReviewSubAgentStatus.Running),
+                Node("b", "root", 1, ReviewSubAgentStatus.Running),
+                Node("c", "root", 1, ReviewSubAgentStatus.Running),
+            ]),
+            new ReviewSubAgentTreeSnapshot([
+                Node("a", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("b", "root", 1, ReviewSubAgentStatus.Running),
+                Node("c", "root", 1, ReviewSubAgentStatus.Running),
+            ]),
+            new ReviewSubAgentTreeSnapshot([
+                Node("a", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("b", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("c", "root", 1, ReviewSubAgentStatus.Running),
+            ]),
+            new ReviewSubAgentTreeSnapshot([
+                Node("a", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("b", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("c", "root", 1, ReviewSubAgentStatus.Completed),
+            ]),
             // Second identical all-terminal snapshot (stability confirmation) — same shape as the previous one.
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("a", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("b", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("c", "root", 1, ReviewSubAgentStatus.Completed),
-                ]
-            )
+            new ReviewSubAgentTreeSnapshot([
+                Node("a", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("b", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("c", "root", 1, ReviewSubAgentStatus.Completed),
+            ])
         );
         var barrier = CreateBarrier(source, clock);
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
@@ -207,7 +197,9 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
         result.Nodes.Should().HaveCount(3);
         result.Nodes.Should().OnlyContain(n => n.Status == ReviewSubAgentStatus.Completed);
-        source.CallCount.Should().BeGreaterThanOrEqualTo(5, "the barrier must keep re-polling while any child is still running");
+        source
+            .CallCount.Should()
+            .BeGreaterThanOrEqualTo(5, "the barrier must keep re-polling while any child is still running");
     }
 
     [Fact]
@@ -219,31 +211,23 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var run = TestRun();
         var source = new ScriptedCompletionSource(
             // Mixed: foreground already Error (terminal) but a background node is Running — must block.
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("fg", "root", 1, ReviewSubAgentStatus.Error),
-                    Node("bg", "root", 1, ReviewSubAgentStatus.Running),
-                ]
-            ),
+            new ReviewSubAgentTreeSnapshot([
+                Node("fg", "root", 1, ReviewSubAgentStatus.Error),
+                Node("bg", "root", 1, ReviewSubAgentStatus.Running),
+            ]),
             // Background settles to Stopped (also terminal); Unknown still blocks.
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("fg", "root", 1, ReviewSubAgentStatus.Error),
-                    Node("bg", "root", 1, ReviewSubAgentStatus.Unknown),
-                ]
-            ),
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("fg", "root", 1, ReviewSubAgentStatus.Error),
-                    Node("bg", "root", 1, ReviewSubAgentStatus.Stopped),
-                ]
-            ),
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("fg", "root", 1, ReviewSubAgentStatus.Error),
-                    Node("bg", "root", 1, ReviewSubAgentStatus.Stopped),
-                ]
-            )
+            new ReviewSubAgentTreeSnapshot([
+                Node("fg", "root", 1, ReviewSubAgentStatus.Error),
+                Node("bg", "root", 1, ReviewSubAgentStatus.Unknown),
+            ]),
+            new ReviewSubAgentTreeSnapshot([
+                Node("fg", "root", 1, ReviewSubAgentStatus.Error),
+                Node("bg", "root", 1, ReviewSubAgentStatus.Stopped),
+            ]),
+            new ReviewSubAgentTreeSnapshot([
+                Node("fg", "root", 1, ReviewSubAgentStatus.Error),
+                Node("bg", "root", 1, ReviewSubAgentStatus.Stopped),
+            ])
         );
         var barrier = CreateBarrier(source, clock);
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
@@ -299,34 +283,26 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
 
-        var baseline = new ReviewSubAgentTreeSnapshot(
-            [
-                Node("a", "root", 1, ReviewSubAgentStatus.Completed),
-                Node("b", "root", 1, ReviewSubAgentStatus.Completed),
-            ]
-        );
+        var baseline = new ReviewSubAgentTreeSnapshot([
+            Node("a", "root", 1, ReviewSubAgentStatus.Completed),
+            Node("b", "root", 1, ReviewSubAgentStatus.Completed),
+        ]);
         var changed = change switch
         {
-            "add" => new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("a", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("b", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("c", "root", 1, ReviewSubAgentStatus.Completed),
-                ]
-            ),
+            "add" => new ReviewSubAgentTreeSnapshot([
+                Node("a", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("b", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("c", "root", 1, ReviewSubAgentStatus.Completed),
+            ]),
             "remove" => new ReviewSubAgentTreeSnapshot([Node("a", "root", 1, ReviewSubAgentStatus.Completed)]),
-            "reparent" => new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("a", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("b", "a", 2, ReviewSubAgentStatus.Completed, threadId: "thread-b"),
-                ]
-            ),
-            "status" => new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("a", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("b", "root", 1, ReviewSubAgentStatus.Error),
-                ]
-            ),
+            "reparent" => new ReviewSubAgentTreeSnapshot([
+                Node("a", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("b", "a", 2, ReviewSubAgentStatus.Completed, threadId: "thread-b"),
+            ]),
+            "status" => new ReviewSubAgentTreeSnapshot([
+                Node("a", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("b", "root", 1, ReviewSubAgentStatus.Error),
+            ]),
             _ => throw new ArgumentOutOfRangeException(nameof(change)),
         };
 
@@ -342,7 +318,9 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         result.Nodes.Should().HaveCount(2);
         result.Nodes.Should().Contain(n => n.AgentId == "a" && n.ParentThreadId == "root" && n.Depth == 1);
         result.Nodes.Should().Contain(n => n.AgentId == "b" && n.ParentThreadId == "root" && n.Depth == 1);
-        source.CallCount.Should().BeGreaterThanOrEqualTo(4, "the reset must force at least one extra confirmation round-trip");
+        source
+            .CallCount.Should()
+            .BeGreaterThanOrEqualTo(4, "the reset must force at least one extra confirmation round-trip");
     }
 
     [Fact]
@@ -354,24 +332,18 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
         var source = new ScriptedCompletionSource(
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("child", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("grandchild", "thread-child", 2, ReviewSubAgentStatus.Running),
-                ]
-            ),
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("child", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("grandchild", "thread-child", 2, ReviewSubAgentStatus.Completed),
-                ]
-            ),
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("child", "root", 1, ReviewSubAgentStatus.Completed),
-                    Node("grandchild", "thread-child", 2, ReviewSubAgentStatus.Completed),
-                ]
-            )
+            new ReviewSubAgentTreeSnapshot([
+                Node("child", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("grandchild", "thread-child", 2, ReviewSubAgentStatus.Running),
+            ]),
+            new ReviewSubAgentTreeSnapshot([
+                Node("child", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("grandchild", "thread-child", 2, ReviewSubAgentStatus.Completed),
+            ]),
+            new ReviewSubAgentTreeSnapshot([
+                Node("child", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("grandchild", "thread-child", 2, ReviewSubAgentStatus.Completed),
+            ])
         );
         var barrier = CreateBarrier(source, clock);
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
@@ -406,10 +378,7 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         // remaining time and cascade to the deadline check without overshooting (see design-notes.md §5).
         clock.Advance(TimeSpan.FromMinutes(5));
 
-        await FluentActions
-            .Awaiting(() => task)
-            .Should()
-            .ThrowAsync<ReviewBarrierDeadlineException>();
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
     }
 
     [Fact]
@@ -437,9 +406,14 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
                 {
                     clock.Advance(TimeSpan.FromMinutes(31));
                 }
-            });
+            }
+        );
         var barrier = CreateBarrier(
-            source, clock, TimeSpan.Zero, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+            source,
+            clock,
+            TimeSpan.Zero,
+            new CapturingLogger<ReviewSubAgentCompletionBarrier>()
+        );
 
         var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
 
@@ -458,7 +432,10 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         public int CallCount { get; private set; }
 
         public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
-            ReviewRun run, string parentThreadId, CancellationToken ct)
+            ReviewRun run,
+            string parentThreadId,
+            CancellationToken ct
+        )
         {
             CallCount++;
             onCall(CallCount);
@@ -479,7 +456,11 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
         var source = new BlockingCompletionSource(honorsCancellation: true);
         var barrier = CreateBarrier(
-            source, clock, TimeSpan.Zero, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+            source,
+            clock,
+            TimeSpan.Zero,
+            new CapturingLogger<ReviewSubAgentCompletionBarrier>()
+        );
 
         var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
 
@@ -495,7 +476,9 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         // property #280 asks for (a WaitAsync-only bound would leave this request running, un-cancelled).
         (await source.ObservedCancellation.WaitAsync(TimeSpan.FromSeconds(5)))
             .Should()
-            .BeTrue("the barrier's deadline-linked token must cancel the in-flight snapshot call, not merely abandon it");
+            .BeTrue(
+                "the barrier's deadline-linked token must cancel the in-flight snapshot call, not merely abandon it"
+            );
     }
 
     [Fact]
@@ -510,13 +493,19 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
         var source = new BlockingCompletionSource(honorsCancellation: false);
         var barrier = CreateBarrier(
-            source, clock, TimeSpan.Zero, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+            source,
+            clock,
+            TimeSpan.Zero,
+            new CapturingLogger<ReviewSubAgentCompletionBarrier>()
+        );
 
         var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
 
         var act = () => PumpUntilSettledAsync(task, clock, TimeSpan.FromMinutes(31));
         _ = await act.Should().ThrowAsync<ReviewBarrierDeadlineException>();
-        source.CallCount.Should().Be(1, "the single token-ignoring call is abandoned at the deadline, not retried past it");
+        source
+            .CallCount.Should()
+            .Be(1, "the single token-ignoring call is abandoned at the deadline, not retried past it");
     }
 
     /// <summary>
@@ -527,8 +516,9 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     /// </summary>
     private sealed class BlockingCompletionSource(bool honorsCancellation) : IReviewSubAgentCompletionSource
     {
-        private readonly TaskCompletionSource<bool> _observedCancellation =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _observedCancellation = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
 
         public int CallCount { get; private set; }
 
@@ -538,7 +528,10 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         public Task<bool> ObservedCancellation => _observedCancellation.Task;
 
         public async Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
-            ReviewRun run, string parentThreadId, CancellationToken ct)
+            ReviewRun run,
+            string parentThreadId,
+            CancellationToken ct
+        )
         {
             CallCount++;
             try
@@ -602,7 +595,8 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         Task<T> task,
         ObservableFakeClock clock,
         TimeSpan step,
-        int steps)
+        int steps
+    )
     {
         var hangGuard = TimeSpan.FromSeconds(30);
 
@@ -617,7 +611,8 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
             if (!await parked)
             {
                 throw new InvalidOperationException(
-                    $"The barrier neither settled nor registered another wait within {hangGuard}.");
+                    $"The barrier neither settled nor registered another wait within {hangGuard}."
+                );
             }
 
             clock.Advance(step);
@@ -626,7 +621,8 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         task.IsCompleted.Should()
             .BeFalse(
                 "the barrier must still be closed after {0} of polling, with its deadline not yet reached",
-                step * steps);
+                step * steps
+            );
     }
 
     [Fact]
@@ -642,13 +638,16 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var start = DateTimeOffset.UtcNow;
         var clock = new ObservableFakeClock(start);
         var run = TestRun();
-        var roster = new ReviewSubAgentTreeSnapshot(
-            [
-                Node("agent-real", "root", 1, ReviewSubAgentStatus.Completed),
-                Node("agent-ghost", "root", 1, ReviewSubAgentStatus.Unknown,
-                    lastActivityUtc: start - TimeSpan.FromMinutes(20)),
-            ]
-        );
+        var roster = new ReviewSubAgentTreeSnapshot([
+            Node("agent-real", "root", 1, ReviewSubAgentStatus.Completed),
+            Node(
+                "agent-ghost",
+                "root",
+                1,
+                ReviewSubAgentStatus.Unknown,
+                lastActivityUtc: start - TimeSpan.FromMinutes(20)
+            ),
+        ]);
         var logger = new CapturingLogger<ReviewSubAgentCompletionBarrier>();
         var barrier = CreateBarrier(new ScriptedCompletionSource(roster), clock, Quiescence, logger);
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
@@ -660,7 +659,10 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         logger
             .CountAtLevel(LogLevel.Warning, "agent-ghost")
             .Should()
-            .Be(1, "opening over an unresolved node is a weaker guarantee than the headline contract and must never be silent");
+            .Be(
+                1,
+                "opening over an unresolved node is a weaker guarantee than the headline contract and must never be silent"
+            );
     }
 
     [Fact]
@@ -674,15 +676,12 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
         var source = new LiveCompletionSource(() =>
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    // Activity tracks the clock: however far time is advanced, this node was busy a moment ago.
-                    Node("agent-busy", "root", 1, ReviewSubAgentStatus.Unknown,
-                        lastActivityUtc: clock.GetUtcNow()),
-                ]
-            ));
-        var barrier = CreateBarrier(
-            source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+            new ReviewSubAgentTreeSnapshot([
+                // Activity tracks the clock: however far time is advanced, this node was busy a moment ago.
+                Node("agent-busy", "root", 1, ReviewSubAgentStatus.Unknown, lastActivityUtc: clock.GetUtcNow()),
+            ])
+        );
+        var barrier = CreateBarrier(source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
 
         var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
@@ -704,15 +703,21 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var start = DateTimeOffset.UtcNow;
         var clock = new ObservableFakeClock(start);
         var run = TestRun();
-        var roster = new ReviewSubAgentTreeSnapshot(
-            [
-                Node("agent-quiet", "root", 1, ReviewSubAgentStatus.Running,
-                    lastActivityUtc: start - TimeSpan.FromHours(2)),
-            ]
-        );
+        var roster = new ReviewSubAgentTreeSnapshot([
+            Node(
+                "agent-quiet",
+                "root",
+                1,
+                ReviewSubAgentStatus.Running,
+                lastActivityUtc: start - TimeSpan.FromHours(2)
+            ),
+        ]);
         var barrier = CreateBarrier(
-            new ScriptedCompletionSource(roster), clock, Quiescence,
-            new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+            new ScriptedCompletionSource(roster),
+            clock,
+            Quiescence,
+            new CapturingLogger<ReviewSubAgentCompletionBarrier>()
+        );
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
 
         var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
@@ -735,9 +740,7 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         // open. Run 277's timeout logged nothing at all, which is why naming the culprit needed a database.
         var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
-        var roster = new ReviewSubAgentTreeSnapshot(
-            [Node("agent-unstamped", "root", 1, ReviewSubAgentStatus.Unknown)]
-        );
+        var roster = new ReviewSubAgentTreeSnapshot([Node("agent-unstamped", "root", 1, ReviewSubAgentStatus.Unknown)]);
         var logger = new CapturingLogger<ReviewSubAgentCompletionBarrier>();
         var barrier = CreateBarrier(new ScriptedCompletionSource(roster), clock, Quiescence, logger);
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
@@ -775,14 +778,11 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         {
             // Quiet for the first poll only — the candidate — then busy on every poll after it.
             var lastActivity = polls++ == 0 ? start - TimeSpan.FromMinutes(20) : clock.GetUtcNow();
-            return new ReviewSubAgentTreeSnapshot(
-                [
-                    Node("agent-ghost", "root", 1, ReviewSubAgentStatus.Unknown, lastActivityUtc: lastActivity),
-                ]
-            );
+            return new ReviewSubAgentTreeSnapshot([
+                Node("agent-ghost", "root", 1, ReviewSubAgentStatus.Unknown, lastActivityUtc: lastActivity),
+            ]);
         });
-        var barrier = CreateBarrier(
-            source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var barrier = CreateBarrier(source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
 
         var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
@@ -806,15 +806,18 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
         var source = new LiveCompletionSource(() =>
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    // Always twice the window in arrears: quiesced at every observation, identical at none.
-                    Node("agent-lagging", "root", 1, ReviewSubAgentStatus.Unknown,
-                        lastActivityUtc: clock.GetUtcNow() - (Quiescence * 2)),
-                ]
-            ));
-        var barrier = CreateBarrier(
-            source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+            new ReviewSubAgentTreeSnapshot([
+                // Always twice the window in arrears: quiesced at every observation, identical at none.
+                Node(
+                    "agent-lagging",
+                    "root",
+                    1,
+                    ReviewSubAgentStatus.Unknown,
+                    lastActivityUtc: clock.GetUtcNow() - (Quiescence * 2)
+                ),
+            ])
+        );
+        var barrier = CreateBarrier(source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
 
         var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
@@ -837,15 +840,12 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
         var source = new LiveCompletionSource(() =>
-            new ReviewSubAgentTreeSnapshot(
-                [
-                    // Finished, and still being stamped: a different instant at every observation.
-                    Node("agent-done", "root", 1, ReviewSubAgentStatus.Completed,
-                        lastActivityUtc: clock.GetUtcNow()),
-                ]
-            ));
-        var barrier = CreateBarrier(
-            source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+            new ReviewSubAgentTreeSnapshot([
+                // Finished, and still being stamped: a different instant at every observation.
+                Node("agent-done", "root", 1, ReviewSubAgentStatus.Completed, lastActivityUtc: clock.GetUtcNow()),
+            ])
+        );
+        var barrier = CreateBarrier(source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
 
         var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
@@ -863,15 +863,21 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var start = DateTimeOffset.UtcNow;
         var clock = new ObservableFakeClock(start);
         var run = TestRun();
-        var roster = new ReviewSubAgentTreeSnapshot(
-            [
-                Node("agent-ghost", "root", 1, ReviewSubAgentStatus.Unknown,
-                    lastActivityUtc: start - TimeSpan.FromHours(12)),
-            ]
-        );
+        var roster = new ReviewSubAgentTreeSnapshot([
+            Node(
+                "agent-ghost",
+                "root",
+                1,
+                ReviewSubAgentStatus.Unknown,
+                lastActivityUtc: start - TimeSpan.FromHours(12)
+            ),
+        ]);
         var barrier = CreateBarrier(
-            new ScriptedCompletionSource(roster), clock, TimeSpan.Zero,
-            new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+            new ScriptedCompletionSource(roster),
+            clock,
+            TimeSpan.Zero,
+            new CapturingLogger<ReviewSubAgentCompletionBarrier>()
+        );
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
 
         var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
@@ -894,13 +900,12 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     /// <summary>Wraps the real client and adapter around <paramref name="handler"/>, so the barrier polls
     /// through exactly the code path a live daemon uses.</summary>
     private static IReviewSubAgentCompletionSource S2SSourceOver(FakeHttpMessageHandler handler) =>
-        new S2SReviewSubAgentCompletionSource(
-            new LmStreamingS2SClient(NewS2SHttp(handler), "s", "id", "key"));
+        new S2SReviewSubAgentCompletionSource(new LmStreamingS2SClient(NewS2SHttp(handler), "s", "id", "key"));
 
     private static string GhostNodeBody(DateTimeOffset lastActivity) =>
         "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"agent-ghost\",\"threadId\":\"thread-ghost\","
-            + "\"parentThreadId\":\"root\",\"depth\":1,\"template\":\"reviewer\",\"status\":\"who-knows\","
-            + $"\"lastActivityUtc\":\"{lastActivity.ToString("O", CultureInfo.InvariantCulture)}\"}}]}}";
+        + "\"parentThreadId\":\"root\",\"depth\":1,\"template\":\"reviewer\",\"status\":\"who-knows\","
+        + $"\"lastActivityUtc\":\"{lastActivity.ToString("O", CultureInfo.InvariantCulture)}\"}}]}}";
 
     [Fact]
     public async Task WaitAsync_OverTheRealS2SWire_OpensOnAnUnknownNodeWhoseOnlyEvidenceIsTheParsedTimestamp()
@@ -913,18 +918,25 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         // drives the real handler -> real client -> real adapter -> real barrier.
         var clock = new ObservableFakeClock(WireStart);
         var stale = WireStart - TimeSpan.FromHours(12);
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Get, "api/conversations/root/subagents?recursive=true", GhostNodeBody(stale));
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "api/conversations/root/subagents?recursive=true",
+            GhostNodeBody(stale)
+        );
         var barrier = CreateBarrier(
-            S2SSourceOver(handler), clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+            S2SSourceOver(handler),
+            clock,
+            Quiescence,
+            new CapturingLogger<ReviewSubAgentCompletionBarrier>()
+        );
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
 
         var task = barrier.WaitAsync(TestRun(), "root", deadline, NoopValidator, CancellationToken.None);
         var result = await PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(5));
 
         var node = result.Nodes.Should().ContainSingle().Subject;
-        node.Status.Should().Be(
-            ReviewSubAgentStatus.Unknown, "an unrecognised wire status must never read as terminal");
+        node.Status.Should()
+            .Be(ReviewSubAgentStatus.Unknown, "an unrecognised wire status must never read as terminal");
         node.LastActivityUtc.Should().Be(stale, "the parsed instant is the whole of what settled this node");
     }
 
@@ -936,16 +948,19 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         // path — only the instant differs, and the host re-stamps it to "now" on every poll, so the node is
         // never quiesced and the barrier burns its deadline instead.
         var clock = new ObservableFakeClock(WireStart);
-        var handler = new FakeHttpMessageHandler()
-            .On(
-                req => req.RequestUri!.ToString().Contains("subagents?recursive=true", StringComparison.Ordinal),
-                _ => new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent(
-                        GhostNodeBody(clock.GetUtcNow()), Encoding.UTF8, "application/json"),
-                });
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.RequestUri!.ToString().Contains("subagents?recursive=true", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(GhostNodeBody(clock.GetUtcNow()), Encoding.UTF8, "application/json"),
+            }
+        );
         var barrier = CreateBarrier(
-            S2SSourceOver(handler), clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+            S2SSourceOver(handler),
+            clock,
+            Quiescence,
+            new CapturingLogger<ReviewSubAgentCompletionBarrier>()
+        );
         var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
 
         var task = barrier.WaitAsync(TestRun(), "root", deadline, NoopValidator, CancellationToken.None);
@@ -959,13 +974,13 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
     /// <summary>Test double that rebuilds its snapshot on every call, so a node's reported state can track
     /// the test clock — the only way to script a child that is still genuinely working.</summary>
-    private sealed class LiveCompletionSource(Func<ReviewSubAgentTreeSnapshot> build)
-        : IReviewSubAgentCompletionSource
+    private sealed class LiveCompletionSource(Func<ReviewSubAgentTreeSnapshot> build) : IReviewSubAgentCompletionSource
     {
         public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
             ReviewRun run,
             string parentThreadId,
-            CancellationToken ct) => Task.FromResult(build());
+            CancellationToken ct
+        ) => Task.FromResult(build());
     }
 
     /// <summary>Test double returning a pre-programmed sequence of snapshots, one per call, holding on the
@@ -982,7 +997,11 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
         public int CallCount { get; private set; }
 
-        public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(ReviewRun run, string parentThreadId, CancellationToken ct)
+        public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
+            ReviewRun run,
+            string parentThreadId,
+            CancellationToken ct
+        )
         {
             CallCount++;
             var next = _snapshots[Math.Min(_index, _snapshots.Count - 1)];

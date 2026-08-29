@@ -35,18 +35,12 @@ public class MultiTurnAgentLoopUsageActivationTests
 
         var store = new InMemoryConversationStore();
         var registry = new FunctionRegistry();
-        await using var loop = new MultiTurnAgentLoop(
-            _mockAgent.Object,
-            registry,
-            "usage-thread",
-            store: store);
+        await using var loop = new MultiTurnAgentLoop(_mockAgent.Object, registry, "usage-thread", store: store);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         _ = loop.RunAsync(cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Hi", Role = Role.User }],
-            InputId: "input-1");
+        var userInput = new UserInput([new TextMessage { Text = "Hi", Role = Role.User }], InputId: "input-1");
 
         await foreach (var _ in loop.ExecuteRunAsync(userInput, cts.Token))
         {
@@ -88,18 +82,12 @@ public class MultiTurnAgentLoopUsageActivationTests
 
         var store = new InMemoryConversationStore();
         var registry = new FunctionRegistry();
-        var loop = new MultiTurnAgentLoop(
-            _mockAgent.Object,
-            registry,
-            "usage-thread",
-            store: store);
+        var loop = new MultiTurnAgentLoop(_mockAgent.Object, registry, "usage-thread", store: store);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         _ = loop.RunAsync(cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Hi", Role = Role.User }],
-            InputId: "input-1");
+        var userInput = new UserInput([new TextMessage { Text = "Hi", Role = Role.User }], InputId: "input-1");
 
         await foreach (var _ in loop.ExecuteRunAsync(userInput, cts.Token))
         {
@@ -131,18 +119,12 @@ public class MultiTurnAgentLoopUsageActivationTests
 
         var store = new InMemoryConversationStore();
         var registry = new FunctionRegistry();
-        var loop = new MultiTurnAgentLoop(
-            _mockAgent.Object,
-            registry,
-            "usage-thread",
-            store: store);
+        var loop = new MultiTurnAgentLoop(_mockAgent.Object, registry, "usage-thread", store: store);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         _ = loop.RunAsync(cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Hi", Role = Role.User }],
-            InputId: "input-1");
+        var userInput = new UserInput([new TextMessage { Text = "Hi", Role = Role.User }], InputId: "input-1");
 
         await foreach (var _ in loop.ExecuteRunAsync(userInput, cts.Token))
         {
@@ -172,18 +154,12 @@ public class MultiTurnAgentLoopUsageActivationTests
 
         var store = new InMemoryConversationStore();
         var registry = new FunctionRegistry();
-        await using var loop = new MultiTurnAgentLoop(
-            _mockAgent.Object,
-            registry,
-            "usage-thread",
-            store: store);
+        await using var loop = new MultiTurnAgentLoop(_mockAgent.Object, registry, "usage-thread", store: store);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         _ = loop.RunAsync(cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Hi", Role = Role.User }],
-            InputId: "input-1");
+        var userInput = new UserInput([new TextMessage { Text = "Hi", Role = Role.User }], InputId: "input-1");
 
         await foreach (var _ in loop.ExecuteRunAsync(userInput, cts.Token))
         {
@@ -222,11 +198,7 @@ public class MultiTurnAgentLoopUsageActivationTests
 
         var store = new InMemoryConversationStore();
         var registry = new FunctionRegistry();
-        await using var loop = new MultiTurnAgentLoop(
-            _mockAgent.Object,
-            registry,
-            "usage-thread",
-            store: store);
+        await using var loop = new MultiTurnAgentLoop(_mockAgent.Object, registry, "usage-thread", store: store);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         _ = loop.RunAsync(cts.Token);
@@ -243,14 +215,13 @@ public class MultiTurnAgentLoopUsageActivationTests
                     }
                 }
             },
-            cts.Token);
+            cts.Token
+        );
 
         // Let the subscription register before the run produces usage.
         await Task.Delay(100, cts.Token);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Hi", Role = Role.User }],
-            InputId: "input-1");
+        var userInput = new UserInput([new TextMessage { Text = "Hi", Role = Role.User }], InputId: "input-1");
 
         await foreach (var _ in loop.ExecuteRunAsync(userInput, cts.Token))
         {
@@ -273,16 +244,20 @@ public class MultiTurnAgentLoopUsageActivationTests
     private void SetupMockAgentResponse(List<IMessage> messages)
     {
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable(messages)));
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         List<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

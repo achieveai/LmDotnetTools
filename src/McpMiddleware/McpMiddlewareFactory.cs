@@ -189,8 +189,11 @@ public class McpMiddlewareFactory
 
         // Check for HTTP transport indicators
         var url = GetStringProperty(jsonElement, "url", "Url", "endpoint", "Endpoint");
-        if (!string.IsNullOrEmpty(url) || transportType.Equals("http", StringComparison.OrdinalIgnoreCase)
-            || transportType.Equals("sse", StringComparison.OrdinalIgnoreCase))
+        if (
+            !string.IsNullOrEmpty(url)
+            || transportType.Equals("http", StringComparison.OrdinalIgnoreCase)
+            || transportType.Equals("sse", StringComparison.OrdinalIgnoreCase)
+        )
         {
             return CreateHttpTransportFromJsonElement(clientId, jsonElement, url);
         }
@@ -205,23 +208,23 @@ public class McpMiddlewareFactory
     private static IClientTransport CreateHttpTransportFromJsonElement(
         string clientId,
         JsonElement jsonElement,
-        string? url)
+        string? url
+    )
     {
         if (string.IsNullOrEmpty(url))
         {
             throw new InvalidOperationException(
-                $"HTTP transport requires 'url' or 'endpoint' property for client '{clientId}'");
+                $"HTTP transport requires 'url' or 'endpoint' property for client '{clientId}'"
+            );
         }
 
-        var options = new HttpClientTransportOptions
-        {
-            Name = clientId,
-            Endpoint = new Uri(url),
-        };
+        var options = new HttpClientTransportOptions { Name = clientId, Endpoint = new Uri(url) };
 
         // Extract headers if present
-        if (jsonElement.TryGetProperty("headers", out var headersElement)
-            && headersElement.ValueKind == JsonValueKind.Object)
+        if (
+            jsonElement.TryGetProperty("headers", out var headersElement)
+            && headersElement.ValueKind == JsonValueKind.Object
+        )
         {
             var headers = new Dictionary<string, string>();
             foreach (var prop in headersElement.EnumerateObject())
@@ -236,8 +239,10 @@ public class McpMiddlewareFactory
                 options.AdditionalHeaders = headers;
             }
         }
-        else if (jsonElement.TryGetProperty("Headers", out headersElement)
-            && headersElement.ValueKind == JsonValueKind.Object)
+        else if (
+            jsonElement.TryGetProperty("Headers", out headersElement)
+            && headersElement.ValueKind == JsonValueKind.Object
+        )
         {
             var headers = new Dictionary<string, string>();
             foreach (var prop in headersElement.EnumerateObject())
@@ -254,8 +259,10 @@ public class McpMiddlewareFactory
         }
 
         // Check for timeout
-        if (jsonElement.TryGetProperty("timeout", out var timeoutElement)
-            && timeoutElement.TryGetInt32(out var timeoutSeconds))
+        if (
+            jsonElement.TryGetProperty("timeout", out var timeoutElement)
+            && timeoutElement.TryGetInt32(out var timeoutSeconds)
+        )
         {
             options.ConnectionTimeout = TimeSpan.FromSeconds(timeoutSeconds);
         }
@@ -293,8 +300,7 @@ public class McpMiddlewareFactory
         }
 
         // Extract environment variables
-        if (jsonElement.TryGetProperty("env", out var envElement)
-            && envElement.ValueKind == JsonValueKind.Object)
+        if (jsonElement.TryGetProperty("env", out var envElement) && envElement.ValueKind == JsonValueKind.Object)
         {
             environmentVariables = [];
             foreach (var prop in envElement.EnumerateObject())
@@ -305,8 +311,7 @@ public class McpMiddlewareFactory
                 }
             }
         }
-        else if (jsonElement.TryGetProperty("Env", out envElement)
-            && envElement.ValueKind == JsonValueKind.Object)
+        else if (jsonElement.TryGetProperty("Env", out envElement) && envElement.ValueKind == JsonValueKind.Object)
         {
             environmentVariables = [];
             foreach (var prop in envElement.EnumerateObject())
@@ -392,7 +397,9 @@ public class McpMiddlewareFactory
 
         // Check for HTTP transport indicators
         var url = GetDictStringValue(configDict, "url", "Url", "endpoint", "Endpoint");
-        return !string.IsNullOrEmpty(url) || transportType.Equals("http", StringComparison.OrdinalIgnoreCase)
+        return
+            !string.IsNullOrEmpty(url)
+            || transportType.Equals("http", StringComparison.OrdinalIgnoreCase)
             || transportType.Equals("sse", StringComparison.OrdinalIgnoreCase)
             ? CreateHttpTransportFromDictionary(clientId, configDict, url)
             : CreateStdioTransportFromDictionary(clientId, configDict);
@@ -404,25 +411,24 @@ public class McpMiddlewareFactory
     private static IClientTransport CreateHttpTransportFromDictionary(
         string clientId,
         Dictionary<string, object> configDict,
-        string? url)
+        string? url
+    )
     {
         if (string.IsNullOrEmpty(url))
         {
             throw new InvalidOperationException(
-                $"HTTP transport requires 'url' or 'endpoint' property for client '{clientId}'");
+                $"HTTP transport requires 'url' or 'endpoint' property for client '{clientId}'"
+            );
         }
 
-        var options = new HttpClientTransportOptions
-        {
-            Name = clientId,
-            Endpoint = new Uri(url),
-        };
+        var options = new HttpClientTransportOptions { Name = clientId, Endpoint = new Uri(url) };
 
         // Extract headers if present
         var headers = GetDictDictionaryValue(configDict, "headers", "Headers");
         if (headers != null && headers.Count > 0)
         {
-            options.AdditionalHeaders = headers.Where(kvp => kvp.Value != null)
+            options.AdditionalHeaders = headers
+                .Where(kvp => kvp.Value != null)
                 .ToDictionary(kvp => kvp.Key, kvp => kvp.Value!);
         }
 
@@ -440,7 +446,8 @@ public class McpMiddlewareFactory
     /// </summary>
     private static IClientTransport CreateStdioTransportFromDictionary(
         string clientId,
-        Dictionary<string, object> configDict)
+        Dictionary<string, object> configDict
+    )
     {
         var command = GetDictStringValue(configDict, "command", "Command");
         string[]? arguments = null;
@@ -503,7 +510,8 @@ public class McpMiddlewareFactory
     /// </summary>
     private static Dictionary<string, string?>? GetDictDictionaryValue(
         Dictionary<string, object> dict,
-        params string[] keys)
+        params string[] keys
+    )
     {
         foreach (var key in keys)
         {

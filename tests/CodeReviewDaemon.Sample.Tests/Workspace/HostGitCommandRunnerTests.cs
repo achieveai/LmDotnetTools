@@ -8,7 +8,15 @@ public class HostGitCommandRunnerTests : IDisposable
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "crd-hostgit-" + Guid.NewGuid().ToString("N"));
 
     public HostGitCommandRunnerTests() => Directory.CreateDirectory(_dir);
-    public void Dispose() { try { Directory.Delete(_dir, true); } catch { } }
+
+    public void Dispose()
+    {
+        try
+        {
+            Directory.Delete(_dir, true);
+        }
+        catch { }
+    }
 
     private static Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> GithubOnly(string token) =>
         _ => Task.FromResult<IReadOnlyList<GitProviderToken>>([new GitProviderToken("github", token)]);
@@ -34,7 +42,8 @@ public class HostGitCommandRunnerTests : IDisposable
 
         var result = await runner.RunAsync(
             new SandboxCommand(["git", "rev-parse", "--is-inside-work-tree"], missingDir),
-            default);
+            default
+        );
 
         result.Succeeded.Should().BeFalse();
         result.Stderr.Should().Contain(missingDir);
@@ -46,14 +55,20 @@ public class HostGitCommandRunnerTests : IDisposable
         // Both GitHub and ADO signed in ⇒ git sees an extraHeader for each host (the ad-hoc GIT_CONFIG_*
         // env the runner injects), so a private clone on either host can authenticate.
         var runner = new HostGitCommandRunner(
-            _ => Task.FromResult<IReadOnlyList<GitProviderToken>>(
-                [new GitProviderToken("github", "gh"), new GitProviderToken("ado", "ado-tok")]),
-            NullLogger<HostGitCommandRunner>.Instance);
+            _ =>
+                Task.FromResult<IReadOnlyList<GitProviderToken>>([
+                    new GitProviderToken("github", "gh"),
+                    new GitProviderToken("ado", "ado-tok"),
+                ]),
+            NullLogger<HostGitCommandRunner>.Instance
+        );
 
         (await runner.RunAsync(new SandboxCommand(["git", "init"], _dir), default)).Succeeded.Should().BeTrue();
 
         var listed = await runner.RunAsync(
-            new SandboxCommand(["git", "config", "--get-regexp", "extraheader"], _dir), default);
+            new SandboxCommand(["git", "config", "--get-regexp", "extraheader"], _dir),
+            default
+        );
 
         listed.Succeeded.Should().BeTrue();
         listed.Stdout.Should().Contain("github.com");
@@ -68,10 +83,10 @@ public class HostGitCommandRunnerTests : IDisposable
 
         await fs.WriteFileAsync(path, "hello", default);
 
-        (await fs.ReadFileAsync(path, SandboxReadLimits.RepositoryFileBytes, default))
-            .Content.Should().Be("hello");
+        (await fs.ReadFileAsync(path, SandboxReadLimits.RepositoryFileBytes, default)).Content.Should().Be("hello");
         (await fs.ReadFileAsync(Path.Combine(_dir, "missing.txt"), SandboxReadLimits.RepositoryFileBytes, default))
-            .Should().Be(SandboxFileRead.Missing);
+            .Should()
+            .Be(SandboxFileRead.Missing);
     }
 
     [Fact]

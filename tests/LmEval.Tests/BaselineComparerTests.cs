@@ -162,10 +162,7 @@ public class BaselineComparerTests
         var baseline = Baseline(UniformRun(passing: 8));
         var candidate = UniformRun(passing: 8, corpusHash: "another-corpus");
 
-        BaselineComparer
-            .Compare(candidate, baseline)
-            .Refusal.Should()
-            .Be(ComparisonRefusal.CorpusSnapshotDiffers);
+        BaselineComparer.Compare(candidate, baseline).Refusal.Should().Be(ComparisonRefusal.CorpusSnapshotDiffers);
     }
 
     [Fact]
@@ -192,10 +189,7 @@ public class BaselineComparerTests
             taskType: "summarization"
         );
 
-        BaselineComparer
-            .Compare(candidate, baseline)
-            .Refusal.Should()
-            .Be(ComparisonRefusal.TaskTypeDiffers);
+        BaselineComparer.Compare(candidate, baseline).Refusal.Should().Be(ComparisonRefusal.TaskTypeDiffers);
     }
 
     [Fact]
@@ -204,12 +198,10 @@ public class BaselineComparerTests
         var baseline = Baseline(UniformRun(passing: 8), minCoverage: 0.8);
 
         // Only 5 of 10 items scored — a coverage of 0.5, below the floor the baseline imposes.
-        var thin = Run(
-            [
-                .. Enumerable.Range(0, 5).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                .. Enumerable.Range(5, 5).Select(i => Undecided($"i{i}")),
-            ]
-        );
+        var thin = Run([
+            .. Enumerable.Range(0, 5).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            .. Enumerable.Range(5, 5).Select(i => Undecided($"i{i}")),
+        ]);
 
         var comparison = BaselineComparer.Compare(thin, baseline);
 
@@ -225,12 +217,10 @@ public class BaselineComparerTests
         var strict = Baseline(UniformRun(passing: 8), minCoverage: 0.9);
         var lenient = Baseline(UniformRun(passing: 8), minCoverage: 0.1);
 
-        var thin = Run(
-            [
-                .. Enumerable.Range(0, 5).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                .. Enumerable.Range(5, 5).Select(i => Undecided($"i{i}")),
-            ]
-        );
+        var thin = Run([
+            .. Enumerable.Range(0, 5).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            .. Enumerable.Range(5, 5).Select(i => Undecided($"i{i}")),
+        ]);
 
         BaselineComparer.Compare(thin, strict).IsRefused.Should().BeTrue();
         BaselineComparer.Compare(thin, lenient).IsRefused.Should().BeFalse();
@@ -258,10 +248,7 @@ public class BaselineComparerTests
         var baseline = Baseline(UniformRun(passing: 10, size: 20), minCoverage: 0.5);
         var jittered = UniformRun(passing: 9, size: 20);
 
-        BaselineComparer
-            .Compare(jittered, baseline)
-            .Triggers.Should()
-            .NotHaveFlag(RegressionTrigger.PassRateDrop);
+        BaselineComparer.Compare(jittered, baseline).Triggers.Should().NotHaveFlag(RegressionTrigger.PassRateDrop);
     }
 
     [Fact]
@@ -292,14 +279,10 @@ public class BaselineComparerTests
             Run([.. Enumerable.Range(0, 10).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass))])
         );
 
-        var collapsed = Run(
-            [
-                .. Enumerable
-                    .Range(0, 9)
-                    .Select(i => Scored($"i{i}", 8.2222222222, VerdictOutcome.Pass)),
-                Scored("i9", 6.0, VerdictOutcome.Pass),
-            ]
-        );
+        var collapsed = Run([
+            .. Enumerable.Range(0, 9).Select(i => Scored($"i{i}", 8.2222222222, VerdictOutcome.Pass)),
+            Scored("i9", 6.0, VerdictOutcome.Pass),
+        ]);
 
         var comparison = BaselineComparer.Compare(collapsed, baseline);
 
@@ -320,9 +303,7 @@ public class BaselineComparerTests
             Run([.. Enumerable.Range(0, 10).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass))])
         );
 
-        var lowered = Run(
-            [.. Enumerable.Range(0, 10).Select(i => Scored($"i{i}", 5.0, VerdictOutcome.Pass))]
-        );
+        var lowered = Run([.. Enumerable.Range(0, 10).Select(i => Scored($"i{i}", 5.0, VerdictOutcome.Pass))]);
 
         var comparison = BaselineComparer.Compare(lowered, baseline);
 
@@ -338,12 +319,10 @@ public class BaselineComparerTests
 
         // Half the corpus now yields no decision. The panel has stopped being able to judge, which
         // invalidates the comparison rather than passing it.
-        var undecided = Run(
-            [
-                .. Enumerable.Range(0, 5).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                .. Enumerable.Range(5, 5).Select(i => Undecided($"i{i}")),
-            ]
-        );
+        var undecided = Run([
+            .. Enumerable.Range(0, 5).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            .. Enumerable.Range(5, 5).Select(i => Undecided($"i{i}")),
+        ]);
 
         var comparison = BaselineComparer.Compare(undecided, baseline);
 
@@ -370,12 +349,10 @@ public class BaselineComparerTests
     [Fact]
     public void A_baseline_freezes_the_coverage_its_conditional_metrics_belong_to()
     {
-        var run = Run(
-            [
-                .. Enumerable.Range(0, 8).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                .. Enumerable.Range(8, 2).Select(i => Undecided($"i{i}")),
-            ]
-        );
+        var run = Run([
+            .. Enumerable.Range(0, 8).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            .. Enumerable.Range(8, 2).Select(i => Undecided($"i{i}")),
+        ]);
 
         var baseline = Baseline(run, minCoverage: 0.5);
 
@@ -428,12 +405,10 @@ public class BaselineComparerTests
     {
         // Baseline: half the corpus undecided. Candidate: all of it decided. The delta is -0.5,
         // five times the default margin in the improving direction.
-        var noisy = Run(
-            [
-                .. Enumerable.Range(0, 5).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                .. Enumerable.Range(5, 5).Select(i => Undecided($"i{i}")),
-            ]
-        );
+        var noisy = Run([
+            .. Enumerable.Range(0, 5).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            .. Enumerable.Range(5, 5).Select(i => Undecided($"i{i}")),
+        ]);
         var baseline = Baseline(noisy, minCoverage: 0.4);
 
         var comparison = BaselineComparer.Compare(UniformRun(passing: 10, size: 10), baseline);
@@ -457,20 +432,16 @@ public class BaselineComparerTests
     public void The_baselines_own_coverage_is_reported_and_is_not_the_runs()
     {
         // Baseline: 6 of 10 scored. Candidate: 9 of 10 scored. Two different numbers, both asserted.
-        var thin = Run(
-            [
-                .. Enumerable.Range(0, 6).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                .. Enumerable.Range(6, 4).Select(i => Undecided($"i{i}")),
-            ]
-        );
+        var thin = Run([
+            .. Enumerable.Range(0, 6).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            .. Enumerable.Range(6, 4).Select(i => Undecided($"i{i}")),
+        ]);
         var baseline = Baseline(thin, minCoverage: 0.5);
 
-        var candidate = Run(
-            [
-                .. Enumerable.Range(0, 9).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                .. Enumerable.Range(9, 1).Select(i => Undecided($"i{i}")),
-            ]
-        );
+        var candidate = Run([
+            .. Enumerable.Range(0, 9).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            .. Enumerable.Range(9, 1).Select(i => Undecided($"i{i}")),
+        ]);
 
         var comparison = BaselineComparer.Compare(candidate, baseline);
 
@@ -487,18 +458,13 @@ public class BaselineComparerTests
     [Fact]
     public void A_refusal_also_reports_the_baselines_own_coverage_and_not_the_runs()
     {
-        var thin = Run(
-            [
-                .. Enumerable.Range(0, 6).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                .. Enumerable.Range(6, 4).Select(i => Undecided($"i{i}")),
-            ]
-        );
+        var thin = Run([
+            .. Enumerable.Range(0, 6).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            .. Enumerable.Range(6, 4).Select(i => Undecided($"i{i}")),
+        ]);
         var baseline = Baseline(thin, minCoverage: 0.5);
 
-        var comparison = BaselineComparer.Compare(
-            UniformRun(passing: 8, rubricVersion: "9.9"),
-            baseline
-        );
+        var comparison = BaselineComparer.Compare(UniformRun(passing: 8, rubricVersion: "9.9"), baseline);
 
         comparison.Refusal.Should().Be(ComparisonRefusal.RubricVersionDiffers);
         comparison.BaselineCoverage.Should().BeApproximately(0.6, 1e-9);
@@ -545,10 +511,7 @@ public class BaselineComparerTests
         static double Width(int size)
         {
             var baseline = Baseline(UniformRun(passing: size, size: size), minCoverage: 0.4);
-            var comparison = BaselineComparer.Compare(
-                UniformRun(passing: size / 2, size: size),
-                baseline
-            );
+            var comparison = BaselineComparer.Compare(UniformRun(passing: size / 2, size: size), baseline);
             return comparison.PassRateDeltaUpper!.Value - comparison.PassRateDeltaLower!.Value;
         }
 
@@ -573,19 +536,15 @@ public class BaselineComparerTests
     [Fact]
     public void A_no_decision_that_was_also_a_panel_outage_is_visible_to_the_degradation_segment()
     {
-        var run = Run(
-            [
-                .. Enumerable.Range(0, 8).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                UndecidedAndDegraded("i8"),
-                Undecided("i9"),
-            ]
-        );
+        var run = Run([
+            .. Enumerable.Range(0, 8).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            UndecidedAndDegraded("i8"),
+            Undecided("i9"),
+        ]);
 
         run.DegradedCount.Should().Be(0, "the exclusion arm it matched is NoDecision, as documented");
         run.NoDecisionCount.Should().Be(2);
-        run.DegradedVerdictCount
-            .Should()
-            .Be(1, "one verdict was produced by a panel that could not be fully staffed");
+        run.DegradedVerdictCount.Should().Be(1, "one verdict was produced by a panel that could not be fully staffed");
     }
 
     [Fact]
@@ -614,12 +573,10 @@ public class BaselineComparerTests
 
         // 4 of 20 items faulted: coverage is 0.8, exactly on the floor, so the floor waves it
         // through — and the pass rate falls from 1.0 to 0.8, four times the default margin.
-        var outage = Run(
-            [
-                .. Enumerable.Range(0, 16).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                .. Enumerable.Range(16, 4).Select(i => Faulted($"i{i}")),
-            ]
-        );
+        var outage = Run([
+            .. Enumerable.Range(0, 16).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            .. Enumerable.Range(16, 4).Select(i => Faulted($"i{i}")),
+        ]);
 
         outage.FaultRate.Should().BeApproximately(0.2, 1e-9);
         outage.Coverage.Should().BeApproximately(0.8, 1e-9);
@@ -640,12 +597,10 @@ public class BaselineComparerTests
     {
         var baseline = Baseline(UniformRun(passing: 20, size: 20), minCoverage: 0.5);
 
-        var occasional = Run(
-            [
-                .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                Faulted("i19"),
-            ]
-        );
+        var occasional = Run([
+            .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            Faulted("i19"),
+        ]);
 
         var comparison = BaselineComparer.Compare(occasional, baseline);
 
@@ -668,20 +623,16 @@ public class BaselineComparerTests
 
         // 8 of 20 faulted: fault rate 0.4 (over the 0.05 default) AND coverage 0.6 (under the 0.9
         // floor). Both refusals apply; only the one naming the cause is worth reporting.
-        var outage = Run(
-            [
-                .. Enumerable.Range(0, 12).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                .. Enumerable.Range(12, 8).Select(i => Faulted($"i{i}")),
-            ]
-        );
+        var outage = Run([
+            .. Enumerable.Range(0, 12).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            .. Enumerable.Range(12, 8).Select(i => Faulted($"i{i}")),
+        ]);
 
         outage.FaultRate.Should().BeApproximately(0.4, 1e-9);
         outage.Coverage.Should().BeApproximately(0.6, 1e-9);
         outage.Coverage.Should().BeLessThan(baseline.MinCoverage);
 
-        BaselineComparer.Compare(outage, baseline).Refusal
-            .Should()
-            .Be(ComparisonRefusal.FaultRateAboveMaximum);
+        BaselineComparer.Compare(outage, baseline).Refusal.Should().Be(ComparisonRefusal.FaultRateAboveMaximum);
     }
 
     /// <summary>
@@ -726,16 +677,12 @@ public class BaselineComparerTests
             maxFaultRate: 0.5
         );
 
-        var run = Run(
-            [
-                .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
-                Faulted("i19"),
-            ]
-        );
+        var run = Run([
+            .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+            Faulted("i19"),
+        ]);
 
-        BaselineComparer.Compare(run, strict).Refusal
-            .Should()
-            .Be(ComparisonRefusal.FaultRateAboveMaximum);
+        BaselineComparer.Compare(run, strict).Refusal.Should().Be(ComparisonRefusal.FaultRateAboveMaximum);
         BaselineComparer.Compare(run, lenient).IsRefused.Should().BeFalse();
     }
 
@@ -787,11 +734,7 @@ public class BaselineComparerTests
     [Fact]
     public void A_baseline_with_an_empty_corpus_is_refused_at_construction()
     {
-        var construct = () =>
-            Baseline(UniformRun(passing: 8)) with
-            {
-                CorpusSize = 0,
-            };
+        var construct = () => Baseline(UniformRun(passing: 8)) with { CorpusSize = 0 };
 
         construct.Should().Throw<ArgumentException>().WithMessage("*denominator*");
     }
@@ -799,15 +742,9 @@ public class BaselineComparerTests
     [Theory]
     [InlineData("")]
     [InlineData(null)]
-    public void A_baseline_with_a_blank_evaluator_config_hash_is_refused_at_construction(
-        string? blank
-    )
+    public void A_baseline_with_a_blank_evaluator_config_hash_is_refused_at_construction(string? blank)
     {
-        var construct = () =>
-            Baseline(UniformRun(passing: 8)) with
-            {
-                EvaluatorConfigHash = blank!,
-            };
+        var construct = () => Baseline(UniformRun(passing: 8)) with { EvaluatorConfigHash = blank! };
 
         construct.Should().Throw<ArgumentException>();
     }

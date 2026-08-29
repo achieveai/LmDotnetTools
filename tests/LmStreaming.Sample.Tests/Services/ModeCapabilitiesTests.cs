@@ -64,12 +64,10 @@ public class ModeCapabilitiesTests
     [Fact]
     public void NamedSandboxTools_ProduceABareNameAllowList()
     {
-        var caps = ModeCapabilities.Resolve(
-            [
-                ToolGroups.Qualify(ToolGroups.Sandbox, "Read"),
-                ToolGroups.Qualify(ToolGroups.Sandbox, "Grep"),
-            ]
-        );
+        var caps = ModeCapabilities.Resolve([
+            ToolGroups.Qualify(ToolGroups.Sandbox, "Read"),
+            ToolGroups.Qualify(ToolGroups.Sandbox, "Grep"),
+        ]);
 
         caps.NeedsSandbox.Should().BeTrue();
         // Bare names: the `sandbox:` prefix is a selection id and must never reach the tool wiring.
@@ -89,12 +87,12 @@ public class ModeCapabilitiesTests
     [Fact]
     public void WorkflowAuthoringAndLaunchFamilies_AreIndependent()
     {
-        var authoringOnly = ModeCapabilities.Resolve(
-            [ToolGroups.Qualify(ToolGroups.Workflow, WorkflowToolProvider.AllToolNames[0])]
-        );
-        var launchOnly = ModeCapabilities.Resolve(
-            [ToolGroups.Qualify(ToolGroups.Workflow, StartWorkflowToolProvider.ToolNames[0])]
-        );
+        var authoringOnly = ModeCapabilities.Resolve([
+            ToolGroups.Qualify(ToolGroups.Workflow, WorkflowToolProvider.AllToolNames[0]),
+        ]);
+        var launchOnly = ModeCapabilities.Resolve([
+            ToolGroups.Qualify(ToolGroups.Workflow, StartWorkflowToolProvider.ToolNames[0]),
+        ]);
 
         authoringOnly.WorkflowAuthoringTools.Should().BeTrue();
         authoringOnly.StartWorkflowTools.Should().BeFalse();
@@ -115,12 +113,10 @@ public class ModeCapabilitiesTests
     [Fact]
     public void LegacySubAgentTools_DoNotTurnOnCollaboration()
     {
-        var caps = ModeCapabilities.Resolve(
-            [
-                ToolGroups.Qualify(ToolGroups.SubAgents, SubAgentToolProvider.SpawnToolName),
-                ToolGroups.Qualify(ToolGroups.SubAgents, SubAgentToolProvider.WaitAgentToolName),
-            ]
-        );
+        var caps = ModeCapabilities.Resolve([
+            ToolGroups.Qualify(ToolGroups.SubAgents, SubAgentToolProvider.SpawnToolName),
+            ToolGroups.Qualify(ToolGroups.SubAgents, SubAgentToolProvider.WaitAgentToolName),
+        ]);
 
         caps.SubAgents.Should().BeTrue();
         caps.Collaboration.Should().BeFalse();
@@ -143,9 +139,7 @@ public class ModeCapabilitiesTests
     {
         // The list exists so ModeCapabilities and SubAgentToolProvider cannot drift; assert the
         // membership rather than trusting two hand-written lists to stay equal.
-        ModeCapabilities
-            .CollaborationToolNames.Should()
-            .BeSubsetOf(SubAgentToolProvider.AllToolNames);
+        ModeCapabilities.CollaborationToolNames.Should().BeSubsetOf(SubAgentToolProvider.AllToolNames);
     }
 
     [Fact]
@@ -205,20 +199,15 @@ public class ModeCapabilitiesTests
     public void MixedWorkflowFamilies_ShareOneAllowListAcrossBothProviders()
     {
         // Authoring and launch tools live in one group namespace, so one allow-list narrows both.
-        var caps = ModeCapabilities.Resolve(
-            [
-                $"{ToolGroups.Workflow}:{WorkflowToolProvider.AddNodeToolName}",
-                $"{ToolGroups.Workflow}:{StartWorkflowToolProvider.StartWorkflowToolName}",
-            ]
-        );
+        var caps = ModeCapabilities.Resolve([
+            $"{ToolGroups.Workflow}:{WorkflowToolProvider.AddNodeToolName}",
+            $"{ToolGroups.Workflow}:{StartWorkflowToolProvider.StartWorkflowToolName}",
+        ]);
 
         caps.WorkflowAuthoringTools.Should().BeTrue();
         caps.StartWorkflowTools.Should().BeTrue();
-        caps.WorkflowToolAllowList
-            .Should()
-            .BeEquivalentTo(
-                [WorkflowToolProvider.AddNodeToolName, StartWorkflowToolProvider.StartWorkflowToolName]
-            );
+        caps.WorkflowToolAllowList.Should()
+            .BeEquivalentTo([WorkflowToolProvider.AddNodeToolName, StartWorkflowToolProvider.StartWorkflowToolName]);
     }
 
     [Fact]
@@ -258,11 +247,11 @@ public class ModeCapabilitiesTests
         // resolutions of the same selection read as different capabilities. That breaks the one
         // question this type exists to answer - "does a copy behave like its original?".
         IReadOnlyList<string> selection =
-            [
-                $"{ToolGroups.Sandbox}:Read",
-                $"{ToolGroups.SubAgents}:{SubAgentToolProvider.SpawnToolName}",
-                $"{ToolGroups.Workflow}:{WorkflowToolProvider.AddNodeToolName}",
-            ];
+        [
+            $"{ToolGroups.Sandbox}:Read",
+            $"{ToolGroups.SubAgents}:{SubAgentToolProvider.SpawnToolName}",
+            $"{ToolGroups.Workflow}:{WorkflowToolProvider.AddNodeToolName}",
+        ];
 
         var left = ModeCapabilities.Resolve(selection);
         var right = ModeCapabilities.Resolve(selection);
@@ -318,11 +307,11 @@ public class ModeCapabilitiesTests
         // null means "the whole family, including tools added later"; empty means "none of it". An
         // equality that folded the two together would report a mode granting everything as identical
         // to one granting nothing - and this record is what the clone check compares.
-        var unrestricted = ModeCapabilities.LegacyDefaults with { SubAgentToolAllowList = null };
-        var nothing = ModeCapabilities.LegacyDefaults with
+        var unrestricted = ModeCapabilities.LegacyDefaults with
         {
-            SubAgentToolAllowList = new HashSet<string>(),
+            SubAgentToolAllowList = null,
         };
+        var nothing = ModeCapabilities.LegacyDefaults with { SubAgentToolAllowList = new HashSet<string>() };
 
         unrestricted.Should().NotBe(nothing);
     }

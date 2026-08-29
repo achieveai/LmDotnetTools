@@ -56,8 +56,7 @@ public class ScheduleTriggerSourceTests
         var src = new ScheduleTriggerSource();
         var fires = 0;
         var sink = SinkCounting(() => Interlocked.Increment(ref fires));
-        await using var handle = await src.ArmAsync(
-            ArmReq("""{"intervalSeconds":1}"""), sink, CancellationToken.None);
+        await using var handle = await src.ArmAsync(ArmReq("""{"intervalSeconds":1}"""), sink, CancellationToken.None);
         await Task.Delay(TimeSpan.FromMilliseconds(2500));
         fires.Should().BeGreaterThanOrEqualTo(2);
     }
@@ -77,7 +76,8 @@ public class ScheduleTriggerSourceTests
         await using var handle = await src.ArmAsync(
             ArmReq("""{"intervalSeconds":1}""", DateTimeOffset.UtcNow.AddMinutes(-5)),
             sink,
-            CancellationToken.None);
+            CancellationToken.None
+        );
         await Task.Delay(TimeSpan.FromMilliseconds(300));
 
         // With the catch-up-storm bug this is ~300 (every missed second fires immediately). Fixed:
@@ -92,8 +92,7 @@ public class ScheduleTriggerSourceTests
         var fired = new TaskCompletionSource();
         var sink = SinkThatSignals(fired);
         // "* * * * * *" every second (Cronos with seconds enabled)
-        await using var handle = await src.ArmAsync(
-            ArmReq("""{"cron":"* * * * * *"}"""), sink, CancellationToken.None);
+        await using var handle = await src.ArmAsync(ArmReq("""{"cron":"* * * * * *"}"""), sink, CancellationToken.None);
         await fired.Task.WaitAsync(TimeSpan.FromSeconds(3));
     }
 
@@ -102,10 +101,7 @@ public class ScheduleTriggerSourceTests
     {
         var src = new ScheduleTriggerSource();
         var act = () =>
-            src.ArmAsync(
-                    ArmReq("""{"cron":"* * * * *","intervalSeconds":5}"""),
-                    NoopSink,
-                    CancellationToken.None)
+            src.ArmAsync(ArmReq("""{"cron":"* * * * *","intervalSeconds":5}"""), NoopSink, CancellationToken.None)
                 .AsTask();
         await act.Should().ThrowAsync<ArgumentException>();
     }
@@ -114,8 +110,7 @@ public class ScheduleTriggerSourceTests
     public async Task Arm_Rejects_IntervalBelowFloor()
     {
         var src = new ScheduleTriggerSource();
-        var act = () =>
-            src.ArmAsync(ArmReq("""{"intervalSeconds":0}"""), NoopSink, CancellationToken.None).AsTask();
+        var act = () => src.ArmAsync(ArmReq("""{"intervalSeconds":0}"""), NoopSink, CancellationToken.None).AsTask();
         await act.Should().ThrowAsync<ArgumentException>();
     }
 
@@ -123,8 +118,7 @@ public class ScheduleTriggerSourceTests
     public async Task Arm_Rejects_InvalidCronExpression()
     {
         var src = new ScheduleTriggerSource();
-        var act = () =>
-            src.ArmAsync(ArmReq("""{"cron":"not a cron"}"""), NoopSink, CancellationToken.None).AsTask();
+        var act = () => src.ArmAsync(ArmReq("""{"cron":"not a cron"}"""), NoopSink, CancellationToken.None).AsTask();
         await act.Should().ThrowAsync<ArgumentException>();
     }
 

@@ -27,10 +27,7 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
     /// <param name="options">Entra client id, tenant + scopes.</param>
     /// <param name="tokenCacheFilePath">Gitignored file the MSAL token cache is serialized to.</param>
     /// <param name="logger">Logger; token material is never written to it.</param>
-    public AdoOAuthProvider(
-        AdoAuthOptions options,
-        string tokenCacheFilePath,
-        ILogger<AdoOAuthProvider> logger)
+    public AdoOAuthProvider(AdoAuthOptions options, string tokenCacheFilePath, ILogger<AdoOAuthProvider> logger)
         : base(logger)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -71,7 +68,15 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
                 return;
             }
 
-            SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, account.Username, _options.Scopes, ExpiresAtUtc: null, Error: null));
+            SetStatus(
+                new OAuthStatus(
+                    OAuthSignInState.SignedIn,
+                    account.Username,
+                    _options.Scopes,
+                    ExpiresAtUtc: null,
+                    Error: null
+                )
+            );
             Logger.LogInformation("Restored persisted ADO sign-in (account {Account}).", account.Username);
         }
         catch (Exception ex)
@@ -99,43 +104,67 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
             },
         };
 
-        SetStatus(new OAuthStatus(OAuthSignInState.Pending, Account: null, _options.Scopes, ExpiresAtUtc: null, Error: null));
+        SetStatus(
+            new OAuthStatus(OAuthSignInState.Pending, Account: null, _options.Scopes, ExpiresAtUtc: null, Error: null)
+        );
 
         await StartBackgroundSignInAsync(async token =>
-        {
-            // Cancelling the originating request aborts the WHOLE interactive sign-in (not just
-            // the URL wait below): link the request ct into MSAL's flow so an abandoned/aborted
-            // sign-in request doesn't leave an orphaned MSAL listener running in the background.
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, ct);
-            try
             {
-                var result = await app
-                    .AcquireTokenInteractive(_scopes)
-                    .WithSystemWebViewOptions(webViewOptions)
-                    .WithUseEmbeddedWebView(false)
-                    .ExecuteAsync(linked.Token)
-                    .ConfigureAwait(false);
+                // Cancelling the originating request aborts the WHOLE interactive sign-in (not just
+                // the URL wait below): link the request ct into MSAL's flow so an abandoned/aborted
+                // sign-in request doesn't leave an orphaned MSAL listener running in the background.
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, ct);
+                try
+                {
+                    var result = await app.AcquireTokenInteractive(_scopes)
+                        .WithSystemWebViewOptions(webViewOptions)
+                        .WithUseEmbeddedWebView(false)
+                        .ExecuteAsync(linked.Token)
+                        .ConfigureAwait(false);
 
-                urlReady.TrySetResult(string.Empty);
-                // Report MSAL's GRANTED scopes (what was actually consented), not the requested set.
-                var grantedScopes = result.Scopes?.ToArray() ?? [];
-                SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, result.Account.Username, grantedScopes, result.ExpiresOn, Error: null));
-                Logger.LogInformation("Signed in to ADO as {Account} (expires {ExpiresAt:o}).", result.Account.Username, result.ExpiresOn);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested && !token.IsCancellationRequested)
-            {
-                // Aborted by the request, not by sign-out/re-sign-in: leave the provider in a clean
-                // NotStarted state instead of Pending-forever, then let the base log the cancellation.
-                SetStatus(new OAuthStatus(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null));
-                Logger.LogInformation("ADO sign-in aborted by the originating request.");
-                throw;
-            }
-        }).ConfigureAwait(false);
+                    urlReady.TrySetResult(string.Empty);
+                    // Report MSAL's GRANTED scopes (what was actually consented), not the requested set.
+                    var grantedScopes = result.Scopes?.ToArray() ?? [];
+                    SetStatus(
+                        new OAuthStatus(
+                            OAuthSignInState.SignedIn,
+                            result.Account.Username,
+                            grantedScopes,
+                            result.ExpiresOn,
+                            Error: null
+                        )
+                    );
+                    Logger.LogInformation(
+                        "Signed in to ADO as {Account} (expires {ExpiresAt:o}).",
+                        result.Account.Username,
+                        result.ExpiresOn
+                    );
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested && !token.IsCancellationRequested)
+                {
+                    // Aborted by the request, not by sign-out/re-sign-in: leave the provider in a clean
+                    // NotStarted state instead of Pending-forever, then let the base log the cancellation.
+                    SetStatus(
+                        new OAuthStatus(
+                            OAuthSignInState.NotStarted,
+                            Account: null,
+                            Scopes: [],
+                            ExpiresAtUtc: null,
+                            Error: null
+                        )
+                    );
+                    Logger.LogInformation("ADO sign-in aborted by the originating request.");
+                    throw;
+                }
+            })
+            .ConfigureAwait(false);
 
         // Wait briefly for MSAL to produce the authorize URL; fall back to the authority on timeout.
-        var url = await Task.WhenAny(urlReady.Task, Task.Delay(TimeSpan.FromSeconds(10), ct)).ConfigureAwait(false) == urlReady.Task
-            ? urlReady.Task.Result
-            : $"https://login.microsoftonline.com/{_options.TenantId}/oauth2/v2.0/authorize";
+        var url =
+            await Task.WhenAny(urlReady.Task, Task.Delay(TimeSpan.FromSeconds(10), ct)).ConfigureAwait(false)
+            == urlReady.Task
+                ? urlReady.Task.Result
+                : $"https://login.microsoftonline.com/{_options.TenantId}/oauth2/v2.0/authorize";
         var launched = launchedSignal.Task.IsCompletedSuccessfully && launchedSignal.Task.Result;
 
         Logger.LogInformation("ADO sign-in started (browser launched: {Launched}).", launched);
@@ -163,14 +192,20 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
             }
         }
 
-        SetStatus(new OAuthStatus(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null));
+        SetStatus(
+            new OAuthStatus(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null)
+        );
         Logger.LogInformation("Signed out of ADO.");
     }
 
     /// <inheritdoc />
-    public override async Task<OAuthAccessToken> GetAccessTokenAsync(IReadOnlyList<string>? scopes = null, CancellationToken ct = default)
+    public override async Task<OAuthAccessToken> GetAccessTokenAsync(
+        IReadOnlyList<string>? scopes = null,
+        CancellationToken ct = default
+    )
     {
-        var account = await GetAccountAsync().ConfigureAwait(false)
+        var account =
+            await GetAccountAsync().ConfigureAwait(false)
             ?? throw new InvalidOperationException("ADO provider is not signed in.");
         var app = _app ?? throw new InvalidOperationException("ADO provider is not signed in.");
 

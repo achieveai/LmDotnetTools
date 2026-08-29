@@ -121,9 +121,7 @@ public class LifecycleStreamIdentityTests
         first.Next("thread:thr-1");
 
         restarted.Next("thread:thr-1").Should().Be(1, "a restarted producer's counter starts over");
-        restarted
-            .ProducerEpoch.Should()
-            .NotBe(first.ProducerEpoch, "so the reset is not mistaken for a gap");
+        restarted.ProducerEpoch.Should().NotBe(first.ProducerEpoch, "so the reset is not mistaken for a gap");
     }
 
     [Fact]
@@ -194,10 +192,7 @@ public class LifecycleStreamIdentityTests
 
         foreach (var (because, envelope) in invalid)
         {
-            envelope
-                .Invoking(e => e.EnsureValid())
-                .Should()
-                .Throw<LifecycleContractException>(because);
+            envelope.Invoking(e => e.EnsureValid()).Should().Throw<LifecycleContractException>(because);
         }
     }
 
@@ -241,8 +236,7 @@ public class LifecycleStreamIdentityTests
     [Fact]
     public void A_body_missing_a_required_member_is_reported_as_a_contract_violation()
     {
-        var decode = () =>
-            LifecycleSerializer.DeserializeEvent("""{"schema_major":1,"event_id":"evt-1"}""");
+        var decode = () => LifecycleSerializer.DeserializeEvent("""{"schema_major":1,"event_id":"evt-1"}""");
 
         decode.Should().Throw<LifecycleContractException>();
     }
@@ -250,8 +244,7 @@ public class LifecycleStreamIdentityTests
     [Fact]
     public async Task Publishing_to_the_null_publisher_is_a_no_op()
     {
-        var publish = async () =>
-            await NullLifecyclePublisher.Instance.PublishAsync(LifecycleTestData.Minimal());
+        var publish = async () => await NullLifecyclePublisher.Instance.PublishAsync(LifecycleTestData.Minimal());
 
         await publish.Should().NotThrowAsync();
     }

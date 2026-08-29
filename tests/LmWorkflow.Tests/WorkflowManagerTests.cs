@@ -49,9 +49,7 @@ public class WorkflowManagerTests
     [Fact]
     public async Task StartAsync_Async_ReturnsStarted_AndProactivelyNotifiesOnCompletion()
     {
-        var notified = new TaskCompletionSource<NotifyMessage>(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
+        var notified = new TaskCompletionSource<NotifyMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
         var controller = ScriptedController(DriveMinimalToTerminal);
         await using var manager = NewManager(
             () => controller.Object,
@@ -296,9 +294,7 @@ public class WorkflowManagerTests
     [Fact]
     public async Task StartAsync_Async_Notify_UsesOriginatingToolCallId_WhenSupplied()
     {
-        var notified = new TaskCompletionSource<NotifyMessage>(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
+        var notified = new TaskCompletionSource<NotifyMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
         var controller = ScriptedController(DriveMinimalToTerminal);
         await using var manager = NewManager(
             () => controller.Object,

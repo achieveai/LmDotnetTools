@@ -64,15 +64,7 @@ public class WorkflowSessionStreamRecoveryTests
         // from as a successfully completed workflow.
         var controller = ScriptedControllerMulti(turn =>
             turn == 1
-                ?
-                [
-                    new StreamRecoveryMessage(
-                        "wf-dropped-thread",
-                        "run-1",
-                        "gen-1",
-                        StreamRecoveryReason.SlowConsumer
-                    ),
-                ]
+                ? [new StreamRecoveryMessage("wf-dropped-thread", "run-1", "gen-1", StreamRecoveryReason.SlowConsumer)]
                 : [new TextMessage { Text = "Workflow finished.", Role = Role.Assistant }]
         );
 

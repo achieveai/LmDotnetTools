@@ -34,16 +34,22 @@ public class MultiTurnAgentBudgetTests
         // Capture the options the provider actually receives for the turn.
         GenerateReplyOptions? captured = null;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, options, _) =>
-            {
-                captured = options;
-                return Task.FromResult(ToAsyncEnumerable(
-                    [new TextMessage { Text = "done", Role = Role.Assistant }]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, options, _) =>
+                {
+                    captured = options;
+                    return Task.FromResult(
+                        ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }])
+                    );
+                }
+            );
 
         var registry = new FunctionRegistry();
 
@@ -53,7 +59,8 @@ public class MultiTurnAgentBudgetTests
             _mockAgent.Object,
             registry,
             threadId: "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -65,19 +72,26 @@ public class MultiTurnAgentBudgetTests
         }
 
         captured.Should().NotBeNull("the provider must have been invoked for the turn");
-        captured!.MaxToken.Should().NotBeNull(
-            "a sub-agent/workflow-delegate loop must send a real max_tokens instead of letting the " +
-            "provider fall back to its 4096 default, which truncates tool-call argument JSON");
-        captured.MaxToken.Should().BeGreaterThan(
-            4096,
-            "the floor must exceed the provider default that causes stop_reason=max_tokens truncation");
+        captured!
+            .MaxToken.Should()
+            .NotBeNull(
+                "a sub-agent/workflow-delegate loop must send a real max_tokens instead of letting the "
+                    + "provider fall back to its 4096 default, which truncates tool-call argument JSON"
+            );
+        captured
+            .MaxToken.Should()
+            .BeGreaterThan(
+                4096,
+                "the floor must exceed the provider default that causes stop_reason=max_tokens truncation"
+            );
 
         await cts.CancelAsync();
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

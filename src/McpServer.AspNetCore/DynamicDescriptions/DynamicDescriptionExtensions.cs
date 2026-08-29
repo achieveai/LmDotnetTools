@@ -48,7 +48,8 @@ public static class DynamicDescriptionExtensions
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddToolDescriptionProvider(
         this IServiceCollection services,
-        IToolDescriptionProvider provider)
+        IToolDescriptionProvider provider
+    )
     {
         _ = services.AddSingleton(provider);
         return services;
@@ -62,75 +63,80 @@ public static class DynamicDescriptionExtensions
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection UseDynamicToolDescriptions(this IServiceCollection services)
     {
-        _ = services.AddOptions<McpServerOptions>()
-            .PostConfigure<IServiceProvider>((options, sp) =>
-            {
-                var originalHandler = options.Handlers?.ListToolsHandler;
-                if (originalHandler == null)
+        _ = services
+            .AddOptions<McpServerOptions>()
+            .PostConfigure<IServiceProvider>(
+                (options, sp) =>
                 {
-                    // No handler registered yet, nothing to intercept
-                    return;
-                }
-
-                var logger = sp.GetService<ILogger<McpServerOptions>>();
-
-                options.Handlers!.ListToolsHandler = async (request, cancellationToken) =>
-                {
-                    // Get original tools first
-                    var result = await originalHandler(request, cancellationToken);
-
-                    // Resolve description providers and context
-                    var contextResolver = sp.GetService<IToolDescriptionContextResolver>();
-                    var providers = sp.GetServices<IToolDescriptionProvider>()
-                        .OrderBy(p => p.Priority)
-                        .ToList();
-
-                    if (providers.Count == 0)
+                    var originalHandler = options.Handlers?.ListToolsHandler;
+                    if (originalHandler == null)
                     {
-                        // No providers registered, return original result
-                        return result;
+                        // No handler registered yet, nothing to intercept
+                        return;
                     }
 
-                    var contextKey = contextResolver?.GetContextKey();
+                    var logger = sp.GetService<ILogger<McpServerOptions>>();
 
-                    logger?.LogDebug(
-                        "Dynamic descriptions: contextKey={ContextKey}, providers={ProviderCount}",
-                        contextKey ?? "(none)",
-                        providers.Count);
-
-                    // Modify tool descriptions based on providers
-                    var modifiedTools = result.Tools.Select(tool =>
+                    options.Handlers!.ListToolsHandler = async (request, cancellationToken) =>
                     {
-                        var provider = providers.FirstOrDefault(p => p.SupportsToolName(tool.Name));
-                        if (provider == null)
+                        // Get original tools first
+                        var result = await originalHandler(request, cancellationToken);
+
+                        // Resolve description providers and context
+                        var contextResolver = sp.GetService<IToolDescriptionContextResolver>();
+                        var providers = sp.GetServices<IToolDescriptionProvider>().OrderBy(p => p.Priority).ToList();
+
+                        if (providers.Count == 0)
                         {
-                            return tool;
+                            // No providers registered, return original result
+                            return result;
                         }
 
-                        // Get dynamic tool description
-                        var newDescription = provider.GetToolDescription(tool.Name, contextKey);
+                        var contextKey = contextResolver?.GetContextKey();
 
-                        // Modify input schema descriptions
-                        var newSchema = ModifySchemaDescriptions(
-                            tool.InputSchema,
-                            tool.Name,
-                            provider,
-                            contextKey,
-                            logger);
+                        logger?.LogDebug(
+                            "Dynamic descriptions: contextKey={ContextKey}, providers={ProviderCount}",
+                            contextKey ?? "(none)",
+                            providers.Count
+                        );
 
-                        return new Tool
-                        {
-                            Name = tool.Name,
-                            Description = newDescription ?? tool.Description,
-                            InputSchema = newSchema
-                        };
-                    }).ToList();
+                        // Modify tool descriptions based on providers
+                        var modifiedTools = result
+                            .Tools.Select(tool =>
+                            {
+                                var provider = providers.FirstOrDefault(p => p.SupportsToolName(tool.Name));
+                                if (provider == null)
+                                {
+                                    return tool;
+                                }
 
-                    logger?.LogDebug("Dynamic descriptions applied to {Count} tools", modifiedTools.Count);
+                                // Get dynamic tool description
+                                var newDescription = provider.GetToolDescription(tool.Name, contextKey);
 
-                    return new ListToolsResult { Tools = modifiedTools };
-                };
-            });
+                                // Modify input schema descriptions
+                                var newSchema = ModifySchemaDescriptions(
+                                    tool.InputSchema,
+                                    tool.Name,
+                                    provider,
+                                    contextKey,
+                                    logger
+                                );
+
+                                return new Tool
+                                {
+                                    Name = tool.Name,
+                                    Description = newDescription ?? tool.Description,
+                                    InputSchema = newSchema,
+                                };
+                            })
+                            .ToList();
+
+                        logger?.LogDebug("Dynamic descriptions applied to {Count} tools", modifiedTools.Count);
+
+                        return new ListToolsResult { Tools = modifiedTools };
+                    };
+                }
+            );
 
         return services;
     }
@@ -143,7 +149,8 @@ public static class DynamicDescriptionExtensions
         string toolName,
         IToolDescriptionProvider provider,
         string? contextKey,
-        ILogger? logger)
+        ILogger? logger
+    )
     {
         try
         {
@@ -157,8 +164,10 @@ public static class DynamicDescriptionExtensions
             }
 
             // Get the properties object
-            if (!schemaObj.TryGetPropertyValue("properties", out var propertiesNode) ||
-                propertiesNode is not JsonObject propertiesObj)
+            if (
+                !schemaObj.TryGetPropertyValue("properties", out var propertiesNode)
+                || propertiesNode is not JsonObject propertiesObj
+            )
             {
                 return originalSchema;
             }
@@ -181,10 +190,7 @@ public static class DynamicDescriptionExtensions
                     paramObj["description"] = newDescription;
                     modified = true;
 
-                    logger?.LogTrace(
-                        "Updated description for {ToolName}.{ParamName}",
-                        toolName,
-                        paramName);
+                    logger?.LogTrace("Updated description for {ToolName}.{ParamName}", toolName, paramName);
                 }
             }
 
@@ -199,10 +205,7 @@ public static class DynamicDescriptionExtensions
         }
         catch (Exception ex)
         {
-            logger?.LogWarning(
-                ex,
-                "Failed to modify schema descriptions for tool {ToolName}",
-                toolName);
+            logger?.LogWarning(ex, "Failed to modify schema descriptions for tool {ToolName}", toolName);
             return originalSchema;
         }
     }
@@ -220,9 +223,7 @@ public static class DynamicDescriptionExtensions
     /// At request time, it queries registered IToolDescriptionProvider instances for
     /// context-specific descriptions, falling back to [Description] attributes.
     /// </remarks>
-    public static IMcpServerBuilder WithDynamicToolsFromAssembly(
-        this IMcpServerBuilder builder,
-        Assembly assembly)
+    public static IMcpServerBuilder WithDynamicToolsFromAssembly(this IMcpServerBuilder builder, Assembly assembly)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(assembly);
@@ -234,27 +235,37 @@ public static class DynamicDescriptionExtensions
         _ = builder.Services.AddSingleton(metadataCache);
 
         // Configure MCP server options with our custom handlers
-        _ = builder.Services.AddOptions<McpServerOptions>()
-            .Configure<IServiceProvider>((options, sp) =>
-            {
-                var logger = sp.GetService<ILogger<McpServerOptions>>();
-
-                logger?.LogInformation(
-                    "Configuring MCP with dynamic descriptions: {ToolCount} tools from {Assembly}",
-                    metadataCache.Tools.Count,
-                    assembly.GetName().Name);
-
-                options.Handlers = new McpServerHandlers
+        _ = builder
+            .Services.AddOptions<McpServerOptions>()
+            .Configure<IServiceProvider>(
+                (options, sp) =>
                 {
-                    // Use request.Services for scoped access to IHttpContextAccessor
-                    // Fall back to root sp if request.Services is null
-                    ListToolsHandler = (request, cancellationToken) =>
-                        HandleListToolsAsync(request.Services ?? sp, metadataCache, logger),
+                    var logger = sp.GetService<ILogger<McpServerOptions>>();
 
-                    CallToolHandler = async (request, cancellationToken) =>
-                        await HandleCallToolAsync(request.Services ?? sp, metadataCache, request.Params, logger, cancellationToken)
-                };
-            });
+                    logger?.LogInformation(
+                        "Configuring MCP with dynamic descriptions: {ToolCount} tools from {Assembly}",
+                        metadataCache.Tools.Count,
+                        assembly.GetName().Name
+                    );
+
+                    options.Handlers = new McpServerHandlers
+                    {
+                        // Use request.Services for scoped access to IHttpContextAccessor
+                        // Fall back to root sp if request.Services is null
+                        ListToolsHandler = (request, cancellationToken) =>
+                            HandleListToolsAsync(request.Services ?? sp, metadataCache, logger),
+
+                        CallToolHandler = async (request, cancellationToken) =>
+                            await HandleCallToolAsync(
+                                request.Services ?? sp,
+                                metadataCache,
+                                request.Params,
+                                logger,
+                                cancellationToken
+                            ),
+                    };
+                }
+            );
 
         return builder;
     }
@@ -265,22 +276,22 @@ public static class DynamicDescriptionExtensions
     private static ValueTask<ListToolsResult> HandleListToolsAsync(
         IServiceProvider sp,
         McpToolMetadataCache metadataCache,
-        ILogger? logger)
+        ILogger? logger
+    )
     {
         // Get context key from resolver (e.g., X-Exam-Type header)
         var contextResolver = sp.GetService<IToolDescriptionContextResolver>();
         var contextKey = contextResolver?.GetContextKey();
 
         // Get description providers
-        var providers = sp.GetServices<IToolDescriptionProvider>()
-            .OrderBy(p => p.Priority)
-            .ToList();
+        var providers = sp.GetServices<IToolDescriptionProvider>().OrderBy(p => p.Priority).ToList();
 
         logger?.LogDebug(
             "ListTools: contextKey={ContextKey}, providers={ProviderCount}, tools={ToolCount}",
             contextKey ?? "(none)",
             providers.Count,
-            metadataCache.Tools.Count);
+            metadataCache.Tools.Count
+        );
 
         var tools = new List<Tool>();
 
@@ -290,19 +301,22 @@ public static class DynamicDescriptionExtensions
             var provider = providers.FirstOrDefault(p => p.SupportsToolName(toolMeta.Name));
 
             // Get tool description (dynamic or fallback to default)
-            var description = provider?.GetToolDescription(toolMeta.Name, contextKey)
+            var description =
+                provider?.GetToolDescription(toolMeta.Name, contextKey)
                 ?? toolMeta.DefaultDescription
                 ?? $"Tool: {toolMeta.Name}";
 
             // Build input schema with dynamic parameter descriptions
             var inputSchema = BuildDynamicInputSchema(toolMeta, provider, contextKey, logger);
 
-            tools.Add(new Tool
-            {
-                Name = toolMeta.Name,
-                Description = description,
-                InputSchema = JsonSerializer.Deserialize<JsonElement>(inputSchema.ToJsonString())
-            });
+            tools.Add(
+                new Tool
+                {
+                    Name = toolMeta.Name,
+                    Description = description,
+                    InputSchema = JsonSerializer.Deserialize<JsonElement>(inputSchema.ToJsonString()),
+                }
+            );
         }
 
         logger?.LogDebug("Returning {Count} tools with dynamic descriptions", tools.Count);
@@ -317,11 +331,18 @@ public static class DynamicDescriptionExtensions
         ToolMetadata toolMeta,
         IToolDescriptionProvider? provider,
         string? contextKey,
-        ILogger? logger)
+        ILogger? logger
+    )
     {
         // Clone the base schema
-        var schema = JsonNode.Parse(toolMeta.InputSchema.ToJsonString()) as JsonObject
-            ?? new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() };
+        var schema =
+            JsonNode.Parse(toolMeta.InputSchema.ToJsonString()) as JsonObject
+            ?? new JsonObject
+            {
+                ["type"] = "object",
+                ["properties"] = new JsonObject(),
+                ["required"] = new JsonArray(),
+            };
 
         if (provider == null)
         {
@@ -334,13 +355,18 @@ public static class DynamicDescriptionExtensions
             foreach (var param in toolMeta.Parameters)
             {
                 var dynamicDesc = provider.GetParameterDescription(toolMeta.Name, param.Name, contextKey);
-                if (dynamicDesc != null && props.TryGetPropertyValue(param.Name, out var paramNode) && paramNode is JsonObject paramObj)
+                if (
+                    dynamicDesc != null
+                    && props.TryGetPropertyValue(param.Name, out var paramNode)
+                    && paramNode is JsonObject paramObj
+                )
                 {
                     paramObj["description"] = dynamicDesc;
                     logger?.LogTrace(
                         "Applied dynamic description for {ToolName}.{ParamName}",
                         toolMeta.Name,
-                        param.Name);
+                        param.Name
+                    );
                 }
             }
         }
@@ -356,7 +382,8 @@ public static class DynamicDescriptionExtensions
         McpToolMetadataCache metadataCache,
         CallToolRequestParams? requestParams,
         ILogger? logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (requestParams is null)
         {
@@ -404,7 +431,8 @@ public static class DynamicDescriptionExtensions
                     logger?.LogError(
                         "Cannot resolve instance of {Type} for tool '{ToolName}'. Ensure it's registered in DI.",
                         toolMeta.DeclaringType.Name,
-                        toolName);
+                        toolName
+                    );
                     return CreateErrorResult($"Cannot resolve tool instance for '{toolName}'");
                 }
 
@@ -430,7 +458,8 @@ public static class DynamicDescriptionExtensions
         object? instance,
         JsonElement? arguments,
         CancellationToken cancellationToken,
-        ILogger? logger)
+        ILogger? logger
+    )
     {
         var methodParams = toolMeta.Method.GetParameters();
         var invokeArgs = new object?[methodParams.Length];
@@ -465,7 +494,8 @@ public static class DynamicDescriptionExtensions
                 logger?.LogError(
                     "Missing required argument '{ParamName}' for tool '{ToolName}'",
                     param.Name,
-                    toolMeta.Name);
+                    toolMeta.Name
+                );
                 return CreateErrorResult($"Missing required argument: {param.Name}");
             }
 
@@ -505,15 +535,9 @@ public static class DynamicDescriptionExtensions
         }
 
         // Otherwise wrap in a success result
-        var jsonResult = result != null
-            ? JsonSerializer.Serialize(result)
-            : "{}";
+        var jsonResult = result != null ? JsonSerializer.Serialize(result) : "{}";
 
-        return new CallToolResult
-        {
-            Content = [new TextContentBlock { Text = jsonResult }],
-            IsError = false
-        };
+        return new CallToolResult { Content = [new TextContentBlock { Text = jsonResult }], IsError = false };
     }
 
     /// <summary>
@@ -537,7 +561,7 @@ public static class DynamicDescriptionExtensions
                 JsonValueKind.Number when targetType == typeof(float) => element.GetSingle(),
                 JsonValueKind.Number when targetType == typeof(decimal) => element.GetDecimal(),
                 JsonValueKind.True or JsonValueKind.False => element.GetBoolean(),
-                _ => null
+                _ => null,
             };
         }
     }
@@ -562,10 +586,6 @@ public static class DynamicDescriptionExtensions
     /// </summary>
     private static CallToolResult CreateErrorResult(string message)
     {
-        return new CallToolResult
-        {
-            Content = [new TextContentBlock { Text = $"Error: {message}" }],
-            IsError = true
-        };
+        return new CallToolResult { Content = [new TextContentBlock { Text = $"Error: {message}" }], IsError = true };
     }
 }

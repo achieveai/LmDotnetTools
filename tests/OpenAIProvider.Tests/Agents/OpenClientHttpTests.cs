@@ -19,7 +19,8 @@ public class OpenClientHttpTests : LoggingTestBase
     private readonly ILogger<OpenClient> _openClientLogger;
     private readonly IPerformanceTracker _performanceTracker;
 
-    public OpenClientHttpTests(ITestOutputHelper output) : base(output)
+    public OpenClientHttpTests(ITestOutputHelper output)
+        : base(output)
     {
         _openClientLogger = LoggerFactory.CreateLogger<OpenClient>();
         _performanceTracker = new PerformanceTracker();
@@ -34,7 +35,13 @@ public class OpenClientHttpTests : LoggingTestBase
             statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
             chunkDelayMs: 0
         );
-        var client = new OpenClient(httpClient, GetApiBaseUrl(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
+        var client = new OpenClient(
+            httpClient,
+            GetApiBaseUrl(),
+            _performanceTracker,
+            _openClientLogger,
+            RetryOptions.FastForTests
+        );
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -87,7 +94,13 @@ public class OpenClientHttpTests : LoggingTestBase
             statusSequence: statusCodes,
             chunkDelayMs: 0
         );
-        var client = new OpenClient(httpClient, GetApiBaseUrl(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
+        var client = new OpenClient(
+            httpClient,
+            GetApiBaseUrl(),
+            _performanceTracker,
+            _openClientLogger,
+            RetryOptions.FastForTests
+        );
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -116,7 +129,13 @@ public class OpenClientHttpTests : LoggingTestBase
     {
         // Arrange
         var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(LoggerFactory, chunkDelayMs: 0);
-        var client = new OpenClient(httpClient, GetApiBaseUrl(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
+        var client = new OpenClient(
+            httpClient,
+            GetApiBaseUrl(),
+            _performanceTracker,
+            _openClientLogger,
+            RetryOptions.FastForTests
+        );
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -145,7 +164,13 @@ public class OpenClientHttpTests : LoggingTestBase
             statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
             chunkDelayMs: 0
         );
-        var client = new OpenClient(httpClient, GetApiBaseUrl(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
+        var client = new OpenClient(
+            httpClient,
+            GetApiBaseUrl(),
+            _performanceTracker,
+            _openClientLogger,
+            RetryOptions.FastForTests
+        );
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -227,13 +252,19 @@ public class OpenClientHttpTests : LoggingTestBase
             }
         }
 
-        Logger.LogInformation("Received {ChunkCount} chunks, total content: {Content}", chunks.Count, allContent.ToString());
+        Logger.LogInformation(
+            "Received {ChunkCount} chunks, total content: {Content}",
+            chunks.Count,
+            allContent.ToString()
+        );
 
         // Assert
         Assert.NotEmpty(chunks);
         Assert.True(allContent.Length > 0, "Should have received text content from instruction chain");
 
-        Logger.LogInformation("StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed completed successfully");
+        Logger.LogInformation(
+            "StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed completed successfully"
+        );
     }
 
     public static IEnumerable<object[]> GetRetryScenarios()

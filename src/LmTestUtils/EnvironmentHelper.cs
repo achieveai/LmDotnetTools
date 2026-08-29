@@ -157,11 +157,7 @@ public static class EnvironmentHelper
             // so accept either form.
             var dotGitPath = Path.Combine(currentDir.FullName, ".git");
             var hasDotGit = Directory.Exists(dotGitPath) || File.Exists(dotGitPath);
-            if (
-                currentDir.GetFiles("*.sln").Length > 0
-                || hasDotGit
-                || currentDir.GetFiles(".env.test").Length > 0
-            )
+            if (currentDir.GetFiles("*.sln").Length > 0 || hasDotGit || currentDir.GetFiles(".env.test").Length > 0)
             {
                 return currentDir.FullName;
             }

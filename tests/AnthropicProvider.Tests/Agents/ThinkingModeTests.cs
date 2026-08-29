@@ -11,7 +11,8 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class ThinkingModeTests : LoggingTestBase
 {
-    public ThinkingModeTests(ITestOutputHelper output) : base(output) { }
+    public ThinkingModeTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Fact]
     public void AnthropicRequest_FromMessages_ShouldExtractThinkingFromOptions()
@@ -43,7 +44,8 @@ public class ThinkingModeTests : LoggingTestBase
         Logger.LogTrace(
             "FromMessages result - request: {RequestStatus}, Thinking: {ThinkingBudget}",
             request != null ? "not null" : "null",
-            request?.Thinking != null ? request.Thinking.BudgetTokens.ToString() : "null");
+            request?.Thinking != null ? request.Thinking.BudgetTokens.ToString() : "null"
+        );
 
         // Assert
         Assert.NotNull(request);

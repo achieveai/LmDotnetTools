@@ -92,7 +92,11 @@ internal sealed record GitRemoteUrl(GitUrlKind Kind, string Host, string RepoPat
     /// </para>
     /// </summary>
     public static string RepoPathForUrlSegment(
-        string provider, string orgOrOwner, string? project, string urlFormRepoName) =>
+        string provider,
+        string orgOrOwner,
+        string? project,
+        string urlFormRepoName
+    ) =>
         IsAzureDevOps(provider)
             ? $"/{Segment(orgOrOwner)}/{Segment(project)}/_git/{urlFormRepoName}"
             : $"/{Segment(orgOrOwner)}/{urlFormRepoName}";
@@ -195,8 +199,7 @@ internal sealed record GitRemoteUrl(GitUrlKind Kind, string Host, string RepoPat
             return this;
         }
 
-        var segments = new List<string>(
-            parent.RepoPath.Split('/', StringSplitOptions.RemoveEmptyEntries));
+        var segments = new List<string>(parent.RepoPath.Split('/', StringSplitOptions.RemoveEmptyEntries));
 
         foreach (var segment in RepoPath.Split('/', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -247,8 +250,7 @@ internal sealed record GitRemoteUrl(GitUrlKind Kind, string Host, string RepoPat
     {
         ArgumentNullException.ThrowIfNull(url);
 
-        if (url.Kind != GitUrlKind.Https
-            || !url.Host.EndsWith(AdoLegacyHostSuffix, StringComparison.OrdinalIgnoreCase))
+        if (url.Kind != GitUrlKind.Https || !url.Host.EndsWith(AdoLegacyHostSuffix, StringComparison.OrdinalIgnoreCase))
         {
             return url;
         }

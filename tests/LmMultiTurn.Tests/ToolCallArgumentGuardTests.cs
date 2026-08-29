@@ -52,13 +52,15 @@ public class ToolCallArgumentGuardTests
             {
                 handlerInvoked = true;
                 return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("wrote"));
-            });
+            }
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -70,13 +72,16 @@ public class ToolCallArgumentGuardTests
             messages.Add(msg);
         }
 
-        handlerInvoked.Should().BeFalse(
-            "a side-effecting tool must never run with truncated/malformed arguments");
+        handlerInvoked.Should().BeFalse("a side-effecting tool must never run with truncated/malformed arguments");
 
-        var toolResult = messages.OfType<ToolCallResultMessage>()
-            .Should().ContainSingle(m => m.ToolCallId == "tc_trunc").Subject;
-        toolResult.IsError.Should().BeTrue(
-            "malformed tool arguments must surface as a recoverable error to the LLM, not a crash");
+        var toolResult = messages
+            .OfType<ToolCallResultMessage>()
+            .Should()
+            .ContainSingle(m => m.ToolCallId == "tc_trunc")
+            .Subject;
+        toolResult
+            .IsError.Should()
+            .BeTrue("malformed tool arguments must surface as a recoverable error to the LLM, not a crash");
 
         await cts.CancelAsync();
     }
@@ -104,13 +109,15 @@ public class ToolCallArgumentGuardTests
             {
                 handlerInvoked = true;
                 return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ran"));
-            });
+            }
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -122,13 +129,20 @@ public class ToolCallArgumentGuardTests
             messages.Add(msg);
         }
 
-        handlerInvoked.Should().BeFalse(
-            "a tool that requires arguments must not run when the argument payload is empty (truncated to 0 bytes)");
+        handlerInvoked
+            .Should()
+            .BeFalse(
+                "a tool that requires arguments must not run when the argument payload is empty (truncated to 0 bytes)"
+            );
 
-        var toolResult = messages.OfType<ToolCallResultMessage>()
-            .Should().ContainSingle(m => m.ToolCallId == "tc_empty").Subject;
-        toolResult.IsError.Should().BeTrue(
-            "empty args for an arg-requiring tool must surface as a recoverable error to the LLM");
+        var toolResult = messages
+            .OfType<ToolCallResultMessage>()
+            .Should()
+            .ContainSingle(m => m.ToolCallId == "tc_empty")
+            .Subject;
+        toolResult
+            .IsError.Should()
+            .BeTrue("empty args for an arg-requiring tool must surface as a recoverable error to the LLM");
 
         await cts.CancelAsync();
     }
@@ -151,18 +165,25 @@ public class ToolCallArgumentGuardTests
         var handlerInvoked = false;
         var registry = new FunctionRegistry();
         registry.AddFunction(
-            new FunctionContract { Name = "get_time", Description = "Get the current time", Parameters = [] },
+            new FunctionContract
+            {
+                Name = "get_time",
+                Description = "Get the current time",
+                Parameters = [],
+            },
             (_, _, _) =>
             {
                 handlerInvoked = true;
                 return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("12:00"));
-            });
+            }
+        );
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             registry,
             "test-thread",
-            logger: _loggerMock.Object);
+            logger: _loggerMock.Object
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -174,54 +195,60 @@ public class ToolCallArgumentGuardTests
             messages.Add(msg);
         }
 
-        handlerInvoked.Should().BeTrue(
-            "a parameterless tool called with empty args is legitimate and must still execute");
+        handlerInvoked
+            .Should()
+            .BeTrue("a parameterless tool called with empty args is legitimate and must still execute");
 
-        var toolResult = messages.OfType<ToolCallResultMessage>()
-            .Should().ContainSingle(m => m.ToolCallId == "tc_noargs").Subject;
+        var toolResult = messages
+            .OfType<ToolCallResultMessage>()
+            .Should()
+            .ContainSingle(m => m.ToolCallId == "tc_noargs")
+            .Subject;
         toolResult.IsError.Should().BeFalse();
 
         await cts.CancelAsync();
     }
 
-    private static FunctionContract BuildWriteContract() => new()
-    {
-        Name = "Write",
-        Description = "Write a file",
-        Parameters =
-        [
-            new FunctionParameterContract
-            {
-                Name = "file_path",
-                Description = "Absolute path to write",
-                ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
-                IsRequired = true,
-            },
-            new FunctionParameterContract
-            {
-                Name = "content",
-                Description = "File contents",
-                ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
-                IsRequired = true,
-            },
-        ],
-    };
+    private static FunctionContract BuildWriteContract() =>
+        new()
+        {
+            Name = "Write",
+            Description = "Write a file",
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "file_path",
+                    Description = "Absolute path to write",
+                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
+                    IsRequired = true,
+                },
+                new FunctionParameterContract
+                {
+                    Name = "content",
+                    Description = "File contents",
+                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
+                    IsRequired = true,
+                },
+            ],
+        };
 
-    private static FunctionContract BuildBashContract() => new()
-    {
-        Name = "Bash",
-        Description = "Run a shell command",
-        Parameters =
-        [
-            new FunctionParameterContract
-            {
-                Name = "command",
-                Description = "The command to run",
-                ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
-                IsRequired = true,
-            },
-        ],
-    };
+    private static FunctionContract BuildBashContract() =>
+        new()
+        {
+            Name = "Bash",
+            Description = "Run a shell command",
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "command",
+                    Description = "The command to run",
+                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
+                    IsRequired = true,
+                },
+            ],
+        };
 
     private void SetupToolThenFinalText(IMessage toolCall)
     {
@@ -230,23 +257,30 @@ public class ToolCallArgumentGuardTests
         // tool call each turn up to MaxTurnsPerRun).
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                return callCount == 1
-                    ? Task.FromResult(ToAsyncEnumerable([toolCall]))
-                    : Task.FromResult(ToAsyncEnumerable(
-                        [new TextMessage { Text = "done", Role = Role.Assistant }]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                {
+                    callCount++;
+                    return callCount == 1
+                        ? Task.FromResult(ToAsyncEnumerable([toolCall]))
+                        : Task.FromResult(
+                            ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }])
+                        );
+                }
+            );
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {

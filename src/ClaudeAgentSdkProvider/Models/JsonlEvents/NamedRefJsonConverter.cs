@@ -41,7 +41,8 @@ public sealed class NamedRefJsonConverter : JsonConverter<NamedRef>
             // the list would reintroduce the same NRE-shaped failure mode this
             // converter exists to prevent (consumers iterating `.Name` on null).
             _ => throw new JsonException(
-                $"Unexpected token '{reader.TokenType}' when reading NamedRef; expected String or StartObject."),
+                $"Unexpected token '{reader.TokenType}' when reading NamedRef; expected String or StartObject."
+            ),
         };
     }
 
@@ -100,7 +101,8 @@ public sealed class NamedRefJsonConverter : JsonConverter<NamedRef>
             if (!reader.Read())
             {
                 throw new JsonException(
-                    $"Unexpected end of JSON after property '{propertyName}' inside NamedRef object.");
+                    $"Unexpected end of JSON after property '{propertyName}' inside NamedRef object."
+                );
             }
 
             switch (propertyName)
@@ -131,7 +133,8 @@ public sealed class NamedRefJsonConverter : JsonConverter<NamedRef>
             JsonTokenType.Null => null,
             JsonTokenType.String => reader.GetString(),
             _ => throw new JsonException(
-                $"Expected string or null for NamedRef property '{propertyName}'; got '{reader.TokenType}'."),
+                $"Expected string or null for NamedRef property '{propertyName}'; got '{reader.TokenType}'."
+            ),
         };
     }
 }

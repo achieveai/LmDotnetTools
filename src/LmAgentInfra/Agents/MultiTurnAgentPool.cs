@@ -182,12 +182,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// id, which is indistinguishable from "never frozen" and is how the cross-app freeze got
     /// dropped.
     /// </remarks>
-    public sealed record AgentHandoffState(
-        string? OwnerUserId,
-        string? CallerAppId,
-        bool IsBusy,
-        object EntryToken
-    );
+    public sealed record AgentHandoffState(string? OwnerUserId, string? CallerAppId, bool IsBusy, object EntryToken);
 
     /// <summary>What <see cref="TryReleaseIdleAgentAsync"/> actually did.</summary>
     public enum AgentReleaseOutcome
@@ -423,8 +418,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             liveSessionResolver,
             lifecycleServices,
             factoryReadsContext: true
-        )
-    { }
+        ) { }
 
     /// <summary>
     /// Back-compat overload taking a four-arg (threadId, mode, providerId, dump) factory that
@@ -447,8 +441,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             liveSessionResolver: null,
             lifecycleServices,
             factoryReadsContext: false
-        )
-    { }
+        ) { }
 
     /// <summary>
     /// Back-compat overload that omits the provider-id parameter from the factory. The
@@ -469,8 +462,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             liveSessionResolver: null,
             lifecycleServices,
             factoryReadsContext: false
-        )
-    { }
+        ) { }
 
     // factoryReadsContext is false for the back-compat overloads, whose factories take loose
     // positional arguments and so never see the AgentCreationContext — including the bundle on it.
@@ -534,7 +526,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// If the agent doesn't exist, it's created and its RunAsync() is started.
     /// The provider id is resolved from persisted metadata (if any) or the registry default.
     /// </summary>
-    public IMultiTurnAgent GetOrCreateAgent(string threadId, AgentProfile mode, string? requestResponseDumpFileName = null)
+    public IMultiTurnAgent GetOrCreateAgent(
+        string threadId,
+        AgentProfile mode,
+        string? requestResponseDumpFileName = null
+    )
     {
         return GetOrCreateAgent(threadId, mode, requestedProviderId: null, requestResponseDumpFileName);
     }
@@ -838,43 +834,45 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
         try
         {
-            await _conversationStore.UpdateMetadataAsync(
-                threadId,
-                existing =>
-                {
-                    var properties = existing?.Properties ?? ImmutableDictionary<string, object>.Empty;
-
-                    if (!properties.ContainsKey(ProviderPropertyKey))
+            await _conversationStore
+                .UpdateMetadataAsync(
+                    threadId,
+                    existing =>
                     {
-                        properties = properties.SetItem(ProviderPropertyKey, providerId);
-                    }
+                        var properties = existing?.Properties ?? ImmutableDictionary<string, object>.Empty;
 
-                    if (!properties.ContainsKey(WorkspacePropertyKey))
-                    {
-                        properties = properties.SetItem(WorkspacePropertyKey, workspaceId);
-                    }
-
-                    // Seed the mode only when absent — a plain reconnect that recreates the agent must
-                    // not overwrite a mode the user deliberately switched to.
-                    if (!string.IsNullOrWhiteSpace(modeId) && !properties.ContainsKey(ModePropertyKey))
-                    {
-                        properties = properties.SetItem(ModePropertyKey, modeId);
-                    }
-
-                    return (
-                        existing
-                        ?? new ThreadMetadata
+                        if (!properties.ContainsKey(ProviderPropertyKey))
                         {
-                            ThreadId = threadId,
-                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            properties = properties.SetItem(ProviderPropertyKey, providerId);
                         }
-                    ) with
-                    {
-                        Properties = properties,
-                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    };
-                }
-            ).ConfigureAwait(false);
+
+                        if (!properties.ContainsKey(WorkspacePropertyKey))
+                        {
+                            properties = properties.SetItem(WorkspacePropertyKey, workspaceId);
+                        }
+
+                        // Seed the mode only when absent — a plain reconnect that recreates the agent must
+                        // not overwrite a mode the user deliberately switched to.
+                        if (!string.IsNullOrWhiteSpace(modeId) && !properties.ContainsKey(ModePropertyKey))
+                        {
+                            properties = properties.SetItem(ModePropertyKey, modeId);
+                        }
+
+                        return (
+                            existing
+                            ?? new ThreadMetadata
+                            {
+                                ThreadId = threadId,
+                                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            }
+                        ) with
+                        {
+                            Properties = properties,
+                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        };
+                    }
+                )
+                .ConfigureAwait(false);
 
             _logger.LogInformation(
                 "Persisted bindings for thread {ThreadId} (provider={ProviderId}, workspace={WorkspaceId}, mode={ModeId})",
@@ -950,12 +948,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// the value is blank; persistence failures are logged and swallowed — the in-memory swap already
     /// succeeded, so a failed persist only forfeits the restore-after-refresh, not the live switch.
     /// </summary>
-    private async Task PersistThreadPropertyAsync(
-        string threadId,
-        string propertyKey,
-        string? value,
-        string label
-    )
+    private async Task PersistThreadPropertyAsync(string threadId, string propertyKey, string? value, string label)
     {
         if (_conversationStore == null || string.IsNullOrWhiteSpace(value))
         {
@@ -964,44 +957,37 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
         try
         {
-            await _conversationStore.UpdateMetadataAsync(
-                threadId,
-                existing =>
-                {
-                    var properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty)
-                        .SetItem(propertyKey, value);
-
-                    return (
-                        existing
-                        ?? new ThreadMetadata
-                        {
-                            ThreadId = threadId,
-                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        }
-                    ) with
+            await _conversationStore
+                .UpdateMetadataAsync(
+                    threadId,
+                    existing =>
                     {
-                        Properties = properties,
-                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    };
-                }
-            ).ConfigureAwait(false);
+                        var properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
+                            propertyKey,
+                            value
+                        );
 
-            _logger.LogInformation(
-                "Persisted {Label} {Value} for thread {ThreadId}",
-                label,
-                value,
-                threadId
-            );
+                        return (
+                            existing
+                            ?? new ThreadMetadata
+                            {
+                                ThreadId = threadId,
+                                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            }
+                        ) with
+                        {
+                            Properties = properties,
+                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        };
+                    }
+                )
+                .ConfigureAwait(false);
+
+            _logger.LogInformation("Persisted {Label} {Value} for thread {ThreadId}", label, value, threadId);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Failed to persist {Label} {Value} for thread {ThreadId}",
-                label,
-                value,
-                threadId
-            );
+            _logger.LogWarning(ex, "Failed to persist {Label} {Value} for thread {ThreadId}", label, value, threadId);
         }
     }
 
@@ -1140,7 +1126,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
         var deferred = await loop.GetDeferredToolCallsAsync(ct);
         return deferred.Any(d =>
-            string.Equals(d.FunctionName, WaitToolProvider.WaitToolName, StringComparison.Ordinal));
+            string.Equals(d.FunctionName, WaitToolProvider.WaitToolName, StringComparison.Ordinal)
+        );
     }
 
     /// <summary>
@@ -1170,8 +1157,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         }
 
         var deferred = await loop.GetDeferredToolCallsAsync(ct);
-        if (deferred.Any(d =>
-            string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)))
+        if (
+            deferred.Any(d =>
+                string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)
+            )
+        )
         {
             return true;
         }
@@ -1256,10 +1246,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             EnsurePrincipalMatches(threadId, observed, ownerUserId);
         }
 
-        if (
-            _liveSessionResolver is null
-            || observed.EstablishedBinding is not { SessionId.Length: > 0 } binding
-        )
+        if (_liveSessionResolver is null || observed.EstablishedBinding is not { SessionId.Length: > 0 } binding)
         {
             return new AgentRefreshResult(observed.Agent, AgentRefreshStatus.Current);
         }
@@ -1352,11 +1339,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         return new AgentRefreshResult(current.Agent, AgentRefreshStatus.Replaced);
     }
 
-    private static void EnsureCallerMatches(
-        string threadId,
-        AgentEntry entry,
-        SandboxCredential? callerCredential
-    )
+    private static void EnsureCallerMatches(string threadId, AgentEntry entry, SandboxCredential? callerCredential)
     {
         var existingAppId = entry.CallerCredential?.AppId;
         var requestedAppId = callerCredential?.AppId;
@@ -1388,11 +1371,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// every route before the pool is reached, and a caller with no principal never gets past
     /// IdentityMiddleware while enforcement is on.
     /// </remarks>
-    private static void EnsurePrincipalMatches(
-        string threadId,
-        AgentEntry entry,
-        string? ownerUserId
-    )
+    private static void EnsurePrincipalMatches(string threadId, AgentEntry entry, string? ownerUserId)
     {
         if (ownerUserId is null || entry.OwnerUserId is null)
         {
@@ -1790,10 +1769,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// being torn down.
     /// </para>
     /// </remarks>
-    public async ValueTask<AgentReleaseOutcome> TryReleaseIdleAgentAsync(
-        string threadId,
-        AgentHandoffState observed
-    )
+    public async ValueTask<AgentReleaseOutcome> TryReleaseIdleAgentAsync(string threadId, AgentHandoffState observed)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrEmpty(threadId);
@@ -2250,11 +2226,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Failed to dispose the refused agent for thread {ThreadId}",
-                threadId
-            );
+            _logger.LogWarning(ex, "Failed to dispose the refused agent for thread {ThreadId}", threadId);
         }
 
         foreach (var resource in ownedResources ?? [])

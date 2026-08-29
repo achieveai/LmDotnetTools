@@ -34,7 +34,10 @@ public class MultiTurnAgentPoolBindingTests
         var sink = new RecordingBindingSink();
         var binding = Binding();
         await using var pool = new MultiTurnAgentPool(
-            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)) { StagedBinding = binding },
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId))
+            {
+                StagedBinding = binding,
+            },
             providerRegistry: null,
             conversationStore: null,
             NullLogger<MultiTurnAgentPool>.Instance,
@@ -93,7 +96,10 @@ public class MultiTurnAgentPoolBindingTests
     {
         var sink = new RecordingBindingSink();
         await using var pool = new MultiTurnAgentPool(
-            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)) { StagedBinding = Binding() },
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId))
+            {
+                StagedBinding = Binding(),
+            },
             providerRegistry: null,
             conversationStore: null,
             NullLogger<MultiTurnAgentPool>.Instance,
@@ -111,7 +117,9 @@ public class MultiTurnAgentPoolBindingTests
     {
         var sink = new RecordingBindingSink();
         await using var pool = new MultiTurnAgentPool(
-            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId) { ThrowOnDispose = true })
+            context => new MultiTurnAgentPool.AgentCreationResult(
+                new FakeMultiTurnAgent(context.ThreadId) { ThrowOnDispose = true }
+            )
             {
                 StagedBinding = Binding(),
             },
@@ -132,9 +140,8 @@ public class MultiTurnAgentPoolBindingTests
         // assertion previously pinned the propagation, which was incidental scaffolding rather than the
         // claim in this test's name; the claim is the line below, and it is unchanged. Pinned as a
         // non-throw rather than deleted so the isolation cannot be silently removed again.
-        await act.Should().NotThrowAsync(
-            "a failure tearing the agent down must not abort the removal, nor skip the drain behind it"
-        );
+        await act.Should()
+            .NotThrowAsync("a failure tearing the agent down must not abort the removal, nor skip the drain behind it");
         sink.Cleared.Should().ContainSingle().Which.Should().Be("thread-dispose-throws");
     }
 
@@ -144,7 +151,10 @@ public class MultiTurnAgentPoolBindingTests
         var sink = new RecordingBindingSink();
         var shared = Binding();
         await using var pool = new MultiTurnAgentPool(
-            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)) { StagedBinding = shared },
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId))
+            {
+                StagedBinding = shared,
+            },
             providerRegistry: null,
             conversationStore: null,
             NullLogger<MultiTurnAgentPool>.Instance,
@@ -174,7 +184,10 @@ public class MultiTurnAgentPoolBindingTests
             context =>
             {
                 var staged = Interlocked.Increment(ref call) == 1 ? first : second;
-                return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)) { StagedBinding = staged };
+                return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId))
+                {
+                    StagedBinding = staged,
+                };
             },
             providerRegistry: null,
             conversationStore: null,
@@ -213,7 +226,10 @@ public class MultiTurnAgentPoolBindingTests
                 // evict), so the swap never commits.
                 if (Interlocked.Increment(ref call) == 1)
                 {
-                    return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)) { StagedBinding = first };
+                    return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId))
+                    {
+                        StagedBinding = first,
+                    };
                 }
 
                 throw new InvalidOperationException("switch construction failed");

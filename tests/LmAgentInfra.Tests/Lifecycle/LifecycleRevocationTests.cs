@@ -52,9 +52,7 @@ public sealed class LifecycleRevocationTests
         );
         harness.Sender.RespondWith(
             (attempt, _) =>
-                attempt.Ordinal == 1
-                    ? inFlight.Task
-                    : Task.FromResult(LifecycleDeliveryResult.Succeeded(202))
+                attempt.Ordinal == 1 ? inFlight.Task : Task.FromResult(LifecycleDeliveryResult.Succeeded(202))
         );
 
         await harness.Pipeline.StartAsync(CancellationToken.None);
@@ -98,9 +96,7 @@ public sealed class LifecycleRevocationTests
             options.RetryBaseDelay = TimeSpan.FromSeconds(1);
         });
         var id = await harness.RegisterAsync();
-        harness.Sender.RespondWith(
-            (_, _) => Task.FromResult(LifecycleDeliveryResult.Retryable("http_status", 503))
-        );
+        harness.Sender.RespondWith((_, _) => Task.FromResult(LifecycleDeliveryResult.Retryable("http_status", 503)));
 
         await harness.Pipeline.StartAsync(CancellationToken.None);
         await harness.Pipeline.PublishAsync(Event(1));
@@ -132,11 +128,7 @@ public sealed class LifecycleRevocationTests
         var harness = new Harness();
         var id = await harness.RegisterAsync();
 
-        using var ticket = harness.Approvals.TryRegister(
-            LifecycleOwnerKey.ForAppId(AppA),
-            Call(),
-            [id]
-        )!;
+        using var ticket = harness.Approvals.TryRegister(LifecycleOwnerKey.ForAppId(AppA), Call(), [id])!;
         ticket.Should().NotBeNull();
         ticket.Decision.IsCompleted.Should().BeFalse("nobody has answered yet");
         harness.Approvals.PendingCount.Should().Be(1);
@@ -164,9 +156,7 @@ public sealed class LifecycleRevocationTests
         );
         harness.Sender.RespondWith(
             (attempt, _) =>
-                attempt.Ordinal == 1
-                    ? inFlight.Task
-                    : Task.FromResult(LifecycleDeliveryResult.Succeeded(202))
+                attempt.Ordinal == 1 ? inFlight.Task : Task.FromResult(LifecycleDeliveryResult.Succeeded(202))
         );
 
         await harness.Pipeline.StartAsync(CancellationToken.None);
@@ -177,11 +167,7 @@ public sealed class LifecycleRevocationTests
 
         // The control plane refuses first, and refuses the way it refuses an id that never existed.
         var refused = await harness.As(AppB).Unregister(id);
-        refused
-            .Should()
-            .BeAssignableTo<ObjectResult>()
-            .Which.StatusCode.Should()
-            .Be(StatusCodes.Status404NotFound);
+        refused.Should().BeAssignableTo<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status404NotFound);
 
         // Reached directly as well, because the controller's refusal means the pipeline's own owner
         // check is never exercised by the path above — and it is the check that has to hold if any
@@ -287,10 +273,7 @@ public sealed class LifecycleRevocationTests
                     HttpContext = new DefaultHttpContext
                     {
                         User = new ClaimsPrincipal(
-                            new ClaimsIdentity(
-                                [new Claim(LifecycleAppIdentity.AppIdClaimType, appId)],
-                                "test"
-                            )
+                            new ClaimsIdentity([new Claim(LifecycleAppIdentity.AppIdClaimType, appId)], "test")
                         ),
                     },
                 },
@@ -299,8 +282,7 @@ public sealed class LifecycleRevocationTests
         /// <summary>Registers through the controller, so the id under test is a server-minted one.</summary>
         internal async Task<string> RegisterAsync(string appId = AppA)
         {
-            var result = await As(appId)
-                .Register(new LifecycleSubscriptionRegistration { CallbackUri = Callback });
+            var result = await As(appId).Register(new LifecycleSubscriptionRegistration { CallbackUri = Callback });
 
             var body = result
                 .Should()
@@ -340,10 +322,7 @@ public sealed class LifecycleRevocationTests
         public ValueTask<LifecycleOwnerKey?> ResolveCallerAsync(
             string appId,
             CancellationToken cancellationToken = default
-        ) =>
-            ValueTask.FromResult(
-                _known.Contains(appId) ? LifecycleOwnerKey.ForAppId(appId) : null
-            );
+        ) => ValueTask.FromResult(_known.Contains(appId) ? LifecycleOwnerKey.ForAppId(appId) : null);
 
         public ValueTask<LifecycleOwnerKey?> ResolveEventOwnerAsync(
             LifecycleEventEnvelope lifecycleEvent,
@@ -374,9 +353,8 @@ public sealed class LifecycleRevocationTests
         /// <summary>One recorded call, ordinal included so a responder can answer the first differently.</summary>
         internal sealed record Attempt(int Ordinal, string SubscriptionId);
 
-        internal void RespondWith(
-            Func<Attempt, CancellationToken, Task<LifecycleDeliveryResult>> respond
-        ) => _respond = respond;
+        internal void RespondWith(Func<Attempt, CancellationToken, Task<LifecycleDeliveryResult>> respond) =>
+            _respond = respond;
 
         internal IReadOnlyList<string> Attempts
         {

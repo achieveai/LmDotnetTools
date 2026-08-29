@@ -19,8 +19,7 @@ namespace AchieveAi.LmDotnetTools.LmEval.Tests;
 /// </summary>
 public class GateOutageTests
 {
-    private static GateDecision Inconclusive(string gateId) =>
-        GateDecision.Inconclusive(gateId, nameof(IOException));
+    private static GateDecision Inconclusive(string gateId) => GateDecision.Inconclusive(gateId, nameof(IOException));
 
     private static GateDecision Passed(string gateId) => GateDecision.Pass(gateId, "content is clean");
 
@@ -138,12 +137,10 @@ public class GateOutageTests
     [Fact]
     public void The_inconclusive_count_is_per_item_not_per_gate_execution()
     {
-        var run = Run(
-            [
-                Scored("i0", Inconclusive("schema"), Inconclusive("anchor"), Inconclusive("length")),
-                Scored("i1", Passed("schema"), Passed("anchor"), Passed("length")),
-            ]
-        );
+        var run = Run([
+            Scored("i0", Inconclusive("schema"), Inconclusive("anchor"), Inconclusive("length")),
+            Scored("i1", Passed("schema"), Passed("anchor"), Passed("length")),
+        ]);
 
         run.InconclusiveGateCount.Should().Be(1, "one item was impaired, not three gates");
         run.InconclusiveGateRate.Should().BeApproximately(0.5, 1e-9);
@@ -167,22 +164,18 @@ public class GateOutageTests
     [Fact]
     public void An_impaired_gate_is_counted_whatever_exclusion_arm_the_row_matched()
     {
-        var run = Run(
-            [
-                Scored("scored", Inconclusive("schema")),
-                Undecided("undecided", Inconclusive("schema")),
-                UndecidedAndDegraded("degraded", Inconclusive("schema")),
-                Scored("clean", Passed("schema")),
-            ]
-        );
+        var run = Run([
+            Scored("scored", Inconclusive("schema")),
+            Undecided("undecided", Inconclusive("schema")),
+            UndecidedAndDegraded("degraded", Inconclusive("schema")),
+            Scored("clean", Passed("schema")),
+        ]);
 
         run.Items.Where(i => i.Exclusion != ScoreExclusion.None)
             .Should()
             .HaveCount(2, "two rows matched a non-None arm — otherwise this proves nothing");
 
-        run.InconclusiveGateCount
-            .Should()
-            .Be(3, "the count reads the gate decisions, not the exclusion");
+        run.InconclusiveGateCount.Should().Be(3, "the count reads the gate decisions, not the exclusion");
         run.InconclusiveGateRate.Should().BeApproximately(0.75, 1e-9);
     }
 
@@ -206,8 +199,9 @@ public class GateOutageTests
         ungated.InconclusiveGateCount.Should().Be(0);
         ungated.InconclusiveGateIds.Should().BeEmpty();
 
-        BaselineComparer.Compare(ungated, Baseline(GatedRun(10))).Refusal
-            .Should()
+        BaselineComparer
+            .Compare(ungated, Baseline(GatedRun(10)))
+            .Refusal.Should()
             .Be(
                 ComparisonRefusal.None,
                 "an absent gate signal is not an outage — a gateless harness is a real configuration"
@@ -233,12 +227,10 @@ public class GateOutageTests
     [Fact]
     public void The_run_names_the_gates_that_went_inconclusive_once_each()
     {
-        var run = Run(
-            [
-                Scored("i0", Inconclusive("schema"), Passed("anchor")),
-                Scored("i1", Inconclusive("schema"), Inconclusive("anchor")),
-            ]
-        );
+        var run = Run([
+            Scored("i0", Inconclusive("schema"), Passed("anchor")),
+            Scored("i1", Inconclusive("schema"), Inconclusive("anchor")),
+        ]);
 
         run.InconclusiveGateIds.Should().Equal("schema", "anchor");
     }
@@ -259,13 +251,9 @@ public class GateOutageTests
     {
         var baseline = Baseline(GatedRun(20), minCoverage: 0.8);
 
-        var outage = Run(
-            [
-                .. Enumerable
-                    .Range(0, 20)
-                    .Select(i => Scored($"i{i}", Inconclusive("schema"), Inconclusive("anchor"))),
-            ]
-        );
+        var outage = Run([
+            .. Enumerable.Range(0, 20).Select(i => Scored($"i{i}", Inconclusive("schema"), Inconclusive("anchor"))),
+        ]);
 
         // Nothing an existing aggregate reports has moved: this is the whole hole.
         outage.PassRate.Should().Be(1.0);
@@ -291,12 +279,10 @@ public class GateOutageTests
     {
         var baseline = Baseline(GatedRun(20));
 
-        var flaky = Run(
-            [
-                .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", Passed("schema"))),
-                Scored("i19", Inconclusive("schema")),
-            ]
-        );
+        var flaky = Run([
+            .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", Passed("schema"))),
+            Scored("i19", Inconclusive("schema")),
+        ]);
 
         flaky.InconclusiveGateRate.Should().BeApproximately(0.05, 1e-9);
         BaselineComparer.Compare(flaky, baseline).IsRefused.Should().BeFalse();
@@ -313,21 +299,15 @@ public class GateOutageTests
     {
         var baseline = Baseline(GatedRun(20));
 
-        var both = Run(
-            [
-                .. Enumerable
-                    .Range(0, 12)
-                    .Select(i => Scored($"i{i}", Inconclusive("schema"))),
-                .. Enumerable.Range(12, 8).Select(i => Faulted($"i{i}")),
-            ]
-        );
+        var both = Run([
+            .. Enumerable.Range(0, 12).Select(i => Scored($"i{i}", Inconclusive("schema"))),
+            .. Enumerable.Range(12, 8).Select(i => Faulted($"i{i}")),
+        ]);
 
         both.FaultRate.Should().BeApproximately(0.4, 1e-9);
         both.InconclusiveGateRate.Should().BeApproximately(0.6, 1e-9);
 
-        BaselineComparer.Compare(both, baseline).Refusal
-            .Should()
-            .Be(ComparisonRefusal.FaultRateAboveMaximum);
+        BaselineComparer.Compare(both, baseline).Refusal.Should().Be(ComparisonRefusal.FaultRateAboveMaximum);
     }
 
     /// <summary>
@@ -339,14 +319,13 @@ public class GateOutageTests
     {
         var baseline = Baseline(GatedRun(20), minCoverage: 0.9);
 
-        var outage = Run(
-            [.. Enumerable.Range(0, 20).Select(i => Scored($"i{i}", Inconclusive("schema")))]
-        );
+        var outage = Run([.. Enumerable.Range(0, 20).Select(i => Scored($"i{i}", Inconclusive("schema")))]);
 
         outage.Coverage.Should().Be(1.0, "an inconclusive gate does not stop the item scoring");
 
-        BaselineComparer.Compare(outage, baseline).Refusal
-            .Should()
+        BaselineComparer
+            .Compare(outage, baseline)
+            .Refusal.Should()
             .Be(ComparisonRefusal.InconclusiveGateRateAboveMaximum);
     }
 
@@ -371,22 +350,19 @@ public class GateOutageTests
         // 12 impaired-but-scored items and 8 the panel could not decide: coverage 0.6 (under the
         // 0.8 floor) AND gate rate 0.6 (over the 0.05 default). Both refusals apply; only the one
         // naming the cause is worth reporting.
-        var both = Run(
-            [
-                .. Enumerable
-                    .Range(0, 12)
-                    .Select(i => Scored($"i{i}", Inconclusive("schema"))),
-                .. Enumerable.Range(12, 8).Select(i => Undecided($"i{i}")),
-            ]
-        );
+        var both = Run([
+            .. Enumerable.Range(0, 12).Select(i => Scored($"i{i}", Inconclusive("schema"))),
+            .. Enumerable.Range(12, 8).Select(i => Undecided($"i{i}")),
+        ]);
 
         both.FaultRate.Should().Be(0.0, "no item faulted, so the fault refusal cannot preempt");
         both.Coverage.Should().BeApproximately(0.6, 1e-9);
         both.Coverage.Should().BeLessThan(baseline.MinCoverage, "the floor is genuinely breached");
         both.InconclusiveGateRate.Should().BeApproximately(0.6, 1e-9);
 
-        BaselineComparer.Compare(both, baseline).Refusal
-            .Should()
+        BaselineComparer
+            .Compare(both, baseline)
+            .Refusal.Should()
             .Be(ComparisonRefusal.InconclusiveGateRateAboveMaximum);
     }
 
@@ -400,29 +376,15 @@ public class GateOutageTests
     [Fact]
     public void The_inconclusive_gate_bound_is_the_baselines_to_set()
     {
-        var strict = EvalBaseline.From(
-            "base-1",
-            GatedRun(20),
-            minCoverage: 0.5,
-            maxInconclusiveGateRate: 0.01
-        );
-        var lenient = EvalBaseline.From(
-            "base-1",
-            GatedRun(20),
-            minCoverage: 0.5,
-            maxInconclusiveGateRate: 0.5
-        );
+        var strict = EvalBaseline.From("base-1", GatedRun(20), minCoverage: 0.5, maxInconclusiveGateRate: 0.01);
+        var lenient = EvalBaseline.From("base-1", GatedRun(20), minCoverage: 0.5, maxInconclusiveGateRate: 0.5);
 
-        var run = Run(
-            [
-                .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", Passed("schema"))),
-                Scored("i19", Inconclusive("schema")),
-            ]
-        );
+        var run = Run([
+            .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", Passed("schema"))),
+            Scored("i19", Inconclusive("schema")),
+        ]);
 
-        BaselineComparer.Compare(run, strict).Refusal
-            .Should()
-            .Be(ComparisonRefusal.InconclusiveGateRateAboveMaximum);
+        BaselineComparer.Compare(run, strict).Refusal.Should().Be(ComparisonRefusal.InconclusiveGateRateAboveMaximum);
         BaselineComparer.Compare(run, lenient).IsRefused.Should().BeFalse();
     }
 
@@ -436,15 +398,12 @@ public class GateOutageTests
     [InlineData(double.NaN)]
     [InlineData(-0.1)]
     [InlineData(1.1)]
-    public void The_gate_bound_cannot_be_rewritten_past_the_validation_its_factory_applied(
-        double bad
-    )
+    public void The_gate_bound_cannot_be_rewritten_past_the_validation_its_factory_applied(double bad)
     {
         var baseline = Baseline(GatedRun(20));
 
         var rewrite = () => baseline with { MaxInconclusiveGateRate = bad };
-        var mint = () =>
-            EvalBaseline.From("base-1", GatedRun(20), 0.5, maxInconclusiveGateRate: bad);
+        var mint = () => EvalBaseline.From("base-1", GatedRun(20), 0.5, maxInconclusiveGateRate: bad);
 
         rewrite.Should().Throw<ArgumentOutOfRangeException>();
         mint.Should().Throw<ArgumentOutOfRangeException>();
@@ -469,19 +428,14 @@ public class GateOutageTests
     [Fact]
     public async Task An_environmental_gate_failure_reaches_the_comparison_as_a_refusal()
     {
-        var snapshot = EvalFixtures.Snapshot(
-            [.. Enumerable.Range(0, 10).Select(i => EvalFixtures.Item($"i{i}"))]
-        );
+        var snapshot = EvalFixtures.Snapshot([.. Enumerable.Range(0, 10).Select(i => EvalFixtures.Item($"i{i}"))]);
 
         var healthy = await EvalFixtures.RunAsync(
             EvalFixtures.Config([new CheckoutGate("checkout", checkoutPresent: true)]),
             snapshot
         );
 
-        var outage = await EvalFixtures.RunAsync(
-            EvalFixtures.Config([new CheckoutGate("checkout")]),
-            snapshot
-        );
+        var outage = await EvalFixtures.RunAsync(EvalFixtures.Config([new CheckoutGate("checkout")]), snapshot);
 
         healthy
             .EvaluatorConfigHash.Should()
@@ -499,10 +453,7 @@ public class GateOutageTests
         outage.InconclusiveGateRate.Should().Be(1.0);
         outage.InconclusiveGateIds.Should().Equal("checkout");
 
-        var comparison = BaselineComparer.Compare(
-            outage,
-            EvalBaseline.From("base-1", healthy, 0.5)
-        );
+        var comparison = BaselineComparer.Compare(outage, EvalBaseline.From("base-1", healthy, 0.5));
 
         comparison.Refusal.Should().Be(ComparisonRefusal.InconclusiveGateRateAboveMaximum);
         comparison.RefusalDetail.Should().Contain("checkout");
@@ -524,9 +475,7 @@ public class GateOutageTests
     [Fact]
     public void A_baseline_is_not_frozen_from_a_run_whose_gates_were_off()
     {
-        var outage = Run(
-            [.. Enumerable.Range(0, 20).Select(i => Scored($"i{i}", Inconclusive("schema")))]
-        );
+        var outage = Run([.. Enumerable.Range(0, 20).Select(i => Scored($"i{i}", Inconclusive("schema")))]);
 
         // Every number a reader would sanity-check the source run on looks pristine. That is why
         // nothing downstream could have caught this.
@@ -540,10 +489,7 @@ public class GateOutageTests
         freeze
             .Should()
             .Throw<ArgumentException>()
-            .WithMessage(
-                "*schema*",
-                "the refusal names the gate that broke, as the comparison refusal does"
-            );
+            .WithMessage("*schema*", "the refusal names the gate that broke, as the comparison refusal does");
     }
 
     /// <summary>
@@ -578,12 +524,10 @@ public class GateOutageTests
     [Fact]
     public void A_run_at_exactly_the_bound_still_freezes()
     {
-        var flaky = Run(
-            [
-                .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", Passed("schema"))),
-                Scored("i19", Inconclusive("schema")),
-            ]
-        );
+        var flaky = Run([
+            .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", Passed("schema"))),
+            Scored("i19", Inconclusive("schema")),
+        ]);
 
         flaky
             .InconclusiveGateRate.Should()
@@ -605,12 +549,10 @@ public class GateOutageTests
     [Fact]
     public void The_construction_bound_is_the_one_the_baseline_will_enforce()
     {
-        var impaired = Run(
-            [
-                .. Enumerable.Range(0, 10).Select(i => Scored($"i{i}", Inconclusive("schema"))),
-                .. Enumerable.Range(10, 10).Select(i => Scored($"i{i}", Passed("schema"))),
-            ]
-        );
+        var impaired = Run([
+            .. Enumerable.Range(0, 10).Select(i => Scored($"i{i}", Inconclusive("schema"))),
+            .. Enumerable.Range(10, 10).Select(i => Scored($"i{i}", Passed("schema"))),
+        ]);
 
         impaired.InconclusiveGateRate.Should().BeApproximately(0.5, 1e-9);
 
@@ -620,8 +562,7 @@ public class GateOutageTests
         var atDefault = () => EvalBaseline.From("base-1", impaired, 0.5);
         atDefault.Should().Throw<ArgumentException>();
 
-        var tightened = () =>
-            EvalBaseline.From("base-1", impaired, 0.5, maxInconclusiveGateRate: 0.49);
+        var tightened = () => EvalBaseline.From("base-1", impaired, 0.5, maxInconclusiveGateRate: 0.49);
         tightened.Should().Throw<ArgumentException>();
     }
 
@@ -639,9 +580,7 @@ public class GateOutageTests
     [Fact]
     public void A_gate_outage_that_also_scored_nothing_is_refused_for_the_outage()
     {
-        var both = Run(
-            [.. Enumerable.Range(0, 20).Select(i => Undecided($"i{i}", Inconclusive("schema")))]
-        );
+        var both = Run([.. Enumerable.Range(0, 20).Select(i => Undecided($"i{i}", Inconclusive("schema")))]);
 
         both.MeanScore.Should().BeNull("the scored-nothing arm must genuinely apply too");
         both.InconclusiveGateRate.Should().Be(1.0);

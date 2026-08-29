@@ -21,7 +21,8 @@ public class SubAgentModelResolutionTests
         var result = SubAgentManager.ResolveSubAgentOptions(
             templateDefaults: new GenerateReplyOptions { ModelId = "template-model" },
             modelOverride: "override-model",
-            parentModelId: "parent-model");
+            parentModelId: "parent-model"
+        );
 
         result!.ModelId.Should().Be("override-model");
     }
@@ -32,7 +33,8 @@ public class SubAgentModelResolutionTests
         var result = SubAgentManager.ResolveSubAgentOptions(
             templateDefaults: new GenerateReplyOptions { ModelId = "template-model" },
             modelOverride: null,
-            parentModelId: "parent-model");
+            parentModelId: "parent-model"
+        );
 
         result!.ModelId.Should().Be("template-model");
     }
@@ -45,7 +47,8 @@ public class SubAgentModelResolutionTests
         var result = SubAgentManager.ResolveSubAgentOptions(
             templateDefaults: null,
             modelOverride: null,
-            parentModelId: "parent-model");
+            parentModelId: "parent-model"
+        );
 
         result.Should().NotBeNull();
         result!.ModelId.Should().Be("parent-model");
@@ -58,7 +61,8 @@ public class SubAgentModelResolutionTests
         var result = SubAgentManager.ResolveSubAgentOptions(
             templateDefaults: new GenerateReplyOptions { Temperature = 0.5f },
             modelOverride: null,
-            parentModelId: "parent-model");
+            parentModelId: "parent-model"
+        );
 
         result!.ModelId.Should().Be("parent-model");
         result.Temperature.Should().Be(0.5f, "applying the parent model must preserve other template options");
@@ -72,7 +76,8 @@ public class SubAgentModelResolutionTests
         var result = SubAgentManager.ResolveSubAgentOptions(
             templateDefaults: null,
             modelOverride: null,
-            parentModelId: null);
+            parentModelId: null
+        );
 
         result.Should().BeNull();
     }
@@ -85,7 +90,8 @@ public class SubAgentModelResolutionTests
         var result = SubAgentManager.ResolveSubAgentOptions(
             templateDefaults: templateDefaults,
             modelOverride: null,
-            parentModelId: null);
+            parentModelId: null
+        );
 
         result.Should().BeSameAs(templateDefaults);
         result!.ModelId.Should().BeEmpty();

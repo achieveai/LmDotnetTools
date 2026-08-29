@@ -21,13 +21,17 @@ public sealed class AgentOutputTokenOptionsTests
     public void Validate_RejectsNonPositiveValues(int primary, int delegated)
     {
         new AgentOutputTokenOptions { Primary = primary, Delegated = delegated }
-            .Validate().Failed.Should().BeTrue();
+            .Validate()
+            .Failed.Should()
+            .BeTrue();
     }
 
     [Fact]
     public void Validate_RejectsPrimaryBelowDelegated()
     {
         new AgentOutputTokenOptions { Primary = 16_383, Delegated = 16_384 }
-            .Validate().Failed.Should().BeTrue();
+            .Validate()
+            .Failed.Should()
+            .BeTrue();
     }
 }

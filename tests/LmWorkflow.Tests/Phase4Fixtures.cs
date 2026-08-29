@@ -184,18 +184,12 @@ internal static class Phase4Fixtures
 
     /// <summary>A single-task <c>start → analyze → done</c> workflow (with a <c>fail</c> onFailure terminal) and a configurable retry budget.</summary>
     public static string SingleTask(int maxValidationRetries) =>
-        SingleTaskTemplate.Replace(
-            "__RETRIES__",
-            maxValidationRetries.ToString(CultureInfo.InvariantCulture)
-        );
+        SingleTaskTemplate.Replace("__RETRIES__", maxValidationRetries.ToString(CultureInfo.InvariantCulture));
 
     /// <summary>
     ///     A single-task <c>start → analyze → done</c> workflow with NO <c>outputSchema</c> and a <c>set</c>
     ///     write — the free-form-output case, where a sub-agent may answer in prose/Markdown rather than JSON.
     /// </summary>
     public static string NoSchemaSingleTask(int maxValidationRetries = 0) =>
-        NoSchemaSingleTaskTemplate.Replace(
-            "__RETRIES__",
-            maxValidationRetries.ToString(CultureInfo.InvariantCulture)
-        );
+        NoSchemaSingleTaskTemplate.Replace("__RETRIES__", maxValidationRetries.ToString(CultureInfo.InvariantCulture));
 }

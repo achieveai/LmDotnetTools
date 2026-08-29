@@ -12,9 +12,8 @@ namespace LmStreaming.Sample.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/marketplaces")]
-public class MarketplacesController(
-    IMarketplaceCatalogClient catalogClient,
-    ILogger<MarketplacesController> logger) : ControllerBase
+public class MarketplacesController(IMarketplaceCatalogClient catalogClient, ILogger<MarketplacesController> logger)
+    : ControllerBase
 {
     /// <summary>
     /// Lists the marketplace catalog. The optional <paramref name="marketplaces"/> query is a

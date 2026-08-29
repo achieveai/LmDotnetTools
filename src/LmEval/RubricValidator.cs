@@ -64,16 +64,13 @@ public static class RubricValidator
 
         if (rubric.MaxScore <= rubric.MinScore)
         {
-            errors.Add(
-                $"the scale [{rubric.MinScore},{rubric.MaxScore}] is empty: MaxScore must exceed MinScore"
-            );
+            errors.Add($"the scale [{rubric.MinScore},{rubric.MaxScore}] is empty: MaxScore must exceed MinScore");
         }
 
         if (rubric.PassThreshold < rubric.MinScore || rubric.PassThreshold > rubric.MaxScore)
         {
             errors.Add(
-                $"PassThreshold {rubric.PassThreshold} is outside the scale "
-                    + $"[{rubric.MinScore},{rubric.MaxScore}]"
+                $"PassThreshold {rubric.PassThreshold} is outside the scale " + $"[{rubric.MinScore},{rubric.MaxScore}]"
             );
         }
 
@@ -111,8 +108,7 @@ public static class RubricValidator
         {
             if (!criterion.Anchors.ContainsKey(required))
             {
-                yield return $"criterion '{criterion.CriterionId}' has no anchor describing "
-                    + $"score {required}";
+                yield return $"criterion '{criterion.CriterionId}' has no anchor describing " + $"score {required}";
             }
         }
 

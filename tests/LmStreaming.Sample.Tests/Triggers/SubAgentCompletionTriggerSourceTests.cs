@@ -24,18 +24,20 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
 
     // Signals when the manager relays a sub-agent result to the parent, so a test can await the
     // relay deterministically instead of racing it.
-    private readonly TaskCompletionSource _parentRelayed =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _parentRelayed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private SubAgentManager? _manager;
 
     public Task InitializeAsync()
     {
         _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Callback(() => _parentRelayed.TrySetResult())
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
@@ -104,7 +106,10 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         var fired = new TaskCompletionSource<TriggerFireEvent>();
 
         await using var handle = await src.ArmAsync(
-            ArmReq($$"""{"agentId":"{{agentId}}"}"""), SinkThatCompletes(fired), CancellationToken.None);
+            ArmReq($$"""{"agentId":"{{agentId}}"}"""),
+            SinkThatCompletes(fired),
+            CancellationToken.None
+        );
 
         // Now armed (relay flag flipped false) — let the sub-agent's run proceed to completion.
         gate.SetResult();
@@ -115,13 +120,16 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         // Relay was suppressed behaviorally: the trigger delivered the result, so the manager must
         // not also relay it to the parent.
         _parentMock.Verify(
-            p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()),
+            p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                ),
             Times.Never(),
-            "the trigger delivered the result — the manager must not also relay it to the parent");
+            "the trigger delivered the result — the manager must not also relay it to the parent"
+        );
     }
 
     [Fact]
@@ -132,8 +140,7 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         var (manager, agentId) = await SpawnGatedSubAgentAsync(result: "sub-done", gate);
 
         var src = new SubAgentCompletionTriggerSource(() => manager);
-        var handle = await src.ArmAsync(
-            ArmReq($$"""{"agentId":"{{agentId}}"}"""), NoopSink, CancellationToken.None);
+        var handle = await src.ArmAsync(ArmReq($$"""{"agentId":"{{agentId}}"}"""), NoopSink, CancellationToken.None);
 
         // Cancel/timeout the wait BEFORE the sub-agent completes.
         await handle.DisposeAsync();
@@ -147,13 +154,16 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         // flag-restore is meaningful (a killed sub-agent would never relay).
         await _parentRelayed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         _parentMock.Verify(
-            p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()),
+            p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                ),
             Times.Once(),
-            "wait-cancel must leave the sub-agent running; its result relays once the flag is restored");
+            "wait-cancel must leave the sub-agent running; its result relays once the flag is restored"
+        );
     }
 
     [Fact]
@@ -185,7 +195,10 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         var fireAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var handle = await src.ArmAsync(
-            ArmReq($$"""{"agentId":"{{agentId}}"}"""), new ThrowingSink(fireAttempted), CancellationToken.None);
+            ArmReq($$"""{"agentId":"{{agentId}}"}"""),
+            new ThrowingSink(fireAttempted),
+            CancellationToken.None
+        );
 
         gate.SetResult();
 
@@ -196,9 +209,12 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         // Must not throw/hang despite the in-flight fire having faulted.
         await handle.DisposeAsync();
 
-        GetNotifyParentOnCompletion(manager, agentId).Should().BeTrue(
-            "a failed delivery must reset _completed so dispose still restores automatic relay " +
-            "instead of permanently stranding it");
+        GetNotifyParentOnCompletion(manager, agentId)
+            .Should()
+            .BeTrue(
+                "a failed delivery must reset _completed so dispose still restores automatic relay "
+                    + "instead of permanently stranding it"
+            );
     }
 
     /// <summary>Reads the internal NotifyParentOnCompletion flag via reflection — see the comment
@@ -206,12 +222,13 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
     /// exists to observe this.</summary>
     private static bool GetNotifyParentOnCompletion(SubAgentManager manager, string agentId)
     {
-        var agentsField = typeof(SubAgentManager).GetField("_agents", BindingFlags.NonPublic | BindingFlags.Instance)
+        var agentsField =
+            typeof(SubAgentManager).GetField("_agents", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("SubAgentManager._agents field not found.");
         var agents = (System.Collections.IDictionary)agentsField.GetValue(manager)!;
-        var state = agents[agentId]
-            ?? throw new InvalidOperationException($"No sub-agent state for '{agentId}'.");
-        var flagProperty = state.GetType().GetProperty("NotifyParentOnCompletion")
+        var state = agents[agentId] ?? throw new InvalidOperationException($"No sub-agent state for '{agentId}'.");
+        var flagProperty =
+            state.GetType().GetProperty("NotifyParentOnCompletion")
             ?? throw new InvalidOperationException("SubAgentState.NotifyParentOnCompletion property not found.");
         return (bool)flagProperty.GetValue(state)!;
     }
@@ -222,7 +239,8 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         var manager = BuildEmptyManager();
         var src = new SubAgentCompletionTriggerSource(() => manager);
 
-        var act = () => src.ArmAsync(ArmReq("""{"agentId":"does-not-exist"}"""), NoopSink, CancellationToken.None).AsTask();
+        var act = () =>
+            src.ArmAsync(ArmReq("""{"agentId":"does-not-exist"}"""), NoopSink, CancellationToken.None).AsTask();
 
         await act.Should().ThrowAsync<ArgumentException>();
     }
@@ -249,26 +267,28 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         var src = new SubAgentCompletionTriggerSource(() => manager);
         var fired = new TaskCompletionSource<TriggerFireEvent>();
 
-        var act = () => src
-            .ArmAsync(ArmReq($$"""{"agentId":"{{agentId}}"}"""), SinkThatCompletes(fired), CancellationToken.None)
-            .AsTask();
+        var act = () =>
+            src.ArmAsync(ArmReq($$"""{"agentId":"{{agentId}}"}"""), SinkThatCompletes(fired), CancellationToken.None)
+                .AsTask();
 
         // Rejected specifically because the relay already happened — NOT because the agent id went
         // unknown. Asserting the reason keeps this from passing for the wrong reason if the manager
         // ever starts evicting completed sub-agents.
-        (await act.Should().ThrowAsync<ArgumentException>())
-            .WithMessage("*already*relayed*");
+        (await act.Should().ThrowAsync<ArgumentException>()).WithMessage("*already*relayed*");
 
         // Nothing fired, and the parent saw the result exactly once.
         fired.Task.IsCompleted.Should().BeFalse("a rejected arm must not deliver a second copy");
         _parentMock.Verify(
-            p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()),
+            p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                ),
             Times.Once(),
-            "the automatic relay delivered the result once; nothing may deliver it again");
+            "the automatic relay delivered the result once; nothing may deliver it again"
+        );
     }
 
     /// <summary>
@@ -293,9 +313,7 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
 
         // Run 2: a continuation. Gated so it is still in flight when the wait arms.
         var secondRun = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        SetupGatedSubAgentResponse(
-            [new TextMessage { Text = "second-run-done", Role = Role.Assistant }],
-            secondRun);
+        SetupGatedSubAgentResponse([new TextMessage { Text = "second-run-done", Role = Role.Assistant }], secondRun);
         _ = await manager.SendMessageAsync(agentId, "follow up", runInBackground: true);
 
         var src = new SubAgentCompletionTriggerSource(() => manager);
@@ -303,7 +321,10 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
 
         // Must NOT throw: run 2 is in flight behind a fresh latch and nothing has been relayed for it.
         await using var handle = await src.ArmAsync(
-            ArmReq($$"""{"agentId":"{{agentId}}"}"""), SinkThatCompletes(fired), CancellationToken.None);
+            ArmReq($$"""{"agentId":"{{agentId}}"}"""),
+            SinkThatCompletes(fired),
+            CancellationToken.None
+        );
 
         secondRun.SetResult();
 
@@ -313,13 +334,16 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         // And the suppression still held for run 2: the trigger delivered it, so the parent saw only
         // run 1's automatic relay.
         _parentMock.Verify(
-            p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()),
+            p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                ),
             Times.Once(),
-            "run 1 relayed automatically; run 2 was delivered by the trigger, not relayed again");
+            "run 1 relayed automatically; run 2 was delivered by the trigger, not relayed again"
+        );
     }
 
     [Fact]
@@ -340,11 +364,10 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
     /// </summary>
     private async Task<(SubAgentManager Manager, string AgentId)> SpawnGatedSubAgentAsync(
         string result,
-        TaskCompletionSource gate)
+        TaskCompletionSource gate
+    )
     {
-        SetupGatedSubAgentResponse(
-            [new TextMessage { Text = result, Role = Role.Assistant }],
-            gate);
+        SetupGatedSubAgentResponse([new TextMessage { Text = result, Role = Role.Assistant }], gate);
 
         var manager = CreateManager();
         _manager = manager;
@@ -370,7 +393,8 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: new MutableSubAgentTemplateSource(options.Templates));
+            source: new MutableSubAgentTemplateSource(options.Templates)
+        );
     }
 
     private SubAgentOptions CreateOptions(int maxConcurrent = 5)
@@ -383,10 +407,7 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
 
         return new SubAgentOptions
         {
-            Templates = new Dictionary<string, SubAgentTemplate>
-            {
-                ["test-agent"] = template,
-            },
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
             MaxConcurrentSubAgents = maxConcurrent,
         };
     }
@@ -400,12 +421,17 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
     private void SetupGatedSubAgentResponse(List<IMessage> messages, TaskCompletionSource gate)
     {
         _subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns((IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken ct) =>
-                Task.FromResult(ToGatedAsyncEnumerable(messages, gate, ct)));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                (IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken ct) =>
+                    Task.FromResult(ToGatedAsyncEnumerable(messages, gate, ct))
+            );
     }
 
     /// <summary>
@@ -415,7 +441,8 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
     private static async IAsyncEnumerable<IMessage> ToGatedAsyncEnumerable(
         List<IMessage> messages,
         TaskCompletionSource gate,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         await gate.Task.WaitAsync(ct);
         foreach (var msg in messages)

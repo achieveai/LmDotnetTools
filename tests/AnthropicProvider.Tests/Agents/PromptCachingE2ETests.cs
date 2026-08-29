@@ -20,12 +20,12 @@ public class PromptCachingE2ETests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
-        var agent = new AnthropicAgent(
-            "TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
-        );
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
 
         var messages = new IMessage[]
         {
@@ -98,8 +98,8 @@ public class PromptCachingE2ETests : LoggingTestBase
         Assert.True(usageMessage.Usage.CompletionTokens > 0, "CompletionTokens should be positive");
 
         Logger.LogInformation(
-            "E2E test passed: cache_control on request, usage on response. " +
-            "CachedTokens={CachedTokens}, CompletionTokens={CompletionTokens}",
+            "E2E test passed: cache_control on request, usage on response. "
+                + "CachedTokens={CachedTokens}, CompletionTokens={CompletionTokens}",
             usageMessage.Usage.TotalCachedTokens,
             usageMessage.Usage.CompletionTokens
         );

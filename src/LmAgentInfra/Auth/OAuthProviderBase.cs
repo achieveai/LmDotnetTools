@@ -23,7 +23,13 @@ public abstract class OAuthProviderBase : IOAuthTokenProvider
     };
 
     private readonly object _statusGate = new();
-    private OAuthStatus _status = new(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null);
+    private OAuthStatus _status = new(
+        OAuthSignInState.NotStarted,
+        Account: null,
+        Scopes: [],
+        ExpiresAtUtc: null,
+        Error: null
+    );
     private CancellationTokenSource? _signInCts;
     private Task? _signInTask;
 
@@ -59,7 +65,10 @@ public abstract class OAuthProviderBase : IOAuthTokenProvider
     public abstract Task SignOutAsync(CancellationToken ct = default);
 
     /// <inheritdoc />
-    public abstract Task<OAuthAccessToken> GetAccessTokenAsync(IReadOnlyList<string>? scopes = null, CancellationToken ct = default);
+    public abstract Task<OAuthAccessToken> GetAccessTokenAsync(
+        IReadOnlyList<string>? scopes = null,
+        CancellationToken ct = default
+    );
 
     /// <summary>Atomically swaps the current status.</summary>
     protected void SetStatus(OAuthStatus status)
@@ -106,7 +115,8 @@ public abstract class OAuthProviderBase : IOAuthTokenProvider
                     Logger.LogError(ex, "Provider {ProviderId} interactive sign-in failed.", ProviderId);
                 }
             },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         // Publish under the same gate as the status so a concurrent CancelSignInAsync (sign-out,
         // re-sign-in) never observes a torn cts/task pair.

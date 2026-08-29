@@ -69,9 +69,7 @@ public class FunctionCallMiddlewareTests
         };
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() => new FunctionCallMiddleware(
-            functions,
-            null!));
+        var exception = Assert.Throws<ArgumentException>(() => new FunctionCallMiddleware(functions, null!));
 
         Assert.Contains("Function map must be provided", exception.Message);
         Assert.Equal("functionMap", exception.ParamName);
@@ -291,15 +289,7 @@ public class FunctionCallMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                [
-                    new ToolsCallMessage
-                    {
-                        Role = Role.Assistant,
-                        ToolCalls = [providerServerCall],
-                    },
-                ]
-            );
+            .ReturnsAsync([new ToolsCallMessage { Role = Role.Assistant, ToolCalls = [providerServerCall] }]);
 
         var context = new MiddlewareContext(
             [new TextMessage { Role = Role.User, Text = "search" }],
@@ -334,31 +324,29 @@ public class FunctionCallMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                [
-                    new ToolsCallMessage
-                    {
-                        Role = Role.Assistant,
-                        ToolCalls =
-                        [
-                            new ToolCall
-                            {
-                                FunctionName = "add",
-                                FunctionArgs = """{"a": 1, "b": 2}""",
-                                ToolCallId = localCallId,
-                                ExecutionTarget = ExecutionTarget.LocalFunction,
-                            },
-                            new ToolCall
-                            {
-                                FunctionName = "web_search",
-                                FunctionArgs = """{"query":"weather"}""",
-                                ToolCallId = providerCallId,
-                                ExecutionTarget = ExecutionTarget.ProviderServer,
-                            },
-                        ],
-                    },
-                ]
-            );
+            .ReturnsAsync([
+                new ToolsCallMessage
+                {
+                    Role = Role.Assistant,
+                    ToolCalls =
+                    [
+                        new ToolCall
+                        {
+                            FunctionName = "add",
+                            FunctionArgs = """{"a": 1, "b": 2}""",
+                            ToolCallId = localCallId,
+                            ExecutionTarget = ExecutionTarget.LocalFunction,
+                        },
+                        new ToolCall
+                        {
+                            FunctionName = "web_search",
+                            FunctionArgs = """{"query":"weather"}""",
+                            ToolCallId = providerCallId,
+                            ExecutionTarget = ExecutionTarget.ProviderServer,
+                        },
+                    ],
+                },
+            ]);
 
         var context = new MiddlewareContext(
             [new TextMessage { Role = Role.User, Text = "do both" }],
@@ -442,8 +430,7 @@ public class FunctionCallMiddlewareTests
         };
         var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["approve_action"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred()),
+            ["approve_action"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()),
         };
 
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -480,8 +467,7 @@ public class FunctionCallMiddlewareTests
         };
         var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["approve_action"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred()),
+            ["approve_action"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()),
         };
 
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -491,10 +477,13 @@ public class FunctionCallMiddlewareTests
         var mockAgent = new Mock<IAgent>();
         var agentReply = CreateToolCallMessage("approve_action", new { action = "send_email" });
         _ = mockAgent
-            .Setup(a => a.GenerateReplyAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync([agentReply]);
 
         // Act
@@ -522,8 +511,7 @@ public class FunctionCallMiddlewareTests
         };
         var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["approve_action"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred()),
+            ["approve_action"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()),
         };
 
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -540,7 +528,9 @@ public class FunctionCallMiddlewareTests
         }
 
         // Assert
-        var resultMessage = Assert.IsType<ToolsCallResultMessage>(Assert.Single(results.OfType<ToolsCallResultMessage>()));
+        var resultMessage = Assert.IsType<ToolsCallResultMessage>(
+            Assert.Single(results.OfType<ToolsCallResultMessage>())
+        );
         var deferredResult = Assert.Single(resultMessage.ToolCallResults);
         Assert.True(deferredResult.IsDeferred);
         Assert.Equal(string.Empty, deferredResult.Result);
@@ -563,10 +553,8 @@ public class FunctionCallMiddlewareTests
         };
         var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["fast_lookup"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                ToolHandlerResult.FromText("result_42")),
-            ["slow_approval"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred()),
+            ["fast_lookup"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("result_42")),
+            ["slow_approval"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()),
         };
 
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -625,8 +613,7 @@ public class FunctionCallMiddlewareTests
             ["echo_id"] = (args, ctx, ct) =>
             {
                 capturedContext = ctx;
-                return Task.FromResult<ToolHandlerResult>(
-                    ToolHandlerResult.FromText("ok"));
+                return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok"));
             },
         };
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -635,7 +622,12 @@ public class FunctionCallMiddlewareTests
         {
             ToolCalls =
             [
-                new ToolCall { FunctionName = "echo_id", FunctionArgs = "{}", ToolCallId = "call_abc123" },
+                new ToolCall
+                {
+                    FunctionName = "echo_id",
+                    FunctionArgs = "{}",
+                    ToolCallId = "call_abc123",
+                },
             ],
             Role = Role.Assistant,
         };
@@ -664,8 +656,7 @@ public class FunctionCallMiddlewareTests
             ["capture_ct"] = (args, ctx, ct) =>
             {
                 capturedToken = ct;
-                return Task.FromResult<ToolHandlerResult>(
-                    ToolHandlerResult.FromText("ok"));
+                return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok"));
             },
         };
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -674,7 +665,12 @@ public class FunctionCallMiddlewareTests
         {
             ToolCalls =
             [
-                new ToolCall { FunctionName = "capture_ct", FunctionArgs = "{}", ToolCallId = "call_ct" },
+                new ToolCall
+                {
+                    FunctionName = "capture_ct",
+                    FunctionArgs = "{}",
+                    ToolCallId = "call_ct",
+                },
             ],
             Role = Role.Assistant,
         };
@@ -1127,7 +1123,10 @@ public class FunctionCallMiddlewareTests
 
         TestContextLogger.LogDebugMessage("Function map created");
 
-        var middleware = new FunctionCallMiddleware(functionContracts, LegacyHandlerAdapter.WrapToNewHandlers(functionMap));
+        var middleware = new FunctionCallMiddleware(
+            functionContracts,
+            LegacyHandlerAdapter.WrapToNewHandlers(functionMap)
+        );
 
         TestContextLogger.LogDebugMessage("Middleware created");
 
@@ -1181,7 +1180,11 @@ public class FunctionCallMiddlewareTests
         var responses = new List<IMessage>();
         await foreach (var response in responseStream)
         {
-            TestContextLogger.LogDebug("Response received: {MessageType}, Role: {Role}", response.GetType().Name, response.Role);
+            TestContextLogger.LogDebug(
+                "Response received: {MessageType}, Role: {Role}",
+                response.GetType().Name,
+                response.Role
+            );
             if (response is ToolsCallMessage toolsCall)
             {
                 TestContextLogger.LogDebug("Tool calls count: {ToolCallCount}", toolsCall.ToolCalls?.Count ?? 0);
@@ -1194,7 +1197,11 @@ public class FunctionCallMiddlewareTests
         TestContextLogger.LogDebug("Total responses: {ResponseCount}", responses.Count);
         foreach (var response in responses)
         {
-            TestContextLogger.LogDebug("Response type: {MessageType}, Role: {Role}", response.GetType().Name, response.Role);
+            TestContextLogger.LogDebug(
+                "Response type: {MessageType}, Role: {Role}",
+                response.GetType().Name,
+                response.Role
+            );
         }
 
         TestContextLogger.LogDebugMessage("=== END DEBUG ===");
@@ -1368,7 +1375,10 @@ public class FunctionCallMiddlewareTests
             },
         };
 
-        var middleware = new FunctionCallMiddleware(functionContracts, LegacyHandlerAdapter.WrapToNewHandlers(functionMap));
+        var middleware = new FunctionCallMiddleware(
+            functionContracts,
+            LegacyHandlerAdapter.WrapToNewHandlers(functionMap)
+        );
 
         var messages = new List<IMessage>
         {
@@ -1416,7 +1426,11 @@ public class FunctionCallMiddlewareTests
         TestContextLogger.LogDebug("Total responses: {ResponseCount}", responses.Count);
         foreach (var response in responses)
         {
-            TestContextLogger.LogDebug("Response type: {MessageType}, Role: {Role}", response.GetType().Name, response.Role);
+            TestContextLogger.LogDebug(
+                "Response type: {MessageType}, Role: {Role}",
+                response.GetType().Name,
+                response.Role
+            );
         }
 
         Assert.NotEmpty(responses);
@@ -1446,7 +1460,11 @@ public class FunctionCallMiddlewareTests
         );
 
         // Create the middleware with the MCP tools
-        var middleware = new FunctionCallMiddleware(functions, LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "McpCalculatorTest");
+        var middleware = new FunctionCallMiddleware(
+            functions,
+            LegacyHandlerAdapter.WrapToNewHandlers(functionMap),
+            name: "McpCalculatorTest"
+        );
 
         // Create large numbers to test with
         var firstNumber = 9876543210.123;
@@ -1714,7 +1732,11 @@ public class FunctionCallMiddlewareTests
             var responses = new List<IMessage>();
             await foreach (var response in streamingResponse2)
             {
-                TestContextLogger.LogDebug("Agent response: {MessageType}, Role: {Role}", response.GetType().Name, response.Role);
+                TestContextLogger.LogDebug(
+                    "Agent response: {MessageType}, Role: {Role}",
+                    response.GetType().Name,
+                    response.Role
+                );
                 responses.Add(response);
             }
 

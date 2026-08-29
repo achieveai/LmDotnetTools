@@ -25,8 +25,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     private const string DefaultBranch = "main";
     private const string NotesRelPath = "PRs/github/achieveai-lmdotnettools/151";
 
-    private readonly string _hostRoot =
-        Path.Combine(Path.GetTempPath(), "crd-prep-" + Guid.NewGuid().ToString("N"));
+    private readonly string _hostRoot = Path.Combine(Path.GetTempPath(), "crd-prep-" + Guid.NewGuid().ToString("N"));
 
     public void Dispose()
     {
@@ -57,15 +56,22 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             fileSystem,
             "ado",
             NullLoggerFactory.Instance,
-            requireSdkOwnershipMarker: true);
+            requireSdkOwnershipMarker: true
+        );
 
         await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
-            command => command == $"rm -rf -- {slot.StorePath}",
-            "an unmarked warm store may carry host-git line-ending and ownership state");
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
-            command => command.Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal));
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .Contain(
+                command => command == $"rm -rf -- {slot.StorePath}",
+                "an unmarked warm store may carry host-git line-ending and ownership state"
+            );
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .Contain(command => command.Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal));
         fileSystem.Files.Should().ContainKey($"{slot.StorePath}/{ReviewSlotPreparer.SdkOwnershipMarkerFile}");
     }
 
@@ -81,14 +87,19 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             fileSystem,
             "ado",
             NullLoggerFactory.Instance,
-            requireSdkOwnershipMarker: true);
+            requireSdkOwnershipMarker: true
+        );
 
         await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.StartsWith("rm -rf --", StringComparison.Ordinal));
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.Contains(" clone ", StringComparison.Ordinal));
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(command => command.StartsWith("rm -rf --", StringComparison.Ordinal));
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(command => command.Contains(" clone ", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -102,20 +113,26 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var fileSystem = SeedGitmodules(slot.StorePath)
             .Seed(
                 $"{slot.StorePath}/{ReviewSlotPreparer.SdkOwnershipMarkerFile}",
-                new string('x', (int)SandboxReadLimits.RepositoryFileBytes + 1));
+                new string('x', (int)SandboxReadLimits.RepositoryFileBytes + 1)
+            );
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             fileSystem,
             "ado",
             NullLoggerFactory.Instance,
-            requireSdkOwnershipMarker: true);
+            requireSdkOwnershipMarker: true
+        );
 
         await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.StartsWith("rm -rf --", StringComparison.Ordinal));
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.Contains(" clone ", StringComparison.Ordinal));
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(command => command.StartsWith("rm -rf --", StringComparison.Ordinal));
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(command => command.Contains(" clone ", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -133,17 +150,29 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         File.SetAttributes(readOnlyPack, FileAttributes.ReadOnly);
         var runner = new FakeSandboxCommandRunner();
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
-        Directory.Exists(slot.StorePath).Should().BeFalse(
-            "the corrupt host store is removed outright so the clone below lands in a fresh directory");
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.StartsWith("rm -rf --", StringComparison.Ordinal),
-            "host paths must not be passed to sandbox/POSIX command semantics");
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
-            command => command.Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal));
+        Directory
+            .Exists(slot.StorePath)
+            .Should()
+            .BeFalse("the corrupt host store is removed outright so the clone below lands in a fresh directory");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                command => command.StartsWith("rm -rf --", StringComparison.Ordinal),
+                "host paths must not be passed to sandbox/POSIX command semantics"
+            );
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .Contain(command => command.Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -163,14 +192,21 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         File.SetAttributes(victim, FileAttributes.ReadOnly);
         DirectoryLink.Create(Path.Combine(slot.StorePath, ".git", "modules"), outside);
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(new FakeSandboxCommandRunner()), new HostFileSystem(), "github",
-            NullLoggerFactory.Instance);
+            new GitRunner(new FakeSandboxCommandRunner()),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
         File.Exists(victim).Should().BeTrue("the wipe unlinks the junction; it never deletes past it");
-        File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue(
-            "clearing read-only outside the store is a write on the daemon host chosen by whoever planted the link");
+        File.GetAttributes(victim)
+            .HasFlag(FileAttributes.ReadOnly)
+            .Should()
+            .BeTrue(
+                "clearing read-only outside the store is a write on the daemon host chosen by whoever planted the link"
+            );
         Directory.Exists(slot.StorePath).Should().BeFalse("the store itself is still wiped");
         File.SetAttributes(victim, FileAttributes.Normal); // so Dispose's best-effort wipe can reach it
     }
@@ -193,19 +229,33 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         DirectoryLink.Create(storeRoot, outside);
         var runner = new FakeSandboxCommandRunner();
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var act = async () => await preparer.RecloneStoreAsync(storeRoot, StoreUrl, CancellationToken.None);
 
         _ = await act.Should().ThrowAsync<SlotAddressUnusableException>();
-        File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue(
-            "clearing read-only THROUGH the root is the same write outside the store the child check refuses");
-        HostPathGuard.Check(storeRoot).Should().Be(
-            new HostPathRefusal(storeRoot, HostPathVerdict.Redirected),
-            "refusing means refusing both ways: the link is not followed and it is not removed either");
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.Contains(" clone ", StringComparison.Ordinal),
-            "a clone after the refusal would land the store wherever the link aims");
+        File.GetAttributes(victim)
+            .HasFlag(FileAttributes.ReadOnly)
+            .Should()
+            .BeTrue("clearing read-only THROUGH the root is the same write outside the store the child check refuses");
+        HostPathGuard
+            .Check(storeRoot)
+            .Should()
+            .Be(
+                new HostPathRefusal(storeRoot, HostPathVerdict.Redirected),
+                "refusing means refusing both ways: the link is not followed and it is not removed either"
+            );
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                command => command.Contains(" clone ", StringComparison.Ordinal),
+                "a clone after the refusal would land the store wherever the link aims"
+            );
         File.SetAttributes(victim, FileAttributes.Normal); // so Dispose's best-effort wipe can reach it
     }
 
@@ -226,20 +276,37 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         await File.WriteAllTextAsync(
             Path.Combine(slot.StorePath, ".gitmodules"),
             "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
-                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(new FakeSandboxCommandRunner()), new HostFileSystem(), "github",
-            NullLoggerFactory.Instance);
+            new GitRunner(new FakeSandboxCommandRunner()),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
-        var act = async () => await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+        var act = async () =>
+            await preparer.PrepareAsync(
+                slot,
+                CreateRun(),
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            );
 
         _ = await act.Should().ThrowAsync<SlotAddressUnusableException>();
         File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue();
-        HostPathGuard.Check(slot.ScratchPath).Should().Be(
-            new HostPathRefusal(slot.ScratchPath, HostPathVerdict.Redirected),
-            "the scratch link survives the refusal untouched — removing and re-creating it IS the repair");
+        HostPathGuard
+            .Check(slot.ScratchPath)
+            .Should()
+            .Be(
+                new HostPathRefusal(slot.ScratchPath, HostPathVerdict.Redirected),
+                "the scratch link survives the refusal untouched — removing and re-creating it IS the repair"
+            );
         File.SetAttributes(victim, FileAttributes.Normal); // so Dispose's best-effort wipe can reach it
     }
 
@@ -262,18 +329,30 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         FileLink.Create(storeRoot, victim);
         var runner = new FakeSandboxCommandRunner();
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var act = async () => await preparer.RecloneStoreAsync(storeRoot, StoreUrl, CancellationToken.None);
 
         _ = await act.Should().ThrowAsync<SlotAddressUnusableException>();
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.Contains(" clone ", StringComparison.Ordinal),
-            "a root that reads as absent is still a root that redirects, and cloning onto it writes outside");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                command => command.Contains(" clone ", StringComparison.Ordinal),
+                "a root that reads as absent is still a root that redirects, and cloning onto it writes outside"
+            );
         (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
-        HostPathGuard.Check(storeRoot).Should().Be(
-            new HostPathRefusal(storeRoot, HostPathVerdict.Redirected),
-            "refusing means refusing both ways: the link is not followed and it is not removed either");
+        HostPathGuard
+            .Check(storeRoot)
+            .Should()
+            .Be(
+                new HostPathRefusal(storeRoot, HostPathVerdict.Redirected),
+                "refusing means refusing both ways: the link is not followed and it is not removed either"
+            );
     }
 
     [RequiresUnreadableEntryFact("a readable entry cannot show the difference between absent and un-inspectable")]
@@ -290,18 +369,30 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         using var denied = UnreadableEntry.Create(slotPath);
         var runner = new FakeSandboxCommandRunner();
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var act = async () => await preparer.RecloneStoreAsync(denied.Path, StoreUrl, CancellationToken.None);
 
         _ = await act.Should().ThrowAsync<SlotAddressUnusableException>();
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.Contains(" clone ", StringComparison.Ordinal),
-            "cloning onto a path the daemon could not inspect is the write the whole check exists to prevent");
-        HostPathGuard.Check(denied.Path).Should().Be(
-            new HostPathRefusal(denied.Path, HostPathVerdict.Unreadable),
-            "the refusal has to name what actually stopped it — reporting a link that was never there sends "
-                + "the next reader looking for one");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                command => command.Contains(" clone ", StringComparison.Ordinal),
+                "cloning onto a path the daemon could not inspect is the write the whole check exists to prevent"
+            );
+        HostPathGuard
+            .Check(denied.Path)
+            .Should()
+            .Be(
+                new HostPathRefusal(denied.Path, HostPathVerdict.Unreadable),
+                "the refusal has to name what actually stopped it — reporting a link that was never there sends "
+                    + "the next reader looking for one"
+            );
     }
 
     [RequiresUnreadableEntryFact("a listable directory cannot show the difference between empty and un-listable")]
@@ -318,18 +409,29 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         using var denied = UnreadableEntry.UnlistableDirectory(opaque);
         var runner = new FakeSandboxCommandRunner();
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var act = async () => await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
         var refusal = await act.Should().ThrowAsync<SlotAddressUnusableException>();
         refusal.Which.Message.Should().Contain(opaque, "the message is the operator's only account of what stopped");
-        refusal.Which.InnerException.Should().BeOfType<UnauthorizedAccessException>(
-            "a denial and a failing device produce the same refusal but not the same operator response");
+        refusal
+            .Which.InnerException.Should()
+            .BeOfType<UnauthorizedAccessException>(
+                "a denial and a failing device produce the same refusal but not the same operator response"
+            );
         Directory.Exists(opaque).Should().BeTrue("refusing means refusing both ways — it is not deleted either");
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.Contains(" clone ", StringComparison.Ordinal),
-            "a clone here would write a fresh store over a directory nobody established anything about");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                command => command.Contains(" clone ", StringComparison.Ordinal),
+                "a clone here would write a fresh store over a directory nobody established anything about"
+            );
     }
 
     [RequiresUnreadableEntryFact("a removable link cannot show what happens when the unlink is refused")]
@@ -356,29 +458,49 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         using var undeletable = UnreadableEntry.UndeletableLink(planted, outside);
         var runner = new FakeSandboxCommandRunner();
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var act = async () => await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
-        var refusal = await act.Should().ThrowAsync<SlotAddressUnusableException>(
-            "an ordinary I/O exception here is returned to the pool and leased again forever");
+        var refusal = await act.Should()
+            .ThrowAsync<SlotAddressUnusableException>(
+                "an ordinary I/O exception here is returned to the pool and leased again forever"
+            );
         refusal.Which.Message.Should().Contain(planted, "the message is the operator's only account of what stopped");
-        refusal.Which.Message.Should().Contain(
-            "symlink or junction",
-            "the verdict is the operator's next move: reporting this as unreadable sends them hunting a read "
-                + "permission on an entry whose problem is that it redirects and will not come out");
-        (refusal.Which.InnerException is IOException or UnauthorizedAccessException).Should().BeTrue(
-            "a denial and a failing device produce the same refusal but not the same operator response, and the "
-                + "cause carried here was {0}",
-            refusal.Which.InnerException?.GetType().Name ?? "nothing at all");
-        Directory.Exists(planted).Should().BeTrue(
-            "the entry that stopped the walk is left exactly as found — the wipe refused it, it did not lose a "
-                + "race with it");
+        refusal
+            .Which.Message.Should()
+            .Contain(
+                "symlink or junction",
+                "the verdict is the operator's next move: reporting this as unreadable sends them hunting a read "
+                    + "permission on an entry whose problem is that it redirects and will not come out"
+            );
+        (refusal.Which.InnerException is IOException or UnauthorizedAccessException)
+            .Should()
+            .BeTrue(
+                "a denial and a failing device produce the same refusal but not the same operator response, and the "
+                    + "cause carried here was {0}",
+                refusal.Which.InnerException?.GetType().Name ?? "nothing at all"
+            );
+        Directory
+            .Exists(planted)
+            .Should()
+            .BeTrue(
+                "the entry that stopped the walk is left exactly as found — the wipe refused it, it did not lose a "
+                    + "race with it"
+            );
         (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.Contains(" clone ", StringComparison.Ordinal),
-            "a clone onto a store still holding the entry the wipe could not remove writes into a tree that was "
-                + "never actually cleared");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                command => command.Contains(" clone ", StringComparison.Ordinal),
+                "a clone onto a store still holding the entry the wipe could not remove writes into a tree that was "
+                    + "never actually cleared"
+            );
     }
 
     [Fact]
@@ -391,15 +513,23 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot(withGitDir: false);
         var runner = new FakeSandboxCommandRunner();
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
-        var clone = runner.Commands.Should().ContainSingle(
-            c => string.Join(' ', c.Argv).Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal))
+        var clone = runner
+            .Commands.Should()
+            .ContainSingle(c =>
+                string.Join(' ', c.Argv).Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal)
+            )
             .Subject;
-        clone.WorkingDirectory.Should().BeNull(
-            "the daemon host has no /workspace, so pinning it as the clone's cwd fails the first-use clone");
+        clone
+            .WorkingDirectory.Should()
+            .BeNull("the daemon host has no /workspace, so pinning it as the clone's cwd fails the first-use clone");
     }
 
     [Fact]
@@ -410,12 +540,19 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot(withGitDir: false);
         var runner = new FakeSandboxCommandRunner();
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), new FakeSandboxFileSystem(), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            new FakeSandboxFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
-        var clone = runner.Commands.Should().ContainSingle(
-            c => string.Join(' ', c.Argv).Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal))
+        var clone = runner
+            .Commands.Should()
+            .ContainSingle(c =>
+                string.Join(' ', c.Argv).Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal)
+            )
             .Subject;
         clone.WorkingDirectory.Should().Be("/workspace");
     }
@@ -436,21 +573,39 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         File.WriteAllText(
             Path.Combine(slot.StorePath, ".gitmodules"),
             "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
-                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains("find ", new SandboxCommandResult(1, string.Empty, "'find' is not recognized"));
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         _ = await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+            slot,
+            CreateRun(),
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         File.Exists(staleLock).Should().BeFalse("clean-on-entry clears the stale lock with host filesystem APIs");
         File.Exists(Path.Combine(gitDir, "MERGE_HEAD")).Should().BeFalse();
         Directory.Exists(Path.Combine(gitDir, "rebase-merge")).Should().BeFalse();
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.StartsWith("find ", StringComparison.Ordinal),
-            "host stale-state cleanup must not be routed through POSIX find");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                command => command.StartsWith("find ", StringComparison.Ordinal),
+                "host stale-state cleanup must not be routed through POSIX find"
+            );
     }
 
     [Fact]
@@ -459,14 +614,22 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var runner = new FakeSandboxCommandRunner();
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.StartsWith("rm -rf --", StringComparison.Ordinal));
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.Contains(" clone ", StringComparison.Ordinal));
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(command => command.StartsWith("rm -rf --", StringComparison.Ordinal));
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(command => command.Contains(" clone ", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -475,32 +638,58 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
-            $"rev-parse --verify origin/{Branch}", new SandboxCommandResult(1, string.Empty, "fatal: unknown revision"));
+            $"rev-parse --verify origin/{Branch}",
+            new SandboxCommandResult(1, string.Empty, "fatal: unknown revision")
+        );
         var fileSystem = SeedGitmodules(slot.StorePath);
         var preparer = new ReviewSlotPreparer(new GitRunner(runner), fileSystem, "github", NullLoggerFactory.Instance);
         var run = CreateRun();
 
         var result = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(
-            a => a.Contains($"checkout -B {Branch} {DefaultBranch}"),
-            "a brand-new branch is cut from the default branch");
-        commands.Should().NotContain(
-            a => a.Contains($"checkout -B {Branch} origin/{Branch}"),
-            "there is no prior origin branch to reuse");
-        commands.Should().Contain(
-            a => a.Contains("submodule update --init") && a.Contains(SubmoduleRelPath),
-            "the reviewed submodule is initialized exactly like InitAllowListedSubmodulesAsync");
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains($"checkout -B {Branch} {DefaultBranch}"),
+                "a brand-new branch is cut from the default branch"
+            );
+        commands
+            .Should()
+            .NotContain(
+                a => a.Contains($"checkout -B {Branch} origin/{Branch}"),
+                "there is no prior origin branch to reuse"
+            );
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains("submodule update --init") && a.Contains(SubmoduleRelPath),
+                "the reviewed submodule is initialized exactly like InitAllowListedSubmodulesAsync"
+            );
 
         var expectedTargetDir = $"{slot.StorePath}/{SubmoduleRelPath}";
-        commands.Should().Contain(
-            a => a.Contains($"-C {expectedTargetDir} fetch origin {run.BaseSha} {run.HeadSha}"),
-            "the submodule fetches exactly the PR's base+head commits");
-        commands.Should().Contain(
-            a => a.Contains($"-C {expectedTargetDir} checkout --force {run.HeadSha}"),
-            "the submodule working tree is advanced to the PR head");
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains($"-C {expectedTargetDir} fetch origin {run.BaseSha} {run.HeadSha}"),
+                "the submodule fetches exactly the PR's base+head commits"
+            );
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains($"-C {expectedTargetDir} checkout --force {run.HeadSha}"),
+                "the submodule working tree is advanced to the PR head"
+            );
 
         result.Branch.Should().Be(Branch);
     }
@@ -511,21 +700,38 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
-            $"rev-parse --verify origin/{Branch}", new SandboxCommandResult(0, "abc123\n", string.Empty));
+            $"rev-parse --verify origin/{Branch}",
+            new SandboxCommandResult(0, "abc123\n", string.Empty)
+        );
         var fileSystem = SeedGitmodules(slot.StorePath);
         var preparer = new ReviewSlotPreparer(new GitRunner(runner), fileSystem, "github", NullLoggerFactory.Instance);
         var run = CreateRun();
 
         _ = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(
-            a => a.Contains($"checkout -B {Branch} origin/{Branch}"),
-            "the existing remote branch (and its prior notes) is reused");
-        commands.Should().NotContain(
-            a => a.Contains($"checkout -B {Branch} {DefaultBranch}"),
-            "the default branch must not be used when the persistent branch already exists — this would wipe prior notes");
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains($"checkout -B {Branch} origin/{Branch}"),
+                "the existing remote branch (and its prior notes) is reused"
+            );
+        commands
+            .Should()
+            .NotContain(
+                a => a.Contains($"checkout -B {Branch} {DefaultBranch}"),
+                "the default branch must not be used when the persistent branch already exists — this would wipe prior notes"
+            );
     }
 
     [Fact]
@@ -537,23 +743,39 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         File.WriteAllText(
             Path.Combine(slot.StorePath, ".gitmodules"),
             "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
-                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         var runner = new FakeSandboxCommandRunner();
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner),
             new HostFileSystem(),
             "github",
-            NullLoggerFactory.Instance);
+            NullLoggerFactory.Instance
+        );
 
         _ = await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+            slot,
+            CreateRun(),
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         Directory.Exists(slot.ScratchPath).Should().BeTrue();
         Directory.EnumerateFileSystemEntries(slot.ScratchPath).Should().BeEmpty();
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            command => command.StartsWith("rm -rf --", StringComparison.Ordinal)
-                || command.StartsWith("mkdir -p --", StringComparison.Ordinal),
-            "host paths must not be passed to sandbox/POSIX command semantics");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                command =>
+                    command.StartsWith("rm -rf --", StringComparison.Ordinal)
+                    || command.StartsWith("mkdir -p --", StringComparison.Ordinal),
+                "host paths must not be passed to sandbox/POSIX command semantics"
+            );
     }
 
     [Fact]
@@ -567,7 +789,16 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var preparer = new ReviewSlotPreparer(new GitRunner(runner), fileSystem, "github", NullLoggerFactory.Instance);
 
         _ = await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+            slot,
+            CreateRun(),
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         Directory.Exists(slot.ScratchPath).Should().BeTrue("the scratch dir is recreated, not merely left deleted");
         File.Exists(markerFile).Should().BeFalse("a stale file from a prior review must not survive the wipe");
@@ -583,7 +814,16 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var preparer = new ReviewSlotPreparer(new GitRunner(runner), fileSystem, "github", NullLoggerFactory.Instance);
 
         var result = await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+            slot,
+            CreateRun(),
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         result.StoreRoot.Should().Be(slot.StorePath);
         result.TargetDir.Should().Be($"{slot.StorePath}/{SubmoduleRelPath}");
@@ -601,10 +841,23 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         File.WriteAllText(staleLock, string.Empty);
         var runner = new FakeSandboxCommandRunner();
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         _ = await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+            slot,
+            CreateRun(),
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         File.Exists(staleLock).Should().BeFalse("clean-on-entry clears the stale lock before the git steps");
     }
@@ -614,12 +867,27 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     {
         var slot = CreateSlot(withGitDir: false);
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(new FakeSandboxCommandRunner()), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(new FakeSandboxCommandRunner()),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
-        var act = async () => await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+        var act = async () =>
+            await preparer.PrepareAsync(
+                slot,
+                CreateRun(),
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            );
 
-        await act.Should().ThrowAsync<SlotNeedsRecloneException>("a structurally broken store must escalate to re-clone");
+        await act.Should()
+            .ThrowAsync<SlotNeedsRecloneException>("a structurally broken store must escalate to re-clone");
     }
 
     [RequiresUnreadableEntryFact("a listable directory cannot show the difference between empty and un-listable")]
@@ -639,20 +907,35 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         await File.WriteAllTextAsync(
             Path.Combine(slot.StorePath, ".gitmodules"),
             "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
-                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(new FakeSandboxCommandRunner()), new HostFileSystem(), "github",
-            NullLoggerFactory.Instance);
+            new GitRunner(new FakeSandboxCommandRunner()),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
-        var act = async () => await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+        var act = async () =>
+            await preparer.PrepareAsync(
+                slot,
+                CreateRun(),
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            );
 
         // A single typed assertion is the whole decision: SlotAddressUnusableException and
         // SlotNeedsRecloneException are unrelated sealed types, so before the fix (which threw the reclone type)
         // this line fails, and after it passes.
-        await act.Should().ThrowAsync<SlotAddressUnusableException>(
-            "an unreadable store cleanup retires the slot; re-cloning it walks the wipe into the same wall");
+        await act.Should()
+            .ThrowAsync<SlotAddressUnusableException>(
+                "an unreadable store cleanup retires the slot; re-cloning it walks the wipe into the same wall"
+            );
     }
 
     [Fact]
@@ -662,14 +945,36 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "submodule update --init",
-            new SandboxCommandResult(1, string.Empty, "fatal: Unable to create '.git/modules/sub/index.lock': File exists."));
+            new SandboxCommandResult(
+                1,
+                string.Empty,
+                "fatal: Unable to create '.git/modules/sub/index.lock': File exists."
+            )
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
-        var act = async () => await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+        var act = async () =>
+            await preparer.PrepareAsync(
+                slot,
+                CreateRun(),
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            );
 
-        await act.Should().ThrowAsync<SlotCorruptException>("a corrupt reviewed-submodule init failure (a stuck lock) drives the reclone ladder");
+        await act.Should()
+            .ThrowAsync<SlotCorruptException>(
+                "a corrupt reviewed-submodule init failure (a stuck lock) drives the reclone ladder"
+            );
     }
 
     [Fact]
@@ -682,12 +987,28 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         // therefore retry the warm store, NOT drive a destructive reclone (matching the store-checkout path,
         // which also reclones only on a definitely-Corrupt classification).
         runner.OnArgvContains(
-            "submodule update --init", new SandboxCommandResult(1, string.Empty, "fatal: clone of submodule failed"));
+            "submodule update --init",
+            new SandboxCommandResult(1, string.Empty, "fatal: clone of submodule failed")
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
-        var act = async () => await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+        var act = async () =>
+            await preparer.PrepareAsync(
+                slot,
+                CreateRun(),
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            );
 
         // It still throws (no silent proceed on a half-inited submodule), but the SPECIFIC transient/unknown
         // exception — not the reclone-driving SlotCorruptException, and not some unrelated regression (e.g. an NRE).
@@ -705,16 +1026,38 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         // SlotNeedsRecloneException (which the executor turns into a destructive delete + RecloneStoreAsync).
         runner.OnArgvContains(
             "submodule update --recursive --no-fetch",
-            new SandboxCommandResult(1, string.Empty, "fatal: Unable to checkout 'deadbeef' in submodule path 'repos/X'"));
+            new SandboxCommandResult(
+                1,
+                string.Empty,
+                "fatal: Unable to checkout 'deadbeef' in submodule path 'repos/X'"
+            )
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
-        var thrown = await Record.ExceptionAsync(async () => await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None));
+        var thrown = await Record.ExceptionAsync(async () =>
+            await preparer.PrepareAsync(
+                slot,
+                CreateRun(),
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            )
+        );
 
         // PrepareAsync must complete (hygiene proceeds, then the rest of preparation runs) — NOT throw at all, and
         // in particular NOT the reclone-driving SlotNeedsRecloneException.
-        thrown.Should().BeNull("a non-corrupt hygiene restore failure proceeds; preparation completes without a reclone");
+        thrown
+            .Should()
+            .BeNull("a non-corrupt hygiene restore failure proceeds; preparation completes without a reclone");
     }
 
     /// <summary>
@@ -731,23 +1074,40 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var runner = new FakeSandboxCommandRunner();
         // Exit 0 with no branch header: `status --porcelain -b` cannot produce that, so the output was lost.
-        runner.OnArgvContains(
-            "status --porcelain", new SandboxCommandResult(0, string.Empty, string.Empty));
+        runner.OnArgvContains("status --porcelain", new SandboxCommandResult(0, string.Empty, string.Empty));
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
-        var act = async () => await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+        var act = async () =>
+            await preparer.PrepareAsync(
+                slot,
+                CreateRun(),
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            );
 
-        await act.Should().ThrowExactlyAsync<SlotProbeUnansweredException>(
-            "a re-clone answers a question that was never put, and retirement condemns the address for it");
-        runner.Commands.Select(c => string.Join(' ', c.Argv))
+        await act.Should()
+            .ThrowExactlyAsync<SlotProbeUnansweredException>(
+                "a re-clone answers a question that was never put, and retirement condemns the address for it"
+            );
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
             .Should()
             .NotContain(
                 // `fetch origin` is the FIRST step past the hygiene switch, so its absence pins that the
                 // throw happened at the gate and not somewhere later that happens to raise the same type.
                 a => a.EndsWith("fetch origin", StringComparison.Ordinal),
-                "preparation stops at the gate rather than reviewing a tree nothing established the state of");
+                "preparation stops at the gate rather than reviewing a tree nothing established the state of"
+            );
     }
 
     [Fact]
@@ -758,12 +1118,30 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         runner.OnArgvContains(
             "submodule update --init",
             new SandboxCommandResult(
-                1, string.Empty, "fatal: unable to access 'https://github.com/x': Could not resolve host: github.com"));
+                1,
+                string.Empty,
+                "fatal: unable to access 'https://github.com/x': Could not resolve host: github.com"
+            )
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
-        var act = async () => await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+        var act = async () =>
+            await preparer.PrepareAsync(
+                slot,
+                CreateRun(),
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            );
 
         // A transient auth/network init failure must retry the warm store, NOT trigger a destructive reclone
         // (which cannot fix it and would loop) — so it throws the SPECIFIC transient exception, not the
@@ -779,14 +1157,30 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"checkout --force {run.HeadSha}",
-            new SandboxCommandResult(128, string.Empty, "fatal: Unable to create '.git/index.lock': File exists."));
+            new SandboxCommandResult(128, string.Empty, "fatal: Unable to create '.git/index.lock': File exists.")
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
-        var act = async () => await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+        var act = async () =>
+            await preparer.PrepareAsync(
+                slot,
+                run,
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            );
 
-        await act.Should().ThrowAsync<SlotCorruptException>("a corrupt-classified git failure drives the re-clone ladder");
+        await act.Should()
+            .ThrowAsync<SlotCorruptException>("a corrupt-classified git failure drives the re-clone ladder");
     }
 
     [Fact]
@@ -797,12 +1191,31 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             $"fetch origin {run.BaseSha} {run.HeadSha}",
-            new SandboxCommandResult(128, string.Empty, "fatal: unable to access 'https://x': Could not resolve host: github.com"));
+            new SandboxCommandResult(
+                128,
+                string.Empty,
+                "fatal: unable to access 'https://x': Could not resolve host: github.com"
+            )
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
-        var act = async () => await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+        var act = async () =>
+            await preparer.PrepareAsync(
+                slot,
+                run,
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            );
 
         // A transient network fault is a normal retry (keep the warm store), NOT a re-clone trigger.
         // SlotCorruptException derives from Exception (not InvalidOperationException), so asserting the exact
@@ -831,12 +1244,15 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     /// fact about this daemon's own machine.
     /// </summary>
     private static FakeSandboxCommandRunner FullCloneWhoseMergeBaseAnswers(
-        string target, SandboxCommandResult mergeBase) =>
+        string target,
+        SandboxCommandResult mergeBase
+    ) =>
         new FakeSandboxCommandRunner()
             .OnArgvContains($"-C {target} merge-base", mergeBase)
             .OnArgvContains(
                 $"-C {target} rev-parse --is-shallow-repository",
-                new SandboxCommandResult(0, "false\n", string.Empty));
+                new SandboxCommandResult(0, "false\n", string.Empty)
+            );
 
     /// <summary>
     /// The control for every test that follows, and the one case that keeps its licence. <c>git merge-base</c>
@@ -856,23 +1272,35 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var run = CreateRun();
         using var logs = new CapturingLoggerFactory();
         var target = $"{slot.StorePath}/{SubmoduleRelPath}";
-        var runner = FullCloneWhoseMergeBaseAnswers(
-            target, new SandboxCommandResult(1, string.Empty, string.Empty));
-        var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", logs);
+        var runner = FullCloneWhoseMergeBaseAnswers(target, new SandboxCommandResult(1, string.Empty, string.Empty));
+        var preparer = new ReviewSlotPreparer(new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", logs);
 
         var prepared = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
-        prepared.MergeBase.Should().Be(
-            MergeBaseOutcome.UnrelatedHistories,
-            "exit 1 from merge-base is git's documented 'no common ancestor', and a clone that reports itself "
-                + "not shallow has no more history to find — this is the one shape that is genuinely a fact "
-                + "about the pull request's commits");
-        logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().Contain(
-            m => m.Contains("is not shallow", StringComparison.Ordinal),
-            "and it says so in the terms an operator can check, rather than as an indeterminate shrug");
+        prepared
+            .MergeBase.Should()
+            .Be(
+                MergeBaseOutcome.UnrelatedHistories,
+                "exit 1 from merge-base is git's documented 'no common ancestor', and a clone that reports itself "
+                    + "not shallow has no more history to find — this is the one shape that is genuinely a fact "
+                    + "about the pull request's commits"
+            );
+        logs.Capturing.MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .Contain(
+                m => m.Contains("is not shallow", StringComparison.Ordinal),
+                "and it says so in the terms an operator can check, rather than as an indeterminate shrug"
+            );
     }
 
     /// <summary>
@@ -894,22 +1322,42 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var run = CreateRun();
         var target = $"{slot.StorePath}/{SubmoduleRelPath}";
         var runner = FullCloneWhoseMergeBaseAnswers(
-            target, new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr));
+            target,
+            new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr)
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var prepared = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
-        prepared.MergeBase.Should().Be(
-            MergeBaseOutcome.Indeterminate,
-            "the probe never answered, so nothing about these commits was established — and only "
-                + "UnrelatedHistories is licensed to become author-facing text");
-        prepared.MergeBase.Should().NotBe(
-            MergeBaseOutcome.UnrelatedHistories,
-            "stated separately because this is the assertion that matters: a killed command must never reach "
-                + "the one outcome that tells a pull-request author to re-target or rebase their branch");
+        prepared
+            .MergeBase.Should()
+            .Be(
+                MergeBaseOutcome.Indeterminate,
+                "the probe never answered, so nothing about these commits was established — and only "
+                    + "UnrelatedHistories is licensed to become author-facing text"
+            );
+        prepared
+            .MergeBase.Should()
+            .NotBe(
+                MergeBaseOutcome.UnrelatedHistories,
+                "stated separately because this is the assertion that matters: a killed command must never reach "
+                    + "the one outcome that tells a pull-request author to re-target or rebase their branch"
+            );
     }
 
     /// <summary>
@@ -925,13 +1373,27 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var run = CreateRun();
         var target = $"{slot.StorePath}/{SubmoduleRelPath}";
         var runner = FullCloneWhoseMergeBaseAnswers(
-            target, new SandboxCommandResult(SigkillExit, string.Empty, string.Empty));
+            target,
+            new SandboxCommandResult(SigkillExit, string.Empty, string.Empty)
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var prepared = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         prepared.MergeBase.Should().Be(MergeBaseOutcome.Indeterminate);
     }
@@ -953,22 +1415,41 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             .OnArgvContains($"-C {target} merge-base", new SandboxCommandResult(1, string.Empty, string.Empty))
             .OnArgvContains(
                 $"-C {target} rev-parse --is-shallow-repository",
-                new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr));
+                new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr)
+            );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var prepared = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
-        prepared.MergeBase.Should().Be(
-            MergeBaseOutcome.Indeterminate,
-            "whether the checkout is shallow was never established, and 'we could not ask' is not "
-                + "'we asked and it is a full clone'");
-        prepared.MergeBase.Should().NotBe(
-            MergeBaseOutcome.UnrelatedHistories,
-            "merge-base genuinely said there is no ancestor here — but that only becomes permanent once the "
-                + "clone is KNOWN to hold all the history there is, and a killed probe knows nothing");
+        prepared
+            .MergeBase.Should()
+            .Be(
+                MergeBaseOutcome.Indeterminate,
+                "whether the checkout is shallow was never established, and 'we could not ask' is not "
+                    + "'we asked and it is a full clone'"
+            );
+        prepared
+            .MergeBase.Should()
+            .NotBe(
+                MergeBaseOutcome.UnrelatedHistories,
+                "merge-base genuinely said there is no ancestor here — but that only becomes permanent once the "
+                    + "clone is KNOWN to hold all the history there is, and a killed probe knows nothing"
+            );
     }
 
     /// <summary>A SIGKILL at the same site, for the same reason as the merge-base pair: the rule is "true or
@@ -983,13 +1464,26 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             .OnArgvContains($"-C {target} merge-base", new SandboxCommandResult(1, string.Empty, string.Empty))
             .OnArgvContains(
                 $"-C {target} rev-parse --is-shallow-repository",
-                new SandboxCommandResult(SigkillExit, string.Empty, string.Empty));
+                new SandboxCommandResult(SigkillExit, string.Empty, string.Empty)
+            );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var prepared = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         prepared.MergeBase.Should().Be(MergeBaseOutcome.Indeterminate);
     }
@@ -1001,16 +1495,22 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     /// from these numbers — so scripting them IS scripting the decision.
     /// </summary>
     private static FakeSandboxCommandRunner ShallowCloneCountingBaseAs(
-        string target, string baseSha, string headSha, params SandboxCommandResult[] baseCounts) =>
+        string target,
+        string baseSha,
+        string headSha,
+        params SandboxCommandResult[] baseCounts
+    ) =>
         new FakeSandboxCommandRunner()
             .OnArgvContains($"-C {target} merge-base", new SandboxCommandResult(1, string.Empty, string.Empty))
             .OnArgvContains(
                 $"-C {target} rev-parse --is-shallow-repository",
-                new SandboxCommandResult(0, "true\n", string.Empty))
+                new SandboxCommandResult(0, "true\n", string.Empty)
+            )
             .OnArgvContainsSequence($"-C {target} rev-list --count {baseSha}", baseCounts)
             .OnArgvContains(
                 $"-C {target} rev-list --count {headSha}",
-                new SandboxCommandResult(0, "34579\n", string.Empty));
+                new SandboxCommandResult(0, "34579\n", string.Empty)
+            );
 
     /// <summary>
     /// The third site, and the least obvious of the three because the corrupted value never leaves the method
@@ -1037,21 +1537,40 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             run.BaseSha,
             run.HeadSha,
             new SandboxCommandResult(0, "1\n", string.Empty),
-            new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr));
+            new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr)
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var prepared = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
-        prepared.MergeBase.Should().Be(
-            MergeBaseOutcome.Indeterminate,
-            "an unmeasured round did not observe a flat history, it observed nothing");
-        prepared.MergeBase.Should().NotBe(
-            MergeBaseOutcome.UnrelatedHistories,
-            "reading a lost count as 'this fetch bought no history' is how a killed rev-list becomes a "
-                + "permanent statement about someone else's commits");
+        prepared
+            .MergeBase.Should()
+            .Be(
+                MergeBaseOutcome.Indeterminate,
+                "an unmeasured round did not observe a flat history, it observed nothing"
+            );
+        prepared
+            .MergeBase.Should()
+            .NotBe(
+                MergeBaseOutcome.UnrelatedHistories,
+                "reading a lost count as 'this fetch bought no history' is how a killed rev-list becomes a "
+                    + "permanent statement about someone else's commits"
+            );
     }
 
     /// <summary>A SIGKILL at the counting site. Same rule, second exit code — production has one path for
@@ -1067,13 +1586,26 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             run.BaseSha,
             run.HeadSha,
             new SandboxCommandResult(0, "1\n", string.Empty),
-            new SandboxCommandResult(SigkillExit, string.Empty, string.Empty));
+            new SandboxCommandResult(SigkillExit, string.Empty, string.Empty)
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var prepared = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         prepared.MergeBase.Should().Be(MergeBaseOutcome.Indeterminate);
     }
@@ -1099,23 +1631,32 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     public async Task PrepareAsync_SaysSomethingDifferentWhenTheCountWasKilledThanWhenTheHistoryIsExhausted()
     {
         var exhausted = await GiveUpWarningAsync(new SandboxCommandResult(0, "100\n", string.Empty));
-        var killed = await GiveUpWarningAsync(
-            new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr));
+        var killed = await GiveUpWarningAsync(new SandboxCommandResult(WatchdogKillExit, string.Empty, KilledStderr));
 
-        exhausted.Should().Contain(
-            "unrelated histories",
-            "the measured run reached real roots on both walks, which is a fact about the commits and is "
-                + "allowed to be stated as one");
-        killed.Should().NotContain(
-            "unrelated histories",
-            "the killed run established nothing about the commits, and this phrase is the one that ends up "
-                + "in a pull request telling the author to re-target or rebase");
-        killed.Should().NotBe(
-            exhausted,
-            "if our infrastructure failure and the author's unrelated branch read the same, the distinction "
-                + "exists only in an enum nobody reads");
-        killed.Should().Contain(
-            "UNKNOWN", "and the line has to name what it could not establish, not merely omit the claim");
+        exhausted
+            .Should()
+            .Contain(
+                "unrelated histories",
+                "the measured run reached real roots on both walks, which is a fact about the commits and is "
+                    + "allowed to be stated as one"
+            );
+        killed
+            .Should()
+            .NotContain(
+                "unrelated histories",
+                "the killed run established nothing about the commits, and this phrase is the one that ends up "
+                    + "in a pull request telling the author to re-target or rebase"
+            );
+        killed
+            .Should()
+            .NotBe(
+                exhausted,
+                "if our infrastructure failure and the author's unrelated branch read the same, the distinction "
+                    + "exists only in an enum nobody reads"
+            );
+        killed
+            .Should()
+            .Contain("UNKNOWN", "and the line has to name what it could not establish, not merely omit the claim");
     }
 
     /// <summary>
@@ -1131,21 +1672,36 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         using var logs = new CapturingLoggerFactory();
         var target = $"{slot.StorePath}/{SubmoduleRelPath}";
         var runner = ShallowCloneCountingBaseAs(
-            target, run.BaseSha, run.HeadSha, new SandboxCommandResult(0, "1\n", string.Empty), secondBaseCount);
-        var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", logs);
+            target,
+            run.BaseSha,
+            run.HeadSha,
+            new SandboxCommandResult(0, "1\n", string.Empty),
+            secondBaseCount
+        );
+        var preparer = new ReviewSlotPreparer(new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", logs);
 
         _ = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         // "deepening" is the word both give-up lines share and no other warning on this path uses, so it
         // selects the line under test without presuming which of the two was written.
-        return logs.Capturing.MessagesAtLevel(LogLevel.Warning)
+        return logs
+            .Capturing.MessagesAtLevel(LogLevel.Warning)
             .Where(m => m.Contains("deepening", StringComparison.Ordinal))
-            .Should().ContainSingle(
+            .Should()
+            .ContainSingle(
                 "the climb stops once and says why once; two lines here would mean the assertion below is "
-                    + "comparing an arbitrary one of them")
+                    + "comparing an arbitrary one of them"
+            )
             .Subject;
     }
 
@@ -1165,29 +1721,53 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             .OnArgvContainsSequence(
                 $"-C {target} merge-base",
                 new SandboxCommandResult(1, string.Empty, string.Empty),
-                new SandboxCommandResult(0, "d34db33f\n", string.Empty))
+                new SandboxCommandResult(0, "d34db33f\n", string.Empty)
+            )
             .OnArgvContains(
                 $"-C {target} rev-parse --is-shallow-repository",
-                new SandboxCommandResult(0, "true\n", string.Empty))
+                new SandboxCommandResult(0, "true\n", string.Empty)
+            )
             .OnArgvContains(
-                $"-C {target} rev-list --count {run.BaseSha}", new SandboxCommandResult(0, "1\n", string.Empty))
+                $"-C {target} rev-list --count {run.BaseSha}",
+                new SandboxCommandResult(0, "1\n", string.Empty)
+            )
             .OnArgvContains(
                 $"-C {target} rev-list --count {run.HeadSha}",
-                new SandboxCommandResult(0, "34579\n", string.Empty));
+                new SandboxCommandResult(0, "34579\n", string.Empty)
+            );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var prepared = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
-        prepared.MergeBase.Should().Be(
-            MergeBaseOutcome.Resolved,
-            "the deepening fetch brought base its ancestry, and the re-ask after the fetch is what observes it");
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
-            a => a.Contains($"-C {target} fetch --depth=100 origin {run.BaseSha}", StringComparison.Ordinal),
-            "only the truncated commit is named: `--depth` shortens exactly the refs a fetch names, so naming "
-                + "the whole head would slice away the history the merge base is hiding in");
+        prepared
+            .MergeBase.Should()
+            .Be(
+                MergeBaseOutcome.Resolved,
+                "the deepening fetch brought base its ancestry, and the re-ask after the fetch is what observes it"
+            );
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .Contain(
+                a => a.Contains($"-C {target} fetch --depth=100 origin {run.BaseSha}", StringComparison.Ordinal),
+                "only the truncated commit is named: `--depth` shortens exactly the refs a fetch names, so naming "
+                    + "the whole head would slice away the history the merge base is hiding in"
+            );
     }
 
     /// <summary>
@@ -1201,20 +1781,182 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var run = CreateRun();
         var target = $"{slot.StorePath}/{SubmoduleRelPath}";
-        var runner = new FakeSandboxCommandRunner()
-            .OnArgvContains(
-                $"-C {target} merge-base", new SandboxCommandResult(0, "d34db33f\n", string.Empty));
+        var runner = new FakeSandboxCommandRunner().OnArgvContains(
+            $"-C {target} merge-base",
+            new SandboxCommandResult(0, "d34db33f\n", string.Empty)
+        );
         var preparer = new ReviewSlotPreparer(
-            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
 
         var prepared = await preparer.PrepareAsync(
-            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
-            CancellationToken.None);
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
 
         prepared.MergeBase.Should().Be(MergeBaseOutcome.Resolved);
-        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
-            a => a.Contains("fetch --depth=", StringComparison.Ordinal),
-            "the question was already answered, so no history needed buying");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(
+                a => a.Contains("fetch --depth=", StringComparison.Ordinal),
+                "the question was already answered, so no history needed buying"
+            );
+    }
+
+    /// <summary>
+    /// The runner shape the object-store-maintenance pair shares: a shallow checkout whose base sits on the
+    /// graft root, so the climb issues exactly one deepening fetch and then resolves on the re-ask. Extracted
+    /// so the ONLY difference between the two tests below is the flag passed to the preparer.
+    /// </summary>
+    private static FakeSandboxCommandRunner ShallowCloneResolvingAfterOneDeepening(string target, ReviewRun run) =>
+        new FakeSandboxCommandRunner()
+            .OnArgvContainsSequence(
+                $"-C {target} merge-base",
+                new SandboxCommandResult(1, string.Empty, string.Empty),
+                new SandboxCommandResult(0, "d34db33f\n", string.Empty)
+            )
+            .OnArgvContains(
+                $"-C {target} rev-parse --is-shallow-repository",
+                new SandboxCommandResult(0, "true\n", string.Empty)
+            )
+            .OnArgvContains(
+                $"-C {target} rev-list --count {run.BaseSha}",
+                new SandboxCommandResult(0, "1\n", string.Empty)
+            )
+            .OnArgvContains(
+                $"-C {target} rev-list --count {run.HeadSha}",
+                new SandboxCommandResult(0, "34579\n", string.Empty)
+            );
+
+    /// <summary>
+    /// A <c>--depth</c> fetch re-asks from the TIP, so each round of the climb brings the tip's whole tree
+    /// closure down again — measured live as four packs of 7.2-7.7 GB holding the same object set four times
+    /// over. The repack that collapses it must run INSIDE the loop, between this round's fetch and the next
+    /// one, or the peak it is meant to bound has already been reached by the time it runs.
+    /// <para>
+    /// <c>--keep-unreachable</c> is the correctness half and is asserted literally. The PR's base and head
+    /// arrive by raw SHA with nothing but <c>FETCH_HEAD</c> pointing at them, and repack's reachability walk
+    /// does not treat <c>FETCH_HEAD</c> as a root — a plain <c>repack -a -d</c> here DELETES the base commit
+    /// the deepening was just paid for, and every subsequent review of that store fails to diff.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_RepacksKeepingUnreachableBetweenTheDeepeningFetchAndTheReAsk()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = ShallowCloneResolvingAfterOneDeepening(target, run);
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance,
+            enableObjectStoreMaintenance: true
+        );
+
+        var prepared = await preparer.PrepareAsync(
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
+
+        prepared.MergeBase.Should().Be(MergeBaseOutcome.Resolved);
+        var argv = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+
+        var repackIndex = argv.FindIndex(a =>
+            a.Contains($"-C {target} repack -a -d --keep-unreachable", StringComparison.Ordinal)
+        );
+        repackIndex
+            .Should()
+            .BeGreaterThan(
+                -1,
+                "without --keep-unreachable the repack drops the PR's base commit outright, so the flag is not a "
+                    + "tuning detail that may drift — it is the whole reason this command is safe to issue"
+            );
+
+        var fetchIndex = argv.FindIndex(a => a.Contains($"-C {target} fetch --depth=100", StringComparison.Ordinal));
+        fetchIndex.Should().BeGreaterThan(-1, "the fixture is a shallow clone that needs one deepening round");
+        repackIndex
+            .Should()
+            .BeGreaterThan(fetchIndex, "there is nothing to collapse until the fetch that duplicated the pack has run");
+
+        var reAskIndex = argv.FindIndex(
+            fetchIndex + 1,
+            a => a.Contains($"-C {target} merge-base", StringComparison.Ordinal)
+        );
+        reAskIndex.Should().BeGreaterThan(-1, "the climb re-asks after every deepening round");
+        repackIndex
+            .Should()
+            .BeLessThan(
+                reAskIndex,
+                "the collapse belongs inside the round that created the duplicate — hoisted out to after the "
+                    + "climb it would run only once the four coexisting packs it exists to prevent are already "
+                    + "on disk"
+            );
+    }
+
+    /// <summary>
+    /// The default, and the one that is not a tuning choice: the owner of these machines instructed that local
+    /// git packs not be touched, and <c>repack</c> rewrites an object store in place under a directory the
+    /// daemon does not own. Off means no repack is issued at all — not a smaller one.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_DoesNotTouchLocalPacksWhenObjectStoreMaintenanceIsOff()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = ShallowCloneResolvingAfterOneDeepening(target, run);
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
+
+        var prepared = await preparer.PrepareAsync(
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
+
+        var argv = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        argv.Should()
+            .Contain(
+                a => a.Contains($"-C {target} fetch --depth=100", StringComparison.Ordinal),
+                "the deepening itself is not gated — only the housekeeping that follows it is, so this asserts "
+                    + "the absence below is a decision rather than a path that never ran"
+            );
+        prepared.MergeBase.Should().Be(MergeBaseOutcome.Resolved);
+        argv.Should()
+            .NotContain(
+                a => a.Contains("repack", StringComparison.Ordinal),
+                "default-off is the requirement, and the accepted cost is that the store keeps the duplicate pack"
+            );
     }
 
     private ReviewSlot CreateSlot(bool withGitDir = true)
@@ -1232,29 +1974,36 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         return slot;
     }
 
-    private static ReviewRun CreateRun() => new()
-    {
-        RepoId = 1,
-        PrId = "151",
-        HeadSha = "head-sha",
-        BaseSha = "base-sha",
-        TriggerWatermark = "wm-1",
-        ReviewKind = "full",
-        VariantId = "primary",
-        Mode = "collect-only",
-        Stage = ReviewStage.Discovered,
-        WorkflowStatus = WorkflowStatus.Running,
-        PrLifecycleState = PrLifecycleState.Open,
-    };
+    private static ReviewRun CreateRun() =>
+        new()
+        {
+            RepoId = 1,
+            PrId = "151",
+            HeadSha = "head-sha",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "collect-only",
+            Stage = ReviewStage.Discovered,
+            WorkflowStatus = WorkflowStatus.Running,
+            PrLifecycleState = PrLifecycleState.Open,
+        };
 
     /// <summary>Allows fetching exactly the reviewed submodule declared below, mirroring
     /// <c>DaemonReviewStageExecutor.BuildStoreSubmoduleAllowList</c>'s per-run allow-list shape.</summary>
     private static OperationPolicy BuildPolicy() =>
         DaemonOperationPolicy.BuildForRun(
-            new RepoIdentity { Provider = "github", OrgOrOwner = "achieveai", RepoName = "LmDotnetTools" },
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+            },
             reviewBotRepoUrl: null,
             allowWriteOperations: false,
-            allowedSubmodules: [new SubmoduleAllowRule("github.com", "/achieveai/LmDotnetTools")]);
+            allowedSubmodules: [new SubmoduleAllowRule("github.com", "/achieveai/LmDotnetTools")]
+        );
 
     /// <summary>Seeds a <c>.gitmodules</c> at the store root declaring the reviewed submodule, so
     /// <see cref="ReviewSlotPreparer"/>'s reused <c>SubmoduleInitializer</c> logic inits it.</summary>
@@ -1263,7 +2012,8 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var fileSystem = new FakeSandboxFileSystem();
         fileSystem.Seed(
             $"{storeRoot}/.gitmodules",
-            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+        );
         return fileSystem;
     }
 }

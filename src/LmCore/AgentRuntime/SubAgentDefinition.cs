@@ -32,12 +32,12 @@ public sealed record SubAgentDefinition
     /// <summary>
     ///     Sugar for inline-markdown sub-agents.
     /// </summary>
-    public static SubAgentDefinition Inline(string name, string markdown)
-        => new() { Name = name, Source = new ContentSource.FromInline(markdown) };
+    public static SubAgentDefinition Inline(string name, string markdown) =>
+        new() { Name = name, Source = new ContentSource.FromInline(markdown) };
 
     /// <summary>
     ///     Sugar for path-sourced sub-agents.
     /// </summary>
-    public static SubAgentDefinition FromPath(string name, string path)
-        => new() { Name = name, Source = new ContentSource.FromPath(path) };
+    public static SubAgentDefinition FromPath(string name, string path) =>
+        new() { Name = name, Source = new ContentSource.FromPath(path) };
 }

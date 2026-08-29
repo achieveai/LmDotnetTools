@@ -16,17 +16,16 @@ public class SampleTriggerRegistrationsTests
     public void Build_OmitsSubAgentKind_WhenAccessorNotSupplied()
     {
         var options = SampleTriggerRegistrations.Build(sandboxEnabled: false);
-        options.AdditionalRegistrations.Select(r => r.Kind)
-            .Should().NotContain(SubAgentCompletionTriggerSource.KindName);
+        options
+            .AdditionalRegistrations.Select(r => r.Kind)
+            .Should()
+            .NotContain(SubAgentCompletionTriggerSource.KindName);
     }
 
     [Fact]
     public void Build_IncludesSubAgentKind_WhenAccessorSupplied()
     {
-        var options = SampleTriggerRegistrations.Build(
-            sandboxEnabled: false,
-            subAgentManagerAccessor: () => null);
-        options.AdditionalRegistrations.Select(r => r.Kind)
-            .Should().Contain(SubAgentCompletionTriggerSource.KindName);
+        var options = SampleTriggerRegistrations.Build(sandboxEnabled: false, subAgentManagerAccessor: () => null);
+        options.AdditionalRegistrations.Select(r => r.Kind).Should().Contain(SubAgentCompletionTriggerSource.KindName);
     }
 }

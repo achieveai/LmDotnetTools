@@ -27,10 +27,7 @@ internal enum ReviewBotPublishOutcome
 /// <see cref="ReviewBranchManager.DeleteBranchAsync"/> (PR abandoned) remove it.
 /// </param>
 /// <param name="PushedSha">The review-branch SHA after the push, or <c>null</c> when the push failed.</param>
-internal sealed record ReviewBotPublishResult(
-    ReviewBotPublishOutcome Outcome,
-    string ReviewBranch,
-    string? PushedSha);
+internal sealed record ReviewBotPublishResult(ReviewBotPublishOutcome Outcome, string ReviewBranch, string? PushedSha);
 
 /// <summary>Inputs for one ReviewBot notes commit.</summary>
 /// <param name="TargetRepo">Identity of the reviewed repository (used to slug the review branch + artifact paths).</param>
@@ -43,7 +40,8 @@ internal sealed record ReviewBotPublishRequest(
     int PrNumber,
     string HeadSha,
     string DefaultBranch,
-    IReadOnlyList<ReviewArtifactFile> Files);
+    IReadOnlyList<ReviewArtifactFile> Files
+);
 
 /// <summary>
 /// Deterministic git/fs orchestration for the ReviewBot repo's per-PR review branch
@@ -126,7 +124,8 @@ internal sealed class ReviewBranchManager
                 ["rev-parse", "--verify", reviewBranch],
                 repoRoot,
                 cancellationToken,
-                allowFailure: true)
+                allowFailure: true
+            )
             .ConfigureAwait(false);
         if (probe.Succeeded)
         {
@@ -134,10 +133,7 @@ internal sealed class ReviewBranchManager
         }
         else
         {
-            await RunGitAsync(
-                    ["checkout", "-B", reviewBranch, request.DefaultBranch],
-                    repoRoot,
-                    cancellationToken)
+            await RunGitAsync(["checkout", "-B", reviewBranch, request.DefaultBranch], repoRoot, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -180,7 +176,8 @@ internal sealed class ReviewBranchManager
                 ["commit", "-m", BuildCommitMessage(request)],
                 repoRoot,
                 cancellationToken,
-                allowFailure: true)
+                allowFailure: true
+            )
             .ConfigureAwait(false);
         if (!commit.Succeeded)
         {
@@ -188,12 +185,12 @@ internal sealed class ReviewBranchManager
                     ["diff", "--cached", "--quiet"],
                     repoRoot,
                     cancellationToken,
-                    allowFailure: true)
+                    allowFailure: true
+                )
                 .ConfigureAwait(false);
             if (!staged.Succeeded)
             {
-                throw new InvalidOperationException(
-                    $"git commit failed (exit {commit.ExitCode}): {commit.Stderr}");
+                throw new InvalidOperationException($"git commit failed (exit {commit.ExitCode}): {commit.Stderr}");
             }
 
             // A clean index proves nothing CHANGED — not that the notes are actually retained. An empty index
@@ -208,32 +205,35 @@ internal sealed class ReviewBranchManager
                         ["cat-file", "-e", $"HEAD:{path.Replace('\\', '/')}"],
                         repoRoot,
                         cancellationToken,
-                        allowFailure: true)
+                        allowFailure: true
+                    )
                     .ConfigureAwait(false);
                 if (!atHead.Succeeded)
                 {
                     throw new InvalidOperationException(
                         $"git commit failed (exit {commit.ExitCode}): {commit.Stderr}"
-                            + $" (nothing staged and '{path}' is missing from '{reviewBranch}')");
+                            + $" (nothing staged and '{path}' is missing from '{reviewBranch}')"
+                    );
                 }
             }
 
             _logger.LogInformation(
                 "ReviewBot notes on '{ReviewBranch}' are unchanged (nothing staged); keeping the branch at its "
                     + "current head instead of failing the commit.",
-                reviewBranch);
+                reviewBranch
+            );
         }
 
         // 4. Push the review branch (never the default) with bounded rebase-retry, and KEEP the branch —
         // no fast-forward of the default and no delete happen here.
-        var pushed = await TryPushWithRebaseAsync(repoRoot, reviewBranch, cancellationToken)
-            .ConfigureAwait(false);
+        var pushed = await TryPushWithRebaseAsync(repoRoot, reviewBranch, cancellationToken).ConfigureAwait(false);
         if (!pushed)
         {
             _logger.LogWarning(
                 "ReviewBot push of review branch '{ReviewBranch}' failed after {Attempts} attempts; the commit stays local for reconcile.",
                 reviewBranch,
-                MaxPushAttempts);
+                MaxPushAttempts
+            );
             return new ReviewBotPublishResult(ReviewBotPublishOutcome.GitSyncFailed, reviewBranch, PushedSha: null);
         }
 
@@ -276,7 +276,8 @@ internal sealed class ReviewBranchManager
                 ["rev-parse", "--verify", remoteBranch],
                 repoRoot,
                 cancellationToken,
-                allowFailure: true)
+                allowFailure: true
+            )
             .ConfigureAwait(false);
         if (!branchExists.Succeeded)
         {
@@ -284,7 +285,8 @@ internal sealed class ReviewBranchManager
             // resolve. Idempotent no-op rather than a failed merge on a nonexistent ref.
             _logger.LogInformation(
                 "ReviewBot merge-to-default: notes branch '{Branch}' no longer exists on origin; nothing to merge.",
-                branch);
+                branch
+            );
             return true;
         }
 
@@ -305,7 +307,8 @@ internal sealed class ReviewBranchManager
                 ["merge", "--ff-only", remoteBranch],
                 repoRoot,
                 cancellationToken,
-                allowFailure: true)
+                allowFailure: true
+            )
             .ConfigureAwait(false);
         if (!ffOnly.Succeeded)
         {
@@ -314,8 +317,7 @@ internal sealed class ReviewBranchManager
             // concurrent PR's merge) in favour of the notes branch — which is exactly what we want to carry —
             // instead of leaving a conflicted index that would wedge this checkout on the next sweep. Without
             // it the same conflict re-throws every cycle and the notes never land.
-            await RunGitAsync(
-                    ["merge", "--no-edit", "-X", "theirs", remoteBranch], repoRoot, cancellationToken)
+            await RunGitAsync(["merge", "--no-edit", "-X", "theirs", remoteBranch], repoRoot, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -348,15 +350,15 @@ internal sealed class ReviewBranchManager
         // Re-running the rebuild after a successful rebase would buy only the last case, one sweep earlier,
         // at the cost of giving the shared TryPushWithRebaseAsync a Knowledge-Base-shaped parameter its other
         // caller (CommitNotesAsync, pushing the notes branch) must then be reasoned about too.
-        var pushed = await TryPushWithRebaseAsync(repoRoot, defaultBranch, cancellationToken)
-            .ConfigureAwait(false);
+        var pushed = await TryPushWithRebaseAsync(repoRoot, defaultBranch, cancellationToken).ConfigureAwait(false);
         if (!pushed)
         {
             _logger.LogWarning(
                 "ReviewBot merge-to-default push of '{DefaultBranch}' failed after {Attempts} attempts; keeping review branch '{Branch}' for reconcile.",
                 defaultBranch,
                 MaxPushAttempts,
-                branch);
+                branch
+            );
             return false;
         }
 
@@ -368,22 +370,14 @@ internal sealed class ReviewBranchManager
     /// Deletes <paramref name="branch"/> (local + remote) without merging it, e.g. when the PR is
     /// abandoned/declined. Idempotent: a missing local or remote branch is a no-op, never an exception.
     /// </summary>
-    public async Task DeleteBranchAsync(
-        string repoRoot,
-        string branch,
-        CancellationToken cancellationToken
-    )
+    public async Task DeleteBranchAsync(string repoRoot, string branch, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
         ArgumentException.ThrowIfNullOrWhiteSpace(branch);
 
         await RunGitAsync(["branch", "-D", branch], repoRoot, cancellationToken, allowFailure: true)
             .ConfigureAwait(false);
-        await RunGitAsync(
-                ["push", "origin", "--delete", branch],
-                repoRoot,
-                cancellationToken,
-                allowFailure: true)
+        await RunGitAsync(["push", "origin", "--delete", branch], repoRoot, cancellationToken, allowFailure: true)
             .ConfigureAwait(false);
     }
 
@@ -392,16 +386,11 @@ internal sealed class ReviewBranchManager
     /// <see cref="MaxPushAttempts"/> times when it advanced underneath us (concurrent review or external
     /// push). Returns <c>true</c> on the first successful push.
     /// </summary>
-    private async Task<bool> TryPushWithRebaseAsync(
-        string repoRoot,
-        string branch,
-        CancellationToken cancellationToken
-    )
+    private async Task<bool> TryPushWithRebaseAsync(string repoRoot, string branch, CancellationToken cancellationToken)
     {
         for (var attempt = 1; attempt <= MaxPushAttempts; attempt++)
         {
-            var push = await RunGitAsync(["push", "origin", branch], repoRoot, cancellationToken)
-                .ConfigureAwait(false);
+            var push = await RunGitAsync(["push", "origin", branch], repoRoot, cancellationToken).ConfigureAwait(false);
             if (push.Succeeded)
             {
                 return true;
@@ -426,7 +415,8 @@ internal sealed class ReviewBranchManager
                     "ReviewBot push-with-rebase for '{Branch}' could not rebase onto origin/{Branch} ({Stderr}); aborting retries.",
                     branch,
                     branch,
-                    rebased.Stderr);
+                    rebased.Stderr
+                );
                 break;
             }
         }
@@ -486,7 +476,8 @@ internal sealed class ReviewBranchManager
                 ex,
                 "ReviewBot merge-to-default: could not rebuild the Knowledge Base listings after the merge "
                     + "commit; entries merged from the default branch may be missing from _index.jsonl and "
-                    + "_toc.md until the next extraction regenerates them.");
+                    + "_toc.md until the next extraction regenerates them."
+            );
             return;
         }
 
@@ -504,8 +495,7 @@ internal sealed class ReviewBranchManager
         // every verb but push/pull, so believing `changed` here would throw out of MergeToDefaultAsync: the
         // notes branch is never deleted and the identical merge re-throws on every subsequent sweep, forever.
         // Ask git what is actually staged. Exit 0 from `--quiet` means no staged difference.
-        var staged = await RunGitAsync(
-                ["diff", "--cached", "--quiet"], repoRoot, cancellationToken, allowFailure: true)
+        var staged = await RunGitAsync(["diff", "--cached", "--quiet"], repoRoot, cancellationToken, allowFailure: true)
             .ConfigureAwait(false);
         if (staged.Succeeded)
         {
@@ -517,11 +507,13 @@ internal sealed class ReviewBranchManager
         await RunGitAsync(
                 ["commit", "-m", "kb: rebuild the knowledge listings from the merged tree"],
                 repoRoot,
-                cancellationToken)
+                cancellationToken
+            )
             .ConfigureAwait(false);
         _logger.LogInformation(
             "ReviewBot merge-to-default: rebuilt the Knowledge Base listings from the merged tree; the "
-                + "merge resolution had left them out of step with the entries it kept.");
+                + "merge resolution had left them out of step with the entries it kept."
+        );
     }
 
     /// <summary>Runs a git command, throwing when a step that must succeed fails.</summary>
@@ -547,8 +539,7 @@ internal sealed class ReviewBranchManager
         var verb = gitArgs[0];
         if (!result.Succeeded && !allowFailure && verb is not ("push" or "pull"))
         {
-            throw new InvalidOperationException(
-                $"git {verb} failed (exit {result.ExitCode}): {result.Stderr}");
+            throw new InvalidOperationException($"git {verb} failed (exit {result.ExitCode}): {result.Stderr}");
         }
 
         return result;
@@ -563,7 +554,10 @@ internal sealed class ReviewBranchManager
     /// drops strays. Best-effort: an <c>ls-files</c> failure or an already-gone entry is tolerated.
     /// </summary>
     private async Task StripEmbeddedGitlinksAsync(
-        string repoRoot, IReadOnlyList<string> stagePaths, CancellationToken cancellationToken)
+        string repoRoot,
+        IReadOnlyList<string> stagePaths,
+        CancellationToken cancellationToken
+    )
     {
         var staged = await RunGitAsync(["ls-files", "--stage"], repoRoot, cancellationToken, allowFailure: true)
             .ConfigureAwait(false);
@@ -595,7 +589,8 @@ internal sealed class ReviewBranchManager
             _logger.LogWarning(
                 "Dropping stray embedded git repo '{Path}' from review notes before commit — an agent-left "
                     + "nested repo committed as a gitlink would wedge slot hygiene.",
-                path);
+                path
+            );
             await RunGitAsync(["rm", "--cached", "--", path], repoRoot, cancellationToken, allowFailure: true)
                 .ConfigureAwait(false);
         }
@@ -613,8 +608,7 @@ internal sealed class ReviewBranchManager
                 continue;
             }
 
-            if (path.Equals(root, StringComparison.Ordinal)
-                || path.StartsWith(root + "/", StringComparison.Ordinal))
+            if (path.Equals(root, StringComparison.Ordinal) || path.StartsWith(root + "/", StringComparison.Ordinal))
             {
                 return true;
             }
@@ -622,6 +616,7 @@ internal sealed class ReviewBranchManager
 
         return false;
     }
+
     /// <summary>
     /// Builds the review branch name <c>review/{repo}-{pr}</c>. The <c>{repo}</c> segment uses the
     /// normalized, slug-escaped target repo name so it is stable across casing drift and safe as a git ref.
@@ -648,8 +643,7 @@ internal sealed class ReviewBranchManager
     private static IEnumerable<string> NotesPathsToVerify(
         ReviewBotPublishRequest request,
         IReadOnlyList<string>? stagePaths
-    ) =>
-        stagePaths is { Count: > 0 } ? stagePaths : request.Files.Select(file => file.RelativePath);
+    ) => stagePaths is { Count: > 0 } ? stagePaths : request.Files.Select(file => file.RelativePath);
 
     /// <summary>Slugs the target repo name into a single ref-safe path segment (lowercased, separators to '-').
     /// Public so the orphan-branch reconciler can match a <c>review/{repo}-{pr}</c> branch back to a configured
@@ -729,8 +723,13 @@ internal sealed class ReviewBranchManager
         }
 
         var prPart = parts[3];
-        if (parts[1].Length == 0 || parts[2].Length == 0 || prPart.Length == 0
-            || !prPart.All(char.IsAsciiDigit) || !int.TryParse(prPart, out prNumber))
+        if (
+            parts[1].Length == 0
+            || parts[2].Length == 0
+            || prPart.Length == 0
+            || !prPart.All(char.IsAsciiDigit)
+            || !int.TryParse(prPart, out prNumber)
+        )
         {
             return false;
         }
@@ -748,6 +747,5 @@ internal sealed class ReviewBranchManager
         return new string(chars).Trim('-');
     }
 
-    private static string JoinPath(string root, string relative) =>
-        $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
+    private static string JoinPath(string root, string relative) => $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
 }

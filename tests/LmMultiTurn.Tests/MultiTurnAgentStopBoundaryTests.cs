@@ -52,18 +52,20 @@ public class MultiTurnAgentStopBoundaryTests
         // Startup is provably in flight (StartupEntered fired) and provably unfinished (the gate is
         // still closed), so a stop that completes here has returned over live startup work.
         var raced = await Task.WhenAny(stop, Task.Delay(BlockedObservation));
-        _ = raced.Should().NotBeSameAs(
-            stop,
-            "StopAsync must not report a stopped agent while the run is still inside its pre-loop startup window"
-        );
+        _ = raced
+            .Should()
+            .NotBeSameAs(
+                stop,
+                "StopAsync must not report a stopped agent while the run is still inside its pre-loop startup window"
+            );
         _ = agent.StartupWriteCompleted.Should().BeFalse();
 
         agent.ReleaseStartup();
 
         await stop.WaitAsync(Generous);
-        _ = agent.StartupWriteCompleted.Should().BeTrue(
-            "the startup store write must have landed before StopAsync returned"
-        );
+        _ = agent
+            .StartupWriteCompleted.Should()
+            .BeTrue("the startup store write must have landed before StopAsync returned");
 
         await run.WaitAsync(Generous);
     }
@@ -80,9 +82,11 @@ public class MultiTurnAgentStopBoundaryTests
         // state that says a run is live and hand back a normal return that reads as "stopped".
         await agent.StopAsync(TimeSpan.FromMilliseconds(250)).WaitAsync(Generous);
 
-        _ = agent.IsRunning.Should().BeTrue(
-            "a stop whose timeout expired has NOT stopped the loop, and must not leave the agent reporting otherwise"
-        );
+        _ = agent
+            .IsRunning.Should()
+            .BeTrue(
+                "a stop whose timeout expired has NOT stopped the loop, and must not leave the agent reporting otherwise"
+            );
 
         agent.ReleaseLoop();
         await run.WaitAsync(Generous);
@@ -118,7 +122,8 @@ public class MultiTurnAgentStopBoundaryTests
 
             await Store!.UpdateMetadataAsync(
                 ThreadId,
-                existing => existing
+                existing =>
+                    existing
                     ?? new ThreadMetadata
                     {
                         ThreadId = ThreadId,

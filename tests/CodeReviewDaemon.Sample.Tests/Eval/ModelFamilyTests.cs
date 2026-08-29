@@ -129,10 +129,7 @@ public class ModelFamilyTests
             .Should()
             .BeOfType<PanelComposition.Degraded>("one eligible judge is Degraded, not Unavailable")
             .Which.Reason.Should()
-            .Be(
-                "single-judge-configured",
-                "nothing was excluded — the shared router is not a shared family"
-            );
+            .Be("single-judge-configured", "nothing was excluded — the shared router is not a shared family");
     }
 
     /// <summary>
@@ -191,10 +188,7 @@ public class ModelFamilyTests
     [Fact]
     public void The_judge_model_id_is_the_judge_model_and_never_the_repo_host()
     {
-        var recorded = new JudgeRequest(1, "github", "primary", "grade this")
-        {
-            JudgeModelId = "openai/gpt-5",
-        };
+        var recorded = new JudgeRequest(1, "github", "primary", "grade this") { JudgeModelId = "openai/gpt-5" };
 
         JudgeAgent.JudgeModelIdOf(recorded).Should().Be("openai/gpt-5");
 

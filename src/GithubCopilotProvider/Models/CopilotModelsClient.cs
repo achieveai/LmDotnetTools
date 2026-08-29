@@ -26,10 +26,9 @@ public sealed class CopilotModelsClient
         ICopilotTokenProvider tokenProvider,
         CopilotSessionContext? session = null,
         CopilotOptions? options = null,
-        ILogger? logger = null)
-        : this(BuildHttpClient(tokenProvider, session, options), logger)
-    {
-    }
+        ILogger? logger = null
+    )
+        : this(BuildHttpClient(tokenProvider, session, options), logger) { }
 
     /// <summary>
     ///     Creates a client over a caller-supplied <see cref="HttpClient"/> (must target the Copilot host
@@ -54,7 +53,8 @@ public sealed class CopilotModelsClient
             {
                 _logger?.LogWarning(
                     "Copilot model discovery returned {StatusCode}; treating catalog as empty.",
-                    (int)response.StatusCode);
+                    (int)response.StatusCode
+                );
                 return [];
             }
 
@@ -80,7 +80,8 @@ public sealed class CopilotModelsClient
     private static HttpClient BuildHttpClient(
         ICopilotTokenProvider tokenProvider,
         CopilotSessionContext? session,
-        CopilotOptions? options)
+        CopilotOptions? options
+    )
     {
         ArgumentNullException.ThrowIfNull(tokenProvider);
         var effectiveOptions = options ?? new CopilotOptions();
@@ -88,6 +89,7 @@ public sealed class CopilotModelsClient
             effectiveOptions.BaseUrl,
             tokenProvider,
             session ?? new CopilotSessionContext(),
-            effectiveOptions);
+            effectiveOptions
+        );
     }
 }

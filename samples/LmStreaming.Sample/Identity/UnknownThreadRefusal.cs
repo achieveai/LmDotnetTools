@@ -34,6 +34,5 @@ public static class UnknownThreadRefusal
     /// different order serialises to different bytes and is enough to tell two surfaces apart.
     /// </summary>
     /// <param name="threadId">The conversation id to report as not found.</param>
-    public static object Body(string threadId) =>
-        new { error = $"Conversation '{threadId}' not found.", code = Code };
+    public static object Body(string threadId) => new { error = $"Conversation '{threadId}' not found.", code = Code };
 }

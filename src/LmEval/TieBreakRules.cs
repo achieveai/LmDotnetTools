@@ -40,14 +40,12 @@ public static class TieBreakRules
     /// </summary>
     /// <param name="judgeId">The arbiter's stable id.</param>
     /// <param name="modelFamily">The arbiter's model family.</param>
-    public static string Arbiter(string judgeId, string modelFamily) =>
-        $"{ArbiterPrefix}{judgeId}:{modelFamily}";
+    public static string Arbiter(string judgeId, string modelFamily) => $"{ArbiterPrefix}{judgeId}:{modelFamily}";
 
     /// <summary>True when this rule records an arbiter-resolved straddle.</summary>
     /// <param name="tieBreakRule">The rule recorded on a verdict.</param>
     public static bool IsArbiterResolved(string? tieBreakRule) =>
-        tieBreakRule is not null
-        && tieBreakRule.StartsWith(ArbiterPrefix, StringComparison.Ordinal);
+        tieBreakRule is not null && tieBreakRule.StartsWith(ArbiterPrefix, StringComparison.Ordinal);
 
     /// <summary>
     /// True when this rule records a <b>straddle</b> — the panel ran and its two counted ballots
@@ -58,8 +56,7 @@ public static class TieBreakRules
     /// </summary>
     /// <param name="tieBreakRule">The rule recorded on a verdict.</param>
     public static bool IsStraddle(string? tieBreakRule) =>
-        string.Equals(tieBreakRule, SplitUnresolved, StringComparison.Ordinal)
-        || IsArbiterResolved(tieBreakRule);
+        string.Equals(tieBreakRule, SplitUnresolved, StringComparison.Ordinal) || IsArbiterResolved(tieBreakRule);
 
     /// <summary>
     /// Recovers the arbiter's identity from a rule <see cref="Arbiter"/> produced. Returns false

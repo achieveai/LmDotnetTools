@@ -47,10 +47,7 @@ public class PromptCachingRequestTests
         Assert.Equal(2, tools.GetArrayLength());
 
         // First tool should NOT have cache_control
-        Assert.False(
-            tools[0].TryGetProperty("cache_control", out _),
-            "First tool should not have cache_control"
-        );
+        Assert.False(tools[0].TryGetProperty("cache_control", out _), "First tool should not have cache_control");
 
         // Last tool SHOULD have cache_control
         Assert.True(

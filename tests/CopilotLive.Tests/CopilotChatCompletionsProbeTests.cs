@@ -152,13 +152,11 @@ public sealed class CopilotChatCompletionsProbeTests
         foreach (var entry in catalog)
         {
             var endpoints = entry.Endpoints.Count == 0 ? "(none)" : string.Join(", ", entry.Endpoints);
-            _output.WriteLine($"{entry.Id,-32} | {entry.Vendor,-14} | {endpoints}");
+            _output.WriteLine($"{entry.Id, -32} | {entry.Vendor, -14} | {endpoints}");
         }
 
         catalog.Should().NotBeEmpty("the proxy resolves its default model from this catalog at startup");
-        catalog
-            .Should()
-            .OnlyContain(e => !string.IsNullOrWhiteSpace(e.Id), "an entry without an id is dropped unseen");
+        catalog.Should().OnlyContain(e => !string.IsNullOrWhiteSpace(e.Id), "an entry without an id is dropped unseen");
         catalog
             .Should()
             .Contain(
@@ -220,11 +218,7 @@ public sealed class CopilotChatCompletionsProbeTests
             Content = JsonContent.Create(payload),
         };
 
-        using var response = await http.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken
-            )
+        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -284,9 +278,7 @@ public sealed class CopilotChatCompletionsProbeTests
 
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
-        var list = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data)
-            ? data
-            : root;
+        var list = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data) ? data : root;
 
         var entries = new List<CatalogEntry>();
         foreach (var item in list.EnumerateArray())

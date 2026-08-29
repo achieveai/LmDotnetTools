@@ -8,7 +8,7 @@
 - **Test with TRX Output**: `dotnet test LmDotnetTools.sln --logger "trx;LogFileName=results.trx" --results-directory .logs/test-results`
 
 ## Coding Conventions
-- **Formatting**: Use CSharpier. Configuration is in `.csharpierrc.json`.
+- **Formatting**: Use CSharpier. Configuration is in `.csharpierrc`; the version is pinned in `.config/dotnet-tools.json`. Enforced by the pre-commit hook (staged files) and by CI (`dotnet csharpier check .`, whole tree). Run `dotnet csharpier format .` to fix.
 - **Style**: Follow `.editorconfig` rules.
 - **Fixing Errors**: Do NOT use scripts to fix build errors/warnings. Use autofixers or manually fix them.
 - **Playwright**: ALWAYS use the `Task` tool when using Playwright to avoid polluting the primary context.

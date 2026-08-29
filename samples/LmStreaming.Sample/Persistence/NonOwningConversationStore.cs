@@ -42,9 +42,7 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
     /// </summary>
     /// <param name="store">The shared store to forward to. Never disposed by this wrapper.</param>
     public NonOwningConversationStore(IConversationStore store)
-        : this(store, provenanceThreadId: null, provenance: null)
-    {
-    }
+        : this(store, provenanceThreadId: null, provenance: null) { }
 
     /// <summary>
     /// Creates a non-owning wrapper over <paramref name="store"/>. If the wrapped store also
@@ -67,7 +65,8 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
     public NonOwningConversationStore(
         IConversationStore store,
         string? provenanceThreadId,
-        Func<ImmutableDictionary<string, object>>? provenance)
+        Func<ImmutableDictionary<string, object>>? provenance
+    )
     {
         ArgumentNullException.ThrowIfNull(store);
         _conversation = store;
@@ -78,8 +77,7 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
 
     private IRunLedgerStore RunLedger =>
         _runLedger
-        ?? throw new NotSupportedException(
-            "The wrapped conversation store does not implement IRunLedgerStore.");
+        ?? throw new NotSupportedException("The wrapped conversation store does not implement IRunLedgerStore.");
 
     // === IConversationStore ===
 
@@ -87,43 +85,34 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
     public Task AppendMessagesAsync(
         string threadId,
         IReadOnlyList<PersistedMessage> messages,
-        CancellationToken ct = default) =>
-        _conversation.AppendMessagesAsync(threadId, messages, ct);
+        CancellationToken ct = default
+    ) => _conversation.AppendMessagesAsync(threadId, messages, ct);
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
-        string threadId,
-        CancellationToken ct = default) =>
+    public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default) =>
         _conversation.LoadMessagesAsync(threadId, ct);
 
     /// <inheritdoc />
-    public Task ReplaceMessageAsync(
-        string threadId,
-        PersistedMessage replacement,
-        CancellationToken ct = default) =>
+    public Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default) =>
         _conversation.ReplaceMessageAsync(threadId, replacement, ct);
 
     /// <inheritdoc />
-    public Task SaveMetadataAsync(
-        string threadId,
-        ThreadMetadata metadata,
-        CancellationToken ct = default)
+    public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(metadata);
         return _conversation.SaveMetadataAsync(threadId, Stamp(metadata, ResolveStamp(threadId)), ct);
     }
 
     /// <inheritdoc />
-    public Task<ThreadMetadata?> LoadMetadataAsync(
-        string threadId,
-        CancellationToken ct = default) =>
+    public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
         _conversation.LoadMetadataAsync(threadId, ct);
 
     /// <inheritdoc />
     public Task UpdateMetadataAsync(
         string threadId,
         Func<ThreadMetadata?, ThreadMetadata> update,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         // Resolve BEFORE handing the callback to the store: `update` runs while the store holds its
         // write lock, and the provenance supplier walks the parent's live sub-agent registry.
@@ -136,8 +125,7 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
     /// created without provenance or the write targets some other thread.
     /// </summary>
     private ImmutableDictionary<string, object>? ResolveStamp(string threadId) =>
-        _provenance is not null
-        && string.Equals(threadId, _provenanceThreadId, StringComparison.Ordinal)
+        _provenance is not null && string.Equals(threadId, _provenanceThreadId, StringComparison.Ordinal)
             ? _provenance()
             : null;
 
@@ -151,9 +139,7 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
     /// child is Running again, since merely omitting the key from a later stamp would otherwise leave
     /// it in place forever (this merge never removes a key just because a new stamp doesn't mention it).
     /// </summary>
-    private static ThreadMetadata Stamp(
-        ThreadMetadata metadata,
-        ImmutableDictionary<string, object>? stamp)
+    private static ThreadMetadata Stamp(ThreadMetadata metadata, ImmutableDictionary<string, object>? stamp)
     {
         if (stamp is null || stamp.IsEmpty)
         {
@@ -173,13 +159,14 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
             }
         }
 
-        return metadata with { Properties = builder.ToImmutable() };
+        return metadata with
+        {
+            Properties = builder.ToImmutable(),
+        };
     }
 
     /// <inheritdoc />
-    public Task DeleteThreadAsync(
-        string threadId,
-        CancellationToken ct = default) =>
+    public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
         _conversation.DeleteThreadAsync(threadId, ct);
 
     /// <inheritdoc />
@@ -187,8 +174,8 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
         int limit = 50,
         int offset = 0,
         ConversationListOptions? options = null,
-        CancellationToken ct = default) =>
-        _conversation.ListThreadsAsync(limit, offset, options, ct);
+        CancellationToken ct = default
+    ) => _conversation.ListThreadsAsync(limit, offset, options, ct);
 
     /// <inheritdoc />
     public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
@@ -196,8 +183,8 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
         int limit = 50,
         int offset = 0,
         ConversationListOptions? options = null,
-        CancellationToken ct = default) =>
-        _conversation.ListThreadsAsync(scope, limit, offset, options, ct);
+        CancellationToken ct = default
+    ) => _conversation.ListThreadsAsync(scope, limit, offset, options, ct);
 
     // === IRunLedgerStore ===
 
@@ -210,9 +197,7 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
         RunLedger.LoadRunLedgerAsync(runId, ct);
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(
-        string threadId,
-        CancellationToken ct = default) =>
+    public Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(string threadId, CancellationToken ct = default) =>
         RunLedger.ListRunLedgerAsync(threadId, ct);
 
     /// <inheritdoc />
@@ -220,19 +205,14 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
         string threadId,
         string inputId,
         DateTimeOffset acceptedAt,
-        CancellationToken ct = default) =>
-        RunLedger.RecordAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
+        CancellationToken ct = default
+    ) => RunLedger.RecordAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
 
     /// <inheritdoc />
-    public Task RemoveAcceptedInputAsync(
-        string threadId,
-        string inputId,
-        CancellationToken ct = default) =>
+    public Task RemoveAcceptedInputAsync(string threadId, string inputId, CancellationToken ct = default) =>
         RunLedger.RemoveAcceptedInputAsync(threadId, inputId, ct);
 
     /// <inheritdoc />
-    public Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(
-        string threadId,
-        CancellationToken ct = default) =>
+    public Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(string threadId, CancellationToken ct = default) =>
         RunLedger.ListAcceptedInputIdsAsync(threadId, ct);
 }

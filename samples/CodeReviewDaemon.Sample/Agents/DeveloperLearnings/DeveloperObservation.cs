@@ -15,7 +15,8 @@ internal sealed record DeveloperObservationHit(
     string Severity,
     string Reconciliation,
     string Location,
-    string Evidence);
+    string Evidence
+);
 
 /// <summary>
 /// One PR's immutable contribution to a developer's ledger. Written once at PR close, never edited.
@@ -51,7 +52,8 @@ internal sealed record DeveloperObservation(
     [property: JsonPropertyName("observedAtUtc")] string ObservedAtUtc,
     [property: JsonPropertyName("reviewRunIds")] IReadOnlyList<long> ReviewRunIds,
     [property: JsonPropertyName("exposure")] IReadOnlyList<string> Exposure,
-    [property: JsonPropertyName("hits")] IReadOnlyList<DeveloperObservationHit> Hits)
+    [property: JsonPropertyName("hits")] IReadOnlyList<DeveloperObservationHit> Hits
+)
 {
     /// <summary>Current observation schema. Never bumped for an appended field.</summary>
     public const int CurrentSchemaVersion = 1;
@@ -61,12 +63,16 @@ internal sealed record DeveloperObservation(
     /// the daemon can observe that no shipped item cites the finding's location, and a finding the lead
     /// reviewer threw out is not evidence about the author.
     /// </summary>
-    private static readonly HashSet<string> SurvivingOutcomes =
-        new(StringComparer.Ordinal) { "kept", "severity-changed", "reframed", "merged-into" };
+    private static readonly HashSet<string> SurvivingOutcomes = new(StringComparer.Ordinal)
+    {
+        "kept",
+        "severity-changed",
+        "reframed",
+        "merged-into",
+    };
 
     /// <summary>Whether a reconciler outcome survived into the shipped review.</summary>
-    public static bool Survived(string reconciliationOutcome) =>
-        SurvivingOutcomes.Contains(reconciliationOutcome);
+    public static bool Survived(string reconciliationOutcome) => SurvivingOutcomes.Contains(reconciliationOutcome);
 
     /// <summary>
     /// Collapses findings to at most one per pattern, keeping the first occurrence.
@@ -76,8 +82,7 @@ internal sealed record DeveloperObservation(
     /// at which point <c>(1-p)^n</c> is negative or zero and the resolution maths stops meaning anything.
     /// </para>
     /// </summary>
-    public static IReadOnlyList<DeveloperObservationHit> DedupeByPattern(
-        IEnumerable<DeveloperObservationHit> hits)
+    public static IReadOnlyList<DeveloperObservationHit> DedupeByPattern(IEnumerable<DeveloperObservationHit> hits)
     {
         ArgumentNullException.ThrowIfNull(hits);
 

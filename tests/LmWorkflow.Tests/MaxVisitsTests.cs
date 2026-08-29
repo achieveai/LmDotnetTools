@@ -16,9 +16,7 @@ public class MaxVisitsTests
     private static WorkflowRuntime LoadedLoop(int maxVisits, bool withOnMaxVisits = true)
     {
         var runtime = new WorkflowRuntime();
-        runtime.LoadDefinition(
-            WorkflowJson.Deserialize(Phase4bFixtures.MaxVisitsLoop(maxVisits, withOnMaxVisits))
-        );
+        runtime.LoadDefinition(WorkflowJson.Deserialize(Phase4bFixtures.MaxVisitsLoop(maxVisits, withOnMaxVisits)));
         return runtime;
     }
 
@@ -38,9 +36,7 @@ public class MaxVisitsTests
 
         // The 3rd entry into gate is refused; nothing mutates on the rejected path.
         var act = () => runtime.AdvanceTo("a", "gate", null);
-        act.Should()
-            .Throw<InvalidOperationException>()
-            .WithMessage("*maxVisits 2*onMaxVisits 'author'*");
+        act.Should().Throw<InvalidOperationException>().WithMessage("*maxVisits 2*onMaxVisits 'author'*");
         runtime.Visits["gate"].Should().Be(2);
         runtime.CurrentNodeId.Should().Be("a");
     }
@@ -105,8 +101,6 @@ public class MaxVisitsTests
         runtime.AdvanceTo("gate", "a", null); // back-edge -> a #2
 
         var act = () => runtime.AdvanceTo("a", "gate", null); // gate #2 -> refused
-        act.Should()
-            .Throw<InvalidOperationException>()
-            .WithMessage("*maxVisits 1*no onMaxVisits is defined*");
+        act.Should().Throw<InvalidOperationException>().WithMessage("*maxVisits 1*no onMaxVisits is defined*");
     }
 }

@@ -42,9 +42,17 @@ public sealed class SubAgentTabsTests
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
             // Background spawn: the Agent call returns a receipt immediately and the child runs
             // out-of-band, persisting its transcript under subagent-{agentId} (the tab replay source).
-            .Turn(t => t.ToolCall(
-                "Agent",
-                new { subagent_type = "researcher", prompt = "Find AI papers", run_in_background = true }))
+            .Turn(t =>
+                t.ToolCall(
+                    "Agent",
+                    new
+                    {
+                        subagent_type = "researcher",
+                        prompt = "Find AI papers",
+                        run_in_background = true,
+                    }
+                )
+            )
             .Turn(t => t.Text("Kicked off the researcher in the background."))
             .Build();
 
@@ -74,8 +82,11 @@ public sealed class SubAgentTabsTests
 
         // The poll (every 3s) surfaces the spawned child as a sub-agent tab alongside the `main` tab.
         await page.SubAgentTabs().WaitForCountAtLeastAsync(1, timeoutMs: 20_000);
-        (await page.ConversationTabs().IsVisibleAsync()).Should().BeTrue("the tab strip appears once a sub-agent exists");
-        await page.ConversationTab("main").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        (await page.ConversationTabs().IsVisibleAsync())
+            .Should()
+            .BeTrue("the tab strip appears once a sub-agent exists");
+        await page.ConversationTab("main")
+            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.SubAgentTabs().First.WaitForTextContainsAsync("research", timeoutMs: 20_000);
 
         // Selecting the sub-agent tab switches the center pane to that child's persisted transcript.
@@ -85,7 +96,8 @@ public sealed class SubAgentTabsTests
 
         // Selecting `main` returns to the parent conversation; the sub-agent view unmounts.
         await page.ConversationTab("main").ClickAsync();
-        await page.GetByTestId("main-view").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("main-view")
+            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         (await page.SubAgentView().CountAsync()).Should().Be(0, "the sub-agent view unmounts when main is active");
 
         await session.SaveSuccessScreenshotAsync($"SubAgentTabs.Sub_agent_gets_a_center_tab_{providerMode}");
@@ -116,8 +128,30 @@ public sealed class SubAgentTabsTests
             .ForRole("beta", ctx => ctx.SystemPromptContains(BetaMarker))
             .Turn(t => t.Text(BetaAnswer))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-            .Turn(t => t.ToolCall("Agent", new { subagent_type = "alpha", name = "alpha", run_in_background = true, prompt = "go alpha" }))
-            .Turn(t => t.ToolCall("Agent", new { subagent_type = "beta", name = "beta", run_in_background = true, prompt = "go beta" }))
+            .Turn(t =>
+                t.ToolCall(
+                    "Agent",
+                    new
+                    {
+                        subagent_type = "alpha",
+                        name = "alpha",
+                        run_in_background = true,
+                        prompt = "go alpha",
+                    }
+                )
+            )
+            .Turn(t =>
+                t.ToolCall(
+                    "Agent",
+                    new
+                    {
+                        subagent_type = "beta",
+                        name = "beta",
+                        run_in_background = true,
+                        prompt = "go beta",
+                    }
+                )
+            )
             .Turn(t => t.Text("Spawned alpha and beta in the background."))
             .Build();
 
@@ -129,8 +163,20 @@ public sealed class SubAgentTabsTests
                 {
                     Templates = new Dictionary<string, SubAgentTemplate>
                     {
-                        ["alpha"] = new SubAgentTemplate { Name = "alpha", SystemPrompt = AlphaMarker, AgentFactory = providerAgentFactory, MaxTurnsPerRun = 5 },
-                        ["beta"] = new SubAgentTemplate { Name = "beta", SystemPrompt = BetaMarker, AgentFactory = providerAgentFactory, MaxTurnsPerRun = 5 },
+                        ["alpha"] = new SubAgentTemplate
+                        {
+                            Name = "alpha",
+                            SystemPrompt = AlphaMarker,
+                            AgentFactory = providerAgentFactory,
+                            MaxTurnsPerRun = 5,
+                        },
+                        ["beta"] = new SubAgentTemplate
+                        {
+                            Name = "beta",
+                            SystemPrompt = BetaMarker,
+                            AgentFactory = providerAgentFactory,
+                            MaxTurnsPerRun = 5,
+                        },
                     },
                     MaxConcurrentSubAgents = 5,
                 }
@@ -149,13 +195,15 @@ public sealed class SubAgentTabsTests
 
         // Each tab dot gets a DISTINCT assigned color.
         var dotColors = await page.EvaluateAsync<string[]>(
-            "() => Array.from(document.querySelectorAll(\"[data-testid='conversation-tab']:not([data-tab-id='main']) .conversation-tab__dot\")).map(d => getComputedStyle(d).backgroundColor)");
+            "() => Array.from(document.querySelectorAll(\"[data-testid='conversation-tab']:not([data-tab-id='main']) .conversation-tab__dot\")).map(d => getComputedStyle(d).backgroundColor)"
+        );
         dotColors.Should().HaveCount(2);
         dotColors.Distinct().Should().HaveCount(2, "each sub-agent tab gets a distinct color");
 
         // Each tab color also tints its inline Agent call pill in the parent conversation.
         var pillBorders = await page.EvaluateAsync<string[]>(
-            "() => Array.from(document.querySelectorAll(\"[data-testid='main-view'] [data-testid='tool-call-pill'][data-tool-name='Agent']\")).map(p => getComputedStyle(p).borderLeftColor)");
+            "() => Array.from(document.querySelectorAll(\"[data-testid='main-view'] [data-testid='tool-call-pill'][data-tool-name='Agent']\")).map(p => getComputedStyle(p).borderLeftColor)"
+        );
         foreach (var color in dotColors)
         {
             pillBorders.Should().Contain(color, "the sub-agent's inline Agent pill is tinted to match its tab");
@@ -164,11 +212,13 @@ public sealed class SubAgentTabsTests
         // Selecting each tab swaps the center pane to that child's transcript.
         await page.SubAgentTabs().Filter(new LocatorFilterOptions { HasText = "alpha" }).First.ClickAsync();
         await page.SubAgentView().WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await page.GetByTestId("subagent-transcript").GetByText(AlphaAnswer, new LocatorGetByTextOptions { Exact = true })
+        await page.GetByTestId("subagent-transcript")
+            .GetByText(AlphaAnswer, new LocatorGetByTextOptions { Exact = true })
             .First.WaitForAsync(new LocatorWaitForOptions { Timeout = 20_000 });
 
         await page.SubAgentTabs().Filter(new LocatorFilterOptions { HasText = "beta" }).First.ClickAsync();
-        await page.GetByTestId("subagent-transcript").GetByText(BetaAnswer, new LocatorGetByTextOptions { Exact = true })
+        await page.GetByTestId("subagent-transcript")
+            .GetByText(BetaAnswer, new LocatorGetByTextOptions { Exact = true })
             .First.WaitForAsync(new LocatorWaitForOptions { Timeout = 20_000 });
 
         await session.SaveSuccessScreenshotAsync($"SubAgentTabs.Two_sub_agents_distinct_colors_{providerMode}");

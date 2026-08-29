@@ -331,31 +331,27 @@ public class MultiTurnAgentPoolCallerCredentialTests
             .Select(i =>
                 Task.Run<(bool Success, IMultiTurnAgent? Agent, SandboxCredential Credential, Exception? Exception)>(
                     () =>
-                {
-                    var credential = i % 2 == 0 ? credentialX : credentialY;
-                    barrier.SignalAndWait();
-                    try
                     {
-                        var agent = pool.GetOrCreateAgent(
-                            threadId,
-                            mode,
-                            requestedProviderId: null,
-                            requestResponseDumpFileName: null,
-                            requestedWorkspaceId: null,
-                            callerCredential: credential
-                        );
-                        return (Success: true, Agent: agent, Credential: credential, Exception: null);
+                        var credential = i % 2 == 0 ? credentialX : credentialY;
+                        barrier.SignalAndWait();
+                        try
+                        {
+                            var agent = pool.GetOrCreateAgent(
+                                threadId,
+                                mode,
+                                requestedProviderId: null,
+                                requestResponseDumpFileName: null,
+                                requestedWorkspaceId: null,
+                                callerCredential: credential
+                            );
+                            return (Success: true, Agent: agent, Credential: credential, Exception: null);
+                        }
+                        catch (SandboxCredentialConflictException ex)
+                        {
+                            return (Success: false, Agent: null, Credential: credential, Exception: ex);
+                        }
                     }
-                    catch (SandboxCredentialConflictException ex)
-                    {
-                        return (
-                            Success: false,
-                            Agent: null,
-                            Credential: credential,
-                            Exception: ex
-                        );
-                    }
-                })
+                )
             )
             .ToArray();
 
@@ -423,7 +419,11 @@ public class MultiTurnAgentPoolCallerCredentialTests
 
         var newMode = SystemChatModes.All[0];
         var act = () =>
-            pool.RecreateAgentWithModeAsync("thread-mode-conflict", newMode, new SandboxCredential("intruder-b", "key-b"));
+            pool.RecreateAgentWithModeAsync(
+                "thread-mode-conflict",
+                newMode,
+                new SandboxCredential("intruder-b", "key-b")
+            );
 
         var thrown = (await act.Should().ThrowAsync<SandboxCredentialConflictException>()).Which;
         thrown.ThreadId.Should().Be("thread-mode-conflict");
@@ -507,7 +507,12 @@ public class MultiTurnAgentPoolCallerCredentialTests
         );
 
         var act = () =>
-            pool.RecreateAgentWithProviderAsync("thread-prov-conflict", "openai", mode, new SandboxCredential("intruder-b", "key-b"));
+            pool.RecreateAgentWithProviderAsync(
+                "thread-prov-conflict",
+                "openai",
+                mode,
+                new SandboxCredential("intruder-b", "key-b")
+            );
 
         var thrown = (await act.Should().ThrowAsync<SandboxCredentialConflictException>()).Which;
         thrown.ThreadId.Should().Be("thread-prov-conflict");
@@ -537,15 +542,16 @@ public class MultiTurnAgentPoolCallerCredentialTests
             ownerUserId: "dir-a:alice"
         );
 
-        var act = () => pool.GetOrCreateAgent(
-            "thread-principal",
-            mode,
-            requestedProviderId: null,
-            requestResponseDumpFileName: null,
-            requestedWorkspaceId: null,
-            callerCredential: null,
-            ownerUserId: "dir-b:mallory"
-        );
+        var act = () =>
+            pool.GetOrCreateAgent(
+                "thread-principal",
+                mode,
+                requestedProviderId: null,
+                requestResponseDumpFileName: null,
+                requestedWorkspaceId: null,
+                callerCredential: null,
+                ownerUserId: "dir-b:mallory"
+            );
 
         var thrown = act.Should().Throw<PrincipalConflictException>().Which;
         thrown.ThreadId.Should().Be("thread-principal");

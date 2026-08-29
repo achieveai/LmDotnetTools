@@ -14,9 +14,8 @@ namespace LmStreaming.Sample.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/auth/github")]
-public sealed class GitHubAuthController(
-    GitHubOAuthProvider provider,
-    ILogger<GitHubAuthController> logger) : ControllerBase
+public sealed class GitHubAuthController(GitHubOAuthProvider provider, ILogger<GitHubAuthController> logger)
+    : ControllerBase
 {
     /// <summary>
     /// Opens the browser to start the interactive sign-in and returns the challenge (the

@@ -15,7 +15,8 @@ internal static class WebToolArgs
     /// </summary>
     public static string? ReadString(JsonElement root, string name)
     {
-        return root.ValueKind == JsonValueKind.Object
+        return
+            root.ValueKind == JsonValueKind.Object
             && root.TryGetProperty(name, out var property)
             && property.ValueKind == JsonValueKind.String
             ? property.GetString()

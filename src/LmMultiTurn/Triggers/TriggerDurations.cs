@@ -10,7 +10,10 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 /// </summary>
 internal static partial class TriggerDurations
 {
-    [GeneratedRegex(@"^\s*(?<value>\d+)\s*(?<unit>ms|s|m|h|d)\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(
+        @"^\s*(?<value>\d+)\s*(?<unit>ms|s|m|h|d)\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+    )]
     private static partial Regex DurationRegex();
 
     /// <summary>
@@ -31,7 +34,14 @@ internal static partial class TriggerDurations
             return false;
         }
 
-        if (!long.TryParse(match.Groups["value"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+        if (
+            !long.TryParse(
+                match.Groups["value"].Value,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var value
+            )
+        )
         {
             return false;
         }
@@ -56,7 +66,8 @@ internal static partial class TriggerDurations
         string? spec,
         DateTimeOffset from,
         out DateTimeOffset instant,
-        out string? error)
+        out string? error
+    )
     {
         instant = default;
         error = null;
@@ -73,11 +84,14 @@ internal static partial class TriggerDurations
             return true;
         }
 
-        if (DateTimeOffset.TryParse(
+        if (
+            DateTimeOffset.TryParse(
                 spec,
                 CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-                out var parsed))
+                out var parsed
+            )
+        )
         {
             instant = parsed;
             return true;
@@ -97,7 +111,8 @@ internal static partial class TriggerDurations
         DateTimeOffset from,
         TimeSpan max,
         out DateTimeOffset deadline,
-        out string? error)
+        out string? error
+    )
     {
         deadline = default;
 

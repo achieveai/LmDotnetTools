@@ -61,8 +61,9 @@ public sealed class FindingsPersistenceTests
 
             // Sanity, in the writing process: the row exists at all. Asserted here and not only after the
             // reopen so a failure tells us WHICH half broke — never written, or written and not durable.
-            ReadFindings(writingStore, runId).Should().NotBeNull(
-                "the Posted stage writes the findings artifact through the production path");
+            ReadFindings(writingStore, runId)
+                .Should()
+                .NotBeNull("the Posted stage writes the findings artifact through the production path");
         }
 
         // The restart. The writing store's connection is closed; this is a fresh handle over the same file,
@@ -118,12 +119,18 @@ public sealed class FindingsPersistenceTests
     private static async Task RunReviewToPostedAsync(ReviewStore store, ReviewRun run)
     {
         var sandbox = new FakeSandboxCommandRunner()
-            .OnArgvContains("rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a git repo"))
-            .OnArgvContains("diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty));
-        var host = new FakeSandboxCommandRunner()
             .OnArgvContains(
-                "rev-parse review/lmdotnettools-118",
-                new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+                "rev-parse --is-inside-work-tree",
+                new SandboxCommandResult(1, string.Empty, "not a git repo")
+            )
+            .OnArgvContains(
+                "diff",
+                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty)
+            );
+        var host = new FakeSandboxCommandRunner().OnArgvContains(
+            "rev-parse review/lmdotnettools-118",
+            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty)
+        );
         var hostFileSystem = new FakeSandboxFileSystem()
             .Seed("/host/reviewbot/README.md", "# ReviewBot")
             .Seed("/host/reviewbot/PRs/.gitkeep", string.Empty)
@@ -141,7 +148,8 @@ public sealed class FindingsPersistenceTests
             NullLoggerFactory.Instance,
             hostRetention: new HostRetentionWorkspace(host, hostFileSystem, "/host/reviewbot"),
             completionSource: new ScriptedRoster(SpecialistNode()),
-            transcriptSource: new ScriptedTranscripts(SpecialistTranscript));
+            transcriptSource: new ScriptedTranscripts(SpecialistTranscript)
+        );
 
         await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -155,9 +163,7 @@ public sealed class FindingsPersistenceTests
         var artifact = store
             .GetArtifacts(runId)
             .SingleOrDefault(a => a.ArtifactKind == DaemonReviewStageExecutor.FindingsArtifactKind);
-        return artifact is null
-            ? null
-            : JsonSerializer.Deserialize<ReviewFindingsArtifactPayload>(artifact.Payload);
+        return artifact is null ? null : JsonSerializer.Deserialize<ReviewFindingsArtifactPayload>(artifact.Payload);
     }
 
     private static ReviewSubAgentNode SpecialistNode() =>
@@ -174,27 +180,31 @@ public sealed class FindingsPersistenceTests
 
     private static ReviewRun SeedRun(ReviewStore store)
     {
-        var repoId = store.EnsureRepo(new RepoIdentity
-        {
-            Provider = "github",
-            OrgOrOwner = "achieveai",
-            RepoName = "LmDotnetTools",
-            RepoStableId = "repo-stable-1",
-        });
-        return store.CreateOrGetReviewRun(new ReviewRun
-        {
-            RepoId = repoId,
-            PrId = "118",
-            HeadSha = "head-sha",
-            BaseSha = "base-sha",
-            TriggerWatermark = "2026-06-29T12:34:56Z",
-            ReviewKind = "full",
-            VariantId = "primary",
-            Mode = "collect-only",
-            Stage = ReviewStage.Discovered,
-            WorkflowStatus = WorkflowStatus.Running,
-            PrLifecycleState = PrLifecycleState.Open,
-        });
+        var repoId = store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "achieveai",
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-stable-1",
+            }
+        );
+        return store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = "118",
+                HeadSha = "head-sha",
+                BaseSha = "base-sha",
+                TriggerWatermark = "2026-06-29T12:34:56Z",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Running,
+                PrLifecycleState = PrLifecycleState.Open,
+            }
+        );
     }
 
     /// <summary>A settled roster of exactly the scripted nodes, returned on every poll.</summary>
@@ -205,7 +215,8 @@ public sealed class FindingsPersistenceTests
         public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
             ReviewRun run,
             string parentThreadId,
-            CancellationToken ct) => Task.FromResult(_snapshot);
+            CancellationToken ct
+        ) => Task.FromResult(_snapshot);
     }
 
     /// <summary>Hands every sub-agent the same scripted transcript; the lead's root transcript is empty.</summary>
@@ -214,13 +225,15 @@ public sealed class FindingsPersistenceTests
         public Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetTranscriptAsync(
             string rootThreadId,
             string agentId,
-            CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<ReviewAgentTranscriptEntry>>(
-                [new("TextMessage", "assistant", FromAgent: null, TimestampUtc: null, Body: body)]);
+            CancellationToken ct
+        ) =>
+            Task.FromResult<IReadOnlyList<ReviewAgentTranscriptEntry>>([
+                new("TextMessage", "assistant", FromAgent: null, TimestampUtc: null, Body: body),
+            ]);
 
         public Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetRootTranscriptAsync(
             string rootThreadId,
-            CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<ReviewAgentTranscriptEntry>>([]);
+            CancellationToken ct
+        ) => Task.FromResult<IReadOnlyList<ReviewAgentTranscriptEntry>>([]);
     }
 }

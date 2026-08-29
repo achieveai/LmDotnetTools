@@ -65,11 +65,11 @@ public sealed class GitHubClonePrerequisites
 
         return new GitHubClonePrerequisites(
             available: false,
-            skipReason:
-                "No persisted GitHub sign-in found. Run the sample and sign in to GitHub "
-                    + "(or set SANDBOX_OAUTH_TOKENS_DIR to a directory containing github.json) to enable "
-                    + "the sandbox git-clone egress test.",
-            tokenStoreDir: null);
+            skipReason: "No persisted GitHub sign-in found. Run the sample and sign in to GitHub "
+                + "(or set SANDBOX_OAUTH_TOKENS_DIR to a directory containing github.json) to enable "
+                + "the sandbox git-clone egress test.",
+            tokenStoreDir: null
+        );
     }
 
     /// <summary>
@@ -99,9 +99,11 @@ public sealed class GitHubClonePrerequisites
             try
             {
                 using var doc = JsonDocument.Parse(File.ReadAllText(path));
-                if (doc.RootElement.TryGetProperty("SandboxGateway", out var sg)
+                if (
+                    doc.RootElement.TryGetProperty("SandboxGateway", out var sg)
                     && sg.TryGetProperty("WorkspaceBasePath", out var wbp)
-                    && wbp.GetString() is { Length: > 0 } baseDir)
+                    && wbp.GetString() is { Length: > 0 } baseDir
+                )
                 {
                     return baseDir;
                 }
@@ -151,7 +153,8 @@ public sealed class GitHubClonePrerequisites
         string gatewayBaseUrl,
         string workspaceBase,
         CancellationToken ct = default,
-        Func<SandboxClientOptions, SandboxClient>? clientFactory = null)
+        Func<SandboxClientOptions, SandboxClient>? clientFactory = null
+    )
     {
         var leaf = "e2e-prereq-probe-" + Guid.NewGuid().ToString("N")[..8];
         var probeHostPath = Path.Combine(workspaceBase, leaf);
@@ -172,7 +175,8 @@ public sealed class GitHubClonePrerequisites
                 clientSecret: string.Empty,
                 executionTimeout: TimeSpan.FromSeconds(30),
                 transportTimeout: TimeSpan.FromSeconds(15),
-                allowInsecureDevelopmentTransport: true);
+                allowInsecureDevelopmentTransport: true
+            );
             client = clientFactory?.Invoke(options) ?? new SandboxClient(options);
 
             var info = await client.CreateAsync(new SandboxCreateRequest(leaf), ct).ConfigureAwait(false);
@@ -189,7 +193,8 @@ public sealed class GitHubClonePrerequisites
                 Verified: false,
                 Reason: "Could not verify the adopted gateway's workspace against this host: the probe "
                     + $"failed with {ex.GetType().Name}. Run the probe manually against the gateway for "
-                    + "the underlying detail.");
+                    + "the underlying detail."
+            );
         }
         finally
         {
@@ -336,7 +341,8 @@ public static class HostWorkspacePathVerifier
         {
             return new HostWorkspaceVerification(
                 false,
-                "The adopted gateway reported no workspace container path for the probe session.");
+                "The adopted gateway reported no workspace container path for the probe session."
+            );
         }
 
         var strippedReported = StripLongPathPrefix(reportedPath);
@@ -350,7 +356,8 @@ public static class HostWorkspacePathVerifier
                 false,
                 $"The adopted gateway reported workspace path '{reportedPath}', which is not shaped like "
                     + "an absolute path on this host — this looks like a container-internal mount point "
-                    + "(typical of a Docker-backed gateway), not this host's filesystem.");
+                    + "(typical of a Docker-backed gateway), not this host's filesystem."
+            );
         }
 
         string normalizedReported;
@@ -358,14 +365,17 @@ public static class HostWorkspacePathVerifier
         try
         {
             normalizedReported = Path.TrimEndingDirectorySeparator(Path.GetFullPath(strippedReported));
-            normalizedExpected = Path.TrimEndingDirectorySeparator(Path.GetFullPath(StripLongPathPrefix(expectedHostPath)));
+            normalizedExpected = Path.TrimEndingDirectorySeparator(
+                Path.GetFullPath(StripLongPathPrefix(expectedHostPath))
+            );
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
             return new HostWorkspaceVerification(
                 false,
                 $"The adopted gateway reported workspace path '{reportedPath}', which is not a valid "
-                    + $"path on this host ({ex.GetType().Name}: {ex.Message}).");
+                    + $"path on this host ({ex.GetType().Name}: {ex.Message})."
+            );
         }
 
         if (!Directory.Exists(normalizedReported))
@@ -374,7 +384,8 @@ public static class HostWorkspacePathVerifier
                 false,
                 $"The adopted gateway reported workspace path '{normalizedReported}', but no such "
                     + "directory exists on this host — the gateway's workspace is not this host's "
-                    + "filesystem.");
+                    + "filesystem."
+            );
         }
 
         if (!string.Equals(normalizedReported, normalizedExpected, StringComparison.OrdinalIgnoreCase))
@@ -383,7 +394,8 @@ public static class HostWorkspacePathVerifier
                 false,
                 $"The adopted gateway reported workspace path '{normalizedReported}', which does not "
                     + $"match the expected host workspace '{normalizedExpected}' — the gateway is not "
-                    + "resolving workspaces against this host's directory tree.");
+                    + "resolving workspaces against this host's directory tree."
+            );
         }
 
         return new HostWorkspaceVerification(true, string.Empty);
@@ -407,9 +419,7 @@ public static class HostWorkspacePathVerifier
     /// scope — the workspace bases this gate is used with are drive-qualified.
     /// </remarks>
     internal static bool LooksLikeAHostPath(string path, bool windowsHost) =>
-        windowsHost
-            ? path.Length >= 2 && path[1] == ':' && char.IsLetter(path[0])
-            : path.StartsWith('/');
+        windowsHost ? path.Length >= 2 && path[1] == ':' && char.IsLetter(path[0]) : path.StartsWith('/');
 
     private static string StripLongPathPrefix(string path) =>
         path.StartsWith(@"\\?\", StringComparison.Ordinal) ? path[4..] : path;

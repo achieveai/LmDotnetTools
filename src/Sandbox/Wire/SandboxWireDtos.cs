@@ -139,7 +139,9 @@ internal sealed record ContainerEntryDto(
 );
 
 /// <summary>Response shape for <c>GET /api/v1/sandboxes</c> (list). See <see cref="ContainerEntryDto"/>.</summary>
-internal sealed record ListSandboxesResponseDto([property: JsonPropertyName("sandboxes")] IReadOnlyList<ContainerEntryDto>? Sandboxes);
+internal sealed record ListSandboxesResponseDto(
+    [property: JsonPropertyName("sandboxes")] IReadOnlyList<ContainerEntryDto>? Sandboxes
+);
 
 // --- Session-discovery REST contract ---
 
@@ -168,9 +170,7 @@ internal sealed record MarketplaceCatalogDto(
 );
 
 /// <summary>Gateway capability advertisement. An absent block leaves every flag <see langword="null"/> ("unknown").</summary>
-internal sealed record CapabilitiesDto(
-    [property: JsonPropertyName("pluginFiltering")] bool? PluginFiltering
-);
+internal sealed record CapabilitiesDto([property: JsonPropertyName("pluginFiltering")] bool? PluginFiltering);
 
 internal sealed record MarketplaceEntryDto(
     [property: JsonPropertyName("alias")] string Alias,

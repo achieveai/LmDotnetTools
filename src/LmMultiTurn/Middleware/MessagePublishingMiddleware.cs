@@ -25,7 +25,8 @@ internal sealed class MessagePublishingMiddleware : IStreamingMiddleware
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var messages = await agent.GenerateReplyAsync(context.Messages, context.Options, ct);
         var result = new List<IMessage>();
@@ -42,7 +43,8 @@ internal sealed class MessagePublishingMiddleware : IStreamingMiddleware
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
         IStreamingAgent agent,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, ct);
         return ProcessAndPublishAsync(stream, ct);
@@ -50,7 +52,8 @@ internal sealed class MessagePublishingMiddleware : IStreamingMiddleware
 
     private async IAsyncEnumerable<IMessage> ProcessAndPublishAsync(
         IAsyncEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         await foreach (var msg in messages.WithCancellation(ct))
         {

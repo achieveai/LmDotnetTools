@@ -132,6 +132,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     {
         public Dictionary<string, int> MessageOrderByGeneration { get; } = [];
         public Dictionary<string, int> ChunkIdxByGeneration { get; } = [];
+
         /// <summary>
         /// Tracks the current message identity to detect when we need to start a new message.
         /// Identity is message type for most updates, or "tool_call_update_{toolCallId}" for tool call updates.
@@ -207,7 +208,10 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 // so it must share the same messageOrderIdx identity as "text_update"
                 CheckAndHandleIdentityChange("text_update");
                 var (citationsOrderIdx, _) = GetCurrentIndices();
-                yield return m with { MessageOrderIdx = citationsOrderIdx };
+                yield return m with
+                {
+                    MessageOrderIdx = citationsOrderIdx,
+                };
                 break;
 
             case TextMessage m:
@@ -231,13 +235,19 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                         );
                     }
 
-                    yield return m with { MessageOrderIdx = finalizedTextOrderIdx };
+                    yield return m with
+                    {
+                        MessageOrderIdx = finalizedTextOrderIdx,
+                    };
                 }
                 else
                 {
                     StartNewMessage();
                     var (textOrderIdx, _) = GetCurrentIndices();
-                    yield return m with { MessageOrderIdx = textOrderIdx };
+                    yield return m with
+                    {
+                        MessageOrderIdx = textOrderIdx,
+                    };
                 }
 
                 break;
@@ -246,7 +256,11 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 // Check if message type changed, which triggers new message
                 CheckAndHandleIdentityChange("text_update");
                 var (textUpdateOrderIdx, textUpdateChunkIdx) = GetCurrentIndices();
-                yield return m with { MessageOrderIdx = textUpdateOrderIdx, ChunkIdx = textUpdateChunkIdx };
+                yield return m with
+                {
+                    MessageOrderIdx = textUpdateOrderIdx,
+                    ChunkIdx = textUpdateChunkIdx,
+                };
                 IncrementChunk();
                 break;
 
@@ -258,14 +272,21 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 // starts its own message (original behavior).
                 StartNewMessage();
                 var (reasoningOrderIdx, _) = GetCurrentIndices();
-                yield return m with { MessageOrderIdx = reasoningOrderIdx };
+                yield return m with
+                {
+                    MessageOrderIdx = reasoningOrderIdx,
+                };
                 break;
 
             case ReasoningUpdateMessage m:
                 // Check if message type changed, which triggers new message
                 CheckAndHandleIdentityChange("reasoning_update");
                 var (reasoningUpdateOrderIdx, reasoningUpdateChunkIdx) = GetCurrentIndices();
-                yield return m with { MessageOrderIdx = reasoningUpdateOrderIdx, ChunkIdx = reasoningUpdateChunkIdx };
+                yield return m with
+                {
+                    MessageOrderIdx = reasoningUpdateOrderIdx,
+                    ChunkIdx = reasoningUpdateChunkIdx,
+                };
                 IncrementChunk();
                 break;
 
@@ -317,7 +338,8 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 foreach (var update in m.ToolCallUpdates)
                 {
                     // Identity based on tool call ID - different tool calls get different messages
-                    var toolCallIdentity = $"tool_call_update_{update.ToolCallId ?? update.Index?.ToString() ?? "unknown"}";
+                    var toolCallIdentity =
+                        $"tool_call_update_{update.ToolCallId ?? update.Index?.ToString() ?? "unknown"}";
                     CheckAndHandleIdentityChange(toolCallIdentity);
 
                     var (toolCallUpdateOrderIdx, toolCallUpdateChunkIdx) = GetCurrentIndices();
@@ -387,31 +409,40 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
             case ToolCallMessage m:
                 StartNewMessage();
                 var (stuOrderIdx, _) = GetCurrentIndices();
-                yield return m with { MessageOrderIdx = stuOrderIdx };
+                yield return m with
+                {
+                    MessageOrderIdx = stuOrderIdx,
+                };
                 break;
 
             case ToolCallResultMessage m:
                 StartNewMessage();
                 var (strOrderIdx, _) = GetCurrentIndices();
-                yield return m with { MessageOrderIdx = strOrderIdx };
+                yield return m with
+                {
+                    MessageOrderIdx = strOrderIdx,
+                };
                 break;
 
             case UsageMessage m:
                 StartNewMessage();
                 var (usageOrderIdx, _) = GetCurrentIndices();
-                yield return m with { MessageOrderIdx = usageOrderIdx };
+                yield return m with
+                {
+                    MessageOrderIdx = usageOrderIdx,
+                };
                 break;
 
             case CompositeMessage:
                 throw new NotSupportedException(
-                    "CompositeMessage should not appear when assigning message orderings. " +
-                    "The downstream flow expects individual messages, not composites."
+                    "CompositeMessage should not appear when assigning message orderings. "
+                        + "The downstream flow expects individual messages, not composites."
                 );
 
             case ToolsCallAggregateMessage:
                 throw new NotSupportedException(
-                    "ToolsCallAggregateMessage should not appear when assigning message orderings. " +
-                    "The downstream flow expects individual messages, not aggregates."
+                    "ToolsCallAggregateMessage should not appear when assigning message orderings. "
+                        + "The downstream flow expects individual messages, not aggregates."
                 );
 
             default:
@@ -492,8 +523,9 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 {
                     // Re-sort: non-tool messages + aggregate, ordered by MessageOrderIdx
                     var combined = new List<IMessage>(nonToolMessages) { aggregate };
-                    combined.Sort((a, b) =>
-                        (a.MessageOrderIdx ?? int.MaxValue).CompareTo(b.MessageOrderIdx ?? int.MaxValue));
+                    combined.Sort(
+                        (a, b) => (a.MessageOrderIdx ?? int.MaxValue).CompareTo(b.MessageOrderIdx ?? int.MaxValue)
+                    );
 
                     // Wrap in CompositeMessage since we have multiple messages with the same GenerationId
                     var composite = CreateCompositeMessage(combined);
@@ -508,7 +540,10 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
             }
 
             // Check if this group has multiple messages that should be composed
-            if (aggregatedGroup.Count > 1 && aggregatedGroup.All(m => m.GenerationId == aggregatedGroup[0].GenerationId))
+            if (
+                aggregatedGroup.Count > 1
+                && aggregatedGroup.All(m => m.GenerationId == aggregatedGroup[0].GenerationId)
+            )
             {
                 // Create CompositeMessage for messages with same GenerationId
                 var composite = CreateCompositeMessage(aggregatedGroup);

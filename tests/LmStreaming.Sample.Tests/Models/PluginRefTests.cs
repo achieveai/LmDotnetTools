@@ -7,12 +7,18 @@ public class PluginRefTests
     {
         var pluginRef = new PluginRef("official", "code-review");
 
-        var json = JsonSerializer.Serialize(pluginRef, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        var json = JsonSerializer.Serialize(
+            pluginRef,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+        );
 
         json.Should().Contain("\"marketplace\":\"official\"");
         json.Should().Contain("\"plugin\":\"code-review\"");
 
-        var roundTripped = JsonSerializer.Deserialize<PluginRef>(json, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        var roundTripped = JsonSerializer.Deserialize<PluginRef>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+        );
 
         roundTripped.Should().Be(pluginRef);
     }

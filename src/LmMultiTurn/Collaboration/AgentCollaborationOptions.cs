@@ -92,8 +92,7 @@ public sealed record AgentCollaborationOptions
     public int MaxClosedEntries { get; init; } = 1024;
 
     /// <summary>Who may read another agent's transcript. Defaults to the narrowest mode.</summary>
-    public TranscriptVisibilityMode TranscriptVisibility { get; init; } =
-        TranscriptVisibilityMode.Ancestors;
+    public TranscriptVisibilityMode TranscriptVisibility { get; init; } = TranscriptVisibilityMode.Ancestors;
 
     /// <summary>
     /// Throws when any limit is unusable, so a misconfigured host fails at construction rather

@@ -47,8 +47,7 @@ public sealed class ToolInvocationPreparer
         _options = options ?? new ToolApprovalOptions();
         _logger = logger ?? NullLogger.Instance;
         RequiresApprovalDecision = _options.RequireApproval || _options.Gates.Count > 0;
-        IsEnabled =
-            RequiresApprovalDecision || _options.ProviderPolicy != null || _options.HostPolicy != null;
+        IsEnabled = RequiresApprovalDecision || _options.ProviderPolicy != null || _options.HostPolicy != null;
     }
 
     /// <summary>A preparer that enforces nothing. Use where a call site has no host configuration.</summary>
@@ -76,7 +75,8 @@ public sealed class ToolInvocationPreparer
     /// </returns>
     public async Task<PreparedToolInvocation> PrepareAsync(
         ToolInvocationRequest request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -105,20 +105,24 @@ public sealed class ToolInvocationPreparer
         // Precedence: provider policy, then host policy, then approvers. Neither policy opens a
         // gate, so a call a local rule already refuses never reaches a human or a remote service.
         var providerVerdict = await EvaluatePolicyAsync(
-            _options.ProviderPolicy,
-            context,
-            ToolApprovalOutcomes.ProviderPolicyDenied,
-            cancellationToken).ConfigureAwait(false);
+                _options.ProviderPolicy,
+                context,
+                ToolApprovalOutcomes.ProviderPolicyDenied,
+                cancellationToken
+            )
+            .ConfigureAwait(false);
         if (!providerVerdict.IsAllowed)
         {
             return Settle(request, arguments, providerVerdict);
         }
 
         var hostVerdict = await EvaluatePolicyAsync(
-            _options.HostPolicy,
-            context,
-            ToolApprovalOutcomes.HostPolicyDenied,
-            cancellationToken).ConfigureAwait(false);
+                _options.HostPolicy,
+                context,
+                ToolApprovalOutcomes.HostPolicyDenied,
+                cancellationToken
+            )
+            .ConfigureAwait(false);
         if (!hostVerdict.IsAllowed)
         {
             return Settle(request, arguments, hostVerdict);
@@ -129,8 +133,7 @@ public sealed class ToolInvocationPreparer
             return Settle(request, arguments, ToolApprovalVerdict.Allow());
         }
 
-        var approval = await RequestApprovalAsync(context, expiresAt, cancellationToken)
-            .ConfigureAwait(false);
+        var approval = await RequestApprovalAsync(context, expiresAt, cancellationToken).ConfigureAwait(false);
         return Settle(request, arguments, approval);
     }
 
@@ -147,7 +150,8 @@ public sealed class ToolInvocationPreparer
         PreparedToolInvocation prepared,
         ToolCallResultHandler handler,
         ToolCallContext context,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         ArgumentNullException.ThrowIfNull(prepared);
         ArgumentNullException.ThrowIfNull(handler);
@@ -160,7 +164,8 @@ public sealed class ToolInvocationPreparer
                 prepared.ToolName,
                 prepared.ToolCallId,
                 prepared.Outcome,
-                prepared.Arguments.Sha256Hex);
+                prepared.Arguments.Sha256Hex
+            );
 
             return Task.FromResult(prepared.ToBlockedResult());
         }
@@ -172,7 +177,8 @@ public sealed class ToolInvocationPreparer
     private static PreparedToolInvocation Settle(
         ToolInvocationRequest request,
         CanonicalToolArguments arguments,
-        ToolApprovalVerdict verdict) =>
+        ToolApprovalVerdict verdict
+    ) =>
         new()
         {
             ToolName = request.ToolName,
@@ -193,7 +199,8 @@ public sealed class ToolInvocationPreparer
         IToolExecutionPolicy? policy,
         ToolApprovalContext context,
         string denialOutcome,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (policy == null)
         {
@@ -211,7 +218,8 @@ public sealed class ToolInvocationPreparer
             // A plain refusal is attributed to the slot the policy occupies, so `Deny()` — the
             // obvious thing to write — reports as provider_policy_denied or host_policy_denied
             // rather than as the generic code. A policy that names something more specific keeps it.
-            return string.IsNullOrEmpty(verdict.Outcome)
+            return
+                string.IsNullOrEmpty(verdict.Outcome)
                 || string.Equals(verdict.Outcome, ToolApprovalOutcomes.Denied, StringComparison.Ordinal)
                 ? ToolApprovalVerdict.Blocked(denialOutcome, verdict.Reason)
                 : verdict;
@@ -226,7 +234,8 @@ public sealed class ToolInvocationPreparer
                 ex,
                 "Tool execution policy threw and therefore blocks: ToolName={ToolName}, ToolCallId={ToolCallId}",
                 context.ToolName,
-                context.ToolCallId);
+                context.ToolCallId
+            );
             return ToolApprovalVerdict.Blocked(ToolApprovalOutcomes.HookError, ex.Message);
         }
     }
@@ -234,7 +243,8 @@ public sealed class ToolInvocationPreparer
     private async Task<ToolApprovalVerdict> RequestApprovalAsync(
         ToolApprovalContext context,
         DateTimeOffset expiresAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var gates = _options.Gates;
         if (gates.Count == 0 || gates.Any(gate => gate == null))
@@ -244,7 +254,8 @@ public sealed class ToolInvocationPreparer
             _logger.LogError(
                 "Tool call requires approval but no approver is configured: ToolName={ToolName}, ToolCallId={ToolCallId}",
                 context.ToolName,
-                context.ToolCallId);
+                context.ToolCallId
+            );
             return ToolApprovalVerdict.Blocked(ToolApprovalOutcomes.MissingApprover);
         }
 
@@ -254,7 +265,8 @@ public sealed class ToolInvocationPreparer
             _logger.LogWarning(
                 "Tool call refused because too many approvals are pending: ToolName={ToolName}, Limit={Limit}",
                 context.ToolName,
-                _options.MaxPendingApprovals);
+                _options.MaxPendingApprovals
+            );
             return ToolApprovalVerdict.Blocked(ToolApprovalOutcomes.Overload);
         }
 
@@ -267,12 +279,9 @@ public sealed class ToolInvocationPreparer
             }
 
             using var expiry = new CancellationTokenSource(remaining, _options.TimeProvider);
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                expiry.Token);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, expiry.Token);
 
-            var verdict = await CollectUnanimousAllowAsync(context, gates, linked.Token)
-                .ConfigureAwait(false);
+            var verdict = await CollectUnanimousAllowAsync(context, gates, linked.Token).ConfigureAwait(false);
 
             // The token wins ties. A decision that arrives as the run is cancelled or the deadline
             // passes is a decision nobody is waiting for any more, and acting on it would execute a
@@ -298,7 +307,8 @@ public sealed class ToolInvocationPreparer
     private async Task<ToolApprovalVerdict> CollectUnanimousAllowAsync(
         ToolApprovalContext context,
         IReadOnlyList<IToolApprovalGate> gates,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         // One approver's refusal is enough, so stop the others as soon as it lands rather than
         // making the caller wait out the slowest approver for an answer that cannot change.
@@ -333,12 +343,12 @@ public sealed class ToolInvocationPreparer
     private async Task<ToolApprovalVerdict> RunGateAsync(
         IToolApprovalGate gate,
         ToolApprovalContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         try
         {
-            var verdict = await gate.RequestApprovalAsync(context, cancellationToken)
-                .ConfigureAwait(false);
+            var verdict = await gate.RequestApprovalAsync(context, cancellationToken).ConfigureAwait(false);
 
             // A gate that returns `default` has not allowed anything — the null outcome is read as
             // a denial rather than as an omission.
@@ -357,7 +367,8 @@ public sealed class ToolInvocationPreparer
                 "Tool approval gate threw and therefore blocks: Gate={Gate}, ToolName={ToolName}, ToolCallId={ToolCallId}",
                 gate.GetType().Name,
                 context.ToolName,
-                context.ToolCallId);
+                context.ToolCallId
+            );
             return ToolApprovalVerdict.Blocked(ToolApprovalOutcomes.HookError, ex.Message);
         }
     }

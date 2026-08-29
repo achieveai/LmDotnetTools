@@ -16,9 +16,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class PrPollTargetBuilderTests : LoggingTestBase
 {
     public PrPollTargetBuilderTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private IReadOnlyList<PrPollTarget> Build(CodeReviewDaemonOptions options) =>
         PrPollTargetBuilder.Build(options, LoggerFactory.CreateLogger<PrPollTargetBuilderTests>());
@@ -48,11 +46,9 @@ public sealed class PrPollTargetBuilderTests : LoggingTestBase
     [Fact]
     public void A_three_segment_entry_becomes_an_ado_target_when_ado_is_enabled()
     {
-        var targets = Build(new CodeReviewDaemonOptions
-        {
-            EnableAdoProvider = true,
-            EnabledRepos = ["contoso/Platform/widgets"],
-        });
+        var targets = Build(
+            new CodeReviewDaemonOptions { EnableAdoProvider = true, EnabledRepos = ["contoso/Platform/widgets"] }
+        );
 
         var target = targets.Should().ContainSingle().Subject;
         target.Provider.Should().Be("ado");
@@ -66,10 +62,9 @@ public sealed class PrPollTargetBuilderTests : LoggingTestBase
     [Fact]
     public void Ado_entries_are_skipped_when_the_ado_provider_is_disabled()
     {
-        var targets = Build(new CodeReviewDaemonOptions
-        {
-            EnabledRepos = ["achieveai/LmDotnetTools", "contoso/Platform/widgets"],
-        });
+        var targets = Build(
+            new CodeReviewDaemonOptions { EnabledRepos = ["achieveai/LmDotnetTools", "contoso/Platform/widgets"] }
+        );
 
         var target = targets.Should().ContainSingle("the ADO repo is dropped when its provider is off").Subject;
         target.Provider.Should().Be("github");
@@ -78,11 +73,9 @@ public sealed class PrPollTargetBuilderTests : LoggingTestBase
     [Fact]
     public void Enabling_comment_posting_makes_targets_post_mode()
     {
-        var targets = Build(new CodeReviewDaemonOptions
-        {
-            EnableCommentPosting = true,
-            EnabledRepos = ["achieveai/LmDotnetTools"],
-        });
+        var targets = Build(
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnabledRepos = ["achieveai/LmDotnetTools"] }
+        );
 
         targets.Should().ContainSingle().Which.Mode.Should().Be("post");
     }
@@ -90,10 +83,12 @@ public sealed class PrPollTargetBuilderTests : LoggingTestBase
     [Fact]
     public void Malformed_entries_are_skipped_not_thrown()
     {
-        var targets = Build(new CodeReviewDaemonOptions
-        {
-            EnabledRepos = ["just-one-segment", "", "  ", "a/b/c/d", "achieveai/LmDotnetTools"],
-        });
+        var targets = Build(
+            new CodeReviewDaemonOptions
+            {
+                EnabledRepos = ["just-one-segment", "", "  ", "a/b/c/d", "achieveai/LmDotnetTools"],
+            }
+        );
 
         targets.Should().ContainSingle().Which.Repo.RepoName.Should().Be("LmDotnetTools");
     }
@@ -101,15 +96,19 @@ public sealed class PrPollTargetBuilderTests : LoggingTestBase
     [Fact]
     public void The_recency_bound_flows_from_options_onto_each_target()
     {
-        var targets = Build(new CodeReviewDaemonOptions
-        {
-            EnableAdoProvider = true,
-            MaxPrAgeDays = 5,
-            EnabledRepos = ["achieveai/LmDotnetTools", "contoso/Platform/widgets"],
-        });
+        var targets = Build(
+            new CodeReviewDaemonOptions
+            {
+                EnableAdoProvider = true,
+                MaxPrAgeDays = 5,
+                EnabledRepos = ["achieveai/LmDotnetTools", "contoso/Platform/widgets"],
+            }
+        );
 
         targets.Should().HaveCount(2);
-        targets.Should().OnlyContain(t => t.MaxPrAgeDays == 5, "the operator recency bound is stamped onto every target");
+        targets
+            .Should()
+            .OnlyContain(t => t.MaxPrAgeDays == 5, "the operator recency bound is stamped onto every target");
     }
 
     [Fact]
@@ -117,7 +116,11 @@ public sealed class PrPollTargetBuilderTests : LoggingTestBase
     {
         var targets = Build(new CodeReviewDaemonOptions { EnabledRepos = ["achieveai/LmDotnetTools"] });
 
-        targets.Should().ContainSingle().Which.MaxPrAgeDays.Should().Be(0, "the filter is off unless an operator sets it");
+        targets
+            .Should()
+            .ContainSingle()
+            .Which.MaxPrAgeDays.Should()
+            .Be(0, "the filter is off unless an operator sets it");
     }
 
     [Fact]

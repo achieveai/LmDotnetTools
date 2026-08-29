@@ -63,7 +63,10 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// <summary>When true, a write fails at the gateway (the SDK surfaces a <see cref="AchieveAi.LmDotnetTools.Sandbox.SandboxException"/>).</summary>
     public bool WriteFailsIntegrity { get; init; }
 
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken
+    )
     {
         var path = request.RequestUri!.AbsolutePath;
 
@@ -102,7 +105,15 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
                 {
                     session_id = "sess-1",
                     container_id = (string?)null,
-                    volumes = new { workspace = new { container_path = "/workspace", read_only = false, id = WorkspaceMountId } },
+                    volumes = new
+                    {
+                        workspace = new
+                        {
+                            container_path = "/workspace",
+                            read_only = false,
+                            id = WorkspaceMountId,
+                        },
+                    },
                 }
             )
         );
@@ -117,7 +128,10 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
 
         if (SimulateExecutionTimeout)
         {
-            return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new { operation_id = operationId, status = "timed_out" }));
+            return Json(
+                HttpStatusCode.OK,
+                JsonSerializer.Serialize(new { operation_id = operationId, status = "timed_out" })
+            );
         }
 
         var snapshot = new
@@ -164,7 +178,9 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
                 return Error(HttpStatusCode.Conflict, "target_locked");
             }
 
-            var sent = request.Content is null ? 0 : (await request.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false)).Length;
+            var sent = request.Content is null
+                ? 0
+                : (await request.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false)).Length;
             return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new { bytes_written = sent }));
         }
 
@@ -215,9 +231,10 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
             return Error(HttpStatusCode.NotFound, "path_not_found");
         }
 
-        var names = ReadBytes is null || ReadBytes.Length == 0
-            ? []
-            : Encoding.UTF8.GetString(ReadBytes).Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        var names =
+            ReadBytes is null || ReadBytes.Length == 0
+                ? []
+                : Encoding.UTF8.GetString(ReadBytes).Split('\0', StringSplitOptions.RemoveEmptyEntries);
 
         var entries = new object[names.Length];
         for (var i = 0; i < names.Length; i++)
@@ -251,7 +268,15 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     private static HttpResponseMessage Error(HttpStatusCode status, string errorCode) =>
         Json(
             status,
-            JsonSerializer.Serialize(new { error = errorCode, code = (int)status, error_code = errorCode, retryable = false })
+            JsonSerializer.Serialize(
+                new
+                {
+                    error = errorCode,
+                    code = (int)status,
+                    error_code = errorCode,
+                    retryable = false,
+                }
+            )
         );
 
     /// <summary>A bare 404 with a NON-JSON body — no machine-readable <c>error_code</c>, mimicking a legacy/older gateway.</summary>

@@ -16,7 +16,8 @@ public sealed class InMemoryConversationStore
     private readonly ConcurrentDictionary<string, List<PersistedMessage>> _messages = new();
     private readonly ConcurrentDictionary<string, ThreadMetadata> _metadata = new();
     private readonly ConcurrentDictionary<string, RunLedgerEntry> _runLedger = new();
-    private readonly ConcurrentDictionary<(string ThreadId, string InputId), AcceptedInputEntry> _acceptedInputs = new();
+    private readonly ConcurrentDictionary<(string ThreadId, string InputId), AcceptedInputEntry> _acceptedInputs =
+        new();
     private readonly Dictionary<string, RunLifecycleState> _runLifecycle = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<(string ThreadId, string InputId), InputAcceptance> _acceptances = new();
     private readonly object _messagesLock = new();
@@ -30,7 +31,8 @@ public sealed class InMemoryConversationStore
     public Task AppendMessagesAsync(
         string threadId,
         IReadOnlyList<PersistedMessage> messages,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(messages);
@@ -50,10 +52,7 @@ public sealed class InMemoryConversationStore
     }
 
     /// <inheritdoc />
-    public Task ReplaceMessageAsync(
-        string threadId,
-        PersistedMessage replacement,
-        CancellationToken ct = default)
+    public Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(replacement);
@@ -63,37 +62,35 @@ public sealed class InMemoryConversationStore
             if (!_messages.TryGetValue(threadId, out var threadMessages))
             {
                 throw new InvalidOperationException(
-                    $"Thread '{threadId}' not found; cannot replace message '{replacement.Id}'.");
+                    $"Thread '{threadId}' not found; cannot replace message '{replacement.Id}'."
+                );
             }
 
             var idx = threadMessages.FindIndex(m => m.Id == replacement.Id);
             if (idx < 0)
             {
-                throw new InvalidOperationException(
-                    $"Message '{replacement.Id}' not found in thread '{threadId}'.");
+                throw new InvalidOperationException($"Message '{replacement.Id}' not found in thread '{threadId}'.");
             }
 
             // Preserve the original timestamp so load ordering remains stable across replacement.
-            threadMessages[idx] = replacement with { Timestamp = threadMessages[idx].Timestamp };
+            threadMessages[idx] = replacement with
+            {
+                Timestamp = threadMessages[idx].Timestamp,
+            };
         }
 
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default)
     {
         lock (_messagesLock)
         {
             if (_messages.TryGetValue(threadId, out var messages))
             {
                 // Return a copy ordered by timestamp
-                var result = messages
-                    .OrderBy(m => m.Timestamp)
-                    .ThenBy(m => m.MessageOrderIdx ?? 0)
-                    .ToList();
+                var result = messages.OrderBy(m => m.Timestamp).ThenBy(m => m.MessageOrderIdx ?? 0).ToList();
                 return Task.FromResult<IReadOnlyList<PersistedMessage>>(result);
             }
         }
@@ -102,19 +99,14 @@ public sealed class InMemoryConversationStore
     }
 
     /// <inheritdoc />
-    public Task SaveMetadataAsync(
-        string threadId,
-        ThreadMetadata metadata,
-        CancellationToken ct = default)
+    public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default)
     {
         _metadata[threadId] = metadata;
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
-    public Task<ThreadMetadata?> LoadMetadataAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default)
     {
         _ = _metadata.TryGetValue(threadId, out var metadata);
         return Task.FromResult(metadata);
@@ -124,7 +116,8 @@ public sealed class InMemoryConversationStore
     public Task UpdateMetadataAsync(
         string threadId,
         Func<ThreadMetadata?, ThreadMetadata> update,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(update);
@@ -141,9 +134,7 @@ public sealed class InMemoryConversationStore
     }
 
     /// <inheritdoc />
-    public Task DeleteThreadAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public Task DeleteThreadAsync(string threadId, CancellationToken ct = default)
     {
         lock (_messagesLock)
         {
@@ -152,10 +143,7 @@ public sealed class InMemoryConversationStore
 
         _ = _metadata.TryRemove(threadId, out _);
 
-        foreach (var runId in _runLedger
-            .Where(kvp => kvp.Value.ThreadId == threadId)
-            .Select(kvp => kvp.Key)
-            .ToList())
+        foreach (var runId in _runLedger.Where(kvp => kvp.Value.ThreadId == threadId).Select(kvp => kvp.Key).ToList())
         {
             _ = _runLedger.TryRemove(runId, out _);
         }
@@ -178,7 +166,8 @@ public sealed class InMemoryConversationStore
         int limit = 50,
         int offset = 0,
         ConversationListOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var allThreadIds = GetAllThreadIds();
         var metadataList = new List<ThreadMetadata>();
@@ -195,16 +184,13 @@ public sealed class InMemoryConversationStore
                 long lastUpdated;
                 lock (_messagesLock)
                 {
-                    lastUpdated = _messages.TryGetValue(threadId, out var messages) && messages.Count > 0
-                        ? messages.Max(m => m.Timestamp)
-                        : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    lastUpdated =
+                        _messages.TryGetValue(threadId, out var messages) && messages.Count > 0
+                            ? messages.Max(m => m.Timestamp)
+                            : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 }
 
-                metadataList.Add(new ThreadMetadata
-                {
-                    ThreadId = threadId,
-                    LastUpdated = lastUpdated,
-                });
+                metadataList.Add(new ThreadMetadata { ThreadId = threadId, LastUpdated = lastUpdated });
             }
         }
 
@@ -213,11 +199,7 @@ public sealed class InMemoryConversationStore
         // ordering it emptied the conversation sidebar. See ConversationListOptions.
         var listOptions = options ?? ConversationListOptions.Default;
 
-        var result = listOptions
-            .Order(metadataList.Where(listOptions.Admits))
-            .Skip(offset)
-            .Take(limit)
-            .ToList();
+        var result = listOptions.Order(metadataList.Where(listOptions.Admits)).Skip(offset).Take(limit).ToList();
 
         return Task.FromResult<IReadOnlyList<ThreadMetadata>>(result);
     }
@@ -228,7 +210,8 @@ public sealed class InMemoryConversationStore
         int limit = 50,
         int offset = 0,
         ConversationListOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(scope);
 
@@ -249,9 +232,7 @@ public sealed class InMemoryConversationStore
     }
 
     /// <inheritdoc />
-    public Task<int> StampUnownedThreadsAsync(
-        string quarantineTenantId,
-        CancellationToken ct = default)
+    public Task<int> StampUnownedThreadsAsync(string quarantineTenantId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(quarantineTenantId);
 
@@ -274,12 +255,13 @@ public sealed class InMemoryConversationStore
     public Task<IReadOnlyList<string>> ListThreadIdsByTenantAsync(
         string tenantId,
         IReadOnlyCollection<string>? threadIds,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
 
-        var result = _metadata.Values
-            .Where(m => string.Equals(m.TenantId, tenantId, StringComparison.Ordinal))
+        var result = _metadata
+            .Values.Where(m => string.Equals(m.TenantId, tenantId, StringComparison.Ordinal))
             .Where(m => threadIds is null || threadIds.Contains(m.ThreadId))
             .Select(m => m.ThreadId)
             .OrderBy(id => id, StringComparer.Ordinal)
@@ -294,7 +276,8 @@ public sealed class InMemoryConversationStore
         string toTenantId,
         string? ownerUserId,
         IReadOnlyCollection<string>? threadIds,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fromTenantId);
         ArgumentException.ThrowIfNullOrWhiteSpace(toTenantId);
@@ -340,14 +323,9 @@ public sealed class InMemoryConversationStore
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(string threadId, CancellationToken ct = default)
     {
-        var result = _runLedger.Values
-            .Where(e => e.ThreadId == threadId)
-            .OrderByDescending(e => e.CreatedAt)
-            .ToList();
+        var result = _runLedger.Values.Where(e => e.ThreadId == threadId).OrderByDescending(e => e.CreatedAt).ToList();
 
         return Task.FromResult<IReadOnlyList<RunLedgerEntry>>(result);
     }
@@ -357,7 +335,8 @@ public sealed class InMemoryConversationStore
         string threadId,
         string inputId,
         DateTimeOffset acceptedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         _acceptedInputs[(threadId, inputId)] = new AcceptedInputEntry(threadId, inputId, acceptedAt);
         return Task.CompletedTask;
@@ -368,13 +347,12 @@ public sealed class InMemoryConversationStore
         string threadId,
         string inputId,
         DateTimeOffset acceptedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         // TryAdd is the whole reservation: ConcurrentDictionary resolves the race internally, so exactly
         // one of N concurrent callers for the same key is told it won.
-        var won = _acceptedInputs.TryAdd(
-            (threadId, inputId),
-            new AcceptedInputEntry(threadId, inputId, acceptedAt));
+        var won = _acceptedInputs.TryAdd((threadId, inputId), new AcceptedInputEntry(threadId, inputId, acceptedAt));
 
         return Task.FromResult(won);
     }
@@ -387,12 +365,11 @@ public sealed class InMemoryConversationStore
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(string threadId, CancellationToken ct = default)
     {
         var result = new HashSet<string>(
-            _acceptedInputs.Keys.Where(k => k.ThreadId == threadId).Select(k => k.InputId));
+            _acceptedInputs.Keys.Where(k => k.ThreadId == threadId).Select(k => k.InputId)
+        );
 
         return Task.FromResult<IReadOnlySet<string>>(result);
     }
@@ -405,11 +382,14 @@ public sealed class InMemoryConversationStore
 
         lock (_lifecycleLock)
         {
-            if (_runLifecycle.TryGetValue(state.RunId, out var existing)
-                && existing.Phase == RunLifecyclePhase.Terminal)
+            if (
+                _runLifecycle.TryGetValue(state.RunId, out var existing)
+                && existing.Phase == RunLifecyclePhase.Terminal
+            )
             {
                 throw new InvalidOperationException(
-                    $"Run '{state.RunId}' already reached a terminal boundary; it cannot be restarted.");
+                    $"Run '{state.RunId}' already reached a terminal boundary; it cannot be restarted."
+                );
             }
 
             // A re-record refreshes how the run describes itself; it does not roll back what the
@@ -437,14 +417,12 @@ public sealed class InMemoryConversationStore
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(string threadId, CancellationToken ct = default)
     {
         lock (_lifecycleLock)
         {
-            var result = _runLifecycle.Values
-                .Where(s => s.ThreadId == threadId)
+            var result = _runLifecycle
+                .Values.Where(s => s.ThreadId == threadId)
                 .OrderByDescending(s => s.StartedAt)
                 .ThenBy(s => s.RunId, StringComparer.Ordinal)
                 .ToList();
@@ -456,12 +434,13 @@ public sealed class InMemoryConversationStore
     /// <inheritdoc />
     public Task<IReadOnlyList<RunLifecycleState>> ListNonTerminalRunsAsync(
         string threadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         lock (_lifecycleLock)
         {
-            var result = _runLifecycle.Values
-                .Where(s => s.ThreadId == threadId && s.Phase == RunLifecyclePhase.Running)
+            var result = _runLifecycle
+                .Values.Where(s => s.ThreadId == threadId && s.Phase == RunLifecyclePhase.Running)
                 .OrderBy(s => s.StartedAt)
                 .ThenBy(s => s.RunId, StringComparer.Ordinal)
                 .ToList();
@@ -476,14 +455,14 @@ public sealed class InMemoryConversationStore
         string outcome,
         int turnCount,
         DateTimeOffset terminalAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrEmpty(outcome);
 
         lock (_lifecycleLock)
         {
-            if (!_runLifecycle.TryGetValue(runId, out var existing)
-                || existing.Phase == RunLifecyclePhase.Terminal)
+            if (!_runLifecycle.TryGetValue(runId, out var existing) || existing.Phase == RunLifecyclePhase.Terminal)
             {
                 return Task.FromResult(false);
             }
@@ -505,7 +484,8 @@ public sealed class InMemoryConversationStore
     public Task<DeferredToolCallRecord> RecordDeferredToolCallAsync(
         string runId,
         DeferredToolCallRecord record,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(record);
 
@@ -514,11 +494,11 @@ public sealed class InMemoryConversationStore
             if (!_runLifecycle.TryGetValue(runId, out var existing))
             {
                 throw new InvalidOperationException(
-                    $"Run '{runId}' was never recorded as started; cannot record deferral '{record.ToolCallId}'.");
+                    $"Run '{runId}' was never recorded as started; cannot record deferral '{record.ToolCallId}'."
+                );
             }
 
-            var already = existing.DeferredToolCalls
-                .FirstOrDefault(d => d.ToolCallId == record.ToolCallId);
+            var already = existing.DeferredToolCalls.FirstOrDefault(d => d.ToolCallId == record.ToolCallId);
             if (already != null)
             {
                 return Task.FromResult(already);
@@ -542,7 +522,8 @@ public sealed class InMemoryConversationStore
         string resolutionFingerprint,
         string? childRunId,
         DateTimeOffset resolvedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrEmpty(resolutionFingerprint);
 
@@ -560,12 +541,10 @@ public sealed class InMemoryConversationStore
                 if (existing.IsResolved)
                 {
                     return Task.FromResult(
-                        string.Equals(
-                            existing.ResolutionFingerprint,
-                            resolutionFingerprint,
-                            StringComparison.Ordinal)
+                        string.Equals(existing.ResolutionFingerprint, resolutionFingerprint, StringComparison.Ordinal)
                             ? DeferredResolutionOutcome.Duplicate
-                            : DeferredResolutionOutcome.Conflict);
+                            : DeferredResolutionOutcome.Conflict
+                    );
                 }
 
                 var updated = state.DeferredToolCalls.ToArray();
@@ -576,11 +555,7 @@ public sealed class InMemoryConversationStore
                     ChildRunId = childRunId,
                 };
 
-                _runLifecycle[state.RunId] = state with
-                {
-                    DeferredToolCalls = updated,
-                    UpdatedAt = resolvedAt,
-                };
+                _runLifecycle[state.RunId] = state with { DeferredToolCalls = updated, UpdatedAt = resolvedAt };
 
                 return Task.FromResult(DeferredResolutionOutcome.Resolved);
             }
@@ -595,7 +570,8 @@ public sealed class InMemoryConversationStore
         string toolCallId,
         string childRunId,
         DateTimeOffset attachedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrEmpty(childRunId);
 
@@ -610,8 +586,7 @@ public sealed class InMemoryConversationStore
                 }
 
                 var existing = state.DeferredToolCalls[index];
-                var (standing, needsWrite) =
-                    RunLifecycleGuards.ClassifyChildRunAttach(existing, childRunId);
+                var (standing, needsWrite) = RunLifecycleGuards.ClassifyChildRunAttach(existing, childRunId);
                 if (!needsWrite)
                 {
                     return Task.FromResult(standing);
@@ -620,11 +595,7 @@ public sealed class InMemoryConversationStore
                 var updated = state.DeferredToolCalls.ToArray();
                 updated[index] = existing with { ChildRunId = childRunId };
 
-                _runLifecycle[state.RunId] = state with
-                {
-                    DeferredToolCalls = updated,
-                    UpdatedAt = attachedAt,
-                };
+                _runLifecycle[state.RunId] = state with { DeferredToolCalls = updated, UpdatedAt = attachedAt };
 
                 return Task.FromResult<string?>(childRunId);
             }
@@ -634,9 +605,7 @@ public sealed class InMemoryConversationStore
     }
 
     /// <inheritdoc />
-    public Task<InputAcceptance?> TryReserveAcceptanceAsync(
-        InputAcceptance acceptance,
-        CancellationToken ct = default)
+    public Task<InputAcceptance?> TryReserveAcceptanceAsync(InputAcceptance acceptance, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(acceptance);
         var key = (acceptance.ThreadId, acceptance.InputId);
@@ -652,10 +621,7 @@ public sealed class InMemoryConversationStore
     }
 
     /// <inheritdoc />
-    public Task<InputAcceptance?> GetAcceptanceAsync(
-        string threadId,
-        string inputId,
-        CancellationToken ct = default)
+    public Task<InputAcceptance?> GetAcceptanceAsync(string threadId, string inputId, CancellationToken ct = default)
     {
         _ = _acceptances.TryGetValue((threadId, inputId), out var acceptance);
         return Task.FromResult(acceptance);
@@ -666,8 +632,7 @@ public sealed class InMemoryConversationStore
     {
         ArgumentNullException.ThrowIfNull(acceptance);
         var key = (acceptance.ThreadId, acceptance.InputId);
-        if (!_acceptances.TryGetValue(key, out var existing)
-            || existing.ReservationId != acceptance.ReservationId)
+        if (!_acceptances.TryGetValue(key, out var existing) || existing.ReservationId != acceptance.ReservationId)
         {
             return Task.FromResult(false);
         }
@@ -680,7 +645,8 @@ public sealed class InMemoryConversationStore
         string threadId,
         string inputId,
         Guid reservationId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var key = (threadId, inputId);
         if (!_acceptances.TryGetValue(key, out var existing) || existing.ReservationId != reservationId)
@@ -688,8 +654,9 @@ public sealed class InMemoryConversationStore
             return Task.FromResult(false);
         }
 
-        var removed = ((ICollection<KeyValuePair<(string, string), InputAcceptance>>)_acceptances)
-            .Remove(new KeyValuePair<(string, string), InputAcceptance>(key, existing));
+        var removed = ((ICollection<KeyValuePair<(string, string), InputAcceptance>>)_acceptances).Remove(
+            new KeyValuePair<(string, string), InputAcceptance>(key, existing)
+        );
         return Task.FromResult(removed);
     }
 

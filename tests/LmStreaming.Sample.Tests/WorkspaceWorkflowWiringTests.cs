@@ -21,7 +21,10 @@ public sealed class WorkspaceWorkflowWiringTests
     private static IStreamingAgent FakeAgent() => Mock.Of<IStreamingAgent>();
 
     private static readonly HashSet<string> WorkflowAndLaunchToolNames =
-        [.. WorkflowToolProvider.AllToolNames, .. StartWorkflowToolProvider.ToolNames];
+    [
+        .. WorkflowToolProvider.AllToolNames,
+        .. StartWorkflowToolProvider.ToolNames,
+    ];
 
     private static SubAgentOptions RestrictedControllerOptions() =>
         new()
@@ -33,20 +36,16 @@ public sealed class WorkspaceWorkflowWiringTests
     [Fact]
     public void WorkflowControllerDefaults_UseDelegatedBudget_AndPreserveExplicitValues()
     {
-        var policy = new AgentOutputTokenPolicy(
-            new AgentOutputTokenOptions { Primary = 24_576, Delegated = 16_384 }
-        );
+        var policy = new AgentOutputTokenPolicy(new AgentOutputTokenOptions { Primary = 24_576, Delegated = 16_384 });
 
-        global::Program.ApplyDelegatedOutputTokens(
-                new GenerateReplyOptions { ModelId = "controller" },
-                policy
-            )
-            .MaxToken.Should().Be(16_384);
-        global::Program.ApplyDelegatedOutputTokens(
-                new GenerateReplyOptions { ModelId = "controller", MaxToken = 12_000 },
-                policy
-            )
-            .MaxToken.Should().Be(12_000);
+        global::Program
+            .ApplyDelegatedOutputTokens(new GenerateReplyOptions { ModelId = "controller" }, policy)
+            .MaxToken.Should()
+            .Be(16_384);
+        global::Program
+            .ApplyDelegatedOutputTokens(new GenerateReplyOptions { ModelId = "controller", MaxToken = 12_000 }, policy)
+            .MaxToken.Should()
+            .Be(12_000);
     }
 
     [Fact]
@@ -59,7 +58,9 @@ public sealed class WorkspaceWorkflowWiringTests
         {
             // Transparency: controller delegates are inherit-all; the workflow tools are excluded
             // structurally via NonInheritedToolNames, not via a per-template allow-list.
-            template.EnabledTools.Should().BeNull($"controller template '{name}' should be inherit-all (transparent)");
+            template
+                .EnabledTools.Should()
+                .BeNull($"controller template '{name}' should be inherit-all (transparent)");
         }
 
         // WorkflowManager asserts the structural exclusion at construction; options that exclude the
@@ -99,9 +100,12 @@ public sealed class WorkspaceWorkflowWiringTests
 
         var controllerTemplates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(enriched, FakeAgent);
 
-        controllerTemplates.Keys.Should().Contain(
-            "code-reviewer:performance-review",
-            "the controller must share the primary agent's discovered/marketplace catalog, not only the built-ins");
+        controllerTemplates
+            .Keys.Should()
+            .Contain(
+                "code-reviewer:performance-review",
+                "the controller must share the primary agent's discovered/marketplace catalog, not only the built-ins"
+            );
         controllerTemplates.Keys.Should().Contain(["general-purpose", "researcher"]);
     }
 
@@ -140,14 +144,20 @@ public sealed class WorkspaceWorkflowWiringTests
         var providerAgent = Mock.Of<IStreamingAgent>();
 
         var enriched = EnrichedCatalog(() => conversationAgent);
-        var controllerTemplates =
-            BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(enriched, () => providerAgent);
+        var controllerTemplates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(
+            enriched,
+            () => providerAgent
+        );
 
         foreach (var (name, template) in controllerTemplates)
         {
-            template.AgentFactory().Should().BeSameAs(
-                providerAgent,
-                $"controller template '{name}' must spawn on the controller's provider factory");
+            template
+                .AgentFactory()
+                .Should()
+                .BeSameAs(
+                    providerAgent,
+                    $"controller template '{name}' must spawn on the controller's provider factory"
+                );
         }
     }
 
@@ -176,7 +186,8 @@ public sealed class WorkspaceWorkflowWiringTests
         // conversation registry, the launch tools would leak into every sub-agent unless excluded. This is
         // exactly what the migration's NonInheritedToolNames = StartWorkflowToolProvider.ToolNames guards.
         defaults.Values.Should().OnlyContain(t => t.EnabledTools == null);
-        StartWorkflowToolProvider.ToolNames.Should()
+        StartWorkflowToolProvider
+            .ToolNames.Should()
             .BeEquivalentTo(["StartWorkflowAgent", "GetWorkflows", "CheckWorkflow", "WaitWorkflow"]);
     }
 
@@ -205,7 +216,8 @@ public sealed class WorkspaceWorkflowWiringTests
         );
 
         // A normal agent sees the launch tools...
-        loop.RegisteredToolNames.Should().Contain(["StartWorkflowAgent", "GetWorkflows", "CheckWorkflow", "WaitWorkflow"]);
+        loop.RegisteredToolNames.Should()
+            .Contain(["StartWorkflowAgent", "GetWorkflows", "CheckWorkflow", "WaitWorkflow"]);
         // ...and NEVER the workflow-state/authoring tools (those live only inside a controller loop).
         loop.RegisteredToolNames.Should()
             .NotContain(["SetWorkflow", "GetWorkflow", "SetCurrentNode", "SetState", "SetNotes"]);

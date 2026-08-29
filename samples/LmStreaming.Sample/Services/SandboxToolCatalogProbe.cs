@@ -43,7 +43,8 @@ public interface ISandboxToolCatalogProbe
 public sealed class SandboxToolCatalogProbe(
     SandboxSessionRegistry sessionRegistry,
     SandboxGatewayLifetime gatewayLifetime,
-    ILoggerFactory loggerFactory) : ISandboxToolCatalogProbe
+    ILoggerFactory loggerFactory
+) : ISandboxToolCatalogProbe
 {
     /// <summary>How long a successful listing is reused before the gateway is asked again.</summary>
     public static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(10);
@@ -66,7 +67,16 @@ public sealed class SandboxToolCatalogProbe(
     ///     tools such as <c>Skill</c>.
     /// </summary>
     public static readonly IReadOnlyList<string> StaticBaseline =
-        ["Bash", "PowerShell", "Read", "Write", "Edit", "Glob", "Grep", "Skill"];
+    [
+        "Bash",
+        "PowerShell",
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Skill",
+    ];
 
     private readonly ILogger _logger = loggerFactory.CreateLogger<SandboxToolCatalogProbe>();
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -144,9 +154,7 @@ public sealed class SandboxToolCatalogProbe(
                 }
             );
 
-            client = await McpClient
-                .CreateAsync(transport, cancellationToken: linkedCts.Token)
-                .ConfigureAwait(false);
+            client = await McpClient.CreateAsync(transport, cancellationToken: linkedCts.Token).ConfigureAwait(false);
 
             // Reuse the registry's own MCP->contract projection rather than reading the raw tool list,
             // so the names and descriptions the editor shows are exactly the ones the agent would get.
@@ -156,7 +164,8 @@ public sealed class SandboxToolCatalogProbe(
                     new Dictionary<string, McpClient> { ["sandbox"] = client },
                     "sandbox",
                     omitServerPrefix: true,
-                    cancellationToken: linkedCts.Token)
+                    cancellationToken: linkedCts.Token
+                )
                 .ConfigureAwait(false);
 
             var (contracts, _) = scratch.Build();
@@ -165,10 +174,7 @@ public sealed class SandboxToolCatalogProbe(
                 .OrderBy(t => t.Name, StringComparer.Ordinal)
                 .ToList();
 
-            _logger.LogInformation(
-                "Sandbox tool catalog listed {Count} tools from the gateway",
-                tools.Count
-            );
+            _logger.LogInformation("Sandbox tool catalog listed {Count} tools from the gateway", tools.Count);
 
             return new SandboxToolCatalog(tools, IsLive: true, Warning: null);
         }
@@ -190,9 +196,7 @@ public sealed class SandboxToolCatalogProbe(
                 ProbeTimeout
             );
 
-            var baseline = StaticBaseline
-                .Select(name => (Name: name, Description: (string?)null))
-                .ToList();
+            var baseline = StaticBaseline.Select(name => (Name: name, Description: (string?)null)).ToList();
 
             return new SandboxToolCatalog(
                 baseline,
@@ -219,4 +223,5 @@ public sealed class SandboxToolCatalogProbe(
 public sealed record SandboxToolCatalog(
     IReadOnlyList<(string Name, string? Description)> Tools,
     bool IsLive,
-    string? Warning);
+    string? Warning
+);

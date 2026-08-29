@@ -20,9 +20,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class AdoPrProviderTests : LoggingTestBase
 {
     public AdoPrProviderTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private static readonly RepoIdentity Repo = new()
     {
@@ -53,13 +51,14 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         }
         """;
 
-    private static PrPollRequest Request(OpaqueCursor? cursor = null, DateTimeOffset? recencyCutoff = null) => new()
-    {
-        Repo = Repo,
-        Scope = "contoso/Platform/widgets:active-prs",
-        Cursor = cursor,
-        RecencyCutoff = recencyCutoff,
-    };
+    private static PrPollRequest Request(OpaqueCursor? cursor = null, DateTimeOffset? recencyCutoff = null) =>
+        new()
+        {
+            Repo = Repo,
+            Scope = "contoso/Platform/widgets:active-prs",
+            Cursor = cursor,
+            RecencyCutoff = recencyCutoff,
+        };
 
     // One PR opened before a recency window (needs a last-push lookup) and one opened inside it (does not).
     private const string DatedPrs = """
@@ -85,7 +84,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            LoggerFactory.CreateLogger<AdoPrProvider>());
+            LoggerFactory.CreateLogger<AdoPrProvider>()
+        );
 
     [Fact]
     public void Provider_id_is_ado()
@@ -109,7 +109,9 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     [InlineData("""{ "displayName": 7 }""", null)]
     [InlineData("{ }", null)]
     public async Task ListOpenPullRequests_takes_the_author_only_from_a_unique_identity(
-        string createdBy, string? expected)
+        string createdBy,
+        string? expected
+    )
     {
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
@@ -118,7 +120,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             { "value": [ { "pullRequestId": 42, "status": "active", "createdBy": {{createdBy}},
                 "lastMergeSourceCommit": { "commitId": "head-42" },
                 "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
-            """);
+            """
+        );
 
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -146,15 +149,23 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     /// that carries none at all.
     /// </summary>
     [Theory]
-    [InlineData("""  "title": "Remove the stale featureflag entry", "description": "Still in the task def." """,
-        "Remove the stale featureflag entry", "Still in the task def.")]
-    [InlineData("""  "title": "Remove the stale featureflag entry", "description": "  " """,
-        "Remove the stale featureflag entry", null)]
-    [InlineData("""  "title": "Remove the stale featureflag entry" """,
-        "Remove the stale featureflag entry", null)]
+    [InlineData(
+        """  "title": "Remove the stale featureflag entry", "description": "Still in the task def." """,
+        "Remove the stale featureflag entry",
+        "Still in the task def."
+    )]
+    [InlineData(
+        """  "title": "Remove the stale featureflag entry", "description": "  " """,
+        "Remove the stale featureflag entry",
+        null
+    )]
+    [InlineData("""  "title": "Remove the stale featureflag entry" """, "Remove the stale featureflag entry", null)]
     [InlineData("""  "description": "Still in the task def." """, null, "Still in the task def.")]
     public async Task ListOpenPullRequests_captures_what_the_pr_says_it_does(
-        string prose, string? expectedTitle, string? expectedDescription)
+        string prose,
+        string? expectedTitle,
+        string? expectedDescription
+    )
     {
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
@@ -163,7 +174,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             { "value": [ { "pullRequestId": 42, "status": "active", {{prose}},
                 "lastMergeSourceCommit": { "commitId": "head-42" },
                 "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
-            """);
+            """
+        );
 
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -181,7 +193,9 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
         var request = handler.Requests.Should().ContainSingle().Subject;
         request.Method.Should().Be(HttpMethod.Get);
-        request.Uri.ToString().Should()
+        request
+            .Uri.ToString()
+            .Should()
             .StartWith("https://dev.azure.com/contoso/Platform/_apis/git/repositories/widgets/pullrequests");
         request.Uri.Query.Should().Contain("searchCriteria.status=active");
         request.Uri.Query.Should().Contain("api-version=7.1");
@@ -226,7 +240,11 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     public async Task ListOpenPullRequests_throws_on_a_non_success_status()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/pullrequests", """{"message":"unauthorized"}""", HttpStatusCode.Unauthorized);
+            HttpMethod.Get,
+            "/pullrequests",
+            """{"message":"unauthorized"}""",
+            HttpStatusCode.Unauthorized
+        );
 
         var act = () => Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -249,10 +267,12 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var handler = new FakeHttpMessageHandler()
             .On(
                 req => req.RequestUri!.ToString().Contains("continuationToken=TOKEN2", StringComparison.Ordinal),
-                _ => JsonResponse(page2))
+                _ => JsonResponse(page2)
+            )
             .On(
                 req => req.RequestUri!.ToString().Contains("/pullrequests", StringComparison.Ordinal),
-                _ => JsonResponse(page1, ("x-ms-continuationtoken", "TOKEN2")));
+                _ => JsonResponse(page1, ("x-ms-continuationtoken", "TOKEN2"))
+            );
 
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -267,13 +287,15 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         FakeHttpMessageHandler handler,
         int maxPagesPerPoll,
         int maxPrsPerPage = 200,
-        ILogger<AdoPrProvider>? logger = null) =>
+        ILogger<AdoPrProvider>? logger = null
+    ) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
             logger ?? LoggerFactory.CreateLogger<AdoPrProvider>(),
             maxPagesPerPoll,
-            maxPrsPerPage);
+            maxPrsPerPage
+        );
 
     /// <summary>
     /// A repo of <paramref name="totalPrs"/> active PRs served the way ADO serves them: honouring
@@ -293,13 +315,19 @@ public sealed class AdoPrProviderTests : LoggingTestBase
                     : 0;
 
                 var ids = Enumerable.Range(skip + 1, Math.Clamp(totalPrs - skip, 0, top));
-                var values = string.Join(",", ids.Select(id => $$"""
-                    { "pullRequestId": {{id}}, "status": "active",
-                      "lastMergeSourceCommit": { "commitId": "head-{{id}}" },
-                      "lastMergeTargetCommit": { "commitId": "base-{{id}}" } }
-                    """));
+                var values = string.Join(
+                    ",",
+                    ids.Select(id =>
+                        $$"""
+                            { "pullRequestId": {{id}}, "status": "active",
+                              "lastMergeSourceCommit": { "commitId": "head-{{id}}" },
+                              "lastMergeTargetCommit": { "commitId": "base-{{id}}" } }
+                            """
+                    )
+                );
                 return JsonResponse($$"""{ "value": [ {{values}} ] }""");
-            });
+            }
+        );
 
     /// <summary>
     /// AC#3 — 30 active PRs at 2 per page is 15 pages, more than the old hardcoded ceiling of 10. With
@@ -314,8 +342,9 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var page = await Provider(handler, maxPagesPerPoll: 20, maxPrsPerPage: 2)
             .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
-        page.PullRequests.Select(p => p.PrId).Should().Contain(
-            ["21", "25", "30"], "these PRs exist only on pages past the old hardcoded ceiling of 10");
+        page.PullRequests.Select(p => p.PrId)
+            .Should()
+            .Contain(["21", "25", "30"], "these PRs exist only on pages past the old hardcoded ceiling of 10");
         page.PullRequests.Should().HaveCount(30);
         // 15 full pages, then one short (empty) page proving the end of the list rather than assuming it.
         handler.CountRequests("/pullrequests").Should().Be(16);
@@ -349,8 +378,13 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         _ = await Provider(handler, maxPagesPerPoll: configured, maxPrsPerPage: 2)
             .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
-        handler.CountRequests("/pullrequests").Should().Be(
-            CodeReviewDaemonOptions.DefaultMaxPagesPerPoll, "a nonsensical bound degrades to the default, not to 0");
+        handler
+            .CountRequests("/pullrequests")
+            .Should()
+            .Be(
+                CodeReviewDaemonOptions.DefaultMaxPagesPerPoll,
+                "a nonsensical bound degrades to the default, not to 0"
+            );
     }
 
     /// <summary>
@@ -383,8 +417,10 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         _ = await Provider(handler, maxPagesPerPoll: 10, maxPrsPerPage: 3)
             .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
-        handler.Requests.Select(r => System.Web.HttpUtility.ParseQueryString(r.Uri.Query)["$skip"])
-            .Should().Equal([null, "3", "6"], "the first page carries no $skip; each later one skips what was read");
+        handler
+            .Requests.Select(r => System.Web.HttpUtility.ParseQueryString(r.Uri.Query)["$skip"])
+            .Should()
+            .Equal([null, "3", "6"], "the first page carries no $skip; each later one skips what was read");
     }
 
     /// <summary>
@@ -404,10 +440,10 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
         page.PullRequests.Should().HaveCount(20, "10 pages of 2, of the repo's 30 PRs");
-        logger.CountAtLevel(
-                LogLevel.Warning,
-                "stopped after 10 page(s) of 2 with more results still available; 20 PR(s)")
-            .Should().Be(1, "the operator is told the poll was incomplete, and with the real counts");
+        logger
+            .CountAtLevel(LogLevel.Warning, "stopped after 10 page(s) of 2 with more results still available; 20 PR(s)")
+            .Should()
+            .Be(1, "the operator is told the poll was incomplete, and with the real counts");
     }
 
     /// <summary>
@@ -425,8 +461,10 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             .ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
         page.PullRequests.Should().HaveCount(7, "the whole repo was enumerated");
-        logger.CountAtLevel(LogLevel.Warning, "stopped after")
-            .Should().Be(0, "a page shorter than $top proved the end of the list; nothing was left unseen");
+        logger
+            .CountAtLevel(LogLevel.Warning, "stopped after")
+            .Should()
+            .Be(0, "a page shorter than $top proved the end of the list; nothing was left unseen");
     }
 
     private static HttpResponseMessage JsonResponse(string json, params (string Name, string Value)[] headers)
@@ -446,7 +484,11 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     [Fact]
     public async Task ListOpenPullRequests_handles_an_empty_envelope()
     {
-        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests", """{"count":0,"value":[]}""");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullrequests",
+            """{"count":0,"value":[]}"""
+        );
 
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -458,7 +500,10 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     public async Task GetPrState_maps_an_active_pr_to_open()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "active" }""");
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "pullRequestId": 42, "status": "active" }"""
+        );
 
         var state = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
 
@@ -475,7 +520,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
             "/pullrequests/42",
-            """{ "pullRequestId": 42, "lastMergeSourceCommit": { "commitId": "ad0c0ffee" } }""");
+            """{ "pullRequestId": 42, "lastMergeSourceCommit": { "commitId": "ad0c0ffee" } }"""
+        );
 
         var head = await Provider(handler).GetCurrentHeadShaAsync(Repo, "42", CancellationToken.None);
 
@@ -490,8 +536,7 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     [InlineData("""{ "pullRequestId": 42, "lastMergeSourceCommit": { "commitId": "" } }""")]
     [InlineData("""{ "pullRequestId": 42, "lastMergeSourceCommit": { "commitId": "  " } }""")]
     [InlineData("""{ "pullRequestId": 42, "lastMergeSourceCommit": { "commitId": null } }""")]
-    public async Task GetCurrentHeadSha_is_null_when_the_payload_carries_no_commit_rather_than_throwing(
-        string payload)
+    public async Task GetCurrentHeadSha_is_null_when_the_payload_carries_no_commit_rather_than_throwing(string payload)
     {
         var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests/42", payload);
 
@@ -507,10 +552,15 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     [InlineData(HttpStatusCode.Unauthorized)]
     [InlineData(HttpStatusCode.NotFound)]
     public async Task GetCurrentHeadSha_propagates_a_non_success_response_rather_than_flattening_it_to_null(
-        HttpStatusCode status)
+        HttpStatusCode status
+    )
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/pullrequests/42", """{ "message": "nope" }""", status);
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "message": "nope" }""",
+            status
+        );
 
         var act = () => Provider(handler).GetCurrentHeadShaAsync(Repo, "42", CancellationToken.None);
 
@@ -523,7 +573,10 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     public async Task GetPrState_maps_a_completed_pr_to_merged()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "completed" }""");
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "pullRequestId": 42, "status": "completed" }"""
+        );
 
         var state = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
 
@@ -534,7 +587,10 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     public async Task GetPrState_maps_an_abandoned_pr_to_abandoned()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "abandoned" }""");
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "pullRequestId": 42, "status": "abandoned" }"""
+        );
 
         var state = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
 
@@ -545,13 +601,18 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     public async Task GetPrState_sends_the_single_pr_request_ado_requires()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "active" }""");
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "pullRequestId": 42, "status": "active" }"""
+        );
 
         _ = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
 
         var request = handler.Requests.Should().ContainSingle().Subject;
         request.Method.Should().Be(HttpMethod.Get);
-        request.Uri.ToString().Should()
+        request
+            .Uri.ToString()
+            .Should()
             .StartWith("https://dev.azure.com/contoso/Platform/_apis/git/repositories/widgets/pullrequests/42");
         request.Uri.Query.Should().Contain("api-version=7.1");
         request.Authorization.Should().StartWith("Basic ", "ADO PATs/bearer tokens are sent via basic auth");
@@ -607,16 +668,17 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         // both signals null ⇒ ApplyRecencyFilter keeps it, rather than dropping on the stale opened-date. No
         // push lookup is attempted (there is no ref to query).
         var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "/pullrequests",
-                """
-                { "value": [ { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
-                    "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
-                """);
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullrequests",
+            """
+            { "value": [ { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
+                "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
+            """
+        );
 
-        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+        var page = await Provider(handler)
+            .ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
 
         page.PullRequests[0].UpdatedAt.Should().BeNull();
         page.PullRequests[0].CreatedAt.Should().BeNull("no source ref ⇒ recency indeterminate ⇒ kept");
@@ -641,24 +703,41 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         // implementation would show a max concurrency of 1 — but never exceed the provider's concurrency cap.
         var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
         const int oldPrCount = 20;
-        var items = string.Join(",", Enumerable.Range(1, oldPrCount).Select(i =>
-            "{ \"pullRequestId\": " + i + ", \"status\": \"active\", \"creationDate\": \"2026-06-01T00:00:00Z\", "
-            + "\"sourceRefName\": \"refs/heads/f" + i + "\", "
-            + "\"lastMergeSourceCommit\": { \"commitId\": \"h" + i + "\" }, "
-            + "\"lastMergeTargetCommit\": { \"commitId\": \"b" + i + "\" } }"));
+        var items = string.Join(
+            ",",
+            Enumerable
+                .Range(1, oldPrCount)
+                .Select(i =>
+                    "{ \"pullRequestId\": "
+                    + i
+                    + ", \"status\": \"active\", \"creationDate\": \"2026-06-01T00:00:00Z\", "
+                    + "\"sourceRefName\": \"refs/heads/f"
+                    + i
+                    + "\", "
+                    + "\"lastMergeSourceCommit\": { \"commitId\": \"h"
+                    + i
+                    + "\" }, "
+                    + "\"lastMergeTargetCommit\": { \"commitId\": \"b"
+                    + i
+                    + "\" } }"
+                )
+        );
         var prsJson = "{ \"value\": [ " + items + " ] }";
 
         using var handler = new ConcurrencyTrackingHandler(prsJson);
         var provider = new AdoPrProvider(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            LoggerFactory.CreateLogger<AdoPrProvider>());
+            LoggerFactory.CreateLogger<AdoPrProvider>()
+        );
 
         var page = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
 
         page.PullRequests.Should().HaveCount(oldPrCount);
         handler.TotalPushes.Should().Be(oldPrCount, "every eligible old PR receives exactly one /pushes lookup");
-        handler.MaxConcurrentPushes.Should().BeGreaterThan(1, "the per-PR push lookups run concurrently, not sequentially");
+        handler
+            .MaxConcurrentPushes.Should()
+            .BeGreaterThan(1, "the per-PR push lookups run concurrently, not sequentially");
         handler.MaxConcurrentPushes.Should().BeLessThanOrEqualTo(6, "concurrency is bounded by the provider's cap");
     }
 
@@ -673,13 +752,16 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var provider = new AdoPrProvider(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            LoggerFactory.CreateLogger<AdoPrProvider>());
+            LoggerFactory.CreateLogger<AdoPrProvider>()
+        );
 
         var page = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
 
         page.PullRequests.Should().ContainSingle();
         page.PullRequests[0].UpdatedAt.Should().BeNull();
-        page.PullRequests[0].CreatedAt.Should().BeNull("a timed-out push lookup leaves recency indeterminate ⇒ the PR is kept");
+        page.PullRequests[0]
+            .CreatedAt.Should()
+            .BeNull("a timed-out push lookup leaves recency indeterminate ⇒ the PR is kept");
     }
 
     [Fact]
@@ -692,7 +774,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var provider = new AdoPrProvider(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            LoggerFactory.CreateLogger<AdoPrProvider>());
+            LoggerFactory.CreateLogger<AdoPrProvider>()
+        );
 
         var act = async () => await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), cts.Token);
 
@@ -710,11 +793,14 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             if (request.RequestUri!.ToString().Contains("/pullrequests", StringComparison.Ordinal))
             {
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(prsJson) });
+                return Task.FromResult(
+                    new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(prsJson) }
+                );
             }
 
             cancelOnPush?.Cancel();
@@ -738,7 +824,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             var uri = request.RequestUri!.ToString();
             if (uri.Contains("/pullrequests", StringComparison.Ordinal))

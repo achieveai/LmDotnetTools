@@ -3,7 +3,7 @@ namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core.Internal;
 internal enum FailoverState
 {
     Primary,
-    Backup
+    Backup,
 }
 
 internal class FailoverStateController
@@ -30,9 +30,7 @@ internal class FailoverStateController
                 return true;
             }
 
-            if (_nextProbeAt.HasValue
-                && _timeProvider.GetUtcNow() >= _nextProbeAt.Value
-                && !_probeInProgress)
+            if (_nextProbeAt.HasValue && _timeProvider.GetUtcNow() >= _nextProbeAt.Value && !_probeInProgress)
             {
                 _probeInProgress = true;
                 return true;
@@ -48,9 +46,7 @@ internal class FailoverStateController
         {
             _state = FailoverState.Backup;
             _probeInProgress = false;
-            _nextProbeAt = _recoveryInterval.HasValue
-                ? _timeProvider.GetUtcNow().Add(_recoveryInterval.Value)
-                : null;
+            _nextProbeAt = _recoveryInterval.HasValue ? _timeProvider.GetUtcNow().Add(_recoveryInterval.Value) : null;
         }
     }
 

@@ -16,8 +16,9 @@ namespace LmStreaming.Sample.Tests.TestDoubles;
 /// </remarks>
 internal sealed class FakeWebSocket : System.Net.WebSockets.WebSocket
 {
-    private readonly Channel<InboundFrame> _inbound =
-        Channel.CreateUnbounded<InboundFrame>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly Channel<InboundFrame> _inbound = Channel.CreateUnbounded<InboundFrame>(
+        new UnboundedChannelOptions { SingleReader = true }
+    );
 
     private readonly List<string> _sent = [];
     private readonly Lock _lock = new();
@@ -34,17 +35,27 @@ internal sealed class FakeWebSocket : System.Net.WebSockets.WebSocket
 
     public IReadOnlyList<string> SentFrames
     {
-        get { lock (_lock) { return [.. _sent]; } }
+        get
+        {
+            lock (_lock)
+            {
+                return [.. _sent];
+            }
+        }
     }
 
     public bool SentContains(string fragment)
     {
-        lock (_lock) { return _sent.Any(f => f.Contains(fragment, StringComparison.Ordinal)); }
+        lock (_lock)
+        {
+            return _sent.Any(f => f.Contains(fragment, StringComparison.Ordinal));
+        }
     }
 
     public void EnqueueTextFrame(string text) =>
         _inbound.Writer.TryWrite(
-            new InboundFrame(Encoding.UTF8.GetBytes(text), WebSocketMessageType.Text, EndOfMessage: true));
+            new InboundFrame(Encoding.UTF8.GetBytes(text), WebSocketMessageType.Text, EndOfMessage: true)
+        );
 
     public async Task WaitUntilAsync(Func<bool> condition, CancellationToken ct)
     {
@@ -63,16 +74,22 @@ internal sealed class FakeWebSocket : System.Net.WebSockets.WebSocket
         ArraySegment<byte> buffer,
         WebSocketMessageType messageType,
         bool endOfMessage,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var text = Encoding.UTF8.GetString(buffer.Array!, buffer.Offset, buffer.Count);
-        lock (_lock) { _sent.Add(text); }
+        lock (_lock)
+        {
+            _sent.Add(text);
+        }
         _ = _activity.Release();
         return Task.CompletedTask;
     }
 
     public override async Task<WebSocketReceiveResult> ReceiveAsync(
-        ArraySegment<byte> buffer, CancellationToken cancellationToken)
+        ArraySegment<byte> buffer,
+        CancellationToken cancellationToken
+    )
     {
         if (_current is null)
         {
@@ -109,7 +126,10 @@ internal sealed class FakeWebSocket : System.Net.WebSockets.WebSocket
     }
 
     public override Task CloseAsync(
-        WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
+        WebSocketCloseStatus closeStatus,
+        string? statusDescription,
+        CancellationToken cancellationToken
+    )
     {
         CloseAsyncCalled = true;
         LastCloseStatus = closeStatus;
@@ -119,7 +139,10 @@ internal sealed class FakeWebSocket : System.Net.WebSockets.WebSocket
     }
 
     public override Task CloseOutputAsync(
-        WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
+        WebSocketCloseStatus closeStatus,
+        string? statusDescription,
+        CancellationToken cancellationToken
+    )
     {
         _state = WebSocketState.Closed;
         _ = _activity.Release();

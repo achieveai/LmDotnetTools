@@ -51,7 +51,8 @@ public sealed partial class SandboxClient
 
         var lazy = _workspaceMountIds.GetOrAdd(
             sessionId,
-            static (id, self) => new Lazy<Task<long>>(() => self.FetchWorkspaceMountIdAsync(id, CancellationToken.None)),
+            static (id, self) =>
+                new Lazy<Task<long>>(() => self.FetchWorkspaceMountIdAsync(id, CancellationToken.None)),
             this
         );
 

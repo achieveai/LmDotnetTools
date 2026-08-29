@@ -43,8 +43,7 @@ public sealed class CapturingSandboxGatewayHandler : HttpMessageHandler
 
     // Minimal but valid create response: a session id plus the workspace volume the registry reads
     // to populate SandboxSession.HostPath. Mirrors the shape asserted in the registry unit tests.
-    private const string CreateResponse =
-        """
+    private const string CreateResponse = """
         { "session_id": "e2e-sess-1", "container_id": "e2e-c-1",
           "volumes": { "workspace": { "container_path": "/workspace", "read_only": false } } }
         """;
@@ -56,9 +55,7 @@ public sealed class CapturingSandboxGatewayHandler : HttpMessageHandler
     // sessionId -> the X-Sbx-App-Id that created it. First creator wins (mirrors "owned by whoever
     // created it"); only consulted when _enforceAuth is true. ConcurrentDictionary rather than the
     // _gate lock: independent of the create-body capture, and reads/writes are single key-value ops.
-    private readonly ConcurrentDictionary<string, string> _sessionOwner = new(
-        StringComparer.Ordinal
-    );
+    private readonly ConcurrentDictionary<string, string> _sessionOwner = new(StringComparer.Ordinal);
 
     private string? _lastCreateBody;
 
@@ -73,11 +70,7 @@ public sealed class CapturingSandboxGatewayHandler : HttpMessageHandler
     }
 
     /// <summary>One request as seen by the mock, in arrival order, with its captured auth headers.</summary>
-    public readonly record struct CapturedRequest(
-        string Method,
-        string Path,
-        string? AppId,
-        string? AppKey);
+    public readonly record struct CapturedRequest(string Method, string Path, string? AppId, string? AppKey);
 
     /// <summary>
     /// Every request the mock has received so far, in arrival order. Captured unconditionally (whether
@@ -124,8 +117,7 @@ public sealed class CapturingSandboxGatewayHandler : HttpMessageHandler
     /// or null when the mock has not recorded a creator for it. Only populated while <c>enforceAuth</c>
     /// is on.
     /// </summary>
-    public string? OwnerOf(string sessionId) =>
-        _sessionOwner.TryGetValue(sessionId, out var owner) ? owner : null;
+    public string? OwnerOf(string sessionId) => _sessionOwner.TryGetValue(sessionId, out var owner) ? owner : null;
 
     /// <summary>The raw JSON body of the most recent <c>POST /api/v1/sandboxes</c>, or null if none yet.</summary>
     public string? LastCreateBody
@@ -162,20 +154,17 @@ public sealed class CapturingSandboxGatewayHandler : HttpMessageHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var path = request.RequestUri?.AbsolutePath ?? string.Empty;
         var appId = GetHeader(request, "X-Sbx-App-Id");
         var appKey = GetHeader(request, "X-Sbx-App-Key");
 
         var isCreate =
-            request.Method == HttpMethod.Post
-            && path.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal);
-        var isDiscovered =
-            request.Method == HttpMethod.Get
-            && path.EndsWith("/discovered", StringComparison.Ordinal);
-        var isMcp =
-            request.Method == HttpMethod.Post && path.EndsWith("/mcp", StringComparison.Ordinal);
+            request.Method == HttpMethod.Post && path.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal);
+        var isDiscovered = request.Method == HttpMethod.Get && path.EndsWith("/discovered", StringComparison.Ordinal);
+        var isMcp = request.Method == HttpMethod.Post && path.EndsWith("/mcp", StringComparison.Ordinal);
         var isSandboxById =
             !isDiscovered
             && (request.Method == HttpMethod.Get || request.Method == HttpMethod.Delete)
@@ -196,9 +185,7 @@ public sealed class CapturingSandboxGatewayHandler : HttpMessageHandler
 
             if (!isCreate)
             {
-                var targetSessionId = isMcp
-                    ? GetHeader(request, "X-Session-ID")
-                    : ExtractSessionId(path);
+                var targetSessionId = isMcp ? GetHeader(request, "X-Session-ID") : ExtractSessionId(path);
                 if (!string.IsNullOrEmpty(targetSessionId))
                 {
                     var owner = _sessionOwner.GetOrAdd(targetSessionId, appId);
@@ -265,13 +252,9 @@ public sealed class CapturingSandboxGatewayHandler : HttpMessageHandler
         }
 
         var sandboxesIndex = Array.LastIndexOf(segments, "sandboxes");
-        return sandboxesIndex >= 0 && sandboxesIndex + 1 < segments.Length
-            ? segments[sandboxesIndex + 1]
-            : null;
+        return sandboxesIndex >= 0 && sandboxesIndex + 1 < segments.Length ? segments[sandboxesIndex + 1] : null;
     }
 
-    private static HttpResponseMessage Json(
-        string body,
-        HttpStatusCode statusCode = HttpStatusCode.OK
-    ) => new(statusCode) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+    private static HttpResponseMessage Json(string body, HttpStatusCode statusCode = HttpStatusCode.OK) =>
+        new(statusCode) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 }

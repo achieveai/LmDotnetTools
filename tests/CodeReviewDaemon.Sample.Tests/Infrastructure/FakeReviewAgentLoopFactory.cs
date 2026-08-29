@@ -99,7 +99,8 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
         PreparedReviewWorkspace? reviewWorkspace = null,
-        string? resumeHostedThreadId = null)
+        string? resumeHostedThreadId = null
+    )
     {
         CreatedProfileIds.Add(profile.Id);
         CreatedProfiles.Add(profile);
@@ -110,8 +111,11 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         WorkspaceIds.Add(reviewWorkspace?.WorkspaceId);
         ResumeHostedThreadIds.Add(resumeHostedThreadId);
 
-        if (toolContext is not null && ThrowWhenToolAssisted is not null
-            && (ThrowOnlyForModel is null || string.Equals(modelId, ThrowOnlyForModel, StringComparison.Ordinal)))
+        if (
+            toolContext is not null
+            && ThrowWhenToolAssisted is not null
+            && (ThrowOnlyForModel is null || string.Equals(modelId, ThrowOnlyForModel, StringComparison.Ordinal))
+        )
         {
             var throwing = FakeMultiTurnAgent.Throwing($"run-{profile.Id}-overflow", ThrowWhenToolAssisted);
             CreatedAgents.Add(throwing);
@@ -120,7 +124,15 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
 
         var text = TextByProfileId.TryGetValue(profile.Id, out var scripted) ? scripted : DefaultText;
         var runId = $"run-{profile.Id}";
-        var agent = new FakeMultiTurnAgent(runId, new TextMessage { Text = text, Role = Role.Assistant, RunId = runId });
+        var agent = new FakeMultiTurnAgent(
+            runId,
+            new TextMessage
+            {
+                Text = text,
+                Role = Role.Assistant,
+                RunId = runId,
+            }
+        );
         CreatedAgents.Add(agent);
         return Decorate(agent, threadId, resumeHostedThreadId);
     }
@@ -129,8 +141,7 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// is set, and one that answers with the request otherwise. Note the real S2S factory does neither exactly:
     /// it forwards the request but answers a <c>lmstreaming:</c>-prefixed id, so a test that turns on the exact
     /// string production returns belongs against the real factory rather than here.</summary>
-    public string? ResolveEffectiveModelId(string? requestedModelId) =>
-        EffectiveModelIdOverride ?? requestedModelId;
+    public string? ResolveEffectiveModelId(string? requestedModelId) => EffectiveModelIdOverride ?? requestedModelId;
 
     /// <summary>
     /// Whether <see cref="Create"/> is modelled as RUNNING the model id it is handed. Default <c>true</c> —

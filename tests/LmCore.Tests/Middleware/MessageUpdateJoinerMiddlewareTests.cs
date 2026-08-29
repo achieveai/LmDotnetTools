@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.Logging;
 using Serilog;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class MessageUpdateJoinerMiddlewareTests
@@ -208,9 +209,24 @@ public class MessageUpdateJoinerMiddlewareTests
         var middleware = new MessageUpdateJoinerMiddleware();
         var stream = new List<IMessage>
         {
-            new TextUpdateMessage { Text = "Hello", Role = Role.Assistant, GenerationId = "gen1" },
-            new TextUpdateMessage { Text = " World", Role = Role.Assistant, GenerationId = "gen1" },
-            new TextMessage { Text = "Hello World", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextUpdateMessage
+            {
+                Text = "Hello",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
+            new TextUpdateMessage
+            {
+                Text = " World",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
+            new TextMessage
+            {
+                Text = "Hello World",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
         };
         var mockStreamingAgent = new Mock<IStreamingAgent>();
         _ = mockStreamingAgent
@@ -248,9 +264,24 @@ public class MessageUpdateJoinerMiddlewareTests
         var middleware = new MessageUpdateJoinerMiddleware();
         var stream = new List<IMessage>
         {
-            new TextUpdateMessage { Text = "Hello", Role = Role.Assistant, GenerationId = "gen1" },
-            new TextUpdateMessage { Text = " World", Role = Role.Assistant, GenerationId = "gen1" },
-            new ReasoningMessage { Reasoning = "afterthought", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextUpdateMessage
+            {
+                Text = "Hello",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
+            new TextUpdateMessage
+            {
+                Text = " World",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
+            new ReasoningMessage
+            {
+                Reasoning = "afterthought",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
         };
         var mockStreamingAgent = new Mock<IStreamingAgent>();
         _ = mockStreamingAgent
@@ -296,9 +327,24 @@ public class MessageUpdateJoinerMiddlewareTests
         // Arrange
         var agentMessages = new List<IMessage>
         {
-            new TextUpdateMessage { Text = "The capital of France ", Role = Role.Assistant, GenerationId = "gen1" },
-            new TextUpdateMessage { Text = "is Paris.", Role = Role.Assistant, GenerationId = "gen1" },
-            new TextMessage { Text = "The capital of France is Paris.", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextUpdateMessage
+            {
+                Text = "The capital of France ",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
+            new TextUpdateMessage
+            {
+                Text = "is Paris.",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
+            new TextMessage
+            {
+                Text = "The capital of France is Paris.",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
         };
         var mockStreamingAgent = new Mock<IStreamingAgent>();
         _ = mockStreamingAgent
@@ -312,8 +358,8 @@ public class MessageUpdateJoinerMiddlewareTests
             .ReturnsAsync(agentMessages.ToAsyncEnumerable());
 
         // The same downstream history pipeline MultiTurnAgentLoop assembles.
-        var pipeline = mockStreamingAgent.Object
-            .WithMessageTransformation()
+        var pipeline = mockStreamingAgent
+            .Object.WithMessageTransformation()
             .WithMiddleware(new MessageUpdateJoinerMiddleware());
 
         // Act
@@ -350,9 +396,24 @@ public class MessageUpdateJoinerMiddlewareTests
 
         var agentMessages = new List<IMessage>
         {
-            new TextUpdateMessage { Text = "The capital of France ", Role = Role.Assistant, GenerationId = "gen1" },
-            new TextUpdateMessage { Text = "is Paris.", Role = Role.Assistant, GenerationId = "gen1" },
-            new TextMessage { Text = "The capital of France is Paris.", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextUpdateMessage
+            {
+                Text = "The capital of France ",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
+            new TextUpdateMessage
+            {
+                Text = "is Paris.",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
+            new TextMessage
+            {
+                Text = "The capital of France is Paris.",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
         };
         var mockStreamingAgent = new Mock<IStreamingAgent>();
         _ = mockStreamingAgent
@@ -365,9 +426,11 @@ public class MessageUpdateJoinerMiddlewareTests
             )
             .ReturnsAsync(agentMessages.ToAsyncEnumerable());
 
-        var pipeline = mockStreamingAgent.Object
-            .WithMessageTransformation(loggerFactory.CreateLogger<MessageTransformationMiddleware>())
-            .WithMiddleware(new MessageUpdateJoinerMiddleware(logger: loggerFactory.CreateLogger<MessageUpdateJoinerMiddleware>()));
+        var pipeline = mockStreamingAgent
+            .Object.WithMessageTransformation(loggerFactory.CreateLogger<MessageTransformationMiddleware>())
+            .WithMiddleware(
+                new MessageUpdateJoinerMiddleware(logger: loggerFactory.CreateLogger<MessageUpdateJoinerMiddleware>())
+            );
 
         // Act
         var resultStream = await pipeline.GenerateReplyStreamingAsync([], new GenerateReplyOptions());
@@ -397,9 +460,24 @@ public class MessageUpdateJoinerMiddlewareTests
         var middleware = new MessageUpdateJoinerMiddleware();
         var stream = new List<IMessage>
         {
-            new TextUpdateMessage { Text = "gen1 ", Role = Role.Assistant, GenerationId = "gen1" },
-            new TextUpdateMessage { Text = "text", Role = Role.Assistant, GenerationId = "gen1" },
-            new TextMessage { Text = "gen2 complete", Role = Role.Assistant, GenerationId = "gen2" },
+            new TextUpdateMessage
+            {
+                Text = "gen1 ",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
+            new TextUpdateMessage
+            {
+                Text = "text",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            },
+            new TextMessage
+            {
+                Text = "gen2 complete",
+                Role = Role.Assistant,
+                GenerationId = "gen2",
+            },
         };
         var mockStreamingAgent = new Mock<IStreamingAgent>();
         _ = mockStreamingAgent
@@ -468,7 +546,12 @@ public class MessageUpdateJoinerMiddlewareTests
                 Role = Role.Assistant,
             },
             // The model's actual answer.
-            new TextMessage { Text = "Here is the answer.", Role = Role.Assistant, GenerationId = "g1" },
+            new TextMessage
+            {
+                Text = "Here is the answer.",
+                Role = Role.Assistant,
+                GenerationId = "g1",
+            },
         };
 
         var results = await RunThroughJoinerAsync(stream);
@@ -510,7 +593,12 @@ public class MessageUpdateJoinerMiddlewareTests
                 ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = Role.Assistant,
             },
-            new TextMessage { Text = "Based on the search...", Role = Role.Assistant, GenerationId = "g2" },
+            new TextMessage
+            {
+                Text = "Based on the search...",
+                Role = Role.Assistant,
+                GenerationId = "g2",
+            },
         };
 
         var results = await RunThroughJoinerAsync(stream);
@@ -540,7 +628,11 @@ public class MessageUpdateJoinerMiddlewareTests
             .ReturnsAsync(stream.ToAsyncEnumerable());
 
         var context = new MiddlewareContext([], new GenerateReplyOptions());
-        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, CancellationToken.None);
+        var resultStream = await middleware.InvokeStreamingAsync(
+            context,
+            mockStreamingAgent.Object,
+            CancellationToken.None
+        );
 
         var results = new List<IMessage>();
         await foreach (var message in resultStream)

@@ -79,8 +79,8 @@ public class EchoDirectivesEndToEndTests
 
         var body = await response.Content.ReadAsStringAsync();
         using var json = JsonDocument.Parse(body);
-        var content = json.RootElement
-            .GetProperty("choices")[0]
+        var content = json
+            .RootElement.GetProperty("choices")[0]
             .GetProperty("message")
             .GetProperty("content")
             .GetString();
@@ -126,10 +126,7 @@ public class EchoDirectivesEndToEndTests
             stream = false,
             max_tokens = 1024,
             system = SystemPrompt,
-            messages = new object[]
-            {
-                new { role = "user", content = BuildUserContent(directive) },
-            },
+            messages = new object[] { new { role = "user", content = BuildUserContent(directive) } },
             tools = new object[]
             {
                 new

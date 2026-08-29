@@ -20,11 +20,13 @@ public class GatewayAppAuthWiringTests
     public void AppKey_binds_from_the_SandboxGateway_config_section()
     {
         var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["SandboxGateway:AppId"] = "lmstreaming-sample",
-                ["SandboxGateway:AppKey"] = "c2VjcmV0",
-            })
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["SandboxGateway:AppId"] = "lmstreaming-sample",
+                    ["SandboxGateway:AppKey"] = "c2VjcmV0",
+                }
+            )
             .Build();
 
         var options = config.GetSection(SandboxGatewayOptions.SectionName).Get<SandboxGatewayOptions>();
@@ -39,32 +41,53 @@ public class GatewayAppAuthWiringTests
         var capture = new CapturingHandler(EmptyCatalog);
         var http = new HttpClient(new GatewayAuthHandler("lmstreaming-sample", "c2VjcmV0") { InnerHandler = capture });
         var client = new MarketplaceCatalogClient(
-            new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, AppId = "lmstreaming-sample", AppKey = "c2VjcmV0" },
+            new SandboxGatewayOptions
+            {
+                BaseUrl = GatewayBaseUrl,
+                AppId = "lmstreaming-sample",
+                AppKey = "c2VjcmV0",
+            },
             http,
-            NullLogger<MarketplaceCatalogClient>.Instance);
+            NullLogger<MarketplaceCatalogClient>.Instance
+        );
 
         _ = await client.GetCatalogAsync();
 
-        capture.LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppIdHeader).Should().ContainSingle()
-            .Which.Should().Be("lmstreaming-sample");
-        capture.LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppKeyHeader).Should().ContainSingle()
-            .Which.Should().Be("c2VjcmV0");
+        capture
+            .LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppIdHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("lmstreaming-sample");
+        capture
+            .LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppKeyHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("c2VjcmV0");
     }
 
     [Fact]
     public async Task Catalog_client_sends_app_id_without_app_key_when_key_is_unset()
     {
         var capture = new CapturingHandler(EmptyCatalog);
-        var http = new HttpClient(new GatewayAuthHandler("lmstreaming-sample", appKey: null) { InnerHandler = capture });
+        var http = new HttpClient(
+            new GatewayAuthHandler("lmstreaming-sample", appKey: null) { InnerHandler = capture }
+        );
         var client = new MarketplaceCatalogClient(
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
             http,
-            NullLogger<MarketplaceCatalogClient>.Instance);
+            NullLogger<MarketplaceCatalogClient>.Instance
+        );
 
         _ = await client.GetCatalogAsync();
 
-        capture.LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppIdHeader).Should().ContainSingle()
-            .Which.Should().Be("lmstreaming-sample");
+        capture
+            .LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppIdHeader)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("lmstreaming-sample");
         capture.LastRequest!.Headers.Contains(GatewayAuthHeaders.AppKeyHeader).Should().BeFalse();
     }
 
@@ -72,13 +95,18 @@ public class GatewayAppAuthWiringTests
     {
         public HttpRequestMessage? LastRequest { get; private set; }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
         {
             LastRequest = request;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(body, Encoding.UTF8, "application/json"),
-            });
+            return Task.FromResult(
+                new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(body, Encoding.UTF8, "application/json"),
+                }
+            );
         }
     }
 }

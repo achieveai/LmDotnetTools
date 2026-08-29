@@ -102,11 +102,8 @@ public sealed class CopilotWebSearchRegistrationTests
         var (_, handlers) = registry.Build();
 
         // The registered contract name is the renamed "WebSearch", not the upstream wire name.
-        var handlerResult = await handlers["WebSearch"](
-            "{\"query\":\"current .NET release\"}",
-            new ToolCallContext(),
-            CancellationToken.None
-        );
+        var handlerResult = await handlers["WebSearch"]
+            ("{\"query\":\"current .NET release\"}", new ToolCallContext(), CancellationToken.None);
 
         handlerResult
             .Should()
@@ -300,8 +297,7 @@ public sealed class CopilotWebSearchRegistrationTests
         public Task<string> GetTokenAsync(CancellationToken cancellationToken = default) => Task.FromResult(token);
     }
 
-    private sealed class FakeCopilotMcpHandler(bool failInitialization = false, int toolCount = 1)
-        : HttpMessageHandler
+    private sealed class FakeCopilotMcpHandler(bool failInitialization = false, int toolCount = 1) : HttpMessageHandler
     {
         private const string SessionId = "test-mcp-session";
 
@@ -319,9 +315,7 @@ public sealed class CopilotWebSearchRegistrationTests
             Requests.Add(
                 new CapturedRequest(
                     request.Headers.Authorization?.ToString(),
-                    request.Headers.TryGetValues("X-MCP-Tools", out var selectors)
-                        ? selectors.Single()
-                        : null,
+                    request.Headers.TryGetValues("X-MCP-Tools", out var selectors) ? selectors.Single() : null,
                     body
                 )
             );
@@ -352,7 +346,8 @@ public sealed class CopilotWebSearchRegistrationTests
 
         private static string ToolsListResponse(int count)
         {
-            const string tool = "{\"name\":\"web_search\",\"description\":\"Search the web with citations\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}";
+            const string tool =
+                "{\"name\":\"web_search\",\"description\":\"Search the web with citations\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}";
             return $"{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"tools\":[{string.Join(",", Enumerable.Repeat(tool, count))}]}}}}";
         }
 

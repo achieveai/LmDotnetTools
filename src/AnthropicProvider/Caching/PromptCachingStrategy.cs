@@ -51,7 +51,10 @@ public static class PromptCachingStrategy
             _ => lastTool,
         };
 
-        return request with { Tools = tools };
+        return request with
+        {
+            Tools = tools,
+        };
     }
 
     private static AnthropicRequest ApplySystemCaching(AnthropicRequest request)

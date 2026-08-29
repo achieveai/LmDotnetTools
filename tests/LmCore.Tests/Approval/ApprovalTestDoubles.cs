@@ -11,14 +11,12 @@ internal sealed class RecordingGate : IToolApprovalGate
     public RecordingGate(Func<ToolApprovalContext, CancellationToken, Task<ToolApprovalVerdict>> decide) =>
         _decide = decide;
 
-    public static RecordingGate Allowing() =>
-        new((_, _) => Task.FromResult(ToolApprovalVerdict.Allow()));
+    public static RecordingGate Allowing() => new((_, _) => Task.FromResult(ToolApprovalVerdict.Allow()));
 
     public static RecordingGate Denying(string? reason = null) =>
         new((_, _) => Task.FromResult(ToolApprovalVerdict.Deny(reason)));
 
-    public static RecordingGate Throwing(Exception exception) =>
-        new((_, _) => throw exception);
+    public static RecordingGate Throwing(Exception exception) => new((_, _) => throw exception);
 
     /// <summary>An approver that never answers until the caller's token says otherwise.</summary>
     public static RecordingGate Hanging() =>

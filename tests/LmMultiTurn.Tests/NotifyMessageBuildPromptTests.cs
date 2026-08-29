@@ -17,7 +17,11 @@ public class NotifyMessageBuildPromptTests
     private static IReadOnlyList<QueuedInput> OneNotify()
     {
         var notify = NotifyMessage.Create(
-            NotifyKinds.SubAgentCompletion, detail: "sub-agent done", sourceToolName: "Agent", sourceToolCallId: "call-1");
+            NotifyKinds.SubAgentCompletion,
+            detail: "sub-agent done",
+            sourceToolName: "Agent",
+            sourceToolCallId: "call-1"
+        );
         return [new QueuedInput(new UserInput([notify]), "r1", DateTimeOffset.UtcNow)];
     }
 

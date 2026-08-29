@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -9,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -37,21 +37,29 @@ public class SubAgentIntegrationTests
 
         // Sub-agent always returns a simple text response
         subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.FromResult(ToAsyncEnumerable([
-                new TextMessage { Text = "Sub-agent analysis complete", Role = Role.Assistant },
-            ])));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                Task.FromResult(
+                    ToAsyncEnumerable([new TextMessage { Text = "Sub-agent analysis complete", Role = Role.Assistant }])
+                )
+            );
 
         // Parent agent: first call returns Agent tool call, second call returns final text
         var parentCallCount = 0;
         parentAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 (_, _, _) =>
                 {
@@ -59,30 +67,29 @@ public class SubAgentIntegrationTests
                     if (parentCallCount == 1)
                     {
                         // Parent's first response: call the Agent tool to spawn sub-agent
-                        return Task.FromResult(ToAsyncEnumerable([
-                            new ToolCallMessage
-                            {
-                                FunctionName = "Agent",
-                                FunctionArgs = JsonSerializer.Serialize(new
+                        return Task.FromResult(
+                            ToAsyncEnumerable([
+                                new ToolCallMessage
                                 {
-                                    subagent_type = "researcher",
-                                    prompt = "Research the topic",
-                                }),
-                                ToolCallId = "call_agent_1",
-                                Role = Role.Assistant,
-                            },
-                        ]));
+                                    FunctionName = "Agent",
+                                    FunctionArgs = JsonSerializer.Serialize(
+                                        new { subagent_type = "researcher", prompt = "Research the topic" }
+                                    ),
+                                    ToolCallId = "call_agent_1",
+                                    Role = Role.Assistant,
+                                },
+                            ])
+                        );
                     }
 
                     // Parent's subsequent responses: final text
-                    return Task.FromResult(ToAsyncEnumerable([
-                        new TextMessage
-                        {
-                            Text = "I've dispatched a researcher sub-agent.",
-                            Role = Role.Assistant,
-                        },
-                    ]));
-                });
+                    return Task.FromResult(
+                        ToAsyncEnumerable([
+                            new TextMessage { Text = "I've dispatched a researcher sub-agent.", Role = Role.Assistant },
+                        ])
+                    );
+                }
+            );
 
         // Configure sub-agent template
         var subAgentTemplate = new SubAgentTemplate
@@ -94,10 +101,7 @@ public class SubAgentIntegrationTests
 
         var subAgentOptions = new SubAgentOptions
         {
-            Templates = new Dictionary<string, SubAgentTemplate>
-            {
-                ["researcher"] = subAgentTemplate,
-            },
+            Templates = new Dictionary<string, SubAgentTemplate> { ["researcher"] = subAgentTemplate },
             MaxConcurrentSubAgents = 3,
         };
 
@@ -107,14 +111,14 @@ public class SubAgentIntegrationTests
             parentAgentMock.Object,
             registry,
             threadId: "integration-test-thread",
-            subAgentOptions: subAgentOptions);
+            subAgentOptions: subAgentOptions
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
         // Act: Send user message and collect all output messages
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Please research AI trends", Role = Role.User }]);
+        var userInput = new UserInput([new TextMessage { Text = "Please research AI trends", Role = Role.User }]);
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
@@ -123,32 +127,40 @@ public class SubAgentIntegrationTests
         }
 
         // Assert: verify the run produced expected message types
-        messages.OfType<RunAssignmentMessage>().Should().NotBeEmpty(
-            "the run should start with a RunAssignmentMessage");
+        messages
+            .OfType<RunAssignmentMessage>()
+            .Should()
+            .NotBeEmpty("the run should start with a RunAssignmentMessage");
 
         // The Agent tool call should have been made
-        messages.OfType<ToolCallMessage>().Should().Contain(
-            tc => tc.FunctionName == "Agent",
-            "the parent should have called the Agent tool");
+        messages
+            .OfType<ToolCallMessage>()
+            .Should()
+            .Contain(tc => tc.FunctionName == "Agent", "the parent should have called the Agent tool");
 
         // Synchronous Agent: the tool result IS the sub-agent's final answer,
         // not a JSON spawn receipt.
         var toolCallResults = messages.OfType<ToolCallResultMessage>().ToList();
-        toolCallResults.Should().NotBeEmpty(
-            "the Agent tool should have returned a result");
+        toolCallResults.Should().NotBeEmpty("the Agent tool should have returned a result");
 
-        toolCallResults.Should().Contain(
-            r => r.Result.Contains("Sub-agent analysis complete"),
-            "synchronous Agent returns the sub-agent's final text as the tool result");
+        toolCallResults
+            .Should()
+            .Contain(
+                r => r.Result.Contains("Sub-agent analysis complete"),
+                "synchronous Agent returns the sub-agent's final text as the tool result"
+            );
 
         // The parent should have generated a final text response
-        messages.OfType<TextMessage>()
-            .Should().Contain(m => m.Role == Role.Assistant && m.Text.Contains("dispatched"),
-                "the parent should produce a final text response after spawning");
+        messages
+            .OfType<TextMessage>()
+            .Should()
+            .Contain(
+                m => m.Role == Role.Assistant && m.Text.Contains("dispatched"),
+                "the parent should produce a final text response after spawning"
+            );
 
         // The run should complete
-        messages.OfType<RunCompletedMessage>().Should().NotBeEmpty(
-            "the run should complete with RunCompletedMessage");
+        messages.OfType<RunCompletedMessage>().Should().NotBeEmpty("the run should complete with RunCompletedMessage");
 
         // Cleanup
         await cts.CancelAsync();
@@ -167,21 +179,25 @@ public class SubAgentIntegrationTests
         var subAgentMock = new Mock<IStreamingAgent>();
 
         subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.FromResult(ToAsyncEnumerable([
-                new TextMessage { Text = "Done", Role = Role.Assistant },
-            ])));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(Task.FromResult(ToAsyncEnumerable([new TextMessage { Text = "Done", Role = Role.Assistant }])));
 
         // Parent first spawns, then checks the agent
         var parentCallCount = 0;
         parentAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 (msgs, _, _) =>
                 {
@@ -190,20 +206,24 @@ public class SubAgentIntegrationTests
                     {
                         // Spawn a sub-agent in the background so the tool returns a
                         // receipt (agent_id) immediately for CheckAgent to poll.
-                        return Task.FromResult(ToAsyncEnumerable([
-                            new ToolCallMessage
-                            {
-                                FunctionName = "Agent",
-                                FunctionArgs = JsonSerializer.Serialize(new
+                        return Task.FromResult(
+                            ToAsyncEnumerable([
+                                new ToolCallMessage
                                 {
-                                    subagent_type = "worker",
-                                    prompt = "Do some work",
-                                    run_in_background = true,
-                                }),
-                                ToolCallId = "call_spawn",
-                                Role = Role.Assistant,
-                            },
-                        ]));
+                                    FunctionName = "Agent",
+                                    FunctionArgs = JsonSerializer.Serialize(
+                                        new
+                                        {
+                                            subagent_type = "worker",
+                                            prompt = "Do some work",
+                                            run_in_background = true,
+                                        }
+                                    ),
+                                    ToolCallId = "call_spawn",
+                                    Role = Role.Assistant,
+                                },
+                            ])
+                        );
                     }
 
                     if (parentCallCount == 2)
@@ -219,33 +239,28 @@ public class SubAgentIntegrationTests
                         if (toolResult != null)
                         {
                             using var doc = JsonDocument.Parse(toolResult.Result);
-                            agentId = doc.RootElement
-                                .GetProperty("agent_id").GetString() ?? "unknown";
+                            agentId = doc.RootElement.GetProperty("agent_id").GetString() ?? "unknown";
                         }
 
-                        return Task.FromResult(ToAsyncEnumerable([
-                            new ToolCallMessage
-                            {
-                                FunctionName = "CheckAgent",
-                                FunctionArgs = JsonSerializer.Serialize(new
+                        return Task.FromResult(
+                            ToAsyncEnumerable([
+                                new ToolCallMessage
                                 {
-                                    agent_id = agentId,
-                                }),
-                                ToolCallId = "call_check",
-                                Role = Role.Assistant,
-                            },
-                        ]));
+                                    FunctionName = "CheckAgent",
+                                    FunctionArgs = JsonSerializer.Serialize(new { agent_id = agentId }),
+                                    ToolCallId = "call_check",
+                                    Role = Role.Assistant,
+                                },
+                            ])
+                        );
                     }
 
                     // Final response
-                    return Task.FromResult(ToAsyncEnumerable([
-                        new TextMessage
-                        {
-                            Text = "Agent status checked.",
-                            Role = Role.Assistant,
-                        },
-                    ]));
-                });
+                    return Task.FromResult(
+                        ToAsyncEnumerable([new TextMessage { Text = "Agent status checked.", Role = Role.Assistant }])
+                    );
+                }
+            );
 
         var template = new SubAgentTemplate
         {
@@ -256,10 +271,7 @@ public class SubAgentIntegrationTests
 
         var subAgentOptions = new SubAgentOptions
         {
-            Templates = new Dictionary<string, SubAgentTemplate>
-            {
-                ["worker"] = template,
-            },
+            Templates = new Dictionary<string, SubAgentTemplate> { ["worker"] = template },
         };
 
         var registry = new FunctionRegistry();
@@ -267,14 +279,14 @@ public class SubAgentIntegrationTests
             parentAgentMock.Object,
             registry,
             threadId: "check-agent-test",
-            subAgentOptions: subAgentOptions);
+            subAgentOptions: subAgentOptions
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
         // Act
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Spawn and check agent", Role = Role.User }]);
+        var userInput = new UserInput([new TextMessage { Text = "Spawn and check agent", Role = Role.User }]);
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
@@ -288,14 +300,11 @@ public class SubAgentIntegrationTests
         toolCalls.Should().Contain(tc => tc.FunctionName == "CheckAgent");
 
         var toolResults = messages.OfType<ToolCallResultMessage>().ToList();
-        toolResults.Should().HaveCountGreaterThanOrEqualTo(2,
-            "both Agent and CheckAgent should produce results");
+        toolResults.Should().HaveCountGreaterThanOrEqualTo(2, "both Agent and CheckAgent should produce results");
 
         // CheckAgent result should contain status information
-        var checkResult = toolResults
-            .FirstOrDefault(r => r.Result.Contains("status") && r.Result.Contains("template"));
-        checkResult.Should().NotBeNull(
-            "CheckAgent should return status with template info");
+        var checkResult = toolResults.FirstOrDefault(r => r.Result.Contains("status") && r.Result.Contains("template"));
+        checkResult.Should().NotBeNull("CheckAgent should return status with template info");
 
         // Cleanup
         await cts.CancelAsync();
@@ -315,65 +324,89 @@ public class SubAgentIntegrationTests
     [Fact]
     public async Task ParentSpawnsBackgroundSubAgent_WhenChildParksOnAskUserQuestion_RootReceivesExactlyOneDescendantQuestionNotification()
     {
-        var childAskArgs = JsonSerializer.Serialize(new
-        {
-            context = "Need to know which color to use.",
-            questions = new[]
+        var childAskArgs = JsonSerializer.Serialize(
+            new
             {
-                new
+                context = "Need to know which color to use.",
+                questions = new[]
                 {
-                    prompt = "Which color?",
-                    options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                    new
+                    {
+                        prompt = "Which color?",
+                        options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                    },
                 },
-            },
-        });
+            }
+        );
 
         var childAgentMock = new Mock<IStreamingAgent>();
         childAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.FromResult(ToAsyncEnumerable([
-                new ToolCallMessage
-                {
-                    FunctionName = AskUserQuestionToolProvider.ToolName,
-                    FunctionArgs = childAskArgs,
-                    ToolCallId = "tc_child_color",
-                    Role = Role.Assistant,
-                },
-            ])));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                Task.FromResult(
+                    ToAsyncEnumerable([
+                        new ToolCallMessage
+                        {
+                            FunctionName = AskUserQuestionToolProvider.ToolName,
+                            FunctionArgs = childAskArgs,
+                            ToolCallId = "tc_child_color",
+                            Role = Role.Assistant,
+                        },
+                    ])
+                )
+            );
 
         var parentAgentMock = new Mock<IStreamingAgent>();
         var parentCallCount = 0;
         parentAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                parentCallCount++;
-                if (parentCallCount == 1)
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
                 {
-                    // Spawn "asker" in the background so the parent's turn finishes immediately with
-                    // a receipt, leaving the child free to park on its own AskUserQuestion afterward.
-                    return Task.FromResult(ToAsyncEnumerable([
-                        new ToolCallMessage
-                        {
-                            FunctionName = "Agent",
-                            FunctionArgs = JsonSerializer.Serialize(new
-                            {
-                                subagent_type = "asker",
-                                prompt = "ask the user which color",
-                                run_in_background = true,
-                            }),
-                            ToolCallId = "call_spawn_asker",
-                            Role = Role.Assistant,
-                        },
-                    ]));
-                }
+                    parentCallCount++;
+                    if (parentCallCount == 1)
+                    {
+                        // Spawn "asker" in the background so the parent's turn finishes immediately with
+                        // a receipt, leaving the child free to park on its own AskUserQuestion afterward.
+                        return Task.FromResult(
+                            ToAsyncEnumerable([
+                                new ToolCallMessage
+                                {
+                                    FunctionName = "Agent",
+                                    FunctionArgs = JsonSerializer.Serialize(
+                                        new
+                                        {
+                                            subagent_type = "asker",
+                                            prompt = "ask the user which color",
+                                            run_in_background = true,
+                                        }
+                                    ),
+                                    ToolCallId = "call_spawn_asker",
+                                    Role = Role.Assistant,
+                                },
+                            ])
+                        );
+                    }
 
-                return Task.FromResult(ToAsyncEnumerable([
-                    new TextMessage { Text = "Dispatched the asker sub-agent.", Role = Role.Assistant },
-                ]));
-            });
+                    return Task.FromResult(
+                        ToAsyncEnumerable([
+                            new TextMessage { Text = "Dispatched the asker sub-agent.", Role = Role.Assistant },
+                        ])
+                    );
+                }
+            );
 
         var subAgentOptions = new SubAgentOptions
         {
@@ -394,25 +427,31 @@ public class SubAgentIntegrationTests
             parentAgentMock.Object,
             registry,
             threadId: "descendant-question-root-thread",
-            subAgentOptions: subAgentOptions);
+            subAgentOptions: subAgentOptions
+        );
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var runTask = loop.RunAsync(cts.Token);
 
         var descendantQuestionNotifications = new List<NotifyMessage>();
-        var observeTask = ObserveAsync(loop, msg =>
-        {
-            if (msg is NotifyMessage { NotifyKind: NotifyKinds.DescendantQuestion } nm)
+        var observeTask = ObserveAsync(
+            loop,
+            msg =>
             {
-                lock (descendantQuestionNotifications)
+                if (msg is NotifyMessage { NotifyKind: NotifyKinds.DescendantQuestion } nm)
                 {
-                    descendantQuestionNotifications.Add(nm);
+                    lock (descendantQuestionNotifications)
+                    {
+                        descendantQuestionNotifications.Add(nm);
+                    }
                 }
-            }
-        }, cts.Token);
+            },
+            cts.Token
+        );
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Please figure out the color, asking me if needed.", Role = Role.User }]);
+        var userInput = new UserInput([
+            new TextMessage { Text = "Please figure out the color, asking me if needed.", Role = Role.User },
+        ]);
 
         string? spawnedAgentId = null;
         await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
@@ -424,8 +463,7 @@ public class SubAgentIntegrationTests
             }
         }
 
-        spawnedAgentId.Should().NotBeNullOrEmpty(
-            "the background spawn must have returned a receipt with an agent id");
+        spawnedAgentId.Should().NotBeNullOrEmpty("the background spawn must have returned a receipt with an agent id");
 
         // The background child races the parent's own run; wait deterministically for its
         // notification to land on the root's publish stream.
@@ -438,7 +476,8 @@ public class SubAgentIntegrationTests
                 }
             },
             "the descendant-question notification landed on the root's publish stream",
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
 
         await cts.CancelAsync();
         await observeTask;
@@ -449,25 +488,32 @@ public class SubAgentIntegrationTests
             snapshot = [.. descendantQuestionNotifications];
         }
 
-        snapshot.Should().HaveCount(
-            1,
-            "the root conversation must receive EXACTLY ONE descendant-question notification for the " +
-            "one parked child — never zero, and never a duplicate");
-        snapshot[0].SourceToolCallId.Should().Be(
-            spawnedAgentId, "the notification must be attributed to the descendant's own agent id");
+        snapshot
+            .Should()
+            .HaveCount(
+                1,
+                "the root conversation must receive EXACTLY ONE descendant-question notification for the "
+                    + "one parked child — never zero, and never a duplicate"
+            );
+        snapshot[0]
+            .SourceToolCallId.Should()
+            .Be(spawnedAgentId, "the notification must be attributed to the descendant's own agent id");
         snapshot[0].Label.Should().Be("asker");
 
         // The primary/root's OWN deferred-call registry has nothing parked — the pending question
         // belongs entirely to the child, proving this notification genuinely came from the descendant
         // tree rather than the primary's own AskUserQuestion handling.
-        (await loop.GetDeferredToolCallsAsync()).Should().BeEmpty();
+        (await loop.GetDeferredToolCallsAsync())
+            .Should()
+            .BeEmpty();
     }
 
     #region Helpers
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         List<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {
@@ -484,24 +530,27 @@ public class SubAgentIntegrationTests
 
         // Not `ct`: a cancelled token would skip this body entirely, leaving the subscription
         // attached and the pending move unobserved.
-        return Task.Run(async () =>
-        {
-            try
+        return Task.Run(
+            async () =>
             {
-                for (var hasMessage = await first; hasMessage; hasMessage = await messages.MoveNextAsync())
+                try
                 {
-                    onMessage(messages.Current);
+                    for (var hasMessage = await first; hasMessage; hasMessage = await messages.MoveNextAsync())
+                    {
+                        onMessage(messages.Current);
+                    }
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                // Cancelling the token is how these tests end the subscription.
-            }
-            finally
-            {
-                await messages.DisposeAsync();
-            }
-        }, CancellationToken.None);
+                catch (OperationCanceledException)
+                {
+                    // Cancelling the token is how these tests end the subscription.
+                }
+                finally
+                {
+                    await messages.DisposeAsync();
+                }
+            },
+            CancellationToken.None
+        );
     }
 
     #endregion

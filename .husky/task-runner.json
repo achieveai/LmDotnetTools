@@ -6,12 +6,12 @@
          "group": "pre-commit",
          "command": "dotnet",
          "args": [
-            "format",
-            "whitespace",
-            "LmDotnetTools.sln",
-            "--verify-no-changes",
-            "--verbosity",
-            "quiet"
+            "csharpier",
+            "check",
+            "${staged}"
+         ],
+         "include": [
+            "**/*.cs"
          ]
       }
    ]

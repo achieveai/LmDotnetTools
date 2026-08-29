@@ -1,9 +1,9 @@
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.Logging;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers.Sources;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 
@@ -16,7 +16,8 @@ public delegate Task TriggerResolveDelegate(
     string toolCallId,
     string result,
     bool isError,
-    CancellationToken cancellationToken);
+    CancellationToken cancellationToken
+);
 
 /// <summary>
 /// Injects a notify-mode trigger envelope as a fresh queued turn on the owning loop. Supplied by
@@ -79,8 +80,9 @@ public sealed class TriggerRuntime : IAsyncDisposable
     private readonly TriggerTryNotifyDelegate? _tryNotify;
     private readonly ILogger? _logger;
     private readonly SemaphoreSlim _concurrencyGate;
-    private readonly ConcurrentDictionary<string, TriggerSourceRegistration> _registrations =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, TriggerSourceRegistration> _registrations = new(
+        StringComparer.Ordinal
+    );
     private readonly ConcurrentDictionary<string, ArmedWait> _waits = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _shutdown = new();
     private int _disposed;
@@ -90,7 +92,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
         TriggerResolveDelegate resolve,
         TriggerNotifyDelegate? notify = null,
         TriggerTryNotifyDelegate? tryNotify = null,
-        ILogger? logger = null)
+        ILogger? logger = null
+    )
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(resolve);
@@ -98,7 +101,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
         {
             throw new ArgumentException(
                 "TriggerOptions.NotifyWaitStore requires a non-empty ThreadId so durable notify restore is scoped to a conversation.",
-                nameof(options));
+                nameof(options)
+            );
         }
         _options = options;
         _resolve = resolve;
@@ -121,25 +125,22 @@ public sealed class TriggerRuntime : IAsyncDisposable
     /// (where it is unambiguously preferred, since it substitutes no optional parameters) while
     /// 2-arg calls still resolve — unambiguously — to the primary constructor.
     /// </remarks>
-    public TriggerRuntime(
-        TriggerOptions options,
-        TriggerResolveDelegate resolve,
-        ILogger? logger)
-        : this(options, resolve, notify: null, tryNotify: null, logger: logger)
-    {
-    }
+    public TriggerRuntime(TriggerOptions options, TriggerResolveDelegate resolve, ILogger? logger)
+        : this(options, resolve, notify: null, tryNotify: null, logger: logger) { }
 
     /// <summary>Registers the built-in one-shot <c>timer</c> source.</summary>
     public void RegisterBuiltIns()
     {
-        Register(new TriggerSourceRegistration
-        {
-            Kind = TimerTriggerSource.KindName,
-            Description = "Wait for a one-shot timer to elapse (a relative delay or an absolute deadline).",
-            ArgsSchema = TimerTriggerSource.ArgsSchemaText,
-            Capabilities = TimerTriggerSource.Capabilities,
-            Source = new TimerTriggerSource(),
-        });
+        Register(
+            new TriggerSourceRegistration
+            {
+                Kind = TimerTriggerSource.KindName,
+                Description = "Wait for a one-shot timer to elapse (a relative delay or an absolute deadline).",
+                ArgsSchema = TimerTriggerSource.ArgsSchemaText,
+                Capabilities = TimerTriggerSource.Capabilities,
+                Source = new TimerTriggerSource(),
+            }
+        );
     }
 
     /// <summary>Registers a trigger kind. The last registration for a kind wins.</summary>
@@ -162,8 +163,12 @@ public sealed class TriggerRuntime : IAsyncDisposable
         _ = sb.Append("Registered wait kinds:");
         foreach (var reg in _registrations.Values.OrderBy(r => r.Kind, StringComparer.Ordinal))
         {
-            _ = sb.Append("\n- ").Append(reg.Kind).Append(": ").Append(reg.Description)
-                .Append("\n  args: ").Append(reg.ArgsSchema);
+            _ = sb.Append("\n- ")
+                .Append(reg.Kind)
+                .Append(": ")
+                .Append(reg.Description)
+                .Append("\n  args: ")
+                .Append(reg.ArgsSchema);
         }
         return sb.ToString();
     }
@@ -181,7 +186,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
         string? label,
         WaitMode mode,
         int? maxFires,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
@@ -192,7 +198,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
         {
             return WaitArmResult.Reject(
                 "unknown_kind",
-                $"No trigger kind '{kind}' is registered. Registered kinds: {string.Join(", ", RegisteredKinds)}.");
+                $"No trigger kind '{kind}' is registered. Registered kinds: {string.Join(", ", RegisteredKinds)}."
+            );
         }
 
         if (mode == WaitMode.Block && !reg.Capabilities.SupportsBlock)
@@ -213,7 +220,15 @@ public sealed class TriggerRuntime : IAsyncDisposable
         }
 
         var now = DateTimeOffset.UtcNow;
-        if (!TriggerDurations.TryResolveDeadline(timeout, now, _options.MaxBlockWaitDuration, out var deadline, out var timeoutError))
+        if (
+            !TriggerDurations.TryResolveDeadline(
+                timeout,
+                now,
+                _options.MaxBlockWaitDuration,
+                out var deadline,
+                out var timeoutError
+            )
+        )
         {
             return WaitArmResult.Reject("invalid_timeout", timeoutError ?? "invalid timeout");
         }
@@ -230,7 +245,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
         int? maxFires,
         DateTimeOffset armedAt,
         DateTimeOffset deadline,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         // Bounded concurrency: acquire once here, release exactly once when the wait terminates
         // (or in the failure path below if arming the source throws).
@@ -239,7 +255,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
             return WaitArmResult.Reject(
                 "max_concurrent_waits",
                 $"The maximum of {_options.MaxConcurrentWaits} concurrent waits is reached. "
-                + "Cancel a wait or wait for one to complete.");
+                    + "Cancel a wait or wait for one to complete."
+            );
         }
 
         var request = new TriggerArmRequest
@@ -290,9 +307,21 @@ public sealed class TriggerRuntime : IAsyncDisposable
             {
                 try
                 {
-                    await _options.NotifyWaitStore.SaveAsync(new NotifyWaitRecord(
-                        waitId, _options.ThreadId, reg.Kind, request.ArgsJson, label, maxFires, 0,
-                        deadline.ToUnixTimeMilliseconds(), armedAt.ToUnixTimeMilliseconds(), "active"), ct);
+                    await _options.NotifyWaitStore.SaveAsync(
+                        new NotifyWaitRecord(
+                            waitId,
+                            _options.ThreadId,
+                            reg.Kind,
+                            request.ArgsJson,
+                            label,
+                            maxFires,
+                            0,
+                            deadline.ToUnixTimeMilliseconds(),
+                            armedAt.ToUnixTimeMilliseconds(),
+                            "active"
+                        ),
+                        ct
+                    );
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -310,7 +339,10 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
             _logger?.LogInformation(
                 "trigger.armed {WaitId} kind={Kind} deadline={Deadline:o}",
-                waitId, reg.Kind, deadline);
+                waitId,
+                reg.Kind,
+                deadline
+            );
 
             return WaitArmResult.Accept(waitId);
         }
@@ -321,7 +353,12 @@ public sealed class TriggerRuntime : IAsyncDisposable
             // an unexpected internal failure.
             ReleaseGate(wait);
             _ = _waits.TryRemove(waitId, out _);
-            _logger?.LogInformation("trigger.arm_rejected {WaitId} kind={Kind} reason={Message}", waitId, reg.Kind, ex.Message);
+            _logger?.LogInformation(
+                "trigger.arm_rejected {WaitId} kind={Kind} reason={Message}",
+                waitId,
+                reg.Kind,
+                ex.Message
+            );
             return WaitArmResult.Reject("invalid_args", ex.Message);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -387,17 +424,19 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
     /// <summary>Read model of currently-armed waits (no payloads or source internals exposed).</summary>
     public IReadOnlyList<WaitInfo> ListWaits() =>
-        [.. _waits.Values
-            .Where(w => w.State == WaitState.Pending)
-            .Select(w => new WaitInfo
-            {
-                WaitId = w.WaitId,
-                Kind = w.Kind,
-                Label = w.Label,
-                State = WaitState.Pending,
-                ArmedAt = w.ArmedAt.ToString("o"),
-                Deadline = w.Deadline.ToString("o"),
-            })];
+        [
+            .. _waits
+                .Values.Where(w => w.State == WaitState.Pending)
+                .Select(w => new WaitInfo
+                {
+                    WaitId = w.WaitId,
+                    Kind = w.Kind,
+                    Label = w.Label,
+                    State = WaitState.Pending,
+                    ArmedAt = w.ArmedAt.ToString("o"),
+                    Deadline = w.Deadline.ToString("o"),
+                }),
+        ];
 
     /// <summary>
     /// Reconciles block waits recovered from persisted history after a restart. A restorable kind
@@ -413,7 +452,11 @@ public sealed class TriggerRuntime : IAsyncDisposable
         {
             if (!WaitToolArgs.TryParse(r.FunctionArgs, out var parsed))
             {
-                await DeliverAsync(r.ToolCallId, BuildFailedPayload(r.ToolCallId, "unknown", null, "trigger_lost_on_restart"), isError: false);
+                await DeliverAsync(
+                    r.ToolCallId,
+                    BuildFailedPayload(r.ToolCallId, "unknown", null, "trigger_lost_on_restart"),
+                    isError: false
+                );
                 continue;
             }
 
@@ -422,34 +465,72 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 await DeliverAsync(
                     r.ToolCallId,
                     BuildFailedPayload(r.ToolCallId, parsed.Kind, parsed.Label, "trigger_lost_on_restart"),
-                    isError: false);
+                    isError: false
+                );
                 continue;
             }
 
             // A missing arm timestamp (older/hand-authored data) would otherwise map to the Unix
             // epoch and expire instantly — restart the clock from now instead.
-            var armedAt = r.DeferredAtUnixMs > 0
-                ? DateTimeOffset.FromUnixTimeMilliseconds(r.DeferredAtUnixMs)
-                : DateTimeOffset.UtcNow;
-            if (!TriggerDurations.TryResolveDeadline(parsed.Timeout, armedAt, _options.MaxBlockWaitDuration, out var deadline, out _))
+            var armedAt =
+                r.DeferredAtUnixMs > 0
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(r.DeferredAtUnixMs)
+                    : DateTimeOffset.UtcNow;
+            if (
+                !TriggerDurations.TryResolveDeadline(
+                    parsed.Timeout,
+                    armedAt,
+                    _options.MaxBlockWaitDuration,
+                    out var deadline,
+                    out _
+                )
+            )
             {
                 // Ceiling already elapsed while offline (or unparseable) — resolve as timed out.
                 await DeliverAsync(
                     r.ToolCallId,
-                    BuildTerminalPayload("timed_out", new ArmedWait { WaitId = r.ToolCallId, Kind = parsed.Kind, Label = parsed.Label, Mode = WaitMode.Block, ArmedAt = armedAt, Deadline = armedAt }),
-                    isError: false);
+                    BuildTerminalPayload(
+                        "timed_out",
+                        new ArmedWait
+                        {
+                            WaitId = r.ToolCallId,
+                            Kind = parsed.Kind,
+                            Label = parsed.Label,
+                            Mode = WaitMode.Block,
+                            ArmedAt = armedAt,
+                            Deadline = armedAt,
+                        }
+                    ),
+                    isError: false
+                );
                 continue;
             }
 
-            var armResult = await ArmCoreAsync(r.ToolCallId, reg, parsed.ArgsJson, parsed.Label, WaitMode.Block, maxFires: null, armedAt, deadline, ct);
+            var armResult = await ArmCoreAsync(
+                r.ToolCallId,
+                reg,
+                parsed.ArgsJson,
+                parsed.Label,
+                WaitMode.Block,
+                maxFires: null,
+                armedAt,
+                deadline,
+                ct
+            );
             if (!armResult.IsArmed)
             {
                 // Re-arm was rejected (e.g. concurrency limit, source arm failure). Do NOT leave the
                 // parked run hanging — resolve it as a restart failure.
                 await DeliverAsync(
                     r.ToolCallId,
-                    BuildFailedPayload(r.ToolCallId, parsed.Kind, parsed.Label, armResult.Reason ?? "trigger_lost_on_restart"),
-                    isError: false);
+                    BuildFailedPayload(
+                        r.ToolCallId,
+                        parsed.Kind,
+                        parsed.Label,
+                        armResult.Reason ?? "trigger_lost_on_restart"
+                    ),
+                    isError: false
+                );
             }
         }
     }
@@ -478,9 +559,18 @@ public sealed class TriggerRuntime : IAsyncDisposable
         var rows = await store.LoadActiveAsync(threadId, ct);
         foreach (var row in rows)
         {
-            if (!_registrations.TryGetValue(row.Kind, out var reg) || !reg.Capabilities.SupportsRestore || !reg.Capabilities.SupportsNotify)
+            if (
+                !_registrations.TryGetValue(row.Kind, out var reg)
+                || !reg.Capabilities.SupportsRestore
+                || !reg.Capabilities.SupportsNotify
+            )
             {
-                if (await TryDeliverRestoreNotifyAsync(BuildFailedPayload(row.WaitId, row.Kind, row.Label, "trigger_lost_on_restart"), isError: false))
+                if (
+                    await TryDeliverRestoreNotifyAsync(
+                        BuildFailedPayload(row.WaitId, row.Kind, row.Label, "trigger_lost_on_restart"),
+                        isError: false
+                    )
+                )
                 {
                     await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
                 }
@@ -488,7 +578,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 {
                     _logger?.LogDebug(
                         "notify-wait restore: input channel unavailable for {WaitId}, retaining row for redelivery on next recovery",
-                        row.WaitId);
+                        row.WaitId
+                    );
                 }
                 continue;
             }
@@ -507,14 +598,32 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
             // A missing arm timestamp (older/hand-authored data) would otherwise map to the Unix
             // epoch and expire instantly — restart the clock from now instead.
-            var armedAt = row.ArmedAtUnixMs > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(row.ArmedAtUnixMs) : DateTimeOffset.UtcNow;
-            var deadline = row.TimeoutAtUnixMs > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(row.TimeoutAtUnixMs) : armedAt;
+            var armedAt =
+                row.ArmedAtUnixMs > 0
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(row.ArmedAtUnixMs)
+                    : DateTimeOffset.UtcNow;
+            var deadline =
+                row.TimeoutAtUnixMs > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(row.TimeoutAtUnixMs) : armedAt;
             if (deadline <= DateTimeOffset.UtcNow)
             {
                 // TTL already elapsed while offline — terminal envelope, delete only if accepted.
-                if (await TryDeliverRestoreNotifyAsync(
-                    BuildTerminalPayload("timed_out", new ArmedWait { WaitId = row.WaitId, Kind = row.Kind, Label = row.Label, Mode = WaitMode.Notify, ArmedAt = armedAt, Deadline = deadline }),
-                    isError: false))
+                if (
+                    await TryDeliverRestoreNotifyAsync(
+                        BuildTerminalPayload(
+                            "timed_out",
+                            new ArmedWait
+                            {
+                                WaitId = row.WaitId,
+                                Kind = row.Kind,
+                                Label = row.Label,
+                                Mode = WaitMode.Notify,
+                                ArmedAt = armedAt,
+                                Deadline = deadline,
+                            }
+                        ),
+                        isError: false
+                    )
+                )
                 {
                     await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
                 }
@@ -522,16 +631,37 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 {
                     _logger?.LogDebug(
                         "notify-wait restore: input channel unavailable for {WaitId}, retaining row for redelivery on next recovery",
-                        row.WaitId);
+                        row.WaitId
+                    );
                 }
                 continue;
             }
 
             var remainingMaxFires = row.MaxFires is int mf ? Math.Max(0, mf - row.FiresSoFar) : (int?)null;
-            var armResult = await ArmCoreAsync(row.WaitId, reg, row.Args, row.Label, WaitMode.Notify, remainingMaxFires, armedAt, deadline, ct);
+            var armResult = await ArmCoreAsync(
+                row.WaitId,
+                reg,
+                row.Args,
+                row.Label,
+                WaitMode.Notify,
+                remainingMaxFires,
+                armedAt,
+                deadline,
+                ct
+            );
             if (!armResult.IsArmed)
             {
-                if (await TryDeliverRestoreNotifyAsync(BuildFailedPayload(row.WaitId, row.Kind, row.Label, armResult.Reason ?? "trigger_lost_on_restart"), isError: false))
+                if (
+                    await TryDeliverRestoreNotifyAsync(
+                        BuildFailedPayload(
+                            row.WaitId,
+                            row.Kind,
+                            row.Label,
+                            armResult.Reason ?? "trigger_lost_on_restart"
+                        ),
+                        isError: false
+                    )
+                )
                 {
                     await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
                 }
@@ -539,7 +669,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 {
                     _logger?.LogDebug(
                         "notify-wait restore: input channel unavailable for {WaitId}, retaining row for redelivery on next recovery",
-                        row.WaitId);
+                        row.WaitId
+                    );
                 }
             }
         }
@@ -584,9 +715,21 @@ public sealed class TriggerRuntime : IAsyncDisposable
         {
             try
             {
-                await _options.NotifyWaitStore.SaveAsync(new NotifyWaitRecord(
-                    wait.WaitId, _options.ThreadId, wait.Kind, wait.ArgsJson, wait.Label, wait.MaxFires, fireNumber,
-                    wait.Deadline.ToUnixTimeMilliseconds(), wait.ArmedAt.ToUnixTimeMilliseconds(), "active"), CancellationToken.None);
+                await _options.NotifyWaitStore.SaveAsync(
+                    new NotifyWaitRecord(
+                        wait.WaitId,
+                        _options.ThreadId,
+                        wait.Kind,
+                        wait.ArgsJson,
+                        wait.Label,
+                        wait.MaxFires,
+                        fireNumber,
+                        wait.Deadline.ToUnixTimeMilliseconds(),
+                        wait.ArmedAt.ToUnixTimeMilliseconds(),
+                        "active"
+                    ),
+                    CancellationToken.None
+                );
             }
             catch (Exception ex)
             {
@@ -614,7 +757,12 @@ public sealed class TriggerRuntime : IAsyncDisposable
             return false; // lost the race — already terminal.
         }
 
-        _logger?.LogInformation("trigger.{State} {WaitId} kind={Kind}", state.ToString().ToLowerInvariant(), wait.WaitId, wait.Kind);
+        _logger?.LogInformation(
+            "trigger.{State} {WaitId} kind={Kind}",
+            state.ToString().ToLowerInvariant(),
+            wait.WaitId,
+            wait.Kind
+        );
 
         try
         {
@@ -790,7 +938,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
             }
             catch (InvalidOperationException ex)
                 when (attempt < DeliverMaxAttempts
-                    && !ex.Message.Contains("already been resolved", StringComparison.Ordinal))
+                    && !ex.Message.Contains("already been resolved", StringComparison.Ordinal)
+                )
             {
                 // The deferred placeholder is not in history yet (handler just returned Deferred).
                 // Retry briefly until the loop finishes appending it.
@@ -874,36 +1023,42 @@ public sealed class TriggerRuntime : IAsyncDisposable
             detail = TruncateUtf8(detail, budget) + marker;
         }
 
-        return Serialize(new Dictionary<string, object?>
-        {
-            ["status"] = "fired",
-            ["kind"] = wait.Kind,
-            ["label"] = wait.Label,
-            ["waitId"] = wait.WaitId,
-            ["firedAt"] = DateTimeOffset.UtcNow.ToString("o"),
-            ["detail"] = detail,
-        });
+        return Serialize(
+            new Dictionary<string, object?>
+            {
+                ["status"] = "fired",
+                ["kind"] = wait.Kind,
+                ["label"] = wait.Label,
+                ["waitId"] = wait.WaitId,
+                ["firedAt"] = DateTimeOffset.UtcNow.ToString("o"),
+                ["detail"] = detail,
+            }
+        );
     }
 
     private static string BuildTerminalPayload(string status, ArmedWait wait) =>
-        Serialize(new Dictionary<string, object?>
-        {
-            ["status"] = status,
-            ["kind"] = wait.Kind,
-            ["label"] = wait.Label,
-            ["waitId"] = wait.WaitId,
-            ["deadline"] = wait.Deadline.ToString("o"),
-        });
+        Serialize(
+            new Dictionary<string, object?>
+            {
+                ["status"] = status,
+                ["kind"] = wait.Kind,
+                ["label"] = wait.Label,
+                ["waitId"] = wait.WaitId,
+                ["deadline"] = wait.Deadline.ToString("o"),
+            }
+        );
 
     private static string BuildFailedPayload(string waitId, string kind, string? label, string reason) =>
-        Serialize(new Dictionary<string, object?>
-        {
-            ["status"] = "failed",
-            ["reason"] = reason,
-            ["kind"] = kind,
-            ["label"] = label,
-            ["waitId"] = waitId,
-        });
+        Serialize(
+            new Dictionary<string, object?>
+            {
+                ["status"] = "failed",
+                ["reason"] = reason,
+                ["kind"] = kind,
+                ["label"] = label,
+                ["waitId"] = waitId,
+            }
+        );
 
     private static string Serialize(Dictionary<string, object?> map)
     {

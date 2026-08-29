@@ -72,7 +72,8 @@ internal sealed class PrPollingService : BackgroundService
         Func<CancellationToken, Task>? sweepAsync = null,
         TimeProvider? timeProvider = null,
         ReviewProgressReporter? progress = null,
-        int? firstReviewLookbackDays = null)
+        int? firstReviewLookbackDays = null
+    )
     {
         _targets = [.. targets];
         _providers = [.. providers];
@@ -144,16 +145,18 @@ internal sealed class PrPollingService : BackgroundService
         try
         {
             var since = _timeProvider.GetUtcNow().AddDays(-_firstReviewLookbackDays);
-            var payloads = _store.GetFirstReviewPayloadsSince(
-                since, DaemonReviewStageExecutor.ReviewArtifactKind);
+            var payloads = _store.GetFirstReviewPayloadsSince(since, DaemonReviewStageExecutor.ReviewArtifactKind);
             var sentinels = payloads.Count(static p =>
-                DaemonReviewStageExecutor.IsNoNewFindingsSentinel(ReadReviewText(p)));
+                DaemonReviewStageExecutor.IsNoNewFindingsSentinel(ReadReviewText(p))
+            );
             _progress.FirstReviewSentinelRate(payloads.Count, sentinels, _firstReviewLookbackDays);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(
-                ex, "Could not measure the no-change-on-a-first-review rate; polling continues regardless.");
+                ex,
+                "Could not measure the no-change-on-a-first-review rate; polling continues regardless."
+            );
         }
     }
 
@@ -162,8 +165,8 @@ internal sealed class PrPollingService : BackgroundService
         try
         {
             return JsonSerializer
-                .Deserialize<ReviewArtifactPayload>(payload, DaemonReviewStageExecutor.PayloadOptions)?
-                .ReviewText;
+                .Deserialize<ReviewArtifactPayload>(payload, DaemonReviewStageExecutor.PayloadOptions)
+                ?.ReviewText;
         }
         catch (JsonException)
         {
@@ -212,7 +215,8 @@ internal sealed class PrPollingService : BackgroundService
             _logger.LogError(
                 ex,
                 "The {SweepName} maintenance sweep failed; continuing after the interval.",
-                MaintenanceSweepException.NameOf(ex));
+                MaintenanceSweepException.NameOf(ex)
+            );
         }
 
         return true;
@@ -249,7 +253,8 @@ internal sealed class PrPollingService : BackgroundService
     private async Task PollTargetAsync(PrPollTarget target, CancellationToken cancellationToken)
     {
         var provider = _providers.FirstOrDefault(p =>
-            string.Equals(p.Provider, target.Provider, StringComparison.OrdinalIgnoreCase));
+            string.Equals(p.Provider, target.Provider, StringComparison.OrdinalIgnoreCase)
+        );
         if (provider is null)
         {
             _logger.LogWarning("No IPrProvider registered for '{Provider}'; skipping target.", target.Provider);
@@ -260,9 +265,10 @@ internal sealed class PrPollingService : BackgroundService
 
         // The recency-window cutoff, computed once so the provider (which may fetch a per-PR activity
         // signal for borderline PRs) and the filter below agree on the same instant.
-        var cutoff = target.MaxPrAgeDays > 0
-            ? _timeProvider.GetUtcNow() - TimeSpan.FromDays(target.MaxPrAgeDays)
-            : (DateTimeOffset?)null;
+        var cutoff =
+            target.MaxPrAgeDays > 0
+                ? _timeProvider.GetUtcNow() - TimeSpan.FromDays(target.MaxPrAgeDays)
+                : (DateTimeOffset?)null;
 
         var page = await provider.ListOpenPullRequestsAsync(
             new PrPollRequest
@@ -272,7 +278,8 @@ internal sealed class PrPollingService : BackgroundService
                 Cursor = cursorResult.ShouldResync ? null : cursorResult.Cursor,
                 RecencyCutoff = cutoff,
             },
-            cancellationToken);
+            cancellationToken
+        );
 
         var repoId = _store.EnsureRepo(target.Repo);
         foreach (var pr in ApplyRecencyFilter(target, cutoff, page.PullRequests))
@@ -319,7 +326,8 @@ internal sealed class PrPollingService : BackgroundService
                     ex,
                     "Orchestrating PR {PrId} on {Scope} failed; the run is left RetryPending and polling continues.",
                     pr.PrId,
-                    target.Scope);
+                    target.Scope
+                );
             }
         }
 
@@ -337,7 +345,8 @@ internal sealed class PrPollingService : BackgroundService
     private IReadOnlyList<PullRequestDescriptor> ApplyRecencyFilter(
         PrPollTarget target,
         DateTimeOffset? cutoff,
-        IReadOnlyList<PullRequestDescriptor> pullRequests)
+        IReadOnlyList<PullRequestDescriptor> pullRequests
+    )
     {
         if (cutoff is null || pullRequests.Count == 0)
         {
@@ -362,7 +371,8 @@ internal sealed class PrPollingService : BackgroundService
                 target.Scope,
                 kept.Count,
                 pullRequests.Count,
-                pullRequests.Count - kept.Count);
+                pullRequests.Count - kept.Count
+            );
         }
 
         return kept;

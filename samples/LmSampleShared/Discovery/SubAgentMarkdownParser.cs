@@ -152,9 +152,7 @@ public static class SubAgentMarkdownParser
             return null;
         }
 
-        var description = string.IsNullOrWhiteSpace(dto?.Description)
-            ? null
-            : dto.Description.Trim();
+        var description = string.IsNullOrWhiteSpace(dto?.Description) ? null : dto.Description.Trim();
         var model = string.IsNullOrWhiteSpace(dto?.Model) ? null : dto.Model.Trim();
         var tools = NormalizeTools(dto?.Tools);
         var diagnostics = new List<string>();
@@ -209,11 +207,7 @@ public static class SubAgentMarkdownParser
         return true;
     }
 
-    private static bool StartsWithLine(
-        ReadOnlySpan<char> input,
-        string marker,
-        out ReadOnlySpan<char> rest
-    )
+    private static bool StartsWithLine(ReadOnlySpan<char> input, string marker, out ReadOnlySpan<char> rest)
     {
         rest = input;
         if (input.Length < marker.Length || !input[..marker.Length].SequenceEqual(marker))
@@ -261,11 +255,7 @@ public static class SubAgentMarkdownParser
         return normalized;
     }
 
-    private static int? ParseModelIntelligence(
-        object? raw,
-        bool isPresent,
-        List<string> diagnostics
-    )
+    private static int? ParseModelIntelligence(object? raw, bool isPresent, List<string> diagnostics)
     {
         if (!isPresent)
         {
@@ -290,17 +280,11 @@ public static class SubAgentMarkdownParser
             return value;
         }
 
-        diagnostics.Add(
-            "modelintelligence must be an integer from 0 through 6; the field was ignored."
-        );
+        diagnostics.Add("modelintelligence must be an integer from 0 through 6; the field was ignored.");
         return null;
     }
 
-    private static ReasoningEffort? ParseEffort(
-        object? raw,
-        bool isPresent,
-        List<string> diagnostics
-    )
+    private static ReasoningEffort? ParseEffort(object? raw, bool isPresent, List<string> diagnostics)
     {
         if (!isPresent)
         {
@@ -324,9 +308,7 @@ public static class SubAgentMarkdownParser
             }
         }
 
-        diagnostics.Add(
-            "effort must be one of low, medium, high, extra-high, or xhigh; the field was ignored."
-        );
+        diagnostics.Add("effort must be one of low, medium, high, extra-high, or xhigh; the field was ignored.");
         return null;
     }
 

@@ -12,17 +12,20 @@ public sealed class SubAgentIntelligenceOptionsTests
     public void ConfigurationBinding_PreservesTierCandidateOrder()
     {
         var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["SubAgentIntelligence:Tiers:3:0"] = "model-a",
-                ["SubAgentIntelligence:Tiers:3:1"] = "model-b",
-                ["SubAgentIntelligence:Tiers:3:2"] = "model-c",
-            })
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["SubAgentIntelligence:Tiers:3:0"] = "model-a",
+                    ["SubAgentIntelligence:Tiers:3:1"] = "model-b",
+                    ["SubAgentIntelligence:Tiers:3:2"] = "model-c",
+                }
+            )
             .Build();
 
         var options = SubAgentIntelligenceOptions.Load(
             configuration,
-            new CapturingLogger<SubAgentIntelligenceOptions>());
+            new CapturingLogger<SubAgentIntelligenceOptions>()
+        );
 
         options.Tiers[3].Should().Equal("model-a", "model-b", "model-c");
     }
@@ -31,12 +34,14 @@ public sealed class SubAgentIntelligenceOptionsTests
     public void Load_LogsAndSkipsMalformedAndOutOfRangeKeysWithoutDroppingValidMappings()
     {
         var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["SubAgentIntelligence:Tiers:not-an-integer:0"] = "bad-model",
-                ["SubAgentIntelligence:Tiers:7:0"] = "out-of-range-model",
-                ["SubAgentIntelligence:Tiers:4:0"] = "valid-model",
-            })
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["SubAgentIntelligence:Tiers:not-an-integer:0"] = "bad-model",
+                    ["SubAgentIntelligence:Tiers:7:0"] = "out-of-range-model",
+                    ["SubAgentIntelligence:Tiers:4:0"] = "valid-model",
+                }
+            )
             .Build();
         var logger = new CapturingLogger<SubAgentIntelligenceOptions>();
 
@@ -53,11 +58,13 @@ public sealed class SubAgentIntelligenceOptionsTests
         // "3" and "03" both normalize to integer tier 3; the second is a duplicate and must be
         // logged and skipped, leaving a single tier-3 mapping.
         var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["SubAgentIntelligence:Tiers:3:0"] = "first-model",
-                ["SubAgentIntelligence:Tiers:03:0"] = "duplicate-model",
-            })
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["SubAgentIntelligence:Tiers:3:0"] = "first-model",
+                    ["SubAgentIntelligence:Tiers:03:0"] = "duplicate-model",
+                }
+            )
             .Build();
         var logger = new CapturingLogger<SubAgentIntelligenceOptions>();
 
@@ -90,9 +97,15 @@ public sealed class SubAgentIntelligenceOptionsTests
 
         // The empty tier is enumerated exactly like the populated one.
         tierSection.GetChildren().Select(child => child.Key).Should().Equal("3", "4");
-        tierSection.GetSection("3").Exists().Should()
+        tierSection
+            .GetSection("3")
+            .Exists()
+            .Should()
             .BeFalse("an empty array has neither a value nor children, so Exists() cannot see it");
-        tierSection.GetSection("3").Get<string[]>().Should()
+        tierSection
+            .GetSection("3")
+            .Get<string[]>()
+            .Should()
             .BeNull("binding yields null, which Load's `?? []` turns into the empty candidate list");
         tierSection.GetSection("4").Get<string[]>().Should().Equal("a-model");
     }
@@ -125,11 +138,13 @@ public sealed class SubAgentIntelligenceOptionsTests
     public void Load_KeepsPopulatedTiersWhileDroppingEmptyAndBlankOnlyOnes()
     {
         var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["SubAgentIntelligence:Tiers:1:0"] = "   ",
-                ["SubAgentIntelligence:Tiers:5:0"] = "real-model",
-            })
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["SubAgentIntelligence:Tiers:1:0"] = "   ",
+                    ["SubAgentIntelligence:Tiers:5:0"] = "real-model",
+                }
+            )
             .Build();
         var logger = new CapturingLogger<SubAgentIntelligenceOptions>();
 
@@ -152,23 +167,26 @@ public sealed class SubAgentIntelligenceOptionsTests
         var tiers = document.RootElement.GetProperty("SubAgentIntelligence").GetProperty("Tiers");
 
         tiers.ValueKind.Should().Be(JsonValueKind.Object);
-        tiers.EnumerateObject().Select(tier => tier.Name)
-            .Should().Equal("0", "1", "2", "3", "4", "5", "6");
-        tiers.EnumerateObject().Should().OnlyContain(tier =>
-            tier.Value.ValueKind == JsonValueKind.Array
-            && tier.Value.GetArrayLength() > 0);
+        tiers.EnumerateObject().Select(tier => tier.Name).Should().Equal("0", "1", "2", "3", "4", "5", "6");
+        tiers
+            .EnumerateObject()
+            .Should()
+            .OnlyContain(tier => tier.Value.ValueKind == JsonValueKind.Array && tier.Value.GetArrayLength() > 0);
     }
 
     /// <summary>The checked-in host <c>appsettings.json</c>, resolved from the test binary's location.</summary>
-    internal static string AppsettingsPath { get; } = Path.GetFullPath(
-        Path.Combine(
-            AppContext.BaseDirectory,
-            "..",
-            "..",
-            "..",
-            "..",
-            "..",
-            "samples",
-            "LmStreaming.Sample",
-            "appsettings.json"));
+    internal static string AppsettingsPath { get; } =
+        Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                "samples",
+                "LmStreaming.Sample",
+                "appsettings.json"
+            )
+        );
 }

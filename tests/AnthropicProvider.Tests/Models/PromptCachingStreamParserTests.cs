@@ -45,10 +45,7 @@ public class PromptCachingStreamParserTests
         );
 
         // content_block_stop
-        parser.ProcessEvent(
-            "content_block_stop",
-            """{"type": "content_block_stop", "index": 0}"""
-        );
+        parser.ProcessEvent("content_block_stop", """{"type": "content_block_stop", "index": 0}""");
 
         // message_delta — this overwrites _usage but cache metrics should be preserved
         var results = parser.ProcessEvent(
@@ -119,10 +116,7 @@ public class PromptCachingStreamParserTests
             "content_block_delta",
             """{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hi"}}"""
         );
-        parser.ProcessEvent(
-            "content_block_stop",
-            """{"type": "content_block_stop", "index": 0}"""
-        );
+        parser.ProcessEvent("content_block_stop", """{"type": "content_block_stop", "index": 0}""");
 
         // message_delta
         var results = parser.ProcessEvent(

@@ -181,8 +181,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
             logger
         );
 
-    private Task<EvalSweepReport> SweepAsync(int limit = 1000) =>
-        Sweep(limit).SweepOnceAsync(CancellationToken.None);
+    private Task<EvalSweepReport> SweepAsync(int limit = 1000) => Sweep(limit).SweepOnceAsync(CancellationToken.None);
 
     // ---- the window advances, and survives the process ------------------------------------------
 
@@ -206,13 +205,9 @@ public sealed class EvalCorpusSweepTests : IDisposable
 
         var secondReport = await SweepAsync();
 
-        secondReport
-            .FromCursor.Should()
-            .Be(first, "the first sweep's edge is where the second starts");
+        secondReport.FromCursor.Should().Be(first, "the first sweep's edge is where the second starts");
         secondReport.ToCursor.Should().Be(second);
-        secondReport
-            .CandidateCount.Should()
-            .Be(1, "the first sweep's rows are behind the window, not swept twice");
+        secondReport.CandidateCount.Should().Be(1, "the first sweep's rows are behind the window, not swept twice");
     }
 
     /// <summary>
@@ -232,9 +227,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
         var second = Reviewed("119", "src/Bar.cs:3 is wrong.");
         var report = await SweepAsync();
 
-        report
-            .FromCursor.Should()
-            .Be(first, "the cursor was read back from the database, not from a field");
+        report.FromCursor.Should().Be(first, "the cursor was read back from the database, not from a field");
         report.CandidateCount.Should().Be(1);
         report.ToCursor.Should().Be(second);
     }
@@ -310,13 +303,9 @@ public sealed class EvalCorpusSweepTests : IDisposable
 
         report.CandidateCount.Should().Be(2);
         report.ScoredCandidates.Should().Be(1, "only the v2 row carries a readable score");
-        report
-            .MeanRecordedScore.Should()
-            .Be(8.0, "averaging the legacy zero in would give 4 — the exact silent drag");
+        report.MeanRecordedScore.Should().Be(8.0, "averaging the legacy zero in would give 4 — the exact silent drag");
         report.AmbiguousLegacyGradeCandidates.Should().Be(1);
-        report
-            .UnscoredCandidates.Should()
-            .Be(0, "a legacy row is unreadable, not a declined grade");
+        report.UnscoredCandidates.Should().Be(0, "a legacy row is unreadable, not a declined grade");
         report.UngradedCandidates.Should().Be(0, "both candidates were judged");
     }
 
@@ -429,9 +418,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
         report.CandidateCount.Should().Be(2, "both arms are candidates over the same input");
         report.ScoredCandidates.Should().Be(1, "only the A arm was graded");
         report.MeanRecordedScore.Should().Be(9.0);
-        report
-            .UngradedCandidates.Should()
-            .Be(1, "the B arm has no grade — it must not inherit the A arm's");
+        report.UngradedCandidates.Should().Be(1, "the B arm has no grade — it must not inherit the A arm's");
     }
 
     /// <summary>
@@ -471,13 +458,9 @@ public sealed class EvalCorpusSweepTests : IDisposable
         var report = await Sweep(logger: logger).SweepOnceAsync(CancellationToken.None);
 
         report.CandidateCount.Should().Be(1);
-        report
-            .ScoredCandidates.Should()
-            .Be(0, "the superseded 8 must not be reported as this candidate's grade");
+        report.ScoredCandidates.Should().Be(0, "the superseded 8 must not be reported as this candidate's grade");
         report.MeanRecordedScore.Should().BeNull("zero is a real grade; null is the absence");
-        report
-            .UngradedCandidates.Should()
-            .Be(1, "no readable grade is a missing grade, not a bad one");
+        report.UngradedCandidates.Should().Be(1, "no readable grade is a missing grade, not a bad one");
         logger.WarningCount("did not deserialize").Should().Be(1);
     }
 
@@ -497,21 +480,13 @@ public sealed class EvalCorpusSweepTests : IDisposable
         var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
 
         AddV2Judge(runId, score: 8);
-        AddRawArtifact(
-            runId,
-            JudgeAgent.JudgeArtifactSchemaVersion,
-            JudgeAgent.JudgeArtifactKind,
-            "null"
-        );
+        AddRawArtifact(runId, JudgeAgent.JudgeArtifactSchemaVersion, JudgeAgent.JudgeArtifactKind, "null");
 
         var logger = new CapturingLogger<EvalCorpusSweep>();
         var report = await Sweep(logger: logger).SweepOnceAsync(CancellationToken.None);
 
         report.UngradedCandidates.Should().Be(1, "the behaviour is unchanged: no grade, and the 8 is not resurrected");
-        logger
-            .WarningCount("literal JSON null")
-            .Should()
-            .Be(1, "the row parsed; what it carries is nothing");
+        logger.WarningCount("literal JSON null").Should().Be(1, "the row parsed; what it carries is nothing");
         logger
             .WarningCount("did not deserialize")
             .Should()
@@ -562,19 +537,15 @@ public sealed class EvalCorpusSweepTests : IDisposable
         AddV2Judge(runId, score: 4, variantId: "b");
 
         var reads = new List<long>();
-        var report = await Sweep(
-                readArtifacts: id =>
-                {
-                    reads.Add(id);
-                    return _store.GetArtifacts(id);
-                }
-            )
+        var report = await Sweep(readArtifacts: id =>
+            {
+                reads.Add(id);
+                return _store.GetArtifacts(id);
+            })
             .SweepOnceAsync(CancellationToken.None);
 
         report.CandidateCount.Should().Be(2, "both arms are candidates over the same input");
-        reads
-            .Should()
-            .Equal([runId], "one read for the run, not one per candidate over it");
+        reads.Should().Equal([runId], "one read for the run, not one per candidate over it");
 
         // The non-vacuity half: caching the read must not also collapse the per-variant match into
         // whichever arm was judged last. Both arms keep their own grade.
@@ -607,14 +578,12 @@ public sealed class EvalCorpusSweepTests : IDisposable
         var production = EvalCorpusSweep.GradeArtifactReader(_store);
         var seen = new List<ReviewArtifact>();
 
-        var report = await Sweep(
-                readArtifacts: id =>
-                {
-                    var artifacts = production(id);
-                    seen.AddRange(artifacts);
-                    return artifacts;
-                }
-            )
+        var report = await Sweep(readArtifacts: id =>
+            {
+                var artifacts = production(id);
+                seen.AddRange(artifacts);
+                return artifacts;
+            })
             .SweepOnceAsync(CancellationToken.None);
 
         seen.Should().NotBeEmpty("a vacuous pass here would prove nothing about the filter");
@@ -669,10 +638,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
         report.CandidateCount.Should().Be(3);
         reads
             .Should()
-            .Equal(
-                [1L, 2L, 1L],
-                "the memo holds the LAST run only, so a run revisited after another is read again"
-            );
+            .Equal([1L, 2L, 1L], "the memo holds the LAST run only, so a run revisited after another is read again");
     }
 
     /// <summary>
@@ -693,9 +659,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
 
         var sweep = Sweep();
 
-        (await sweep.SweepOnceAsync(CancellationToken.None))
-            .MeanRecordedScore.Should()
-            .Be(8.0);
+        (await sweep.SweepOnceAsync(CancellationToken.None)).MeanRecordedScore.Should().Be(8.0);
 
         // Re-judged after the first sweep read this run's artifacts.
         AddV2Judge(runId, score: 3);
@@ -708,9 +672,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
 
         var second = await sweep.SweepOnceAsync(CancellationToken.None);
 
-        second
-            .MeanRecordedScore.Should()
-            .Be(3.0, "the re-judge supersedes the grade the first sweep read");
+        second.MeanRecordedScore.Should().Be(3.0, "the re-judge supersedes the grade the first sweep read");
     }
 
     /// <summary>
@@ -718,8 +680,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
     /// single entry is measured against. It reads no store: the run ids are metadata, and the grade
     /// lookup is what the test is watching.
     /// </summary>
-    private sealed class InterleavedCorpusReader(IReadOnlyList<(long RunId, string VariantId)> items)
-        : ICorpusReader
+    private sealed class InterleavedCorpusReader(IReadOnlyList<(long RunId, string VariantId)> items) : ICorpusReader
     {
         public Task<CorpusPage> LoadAsync(
             string corpusId,
@@ -742,10 +703,9 @@ public sealed class EvalCorpusSweepTests : IDisposable
                                 VariantId = item.VariantId,
                                 Metadata = new Dictionary<string, string>(StringComparer.Ordinal)
                                 {
-                                    [DaemonCorpusReader.ReviewRunIdMetadataKey] =
-                                        item.RunId.ToString(
-                                            System.Globalization.CultureInfo.InvariantCulture
-                                        ),
+                                    [DaemonCorpusReader.ReviewRunIdMetadataKey] = item.RunId.ToString(
+                                        System.Globalization.CultureInfo.InvariantCulture
+                                    ),
                                 },
                             }),
                         ]
@@ -773,10 +733,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
     [Fact]
     public async Task The_citation_surface_of_each_review_is_measured()
     {
-        _ = Reviewed(
-            "118",
-            "[Blocker] src/Foo.cs:12 leaks a handle.\n[Nit] tests/Bar.cs:7 reads oddly."
-        );
+        _ = Reviewed("118", "[Blocker] src/Foo.cs:12 leaks a handle.\n[Nit] tests/Bar.cs:7 reads oddly.");
         _ = Reviewed("119", "Looks good to me.");
 
         // The citation that separates the two counts. The anchor pattern accepts it — it is a
@@ -798,10 +755,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
             );
         report
             .AnchoredFindingCount.Should()
-            .BeLessThan(
-                report.FindingCount,
-                "the two totals must be able to disagree, or neither measures anything"
-            );
+            .BeLessThan(report.FindingCount, "the two totals must be able to disagree, or neither measures anything");
         report
             .CandidatesCitingNothing.Should()
             .Be(1, "a review citing no file is the finding-level signal's own worst case");
@@ -834,10 +788,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
     [InlineData("{}", "an absent field")]
     [InlineData("{\"AfterReviewRunId\":null}", "an explicit null")]
     [InlineData("not json at all", "unparseable text")]
-    public void A_cursor_payload_that_carries_no_id_is_unreadable_rather_than_a_restart(
-        string payload,
-        string because
-    )
+    public void A_cursor_payload_that_carries_no_id_is_unreadable_rather_than_a_restart(string payload, string because)
     {
         WriteRawCursor(payload);
 

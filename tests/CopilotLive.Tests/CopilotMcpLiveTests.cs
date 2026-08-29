@@ -57,8 +57,7 @@ public sealed class CopilotMcpLiveTests(CopilotLiveFixture fixture)
         tools.GetArrayLength().Should().Be(1);
         var tool = tools[0];
         tool.GetProperty("name").GetString().Should().Be("web_search");
-        tool
-            .GetProperty("inputSchema")
+        tool.GetProperty("inputSchema")
             .GetProperty("required")
             .EnumerateArray()
             .Select(item => item.GetString())
@@ -94,9 +93,6 @@ public sealed class CopilotMcpLiveTests(CopilotLiveFixture fixture)
 
     private static string ReadSseData(string body)
     {
-        return body
-                .Split('\n')
-                .First(line => line.StartsWith("data: ", StringComparison.Ordinal))
-                ["data: ".Length..];
+        return body.Split('\n').First(line => line.StartsWith("data: ", StringComparison.Ordinal))["data: ".Length..];
     }
 }

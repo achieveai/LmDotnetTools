@@ -40,7 +40,8 @@ public sealed class UsageLedger : IUsageSink
         string rootConversationId,
         IPricingResolver? pricingResolver = null,
         IUsageSink? forwardTo = null,
-        Action<ConversationUsageAggregate>? onAggregateUpdated = null)
+        Action<ConversationUsageAggregate>? onAggregateUpdated = null
+    )
     {
         RootConversationId = rootConversationId;
         _pricingResolver = pricingResolver;
@@ -77,7 +78,11 @@ public sealed class UsageLedger : IUsageSink
 
             // The ledger is scoped to one root conversation, so every observation it receives is
             // attributed to that root — callers (e.g. the sub-agent relay) need not know the root id.
-            merged = merged with { Revision = revision, RootConversationId = RootConversationId };
+            merged = merged with
+            {
+                Revision = revision,
+                RootConversationId = RootConversationId,
+            };
             merged = WithEstimatedCost(merged);
             _byAttempt[observation.ProviderAttemptId] = merged;
             _watermark.Commit(revision);
@@ -193,9 +198,10 @@ public sealed class UsageLedger : IUsageSink
             EstimatedPublicCostMicros = pricing.EstimateMicros(record.InputTokens, record.OutputTokens),
             // A provider-reported figure is the ground truth for provenance; filling in a public estimate
             // alongside it (kept for comparison) must not downgrade that.
-            CostProvenance = record.CostProvenance == CostProvenance.ProviderReported
-                ? record.CostProvenance
-                : CostProvenance.PublicEstimate,
+            CostProvenance =
+                record.CostProvenance == CostProvenance.ProviderReported
+                    ? record.CostProvenance
+                    : CostProvenance.PublicEstimate,
         };
     }
 
@@ -213,10 +219,14 @@ public sealed class UsageLedger : IUsageSink
             CacheReadTokens = Math.Max(existing.CacheReadTokens, observation.CacheReadTokens),
             CacheWriteTokens = Math.Max(existing.CacheWriteTokens, observation.CacheWriteTokens),
             ReasoningTokens = Math.Max(existing.ReasoningTokens, observation.ReasoningTokens),
-            EstimatedPublicCostMicros =
-                MaxNullable(existing.EstimatedPublicCostMicros, observation.EstimatedPublicCostMicros),
-            ProviderReportedCostMicros =
-                MaxNullable(existing.ProviderReportedCostMicros, observation.ProviderReportedCostMicros),
+            EstimatedPublicCostMicros = MaxNullable(
+                existing.EstimatedPublicCostMicros,
+                observation.EstimatedPublicCostMicros
+            ),
+            ProviderReportedCostMicros = MaxNullable(
+                existing.ProviderReportedCostMicros,
+                observation.ProviderReportedCostMicros
+            ),
             // Higher-information provenance wins: the enum is ordered Unavailable < PublicEstimate <
             // ProviderReported, so the max ordinal is the more-informative value — mirroring the MaxNullable
             // cost merges above rather than defaulting to the incoming (last) observation (#367).

@@ -10,9 +10,8 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class FunctionToolTests : LoggingTestBase
 {
-    public FunctionToolTests(ITestOutputHelper output) : base(output)
-    {
-    }
+    public FunctionToolTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Fact]
     public async Task RequestFormat_FunctionTools()
@@ -21,7 +20,11 @@ public class FunctionToolTests : LoggingTestBase
 
         // Arrange - Using Anthropic test-mode handler with request capture
         var requestCapture = new RequestCapture();
-        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, requestCapture, chunkDelayMs: 0);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
+        );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         Logger.LogTrace("Created agent and capture client");
@@ -68,7 +71,11 @@ public class FunctionToolTests : LoggingTestBase
         Assert.True(weatherTool.HasInputProperty("location"));
         Assert.Equal("string", weatherTool.GetInputPropertyType("location"));
 
-        Logger.LogTrace("Successfully validated tool: {ToolName} with {ToolCount} tools total", weatherTool.Name, tools.Count);
+        Logger.LogTrace(
+            "Successfully validated tool: {ToolName} with {ToolCount} tools total",
+            weatherTool.Name,
+            tools.Count
+        );
     }
 
     [Fact]
@@ -78,7 +85,11 @@ public class FunctionToolTests : LoggingTestBase
 
         // Arrange - Using Anthropic test-mode handler with request capture
         var requestCapture = new RequestCapture();
-        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, requestCapture, chunkDelayMs: 0);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
+        );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         Logger.LogTrace("Created agent and capture client");
@@ -300,11 +311,7 @@ public class FunctionToolTests : LoggingTestBase
             Parameters = listDirTemplate.Parameters,
         };
 
-        var options = new GenerateReplyOptions
-        {
-            ModelId = "claude-3-sonnet-20240229",
-            Functions = [listDirFunction],
-        };
+        var options = new GenerateReplyOptions { ModelId = "claude-3-sonnet-20240229", Functions = [listDirFunction] };
 
         Logger.LogDebug("Created messages with tool_call instruction chain");
 

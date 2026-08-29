@@ -43,7 +43,12 @@ public class OpenAiGrokAgenticExample
         _logger = logger;
     }
 
-    public async Task RunAsync(string prompt, string modelId = "x-ai/grok-4.1-fast", float temperature = 0.7f, int maxTurns = 10)
+    public async Task RunAsync(
+        string prompt,
+        string modelId = "x-ai/grok-4.1-fast",
+        float temperature = 0.7f,
+        int maxTurns = 10
+    )
     {
         _logger.LogInformation("=== Agentic Loop Example with {ModelId} ===\n", modelId);
 
@@ -60,7 +65,9 @@ public class OpenAiGrokAgenticExample
             _logger.LogWarning("  claude-3-*, anthropic/* -> ANTHROPIC_API_KEY");
             _logger.LogWarning("  openrouter/*           -> OPENROUTER_API_KEY");
             _logger.LogWarning("  deepseek/*             -> DEEPSEEK_API_KEY");
-            _logger.LogWarning("  claude-sonnet-4-5      -> ClaudeAgentSDK (no API key needed if Claude Code authenticated)");
+            _logger.LogWarning(
+                "  claude-sonnet-4-5      -> ClaudeAgentSDK (no API key needed if Claude Code authenticated)"
+            );
             _logger.LogWarning("");
             _logger.LogWarning("Use '--list-providers' to see provider status.");
             return;
@@ -181,7 +188,9 @@ public class OpenAiGrokAgenticExample
                 try
                 {
                     var result = EvaluateSimpleExpression(calcArgs?.Expression ?? "0");
-                    return ToolHandlerResult.FromText(JsonSerializer.Serialize(new { result, expression = calcArgs?.Expression }));
+                    return ToolHandlerResult.FromText(
+                        JsonSerializer.Serialize(new { result, expression = calcArgs?.Expression })
+                    );
                 }
                 catch (Exception ex)
                 {
@@ -195,7 +204,8 @@ public class OpenAiGrokAgenticExample
         var (toolCallMiddleware, functionHandlers) = registry.BuildToolCallComponents(name: "ToolCallInjection");
 
         // ===== Step 4: Create Provider Agent =====
-        var providerAgent = _agentFactory.CreateStreamingAgent(resolution)
+        var providerAgent = _agentFactory
+            .CreateStreamingAgent(resolution)
             .WithMessageTransformation()
             .WithMiddleware(new JsonFragmentUpdateMiddleware())
             .WithMiddleware(new MessageUpdateJoinerMiddleware(name: "MessageJoiner"))

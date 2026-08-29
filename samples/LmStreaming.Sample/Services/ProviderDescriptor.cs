@@ -21,4 +21,5 @@ public sealed record ProviderDescriptor(
     string DisplayName,
     bool Available,
     string? KnownLimitation = null,
-    string? Group = null);
+    string? Group = null
+);

@@ -14,7 +14,8 @@ public class CopilotRpcTraceWriterTests
             await writer.WriteAsync(
                 "outbound",
                 """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"apiKey":"secret","token":"t","authorization":"a","access_token":"at","refresh_token":"rt","sessionId":"s-1"}}""",
-                CancellationToken.None);
+                CancellationToken.None
+            );
         }
 
         var lines = await File.ReadAllLinesAsync(path);
@@ -50,7 +51,8 @@ public class CopilotRpcTraceWriterTests
             await writer.WriteAsync(
                 "inbound",
                 """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_message_chunk"}}}""",
-                CancellationToken.None);
+                CancellationToken.None
+            );
         }
 
         var lines = await File.ReadAllLinesAsync(path);
@@ -72,7 +74,8 @@ public class CopilotRpcTraceWriterTests
             await writer.WriteAsync(
                 "inbound",
                 """{"jsonrpc":"2.0","id":42,"result":{"ok":true}}""",
-                CancellationToken.None);
+                CancellationToken.None
+            );
         }
 
         var lines = await File.ReadAllLinesAsync(path);

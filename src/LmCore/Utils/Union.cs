@@ -59,9 +59,9 @@ public record Union<T1, T2> : Union
 
     public override T Get<T>()
     {
-        return typeof(T).IsAssignableFrom(typeof(T1))
-            ? (T)(object)_v1!
-            : typeof(T).IsAssignableFrom(typeof(T2)) ? (T)(object)_v2! : base.Get<T>();
+        return typeof(T).IsAssignableFrom(typeof(T1)) ? (T)(object)_v1!
+            : typeof(T).IsAssignableFrom(typeof(T2)) ? (T)(object)_v2!
+            : base.Get<T>();
     }
 
     public static implicit operator T1(Union<T1, T2> union)

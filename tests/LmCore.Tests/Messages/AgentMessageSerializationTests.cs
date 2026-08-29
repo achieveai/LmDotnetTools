@@ -127,9 +127,7 @@ public class AgentMessageSerializationTests
 
         var options = GetOptionsWithConverter();
         var json = JsonSerializer.Serialize(original, options);
-        var round = Assert.IsType<AgentMessage>(
-            JsonSerializer.Deserialize<IMessage>(json, options)
-        );
+        var round = Assert.IsType<AgentMessage>(JsonSerializer.Deserialize<IMessage>(json, options));
 
         Assert.Equal("agentmsg-rt", round.MessageId);
         Assert.Equal(AgentMessageType.DelegateTask, round.AgentMessageType);
@@ -159,9 +157,7 @@ public class AgentMessageSerializationTests
                 ""role"": ""user""
             }";
 
-        var agent = Assert.IsType<AgentMessage>(
-            JsonSerializer.Deserialize<IMessage>(json, GetOptionsWithConverter())
-        );
+        var agent = Assert.IsType<AgentMessage>(JsonSerializer.Deserialize<IMessage>(json, GetOptionsWithConverter()));
 
         Assert.DoesNotContain("STALE", agent.Text);
         Assert.Contains("from-agent-id=\"agent-7\"", agent.Text);
@@ -176,9 +172,7 @@ public class AgentMessageSerializationTests
         // recovery of the whole conversation.
         var json = @"{ ""$type"": ""agent"", ""agent_message_type"": ""Response"" }";
 
-        var agent = Assert.IsType<AgentMessage>(
-            JsonSerializer.Deserialize<IMessage>(json, GetOptionsWithConverter())
-        );
+        var agent = Assert.IsType<AgentMessage>(JsonSerializer.Deserialize<IMessage>(json, GetOptionsWithConverter()));
 
         Assert.Equal(string.Empty, agent.MessageId);
         Assert.Equal(string.Empty, agent.FromAgentId);
@@ -292,9 +286,7 @@ public class AgentMessageSerializationTests
         _ = Assert.Throws<ArgumentException>(() =>
             AgentMessage.Create("m3", AgentMessageType.Steer, "  ", "build-fixer")
         );
-        _ = Assert.Throws<ArgumentException>(() =>
-            AgentMessage.Create("m4", AgentMessageType.Steer, "agent-7", "  ")
-        );
+        _ = Assert.Throws<ArgumentException>(() => AgentMessage.Create("m4", AgentMessageType.Steer, "agent-7", "  "));
     }
 
     [Fact]
@@ -423,16 +415,9 @@ public class AgentMessageSerializationTests
     {
         // Hardening must not cost the receiver readability: everything that is not structural, and not
         // invisible, arrives exactly as written.
-        const string body =
-            "Run `dotnet test` — 3 of 4 passed (75%).\nSee the report: path/to/file.";
+        const string body = "Run `dotnet test` — 3 of 4 passed (75%).\nSee the report: path/to/file.";
 
-        var agent = AgentMessage.Create(
-            "agentmsg-prose",
-            AgentMessageType.Steer,
-            "agent-7",
-            "build-fixer",
-            body: body
-        );
+        var agent = AgentMessage.Create("agentmsg-prose", AgentMessageType.Steer, "agent-7", "build-fixer", body: body);
 
         Assert.Contains(body, agent.Text);
     }

@@ -40,7 +40,8 @@ public class RunLifecycleEmissionTests
         await using var agent = new LifecycleProbeAgent(
             "thread-1",
             new MultiTurnLifecycleServices { LifecycleStore = store },
-            store);
+            store
+        );
 
         var assignment = await agent.StartAsync();
         await agent.CompleteAsync(assignment);
@@ -65,9 +66,7 @@ public class RunLifecycleEmissionTests
         var assignment = await agent.StartAsync();
         await agent.CompleteAsync(assignment);
 
-        publisher.EventTypes.Should().Equal(
-            LifecycleEventTypes.RunStarted,
-            LifecycleEventTypes.RunCompleted);
+        publisher.EventTypes.Should().Equal(LifecycleEventTypes.RunStarted, LifecycleEventTypes.RunCompleted);
 
         var started = publisher.PayloadAt<RunStartedPayload>(0);
         started.RunId.Should().Be(assignment.RunId);
@@ -81,16 +80,10 @@ public class RunLifecycleEmissionTests
         completed.Outcome.Should().Be(LifecycleRunOutcomes.Completed);
         completed.Error.Should().BeNull();
 
-        publisher.Events
-            .Select(e => e.SourceStreamId)
-            .Should()
-            .AllBe(LifecycleSourceStream.ForThread("thread-1"));
+        publisher.Events.Select(e => e.SourceStreamId).Should().AllBe(LifecycleSourceStream.ForThread("thread-1"));
         publisher.Events.Select(e => e.SourceSequence).Should().BeInAscendingOrder();
         publisher.Events.Select(e => e.EventId).Should().OnlyHaveUniqueItems();
-        publisher.Events
-            .Select(e => e.Correlation?.RunId)
-            .Should()
-            .AllBe(assignment.RunId);
+        publisher.Events.Select(e => e.Correlation?.RunId).Should().AllBe(assignment.RunId);
     }
 
     [Fact]
@@ -118,8 +111,8 @@ public class RunLifecycleEmissionTests
         await agent.CompleteAsync(assignment);
         await agent.CompleteAsync(assignment);
 
-        publisher.EventTypes
-            .Count(t => t == LifecycleEventTypes.RunCompleted)
+        publisher
+            .EventTypes.Count(t => t == LifecycleEventTypes.RunCompleted)
             .Should()
             .Be(1, "a subscriber pairs starts with completions and a second completion breaks the pairing");
     }
@@ -134,10 +127,15 @@ public class RunLifecycleEmissionTests
 
         var racers = Enumerable
             .Range(0, 8)
-            .Select(_ => Task.Run(() => agent.Lifecycle.TryCompleteRunAsync(
-                assignment.RunId,
-                assignment.GenerationId,
-                LifecycleRunOutcomes.Completed)))
+            .Select(_ =>
+                Task.Run(() =>
+                    agent.Lifecycle.TryCompleteRunAsync(
+                        assignment.RunId,
+                        assignment.GenerationId,
+                        LifecycleRunOutcomes.Completed
+                    )
+                )
+            )
             .ToArray();
 
         var winners = await Task.WhenAll(racers);
@@ -151,11 +149,7 @@ public class RunLifecycleEmissionTests
     {
         var store = new InMemoryConversationStore();
         var publisher = new RecordingLifecyclePublisher();
-        var services = new MultiTurnLifecycleServices
-        {
-            Publisher = publisher,
-            LifecycleStore = store,
-        };
+        var services = new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store };
 
         var first = new RunTurnLifecycleFinalizer("thread-1", services);
         var second = new RunTurnLifecycleFinalizer("thread-1", services);
@@ -184,7 +178,8 @@ public class RunLifecycleEmissionTests
         await using var agent = new LifecycleProbeAgent(
             "thread-1",
             new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store },
-            store);
+            store
+        );
 
         var run = agent.RunAsync();
         var runId = await agent.WaitForLoopRunAsync();
@@ -210,7 +205,8 @@ public class RunLifecycleEmissionTests
         var agent = new LifecycleProbeAgent(
             "thread-1",
             new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store },
-            store);
+            store
+        );
 
         var assignment = await agent.StartAsync();
         await agent.DisposeAsync();
@@ -228,7 +224,8 @@ public class RunLifecycleEmissionTests
         // A previous incarnation started a run and never came back.
         var abandoned = new RunTurnLifecycleFinalizer(
             "thread-1",
-            new MultiTurnLifecycleServices { LifecycleStore = store });
+            new MultiTurnLifecycleServices { LifecycleStore = store }
+        );
         await abandoned.RunStartedAsync("run-orphan", "gen-orphan");
 
         var publisher = new RecordingLifecyclePublisher();
@@ -236,7 +233,8 @@ public class RunLifecycleEmissionTests
             "thread-1",
             new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store },
             store,
-            startRunOnLoop: false);
+            startRunOnLoop: false
+        );
 
         var run = agent.RunAsync();
         await agent.WaitForLoopEntryAsync();
@@ -263,7 +261,8 @@ public class RunLifecycleEmissionTests
             "thread-1",
             new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store },
             store,
-            startRunOnLoop: false);
+            startRunOnLoop: false
+        );
 
         for (var i = 0; i < 2; i++)
         {
@@ -296,7 +295,8 @@ public class RunLifecycleEmissionTests
                     SpawningToolCallId = "call-spawn",
                     SubAgentId = "researcher",
                 },
-            });
+            }
+        );
 
         var assignment = await agent.StartAsync();
         await agent.CompleteAsync(assignment);
@@ -330,7 +330,8 @@ public class RunLifecycleEmissionTests
     [Fact]
     public void ForAgent_LetsTheLoopNameItselfAndTheHostNameTheModel()
     {
-        MultiTurnLifecycleServices.ForAgent(null, LifecycleAgentKinds.Claude)
+        MultiTurnLifecycleServices
+            .ForAgent(null, LifecycleAgentKinds.Claude)
             .Should()
             .BeSameAs(MultiTurnLifecycleServices.Disabled);
 
@@ -346,10 +347,7 @@ public class RunLifecycleEmissionTests
             ModelId = "resolved/model",
         };
 
-        var stamped = MultiTurnLifecycleServices.ForAgent(
-            hostSupplied,
-            LifecycleAgentKinds.Codex,
-            "loop-guess");
+        var stamped = MultiTurnLifecycleServices.ForAgent(hostSupplied, LifecycleAgentKinds.Codex, "loop-guess");
 
         stamped.AgentKind.Should().Be(LifecycleAgentKinds.Codex);
         stamped.ModelId.Should().Be("resolved/model");
@@ -370,18 +368,13 @@ public class RunLifecycleEmissionTests
         var publisher = new RecordingLifecyclePublisher();
         await using var agent = new LifecycleProbeAgent(
             "thread-1",
-            new MultiTurnLifecycleServices
-            {
-                Publisher = publisher,
-                LifecycleStore = new ThrowingRunLifecycleStore(),
-            });
+            new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = new ThrowingRunLifecycleStore() }
+        );
 
         var assignment = await agent.StartAsync();
         await agent.CompleteAsync(assignment);
 
-        publisher.EventTypes.Should().Equal(
-            LifecycleEventTypes.RunStarted,
-            LifecycleEventTypes.RunCompleted);
+        publisher.EventTypes.Should().Equal(LifecycleEventTypes.RunStarted, LifecycleEventTypes.RunCompleted);
         publisher.PayloadAt<RunCompletedPayload>(1).RunId.Should().Be(assignment.RunId);
     }
 
@@ -391,12 +384,9 @@ public class RunLifecycleEmissionTests
         var store = new InMemoryConversationStore();
         await using var agent = new LifecycleProbeAgent(
             "thread-1",
-            new MultiTurnLifecycleServices
-            {
-                Publisher = new ThrowingLifecyclePublisher(),
-                LifecycleStore = store,
-            },
-            store);
+            new MultiTurnLifecycleServices { Publisher = new ThrowingLifecyclePublisher(), LifecycleStore = store },
+            store
+        );
 
         var assignment = await agent.StartAsync();
         await agent.CompleteAsync(assignment);
@@ -409,15 +399,19 @@ public class RunLifecycleEmissionTests
 
     #region Helpers
 
-    private static (LifecycleProbeAgent Agent, RecordingLifecyclePublisher Publisher, InMemoryConversationStore Store) CreateWiredAgent(
-        string threadId)
+    private static (
+        LifecycleProbeAgent Agent,
+        RecordingLifecyclePublisher Publisher,
+        InMemoryConversationStore Store
+    ) CreateWiredAgent(string threadId)
     {
         var store = new InMemoryConversationStore();
         var publisher = new RecordingLifecyclePublisher();
         var agent = new LifecycleProbeAgent(
             threadId,
             new MultiTurnLifecycleServices { Publisher = publisher, LifecycleStore = store },
-            store);
+            store
+        );
         return (agent, publisher, store);
     }
 
@@ -428,16 +422,17 @@ public class RunLifecycleEmissionTests
     private sealed class LifecycleProbeAgent : MultiTurnAgentBase
     {
         private readonly bool _startRunOnLoop;
-        private readonly TaskCompletionSource<string> _loopRunStarted =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource _loopEntered =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<string> _loopRunStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        private readonly TaskCompletionSource _loopEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public LifecycleProbeAgent(
             string threadId,
             MultiTurnLifecycleServices? services = null,
             IConversationStore? store = null,
-            bool startRunOnLoop = true)
+            bool startRunOnLoop = true
+        )
             : base(threadId, store: store, lifecycleServices: services)
         {
             _startRunOnLoop = startRunOnLoop;
@@ -450,20 +445,15 @@ public class RunLifecycleEmissionTests
         public Task<RunAssignment> StartAsync(
             string? parentRunId = null,
             bool wasForked = false,
-            CancellationToken ct = default) =>
-            StartRunAsync([], parentRunId, ct, wasForked);
+            CancellationToken ct = default
+        ) => StartRunAsync([], parentRunId, ct, wasForked);
 
         public Task CompleteAsync(
             RunAssignment assignment,
             bool isError = false,
             string? error = null,
-            CancellationToken ct = default) =>
-            CompleteRunAsync(
-                assignment.RunId,
-                assignment.GenerationId,
-                isError: isError,
-                errorMessage: error,
-                ct: ct);
+            CancellationToken ct = default
+        ) => CompleteRunAsync(assignment.RunId, assignment.GenerationId, isError: isError, errorMessage: error, ct: ct);
 
         public Task<string> WaitForLoopRunAsync() => _loopRunStarted.Task;
 
@@ -495,47 +485,41 @@ public class RunLifecycleEmissionTests
 
     private sealed class ThrowingLifecyclePublisher : ILifecyclePublisher
     {
-        public ValueTask PublishAsync(
-            LifecycleEventEnvelope envelope,
-            CancellationToken ct = default) =>
+        public ValueTask PublishAsync(LifecycleEventEnvelope envelope, CancellationToken ct = default) =>
             throw new InvalidOperationException("the subscriber is gone");
     }
 
     private sealed class ThrowingRunLifecycleStore : IRunLifecycleStore
     {
-        public Task RecordRunStartedAsync(
-            RunLifecycleState state,
-            CancellationToken ct = default) =>
+        public Task RecordRunStartedAsync(RunLifecycleState state, CancellationToken ct = default) =>
             throw new InvalidOperationException("the lifecycle store is unavailable");
 
-        public Task<RunLifecycleState?> LoadRunLifecycleAsync(
-            string runId,
-            CancellationToken ct = default) =>
+        public Task<RunLifecycleState?> LoadRunLifecycleAsync(string runId, CancellationToken ct = default) =>
             throw new InvalidOperationException("the lifecycle store is unavailable");
 
         public Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
             string threadId,
-            CancellationToken ct = default) =>
-            throw new InvalidOperationException("the lifecycle store is unavailable");
+            CancellationToken ct = default
+        ) => throw new InvalidOperationException("the lifecycle store is unavailable");
 
         public Task<IReadOnlyList<RunLifecycleState>> ListNonTerminalRunsAsync(
             string threadId,
-            CancellationToken ct = default) =>
-            throw new InvalidOperationException("the lifecycle store is unavailable");
+            CancellationToken ct = default
+        ) => throw new InvalidOperationException("the lifecycle store is unavailable");
 
         public Task<bool> TryMarkRunTerminalAsync(
             string runId,
             string outcome,
             int turnCount,
             DateTimeOffset terminalAt,
-            CancellationToken ct = default) =>
-            throw new InvalidOperationException("the lifecycle store is unavailable");
+            CancellationToken ct = default
+        ) => throw new InvalidOperationException("the lifecycle store is unavailable");
 
         public Task<DeferredToolCallRecord> RecordDeferredToolCallAsync(
             string runId,
             DeferredToolCallRecord record,
-            CancellationToken ct = default) =>
-            throw new InvalidOperationException("the lifecycle store is unavailable");
+            CancellationToken ct = default
+        ) => throw new InvalidOperationException("the lifecycle store is unavailable");
 
         public Task<DeferredResolutionOutcome> TryResolveDeferredToolCallAsync(
             string threadId,
@@ -543,16 +527,16 @@ public class RunLifecycleEmissionTests
             string resolutionFingerprint,
             string? childRunId,
             DateTimeOffset resolvedAt,
-            CancellationToken ct = default) =>
-            throw new InvalidOperationException("the lifecycle store is unavailable");
+            CancellationToken ct = default
+        ) => throw new InvalidOperationException("the lifecycle store is unavailable");
 
         public Task<string?> AttachDeferredChildRunAsync(
             string threadId,
             string toolCallId,
             string childRunId,
             DateTimeOffset attachedAt,
-            CancellationToken ct = default) =>
-            throw new InvalidOperationException("the lifecycle store is unavailable");
+            CancellationToken ct = default
+        ) => throw new InvalidOperationException("the lifecycle store is unavailable");
     }
 
     #endregion

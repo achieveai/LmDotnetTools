@@ -29,11 +29,11 @@ public class SandboxAppDirTests
     [Fact]
     public void EffectiveBase_appends_app_dir_only_when_rooting_is_on()
     {
-        SandboxAppDir.EffectiveBase("B:/ws", "code-review-daemon", perAppRooting: false)
-            .Should().Be("B:/ws");
-        SandboxAppDir.EffectiveBase("B:/ws", "code-review-daemon", perAppRooting: true)
-            .Should().Be("B:/ws/code-review-daemon-9815591a2bf6c8a2");
-        SandboxAppDir.EffectiveBase(null, "code-review-daemon", perAppRooting: true)
-            .Should().BeNull();
+        SandboxAppDir.EffectiveBase("B:/ws", "code-review-daemon", perAppRooting: false).Should().Be("B:/ws");
+        SandboxAppDir
+            .EffectiveBase("B:/ws", "code-review-daemon", perAppRooting: true)
+            .Should()
+            .Be("B:/ws/code-review-daemon-9815591a2bf6c8a2");
+        SandboxAppDir.EffectiveBase(null, "code-review-daemon", perAppRooting: true).Should().BeNull();
     }
 }

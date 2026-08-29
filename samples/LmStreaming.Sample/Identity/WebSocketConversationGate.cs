@@ -71,7 +71,8 @@ public sealed class WebSocketConversationGate
     public WebSocketConversationGate(
         ConversationAuthorizer authorizer,
         IConversationStore store,
-        ILogger<WebSocketConversationGate> logger)
+        ILogger<WebSocketConversationGate> logger
+    )
     {
         ArgumentNullException.ThrowIfNull(authorizer);
         ArgumentNullException.ThrowIfNull(store);
@@ -111,7 +112,8 @@ public sealed class WebSocketConversationGate
         HttpContext context,
         string threadId,
         AccessAction action,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
@@ -193,7 +195,8 @@ public sealed class WebSocketConversationGate
         HttpContext context,
         string parentThreadId,
         string agentId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(parentThreadId);
@@ -231,7 +234,8 @@ public sealed class WebSocketConversationGate
             _logger.LogWarning(
                 "Sub-agent {AgentId} is not a child of {ParentThreadId}; persisted replay withheld.",
                 agentId,
-                parentThreadId);
+                parentThreadId
+            );
         }
 
         return new SubAgentSocketAdmission(true, isOwnChild);
@@ -261,7 +265,8 @@ public sealed class WebSocketConversationGate
             _logger.LogWarning(
                 "WebSocket handshake for {ThreadId} refused as unknown for the current principal: {Reason}",
                 threadId,
-                result.Reason);
+                result.Reason
+            );
 
             status = StatusCodes.Status404NotFound;
             code = UnknownThreadRefusal.Code;
@@ -269,14 +274,16 @@ public sealed class WebSocketConversationGate
         }
         else
         {
-            _logger.LogWarning(
-                "WebSocket handshake for {ThreadId} refused: {Reason}",
-                threadId,
-                result.Reason);
+            _logger.LogWarning("WebSocket handshake for {ThreadId} refused: {Reason}", threadId, result.Reason);
 
             status = StatusCodes.Status403Forbidden;
             code = result.Reason;
-            body = new { error = "forbidden", code, threadId };
+            body = new
+            {
+                error = "forbidden",
+                code,
+                threadId,
+            };
         }
 
         context.Response.StatusCode = status;

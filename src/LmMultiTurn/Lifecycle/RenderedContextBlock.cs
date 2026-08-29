@@ -103,7 +103,8 @@ public sealed record RenderedContextBlock
         string content,
         bool truncated,
         string phase,
-        string discoveryKind = ContextFileKind)
+        string discoveryKind = ContextFileKind
+    )
     {
         ArgumentNullException.ThrowIfNull(content);
 
@@ -128,7 +129,8 @@ public sealed record RenderedContextBlock
     public static IReadOnlyList<RenderedContextBlock> Scan(
         string? text,
         string phase,
-        string discoveryKind = ContextFileKind)
+        string discoveryKind = ContextFileKind
+    )
     {
         if (string.IsNullOrEmpty(text) || !text.Contains(OpenTagName, StringComparison.Ordinal))
         {
@@ -179,7 +181,9 @@ public sealed record RenderedContextBlock
                     text[open..end],
                     attributes.Contains(TruncatedAttribute, StringComparison.Ordinal),
                     phase,
-                    discoveryKind));
+                    discoveryKind
+                )
+            );
 
             cursor = end;
         }
@@ -213,9 +217,7 @@ public sealed record RenderedContextBlock
                 continue;
             }
 
-            var phase = message.Role == Role.System
-                ? LifecycleContextPhases.Boot
-                : LifecycleContextPhases.MidSession;
+            var phase = message.Role == Role.System ? LifecycleContextPhases.Boot : LifecycleContextPhases.MidSession;
 
             var blocks = Scan(textual.GetText(), phase);
             if (blocks.Count > 0)
@@ -245,7 +247,8 @@ public sealed record RenderedContextBlock
         string text,
         bool truncated,
         string phase,
-        string discoveryKind)
+        string discoveryKind
+    )
     {
         var normalizedPath = NormalizePath(path);
         return new RenderedContextBlock

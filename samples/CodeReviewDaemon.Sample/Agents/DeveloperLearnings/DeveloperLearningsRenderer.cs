@@ -58,12 +58,7 @@ internal static class DeveloperLearningsRenderer
         AppendActive(sb, view);
         AppendStateSummary(sb, "Watch", view.Watch, "No patterns are on watch.", view);
         AppendResolved(sb, view);
-        AppendStateSummary(
-            sb,
-            "Unjudgeable",
-            view.Unjudgeable,
-            "No patterns are unjudgeable.",
-            view);
+        AppendStateSummary(sb, "Unjudgeable", view.Unjudgeable, "No patterns are unjudgeable.", view);
         AppendProvenance(sb, view);
 
         return sb.ToString();
@@ -101,7 +96,8 @@ internal static class DeveloperLearningsRenderer
         {
             _ = sb.Append(
                     "Clean streak counts EXPOSED PRs — PRs where this pattern's specialist ran and completed "
-                    + "— never calendar days and never all PRs.")
+                        + "— never calendar days and never all PRs."
+                )
                 .Append(Nl)
                 .Append(Nl);
             _ = sb.Append("| Pattern | Occurrences | Active period | Clean streak | Confidence | Provisional |")
@@ -164,8 +160,8 @@ internal static class DeveloperLearningsRenderer
                     .Append(
                         standing.StreakBrokenAt is null
                             ? "—"
-                            : standing.StreakBrokenAt.Value.ToString(CultureInfo.InvariantCulture)
-                                + " exposed PRs")
+                            : standing.StreakBrokenAt.Value.ToString(CultureInfo.InvariantCulture) + " exposed PRs"
+                    )
                     .Append(" | ")
                     .Append(Day(standing.LastSeenUtc))
                     .Append(" |")
@@ -235,7 +231,8 @@ internal static class DeveloperLearningsRenderer
         {
             _ = sb.Append(
                     "Not progress. A developer who stopped writing this kind of code has not improved, and "
-                    + "neither has one whose reviewer stopped looking.")
+                        + "neither has one whose reviewer stopped looking."
+                )
                 .Append(Nl)
                 .Append(Nl);
             AppendPatternList(sb, view.Unjudgeable);
@@ -258,8 +255,8 @@ internal static class DeveloperLearningsRenderer
     {
         ArgumentNullException.ThrowIfNull(view);
 
-        var ranked = view.Active
-            .OrderByDescending(DeveloperLearningsView.ChecklistScore)
+        var ranked = view
+            .Active.OrderByDescending(DeveloperLearningsView.ChecklistScore)
             .ThenBy(p => p.Standing.PatternId, StringComparer.Ordinal)
             .Take(MaxChecklistPatterns)
             .ToArray();
@@ -329,7 +326,8 @@ internal static class DeveloperLearningsRenderer
 
         _ = sb.Append(
                 "Sorted by last activity, not by pattern count — this is not a leaderboard. Counts are "
-                + "patterns, and every pattern's rate is measured in exposed PRs.")
+                    + "patterns, and every pattern's rate is measured in exposed PRs."
+            )
             .Append(Nl)
             .Append(Nl);
         _ = sb.Append("| Developer | PRs reviewed | Active | Resolved | Regressed | Last activity |")
@@ -338,9 +336,11 @@ internal static class DeveloperLearningsRenderer
             .Append(Nl);
 
         var ordered = views
-            .OrderByDescending(v => v.LastObservedUtc is null
-                ? DateTimeOffset.MinValue
-                : DeveloperLearningsLedger.ParseTimestamp(v.LastObservedUtc))
+            .OrderByDescending(v =>
+                v.LastObservedUtc is null
+                    ? DateTimeOffset.MinValue
+                    : DeveloperLearningsLedger.ParseTimestamp(v.LastObservedUtc)
+            )
             .ThenBy(v => v.DeveloperSlug, StringComparer.Ordinal);
 
         var provisional = 0;
@@ -370,7 +370,8 @@ internal static class DeveloperLearningsRenderer
                     ? "No resolution is currently provisional."
                     : Count(provisional, "resolution")
                         + " held provisional pending a window without a cohort-wide drop; see each "
-                        + "developer's progress.md.")
+                        + "developer's progress.md."
+            )
             .Append(Nl);
 
         return sb.ToString();
@@ -386,21 +387,20 @@ internal static class DeveloperLearningsRenderer
             "PRs reviewed",
             view.Observations.ToString(CultureInfo.InvariantCulture)
                 + " — one observation file is written per closed PR, so this is the observation count under "
-                + "another name, not a second measurement of it");
+                + "another name, not a second measurement of it"
+        );
         Row(sb, "Distinct patterns", view.Patterns.Count.ToString(CultureInfo.InvariantCulture));
         Row(sb, "Active", view.Active.Count.ToString(CultureInfo.InvariantCulture));
         Row(sb, "Watch", view.Watch.Count.ToString(CultureInfo.InvariantCulture));
         Row(sb, "Resolved (confirmed)", view.ConfirmedResolvedCount.ToString(CultureInfo.InvariantCulture));
-        Row(
-            sb,
-            "Resolved (provisional)",
-            view.ProvisionalResolutions.Count.ToString(CultureInfo.InvariantCulture));
+        Row(sb, "Resolved (provisional)", view.ProvisionalResolutions.Count.ToString(CultureInfo.InvariantCulture));
         Row(sb, "Unjudgeable", view.Unjudgeable.Count.ToString(CultureInfo.InvariantCulture));
         Row(
             sb,
             "Regressed",
             view.Regressions.Count.ToString(CultureInfo.InvariantCulture)
-                + " — a flag, not a state; these are also counted in their state row above");
+                + " — a flag, not a state; these are also counted in their state row above"
+        );
         Row(sb, "First observed", view.FirstObservedUtc is null ? "never" : Day(view.FirstObservedUtc));
         Row(sb, "Last observed", view.LastObservedUtc is null ? "never" : Day(view.LastObservedUtc));
         _ = sb.Append(Nl);
@@ -417,7 +417,8 @@ internal static class DeveloperLearningsRenderer
 
         _ = sb.Append(
                 "First, because it is the most actionable thing here. A returning pattern keeps its whole "
-                + "history; these also appear in their state section below.")
+                    + "history; these also appear in their state section below."
+            )
             .Append(Nl)
             .Append(Nl);
         foreach (var pattern in view.Regressions)
@@ -433,7 +434,8 @@ internal static class DeveloperLearningsRenderer
                 .Append(
                     standing.StreakBrokenAt is null
                         ? "an unrecorded number of"
-                        : standing.StreakBrokenAt.Value.ToString(CultureInfo.InvariantCulture))
+                        : standing.StreakBrokenAt.Value.ToString(CultureInfo.InvariantCulture)
+                )
                 .Append(" exposed PRs. Now ")
                 .Append(standing.Occurrences.ToString(CultureInfo.InvariantCulture))
                 .Append(" occurrences in total.")
@@ -494,19 +496,15 @@ internal static class DeveloperLearningsRenderer
         foreach (var pattern in view.Active)
         {
             _ = sb.Append("### ").Append(OneLine(pattern.Prose.Title)).Append(Nl).Append(Nl);
-            _ = sb.Append("`").Append(pattern.Standing.PatternId).Append("` · ")
+            _ = sb.Append("`")
+                .Append(pattern.Standing.PatternId)
+                .Append("` · ")
                 .Append(pattern.Standing.Dimension)
                 .Append(Nl)
                 .Append(Nl);
             _ = sb.Append("**What it is** — ").Append(OneLine(pattern.Prose.WhatItIs)).Append(Nl).Append(Nl);
-            _ = sb.Append("**Why it matters** — ")
-                .Append(OneLine(pattern.Prose.WhyItMatters))
-                .Append(Nl)
-                .Append(Nl);
-            _ = sb.Append("**How to avoid it** — ")
-                .Append(OneLine(pattern.Prose.HowToAvoid))
-                .Append(Nl)
-                .Append(Nl);
+            _ = sb.Append("**Why it matters** — ").Append(OneLine(pattern.Prose.WhyItMatters)).Append(Nl).Append(Nl);
+            _ = sb.Append("**How to avoid it** — ").Append(OneLine(pattern.Prose.HowToAvoid)).Append(Nl).Append(Nl);
             _ = sb.Append("**Seen in**").Append(Nl).Append(Nl);
             if (pattern.Sightings.Count == 0)
             {
@@ -567,7 +565,8 @@ internal static class DeveloperLearningsRenderer
         string heading,
         IReadOnlyList<PatternView> patterns,
         string emptyText,
-        DeveloperLearningsView view)
+        DeveloperLearningsView view
+    )
     {
         _ = sb.Append("## ").Append(heading).Append(Nl).Append(Nl);
         if (patterns.Count == 0)
@@ -616,30 +615,30 @@ internal static class DeveloperLearningsRenderer
         _ = sb.Append("## Provenance").Append(Nl).Append(Nl);
         _ = sb.Append(
                 "**Exposure.** A PR counts toward a pattern only where that pattern's specialist ran and "
-                + "reached Completed on it. Every rate, window and clean streak below is measured in exposed "
-                + "PRs — never in calendar days and never in all PRs, both of which would improve when the "
-                + "reviewer got narrower or the developer shipped less.")
+                    + "reached Completed on it. Every rate, window and clean streak below is measured in exposed "
+                    + "PRs — never in calendar days and never in all PRs, both of which would improve when the "
+                    + "reviewer got narrower or the developer shipped less."
+            )
             .Append(Nl)
             .Append(Nl);
         _ = sb.Append(
                 "**What counts as a hit.** Only findings that survived into the shipped review — `kept`, "
-                + "`severity-changed`, `reframed`, `merged-into`. A finding the lead reviewer dropped is not "
-                + "evidence about the author. At most one hit per pattern per PR.")
+                    + "`severity-changed`, `reframed`, `merged-into`. A finding the lead reviewer dropped is not "
+                    + "evidence about the author. At most one hit per pattern per PR."
+            )
             .Append(Nl)
             .Append(Nl);
         _ = sb.Append(
                 "**Who computed what.** Every count, rate, date and state on this page was computed by the "
-                + "daemon from immutable per-PR observation files. The model's only contribution is the "
-                + "pattern prose and the pattern each finding was filed under.")
+                    + "daemon from immutable per-PR observation files. The model's only contribution is the "
+                    + "pattern prose and the pattern each finding was filed under."
+            )
             .Append(Nl)
             .Append(Nl);
         _ = sb.Append("| Threshold | Value |").Append(Nl).Append("| --- | --- |").Append(Nl);
         Row(sb, "ResolutionConfidence", Num(view.Thresholds.ResolutionConfidence));
         Row(sb, "ActiveWindowPrs", view.Thresholds.ActiveWindowPrs.ToString(CultureInfo.InvariantCulture));
-        Row(
-            sb,
-            "ExposureStalenessDays",
-            view.Thresholds.ExposureStalenessDays.ToString(CultureInfo.InvariantCulture));
+        Row(sb, "ExposureStalenessDays", view.Thresholds.ExposureStalenessDays.ToString(CultureInfo.InvariantCulture));
         Row(sb, "CohortDropThreshold", Num(view.Thresholds.CohortDropThreshold));
         _ = sb.Append(Nl);
     }
@@ -671,8 +670,7 @@ internal static class DeveloperLearningsRenderer
     private static string Num(double? value) =>
         value is null ? "—" : value.Value.ToString("0.00", CultureInfo.InvariantCulture);
 
-    private static string Percent(double value) =>
-        (value * 100).ToString("0.0", CultureInfo.InvariantCulture) + "%";
+    private static string Percent(double value) => (value * 100).ToString("0.0", CultureInfo.InvariantCulture) + "%";
 
     /// <summary>
     /// Renders a stored ISO timestamp as a date, falling back to the stored text when it cannot be parsed.

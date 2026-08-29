@@ -11,9 +11,7 @@ public class RealAnthropicResponseParsingTests
     ///     Result of parsing an SSE file through the stream parser.
     ///     Contains both the per-event streamed messages and the joined final messages.
     /// </summary>
-    private record ParseResult(
-        List<IMessage> StreamedMessages,
-        List<IMessage> JoinedMessages);
+    private record ParseResult(List<IMessage> StreamedMessages, List<IMessage> JoinedMessages);
 
     /// <summary>
     ///     Parses an SSE file through the AnthropicStreamParser, returning both the
@@ -198,7 +196,8 @@ public class RealAnthropicResponseParsingTests
         Assert.NotEmpty(result.StreamedMessages.OfType<ReasoningUpdateMessage>());
 
         // Joined: at least one plain reasoning
-        var plain = result.JoinedMessages.OfType<ReasoningMessage>()
+        var plain = result
+            .JoinedMessages.OfType<ReasoningMessage>()
             .Where(r => r.Visibility == ReasoningVisibility.Plain)
             .ToList();
         Assert.NotEmpty(plain);
@@ -211,7 +210,8 @@ public class RealAnthropicResponseParsingTests
         var result = ParseSseFile(WebSearchFixture);
 
         // The server_tool_use block emits a ToolCallMessage with ExecutionTarget.ProviderServer
-        var serverToolCalls = result.JoinedMessages.OfType<ToolCallMessage>()
+        var serverToolCalls = result
+            .JoinedMessages.OfType<ToolCallMessage>()
             .Where(tc => tc.ExecutionTarget == ExecutionTarget.ProviderServer)
             .ToList();
         Assert.NotEmpty(serverToolCalls);
@@ -271,9 +271,7 @@ public class RealAnthropicResponseParsingTests
         foreach (var usage in new[] { streamedUsage, joinedUsage })
         {
             Assert.Equal(4353, usage.Usage.TotalCachedTokens);
-            Assert.Equal(
-                11769,
-                usage.Usage.GetExtraProperty<int>("cache_creation_input_tokens"));
+            Assert.Equal(11769, usage.Usage.GetExtraProperty<int>("cache_creation_input_tokens"));
         }
     }
 
@@ -301,9 +299,7 @@ public class RealAnthropicResponseParsingTests
         // Unlike the tool-call response, web_search completes in one turn (end_turn)
         var textMessages = result.JoinedMessages.OfType<TextMessage>().ToList();
         var citedMessages = result.JoinedMessages.OfType<TextWithCitationsMessage>().ToList();
-        Assert.True(
-            textMessages.Count + citedMessages.Count > 0,
-            "Should have text output for end_turn response");
+        Assert.True(textMessages.Count + citedMessages.Count > 0, "Should have text output for end_turn response");
     }
 
     [Fact]
@@ -315,7 +311,8 @@ public class RealAnthropicResponseParsingTests
         // Expected order: thinking -> server_tool_use -> tool_result -> thinking -> text/citations -> usage
         var firstReasoning = joined.FindIndex(m => m is ReasoningMessage);
         var firstServerTool = joined.FindIndex(m =>
-            m is ToolCallMessage tc && tc.ExecutionTarget == ExecutionTarget.ProviderServer);
+            m is ToolCallMessage tc && tc.ExecutionTarget == ExecutionTarget.ProviderServer
+        );
         var firstToolResult = joined.FindIndex(m => m is ToolCallResultMessage);
         var firstTextOrCited = joined.FindIndex(m => m is TextMessage or TextWithCitationsMessage);
         var usageIdx = joined.FindIndex(m => m is UsageMessage);
@@ -337,7 +334,8 @@ public class RealAnthropicResponseParsingTests
     {
         var result = ParseSseFile(WebSearchFixture);
 
-        var serverCall = result.JoinedMessages.OfType<ToolCallMessage>()
+        var serverCall = result
+            .JoinedMessages.OfType<ToolCallMessage>()
             .First(tc => tc.ExecutionTarget == ExecutionTarget.ProviderServer);
         var toolResult = result.JoinedMessages.OfType<ToolCallResultMessage>().First();
 
@@ -352,15 +350,14 @@ public class RealAnthropicResponseParsingTests
 
         // GetAllMessages() (joined) must contain exactly one ToolCallMessage per server_tool_use block.
         // If duplicates exist, multi-turn conversations will fail with "tool call id is duplicated".
-        var serverToolCalls = result.JoinedMessages.OfType<ToolCallMessage>()
+        var serverToolCalls = result
+            .JoinedMessages.OfType<ToolCallMessage>()
             .Where(tc => tc.ExecutionTarget == ExecutionTarget.ProviderServer)
             .ToList();
         Assert.Single(serverToolCalls);
 
         // No duplicate ToolCallIds across all tool-related messages
-        var allToolCallIds = result.JoinedMessages.OfType<ToolCallMessage>()
-            .Select(tc => tc.ToolCallId)
-            .ToList();
+        var allToolCallIds = result.JoinedMessages.OfType<ToolCallMessage>().Select(tc => tc.ToolCallId).ToList();
         Assert.Equal(allToolCallIds.Count, allToolCallIds.Distinct().Count());
     }
 
@@ -371,7 +368,8 @@ public class RealAnthropicResponseParsingTests
 
         // Both content_block_start and content_block_stop emit ToolCallUpdateMessage.
         // The joiner middleware combines them into a single ToolCallMessage.
-        var streamedUpdates = result.StreamedMessages.OfType<ToolCallUpdateMessage>()
+        var streamedUpdates = result
+            .StreamedMessages.OfType<ToolCallUpdateMessage>()
             .Where(tc => tc.ExecutionTarget == ExecutionTarget.ProviderServer)
             .ToList();
         Assert.Equal(2, streamedUpdates.Count);

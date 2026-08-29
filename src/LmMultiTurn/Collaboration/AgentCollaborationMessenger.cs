@@ -68,20 +68,14 @@ public sealed class AgentCollaborationMessenger
     /// tool-call token signals — must not then silently drop a message the receiver has been promised.
     /// The delivery therefore runs uncancelled and always settles the ledger.
     /// </remarks>
-    public AgentDispatch Send(
-        string target,
-        string body,
-        AgentMessageType messageType,
-        string? inResponseTo = null
-    )
+    public AgentDispatch Send(string target, string body, AgentMessageType messageType, string? inResponseTo = null)
     {
         return _setup.Bundle.TrySendAndDeliver(
             _setup.AgentId,
             target,
             messageType,
             inResponseTo,
-            (messageId, targetAgentId) =>
-                DeliverAsync(messageId, targetAgentId, messageType, body, inResponseTo)
+            (messageId, targetAgentId) => DeliverAsync(messageId, targetAgentId, messageType, body, inResponseTo)
         );
     }
 
@@ -107,14 +101,7 @@ public sealed class AgentCollaborationMessenger
                 return;
             }
 
-            var message = AgentMessage.Create(
-                messageId,
-                messageType,
-                _setup.AgentId,
-                _setup.Name,
-                body,
-                inResponseTo
-            );
+            var message = AgentMessage.Create(messageId, messageType, _setup.AgentId, _setup.Name, body, inResponseTo);
 
             var outcome = await endpoint.DeliverAsync(message, CancellationToken.None);
             _ = outcome.IsDelivered
@@ -164,16 +151,10 @@ internal sealed class AgentLoopWriteEndpoint : IAgentWriteEndpoint
     {
         ArgumentNullException.ThrowIfNull(message);
 
-        var receipt = await _agent.TrySendAsync(
-            [message],
-            ct: cancellationToken
-        );
+        var receipt = await _agent.TrySendAsync([message], ct: cancellationToken);
 
         return receipt is null
-            ? new AgentDeliveryOutcome(
-                AgentDeliveryDisposition.Refused,
-                InputQueueFullReasonCode
-            )
+            ? new AgentDeliveryOutcome(AgentDeliveryDisposition.Refused, InputQueueFullReasonCode)
             : new AgentDeliveryOutcome(AgentDeliveryDisposition.Delivered);
     }
 }

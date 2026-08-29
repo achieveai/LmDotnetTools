@@ -114,7 +114,8 @@ public sealed record ConversationUsageAggregate
         string rootConversationId,
         IEnumerable<UsageRecord> records,
         long foldedRevision,
-        UsageCompleteness completeness = UsageCompleteness.InProgress)
+        UsageCompleteness completeness = UsageCompleteness.InProgress
+    )
     {
         var deduped = DedupeByAttempt(records);
 
@@ -175,7 +176,8 @@ public sealed record ConversationUsageAggregate
                     var latest = g.OrderByDescending(r => r.Revision).First();
                     var occurredAt = g.Aggregate(
                         (DateTimeOffset?)null,
-                        (earliest, r) => UsageRecord.EarliestOccurredAt(earliest, r.OccurredAtUtc));
+                        (earliest, r) => UsageRecord.EarliestOccurredAt(earliest, r.OccurredAtUtc)
+                    );
                     return latest with { OccurredAtUtc = occurredAt };
                 }),
         ];

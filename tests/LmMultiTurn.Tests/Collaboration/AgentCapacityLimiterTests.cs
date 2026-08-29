@@ -110,10 +110,7 @@ public class AgentCapacityLimiterTests
     [InlineData(-1)]
     public void Constructor_RejectsUnusableCapacity(int capacity)
     {
-        FluentActions
-            .Invoking(() => new AgentCapacityLimiter(capacity))
-            .Should()
-            .Throw<ArgumentOutOfRangeException>();
+        FluentActions.Invoking(() => new AgentCapacityLimiter(capacity)).Should().Throw<ArgumentOutOfRangeException>();
     }
 
     [Fact]

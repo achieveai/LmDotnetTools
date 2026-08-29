@@ -23,8 +23,12 @@ public sealed class RetryHandlerTests
     [Fact]
     public async Task A_get_that_is_rate_limited_then_succeeds_is_retried()
     {
-        var fake = new FakeHttpMessageHandler()
-            .OnSequence(HttpMethod.Get, "resource", (HttpStatusCode.TooManyRequests, "{}"), (HttpStatusCode.OK, "{\"ok\":true}"));
+        var fake = new FakeHttpMessageHandler().OnSequence(
+            HttpMethod.Get,
+            "resource",
+            (HttpStatusCode.TooManyRequests, "{}"),
+            (HttpStatusCode.OK, "{\"ok\":true}")
+        );
 
         var response = await Client(fake).GetAsync(Url);
 
@@ -40,7 +44,8 @@ public sealed class RetryHandlerTests
             "resource",
             (HttpStatusCode.ServiceUnavailable, "{}"),
             (HttpStatusCode.BadGateway, "{}"),
-            (HttpStatusCode.OK, "{\"ok\":true}"));
+            (HttpStatusCode.OK, "{\"ok\":true}")
+        );
 
         var response = await Client(fake).GetAsync(Url);
 
@@ -63,24 +68,37 @@ public sealed class RetryHandlerTests
     public async Task A_post_is_retried_on_429()
     {
         var fake = new FakeHttpMessageHandler().OnSequence(
-            HttpMethod.Post, "resource", (HttpStatusCode.TooManyRequests, "{}"), (HttpStatusCode.Created, "{\"id\":1}"));
+            HttpMethod.Post,
+            "resource",
+            (HttpStatusCode.TooManyRequests, "{}"),
+            (HttpStatusCode.Created, "{\"id\":1}")
+        );
 
-        var response = await Client(fake).PostAsync(Url, new StringContent("{\"body\":true}", Encoding.UTF8, "application/json"));
+        var response = await Client(fake)
+            .PostAsync(Url, new StringContent("{\"body\":true}", Encoding.UTF8, "application/json"));
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
-        fake.CountRequests("resource").Should().Be(2, "429 means the POST was rejected before processing — safe to retry");
+        fake.CountRequests("resource")
+            .Should()
+            .Be(2, "429 means the POST was rejected before processing — safe to retry");
     }
 
     [Fact]
     public async Task A_post_is_not_retried_on_5xx()
     {
         var fake = new FakeHttpMessageHandler().OnSequence(
-            HttpMethod.Post, "resource", (HttpStatusCode.InternalServerError, "{}"), (HttpStatusCode.Created, "{\"id\":1}"));
+            HttpMethod.Post,
+            "resource",
+            (HttpStatusCode.InternalServerError, "{}"),
+            (HttpStatusCode.Created, "{\"id\":1}")
+        );
 
-        var response = await Client(fake).PostAsync(Url, new StringContent("{\"body\":true}", Encoding.UTF8, "application/json"));
+        var response = await Client(fake)
+            .PostAsync(Url, new StringContent("{\"body\":true}", Encoding.UTF8, "application/json"));
 
         response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
-        fake.CountRequests("resource").Should()
+        fake.CountRequests("resource")
+            .Should()
             .Be(1, "an ambiguous 5xx POST could have applied server-side; retry is left to the ReviewPoster backstop");
     }
 }

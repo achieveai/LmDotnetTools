@@ -22,6 +22,7 @@ public sealed class FileConversationStore
     private const string AcceptedInputsFileName = "accepted-inputs.json";
     private const string AcceptancesDirectoryName = "acceptances";
     private const string MutationGateSuffix = ".mutate";
+
     /// <summary>
     /// How long a caller waits for an admission record that exists but is not yet readable before calling it
     /// a fault. The threshold separates "a live writer has not finished" from "a dead host left a half-written
@@ -72,7 +73,8 @@ public sealed class FileConversationStore
     public async Task AppendMessagesAsync(
         string threadId,
         IReadOnlyList<PersistedMessage> messages,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(messages);
@@ -101,10 +103,7 @@ public sealed class FileConversationStore
     }
 
     /// <inheritdoc />
-    public async Task ReplaceMessageAsync(
-        string threadId,
-        PersistedMessage replacement,
-        CancellationToken ct = default)
+    public async Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(replacement);
@@ -117,12 +116,14 @@ public sealed class FileConversationStore
             var idx = existing.FindIndex(m => m.Id == replacement.Id);
             if (idx < 0)
             {
-                throw new InvalidOperationException(
-                    $"Message '{replacement.Id}' not found in thread '{threadId}'.");
+                throw new InvalidOperationException($"Message '{replacement.Id}' not found in thread '{threadId}'.");
             }
 
             // Preserve original timestamp so load ordering remains stable across replacement.
-            existing[idx] = replacement with { Timestamp = existing[idx].Timestamp };
+            existing[idx] = replacement with
+            {
+                Timestamp = existing[idx].Timestamp,
+            };
             await WriteJsonFileAsync(messagesFile, existing, ct);
         }
         finally
@@ -134,7 +135,8 @@ public sealed class FileConversationStore
     /// <inheritdoc />
     public async Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
         string threadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -153,10 +155,7 @@ public sealed class FileConversationStore
     }
 
     /// <inheritdoc />
-    public async Task SaveMetadataAsync(
-        string threadId,
-        ThreadMetadata metadata,
-        CancellationToken ct = default)
+    public async Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -176,9 +175,7 @@ public sealed class FileConversationStore
     }
 
     /// <inheritdoc />
-    public async Task<ThreadMetadata?> LoadMetadataAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -198,7 +195,8 @@ public sealed class FileConversationStore
     public async Task UpdateMetadataAsync(
         string threadId,
         Func<ThreadMetadata?, ThreadMetadata> update,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(update);
@@ -224,9 +222,7 @@ public sealed class FileConversationStore
     }
 
     /// <inheritdoc />
-    public async Task DeleteThreadAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task DeleteThreadAsync(string threadId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -250,7 +246,8 @@ public sealed class FileConversationStore
         int limit = 50,
         int offset = 0,
         ConversationListOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         await _lock.WaitAsync(ct);
         try
@@ -280,15 +277,12 @@ public sealed class FileConversationStore
                     // Thread exists but has no metadata - create minimal entry
                     var messagesFile = Path.Combine(dir, MessagesFileName);
                     var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
-                    var lastUpdated = messages.Count > 0
-                        ? messages.Max(m => m.Timestamp)
-                        : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var lastUpdated =
+                        messages.Count > 0
+                            ? messages.Max(m => m.Timestamp)
+                            : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-                    metadataList.Add(new ThreadMetadata
-                    {
-                        ThreadId = threadId,
-                        LastUpdated = lastUpdated,
-                    });
+                    metadataList.Add(new ThreadMetadata { ThreadId = threadId, LastUpdated = lastUpdated });
                 }
             }
 
@@ -297,13 +291,7 @@ public sealed class FileConversationStore
             // conversations behind a wall of agent-owned threads. See ConversationListOptions.
             var listOptions = options ?? ConversationListOptions.Default;
 
-            return
-            [
-                .. listOptions
-                    .Order(metadataList.Where(listOptions.Admits))
-                    .Skip(offset)
-                    .Take(limit)
-            ];
+            return [.. listOptions.Order(metadataList.Where(listOptions.Admits)).Skip(offset).Take(limit)];
         }
         finally
         {
@@ -317,7 +305,8 @@ public sealed class FileConversationStore
         int limit = 50,
         int offset = 0,
         ConversationListOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(scope);
 
@@ -331,17 +320,12 @@ public sealed class FileConversationStore
 
         return
         [
-            .. listOptions
-                .Order(all.Where(m => scope.Admits(m) && listOptions.Admits(m)))
-                .Skip(offset)
-                .Take(limit)
+            .. listOptions.Order(all.Where(m => scope.Admits(m) && listOptions.Admits(m))).Skip(offset).Take(limit),
         ];
     }
 
     /// <inheritdoc />
-    public async Task<int> StampUnownedThreadsAsync(
-        string quarantineTenantId,
-        CancellationToken ct = default)
+    public async Task<int> StampUnownedThreadsAsync(string quarantineTenantId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(quarantineTenantId);
 
@@ -357,7 +341,8 @@ public sealed class FileConversationStore
             await UpdateMetadataAsync(
                     metadata.ThreadId,
                     existing => (existing ?? metadata) with { TenantId = quarantineTenantId },
-                    ct)
+                    ct
+                )
                 .ConfigureAwait(false);
 
             stamped++;
@@ -370,7 +355,8 @@ public sealed class FileConversationStore
     public async Task<IReadOnlyList<string>> ListThreadIdsByTenantAsync(
         string tenantId,
         IReadOnlyCollection<string>? threadIds,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
 
@@ -378,11 +364,10 @@ public sealed class FileConversationStore
 
         return
         [
-            .. all
-                .Where(m => string.Equals(m.TenantId, tenantId, StringComparison.Ordinal))
+            .. all.Where(m => string.Equals(m.TenantId, tenantId, StringComparison.Ordinal))
                 .Where(m => threadIds is null || threadIds.Contains(m.ThreadId))
                 .Select(m => m.ThreadId)
-                .OrderBy(id => id, StringComparer.Ordinal)
+                .OrderBy(id => id, StringComparer.Ordinal),
         ];
     }
 
@@ -392,32 +377,34 @@ public sealed class FileConversationStore
         string toTenantId,
         string? ownerUserId,
         IReadOnlyCollection<string>? threadIds,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fromTenantId);
         ArgumentException.ThrowIfNullOrWhiteSpace(toTenantId);
 
-        var eligible = await ListThreadIdsByTenantAsync(fromTenantId, threadIds, ct)
-            .ConfigureAwait(false);
+        var eligible = await ListThreadIdsByTenantAsync(fromTenantId, threadIds, ct).ConfigureAwait(false);
 
         foreach (var threadId in eligible)
         {
             await UpdateMetadataAsync(
                     threadId,
-                    existing => existing is null
-                        ? new ThreadMetadata
-                        {
-                            ThreadId = threadId,
-                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                            TenantId = toTenantId,
-                            OwnerUserId = ownerUserId,
-                        }
-                        : existing with
-                        {
-                            TenantId = toTenantId,
-                            OwnerUserId = ownerUserId ?? existing.OwnerUserId,
-                        },
-                    ct)
+                    existing =>
+                        existing is null
+                            ? new ThreadMetadata
+                            {
+                                ThreadId = threadId,
+                                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                                TenantId = toTenantId,
+                                OwnerUserId = ownerUserId,
+                            }
+                            : existing with
+                            {
+                                TenantId = toTenantId,
+                                OwnerUserId = ownerUserId ?? existing.OwnerUserId,
+                            },
+                    ct
+                )
                 .ConfigureAwait(false);
         }
 
@@ -457,13 +444,16 @@ public sealed class FileConversationStore
 
                 var messagesFile = Path.Combine(dir, MessagesFileName);
                 var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
-                metadataList.Add(new ThreadMetadata
-                {
-                    ThreadId = threadId,
-                    LastUpdated = messages.Count > 0
-                        ? messages.Max(m => m.Timestamp)
-                        : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                });
+                metadataList.Add(
+                    new ThreadMetadata
+                    {
+                        ThreadId = threadId,
+                        LastUpdated =
+                            messages.Count > 0
+                                ? messages.Max(m => m.Timestamp)
+                                : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    }
+                );
             }
 
             return metadataList;
@@ -542,9 +532,7 @@ public sealed class FileConversationStore
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(string threadId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -567,8 +555,8 @@ public sealed class FileConversationStore
         string threadId,
         string inputId,
         DateTimeOffset acceptedAt,
-        CancellationToken ct = default) =>
-        _ = await WriteAcceptedInputAsync(threadId, inputId, acceptedAt, onlyIfAbsent: false, ct);
+        CancellationToken ct = default
+    ) => _ = await WriteAcceptedInputAsync(threadId, inputId, acceptedAt, onlyIfAbsent: false, ct);
 
     /// <inheritdoc />
     /// <remarks>
@@ -582,8 +570,8 @@ public sealed class FileConversationStore
         string threadId,
         string inputId,
         DateTimeOffset acceptedAt,
-        CancellationToken ct = default) =>
-        await WriteAcceptedInputAsync(threadId, inputId, acceptedAt, onlyIfAbsent: true, ct);
+        CancellationToken ct = default
+    ) => await WriteAcceptedInputAsync(threadId, inputId, acceptedAt, onlyIfAbsent: true, ct);
 
     /// <summary>
     /// Shared body of the record/reserve pair, so the two can never disagree about where the file lives or
@@ -602,7 +590,8 @@ public sealed class FileConversationStore
         string inputId,
         DateTimeOffset acceptedAt,
         bool onlyIfAbsent,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(inputId);
@@ -642,10 +631,7 @@ public sealed class FileConversationStore
     }
 
     /// <inheritdoc />
-    public async Task RemoveAcceptedInputAsync(
-        string threadId,
-        string inputId,
-        CancellationToken ct = default)
+    public async Task RemoveAcceptedInputAsync(string threadId, string inputId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(inputId);
@@ -672,9 +658,7 @@ public sealed class FileConversationStore
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(string threadId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -713,7 +697,8 @@ public sealed class FileConversationStore
                 if (runs[idx].Phase == RunLifecyclePhase.Terminal)
                 {
                     throw new InvalidOperationException(
-                        $"Run '{state.RunId}' already reached a terminal boundary; it cannot be restarted.");
+                        $"Run '{state.RunId}' already reached a terminal boundary; it cannot be restarted."
+                    );
                 }
 
                 // A re-record refreshes how the run describes itself; it does not roll back what
@@ -740,9 +725,7 @@ public sealed class FileConversationStore
     }
 
     /// <inheritdoc />
-    public async Task<RunLifecycleState?> LoadRunLifecycleAsync(
-        string runId,
-        CancellationToken ct = default)
+    public async Task<RunLifecycleState?> LoadRunLifecycleAsync(string runId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(runId);
 
@@ -779,7 +762,8 @@ public sealed class FileConversationStore
     /// <inheritdoc />
     public async Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
         string threadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -787,12 +771,7 @@ public sealed class FileConversationStore
         try
         {
             var runs = await LoadThreadLifecycleAsync(threadId, ct);
-            return
-            [
-                .. runs
-                    .OrderByDescending(r => r.StartedAt)
-                    .ThenBy(r => r.RunId, StringComparer.Ordinal),
-            ];
+            return [.. runs.OrderByDescending(r => r.StartedAt).ThenBy(r => r.RunId, StringComparer.Ordinal)];
         }
         finally
         {
@@ -803,7 +782,8 @@ public sealed class FileConversationStore
     /// <inheritdoc />
     public async Task<IReadOnlyList<RunLifecycleState>> ListNonTerminalRunsAsync(
         string threadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -813,8 +793,7 @@ public sealed class FileConversationStore
             var runs = await LoadThreadLifecycleAsync(threadId, ct);
             return
             [
-                .. runs
-                    .Where(r => r.Phase == RunLifecyclePhase.Running)
+                .. runs.Where(r => r.Phase == RunLifecyclePhase.Running)
                     .OrderBy(r => r.StartedAt)
                     .ThenBy(r => r.RunId, StringComparer.Ordinal),
             ];
@@ -831,7 +810,8 @@ public sealed class FileConversationStore
         string outcome,
         int turnCount,
         DateTimeOffset terminalAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(runId);
         ArgumentException.ThrowIfNullOrEmpty(outcome);
@@ -873,7 +853,8 @@ public sealed class FileConversationStore
     public async Task<DeferredToolCallRecord> RecordDeferredToolCallAsync(
         string runId,
         DeferredToolCallRecord record,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(runId);
         ArgumentNullException.ThrowIfNull(record);
@@ -881,10 +862,11 @@ public sealed class FileConversationStore
         await _lock.WaitAsync(ct);
         try
         {
-            var located = await LocateRunAsync(runId, ct)
+            var located =
+                await LocateRunAsync(runId, ct)
                 ?? throw new InvalidOperationException(
-                    $"Run '{runId}' was never recorded as started; cannot record deferral "
-                        + $"'{record.ToolCallId}'.");
+                    $"Run '{runId}' was never recorded as started; cannot record deferral " + $"'{record.ToolCallId}'."
+                );
 
             var (file, runs, idx) = located;
             var state = runs[idx];
@@ -918,7 +900,8 @@ public sealed class FileConversationStore
         string resolutionFingerprint,
         string? childRunId,
         DateTimeOffset resolvedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(toolCallId);
@@ -944,7 +927,8 @@ public sealed class FileConversationStore
                     return string.Equals(
                         existing.ResolutionFingerprint,
                         resolutionFingerprint,
-                        StringComparison.Ordinal)
+                        StringComparison.Ordinal
+                    )
                         ? DeferredResolutionOutcome.Duplicate
                         : DeferredResolutionOutcome.Conflict;
                 }
@@ -957,11 +941,7 @@ public sealed class FileConversationStore
                     ChildRunId = childRunId,
                 };
 
-                runs[runIdx] = runs[runIdx] with
-                {
-                    DeferredToolCalls = updated,
-                    UpdatedAt = resolvedAt,
-                };
+                runs[runIdx] = runs[runIdx] with { DeferredToolCalls = updated, UpdatedAt = resolvedAt };
 
                 await WriteJsonFileAsync(file, runs, ct);
                 return DeferredResolutionOutcome.Resolved;
@@ -981,7 +961,8 @@ public sealed class FileConversationStore
         string toolCallId,
         string childRunId,
         DateTimeOffset attachedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(toolCallId);
@@ -1002,8 +983,7 @@ public sealed class FileConversationStore
                 }
 
                 var existing = runs[runIdx].DeferredToolCalls[callIdx];
-                var (standing, needsWrite) =
-                    RunLifecycleGuards.ClassifyChildRunAttach(existing, childRunId);
+                var (standing, needsWrite) = RunLifecycleGuards.ClassifyChildRunAttach(existing, childRunId);
                 if (!needsWrite)
                 {
                     return standing;
@@ -1012,11 +992,7 @@ public sealed class FileConversationStore
                 var updated = runs[runIdx].DeferredToolCalls.ToArray();
                 updated[callIdx] = existing with { ChildRunId = childRunId };
 
-                runs[runIdx] = runs[runIdx] with
-                {
-                    DeferredToolCalls = updated,
-                    UpdatedAt = attachedAt,
-                };
+                runs[runIdx] = runs[runIdx] with { DeferredToolCalls = updated, UpdatedAt = attachedAt };
 
                 await WriteJsonFileAsync(file, runs, ct);
                 return childRunId;
@@ -1030,9 +1006,7 @@ public sealed class FileConversationStore
         }
     }
 
-    private async Task<List<RunLifecycleState>> LoadThreadLifecycleAsync(
-        string threadId,
-        CancellationToken ct)
+    private async Task<List<RunLifecycleState>> LoadThreadLifecycleAsync(string threadId, CancellationToken ct)
     {
         var file = Path.Combine(GetThreadDirectory(threadId), RunLifecycleFileName);
         return await LoadJsonFileAsync<List<RunLifecycleState>>(file, ct) ?? [];
@@ -1044,7 +1018,8 @@ public sealed class FileConversationStore
     /// </summary>
     private async Task<(string File, List<RunLifecycleState> Runs, int Index)?> LocateRunAsync(
         string runId,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (!Directory.Exists(_baseDirectory))
         {
@@ -1070,7 +1045,8 @@ public sealed class FileConversationStore
     /// <inheritdoc />
     public async Task<InputAcceptance?> TryReserveAcceptanceAsync(
         InputAcceptance acceptance,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(acceptance);
         var acceptanceFile = GetAcceptanceFile(acceptance.ThreadId, acceptance.InputId, createDirectory: true);
@@ -1103,7 +1079,8 @@ public sealed class FileConversationStore
                     FileAccess.Write,
                     FileShare.None,
                     bufferSize: 0,
-                    FileOptions.None);
+                    FileOptions.None
+                );
             }
             catch (IOException)
             {
@@ -1129,8 +1106,7 @@ public sealed class FileConversationStore
                 await Task.Delay(AcceptanceSettlePoll, _time, ct);
                 continue;
             }
-            catch (UnauthorizedAccessException)
-                when (_time.GetElapsedTime(started) < AcceptanceSettleTimeout)
+            catch (UnauthorizedAccessException) when (_time.GetElapsedTime(started) < AcceptanceSettleTimeout)
             {
                 await Task.Delay(AcceptanceSettlePoll, _time, ct);
                 continue;
@@ -1173,23 +1149,19 @@ public sealed class FileConversationStore
     }
 
     /// <inheritdoc />
-    public Task<InputAcceptance?> GetAcceptanceAsync(
-        string threadId,
-        string inputId,
-        CancellationToken ct = default) =>
+    public Task<InputAcceptance?> GetAcceptanceAsync(string threadId, string inputId, CancellationToken ct = default) =>
         ReadAcceptanceFileAsync(GetAcceptanceFile(threadId, inputId, createDirectory: false), ct);
 
     /// <inheritdoc />
-    public Task<bool> TryRecordOutcomeAsync(
-        InputAcceptance acceptance,
-        CancellationToken ct = default)
+    public Task<bool> TryRecordOutcomeAsync(InputAcceptance acceptance, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(acceptance);
         return TryMutateAcceptanceAsync(
             GetAcceptanceFile(acceptance.ThreadId, acceptance.InputId, createDirectory: false),
             acceptance.ReservationId,
             acceptance,
-            ct);
+            ct
+        );
     }
 
     /// <inheritdoc />
@@ -1197,18 +1169,21 @@ public sealed class FileConversationStore
         string threadId,
         string inputId,
         Guid reservationId,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         TryMutateAcceptanceAsync(
             GetAcceptanceFile(threadId, inputId, createDirectory: false),
             reservationId,
             replacement: null,
-            ct);
+            ct
+        );
 
     private async Task<bool> TryMutateAcceptanceAsync(
         string acceptanceFile,
         Guid reservationId,
         InputAcceptance? replacement,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var gate = await OpenMutationGateAsync(acceptanceFile + MutationGateSuffix, ct);
         if (gate is null)
@@ -1218,8 +1193,10 @@ public sealed class FileConversationStore
 
         await using (gate)
         {
-            if (await ReadAcceptanceFileAsync(acceptanceFile, ct) is not { } stored
-                || stored.ReservationId != reservationId)
+            if (
+                await ReadAcceptanceFileAsync(acceptanceFile, ct) is not { } stored
+                || stored.ReservationId != reservationId
+            )
             {
                 return false;
             }
@@ -1261,7 +1238,8 @@ public sealed class FileConversationStore
                     FileAccess.Write,
                     FileShare.None,
                     bufferSize: 1,
-                    FileOptions.None);
+                    FileOptions.None
+                );
             }
             catch (IOException) when (_time.GetElapsedTime(started) < AcceptanceSettleTimeout)
             {
@@ -1276,9 +1254,7 @@ public sealed class FileConversationStore
         }
     }
 
-    private async Task<InputAcceptance?> ReadAcceptanceFileAsync(
-        string acceptanceFile,
-        CancellationToken ct)
+    private async Task<InputAcceptance?> ReadAcceptanceFileAsync(string acceptanceFile, CancellationToken ct)
     {
         var started = _time.GetTimestamp();
         while (true)
@@ -1291,12 +1267,13 @@ public sealed class FileConversationStore
                     FileAccess.Read,
                     FileShare.ReadWrite | FileShare.Delete,
                     bufferSize: 4096,
-                    useAsync: true);
-                if (stream.Length > 0
-                    && await JsonSerializer.DeserializeAsync<InputAcceptance>(
-                        stream,
-                        AcceptanceJsonOptions,
-                        ct) is { } record)
+                    useAsync: true
+                );
+                if (
+                    stream.Length > 0
+                    && await JsonSerializer.DeserializeAsync<InputAcceptance>(stream, AcceptanceJsonOptions, ct)
+                        is { } record
+                )
                 {
                     return record;
                 }
@@ -1313,16 +1290,14 @@ public sealed class FileConversationStore
             {
                 // The exclusive claim exists but has not settled yet.
             }
-            catch (UnauthorizedAccessException)
-                when (_time.GetElapsedTime(started) < AcceptanceSettleTimeout)
+            catch (UnauthorizedAccessException) when (_time.GetElapsedTime(started) < AcceptanceSettleTimeout)
             {
                 // A Windows delete-pending name is transient; a real permission failure outlives the budget.
             }
 
             if (_time.GetElapsedTime(started) >= AcceptanceSettleTimeout)
             {
-                throw new IOException(
-                    $"The admission record '{acceptanceFile}' exists but never became readable.");
+                throw new IOException($"The admission record '{acceptanceFile}' exists but never became readable.");
             }
 
             await Task.Delay(AcceptanceSettlePoll, _time, ct);
@@ -1348,9 +1323,7 @@ public sealed class FileConversationStore
         return Path.Combine(_baseDirectory, safeThreadId);
     }
 
-    private static async Task<List<PersistedMessage>> LoadMessagesFromFileAsync(
-        string filePath,
-        CancellationToken ct)
+    private static async Task<List<PersistedMessage>> LoadMessagesFromFileAsync(string filePath, CancellationToken ct)
     {
         if (!File.Exists(filePath))
         {
@@ -1395,7 +1368,8 @@ public sealed class FileConversationStore
         string filePath,
         T data,
         JsonSerializerOptions options,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         // Write to temp file first, then rename for atomic operation
         var tempFile = filePath + ".tmp";

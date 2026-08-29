@@ -21,9 +21,7 @@ public static class MarketplaceAliases
             return null;
         }
 
-        var aliases = value.Split(
-            ',',
-            StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var aliases = value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
 
         return aliases.Length > 0 ? aliases : null;
     }
@@ -44,6 +42,6 @@ public static class MarketplaceAliases
     /// </remarks>
     public static IReadOnlyList<string>? ResolveEffective(
         IReadOnlyList<string>? workspaceMarketplaces,
-        string? configuredDefault) =>
-        workspaceMarketplaces is { Count: > 0 } ? workspaceMarketplaces : Parse(configuredDefault);
+        string? configuredDefault
+    ) => workspaceMarketplaces is { Count: > 0 } ? workspaceMarketplaces : Parse(configuredDefault);
 }

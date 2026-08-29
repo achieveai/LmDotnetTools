@@ -46,8 +46,7 @@ internal sealed class EvalCorpusSweepSchedule
     )
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(interval, TimeSpan.Zero);
-        _sweepOnceAsync =
-            sweepOnceAsync ?? throw new ArgumentNullException(nameof(sweepOnceAsync));
+        _sweepOnceAsync = sweepOnceAsync ?? throw new ArgumentNullException(nameof(sweepOnceAsync));
         _interval = interval;
         _clock = clock ?? TimeProvider.System;
         _logger = logger;

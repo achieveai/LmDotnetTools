@@ -77,7 +77,14 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
     /// <c>.conversations/.gitignore</c> fails.
     /// </summary>
     public Func<string, Exception?>? WriteFailure { get; set; }
-    public SandboxCommandResult ExecResult { get; set; } = new() { ExitCode = 0, StandardOutput = "", StandardError = "", OperationId = "op" };
+    public SandboxCommandResult ExecResult { get; set; } =
+        new()
+        {
+            ExitCode = 0,
+            StandardOutput = "",
+            StandardError = "",
+            OperationId = "op",
+        };
 
     /// <summary>
     /// Per-command result selector. When set it wins over <see cref="ExecResult"/>; it may also throw, to
@@ -89,7 +96,12 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
     public List<SandboxCommand> Commands { get; } = [];
     public int ReadCalls { get; private set; }
 
-    public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionAsync(string threadId, string persistedWorkspaceId, SandboxCredential? requestCredential, CancellationToken ct = default)
+    public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionAsync(
+        string threadId,
+        string persistedWorkspaceId,
+        SandboxCredential? requestCredential,
+        CancellationToken ct = default
+    )
     {
         LastPersistedWorkspaceId = persistedWorkspaceId;
         ResolveCredentials.Add(requestCredential);
@@ -99,14 +111,16 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
             return Task.FromException<SandboxSessionResolution>(ResolveThrows);
         }
 
-        if (OwnerAppId is not null
-            && !string.Equals(OwnerAppId, requestCredential?.AppId, StringComparison.Ordinal))
+        if (OwnerAppId is not null && !string.Equals(OwnerAppId, requestCredential?.AppId, StringComparison.Ordinal))
         {
-            return Task.FromResult(new SandboxSessionResolution(
-                SandboxSessionResolutionOutcome.CredentialConflict,
-                null,
-                OwnerAppId,
-                requestCredential?.AppId));
+            return Task.FromResult(
+                new SandboxSessionResolution(
+                    SandboxSessionResolutionOutcome.CredentialConflict,
+                    null,
+                    OwnerAppId,
+                    requestCredential?.AppId
+                )
+            );
         }
 
         return Task.FromResult(Resolution);
@@ -118,7 +132,11 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
     /// a test can tell the two methods apart. A double that answered both the same way would make
     /// the whole fix untestable.
     /// </summary>
-    public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionForBackgroundAsync(string threadId, string persistedWorkspaceId, CancellationToken ct = default)
+    public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionForBackgroundAsync(
+        string threadId,
+        string persistedWorkspaceId,
+        CancellationToken ct = default
+    )
     {
         LastPersistedWorkspaceId = persistedWorkspaceId;
         BackgroundResolveCalls++;
@@ -131,7 +149,11 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
     /// <summary>How many times the background seam was used, so a test can assert the writer took it.</summary>
     public int BackgroundResolveCalls { get; private set; }
 
-    public Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(string sessionId, string relativePath, CancellationToken ct = default)
+    public Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(
+        string sessionId,
+        string relativePath,
+        CancellationToken ct = default
+    )
     {
         if (ListThrows is not null)
         {
@@ -143,13 +165,23 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
             : Task.FromResult<IReadOnlyList<SandboxDirectoryEntry>>([]);
     }
 
-    public Task<byte[]> ReadWorkspaceFileBytesAsync(string sessionId, string relativePath, long? maxBytes, CancellationToken ct = default)
+    public Task<byte[]> ReadWorkspaceFileBytesAsync(
+        string sessionId,
+        string relativePath,
+        long? maxBytes,
+        CancellationToken ct = default
+    )
     {
         ReadCalls++;
         return ReadThrows is not null ? Task.FromException<byte[]>(ReadThrows) : Task.FromResult(FileBytes);
     }
 
-    public Task WriteWorkspaceFileBytesAsync(string sessionId, string relativePath, byte[] bytes, CancellationToken ct = default)
+    public Task WriteWorkspaceFileBytesAsync(
+        string sessionId,
+        string relativePath,
+        byte[] bytes,
+        CancellationToken ct = default
+    )
     {
         if (WriteThrows is not null)
         {
@@ -165,7 +197,11 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
         return Task.CompletedTask;
     }
 
-    public Task<SandboxCommandResult> ExecuteWorkspaceCommandAsync(string sessionId, SandboxCommand command, CancellationToken ct = default)
+    public Task<SandboxCommandResult> ExecuteWorkspaceCommandAsync(
+        string sessionId,
+        SandboxCommand command,
+        CancellationToken ct = default
+    )
     {
         Commands.Add(command);
         try

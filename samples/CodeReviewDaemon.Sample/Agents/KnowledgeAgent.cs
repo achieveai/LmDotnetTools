@@ -305,8 +305,7 @@ internal sealed class KnowledgeAgent
     /// duplicate one that already exists.
     /// </para>
     /// </summary>
-    private void AppendExistingListing(
-        StringBuilder builder, string heading, string fileName, SandboxFileRead read)
+    private void AppendExistingListing(StringBuilder builder, string heading, string fileName, SandboxFileRead read)
     {
         _ = builder.Append("\n\n## Existing Knowledge Base ").Append(heading).Append('\n');
 
@@ -352,9 +351,7 @@ internal sealed class KnowledgeAgent
         var dropped = CountLines(content) - CountLines(kept);
 
         _ = builder.Append(kept);
-        _ = builder.Append(
-            "\n\n**This listing is PARTIAL — it did not fit, and "
-        );
+        _ = builder.Append("\n\n**This listing is PARTIAL — it did not fit, and ");
         _ = builder.Append(dropped.ToString(CultureInfo.InvariantCulture));
         _ = builder.Append(
             " further lines are not shown.** Entries you cannot see here may already exist, so absence "
@@ -453,7 +450,8 @@ internal sealed class KnowledgeAgent
             {
                 _logger.LogWarning(
                     "Knowledge extraction rejected unsafe ## UPDATES '{Updates}'; treating as a create.",
-                    parsed.Updates);
+                    parsed.Updates
+                );
             }
             else if (IsBookkeeping(LeafName(updatesRel)))
             {
@@ -462,7 +460,8 @@ internal sealed class KnowledgeAgent
                 // through to the scope+slug create instead of quietly losing the entry.
                 _logger.LogWarning(
                     "Knowledge extraction rejected ## UPDATES '{Updates}' targeting a bookkeeping file; treating as a create.",
-                    parsed.Updates);
+                    parsed.Updates
+                );
             }
             else if (IsDevelopersDirectory(ScopeSegment(updatesRel) ?? string.Empty))
             {
@@ -473,7 +472,8 @@ internal sealed class KnowledgeAgent
                 _logger.LogWarning(
                     "Knowledge extraction rejected ## UPDATES '{Updates}' targeting the reserved per-developer "
                         + "directory; treating as a create.",
-                    parsed.Updates);
+                    parsed.Updates
+                );
             }
             else if (StaysUnderKnowledgeBase(knowledgeBaseDir, updatesRel))
             {
@@ -512,8 +512,7 @@ internal sealed class KnowledgeAgent
             // The per-developer namespace is reserved (see IsDevelopersDirectory). A model-chosen scope must
             // never be able to place a knowledge entry among records that name real people, nor to collide
             // with a record ReviewFeedbackAgent rewrites wholesale.
-            _logger.LogWarning(
-                "Knowledge extraction rejected reserved SCOPE '{Scope}'; nothing written.", scope);
+            _logger.LogWarning("Knowledge extraction rejected reserved SCOPE '{Scope}'; nothing written.", scope);
             return null;
         }
 
@@ -529,7 +528,8 @@ internal sealed class KnowledgeAgent
         {
             _logger.LogWarning(
                 "Knowledge extraction rejected SCOPE '{Scope}' that escapes the Knowledge Base; nothing written.",
-                scope);
+                scope
+            );
             return null;
         }
 
@@ -539,7 +539,8 @@ internal sealed class KnowledgeAgent
             // resolved target must never be allowed to alias _toc.md/_index.jsonl regardless.
             _logger.LogWarning(
                 "Knowledge extraction rejected SCOPE/TITLE resolving to bookkeeping file '{RelPath}'; nothing written.",
-                relPath);
+                relPath
+            );
             return null;
         }
 
@@ -571,9 +572,11 @@ internal sealed class KnowledgeAgent
         }
 
         var segments = trimmed.Split('/');
-        if (segments.Length > 2
+        if (
+            segments.Length > 2
             || !segments.All(IsSafeSegment)
-            || !segments[^1].EndsWith(".md", StringComparison.Ordinal))
+            || !segments[^1].EndsWith(".md", StringComparison.Ordinal)
+        )
         {
             return null;
         }
@@ -657,7 +660,8 @@ internal sealed class KnowledgeAgent
     {
         var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n');
 
-        string scope = string.Empty, title = string.Empty;
+        string scope = string.Empty,
+            title = string.Empty;
         string? updates = null;
         List<string> tags = [];
 
@@ -756,20 +760,25 @@ internal sealed class KnowledgeAgent
     /// </para>
     /// </summary>
     private async Task<string> ReconcileUpdatesCaseAsync(
-        string knowledgeBaseDir, string updatesRel, CancellationToken cancellationToken)
+        string knowledgeBaseDir,
+        string updatesRel,
+        CancellationToken cancellationToken
+    )
     {
         var scope = ScopeSegment(updatesRel);
         if (scope is null)
         {
             // Legacy flat "<slug>.md": one segment, matched directly against the Knowledge Base root.
-            return await ReconcileChildCaseAsync(knowledgeBaseDir, updatesRel, cancellationToken)
-                .ConfigureAwait(false);
+            return await ReconcileChildCaseAsync(knowledgeBaseDir, updatesRel, cancellationToken).ConfigureAwait(false);
         }
 
         var reconciledScope = await ReconcileScopeCaseAsync(knowledgeBaseDir, scope, cancellationToken)
             .ConfigureAwait(false);
         var reconciledLeaf = await ReconcileChildCaseAsync(
-                JoinPath(knowledgeBaseDir, reconciledScope), LeafName(updatesRel), cancellationToken)
+                JoinPath(knowledgeBaseDir, reconciledScope),
+                LeafName(updatesRel),
+                cancellationToken
+            )
             .ConfigureAwait(false);
         return $"{reconciledScope}/{reconciledLeaf}";
     }
@@ -780,7 +789,10 @@ internal sealed class KnowledgeAgent
     /// such entry (or the directory cannot be listed).
     /// </summary>
     private async Task<string> ReconcileChildCaseAsync(
-        string directory, string name, CancellationToken cancellationToken)
+        string directory,
+        string name,
+        CancellationToken cancellationToken
+    )
     {
         IReadOnlyList<string> children;
         try
@@ -790,7 +802,11 @@ internal sealed class KnowledgeAgent
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(
-                ex, "Listing '{Directory}' to reconcile '{Name}' case failed; using it as-is.", directory, name);
+                ex,
+                "Listing '{Directory}' to reconcile '{Name}' case failed; using it as-is.",
+                directory,
+                name
+            );
             return name;
         }
 
@@ -799,17 +815,17 @@ internal sealed class KnowledgeAgent
         // one of them exactly, that is the entry it meant; re-pointing it at its sibling because a
         // case-insensitive scan returned that sibling first would be the reconciliation causing the very
         // collision it is here to prevent.
-        var existing = children.FirstOrDefault(
-                child => string.Equals(child, name, StringComparison.Ordinal))
-            ?? children.FirstOrDefault(
-                child => string.Equals(child, name, StringComparison.OrdinalIgnoreCase));
+        var existing =
+            children.FirstOrDefault(child => string.Equals(child, name, StringComparison.Ordinal))
+            ?? children.FirstOrDefault(child => string.Equals(child, name, StringComparison.OrdinalIgnoreCase));
         if (existing is not null && !string.Equals(existing, name, StringComparison.Ordinal))
         {
             _logger.LogInformation(
                 "Reconciling Knowledge Base '## UPDATES' target '{Name}' to the existing entry '{Existing}' "
                     + "so the update merges instead of creating a case-variant duplicate.",
                 name,
-                existing);
+                existing
+            );
             return existing;
         }
 
@@ -824,7 +840,10 @@ internal sealed class KnowledgeAgent
     /// silently dropping entries. A listing failure never blocks the write: it falls back to the model's case.
     /// </summary>
     private async Task<string> ReconcileScopeCaseAsync(
-        string knowledgeBaseDir, string scope, CancellationToken cancellationToken)
+        string knowledgeBaseDir,
+        string scope,
+        CancellationToken cancellationToken
+    )
     {
         IReadOnlyList<string> children;
         try
@@ -834,7 +853,10 @@ internal sealed class KnowledgeAgent
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(
-                ex, "Listing the Knowledge Base to reconcile scope '{Scope}' case failed; using it as-is.", scope);
+                ex,
+                "Listing the Knowledge Base to reconcile scope '{Scope}' case failed; using it as-is.",
+                scope
+            );
             return scope;
         }
 
@@ -843,17 +865,17 @@ internal sealed class KnowledgeAgent
         // one of them exactly, that is the entry it meant; re-pointing it at its sibling because a
         // case-insensitive scan returned that sibling first would be the reconciliation causing the very
         // collision it is here to prevent.
-        var existing = children.FirstOrDefault(
-                child => string.Equals(child, scope, StringComparison.Ordinal))
-            ?? children.FirstOrDefault(
-                child => string.Equals(child, scope, StringComparison.OrdinalIgnoreCase));
+        var existing =
+            children.FirstOrDefault(child => string.Equals(child, scope, StringComparison.Ordinal))
+            ?? children.FirstOrDefault(child => string.Equals(child, scope, StringComparison.OrdinalIgnoreCase));
         if (existing is not null && !string.Equals(existing, scope, StringComparison.Ordinal))
         {
             _logger.LogInformation(
                 "Reconciling Knowledge Base scope '{Scope}' to the existing directory '{Existing}' to avoid a "
                     + "case-variant collision.",
                 scope,
-                existing);
+                existing
+            );
             return existing;
         }
 
@@ -889,7 +911,6 @@ internal sealed class KnowledgeAgent
         var slug = builder.ToString();
         return slug.Length == 0 ? "entry" : slug;
     }
-
 }
 
 /// <summary>How an extraction attempt ended. The distinction is load-bearing: only <see cref="Failed"/>

@@ -216,11 +216,12 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             // Check if this message has tool calls
             var responseToolCall = reply as ToolsCallMessage;
             var responseToolCalls = responseToolCall?.ToolCalls;
-            var localToolCalls = responseToolCalls?
-                .Where(tc => tc.ExecutionTarget == ExecutionTarget.LocalFunction)
+            var localToolCalls = responseToolCalls
+                ?.Where(tc => tc.ExecutionTarget == ExecutionTarget.LocalFunction)
                 .ToImmutableList();
 
-            var serverToolCallCount = responseToolCalls?.Count(tc => tc.ExecutionTarget == ExecutionTarget.ProviderServer) ?? 0;
+            var serverToolCallCount =
+                responseToolCalls?.Count(tc => tc.ExecutionTarget == ExecutionTarget.ProviderServer) ?? 0;
             if (serverToolCallCount > 0)
             {
                 _logger.LogDebug(
@@ -393,9 +394,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     {
         // Check for existing tool calls that need processing
         var lastMessage = context.Messages.Last() as ICanGetToolCalls;
-        var toolCalls = lastMessage?
-            .GetToolCalls()
-            ?.Where(tc => tc.ExecutionTarget == ExecutionTarget.LocalFunction);
+        var toolCalls = lastMessage?.GetToolCalls()?.Where(tc => tc.ExecutionTarget == ExecutionTarget.LocalFunction);
         var hasPendingToolCalls = toolCalls != null && toolCalls.Any();
 
         // Clone options and add functions
@@ -769,8 +768,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             builtMessage.ToolCalls.Count
         );
 
-        var localBuiltToolCalls = builtMessage.ToolCalls
-            .Where(tc => tc.ExecutionTarget == ExecutionTarget.LocalFunction)
+        var localBuiltToolCalls = builtMessage
+            .ToolCalls.Where(tc => tc.ExecutionTarget == ExecutionTarget.LocalFunction)
             .ToImmutableList();
 
         if (localBuiltToolCalls.Count > 0)

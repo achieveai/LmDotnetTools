@@ -33,16 +33,23 @@ public class NotifyMessageLoopTests
         IEnumerable<IMessage>? sentToModel = null;
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((msgs, _, _) =>
-            {
-                callCount++;
-                sentToModel = [.. msgs];
-                return Task.FromResult(ToAsyncEnumerable([new TextMessage { Text = "ack", Role = Role.Assistant }]));
-            });
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, _, _) =>
+                {
+                    callCount++;
+                    sentToModel = [.. msgs];
+                    return Task.FromResult(
+                        ToAsyncEnumerable([new TextMessage { Text = "ack", Role = Role.Assistant }])
+                    );
+                }
+            );
 
         await using var loop = BuildLoop(new TriggerOptions());
         using var cts = new CancellationTokenSource();
@@ -55,18 +62,26 @@ public class NotifyMessageLoopTests
             detail: "sub-agent done",
             sourceToolName: "Agent",
             sourceToolCallId: "call-1",
-            generationId: "notify:fixed");
+            generationId: "notify:fixed"
+        );
         await loop.SendAsync([notify]);
         await collector.WaitForCompletionsAsync(1);
 
         // Idle notify woke the agent: exactly one LLM turn ran, and the envelope reached the model.
         callCount.Should().Be(1);
         sentToModel.Should().NotBeNull();
-        sentToModel!.OfType<NotifyMessage>().Should().ContainSingle()
-            .Which.NotifyKind.Should().Be(NotifyKinds.SubAgentCompletion);
+        sentToModel!
+            .OfType<NotifyMessage>()
+            .Should()
+            .ContainSingle()
+            .Which.NotifyKind.Should()
+            .Be(NotifyKinds.SubAgentCompletion);
 
         // The pill was published live (not merely persisted) with identity preserved from the producer.
-        collector.Snapshot().OfType<NotifyMessage>().Should()
+        collector
+            .Snapshot()
+            .OfType<NotifyMessage>()
+            .Should()
             .ContainSingle(n => n.GenerationId == "notify:fixed" && n.NotifyKind == NotifyKinds.SubAgentCompletion);
 
         await cts.CancelAsync();
@@ -94,7 +109,14 @@ public class NotifyMessageLoopTests
         var waitCall = new ToolCallMessage
         {
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "host_event", args = new { }, timeout = "10m" }),
+            FunctionArgs = WaitArgs(
+                new
+                {
+                    kind = "host_event",
+                    args = new { },
+                    timeout = "10m",
+                }
+            ),
             ToolCallId = "tc_host",
             Role = Role.Assistant,
         };
@@ -103,20 +125,25 @@ public class NotifyMessageLoopTests
         var callCount = 0;
         IEnumerable<IMessage>? resumeMessages = null;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((msgs, _, _) =>
-            {
-                callCount++;
-                if (callCount == 1)
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, _, _) =>
                 {
-                    return Task.FromResult(ToAsyncEnumerable([waitCall]));
+                    callCount++;
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(ToAsyncEnumerable([waitCall]));
+                    }
+                    resumeMessages = [.. msgs];
+                    return Task.FromResult(ToAsyncEnumerable([finalText]));
                 }
-                resumeMessages = [.. msgs];
-                return Task.FromResult(ToAsyncEnumerable([finalText]));
-            });
+            );
 
         await using var loop = BuildLoop(options);
         using var cts = new CancellationTokenSource();
@@ -130,7 +157,11 @@ public class NotifyMessageLoopTests
 
         // A background sub-agent completes while the parent is parked → notify arrives.
         var notify = NotifyMessage.Create(
-            NotifyKinds.SubAgentCompletion, detail: "bg done", sourceToolName: "Agent", sourceToolCallId: "call-x");
+            NotifyKinds.SubAgentCompletion,
+            detail: "bg done",
+            sourceToolName: "Agent",
+            sourceToolCallId: "call-x"
+        );
         await loop.SendAsync([notify]);
 
         // Give the loop time to drain-and-park the notify. It must NOT start a turn (no extra LLM call),
@@ -153,12 +184,14 @@ public class NotifyMessageLoopTests
         await cts.CancelAsync();
     }
 
-    private MultiTurnAgentLoop BuildLoop(TriggerOptions options) => new(
-        _mockAgent.Object,
-        new FunctionRegistry(),
-        "notify-thread",
-        logger: _loggerMock.Object,
-        triggerOptions: options);
+    private MultiTurnAgentLoop BuildLoop(TriggerOptions options) =>
+        new(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            "notify-thread",
+            logger: _loggerMock.Object,
+            triggerOptions: options
+        );
 
     /// <summary>Collects the loop's published output on a background task for assertions.</summary>
     private sealed class MessageCollector
@@ -183,7 +216,8 @@ public class NotifyMessageLoopTests
                         _completions++;
                     }
                 },
-                ct);
+                ct
+            );
 
         public List<IMessage> Snapshot()
         {
@@ -215,20 +249,27 @@ public class NotifyMessageLoopTests
     }
 
     private static List<ToolCallResultMessage> ExtractResults(IEnumerable<IMessage> messages) =>
-    [
-        .. messages.OfType<ToolCallResultMessage>()
-            .Concat(messages.OfType<ToolsCallResultMessage>()
-                .SelectMany(m => m.ToolCallResults.Select(r => new ToolCallResultMessage
-                {
-                    ToolCallId = r.ToolCallId,
-                    Result = r.Result,
-                    IsError = r.IsError,
-                }))),
-    ];
+        [
+            .. messages
+                .OfType<ToolCallResultMessage>()
+                .Concat(
+                    messages
+                        .OfType<ToolsCallResultMessage>()
+                        .SelectMany(m =>
+                            m.ToolCallResults.Select(r => new ToolCallResultMessage
+                            {
+                                ToolCallId = r.ToolCallId,
+                                Result = r.Result,
+                                IsError = r.IsError,
+                            })
+                        )
+                ),
+        ];
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {
@@ -243,7 +284,10 @@ public class NotifyMessageLoopTests
         private volatile ITriggerEventSink? _sink;
 
         public ValueTask<IArmedTrigger> ArmAsync(
-            TriggerArmRequest request, ITriggerEventSink eventSink, CancellationToken cancellationToken)
+            TriggerArmRequest request,
+            ITriggerEventSink eventSink,
+            CancellationToken cancellationToken
+        )
         {
             _sink = eventSink;
             return ValueTask.FromResult<IArmedTrigger>(new Handle(request.WaitId));

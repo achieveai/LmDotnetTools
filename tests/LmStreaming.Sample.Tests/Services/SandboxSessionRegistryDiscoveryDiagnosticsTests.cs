@@ -26,7 +26,9 @@ public sealed class SandboxSessionRegistryDiscoveryDiagnosticsTests
     {
         await using var registry = CreateRegistry(publicBaseUrl: string.Empty);
 
-        registry.DiscoveryEnabled.Should().BeFalse("no callback base means the gateway has nowhere to deliver discoveries");
+        registry
+            .DiscoveryEnabled.Should()
+            .BeFalse("no callback base means the gateway has nowhere to deliver discoveries");
         registry.DiscoveryWebhookUrl.Should().Be("/api/discovery/context_discovery");
     }
 
@@ -51,7 +53,8 @@ public sealed class SandboxSessionRegistryDiscoveryDiagnosticsTests
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(Unused)));
+            new HttpClient(new StubHandler(Unused))
+        );
 
         return new SandboxSessionRegistry(
             gateway,
@@ -61,14 +64,17 @@ public sealed class SandboxSessionRegistryDiscoveryDiagnosticsTests
             authOptions,
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             return Task.FromResult(respond(request));
         }

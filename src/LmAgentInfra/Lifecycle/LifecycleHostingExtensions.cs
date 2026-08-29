@@ -102,8 +102,8 @@ public static class LifecycleHostingExtensions
         // eager `SandboxSessionRegistry` constructor argument closes that loop inside the container,
         // and a container cycle behind factory delegates is not reported: the host simply never
         // finishes starting.
-        services.TryAddSingleton<ILifecycleOwnerResolver>(sp => new SandboxLifecycleOwnerResolver(
-            () => sp.GetRequiredService<SandboxSessionRegistry>()
+        services.TryAddSingleton<ILifecycleOwnerResolver>(sp => new SandboxLifecycleOwnerResolver(() =>
+            sp.GetRequiredService<SandboxSessionRegistry>()
         ));
 
         _ = services
@@ -141,9 +141,7 @@ public static class LifecycleHostingExtensions
         );
 
         services.TryAddSingleton<LifecycleDeliveryPipeline>();
-        services.TryAddSingleton<ILifecyclePublisher>(sp =>
-            sp.GetRequiredService<LifecycleDeliveryPipeline>()
-        );
+        services.TryAddSingleton<ILifecyclePublisher>(sp => sp.GetRequiredService<LifecycleDeliveryPipeline>());
         _ = services.AddHostedService(sp => sp.GetRequiredService<LifecycleDeliveryPipeline>());
 
         return AddLifecycleBundle(services);
@@ -204,9 +202,7 @@ public static class LifecycleHostingExtensions
 
         // Enumerable, because ToolApprovalOptions.Gates is a list every member of which must allow a
         // call. A host that adds its own gate keeps it; this one joins rather than replaces.
-        services.TryAddEnumerable(
-            ServiceDescriptor.Singleton<IToolApprovalGate, RemoteToolApprovalGate>()
-        );
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolApprovalGate, RemoteToolApprovalGate>());
 
         return AddLifecycleBundle(services);
     }
@@ -256,10 +252,7 @@ public static class LifecycleHostingExtensions
     /// A flag is set but the matching services were never registered on <see cref="IMvcBuilder.Services"/>,
     /// or the host has a controller feature provider of its own; see the remarks.
     /// </exception>
-    public static IMvcBuilder AddLifecycleControlPlane(
-        this IMvcBuilder builder,
-        IConfiguration configuration
-    )
+    public static IMvcBuilder AddLifecycleControlPlane(this IMvcBuilder builder, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -291,9 +284,7 @@ public static class LifecycleHostingExtensions
 
             // What an earlier call to this method left behind, so a repeat call recognizes its own
             // work instead of reporting it as a host provider it must not overrule.
-            var installed = parts
-                .FeatureProviders.OfType<LifecycleControllerFeatureProvider>()
-                .ToList();
+            var installed = parts.FeatureProviders.OfType<LifecycleControllerFeatureProvider>().ToList();
 
             var foreign = parts
                 .FeatureProviders.OfType<IApplicationFeatureProvider<ControllerFeature>>()
@@ -328,9 +319,7 @@ public static class LifecycleHostingExtensions
             }
 
             foreach (
-                var existing in parts
-                    .FeatureProviders.OfType<IApplicationFeatureProvider<ControllerFeature>>()
-                    .ToList()
+                var existing in parts.FeatureProviders.OfType<IApplicationFeatureProvider<ControllerFeature>>().ToList()
             )
             {
                 _ = parts.FeatureProviders.Remove(existing);
@@ -361,11 +350,7 @@ public static class LifecycleHostingExtensions
     /// method exists to avoid, arrived at from the other direction. A route that is merely absent is
     /// also the safer failure: it tells a prober nothing.
     /// </remarks>
-    private static void RequireRegistered<TOptions>(
-        IServiceCollection services,
-        string section,
-        string registrar
-    )
+    private static void RequireRegistered<TOptions>(IServiceCollection services, string section, string registrar)
     {
         if (services.Any(descriptor => descriptor.ServiceType == typeof(TOptions)))
         {
@@ -439,8 +424,7 @@ public static class LifecycleHostingExtensions
     )
     {
         var endPoint = context.DnsEndPoint;
-        var resolved = await Dns.GetHostAddressesAsync(endPoint.Host, cancellationToken)
-            .ConfigureAwait(false);
+        var resolved = await Dns.GetHostAddressesAsync(endPoint.Host, cancellationToken).ConfigureAwait(false);
 
         var permitted = Array.FindAll(
             resolved,
@@ -463,9 +447,7 @@ public static class LifecycleHostingExtensions
         var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
         try
         {
-            await socket
-                .ConnectAsync(permitted, endPoint.Port, cancellationToken)
-                .ConfigureAwait(false);
+            await socket.ConnectAsync(permitted, endPoint.Port, cancellationToken).ConfigureAwait(false);
             return new NetworkStream(socket, ownsSocket: true);
         }
         catch
@@ -505,8 +487,7 @@ internal sealed class LifecycleControllerFeatureProvider(
     Func<IEnumerable<ApplicationPart>> applicationParts
 ) : ControllerFeatureProvider
 {
-    private static readonly Assembly LifecycleAssembly =
-        typeof(LifecycleControllerFeatureProvider).Assembly;
+    private static readonly Assembly LifecycleAssembly = typeof(LifecycleControllerFeatureProvider).Assembly;
 
     /// <summary>
     /// The controllers whose visibility this method owns. Listed by type rather than by namespace so

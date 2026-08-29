@@ -1,4 +1,3 @@
-
 namespace AchieveAi.LmDotnetTools.LmEval.Tests;
 
 /// <summary>
@@ -13,10 +12,7 @@ public class TieBreakRulesTests
     {
         var rule = TieBreakRules.Arbiter("arbiter-1", "anthropic");
 
-        TieBreakRules
-            .TryParseArbiter(rule, out var judgeId, out var family)
-            .Should()
-            .BeTrue();
+        TieBreakRules.TryParseArbiter(rule, out var judgeId, out var family).Should().BeTrue();
         judgeId.Should().Be("arbiter-1");
         family.Should().Be("anthropic");
     }
@@ -28,10 +24,7 @@ public class TieBreakRulesTests
         // report its family as "team", which is a wrong answer rather than a refused one.
         var rule = TieBreakRules.Arbiter("org:team:arbiter", "openai");
 
-        TieBreakRules
-            .TryParseArbiter(rule, out var judgeId, out var family)
-            .Should()
-            .BeTrue();
+        TieBreakRules.TryParseArbiter(rule, out var judgeId, out var family).Should().BeTrue();
         judgeId.Should().Be("org:team:arbiter");
         family.Should().Be("openai");
     }

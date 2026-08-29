@@ -39,7 +39,8 @@ internal sealed class DeepLinkRetentionSweeper
         LmStreamingS2SClient client,
         TimeSpan retention,
         ILogger<DeepLinkRetentionSweeper> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _client = client ?? throw new ArgumentNullException(nameof(client));
@@ -49,7 +50,8 @@ internal sealed class DeepLinkRetentionSweeper
                 nameof(retention),
                 retention,
                 "The deep-link retention window must be positive; to keep conversations forever, do not "
-                    + "register the sweeper.");
+                    + "register the sweeper."
+            );
         }
 
         _retention = retention;
@@ -76,7 +78,8 @@ internal sealed class DeepLinkRetentionSweeper
             "Discarding {Count} review deep-link conversation(s) minted before {Cutoff:O} (retention {Retention}).",
             expired.Count,
             cutoff,
-            _retention);
+            _retention
+        );
 
         foreach (var conversation in expired)
         {
@@ -96,7 +99,8 @@ internal sealed class DeepLinkRetentionSweeper
                             + "gone from the review host; dropped from the retention ledger.",
                     conversation.ThreadId,
                     conversation.Title ?? "untitled",
-                    conversation.MintedAt);
+                    conversation.MintedAt
+                );
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -110,7 +114,8 @@ internal sealed class DeepLinkRetentionSweeper
                     ex,
                     "Could not discard expired review conversation {ThreadId}; leaving it in the retention "
                         + "ledger to retry on the next sweep.",
-                    conversation.ThreadId);
+                    conversation.ThreadId
+                );
             }
         }
     }

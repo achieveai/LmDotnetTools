@@ -20,7 +20,8 @@ public class MultiModalToolResultSerializationTests
         var messages = CreateToolCallAndResultMessages(
             toolCallId: "toolu_01ABC",
             resultText: "The answer is 42.",
-            contentBlocks: null);
+            contentBlocks: null
+        );
 
         var request = AnthropicRequest.FromMessages(messages);
         var json = JsonSerializer.Serialize(request, _jsonOptions);
@@ -50,7 +51,8 @@ public class MultiModalToolResultSerializationTests
             new TextToolResultBlock { Text = "Here is an image:" },
             new ImageToolResultBlock
             {
-                Data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                Data =
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
                 MimeType = "image/png",
             },
         };
@@ -58,7 +60,8 @@ public class MultiModalToolResultSerializationTests
         var messages = CreateToolCallAndResultMessages(
             toolCallId: "toolu_01DEF",
             resultText: "Here is an image:",
-            contentBlocks: contentBlocks);
+            contentBlocks: contentBlocks
+        );
 
         var request = AnthropicRequest.FromMessages(messages);
         var json = JsonSerializer.Serialize(request, _jsonOptions);
@@ -105,7 +108,8 @@ public class MultiModalToolResultSerializationTests
         var messages = CreateToolCallAndResultMessages(
             toolCallId: "toolu_01GHI",
             resultText: "Just text, no images.",
-            contentBlocks: contentBlocks);
+            contentBlocks: contentBlocks
+        );
 
         var request = AnthropicRequest.FromMessages(messages);
         var json = JsonSerializer.Serialize(request, _jsonOptions);
@@ -153,7 +157,8 @@ public class MultiModalToolResultSerializationTests
             new ToolsCallAggregateMessage(
                 new ToolsCallMessage { ToolCalls = [toolCall], GenerationId = "gen1" },
                 new ToolsCallResultMessage { ToolCallResults = [errorResult], GenerationId = "gen1" },
-                "assistant"),
+                "assistant"
+            ),
         };
 
         var request = AnthropicRequest.FromMessages(messages);
@@ -208,12 +213,9 @@ public class MultiModalToolResultSerializationTests
             new TextMessage { Role = Role.User, Text = "Do two things" },
             new ToolsCallAggregateMessage(
                 new ToolsCallMessage { ToolCalls = [toolCall1, toolCall2], GenerationId = "gen1" },
-                new ToolsCallResultMessage
-                {
-                    ToolCallResults = [result1, result2],
-                    GenerationId = "gen1",
-                },
-                "assistant"),
+                new ToolsCallResultMessage { ToolCallResults = [result1, result2], GenerationId = "gen1" },
+                "assistant"
+            ),
         };
 
         var request = AnthropicRequest.FromMessages(messages);
@@ -303,7 +305,8 @@ public class MultiModalToolResultSerializationTests
         var messages = CreateToolCallAndResultMessages(
             toolCallId: "toolu_01CLEAN",
             resultText: "Some text",
-            contentBlocks: contentBlocks);
+            contentBlocks: contentBlocks
+        );
 
         var request = AnthropicRequest.FromMessages(messages);
         var json = JsonSerializer.Serialize(request, _jsonOptions);
@@ -372,21 +375,14 @@ public class MultiModalToolResultSerializationTests
         {
             Type = "tool_result",
             ToolUseId = "toolu_02",
-            ToolResultContentBlocks =
-            [
-                new AnthropicContent { Type = "text", Text = "hello" },
-            ],
+            ToolResultContentBlocks = [new AnthropicContent { Type = "text", Text = "hello" }],
         };
         var json2 = JsonSerializer.Serialize(arrayContent, _jsonOptions);
         var doc2 = JsonDocument.Parse(json2);
         Assert.Equal(JsonValueKind.Array, doc2.RootElement.GetProperty("content").ValueKind);
 
         // Case 3: Both null -> content omitted
-        var nullContent = new AnthropicContent
-        {
-            Type = "tool_result",
-            ToolUseId = "toolu_03",
-        };
+        var nullContent = new AnthropicContent { Type = "tool_result", ToolUseId = "toolu_03" };
         var json3 = JsonSerializer.Serialize(nullContent, _jsonOptions);
         var doc3 = JsonDocument.Parse(json3);
         Assert.False(doc3.RootElement.TryGetProperty("content", out _));
@@ -406,7 +402,8 @@ public class MultiModalToolResultSerializationTests
             new TextToolResultBlock { Text = "Here is the captured screenshot:" },
             new ImageToolResultBlock
             {
-                Data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                Data =
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
                 MimeType = "image/png",
             },
         };
@@ -478,7 +475,8 @@ public class MultiModalToolResultSerializationTests
     private static IMessage[] CreateToolCallAndResultMessages(
         string toolCallId,
         string resultText,
-        IList<ToolResultContentBlock>? contentBlocks)
+        IList<ToolResultContentBlock>? contentBlocks
+    )
     {
         var toolCall = new ToolCall
         {
@@ -496,7 +494,8 @@ public class MultiModalToolResultSerializationTests
             new ToolsCallAggregateMessage(
                 new ToolsCallMessage { ToolCalls = [toolCall], GenerationId = "gen1" },
                 new ToolsCallResultMessage { ToolCallResults = [toolResult], GenerationId = "gen1" },
-                "assistant"),
+                "assistant"
+            ),
         ];
     }
 
@@ -521,8 +520,7 @@ public class MultiModalToolResultSerializationTests
             }
         }
 
-        throw new InvalidOperationException(
-            $"Could not find message with role '{role}' (skip={skip}) in request JSON");
+        throw new InvalidOperationException($"Could not find message with role '{role}' (skip={skip}) in request JSON");
     }
 
     #endregion

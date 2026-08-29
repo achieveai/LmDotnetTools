@@ -32,14 +32,14 @@ public class WorkflowCompletionNotifierTests
             ThreadId,
             agent,
             new TextMessage { Role = Role.User, Text = "workflow finished" },
-            CancellationToken.None);
+            CancellationToken.None
+        );
 
         agent.SentMessages.Should().ContainSingle("the notice really was queued");
 
         pool.TryGetHandoffState(ThreadId, out var after).Should().BeTrue();
         after.IsBusy.Should().BeTrue("a queued completion notice is work in hand like any other input");
-        (await pool.TryReleaseIdleAgentAsync(ThreadId, after))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+        (await pool.TryReleaseIdleAgentAsync(ThreadId, after)).Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
     }
 
     [Fact]
@@ -54,27 +54,32 @@ public class WorkflowCompletionNotifierTests
         var agent = CreateAgent(pool);
         agent.ThrowOnSend = true;
 
-        var deliver = async () => await WorkflowCompletionNotifier.DeliverAsync(
-            pool,
-            ThreadId,
-            agent,
-            new TextMessage { Role = Role.User, Text = "workflow finished" },
-            CancellationToken.None);
+        var deliver = async () =>
+            await WorkflowCompletionNotifier.DeliverAsync(
+                pool,
+                ThreadId,
+                agent,
+                new TextMessage { Role = Role.User, Text = "workflow finished" },
+                CancellationToken.None
+            );
 
-        await deliver.Should().ThrowAsync<InvalidOperationException>(
-            "a failed delivery must stay visible to WorkflowManager's own handling");
+        await deliver
+            .Should()
+            .ThrowAsync<InvalidOperationException>(
+                "a failed delivery must stay visible to WorkflowManager's own handling"
+            );
 
         pool.TryGetHandoffState(ThreadId, out var after).Should().BeTrue();
         after.IsBusy.Should().BeFalse("nothing was queued, so nothing is owed");
         (await pool.TryReleaseIdleAgentAsync(ThreadId, after))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
+            .Should()
+            .Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
     }
 
     private static RecordingMultiTurnAgent CreateAgent(MultiTurnAgentPool pool)
     {
-        var agent = (RecordingMultiTurnAgent)pool.GetOrCreateAgent(
-            ThreadId,
-            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+        var agent = (RecordingMultiTurnAgent)
+            pool.GetOrCreateAgent(ThreadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
         agent.CurrentRunId = null;
         agent.IsRunning = false;
         return agent;
@@ -82,7 +87,7 @@ public class WorkflowCompletionNotifierTests
 
     private static MultiTurnAgentPool CreatePool() =>
         new(
-            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(
-                new RecordingMultiTurnAgent(threadId)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new RecordingMultiTurnAgent(threadId)),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 }

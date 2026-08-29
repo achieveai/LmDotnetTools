@@ -63,11 +63,11 @@ public class SandboxSessionRegistryLifecycleEventTests
     {
         await using var harness = CreateHarness(
             createExtras: """
-                "status":"running","inventory":{"status":"confirmed","items":[
-                    {"kind":"plugin","id":"development","version":"1.4.0"},
-                    {"kind":"skill","id":"development:implement"}
-                ]}
-                """
+            "status":"running","inventory":{"status":"confirmed","items":[
+                {"kind":"plugin","id":"development","version":"1.4.0"},
+                {"kind":"skill","id":"development:implement"}
+            ]}
+            """
         );
 
         _ = await harness.Registry.GetOrCreateSessionAsync("ws-1");
@@ -114,9 +114,7 @@ public class SandboxSessionRegistryLifecycleEventTests
 
         second.SessionId.Should().Be(first.SessionId);
         harness.Calls.PostCount.Should().Be(1);
-        harness
-            .Events.Events.Should()
-            .ContainSingle("handing back a session that already existed is not a creation");
+        harness.Events.Events.Should().ContainSingle("handing back a session that already existed is not a creation");
     }
 
     [Fact]
@@ -242,9 +240,7 @@ public class SandboxSessionRegistryLifecycleEventTests
         );
 
         live[0].SessionId.Should().Be(live[1].SessionId);
-        harness
-            .Events.Events.Should()
-            .HaveCount(2, "one creation and one replacement, however many callers raced");
+        harness.Events.Events.Should().HaveCount(2, "one creation and one replacement, however many callers raced");
         harness.Events.PayloadAt<SandboxCreatedPayload>(1).ReplacedSessionId.Should().Be(first.SessionId);
     }
 
@@ -446,11 +442,8 @@ public class SandboxSessionRegistryLifecycleEventTests
             return new HttpResponseMessage(HttpStatusCode.OK);
         });
 
-    private sealed record Harness(
-        SandboxSessionRegistry Registry,
-        CallLog Calls,
-        RecordingPublisher Events
-    ) : IAsyncDisposable
+    private sealed record Harness(SandboxSessionRegistry Registry, CallLog Calls, RecordingPublisher Events)
+        : IAsyncDisposable
     {
         public ValueTask DisposeAsync() => Registry.DisposeAsync();
     }

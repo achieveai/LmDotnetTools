@@ -49,7 +49,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public void ExposesExactlyStartGetCheckWait()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         provider
             .GetFunctions()
@@ -63,7 +65,9 @@ public class StartWorkflowToolProviderTests
     {
         // Hosts keep this family out of sub-agent inheritance by name; a tool missing from the list would
         // leak into every child that inherits its parent's tools.
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         StartWorkflowToolProvider
             .ToolNames.Should()
@@ -73,7 +77,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public void GetWorkflows_TakesNoParameters()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         var contract = Tool(provider, "GetWorkflows").Contract;
         (contract.Parameters ?? []).Should().BeEmpty("discovery must never fail because an argument was guessed");
@@ -128,7 +134,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public async Task GetWorkflows_WithNothingStarted_ReturnsAnEmptyListRatherThanAnError()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         var result = await Invoke(Tool(provider, "GetWorkflows"), "{}");
 
@@ -142,9 +150,14 @@ public class StartWorkflowToolProviderTests
     [InlineData("WaitWorkflow")]
     public async Task UnknownWorkflowId_NamesTheIdsThatWouldHaveWorked(string toolName)
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
-        _ = await Invoke(Tool(provider, "StartWorkflowAgent"), StartArgs("known-one", WorkflowFixtures.MinimalValid, "sync"));
+        _ = await Invoke(
+            Tool(provider, "StartWorkflowAgent"),
+            StartArgs("known-one", WorkflowFixtures.MinimalValid, "sync")
+        );
 
         var result = await Invoke(
             Tool(provider, toolName),
@@ -162,7 +175,9 @@ public class StartWorkflowToolProviderTests
     {
         // A silently truncated list is worse than no list: the agent concludes its id does not exist and
         // starts a duplicate workflow. Saying "showing N of M" keeps that inference off the table.
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
         var start = Tool(provider, "StartWorkflowAgent");
 
         var total = StartWorkflowToolProvider.MaxListedWorkflowIds + 1;
@@ -176,9 +191,9 @@ public class StartWorkflowToolProviderTests
             new JsonObject { ["workflowId"] = "guessed" }.ToJsonString()
         );
 
-        result.Payload.Text.Should()
-            .Contain($"showing {StartWorkflowToolProvider.MaxListedWorkflowIds} of {total}");
-        result.Payload.Text.Should()
+        result.Payload.Text.Should().Contain($"showing {StartWorkflowToolProvider.MaxListedWorkflowIds} of {total}");
+        result
+            .Payload.Text.Should()
             .Contain("wf-00", "the cap keeps the FIRST ids in ordinal order, so the list is predictable");
     }
 
@@ -190,11 +205,11 @@ public class StartWorkflowToolProviderTests
     {
         // StartWorkflowAgent sits next to the Agent tool in the Workspace surface, and both hand back an
         // opaque id. Nothing but the parameter text stops one being passed where the other belongs.
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
-        var description = Tool(provider, toolName)
-            .Contract.Parameters!.Single(p => p.Name == "workflowId")
-            .Description;
+        var description = Tool(provider, toolName).Contract.Parameters!.Single(p => p.Name == "workflowId").Description;
 
         description.Should().Contain("StartWorkflowAgent");
         description.Should().Contain("not an agent_id");
@@ -203,7 +218,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public void WaitWorkflowDescription_DocumentsOpenEndedTimeoutTradeoff()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         Tool(provider, "WaitWorkflow").Contract.Description.Should().Contain("open-ended");
     }
@@ -211,7 +228,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public void StartWorkflowDescription_TreatsStartedAsSuccessAndSteersAgainstDuplicateLaunches()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         var description = Tool(provider, "StartWorkflowAgent").Contract.Description;
         description.Should().Contain("status of 'started' is SUCCESS");
@@ -222,7 +241,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public void StartWorkflowAgent_WorkflowParam_AdvertisesTheFlatStepSchema()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         var workflowSchema = Tool(provider, "StartWorkflowAgent")
             .Contract.Parameters!.Single(p => p.Name == "workflow")
@@ -242,7 +263,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public async Task StartWorkflow_AuthoredInTheFlatDsl_IsAcceptedAndTranslated()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
         const string dsl = """
             { "objective": "trivial", "steps": [
               { "id": "start", "kind": "start", "next": "done" },
@@ -267,7 +290,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public async Task StartWorkflow_DslMissingAgentFields_ReturnsInvalidWorkflow()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
         const string dsl = """
             { "objective": "x", "steps": [
               { "id": "start", "kind": "start", "next": "a" },
@@ -291,7 +316,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public async Task StartWorkflow_InvalidDefinition_MapsToInvalidWorkflow()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         var result = await Invoke(Tool(provider, "StartWorkflowAgent"), StartArgs("x", InvalidNoTerminal, "sync"));
 
@@ -302,7 +329,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public async Task StartWorkflow_DuplicateId_MapsToDuplicateWorkflow()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
         var start = Tool(provider, "StartWorkflowAgent");
 
         var first = await Invoke(start, StartArgs("dup", WorkflowFixtures.MinimalValid, "sync"));
@@ -316,7 +345,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public async Task CheckWorkflow_UnknownId_MapsToUnknownWorkflow()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         var result = await Invoke(
             Tool(provider, "CheckWorkflow"),
@@ -332,7 +363,11 @@ public class StartWorkflowToolProviderTests
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var provider = new StartWorkflowToolProvider(
-            NewManager(() => GatedController(gate).Object, maxConcurrentWorkflows: 1, gateWaitTimeout: TimeSpan.FromMilliseconds(200))
+            NewManager(
+                () => GatedController(gate).Object,
+                maxConcurrentWorkflows: 1,
+                gateWaitTimeout: TimeSpan.FromMilliseconds(200)
+            )
         );
         var start = Tool(provider, "StartWorkflowAgent");
 
@@ -350,9 +385,14 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public async Task StartWorkflow_Sync_ReturnsCompletedJson()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
-        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), StartArgs("ok", WorkflowFixtures.MinimalValid, "sync"));
+        var result = await Invoke(
+            Tool(provider, "StartWorkflowAgent"),
+            StartArgs("ok", WorkflowFixtures.MinimalValid, "sync")
+        );
 
         result.Payload.IsError.Should().BeFalse();
         using var doc = JsonDocument.Parse(result.Payload.Text);
@@ -383,7 +423,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public async Task WaitWorkflow_UnknownId_MapsToUnknownWorkflow()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         var result = await Invoke(
             Tool(provider, "WaitWorkflow"),
@@ -397,7 +439,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public async Task WaitWorkflow_MissingWorkflowId_ReturnsInvalidArgs()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         var result = await Invoke(Tool(provider, "WaitWorkflow"), "{}");
 
@@ -412,7 +456,9 @@ public class StartWorkflowToolProviderTests
     {
         // The workflow is already terminal, so WaitWorkflow returns immediately regardless of the timeout —
         // this exercises TryReadTimeout's string/clamp paths through the actual handler.
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
         var start = Tool(provider, "StartWorkflowAgent");
         var wait = Tool(provider, "WaitWorkflow");
 
@@ -437,7 +483,9 @@ public class StartWorkflowToolProviderTests
     public async Task WaitWorkflow_PresentButInvalidTimeout_ReturnsInvalidArgs(object timeout)
     {
         // A present-but-invalid timeout must be rejected, not silently collapsed to an unbounded wait.
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
         var start = Tool(provider, "StartWorkflowAgent");
         var wait = Tool(provider, "WaitWorkflow");
 
@@ -460,7 +508,9 @@ public class StartWorkflowToolProviderTests
     [InlineData("WaitWorkflow")]
     public async Task Handlers_MalformedJson_ReturnInvalidArgs(string toolName)
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         var result = await Invoke(Tool(provider, toolName), "{not valid json");
 
@@ -471,7 +521,9 @@ public class StartWorkflowToolProviderTests
     [Fact]
     public void StartWorkflowAgent_AdvertisesProviderAndModelParams()
     {
-        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object)
+        );
 
         Tool(provider, "StartWorkflowAgent")
             .Contract.Parameters!.Select(p => p.Name)

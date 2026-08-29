@@ -31,15 +31,10 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
     };
 
     public PrLifecycleSweeperTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private ReviewBranchManager CreateBranchManager(FakeSandboxCommandRunner runner) =>
-        new(
-            new GitRunner(runner),
-            new FakeSandboxFileSystem(),
-            LoggerFactory.CreateLogger<ReviewBranchManager>());
+        new(new GitRunner(runner), new FakeSandboxFileSystem(), LoggerFactory.CreateLogger<ReviewBranchManager>());
 
     private PrLifecycleSweeper CreateSweeper(
         IReadOnlyList<ReviewedPr> reviewedPrs,
@@ -56,7 +51,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             DefaultBranch,
             mergeNotesBranchOnClose,
             LoggerFactory.CreateLogger<PrLifecycleSweeper>(),
-            extractKnowledgeAsync);
+            extractKnowledgeAsync
+        );
 
     private static ReviewedPr Pr(string prId, string branch) => new(TargetRepo, "github", prId, branch);
 
@@ -69,7 +65,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Merged),
             CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true);
+            mergeNotesBranchOnClose: true
+        );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
@@ -90,7 +87,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Abandoned),
             CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true);
+            mergeNotesBranchOnClose: true
+        );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
@@ -109,7 +107,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Open),
             CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true);
+            mergeNotesBranchOnClose: true
+        );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
@@ -125,7 +124,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Merged),
             CreateBranchManager(runner),
-            mergeNotesBranchOnClose: false);
+            mergeNotesBranchOnClose: false
+        );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
@@ -140,11 +140,13 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
         var okPr = Pr("47", "review/widgets-47");
         var sweeper = CreateSweeper(
             [failingPr, okPr],
-            (pr, _) => pr.PrId == failingPr.PrId
-                ? throw new InvalidOperationException("simulated lifecycle lookup failure")
-                : Task.FromResult(PrLifecycle.Abandoned),
+            (pr, _) =>
+                pr.PrId == failingPr.PrId
+                    ? throw new InvalidOperationException("simulated lifecycle lookup failure")
+                    : Task.FromResult(PrLifecycle.Abandoned),
             CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true);
+            mergeNotesBranchOnClose: true
+        );
 
         var act = () => sweeper.SweepAsync(CancellationToken.None);
 
@@ -173,7 +175,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
                 // extraction ran BEFORE the merge (design §1 — extract before the notes branch merges).
                 runnerCommandCountAtInvocation = runner.Commands.Count;
                 return Task.FromResult(KnowledgeExtractionOutcome.Wrote);
-            });
+            }
+        );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
@@ -200,7 +203,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             {
                 invoked.Add(p.PrId);
                 return Task.FromResult(KnowledgeExtractionOutcome.Wrote);
-            });
+            }
+        );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
@@ -217,7 +221,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             (_, _) => Task.FromResult(PrLifecycle.Merged),
             CreateBranchManager(runner),
             mergeNotesBranchOnClose: true,
-            extractKnowledgeAsync: (_, _) => throw new InvalidOperationException("simulated extraction failure"));
+            extractKnowledgeAsync: (_, _) => throw new InvalidOperationException("simulated extraction failure")
+        );
 
         var act = () => sweeper.SweepAsync(CancellationToken.None);
 
@@ -248,14 +253,18 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             {
                 attempts++;
                 return Task.FromResult(KnowledgeExtractionOutcome.Failed);
-            });
+            }
+        );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().NotContain(
-            a => a.Contains($"merge --ff-only origin/{pr.Branch}"),
-            "merging deletes the notes branch, which would make this failed extraction permanent (defect D5)");
+        commands
+            .Should()
+            .NotContain(
+                a => a.Contains($"merge --ff-only origin/{pr.Branch}"),
+                "merging deletes the notes branch, which would make this failed extraction permanent (defect D5)"
+            );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
@@ -278,7 +287,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             {
                 attempts++;
                 return Task.FromResult(KnowledgeExtractionOutcome.Failed);
-            });
+            }
+        );
 
         // Three sweeps: two deferrals, then the cap is reached and the lifecycle proceeds regardless —
         // extraction bounds the delay, it never blocks the lifecycle outright (design §6).
@@ -289,8 +299,10 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
         attempts.Should().Be(3, "extraction is retried up to the cap, then given up on");
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         commands.Should().Contain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
-        commands.Count(a => a.Contains($"push origin {DefaultBranch}"))
-            .Should().Be(1, "the merge happens exactly once, on the sweep that hit the cap");
+        commands
+            .Count(a => a.Contains($"push origin {DefaultBranch}"))
+            .Should()
+            .Be(1, "the merge happens exactly once, on the sweep that hit the cap");
     }
 
     [Fact]
@@ -304,7 +316,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             CreateBranchManager(runner),
             mergeNotesBranchOnClose: true,
             // "This PR carried no durable knowledge" is a valid outcome, not a failure — nothing to retry.
-            extractKnowledgeAsync: (_, _) => Task.FromResult(KnowledgeExtractionOutcome.Declined));
+            extractKnowledgeAsync: (_, _) => Task.FromResult(KnowledgeExtractionOutcome.Declined)
+        );
 
         await sweeper.SweepAsync(CancellationToken.None);
 
@@ -327,15 +340,18 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
                 return Task.FromResult(PrLifecycle.Merged);
             },
             CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true);
+            mergeNotesBranchOnClose: true
+        );
 
         await sweeper.SweepAsync(CancellationToken.None);
         await sweeper.SweepAsync(CancellationToken.None);
 
         lifecycleLookups.Should().Be(1, "a merged-and-swept branch is cached, so later sweeps skip it entirely");
-        runner.Commands.Select(c => string.Join(' ', c.Argv))
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
             .Count(a => a.Contains($"push origin {DefaultBranch}"))
-            .Should().Be(1, "the notes branch is merged exactly once, not re-merged every poll");
+            .Should()
+            .Be(1, "the notes branch is merged exactly once, not re-merged every poll");
     }
 
     [Fact]
@@ -345,7 +361,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
         // The push never succeeds, so MergeToDefaultAsync returns false and the branch is NOT cached as done.
         runner.OnArgvContains(
             $"push origin {DefaultBranch}",
-            new SandboxCommandResult(1, string.Empty, "rejected: non-fast-forward"));
+            new SandboxCommandResult(1, string.Empty, "rejected: non-fast-forward")
+        );
         var pr = Pr("48", "review/widgets-48");
         var lifecycleLookups = 0;
         var sweeper = CreateSweeper(
@@ -356,7 +373,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
                 return Task.FromResult(PrLifecycle.Merged);
             },
             CreateBranchManager(runner),
-            mergeNotesBranchOnClose: true);
+            mergeNotesBranchOnClose: true
+        );
 
         await sweeper.SweepAsync(CancellationToken.None);
         await sweeper.SweepAsync(CancellationToken.None);

@@ -24,7 +24,8 @@ internal static class SandboxAppDir
 
         char[] slugChars =
         [
-            .. appId.ToLowerInvariant()
+            .. appId
+                .ToLowerInvariant()
                 .Where(c => c is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '.' or '_' or '-'),
         ];
         var slug = new string(slugChars);
@@ -33,8 +34,7 @@ internal static class SandboxAppDir
             slug = slug[..32];
         }
 
-        var shortHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(appId)))
-            .ToLowerInvariant()[..16];
+        var shortHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(appId))).ToLowerInvariant()[..16];
 
         return $"{slug}-{shortHash}";
     }

@@ -105,8 +105,7 @@ public sealed class SubAgentSummaryTests
     {
         var tab = LegacyTab().WithCollaboration(Entry());
 
-        tab.AgentType.Should().Be(tab.Template,
-            "the pre-#244 name is a permanent alias, not migration scaffolding");
+        tab.AgentType.Should().Be(tab.Template, "the pre-#244 name is a permanent alias, not migration scaffolding");
     }
 
     [Theory]
@@ -116,8 +115,10 @@ public sealed class SubAgentSummaryTests
     [InlineData(AgentKind.WorkflowController, SubAgentSummary.WorkflowTabKind)]
     public void TabKindFor_SurfacesOnlyControllersAsWorkflowTabs(AgentKind kind, string expected)
     {
-        SubAgentSummary.TabKindFor(kind).Should().Be(expected,
-            "the merge key is (Kind, AgentId), so one agent must map to exactly one tab kind");
+        SubAgentSummary
+            .TabKindFor(kind)
+            .Should()
+            .Be(expected, "the merge key is (Kind, AgentId), so one agent must map to exactly one tab kind");
     }
 
     [Fact]
@@ -143,7 +144,8 @@ public sealed class SubAgentSummaryTests
                 AgentId = "thread-root",
                 ParentAgentId = null,
                 AncestorAgentIds = [],
-            });
+            }
+        );
 
         tab.ThreadId.Should().Be("thread-root", "the root's transcript is the conversation itself");
         tab.StructuralDepth.Should().Be(0);
@@ -157,17 +159,25 @@ public sealed class SubAgentSummaryTests
 
         var restored = SubAgentSummary.FromDirectoryEntry(entry).ToNodeRecord()!.ToEntry();
 
-        restored.Should().BeEquivalentTo(
-            entry with { IsLive = false },
-            "a persisted node describes an agent that is no longer reachable here");
+        restored
+            .Should()
+            .BeEquivalentTo(
+                entry with
+                {
+                    IsLive = false,
+                },
+                "a persisted node describes an agent that is no longer reachable here"
+            );
     }
 
     [Fact]
     public void ToNodeRecord_StampsTheCurrentSchemaVersion()
     {
-        SubAgentSummary.FromDirectoryEntry(Entry())
-            .ToNodeRecord()!.SchemaVersion
-            .Should().Be(CollaborationNodeRecord.CurrentSchemaVersion);
+        SubAgentSummary
+            .FromDirectoryEntry(Entry())
+            .ToNodeRecord()!
+            .SchemaVersion.Should()
+            .Be(CollaborationNodeRecord.CurrentSchemaVersion);
     }
 
     [Fact]
@@ -194,8 +204,10 @@ public sealed class SubAgentSummaryTests
     [Fact]
     public void AsRetained_DoesNotInventLivenessForAPre244Row()
     {
-        LegacyTab().AsRetained().IsLive.Should().BeNull(
-            "adding isLive to a legacy row would change the shape a pre-#244 client parses");
+        LegacyTab()
+            .AsRetained()
+            .IsLive.Should()
+            .BeNull("adding isLive to a legacy row would change the shape a pre-#244 client parses");
     }
 
     [Fact]
@@ -203,52 +215,65 @@ public sealed class SubAgentSummaryTests
     {
         var json = JsonSerializer.SerializeToNode(LegacyTab(), Web)!.AsObject();
 
-        json.Select(p => p.Key).Should().BeEquivalentTo(
-            [
-                "agentId",
-                "kind",
-                "name",
-                "template",
-                "task",
-                "status",
-                "threadId",
-                "lastActivityUtc",
-                "parentThreadId",
-                "depth",
-                "terminalAtUtc",
-                "failureCode",
-                "effectiveModelId",
-                "effectiveModelIntelligence",
-                "modelSelectionSource",
-            ],
-            "a host that never enabled collaboration must retain the current main-branch legacy shape — "
-                + "every collaboration-only #244 member is omitted when it has nothing to say");
+        json.Select(p => p.Key)
+            .Should()
+            .BeEquivalentTo(
+                [
+                    "agentId",
+                    "kind",
+                    "name",
+                    "template",
+                    "task",
+                    "status",
+                    "threadId",
+                    "lastActivityUtc",
+                    "parentThreadId",
+                    "depth",
+                    "terminalAtUtc",
+                    "failureCode",
+                    "effectiveModelId",
+                    "effectiveModelIntelligence",
+                    "modelSelectionSource",
+                ],
+                "a host that never enabled collaboration must retain the current main-branch legacy shape — "
+                    + "every collaboration-only #244 member is omitted when it has nothing to say"
+            );
     }
 
     [Fact]
     public void CollaborationRow_PublishesTheHierarchyNamesTheClientParses()
     {
         var json = JsonSerializer
-            .SerializeToNode(SubAgentSummary.FromDirectoryEntry(Entry()) with { IsCurrent = true, IsReadable = true }, Web)!
+            .SerializeToNode(
+                SubAgentSummary.FromDirectoryEntry(Entry()) with
+                {
+                    IsCurrent = true,
+                    IsReadable = true,
+                },
+                Web
+            )!
             .AsObject();
 
-        json.Select(p => p.Key).Should().Contain(
-            [
-                "schemaVersion",
-                "collaborationId",
-                "agentType",
-                "agentKind",
-                "role",
-                "description",
-                "parentAgentId",
-                "ancestorAgentIds",
-                "structuralDepth",
-                "delegationDepth",
-                "isLive",
-                "isCurrent",
-                "isReadable",
-            ],
-            "the client parses these names literally; renaming one is a breaking change");
+        json.Select(p => p.Key)
+            .Should()
+            .Contain(
+                [
+                    "schemaVersion",
+                    "collaborationId",
+                    "agentType",
+                    "agentKind",
+                    "role",
+                    "description",
+                    "parentAgentId",
+                    "ancestorAgentIds",
+                    "structuralDepth",
+                    "delegationDepth",
+                    "isLive",
+                    "isCurrent",
+                    "isReadable",
+                ],
+                "the client parses these names literally; renaming one is a breaking change"
+            );
         json["template"]!.GetValue<string>().Should().Be(json["agentType"]!.GetValue<string>());
     }
 

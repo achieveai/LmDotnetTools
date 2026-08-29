@@ -48,9 +48,12 @@ public class DelayedResultChildRunTests
         var second = await harness.Loop.TryResolveToolCallAsync("tc_1", "the-answer");
 
         first.Should().Be(ResolveToolCallOutcome.Resolved);
-        second.Should().Be(
-            ResolveToolCallOutcome.Duplicate,
-            "a webhook that retries after a lost acknowledgement must not be told it failed");
+        second
+            .Should()
+            .Be(
+                ResolveToolCallOutcome.Duplicate,
+                "a webhook that retries after a lost acknowledgement must not be told it failed"
+            );
     }
 
     [Fact]
@@ -65,8 +68,7 @@ public class DelayedResultChildRunTests
         var stored = await LoadResultsAsync(harness.Store, harness.ThreadId);
         stored
             .Single(m => m.ToolCallId == "tc_1")
-            .Result
-            .Should()
+            .Result.Should()
             .Be("the-answer", "the committed resolution wins; a later disagreement is rejected, not applied");
     }
 
@@ -77,9 +79,7 @@ public class DelayedResultChildRunTests
 
         var outcome = await harness.Loop.TryResolveToolCallAsync("tc_nonexistent", "whatever");
 
-        outcome.Should().Be(
-            ResolveToolCallOutcome.NotFound,
-            "retrying will never make an unknown tool call exist");
+        outcome.Should().Be(ResolveToolCallOutcome.NotFound, "retrying will never make an unknown tool call exist");
     }
 
     [Fact]
@@ -93,15 +93,22 @@ public class DelayedResultChildRunTests
 
         refused.Should().Be(ResolveToolCallOutcome.StoreFailed);
         var pending = await harness.Loop.GetDeferredToolCallsAsync();
-        pending.Should().ContainSingle(p => p.ToolCallId == "tc_1",
-            "a resolution the store would not take did not happen, so the call is still outstanding");
+        pending
+            .Should()
+            .ContainSingle(
+                p => p.ToolCallId == "tc_1",
+                "a resolution the store would not take did not happen, so the call is still outstanding"
+            );
 
         store.FailResolutions = false;
         var retried = await harness.Loop.TryResolveToolCallAsync("tc_1", "the-answer");
 
-        retried.Should().Be(
-            ResolveToolCallOutcome.Resolved,
-            "the retry is the first resolution to commit, so it must not be mistaken for a duplicate");
+        retried
+            .Should()
+            .Be(
+                ResolveToolCallOutcome.Resolved,
+                "the retry is the first resolution to commit, so it must not be mistaken for a duplicate"
+            );
     }
 
     [Fact]
@@ -126,7 +133,8 @@ public class DelayedResultChildRunTests
             .Be(
                 ResolveToolCallOutcome.Cancelled,
                 "the delivery was withdrawn by the caller, and saying anything else would suggest the "
-                    + "store is unhealthy when it is not");
+                    + "store is unhealthy when it is not"
+            );
         var pending = await harness.Loop.GetDeferredToolCallsAsync();
         pending.Should().ContainSingle(p => p.ToolCallId == "tc_1");
     }
@@ -140,8 +148,7 @@ public class DelayedResultChildRunTests
 
         // The caller is not cancelling anything. The store times out internally — a connection
         // deadline, a linked token of its own — and that surfaces as the same exception type.
-        store.BeforeResolve = _ =>
-            failed ? Task.CompletedTask : throw new OperationCanceledException();
+        store.BeforeResolve = _ => failed ? Task.CompletedTask : throw new OperationCanceledException();
         var refused = await harness.Loop.TryResolveToolCallAsync("tc_1", "the-answer");
 
         refused
@@ -149,7 +156,8 @@ public class DelayedResultChildRunTests
             .Be(
                 ResolveToolCallOutcome.StoreFailed,
                 "a cancellation the caller did not ask for is the store failing, and calling it "
-                    + "Cancelled would invite the caller to drop a result the store would take");
+                    + "Cancelled would invite the caller to drop a result the store would take"
+            );
         var pending = await harness.Loop.GetDeferredToolCallsAsync();
         pending.Should().ContainSingle(p => p.ToolCallId == "tc_1", "the state left behind is retry-safe");
 
@@ -167,19 +175,19 @@ public class DelayedResultChildRunTests
         var racers = await Task.WhenAll(
             Enumerable
                 .Range(0, 8)
-                .Select(_ => Task.Run(() => harness.Loop.TryResolveToolCallAsync("tc_1", "the-answer"))));
+                .Select(_ => Task.Run(() => harness.Loop.TryResolveToolCallAsync("tc_1", "the-answer")))
+        );
 
         racers
             .Count(o => o == ResolveToolCallOutcome.Resolved)
             .Should()
             .Be(1, "exactly one delivery may commit; the rest are the same result arriving again");
-        racers
-            .Should()
-            .OnlyContain(o => o == ResolveToolCallOutcome.Resolved || o == ResolveToolCallOutcome.Duplicate);
+        racers.Should().OnlyContain(o => o == ResolveToolCallOutcome.Resolved || o == ResolveToolCallOutcome.Duplicate);
 
         await harness.WaitForProviderCallsAsync(2);
-        harness.ProviderCallCount.Should().Be(
-            2, "one commit means one continuation, however many callers raced to deliver it");
+        harness
+            .ProviderCallCount.Should()
+            .Be(2, "one commit means one continuation, however many callers raced to deliver it");
     }
 
     [Fact]
@@ -199,14 +207,21 @@ public class DelayedResultChildRunTests
         var mockAgent = new Mock<IStreamingAgent>();
         Harness.SetupProvider(mockAgent, "tc_1");
         await using var restored = new MultiTurnAgentLoop(
-            mockAgent.Object, Harness.BuildRegistry("tc_1"), threadId, store: store);
+            mockAgent.Object,
+            Harness.BuildRegistry("tc_1"),
+            threadId,
+            store: store
+        );
         (await restored.RecoverAsync()).Should().BeTrue();
 
         var outcome = await restored.TryResolveToolCallAsync("tc_1", "the-answer");
 
-        outcome.Should().Be(
-            ResolveToolCallOutcome.Resolved,
-            "the deferral outlived the process that created it, so its resolution must still land");
+        outcome
+            .Should()
+            .Be(
+                ResolveToolCallOutcome.Resolved,
+                "the deferral outlived the process that created it, so its resolution must still land"
+            );
         var stored = await LoadResultsAsync(store, threadId);
         stored.Single(m => m.ToolCallId == "tc_1").IsDeferred.Should().BeFalse();
     }
@@ -219,8 +234,7 @@ public class DelayedResultChildRunTests
     public async Task EachResolvedResultGetsItsOwnChildRun_AndOnlyTheLastTalksToTheProvider()
     {
         var publisher = new RecordingLifecyclePublisher();
-        await using var harness = await Harness.StartAsync(
-            _mockAgent, ["tc_a", "tc_b", "tc_c"], publisher: publisher);
+        await using var harness = await Harness.StartAsync(_mockAgent, ["tc_a", "tc_b", "tc_c"], publisher: publisher);
 
         await harness.Loop.ResolveToolCallAsync("tc_a", "result-a");
         await harness.Loop.ResolveToolCallAsync("tc_b", "result-b");
@@ -228,19 +242,15 @@ public class DelayedResultChildRunTests
         await harness.WaitForProviderCallsAsync(2);
 
         var runsStarted = publisher.Payloads<RunStartedPayload>(LifecycleEventTypes.RunStarted);
-        var children = runsStarted
-            .Where(r => r.Cause.Kind == LifecycleRunCauseKinds.ToolResult)
-            .ToList();
+        var children = runsStarted.Where(r => r.Cause.Kind == LifecycleRunCauseKinds.ToolResult).ToList();
         children.Should().HaveCount(3, "one child run per resolved result — no batching, no skipping");
         children.Select(c => c.RunId).Should().OnlyHaveUniqueItems();
-        children
-            .Select(c => c.Cause.ToolCallId)
-            .Should()
-            .BeEquivalentTo(["tc_a", "tc_b", "tc_c"]);
+        children.Select(c => c.Cause.ToolCallId).Should().BeEquivalentTo(["tc_a", "tc_b", "tc_c"]);
         children.Should().OnlyContain(c => !c.WasForked, "a delayed result continues a line, it does not branch one");
 
-        harness.ProviderCallCount.Should().Be(
-            2, "only the child that cleared the last outstanding call may build a provider request");
+        harness
+            .ProviderCallCount.Should()
+            .Be(2, "only the child that cleared the last outstanding call may build a provider request");
 
         var completions = publisher
             .Payloads<RunCompletedPayload>(LifecycleEventTypes.RunCompleted)
@@ -269,8 +279,7 @@ public class DelayedResultChildRunTests
     public async Task ResolutionOrderDoesNotDecideTheOwner_TheLastOneOutstandingDoes()
     {
         var publisher = new RecordingLifecyclePublisher();
-        await using var harness = await Harness.StartAsync(
-            _mockAgent, ["tc_a", "tc_b"], publisher: publisher);
+        await using var harness = await Harness.StartAsync(_mockAgent, ["tc_a", "tc_b"], publisher: publisher);
 
         // Deliberately backwards: the call requested second resolves first.
         await harness.Loop.ResolveToolCallAsync("tc_b", "result-b");
@@ -285,8 +294,7 @@ public class DelayedResultChildRunTests
         publisher
             .Payloads<RunCompletedPayload>(LifecycleEventTypes.RunCompleted)
             .Single(c => c.RunId == owner.RunId)
-            .Outcome
-            .Should()
+            .Outcome.Should()
             .Be(LifecycleRunOutcomes.Completed, "ownership follows what is left outstanding, not arrival order");
     }
 
@@ -308,20 +316,24 @@ public class DelayedResultChildRunTests
             .Should()
             .ContainSingle(r => r.Cause.Kind == LifecycleRunCauseKinds.ToolResult)
             .Subject;
-        child.Cause.ToolCallId.Should().Be(
-            "tc_1", "the cause is the tool call that resolved — nothing synthetic is invented to stand in for it");
+        child
+            .Cause.ToolCallId.Should()
+            .Be("tc_1", "the cause is the tool call that resolved — nothing synthetic is invented to stand in for it");
 
         harness.SecondRequest.Should().NotBeNull();
-        harness.SecondRequest!
-            .OfType<TextMessage>()
+        harness
+            .SecondRequest!.OfType<TextMessage>()
             .Should()
             .NotContain(
                 m => m.Role == Role.User && m.Text != "Go",
-                "no fabricated user message is appended to explain the result");
+                "no fabricated user message is appended to explain the result"
+            );
 
         ResultsFor(harness.SecondRequest!, "tc_1")
             .Should()
-            .ContainSingle("the resolution fills the placeholder in place; carrying it as a cause must not append it again")
+            .ContainSingle(
+                "the resolution fills the placeholder in place; carrying it as a cause must not append it again"
+            )
             .Which.Should()
             .Be("the-answer");
     }
@@ -358,9 +370,12 @@ public class DelayedResultChildRunTests
             .Should()
             .ContainSingle(p => p.WasDeferred)
             .Subject;
-        toolCompleted.RunId.Should().Be(
-            harness.OriginatingRunId,
-            "the tool belongs to the run that asked for it, however long the answer took to arrive");
+        toolCompleted
+            .RunId.Should()
+            .Be(
+                harness.OriginatingRunId,
+                "the tool belongs to the run that asked for it, however long the answer took to arrive"
+            );
         toolCompleted.ToolCallId.Should().Be("tc_1");
         toolCompleted.Outcome.Should().Be(LifecycleToolOutcomes.Succeeded);
 
@@ -412,18 +427,18 @@ public class DelayedResultChildRunTests
     /// <summary>The tool results a thread actually has on disk, rehydrated from persistence.</summary>
     private static async Task<IReadOnlyList<ToolCallResultMessage>> LoadResultsAsync(
         IConversationStore store,
-        string threadId)
+        string threadId
+    )
     {
         var persisted = await store.LoadMessagesAsync(threadId);
-        return [.. MessagePersistenceConverter
-            .FromPersistedMessages(persisted)
-            .OfType<ToolCallResultMessage>()];
+        return [.. MessagePersistenceConverter.FromPersistedMessages(persisted).OfType<ToolCallResultMessage>()];
     }
 
     private static int IndexOf(
         IReadOnlyList<AchieveAi.LmDotnetTools.LmLifecycle.LifecycleEventEnvelope> events,
         string eventType,
-        string runId)
+        string runId
+    )
     {
         var index = events
             .Select((e, i) => (e, i))
@@ -440,17 +455,14 @@ public class DelayedResultChildRunTests
     /// caught across both shapes — counting only one of them would miss the duplicate.
     /// </remarks>
     private static IReadOnlyList<string> ResultsFor(IReadOnlyList<IMessage> request, string toolCallId) =>
-    [
-        .. request
-            .OfType<ToolCallResultMessage>()
-            .Where(m => m.ToolCallId == toolCallId)
-            .Select(m => m.Result),
-        .. request
-            .OfType<ToolsCallResultMessage>()
-            .SelectMany(m => m.ToolCallResults)
-            .Where(r => r.ToolCallId == toolCallId)
-            .Select(r => r.Result),
-    ];
+        [
+            .. request.OfType<ToolCallResultMessage>().Where(m => m.ToolCallId == toolCallId).Select(m => m.Result),
+            .. request
+                .OfType<ToolsCallResultMessage>()
+                .SelectMany(m => m.ToolCallResults)
+                .Where(r => r.ToolCallId == toolCallId)
+                .Select(r => r.Result),
+        ];
 
     /// <summary>
     /// A loop whose first turn deferred every tool call it made, parked and waiting for results.
@@ -516,33 +528,36 @@ public class DelayedResultChildRunTests
             string toolCallId,
             IConversationStore? store = null,
             IRunLifecycleStore? lifecycleStore = null,
-            RecordingLifecyclePublisher? publisher = null) =>
-            StartAsync(mockAgent, [toolCallId], store, lifecycleStore, publisher);
+            RecordingLifecyclePublisher? publisher = null
+        ) => StartAsync(mockAgent, [toolCallId], store, lifecycleStore, publisher);
 
         public static async Task<Harness> StartAsync(
             Mock<IStreamingAgent> mockAgent,
             IReadOnlyList<string> toolCallIds,
             IConversationStore? store = null,
             IRunLifecycleStore? lifecycleStore = null,
-            RecordingLifecyclePublisher? publisher = null)
+            RecordingLifecyclePublisher? publisher = null
+        )
         {
             store ??= new InMemoryConversationStore();
             var threadId = $"thread-{Guid.NewGuid():N}";
 
-            var services = publisher == null && lifecycleStore == null
-                ? null
-                : new MultiTurnLifecycleServices
-                {
-                    Publisher = publisher ?? (ILifecyclePublisher)NullLifecyclePublisher.Instance,
-                    LifecycleStore = lifecycleStore,
-                };
+            var services =
+                publisher == null && lifecycleStore == null
+                    ? null
+                    : new MultiTurnLifecycleServices
+                    {
+                        Publisher = publisher ?? (ILifecyclePublisher)NullLifecyclePublisher.Instance,
+                        LifecycleStore = lifecycleStore,
+                    };
 
             var loop = new MultiTurnAgentLoop(
                 mockAgent.Object,
                 BuildRegistry(toolCallIds),
                 threadId,
                 store: store,
-                lifecycleServices: services);
+                lifecycleServices: services
+            );
 
             var harness = new Harness(loop, store, threadId, toolCallIds.Count);
             SetupProvider(mockAgent, toolCallIds, harness);
@@ -582,7 +597,8 @@ public class DelayedResultChildRunTests
                     .Should()
                     .BeTrue(
                         $"the provider should have been called {count} times, but call {seen + 1} "
-                            + $"never arrived within {WaitBudget}");
+                            + $"never arrived within {WaitBudget}"
+                    );
             }
 
             ProviderCallCount.Should().BeGreaterThanOrEqualTo(count);
@@ -597,7 +613,8 @@ public class DelayedResultChildRunTests
                     .Should()
                     .BeTrue(
                         $"{expectedCompletions} run(s) should have completed, but completion "
-                            + $"{seen + 1} never arrived within {WaitBudget}");
+                            + $"{seen + 1} never arrived within {WaitBudget}"
+                    );
             }
         }
 
@@ -616,7 +633,8 @@ public class DelayedResultChildRunTests
                         Description = $"Defers, for {name}",
                         Parameters = [],
                     },
-                    (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+                    (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred())
+                );
             }
 
             return registry;
@@ -628,51 +646,57 @@ public class DelayedResultChildRunTests
         private static void SetupProvider(
             Mock<IStreamingAgent> mockAgent,
             IReadOnlyList<string> toolCallIds,
-            Harness? harness)
+            Harness? harness
+        )
         {
             var calls = 0;
             mockAgent
-                .Setup(a => a.GenerateReplyStreamingAsync(
-                    It.IsAny<IEnumerable<IMessage>>(),
-                    It.IsAny<GenerateReplyOptions>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((msgs, _, _) =>
-                {
-                    var call = Interlocked.Increment(ref calls);
-                    if (harness != null)
+                .Setup(a =>
+                    a.GenerateReplyStreamingAsync(
+                        It.IsAny<IEnumerable<IMessage>>(),
+                        It.IsAny<GenerateReplyOptions>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                    (msgs, _, _) =>
                     {
-                        Interlocked.Increment(ref harness._providerCallCount);
-                    }
-
-                    IAsyncEnumerable<IMessage> reply;
-                    if (call == 1)
-                    {
-                        reply = ToAsyncEnumerable(
-                            [.. toolCallIds.Select(id => new ToolCallMessage
-                            {
-                                FunctionName = ToolNameFor(id),
-                                FunctionArgs = "{}",
-                                ToolCallId = id,
-                                Role = Role.Assistant,
-                            })]);
-                    }
-                    else
-                    {
-                        if (harness != null && call == 2)
+                        var call = Interlocked.Increment(ref calls);
+                        if (harness != null)
                         {
-                            harness.SecondRequest = [.. msgs];
+                            Interlocked.Increment(ref harness._providerCallCount);
                         }
 
-                        reply = ToAsyncEnumerable(
-                            [new TextMessage { Text = "all done", Role = Role.Assistant }]);
-                    }
+                        IAsyncEnumerable<IMessage> reply;
+                        if (call == 1)
+                        {
+                            reply = ToAsyncEnumerable([
+                                .. toolCallIds.Select(id => new ToolCallMessage
+                                {
+                                    FunctionName = ToolNameFor(id),
+                                    FunctionArgs = "{}",
+                                    ToolCallId = id,
+                                    Role = Role.Assistant,
+                                }),
+                            ]);
+                        }
+                        else
+                        {
+                            if (harness != null && call == 2)
+                            {
+                                harness.SecondRequest = [.. msgs];
+                            }
 
-                    // Released last, after everything this call records. A waiter that woke on the
-                    // counter alone could observe the call and read a SecondRequest not yet
-                    // assigned; releasing here both orders the two and publishes the write.
-                    harness?._providerCalled.Release();
-                    return Task.FromResult(reply);
-                });
+                            reply = ToAsyncEnumerable([new TextMessage { Text = "all done", Role = Role.Assistant }]);
+                        }
+
+                        // Released last, after everything this call records. A waiter that woke on the
+                        // counter alone could observe the call and read a SecondRequest not yet
+                        // assigned; releasing here both orders the two and publishes the write.
+                        harness?._providerCalled.Release();
+                        return Task.FromResult(reply);
+                    }
+                );
         }
 
         private static string ToolNameFor(string toolCallId) => $"defer_{toolCallId}";
@@ -685,41 +709,44 @@ public class DelayedResultChildRunTests
             // Not the harness token: a cancelled one would skip the body and leave the pending move
             // unobserved. Enumerating starts on this thread so the subscription is attached before
             // the caller sends anything — a late subscriber gets no replay and would wait forever.
-            _ = Task.Run(async () =>
-            {
-                try
+            _ = Task.Run(
+                async () =>
                 {
-                    for (var has = await first; has; has = await messages.MoveNextAsync())
+                    try
                     {
-                        if (messages.Current is not RunCompletedMessage completed)
+                        for (var has = await first; has; has = await messages.MoveNextAsync())
                         {
-                            continue;
-                        }
+                            if (messages.Current is not RunCompletedMessage completed)
+                            {
+                                continue;
+                            }
 
-                        lock (_gate)
-                        {
-                            _completedRunIds.Add(completed.CompletedRunId);
-                        }
+                            lock (_gate)
+                            {
+                                _completedRunIds.Add(completed.CompletedRunId);
+                            }
 
-                        if (_firstRunCompleted.TrySetResult(true))
-                        {
-                            OriginatingRunId = completed.CompletedRunId;
-                        }
+                            if (_firstRunCompleted.TrySetResult(true))
+                            {
+                                OriginatingRunId = completed.CompletedRunId;
+                            }
 
-                        // Released after the recording, so a waiter that wakes on it sees the run
-                        // it woke for already in the list.
-                        _runCompleted.Release();
+                            // Released after the recording, so a waiter that wakes on it sees the run
+                            // it woke for already in the list.
+                            _runCompleted.Release();
+                        }
                     }
-                }
-                catch (OperationCanceledException)
-                {
-                    // Cancelling the token is how the harness ends the subscription.
-                }
-                finally
-                {
-                    await messages.DisposeAsync();
-                }
-            }, CancellationToken.None);
+                    catch (OperationCanceledException)
+                    {
+                        // Cancelling the token is how the harness ends the subscription.
+                    }
+                    finally
+                    {
+                        await messages.DisposeAsync();
+                    }
+                },
+                CancellationToken.None
+            );
         }
 
         public async ValueTask DisposeAsync()
@@ -736,7 +763,8 @@ public class DelayedResultChildRunTests
 
         private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
             IEnumerable<IMessage> messages,
-            [EnumeratorCancellation] CancellationToken ct = default)
+            [EnumeratorCancellation] CancellationToken ct = default
+        )
         {
             foreach (var msg in messages)
             {
@@ -771,24 +799,27 @@ public class DelayedResultChildRunTests
 
         public Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
             string threadId,
-            CancellationToken ct = default) => inner.ListRunLifecycleAsync(threadId, ct);
+            CancellationToken ct = default
+        ) => inner.ListRunLifecycleAsync(threadId, ct);
 
         public Task<IReadOnlyList<RunLifecycleState>> ListNonTerminalRunsAsync(
             string threadId,
-            CancellationToken ct = default) => inner.ListNonTerminalRunsAsync(threadId, ct);
+            CancellationToken ct = default
+        ) => inner.ListNonTerminalRunsAsync(threadId, ct);
 
         public Task<bool> TryMarkRunTerminalAsync(
             string runId,
             string outcome,
             int turnCount,
             DateTimeOffset terminalAt,
-            CancellationToken ct = default) =>
-            inner.TryMarkRunTerminalAsync(runId, outcome, turnCount, terminalAt, ct);
+            CancellationToken ct = default
+        ) => inner.TryMarkRunTerminalAsync(runId, outcome, turnCount, terminalAt, ct);
 
         public Task<DeferredToolCallRecord> RecordDeferredToolCallAsync(
             string runId,
             DeferredToolCallRecord record,
-            CancellationToken ct = default) => inner.RecordDeferredToolCallAsync(runId, record, ct);
+            CancellationToken ct = default
+        ) => inner.RecordDeferredToolCallAsync(runId, record, ct);
 
         public async Task<DeferredResolutionOutcome> TryResolveDeferredToolCallAsync(
             string threadId,
@@ -796,7 +827,8 @@ public class DelayedResultChildRunTests
             string resolutionFingerprint,
             string? childRunId,
             DateTimeOffset resolvedAt,
-            CancellationToken ct = default)
+            CancellationToken ct = default
+        )
         {
             if (BeforeResolve != null)
             {
@@ -806,7 +838,13 @@ public class DelayedResultChildRunTests
             return FailResolutions
                 ? throw new InvalidOperationException("the store is unavailable")
                 : await inner.TryResolveDeferredToolCallAsync(
-                    threadId, toolCallId, resolutionFingerprint, childRunId, resolvedAt, ct);
+                    threadId,
+                    toolCallId,
+                    resolutionFingerprint,
+                    childRunId,
+                    resolvedAt,
+                    ct
+                );
         }
 
         public Task<string?> AttachDeferredChildRunAsync(
@@ -814,8 +852,8 @@ public class DelayedResultChildRunTests
             string toolCallId,
             string childRunId,
             DateTimeOffset attachedAt,
-            CancellationToken ct = default) =>
-            inner.AttachDeferredChildRunAsync(threadId, toolCallId, childRunId, attachedAt, ct);
+            CancellationToken ct = default
+        ) => inner.AttachDeferredChildRunAsync(threadId, toolCallId, childRunId, attachedAt, ct);
     }
 
     #endregion

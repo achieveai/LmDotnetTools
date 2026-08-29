@@ -28,9 +28,7 @@ public sealed class ReviewBranchManagerRealGitTests : LoggingTestBase
     private const string NotesBranch = "review/widgets-42";
 
     public ReviewBranchManagerRealGitTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     /// <summary>
     /// The item-6 acceptance, end to end: after the merge the entries BOTH survive and both listings
@@ -64,7 +62,11 @@ public sealed class ReviewBranchManagerRealGitTests : LoggingTestBase
         // Pushed, not merely resolved in the working tree: origin's default branch must carry it, because a
         // repair that never leaves the store checkout is repaired for nobody.
         var pushedIndex = await fixture.GitAsync(
-            store, CancellationToken.None, "show", $"origin/{DefaultBranch}:KnowledgeBase/_index.jsonl");
+            store,
+            CancellationToken.None,
+            "show",
+            $"origin/{DefaultBranch}:KnowledgeBase/_index.jsonl"
+        );
         pushedIndex.Should().Contain("system/b.md");
 
         // The notes branch is deleted only after a successful push, so its absence is the merge's receipt.
@@ -89,15 +91,18 @@ public sealed class ReviewBranchManagerRealGitTests : LoggingTestBase
 
         merged.Should().BeTrue();
 
-        RealGitFixture.Read(store, "KnowledgeBase/system/b.md")
+        RealGitFixture
+            .Read(store, "KnowledgeBase/system/b.md")
             .Should()
             .NotBeNull("`-X theirs` resolves per conflicting hunk; b.md is a different path, so nothing touched it");
-        RealGitFixture.Read(store, "KnowledgeBase/_index.jsonl")
+        RealGitFixture
+            .Read(store, "KnowledgeBase/_index.jsonl")
             .Should()
             .Contain("system/a.md")
             .And.NotContain(
                 "system/b.md",
-                "the listings are whole-file rewrites, so `theirs` took the notes branch's copy wholesale");
+                "the listings are whole-file rewrites, so `theirs` took the notes branch's copy wholesale"
+            );
         RealGitFixture.Read(store, "KnowledgeBase/_toc.md").Should().NotContain("system/b.md");
     }
 
@@ -126,7 +131,11 @@ public sealed class ReviewBranchManagerRealGitTests : LoggingTestBase
         RealGitFixture.Read(store, "KnowledgeBase/_toc.md").Should().Contain("system/b.md");
 
         var pushedIndex = await fixture.GitAsync(
-            store, CancellationToken.None, "show", $"origin/{DefaultBranch}:KnowledgeBase/_index.jsonl");
+            store,
+            CancellationToken.None,
+            "show",
+            $"origin/{DefaultBranch}:KnowledgeBase/_index.jsonl"
+        );
         pushedIndex.Should().Contain("system/b.md");
     }
 
@@ -153,7 +162,8 @@ public sealed class ReviewBranchManagerRealGitTests : LoggingTestBase
             .Should()
             .Be(
                 int.Parse(before, System.Globalization.CultureInfo.InvariantCulture) + 1,
-                "the fast-forward advances by the notes commit alone; the rebuild must have nothing to add");
+                "the fast-forward advances by the notes commit alone; the rebuild must have nothing to add"
+            );
         var subject = await fixture.GitAsync(store, CancellationToken.None, "log", "-1", "--format=%s");
         subject.Should().NotContain("rebuild the knowledge listings");
     }
@@ -186,11 +196,12 @@ public sealed class ReviewBranchManagerRealGitTests : LoggingTestBase
 
         // Non-vacuity: the first push really was rejected and the retry really ran. Without this the test
         // would keep passing if the race stopped racing — a fast-forwarding push asserts nothing at all.
-        fixture.Commands
-            .Should()
+        fixture
+            .Commands.Should()
             .Contain(
                 c => c.Contains($"pull --rebase origin {DefaultBranch}", StringComparison.Ordinal),
-                "the point of this test is the retry path, which only runs after a rejected push");
+                "the point of this test is the retry path, which only runs after a rejected push"
+            );
 
         // Either outcome is correct by design and both are non-losing: the rebase applies (and the retry
         // pushes) or it conflicts, in which case the branch is KEPT and the next sweep re-merges non-ff.
@@ -198,20 +209,28 @@ public sealed class ReviewBranchManagerRealGitTests : LoggingTestBase
         if (merged)
         {
             var pushed = await fixture.GitAsync(
-                store, CancellationToken.None, "show", $"origin/{DefaultBranch}:KnowledgeBase/_index.jsonl");
+                store,
+                CancellationToken.None,
+                "show",
+                $"origin/{DefaultBranch}:KnowledgeBase/_index.jsonl"
+            );
             var entries = await ListedEntriesAsync(fixture, store);
             foreach (var entry in entries)
             {
-                pushed.Should().Contain(
-                    entry,
-                    "an entry that reached the default branch unindexed is unreachable to every reader");
+                pushed
+                    .Should()
+                    .Contain(
+                        entry,
+                        "an entry that reached the default branch unindexed is unreachable to every reader"
+                    );
             }
         }
         else
         {
             var branches = await fixture.GitAsync(store, CancellationToken.None, "branch", "-r");
-            branches.Should().Contain(
-                NotesBranch, "a failed push must keep the notes branch so the next sweep can re-merge it");
+            branches
+                .Should()
+                .Contain(NotesBranch, "a failed push must keep the notes branch so the next sweep can re-merge it");
         }
     }
 
@@ -255,14 +274,18 @@ public sealed class ReviewBranchManagerRealGitTests : LoggingTestBase
             // Wired exactly as Program.cs wires the sweeper's manager, so what these tests exercise is the
             // production pairing and not a test-only regenerator.
             var regenerator = new KnowledgeIndexRegenerator(
-                fileSystem, LoggerFactory.CreateLogger<KnowledgeIndexRegenerator>());
-            rebuild = (root, ct) => regenerator.RegenerateAsync(
-                $"{root.TrimEnd('/', '\\')}/{KnowledgeIndexRegenerator.KnowledgeBaseDirectory}", ct);
+                fileSystem,
+                LoggerFactory.CreateLogger<KnowledgeIndexRegenerator>()
+            );
+            rebuild = (root, ct) =>
+                regenerator.RegenerateAsync(
+                    $"{root.TrimEnd('/', '\\')}/{KnowledgeIndexRegenerator.KnowledgeBaseDirectory}",
+                    ct
+                );
         }
 
         _ = repoRoot;
-        return new ReviewBranchManager(
-            git, fileSystem, LoggerFactory.CreateLogger<ReviewBranchManager>(), rebuild);
+        return new ReviewBranchManager(git, fileSystem, LoggerFactory.CreateLogger<ReviewBranchManager>(), rebuild);
     }
 
     /// <summary>
@@ -352,8 +375,7 @@ public sealed class ReviewBranchManagerRealGitTests : LoggingTestBase
     /// <summary>The entry files present in the checkout, as KB-relative paths.</summary>
     private static async Task<IReadOnlyList<string>> ListedEntriesAsync(RealGitFixture fixture, string repoRoot)
     {
-        var listed = await fixture.GitAsync(
-            repoRoot, CancellationToken.None, "ls-files", "--", "KnowledgeBase/system");
+        var listed = await fixture.GitAsync(repoRoot, CancellationToken.None, "ls-files", "--", "KnowledgeBase/system");
         return
         [
             .. listed
@@ -377,7 +399,10 @@ public sealed class ReviewBranchManagerRealGitTests : LoggingTestBase
     /// </summary>
     private async Task RegenerateAsync(string repoPath) =>
         _ = await new KnowledgeIndexRegenerator(
-                new HostFileSystem(), LoggerFactory.CreateLogger<KnowledgeIndexRegenerator>())
-            .RegenerateAsync(
-                Path.Combine(repoPath, KnowledgeIndexRegenerator.KnowledgeBaseDirectory), CancellationToken.None);
+            new HostFileSystem(),
+            LoggerFactory.CreateLogger<KnowledgeIndexRegenerator>()
+        ).RegenerateAsync(
+            Path.Combine(repoPath, KnowledgeIndexRegenerator.KnowledgeBaseDirectory),
+            CancellationToken.None
+        );
 }

@@ -34,13 +34,16 @@ public static class MockProviderHostBuilder
     public static WebApplication Build(
         ScriptedSseResponder responder,
         string[]? urls = null,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null
+    )
     {
         ArgumentNullException.ThrowIfNull(responder);
 
         var openAiHandler = responder.AsOpenAiHandler(loggerFactory?.CreateLogger("MockProviderHost.OpenAi"));
         var anthropicHandler = responder.AsAnthropicHandler(loggerFactory?.CreateLogger("MockProviderHost.Anthropic"));
-        var responsesHandler = responder.AsOpenAiResponsesHandler(loggerFactory?.CreateLogger("MockProviderHost.OpenAiResponses"));
+        var responsesHandler = responder.AsOpenAiResponsesHandler(
+            loggerFactory?.CreateLogger("MockProviderHost.OpenAiResponses")
+        );
 
         return BuildFromHandlers(openAiHandler, anthropicHandler, responsesHandler, responder, urls, loggerFactory);
     }
@@ -64,7 +67,8 @@ public static class MockProviderHostBuilder
         HttpMessageHandler? responsesHandler = null,
         ScriptedSseResponder? responsesResponder = null,
         string[]? urls = null,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null
+    )
     {
         ArgumentNullException.ThrowIfNull(openAiHandler);
         ArgumentNullException.ThrowIfNull(anthropicHandler);
@@ -99,10 +103,7 @@ public static class MockProviderHostBuilder
         };
         HttpClient? responsesClient = responsesHandler is null
             ? null
-            : new HttpClient(responsesHandler, disposeHandler: true)
-            {
-                BaseAddress = new Uri("http://mock.local/"),
-            };
+            : new HttpClient(responsesHandler, disposeHandler: true) { BaseAddress = new Uri("http://mock.local/") };
 
         // Dispose the in-process clients (and their wrapped handlers) when the host shuts down.
         _ = app.Lifetime.ApplicationStopping.Register(() =>
@@ -114,41 +115,52 @@ public static class MockProviderHostBuilder
 
         _ = app.MapGet("/healthz", () => Results.Text("ok", "text/plain"));
 
-        _ = app.MapPost("/v1/chat/completions", ctx =>
-            ForwardAsync(ctx, openAiClient, "/v1/chat/completions", openAiHeaders: true));
+        _ = app.MapPost(
+            "/v1/chat/completions",
+            ctx => ForwardAsync(ctx, openAiClient, "/v1/chat/completions", openAiHeaders: true)
+        );
 
-        _ = app.MapPost("/v1/messages", ctx =>
-            ForwardAsync(ctx, anthropicClient, "/v1/messages", openAiHeaders: false));
+        _ = app.MapPost(
+            "/v1/messages",
+            ctx => ForwardAsync(ctx, anthropicClient, "/v1/messages", openAiHeaders: false)
+        );
 
         if (responsesClient is not null)
         {
-            _ = app.MapPost("/v1/responses", ctx =>
-                ForwardAsync(ctx, responsesClient, "/v1/responses", openAiHeaders: true));
+            _ = app.MapPost(
+                "/v1/responses",
+                ctx => ForwardAsync(ctx, responsesClient, "/v1/responses", openAiHeaders: true)
+            );
         }
 
         if (responsesResponder is not null)
         {
             // Only GET upgrades to WebSocket — POST is handled above for HTTP+SSE, and
             // restricting this route prevents future verbs from being silently swallowed.
-            _ = app.MapGet("/v1/responses", async ctx =>
-            {
-                var logger = ctx.RequestServices.GetService<ILoggerFactory>()
-                    ?.CreateLogger("MockProviderHost.OpenAiResponsesWs");
-                if (!ctx.WebSockets.IsWebSocketRequest)
+            _ = app.MapGet(
+                "/v1/responses",
+                async ctx =>
                 {
-                    // Match real Responses API behavior: clients must upgrade to a WebSocket.
-                    ctx.Response.StatusCode = StatusCodes.Status426UpgradeRequired;
-                    ctx.Response.Headers["Upgrade"] = "websocket";
-                    ctx.Response.Headers["Connection"] = "Upgrade";
-                    await ctx.Response.WriteAsync(
-                        "WebSocket upgrade required for /v1/responses (use POST for HTTP+SSE)");
-                    return;
-                }
+                    var logger = ctx
+                        .RequestServices.GetService<ILoggerFactory>()
+                        ?.CreateLogger("MockProviderHost.OpenAiResponsesWs");
+                    if (!ctx.WebSockets.IsWebSocketRequest)
+                    {
+                        // Match real Responses API behavior: clients must upgrade to a WebSocket.
+                        ctx.Response.StatusCode = StatusCodes.Status426UpgradeRequired;
+                        ctx.Response.Headers["Upgrade"] = "websocket";
+                        ctx.Response.Headers["Connection"] = "Upgrade";
+                        await ctx.Response.WriteAsync(
+                            "WebSocket upgrade required for /v1/responses (use POST for HTTP+SSE)"
+                        );
+                        return;
+                    }
 
-                using var socket = await ctx.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
-                await ServeResponsesWebSocketAsync(socket, responsesResponder, logger, ctx.RequestAborted)
-                    .ConfigureAwait(false);
-            });
+                    using var socket = await ctx.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
+                    await ServeResponsesWebSocketAsync(socket, responsesResponder, logger, ctx.RequestAborted)
+                        .ConfigureAwait(false);
+                }
+            );
         }
 
         // Catch-all so mismatched paths surface a logged 404 rather than failing silently —
@@ -156,16 +168,15 @@ public static class MockProviderHostBuilder
         // present as "the CLI completes with no rendered content" (see issue #29).
         _ = app.MapFallback(async ctx =>
         {
-            var logger = ctx.RequestServices.GetService<ILoggerFactory>()
-                ?.CreateLogger("MockProviderHost.Unmatched");
+            var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("MockProviderHost.Unmatched");
             logger?.LogWarning(
                 "Unmatched request: {Method} {Path}{Query} (host expected /healthz, /v1/chat/completions, /v1/messages)",
                 ctx.Request.Method,
                 ctx.Request.Path,
-                ctx.Request.QueryString);
+                ctx.Request.QueryString
+            );
             ctx.Response.StatusCode = StatusCodes.Status404NotFound;
-            await ctx.Response.WriteAsync(
-                $"Mock provider host: no route for {ctx.Request.Method} {ctx.Request.Path}");
+            await ctx.Response.WriteAsync($"Mock provider host: no route for {ctx.Request.Method} {ctx.Request.Path}");
         });
 
         return app;
@@ -175,7 +186,8 @@ public static class MockProviderHostBuilder
         WebSocket socket,
         ScriptedSseResponder responder,
         ILogger? logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var receiveBuffer = new byte[8 * 1024];
 
@@ -184,7 +196,8 @@ public static class MockProviderHostBuilder
             string? frameText;
             try
             {
-                frameText = await ReadFullTextFrameAsync(socket, receiveBuffer, cancellationToken).ConfigureAwait(false);
+                frameText = await ReadFullTextFrameAsync(socket, receiveBuffer, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (WebSocketException wsEx)
             {
@@ -206,54 +219,61 @@ public static class MockProviderHostBuilder
             {
                 logger?.LogWarning(ex, "Malformed JSON on WebSocket frame; closing");
                 await TryCloseAsync(
-                    socket,
-                    WebSocketCloseStatus.InvalidPayloadData,
-                    "Invalid JSON",
-                    cancellationToken,
-                    logger
-                ).ConfigureAwait(false);
+                        socket,
+                        WebSocketCloseStatus.InvalidPayloadData,
+                        "Invalid JSON",
+                        cancellationToken,
+                        logger
+                    )
+                    .ConfigureAwait(false);
                 return;
             }
 
             using (doc)
             {
                 var root = doc.RootElement;
-                if (root.ValueKind != JsonValueKind.Object
+                if (
+                    root.ValueKind != JsonValueKind.Object
                     || !root.TryGetProperty("type", out var typeProp)
                     || typeProp.ValueKind != JsonValueKind.String
-                    || typeProp.GetString() != ResponseEventTypes.ClientResponseCreate)
+                    || typeProp.GetString() != ResponseEventTypes.ClientResponseCreate
+                )
                 {
                     logger?.LogWarning("Frame missing or invalid 'type' = response.create; closing");
                     await TryCloseAsync(
-                        socket,
-                        WebSocketCloseStatus.InvalidPayloadData,
-                        "Expected response.create",
-                        cancellationToken,
-                        logger
-                    ).ConfigureAwait(false);
+                            socket,
+                            WebSocketCloseStatus.InvalidPayloadData,
+                            "Expected response.create",
+                            cancellationToken,
+                            logger
+                        )
+                        .ConfigureAwait(false);
                     return;
                 }
 
                 var ctx = BuildResponsesContext(root);
-                var model = root.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String
-                    ? m.GetString()
-                    : null;
+                var model =
+                    root.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String
+                        ? m.GetString()
+                        : null;
 
                 try
                 {
-                    await responder.EmitResponseEventsAsync(socket, ctx, model, cancellationToken)
+                    await responder
+                        .EmitResponseEventsAsync(socket, ctx, model, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     logger?.LogError(ex, "Failure while emitting WebSocket events");
                     await TryCloseAsync(
-                        socket,
-                        WebSocketCloseStatus.InternalServerError,
-                        "Emit failure",
-                        CancellationToken.None,
-                        logger
-                    ).ConfigureAwait(false);
+                            socket,
+                            WebSocketCloseStatus.InternalServerError,
+                            "Emit failure",
+                            CancellationToken.None,
+                            logger
+                        )
+                        .ConfigureAwait(false);
                     return;
                 }
             }
@@ -263,16 +283,9 @@ public static class MockProviderHostBuilder
         {
             // If the request was aborted, the original token is already cancelled; pass
             // CancellationToken.None so the close frame can still be written before we exit.
-            var closeToken = cancellationToken.IsCancellationRequested
-                ? CancellationToken.None
-                : cancellationToken;
-            await TryCloseAsync(
-                socket,
-                WebSocketCloseStatus.NormalClosure,
-                "session ended",
-                closeToken,
-                logger
-            ).ConfigureAwait(false);
+            var closeToken = cancellationToken.IsCancellationRequested ? CancellationToken.None : cancellationToken;
+            await TryCloseAsync(socket, WebSocketCloseStatus.NormalClosure, "session ended", closeToken, logger)
+                .ConfigureAwait(false);
         }
     }
 
@@ -288,7 +301,8 @@ public static class MockProviderHostBuilder
         WebSocketCloseStatus status,
         string description,
         CancellationToken cancellationToken,
-        ILogger? logger)
+        ILogger? logger
+    )
     {
         if (socket.State != WebSocketState.Open)
         {
@@ -299,9 +313,7 @@ public static class MockProviderHostBuilder
         {
             await socket.CloseAsync(status, description, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is WebSocketException
-                                   or OperationCanceledException
-                                   or ObjectDisposedException)
+        catch (Exception ex) when (ex is WebSocketException or OperationCanceledException or ObjectDisposedException)
         {
             logger?.LogDebug(ex, "Best-effort WebSocket close ({Status}) failed", status);
         }
@@ -310,7 +322,8 @@ public static class MockProviderHostBuilder
     private static async Task<string?> ReadFullTextFrameAsync(
         WebSocket socket,
         byte[] buffer,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var sb = new StringBuilder();
         while (true)
@@ -320,11 +333,9 @@ public static class MockProviderHostBuilder
             {
                 if (socket.State == WebSocketState.CloseReceived)
                 {
-                    await socket.CloseAsync(
-                        WebSocketCloseStatus.NormalClosure,
-                        "client closed",
-                        cancellationToken
-                    ).ConfigureAwait(false);
+                    await socket
+                        .CloseAsync(WebSocketCloseStatus.NormalClosure, "client closed", cancellationToken)
+                        .ConfigureAwait(false);
                 }
 
                 return null;
@@ -340,8 +351,8 @@ public static class MockProviderHostBuilder
 
     private static ScriptedRequestContext BuildResponsesContext(JsonElement root)
     {
-        var systemPrompt = root.TryGetProperty("instructions", out var instr)
-            && instr.ValueKind == JsonValueKind.String
+        var systemPrompt =
+            root.TryGetProperty("instructions", out var instr) && instr.ValueKind == JsonValueKind.String
                 ? instr.GetString() ?? string.Empty
                 : string.Empty;
 
@@ -352,9 +363,11 @@ public static class MockProviderHostBuilder
         {
             foreach (var tool in toolsEl.EnumerateArray())
             {
-                if (tool.ValueKind == JsonValueKind.Object
+                if (
+                    tool.ValueKind == JsonValueKind.Object
                     && tool.TryGetProperty("name", out var n)
-                    && n.ValueKind == JsonValueKind.String)
+                    && n.ValueKind == JsonValueKind.String
+                )
                 {
                     tools.Add(n.GetString()!);
                 }
@@ -371,11 +384,7 @@ public static class MockProviderHostBuilder
         };
     }
 
-    private static async Task ForwardAsync(
-        HttpContext ctx,
-        HttpClient client,
-        string upstreamPath,
-        bool openAiHeaders)
+    private static async Task ForwardAsync(HttpContext ctx, HttpClient client, string upstreamPath, bool openAiHeaders)
     {
         try
         {
@@ -395,10 +404,9 @@ public static class MockProviderHostBuilder
 
             // ScriptedHandler streams back token-by-token, so read response headers first and copy
             // the body as it arrives.
-            using var upstreamResponse = await client.SendAsync(
-                upstreamRequest,
-                HttpCompletionOption.ResponseHeadersRead,
-                ctx.RequestAborted).ConfigureAwait(false);
+            using var upstreamResponse = await client
+                .SendAsync(upstreamRequest, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted)
+                .ConfigureAwait(false);
 
             ctx.Response.StatusCode = (int)upstreamResponse.StatusCode;
 
@@ -428,7 +436,9 @@ public static class MockProviderHostBuilder
             // Copy the (possibly streaming) response body straight through. CopyToAsync flushes
             // periodically, which is sufficient for SSE since each `data:` frame from the inner
             // SseStreamHttpContent crosses a write boundary.
-            await using var upstreamStream = await upstreamResponse.Content.ReadAsStreamAsync(ctx.RequestAborted).ConfigureAwait(false);
+            await using var upstreamStream = await upstreamResponse
+                .Content.ReadAsStreamAsync(ctx.RequestAborted)
+                .ConfigureAwait(false);
             await upstreamStream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
@@ -440,8 +450,7 @@ public static class MockProviderHostBuilder
         {
             // Mock-host failures are otherwise invisible to the test (a generic 500 with no
             // logged cause). Log so failing E2E tests have a diagnostic entry point.
-            var logger = ctx.RequestServices.GetService<ILoggerFactory>()
-                ?.CreateLogger("MockProviderHost.Forward");
+            var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("MockProviderHost.Forward");
             logger?.LogError(ex, "ForwardAsync failed for {Path}", upstreamPath);
             throw;
         }

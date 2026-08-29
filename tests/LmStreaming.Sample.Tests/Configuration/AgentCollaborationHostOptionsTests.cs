@@ -13,9 +13,8 @@ public class AgentCollaborationHostOptionsTests
     private static AgentCollaborationHostOptions Bind(Dictionary<string, string?> values)
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
-        return configuration
-                .GetSection(AgentCollaborationHostOptions.SectionName)
-                .Get<AgentCollaborationHostOptions>() ?? new AgentCollaborationHostOptions();
+        return configuration.GetSection(AgentCollaborationHostOptions.SectionName).Get<AgentCollaborationHostOptions>()
+            ?? new AgentCollaborationHostOptions();
     }
 
     [Fact]
@@ -24,8 +23,7 @@ public class AgentCollaborationHostOptionsTests
         var options = Bind([]);
 
         options.Enabled.Should().BeNull("an unconfigured flag means 'let the mode decide', not 'off'");
-        options.ToCollaborationOptions().Should().BeNull(
-            "absence of the library options object is the feature gate");
+        options.ToCollaborationOptions().Should().BeNull("absence of the library options object is the feature gate");
     }
 
     /// <summary>
@@ -41,12 +39,12 @@ public class AgentCollaborationHostOptionsTests
     [InlineData("true", true, true)] // explicit on beats the mode default
     [InlineData("true", false, true)]
     public void ResolveForMode_HonoursTheExplicitFlagAndFallsBackToTheModeDefault(
-        string? configured, bool defaultEnabled, bool expectEnabled)
+        string? configured,
+        bool defaultEnabled,
+        bool expectEnabled
+    )
     {
-        var values = new Dictionary<string, string?>
-        {
-            ["AgentCollaboration:MaxTotalAgents"] = "64",
-        };
+        var values = new Dictionary<string, string?> { ["AgentCollaboration:MaxTotalAgents"] = "64" };
         if (configured is not null)
         {
             values["AgentCollaboration:Enabled"] = configured;
@@ -71,35 +69,43 @@ public class AgentCollaborationHostOptionsTests
         // The parameterless overload is the backward-compatible seam: no mode, no default-on.
         Bind([]).ToCollaborationOptions().Should().BeNull();
         Bind(new Dictionary<string, string?> { ["AgentCollaboration:Enabled"] = "true" })
-            .ToCollaborationOptions().Should().NotBeNull();
+            .ToCollaborationOptions()
+            .Should()
+            .NotBeNull();
     }
 
     [Fact]
     public void EnabledFalse_LeavesCollaborationOff()
     {
-        var options = Bind(new Dictionary<string, string?>
-        {
-            ["AgentCollaboration:Enabled"] = "false",
-            ["AgentCollaboration:MaxDelegationDepth"] = "3",
-        });
+        var options = Bind(
+            new Dictionary<string, string?>
+            {
+                ["AgentCollaboration:Enabled"] = "false",
+                ["AgentCollaboration:MaxDelegationDepth"] = "3",
+            }
+        );
 
-        options.ToCollaborationOptions().Should().BeNull(
-            "a configured-but-disabled section must not switch the feature on");
+        options
+            .ToCollaborationOptions()
+            .Should()
+            .BeNull("a configured-but-disabled section must not switch the feature on");
     }
 
     [Fact]
     public void EnabledSection_ProjectsEveryBoundValue()
     {
-        var options = Bind(new Dictionary<string, string?>
-        {
-            ["AgentCollaboration:Enabled"] = "true",
-            ["AgentCollaboration:MaxDelegationDepth"] = "3",
-            ["AgentCollaboration:MaxTotalAgents"] = "64",
-            ["AgentCollaboration:MaxInboxMessages"] = "8",
-            ["AgentCollaboration:ClosedEntryRetentionMinutes"] = "5",
-            ["AgentCollaboration:MaxClosedEntries"] = "16",
-            ["AgentCollaboration:TranscriptVisibility"] = "open",
-        });
+        var options = Bind(
+            new Dictionary<string, string?>
+            {
+                ["AgentCollaboration:Enabled"] = "true",
+                ["AgentCollaboration:MaxDelegationDepth"] = "3",
+                ["AgentCollaboration:MaxTotalAgents"] = "64",
+                ["AgentCollaboration:MaxInboxMessages"] = "8",
+                ["AgentCollaboration:ClosedEntryRetentionMinutes"] = "5",
+                ["AgentCollaboration:MaxClosedEntries"] = "16",
+                ["AgentCollaboration:TranscriptVisibility"] = "open",
+            }
+        );
 
         var collaboration = options.ToCollaborationOptions();
 
@@ -109,34 +115,37 @@ public class AgentCollaborationHostOptionsTests
         collaboration.MaxInboxMessages.Should().Be(8);
         collaboration.ClosedEntryRetention.Should().Be(TimeSpan.FromMinutes(5));
         collaboration.MaxClosedEntries.Should().Be(16);
-        collaboration.TranscriptVisibility.Should().Be(TranscriptVisibilityMode.Open,
-            "the mode is parsed case-insensitively so config files need not match enum casing");
+        collaboration
+            .TranscriptVisibility.Should()
+            .Be(
+                TranscriptVisibilityMode.Open,
+                "the mode is parsed case-insensitively so config files need not match enum casing"
+            );
     }
 
     [Fact]
     public void EnabledSection_DefaultsToTheNarrowestVisibility()
     {
-        var options = Bind(new Dictionary<string, string?>
-        {
-            ["AgentCollaboration:Enabled"] = "true",
-        });
+        var options = Bind(new Dictionary<string, string?> { ["AgentCollaboration:Enabled"] = "true" });
 
-        options.ToCollaborationOptions()!.TranscriptVisibility
-            .Should().Be(TranscriptVisibilityMode.Ancestors);
+        options.ToCollaborationOptions()!.TranscriptVisibility.Should().Be(TranscriptVisibilityMode.Ancestors);
     }
 
     [Fact]
     public void UnknownTranscriptVisibility_FailsWithTheAllowedValues()
     {
-        var options = Bind(new Dictionary<string, string?>
-        {
-            ["AgentCollaboration:Enabled"] = "true",
-            ["AgentCollaboration:TranscriptVisibility"] = "everyone",
-        });
+        var options = Bind(
+            new Dictionary<string, string?>
+            {
+                ["AgentCollaboration:Enabled"] = "true",
+                ["AgentCollaboration:TranscriptVisibility"] = "everyone",
+            }
+        );
 
         var act = () => options.ToCollaborationOptions();
 
-        act.Should().Throw<InvalidOperationException>()
+        act.Should()
+            .Throw<InvalidOperationException>()
             .WithMessage("*TranscriptVisibility*")
             .WithMessage("*Ancestors*")
             .WithMessage("*everyone*");
@@ -150,15 +159,19 @@ public class AgentCollaborationHostOptionsTests
     [InlineData("MaxClosedEntries", "0")]
     public void UnusableLimit_IsRejectedAtStartup(string key, string value)
     {
-        var options = Bind(new Dictionary<string, string?>
-        {
-            ["AgentCollaboration:Enabled"] = "true",
-            [$"AgentCollaboration:{key}"] = value,
-        });
+        var options = Bind(
+            new Dictionary<string, string?>
+            {
+                ["AgentCollaboration:Enabled"] = "true",
+                [$"AgentCollaboration:{key}"] = value,
+            }
+        );
 
         var act = () => options.ToCollaborationOptions();
 
-        act.Should().Throw<ArgumentOutOfRangeException>(
-            "the library's own guard should surface the bad bound while the host is still booting");
+        act.Should()
+            .Throw<ArgumentOutOfRangeException>(
+                "the library's own guard should surface the bad bound while the host is still booting"
+            );
     }
 }

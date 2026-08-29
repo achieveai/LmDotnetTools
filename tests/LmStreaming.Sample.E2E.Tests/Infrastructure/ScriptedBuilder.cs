@@ -19,7 +19,8 @@ public sealed class ScriptedBuilder : ITestAgentBuilder
 
     public ScriptedBuilder(
         HttpMessageHandler handler,
-        Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null)
+        Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null
+    )
     {
         _handler = handler ?? throw new ArgumentNullException(nameof(handler));
         _subAgentFactory = subAgentFactory;
@@ -34,7 +35,8 @@ public sealed class ScriptedBuilder : ITestAgentBuilder
     /// </summary>
     public ScriptedBuilder(
         ScriptedSseResponder responder,
-        Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null)
+        Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null
+    )
     {
         _responder = responder ?? throw new ArgumentNullException(nameof(responder));
         _subAgentFactory = subAgentFactory;
@@ -55,7 +57,8 @@ public sealed class ScriptedBuilder : ITestAgentBuilder
 
     public SubAgentOptions? CreateSubAgentOptions(
         ILoggerFactory loggerFactory,
-        Func<IStreamingAgent> providerAgentFactory)
+        Func<IStreamingAgent> providerAgentFactory
+    )
     {
         return _subAgentFactory?.Invoke(loggerFactory, providerAgentFactory);
     }

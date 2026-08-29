@@ -119,10 +119,7 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
                 "Remote tool approval is disabled but the gate was consulted for tool {Tool}; blocking.",
                 context.ToolName
             );
-            return ToolApprovalVerdict.Blocked(
-                CoreOutcomes.MissingApprover,
-                "remote tool approval is disabled"
-            );
+            return ToolApprovalVerdict.Blocked(CoreOutcomes.MissingApprover, "remote tool approval is disabled");
         }
 
         RemoteApprovalTicket? ticket = null;
@@ -164,14 +161,10 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
             ticket = _store.TryRegister(owner, context, approvers.Select(a => a.SubscriptionId));
             if (ticket is null)
             {
-                return ToolApprovalVerdict.Blocked(
-                    CoreOutcomes.Overload,
-                    "too many approvals are already pending"
-                );
+                return ToolApprovalVerdict.Blocked(CoreOutcomes.Overload, "too many approvals are already pending");
             }
 
-            if (!await TryPublishAsync(ticket.Request, approvers, context, cancellationToken)
-                .ConfigureAwait(false))
+            if (!await TryPublishAsync(ticket.Request, approvers, context, cancellationToken).ConfigureAwait(false))
             {
                 return ToolApprovalVerdict.Blocked(
                     CoreOutcomes.HookError,
@@ -181,9 +174,7 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
 
             // The supplied token already carries both the run's cancellation and the effective
             // expiry (see ToolInvocationPreparer), so there is no second timer to get out of step.
-            var decision = await ticket
-                .Decision.WaitAsync(cancellationToken)
-                .ConfigureAwait(false);
+            var decision = await ticket.Decision.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             return WireOutcomes.IsAllowed(decision.Decision)
                 ? ToolApprovalVerdict.Allow()
@@ -217,11 +208,7 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
 
     /// <summary>The owner's subscriptions that are actually allowed to answer an approval.</summary>
     private IReadOnlyList<LifecycleSubscription> CapableApprovers(LifecycleOwnerKey owner) =>
-        [
-            .. _subscriptions
-                .ForOwner(owner)
-                .Where(s => s.HasCapability(LifecycleCapabilities.ToolApprovalDecide)),
-        ];
+        [.. _subscriptions.ForOwner(owner).Where(s => s.HasCapability(LifecycleCapabilities.ToolApprovalDecide))];
 
     /// <summary>
     /// Offers the request to every frozen approver, concurrently.
@@ -255,11 +242,7 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
             try
             {
                 await _publisher
-                    .PublishAsync(
-                        approver,
-                        ForSubscriber(request, approver, context),
-                        cancellationToken
-                    )
+                    .PublishAsync(approver, ForSubscriber(request, approver, context), cancellationToken)
                     .ConfigureAwait(false);
                 return true;
             }
@@ -302,8 +285,6 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
         request with
         {
             SubscriptionId = subscriber.SubscriptionId,
-            Arguments = subscriber.HasCapability(LifecycleCapabilities.ContentFull)
-                ? context.Arguments.Json
-                : null,
+            Arguments = subscriber.HasCapability(LifecycleCapabilities.ContentFull) ? context.Arguments.Json : null,
         };
 }

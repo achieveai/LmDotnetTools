@@ -51,7 +51,14 @@ public class NotifyOrderingTests
         var waitCall = new ToolCallMessage
         {
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "manual", mode = "notify", timeout = "1h" }),
+            FunctionArgs = WaitArgs(
+                new
+                {
+                    kind = "manual",
+                    mode = "notify",
+                    timeout = "1h",
+                }
+            ),
             ToolCallId = "tc_notify",
             Role = Role.Assistant,
         };
@@ -61,26 +68,38 @@ public class NotifyOrderingTests
 
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                return callCount switch
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
                 {
-                    1 => Task.FromResult(ToAsyncEnumerable([waitCall])),
-                    2 => Task.FromResult(ToAsyncEnumerable(
-                        [new TextMessage { Text = "armed", Role = Role.Assistant }])),
-                    3 => Task.FromResult(GatedAsyncEnumerable(
-                        generationStarted,
-                        releaseGeneration.Task,
-                        [new TextMessage { Text = "gated reply", Role = Role.Assistant }])),
-                    _ => Task.FromResult(ToAsyncEnumerable(
-                        [new TextMessage { Text = $"handled {callCount}", Role = Role.Assistant }])),
-                };
-            });
+                    callCount++;
+                    return callCount switch
+                    {
+                        1 => Task.FromResult(ToAsyncEnumerable([waitCall])),
+                        2 => Task.FromResult(
+                            ToAsyncEnumerable([new TextMessage { Text = "armed", Role = Role.Assistant }])
+                        ),
+                        3 => Task.FromResult(
+                            GatedAsyncEnumerable(
+                                generationStarted,
+                                releaseGeneration.Task,
+                                [new TextMessage { Text = "gated reply", Role = Role.Assistant }]
+                            )
+                        ),
+                        _ => Task.FromResult(
+                            ToAsyncEnumerable([
+                                new TextMessage { Text = $"handled {callCount}", Role = Role.Assistant },
+                            ])
+                        ),
+                    };
+                }
+            );
 
         const string threadId = "ordering-active-generation";
         var store = new InMemoryConversationStore();
@@ -91,7 +110,8 @@ public class NotifyOrderingTests
             threadId,
             store: store,
             logger: _loggerMock.Object,
-            triggerOptions: options);
+            triggerOptions: options
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -121,15 +141,19 @@ public class NotifyOrderingTests
             store,
             threadId,
             h => h.OfType<TextMessage>().Any(m => m.Role == Role.User && m.Text.Contains("<trigger>")),
-            "the queued fire's trigger message reached persisted history");
+            "the queued fire's trigger message reached persisted history"
+        );
 
         var gatedReplyIdx = IndexOfTextMessage(history, Role.Assistant, "gated reply");
         var triggerIdx = IndexOfTextMessage(history, Role.User, "<trigger>");
 
         gatedReplyIdx.Should().BeGreaterThan(-1, "run 2's gated assistant reply must land in history");
-        triggerIdx.Should().BeGreaterThan(
-            gatedReplyIdx,
-            "the fire happened mid-generation but must queue behind the in-flight turn's assistant message, never interrupt it");
+        triggerIdx
+            .Should()
+            .BeGreaterThan(
+                gatedReplyIdx,
+                "the fire happened mid-generation but must queue behind the in-flight turn's assistant message, never interrupt it"
+            );
     }
 
     [Fact]
@@ -147,20 +171,33 @@ public class NotifyOrderingTests
         var releaseTool = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         registry.AddFunction(
-            new FunctionContract { Name = "SlowTool", Description = "test slow tool", Parameters = [] },
+            new FunctionContract
+            {
+                Name = "SlowTool",
+                Description = "test slow tool",
+                Parameters = [],
+            },
             async (_, _, _) =>
             {
                 toolStarted.TrySetResult(true);
                 await releaseTool.Task;
                 return ToolHandlerResult.FromText("tool done");
-            });
+            }
+        );
 
         var options = ManualNotifyOptions(manual);
 
         var waitCall = new ToolCallMessage
         {
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "manual", mode = "notify", timeout = "1h" }),
+            FunctionArgs = WaitArgs(
+                new
+                {
+                    kind = "manual",
+                    mode = "notify",
+                    timeout = "1h",
+                }
+            ),
             ToolCallId = "tc_notify",
             Role = Role.Assistant,
         };
@@ -174,23 +211,32 @@ public class NotifyOrderingTests
 
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                return callCount switch
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
                 {
-                    1 => Task.FromResult(ToAsyncEnumerable([waitCall])),
-                    2 => Task.FromResult(ToAsyncEnumerable(
-                        [new TextMessage { Text = "armed", Role = Role.Assistant }])),
-                    3 => Task.FromResult(ToAsyncEnumerable([slowToolCall])),
-                    _ => Task.FromResult(ToAsyncEnumerable(
-                        [new TextMessage { Text = $"handled {callCount}", Role = Role.Assistant }])),
-                };
-            });
+                    callCount++;
+                    return callCount switch
+                    {
+                        1 => Task.FromResult(ToAsyncEnumerable([waitCall])),
+                        2 => Task.FromResult(
+                            ToAsyncEnumerable([new TextMessage { Text = "armed", Role = Role.Assistant }])
+                        ),
+                        3 => Task.FromResult(ToAsyncEnumerable([slowToolCall])),
+                        _ => Task.FromResult(
+                            ToAsyncEnumerable([
+                                new TextMessage { Text = $"handled {callCount}", Role = Role.Assistant },
+                            ])
+                        ),
+                    };
+                }
+            );
 
         const string threadId = "ordering-tool-execution";
         var store = new InMemoryConversationStore();
@@ -201,7 +247,8 @@ public class NotifyOrderingTests
             threadId,
             store: store,
             logger: _loggerMock.Object,
-            triggerOptions: options);
+            triggerOptions: options
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -229,15 +276,19 @@ public class NotifyOrderingTests
             store,
             threadId,
             h => h.OfType<TextMessage>().Any(m => m.Role == Role.User && m.Text.Contains("<trigger>")),
-            "the queued fire's trigger message reached persisted history");
+            "the queued fire's trigger message reached persisted history"
+        );
 
         var toolResultIdx = IndexOfToolResult(history, "tc_slow");
         var triggerIdx = IndexOfTextMessage(history, Role.User, "<trigger>");
 
         toolResultIdx.Should().BeGreaterThan(-1, "the slow tool's result must land in history");
-        triggerIdx.Should().BeGreaterThan(
-            toolResultIdx,
-            "the fire happened mid-tool-execution but must queue behind the tool result, never interrupt it");
+        triggerIdx
+            .Should()
+            .BeGreaterThan(
+                toolResultIdx,
+                "the fire happened mid-tool-execution but must queue behind the tool result, never interrupt it"
+            );
     }
 
     [Fact]
@@ -255,23 +306,40 @@ public class NotifyOrderingTests
         var blockWaitCall = new ToolCallMessage
         {
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "timer", args = new { }, timeout = "10m" }),
+            FunctionArgs = WaitArgs(
+                new
+                {
+                    kind = "timer",
+                    args = new { },
+                    timeout = "10m",
+                }
+            ),
             ToolCallId = "tc_block",
             Role = Role.Assistant,
         };
         var notifyWaitCall = new ToolCallMessage
         {
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "manual", mode = "notify", timeout = "10m" }),
+            FunctionArgs = WaitArgs(
+                new
+                {
+                    kind = "manual",
+                    mode = "notify",
+                    timeout = "10m",
+                }
+            ),
             ToolCallId = "tc_notify",
             Role = Role.Assistant,
         };
 
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .Returns(Task.FromResult(ToAsyncEnumerable([blockWaitCall, notifyWaitCall])));
 
         const string threadId = "ordering-block-untouched";
@@ -283,7 +351,8 @@ public class NotifyOrderingTests
             threadId,
             store: store,
             logger: _loggerMock.Object,
-            triggerOptions: options);
+            triggerOptions: options
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -293,8 +362,10 @@ public class NotifyOrderingTests
         await loop.SendAsync([new TextMessage { Text = "arm both waits", Role = Role.User }]);
         await runsCompleted.WaitAsync(0);
 
-        var before = (await loop.GetDeferredToolCallsAsync()).Should()
-            .ContainSingle(p => p.ToolCallId == "tc_block").Subject;
+        var before = (await loop.GetDeferredToolCallsAsync())
+            .Should()
+            .ContainSingle(p => p.ToolCallId == "tc_block")
+            .Subject;
         manual.Sinks.Should().ContainKey("tc_notify");
 
         await manual.Sinks["tc_notify"].FireAsync(new TriggerFireEvent("fire-1"), cts.Token);
@@ -302,19 +373,24 @@ public class NotifyOrderingTests
 
         await cts.CancelAsync();
 
-        var after = (await loop.GetDeferredToolCallsAsync()).Should()
+        var after = (await loop.GetDeferredToolCallsAsync())
+            .Should()
             .ContainSingle(
                 p => p.ToolCallId == "tc_block",
-                "a notify fire must never resolve or otherwise touch a parked block wait's deferred tool call")
+                "a notify fire must never resolve or otherwise touch a parked block wait's deferred tool call"
+            )
             .Subject;
 
         // Presence-by-key is not enough: a regression that mutated the entry in place (e.g.
         // overwrote FunctionArgs/DeferredAtUnixMs/GenerationId while keeping the same key) would
         // slip past a key check. DeferredToolCallInfo is a record, so value-equality proves the
         // entry is byte-for-byte unchanged — every field, not just the id.
-        after.Should().Be(
-            before,
-            "a notify fire must leave the parked block wait's deferred entry entirely unchanged, not merely still-keyed");
+        after
+            .Should()
+            .Be(
+                before,
+                "a notify fire must leave the parked block wait's deferred entry entirely unchanged, not merely still-keyed"
+            );
     }
 
     [Fact]
@@ -330,27 +406,42 @@ public class NotifyOrderingTests
         var waitCall = new ToolCallMessage
         {
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "manual", mode = "notify", timeout = "1h" }),
+            FunctionArgs = WaitArgs(
+                new
+                {
+                    kind = "manual",
+                    mode = "notify",
+                    timeout = "1h",
+                }
+            ),
             ToolCallId = "tc_notify",
             Role = Role.Assistant,
         };
 
         var callCount = 0;
         _mockAgent
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
-            {
-                callCount++;
-                return callCount switch
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
                 {
-                    1 => Task.FromResult(ToAsyncEnumerable([waitCall])),
-                    _ => Task.FromResult(ToAsyncEnumerable(
-                        [new TextMessage { Text = $"handled {callCount}", Role = Role.Assistant }])),
-                };
-            });
+                    callCount++;
+                    return callCount switch
+                    {
+                        1 => Task.FromResult(ToAsyncEnumerable([waitCall])),
+                        _ => Task.FromResult(
+                            ToAsyncEnumerable([
+                                new TextMessage { Text = $"handled {callCount}", Role = Role.Assistant },
+                            ])
+                        ),
+                    };
+                }
+            );
 
         const string threadId = "ordering-multiple-fires";
         var store = new InMemoryConversationStore();
@@ -361,7 +452,8 @@ public class NotifyOrderingTests
             threadId,
             store: store,
             logger: _loggerMock.Object,
-            triggerOptions: options);
+            triggerOptions: options
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -382,7 +474,8 @@ public class NotifyOrderingTests
             threadId,
             h => h.OfType<TextMessage>().Count(m => m.Role == Role.User && m.Text.Contains("<trigger>")) >= 3,
             "all three fires reached persisted history",
-            timeoutSeconds: 10);
+            timeoutSeconds: 10
+        );
 
         await cts.CancelAsync();
 
@@ -394,7 +487,12 @@ public class NotifyOrderingTests
 
         triggerTexts.Should().HaveCount(3);
         var fireOrder = triggerTexts
-            .Select(t => t.Contains("fire-1") ? 1 : t.Contains("fire-2") ? 2 : t.Contains("fire-3") ? 3 : 0)
+            .Select(t =>
+                t.Contains("fire-1") ? 1
+                : t.Contains("fire-2") ? 2
+                : t.Contains("fire-3") ? 3
+                : 0
+            )
             .ToList();
         fireOrder.Should().Equal([1, 2, 3], "the three fires must be delivered in the order they occurred");
     }
@@ -404,20 +502,21 @@ public class NotifyOrderingTests
     /// wait with <c>kind: "manual"</c> arms against it. Every scenario wires the same source the
     /// same way — this keeps that boilerplate in one place.
     /// </summary>
-    private static TriggerOptions ManualNotifyOptions(ManualTriggerSource manual) => new()
-    {
-        AdditionalRegistrations =
-        [
-            new TriggerSourceRegistration
-            {
-                Kind = "manual",
-                Description = "test notify source",
-                ArgsSchema = "{}",
-                Capabilities = ManualTriggerSource.Caps,
-                Source = manual,
-            },
-        ],
-    };
+    private static TriggerOptions ManualNotifyOptions(ManualTriggerSource manual) =>
+        new()
+        {
+            AdditionalRegistrations =
+            [
+                new TriggerSourceRegistration
+                {
+                    Kind = "manual",
+                    Description = "test notify source",
+                    ArgsSchema = "{}",
+                    Capabilities = ManualTriggerSource.Caps,
+                    Source = manual,
+                },
+            ],
+        };
 
     /// <summary>
     /// Returns persisted history once it satisfies <paramref name="condition"/>, or fails the test
@@ -430,19 +529,20 @@ public class NotifyOrderingTests
         string threadId,
         Func<IReadOnlyList<IMessage>, bool> condition,
         string because,
-        int timeoutSeconds = 5)
+        int timeoutSeconds = 5
+    )
     {
         IReadOnlyList<IMessage> history = [];
         await Wait.UntilAsync(
             async () =>
             {
-                history = MessagePersistenceConverter.FromPersistedMessages(
-                    await store.LoadMessagesAsync(threadId));
+                history = MessagePersistenceConverter.FromPersistedMessages(await store.LoadMessagesAsync(threadId));
                 return condition(history);
             },
             because,
             TimeSpan.FromSeconds(timeoutSeconds),
-            TimeSpan.FromMilliseconds(50));
+            TimeSpan.FromMilliseconds(50)
+        );
 
         return history;
     }
@@ -451,7 +551,11 @@ public class NotifyOrderingTests
     {
         for (var i = 0; i < history.Count; i++)
         {
-            if (history[i] is TextMessage tm && tm.Role == role && tm.Text.Contains(substring, StringComparison.Ordinal))
+            if (
+                history[i] is TextMessage tm
+                && tm.Role == role
+                && tm.Text.Contains(substring, StringComparison.Ordinal)
+            )
             {
                 return i;
             }
@@ -474,7 +578,8 @@ public class NotifyOrderingTests
     /// <summary>Yields each message with no gating — completes as soon as it is enumerated.</summary>
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var msg in messages)
         {
@@ -493,7 +598,8 @@ public class NotifyOrderingTests
         TaskCompletionSource<bool> started,
         Task gate,
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         started.TrySetResult(true);
         await gate;

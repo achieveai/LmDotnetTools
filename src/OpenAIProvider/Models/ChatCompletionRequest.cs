@@ -181,24 +181,22 @@ public record ChatCompletionRequest
                     new()
                     {
                         Role = ChatMessage.ToRoleEnum(compositeMsg.Role),
-                        Content = new Union<string, Union<TextContent, ImageContent>[]>(
-                            [
-                                .. compositeMsg
-                                    .Messages.Where(m => m is not ReasoningMessage)
-                                    .Select(m =>
-                                        m switch
-                                        {
-                                            TextMessage textMessage => new Union<TextContent, ImageContent>(
-                                                new TextContent(textMessage.Text)
-                                            ),
-                                            ImageMessage imageMessage => new Union<TextContent, ImageContent>(
-                                                new ImageContent(imageMessage.ImageData.ToDataUrl()!)
-                                            ),
-                                            _ => throw new ArgumentException("Unsupported message type"),
-                                        }
-                                    ),
-                            ]
-                        ),
+                        Content = new Union<string, Union<TextContent, ImageContent>[]>([
+                            .. compositeMsg
+                                .Messages.Where(m => m is not ReasoningMessage)
+                                .Select(m =>
+                                    m switch
+                                    {
+                                        TextMessage textMessage => new Union<TextContent, ImageContent>(
+                                            new TextContent(textMessage.Text)
+                                        ),
+                                        ImageMessage imageMessage => new Union<TextContent, ImageContent>(
+                                            new ImageContent(imageMessage.ImageData.ToDataUrl()!)
+                                        ),
+                                        _ => throw new ArgumentException("Unsupported message type"),
+                                    }
+                                ),
+                        ]),
                     },
                 ];
 
@@ -240,82 +238,78 @@ public record ChatCompletionRequest
                     new ChatMessage
                     {
                         Role = ChatMessage.ToRoleEnum(imageMessage.Role),
-                        Content = new Union<string, Union<TextContent, ImageContent>[]>(
-                            [
-                                new Union<TextContent, ImageContent>(
-                                    new ImageContent(imageMessage.ImageData.ToDataUrl()!)
-                                ),
-                            ]
-                        ),
+                        Content = new Union<string, Union<TextContent, ImageContent>[]>([
+                            new Union<TextContent, ImageContent>(new ImageContent(imageMessage.ImageData.ToDataUrl()!)),
+                        ]),
                     },
                 ];
             case ToolsCallResultMessage toolCallResultMessage:
-                {
-                    var toolMessages = toolCallResultMessage
-                        .ToolCallResults.Where(tc => tc.Result != null)
-                        .Select(tc => new ChatMessage
-                        {
-                            Role = RoleEnum.Tool,
-                            ToolCallId = tc.ToolCallId,
-                            Content = new Union<string, Union<TextContent, ImageContent>[]>(tc.Result!),
-                        });
-
-                    // OpenAI does not support images in tool_result messages.
-                    // Collect images from ContentBlocks and append as a user message.
-                    var imageContents = toolCallResultMessage
-                        .ToolCallResults.Where(tc => tc.Result != null && tc.ContentBlocks != null)
-                        .SelectMany(tc => tc.ContentBlocks!)
-                        .OfType<ImageToolResultBlock>()
-                        .Select(img => new Union<TextContent, ImageContent>(
-                            new ImageContent($"data:{img.MimeType};base64,{img.Data}")))
-                        .ToList();
-
-                    if (imageContents.Count > 0)
+            {
+                var toolMessages = toolCallResultMessage
+                    .ToolCallResults.Where(tc => tc.Result != null)
+                    .Select(tc => new ChatMessage
                     {
-                        var imageMessage = new ChatMessage
-                        {
-                            Role = RoleEnum.User,
-                            Content = new Union<string, Union<TextContent, ImageContent>[]>(
-                                [.. imageContents]),
-                        };
-                        return toolMessages.Append(imageMessage);
-                    }
+                        Role = RoleEnum.Tool,
+                        ToolCallId = tc.ToolCallId,
+                        Content = new Union<string, Union<TextContent, ImageContent>[]>(tc.Result!),
+                    });
 
-                    return toolMessages;
+                // OpenAI does not support images in tool_result messages.
+                // Collect images from ContentBlocks and append as a user message.
+                var imageContents = toolCallResultMessage
+                    .ToolCallResults.Where(tc => tc.Result != null && tc.ContentBlocks != null)
+                    .SelectMany(tc => tc.ContentBlocks!)
+                    .OfType<ImageToolResultBlock>()
+                    .Select(img => new Union<TextContent, ImageContent>(
+                        new ImageContent($"data:{img.MimeType};base64,{img.Data}")
+                    ))
+                    .ToList();
+
+                if (imageContents.Count > 0)
+                {
+                    var imageMessage = new ChatMessage
+                    {
+                        Role = RoleEnum.User,
+                        Content = new Union<string, Union<TextContent, ImageContent>[]>([.. imageContents]),
+                    };
+                    return toolMessages.Append(imageMessage);
                 }
+
+                return toolMessages;
+            }
             case ToolsCallAggregateMessage toolCallAggregateMessage:
                 return FromMessage(toolCallAggregateMessage.ToolsCallMessage)
                     .Concat(FromMessage(toolCallAggregateMessage.ToolsCallResult));
             case ICanGetText textMessage:
+            {
+                var cm = new ChatMessage
                 {
-                    var cm = new ChatMessage
-                    {
-                        Role = ChatMessage.ToRoleEnum(textMessage.Role),
-                        Content =
-                            textMessage.GetText() != null
-                                ? new Union<string, Union<TextContent, ImageContent>[]>(textMessage.GetText()!)
-                                : null,
-                    };
+                    Role = ChatMessage.ToRoleEnum(textMessage.Role),
+                    Content =
+                        textMessage.GetText() != null
+                            ? new Union<string, Union<TextContent, ImageContent>[]>(textMessage.GetText()!)
+                            : null,
+                };
 
-                    if (
-                        textMessage.Metadata != null
-                        && textMessage.Metadata.TryGetValue("reasoning", out var rVal)
-                        && rVal is string rStr
-                    )
-                    {
-                        cm.Reasoning = rStr;
-                    }
-                    else if (
-                        textMessage.Metadata != null
-                        && textMessage.Metadata.TryGetValue("reasoning_details", out var dVal)
-                        && dVal is List<ChatMessage.ReasoningDetail> details
-                    )
-                    {
-                        cm.ReasoningDetails = details;
-                    }
-
-                    return [cm];
+                if (
+                    textMessage.Metadata != null
+                    && textMessage.Metadata.TryGetValue("reasoning", out var rVal)
+                    && rVal is string rStr
+                )
+                {
+                    cm.Reasoning = rStr;
                 }
+                else if (
+                    textMessage.Metadata != null
+                    && textMessage.Metadata.TryGetValue("reasoning_details", out var dVal)
+                    && dVal is List<ChatMessage.ReasoningDetail> details
+                )
+                {
+                    cm.ReasoningDetails = details;
+                }
+
+                return [cm];
+            }
             case ICanGetToolCalls toolCallMessage:
                 var toolChat = new ChatMessage
                 {
@@ -386,16 +380,16 @@ public record ChatCompletionRequest
                 case TextMessage txt:
                 case ToolsCallMessage tc:
                 case ToolsCallAggregateMessage agg:
+                {
+                    var produced = FromMessage(m).ToList();
+                    foreach (var ch in produced)
                     {
-                        var produced = FromMessage(m).ToList();
-                        foreach (var ch in produced)
-                        {
-                            MergeReasoning(reasoningBuffer, ch);
-                            yield return ch;
-                        }
-
-                        break;
+                        MergeReasoning(reasoningBuffer, ch);
+                        yield return ch;
                     }
+
+                    break;
+                }
 
                 default:
                     // For other message types (system/user/tool etc.) just forward conversion without merging

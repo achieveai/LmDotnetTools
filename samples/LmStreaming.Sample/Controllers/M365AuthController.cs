@@ -16,9 +16,7 @@ namespace LmStreaming.Sample.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/auth/m365")]
-public sealed class M365AuthController(
-    M365OAuthProvider provider,
-    ILogger<M365AuthController> logger) : ControllerBase
+public sealed class M365AuthController(M365OAuthProvider provider, ILogger<M365AuthController> logger) : ControllerBase
 {
     /// <summary>
     /// Opens the browser to start the interactive sign-in and returns the challenge (the
@@ -67,7 +65,8 @@ public sealed class M365AuthController(
         [FromQuery] string? state,
         [FromQuery] string? error,
         [FromQuery(Name = "error_description")] string? errorDescription,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (!string.IsNullOrEmpty(error))
         {

@@ -22,8 +22,7 @@ internal static class EvalArtifactJson
     /// Case-insensitive, matching what the daemon's own writers produce and what the earlier
     /// readers used. Shared so the two cannot drift into disagreeing about the same stored bytes.
     /// </summary>
-    internal static readonly JsonSerializerOptions Options =
-        new() { PropertyNameCaseInsensitive = true };
+    internal static readonly JsonSerializerOptions Options = new() { PropertyNameCaseInsensitive = true };
 
     /// <summary>
     /// Deserialises <paramref name="payload"/>, or returns null with <paramref name="failure"/> set.

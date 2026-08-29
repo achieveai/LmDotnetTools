@@ -58,11 +58,7 @@ public class OpenAiAgentTests
                 Role = Role.System,
                 Text = "You will always respond in JSON as `{\"response\": \"...\"}`",
             },
-            new TextMessage
-            {
-                Role = Role.User,
-                Text = "{\"response\":\"hello\"}",
-            },
+            new TextMessage { Role = Role.User, Text = "{\"response\":\"hello\"}" },
         };
 
         var options = new GenerateReplyOptions
@@ -406,7 +402,9 @@ public class OpenAiAgentTests
 
             Assert.True(File.Exists(requestPath));
             Assert.True(File.Exists(responsePath));
-            var lines = (await File.ReadAllLinesAsync(responsePath)).Where(line => !string.IsNullOrWhiteSpace(line)).ToList();
+            var lines = (await File.ReadAllLinesAsync(responsePath))
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .ToList();
             Assert.True(lines.Count > 1);
         }
         finally
@@ -476,5 +474,4 @@ public class OpenAiAgentTests
             }
         }
     }
-
 }

@@ -33,9 +33,7 @@ public class LifecycleProtocolTests
     [Fact]
     public void Peers_sharing_a_major_agree_on_it()
     {
-        LifecycleProtocol.TryNegotiate([LifecycleProtocol.CurrentMajor], out var agreed)
-            .Should()
-            .BeTrue();
+        LifecycleProtocol.TryNegotiate([LifecycleProtocol.CurrentMajor], out var agreed).Should().BeTrue();
         agreed.Should().Be(LifecycleProtocol.CurrentMajor);
     }
 
@@ -75,9 +73,7 @@ public class LifecycleProtocolTests
     [Fact]
     public void A_subscriber_on_an_incompatible_major_is_refused_by_this_build()
     {
-        LifecycleProtocol.TryNegotiate([LifecycleProtocol.CurrentMajor + 1], out var agreed)
-            .Should()
-            .BeFalse();
+        LifecycleProtocol.TryNegotiate([LifecycleProtocol.CurrentMajor + 1], out var agreed).Should().BeFalse();
         agreed.Should().Be(0);
     }
 

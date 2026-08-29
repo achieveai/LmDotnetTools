@@ -23,7 +23,8 @@ public sealed class AgentHierarchyProjectionTests
         int structuralDepth = 1,
         int delegationDepth = 1,
         bool isLive = true,
-        string status = AgentCollaborationStatuses.Running) =>
+        string status = AgentCollaborationStatuses.Running
+    ) =>
         new()
         {
             AgentId = agentId,
@@ -45,8 +46,7 @@ public sealed class AgentHierarchyProjectionTests
         Node(Root, AgentKind.Root, parent: null, ancestors: [], structuralDepth: 0, delegationDepth: 0);
 
     /// <summary>A node one level down has exactly its parent above it.</summary>
-    private static IReadOnlyList<string> DefaultAncestors(string? parent) =>
-        parent is null ? [] : [parent];
+    private static IReadOnlyList<string> DefaultAncestors(string? parent) => parent is null ? [] : [parent];
 
     private static SubAgentSummary Tab(string agentId, string kind = SubAgentSummary.SubAgentTabKind) =>
         new()
@@ -64,16 +64,17 @@ public sealed class AgentHierarchyProjectionTests
         IReadOnlyList<SubAgentSummary> tabs,
         IReadOnlyList<AgentDirectoryEntry> nodes,
         string? viewer = Root,
-        TranscriptVisibilityMode visibility = TranscriptVisibilityMode.Ancestors) =>
-        AgentHierarchyProjection.Project(tabs, nodes, viewer, visibility);
+        TranscriptVisibilityMode visibility = TranscriptVisibilityMode.Ancestors
+    ) => AgentHierarchyProjection.Project(tabs, nodes, viewer, visibility);
 
     [Fact]
     public void NoNodes_LeavesEveryTabExactlyAsItWas()
     {
         var tabs = new[] { Tab("a-1"), Tab("a-2") };
 
-        Project(tabs, []).Should().Equal(tabs,
-            "a host that never enabled collaboration must see the pre-#244 rows unchanged");
+        Project(tabs, [])
+            .Should()
+            .Equal(tabs, "a host that never enabled collaboration must see the pre-#244 rows unchanged");
     }
 
     [Fact]
@@ -97,7 +98,12 @@ public sealed class AgentHierarchyProjectionTests
         // whole point of the shared directory is that it appears anyway.
         var rows = Project(
             [Tab("a-1")],
-            [RootNode(), Node("a-1"), Node("g-1", parent: "a-1", ancestors: [Root, "a-1"], structuralDepth: 2, delegationDepth: 2)]);
+            [
+                RootNode(),
+                Node("a-1"),
+                Node("g-1", parent: "a-1", ancestors: [Root, "a-1"], structuralDepth: 2, delegationDepth: 2),
+            ]
+        );
 
         rows.Should().HaveCount(2);
         var grandchild = rows.Single(r => r.AgentId == "g-1");
@@ -110,8 +116,9 @@ public sealed class AgentHierarchyProjectionTests
     [Fact]
     public void RootNode_IsNeverListedAsOneOfItsOwnChildren()
     {
-        Project([], [RootNode()]).Should().BeEmpty(
-            "the root is the conversation itself; a tab for it would be self-referential");
+        Project([], [RootNode()])
+            .Should()
+            .BeEmpty("the root is the conversation itself; a tab for it would be self-referential");
     }
 
     [Fact]
@@ -126,8 +133,11 @@ public sealed class AgentHierarchyProjectionTests
         var row = Project([retained], [RootNode(), Node("a-1")]).Single();
 
         row.IsLive.Should().BeTrue();
-        row.Status.Should().Be(SubAgentSummary.InterruptedStatus,
-            "liveness comes from the directory; the tab's own status is still the tab's to report");
+        row.Status.Should()
+            .Be(
+                SubAgentSummary.InterruptedStatus,
+                "liveness comes from the directory; the tab's own status is still the tab's to report"
+            );
     }
 
     [Fact]
@@ -151,16 +161,24 @@ public sealed class AgentHierarchyProjectionTests
             [
                 RootNode(),
                 Node(controllerId, AgentKind.WorkflowController, delegationDepth: 0),
-                Node("d-1", AgentKind.WorkflowDelegate, parent: controllerId, ancestors: [Root, controllerId], structuralDepth: 2),
-            ]);
+                Node(
+                    "d-1",
+                    AgentKind.WorkflowDelegate,
+                    parent: controllerId,
+                    ancestors: [Root, controllerId],
+                    structuralDepth: 2
+                ),
+            ]
+        );
 
         var workflow = rows.Single(r => r.Kind == SubAgentSummary.WorkflowTabKind);
         workflow.AgentId.Should().Be("w1", "the tab keeps the id it has always been addressed by");
         workflow.AgentNodeId.Should().Be(controllerId);
         workflow.DelegationDepth.Should().Be(0, "a controller is a structural hop that spends no budget");
 
-        rows.Single(r => r.AgentId == "d-1").ParentAgentId.Should().Be(
-            workflow.AgentNodeId, "a delegate must be linkable to the workflow tab above it");
+        rows.Single(r => r.AgentId == "d-1")
+            .ParentAgentId.Should()
+            .Be(workflow.AgentNodeId, "a delegate must be linkable to the workflow tab above it");
     }
 
     [Fact]
@@ -168,8 +186,9 @@ public sealed class AgentHierarchyProjectionTests
     {
         var controllerId = WorkflowCollaboration.ComposeControllerAgentId("w1");
 
-        Project([], [RootNode(), Node(controllerId, AgentKind.WorkflowController)]).Should().BeEmpty(
-            "a controller's tab id and thread belong to the run that produced it, not to a formula");
+        Project([], [RootNode(), Node(controllerId, AgentKind.WorkflowController)])
+            .Should()
+            .BeEmpty("a controller's tab id and thread belong to the run that produced it, not to a formula");
     }
 
     [Fact]
@@ -184,8 +203,10 @@ public sealed class AgentHierarchyProjectionTests
         var asChild = Project([Tab("a-1"), Tab("a-2")], nodes, viewer: "a-1");
         asChild.Single(r => r.AgentId == "a-1").IsCurrent.Should().BeTrue();
         asChild.Single(r => r.AgentId == "a-1").IsReadable.Should().BeTrue("an agent may read itself");
-        asChild.Single(r => r.AgentId == "a-2").IsReadable.Should().BeFalse(
-            "a sibling is neither the target nor above it");
+        asChild
+            .Single(r => r.AgentId == "a-2")
+            .IsReadable.Should()
+            .BeFalse("a sibling is neither the target nor above it");
     }
 
     [Fact]
@@ -195,7 +216,8 @@ public sealed class AgentHierarchyProjectionTests
             [Tab("a-2")],
             [RootNode(), Node("a-1"), Node("a-2")],
             viewer: "a-1",
-            visibility: TranscriptVisibilityMode.Open);
+            visibility: TranscriptVisibilityMode.Open
+        );
 
         rows.Single(r => r.AgentId == "a-2").IsReadable.Should().BeTrue();
     }
@@ -205,8 +227,7 @@ public sealed class AgentHierarchyProjectionTests
     {
         var rows = Project([Tab("a-1")], [RootNode(), Node("a-1")], viewer: "not-in-this-collaboration");
 
-        rows.Single().IsReadable.Should().BeFalse(
-            "an unregistered reader is denied rather than treated as an error");
+        rows.Single().IsReadable.Should().BeFalse("an unregistered reader is denied rather than treated as an error");
         rows.Single().IsCurrent.Should().BeFalse();
     }
 
@@ -244,11 +265,13 @@ public sealed class AgentHierarchyProjectionTests
         var row = Project([placeholder], [RootNode(), Node("a-1")]).Single();
 
         row.Name.Should().Be("a-1", "the live directory node is a real name; the placeholder has none");
-        row.Template.Should().Be(
-            "general-purpose",
-            "the live node's AgentType is a real template; the placeholder's is the unresolved sentinel");
-        row.ThreadId.Should().Be(
-            "subagent-a-1", "restart-recoverability depends on the thread id keeping its convention");
+        row.Template.Should()
+            .Be(
+                "general-purpose",
+                "the live node's AgentType is a real template; the placeholder's is the unresolved sentinel"
+            );
+        row.ThreadId.Should()
+            .Be("subagent-a-1", "restart-recoverability depends on the thread id keeping its convention");
     }
 
     [Fact]
@@ -257,7 +280,11 @@ public sealed class AgentHierarchyProjectionTests
         // Enrich runs before any particular viewer is known (write-through persistence), so if the
         // caller already set IsCurrent/IsReadable on the row it hands in, those must survive untouched —
         // only Project is allowed to (re)compute viewer-scoped flags.
-        var tab = Tab("a-1") with { IsCurrent = true, IsReadable = true };
+        var tab = Tab("a-1") with
+        {
+            IsCurrent = true,
+            IsReadable = true,
+        };
 
         var enriched = AgentHierarchyProjection.Enrich([tab], [RootNode(), Node("a-1")]).Single();
 
@@ -297,11 +324,11 @@ public sealed class AgentHierarchyProjectionTests
     {
         var rows = Project(
             [Tab("w1", SubAgentSummary.WorkflowTabKind)],
-            [RootNode(), Node(WorkflowCollaboration.ComposeControllerAgentId("w1"), AgentKind.WorkflowController)]);
+            [RootNode(), Node(WorkflowCollaboration.ComposeControllerAgentId("w1"), AgentKind.WorkflowController)]
+        );
 
         AgentHierarchyProjection.Find(rows, "w1").Should().NotBeNull();
-        AgentHierarchyProjection.Find(rows, WorkflowCollaboration.ComposeControllerAgentId("w1"))
-            .Should().NotBeNull();
+        AgentHierarchyProjection.Find(rows, WorkflowCollaboration.ComposeControllerAgentId("w1")).Should().NotBeNull();
         AgentHierarchyProjection.Find(rows, "nobody").Should().BeNull();
     }
 }

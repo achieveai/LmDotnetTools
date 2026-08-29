@@ -125,7 +125,8 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         {
             sdkResult = await client.ExecuteAsync(_sessionId, sdkCommand, timeoutCts.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
+            when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             throw CommandTimedOut();
         }
@@ -158,7 +159,8 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
             return SandboxFileRead.Of(
                 await client
                     .ReadTextFileAsync(_sessionId, ToWorkspaceRelativePath(path), maxBytes, cancellationToken)
-                    .ConfigureAwait(false));
+                    .ConfigureAwait(false)
+            );
         }
         catch (SandboxException ex) when (ex.IsDefiniteMissingPath)
         {

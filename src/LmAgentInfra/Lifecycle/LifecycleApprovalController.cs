@@ -108,8 +108,7 @@ public sealed class LifecycleApprovalController(
 ) : ControllerBase
 {
     /// <summary>The one body returned for every not-found class, so the four are indistinguishable.</summary>
-    private static readonly ToolApprovalDecisionResponse NotFoundBody =
-        new() { Error = "unknown approval request" };
+    private static readonly ToolApprovalDecisionResponse NotFoundBody = new() { Error = "unknown approval request" };
 
     /// <summary>Submits one approver's decision about one pending tool call.</summary>
     /// <param name="decision">The decision. Its <c>request_id</c> and <c>arguments_hash</c> must both
@@ -175,9 +174,7 @@ public sealed class LifecycleApprovalController(
             return Denied("caller does not name an application");
         }
 
-        var owner = await ownerResolver
-            .ResolveCallerAsync(appId, cancellationToken)
-            .ConfigureAwait(false);
+        var owner = await ownerResolver.ResolveCallerAsync(appId, cancellationToken).ConfigureAwait(false);
         if (owner is null)
         {
             logger.LogWarning("Rejecting an approval decision: app {AppId} resolves to no owner.", appId);
@@ -191,9 +188,7 @@ public sealed class LifecycleApprovalController(
         // was asked answered" — and the store then refuses it again if it was not among the frozen set.
         var approver = subscriptions
             .ForOwner(owner)
-            .FirstOrDefault(s =>
-                string.Equals(s.SubscriptionId, decision.SubscriptionId, StringComparison.Ordinal)
-            );
+            .FirstOrDefault(s => string.Equals(s.SubscriptionId, decision.SubscriptionId, StringComparison.Ordinal));
 
         // Comparing the app id as well as the owner is deliberate: two apps can resolve to one owner,
         // and a subscription is an approver identity, not a tenancy-wide permission. A subscriber
@@ -218,11 +213,7 @@ public sealed class LifecycleApprovalController(
         return settlement.Status switch
         {
             RemoteApprovalSettleStatus.Accepted or RemoteApprovalSettleStatus.AlreadyDecided => Ok(
-                new ToolApprovalDecisionResponse
-                {
-                    RequestId = decision.RequestId,
-                    Outcome = settlement.Outcome,
-                }
+                new ToolApprovalDecisionResponse { RequestId = decision.RequestId, Outcome = settlement.Outcome }
             ),
 
             // Counted, and the call is still blocked: every frozen approver has to allow. No outcome
@@ -271,8 +262,7 @@ public sealed class LifecycleApprovalController(
     /// rule at this endpoint; "carries the app-id claim" is.
     /// </para>
     /// </remarks>
-    private LifecycleAppIdentity.AppIdResolution AuthenticatedAppId() =>
-        LifecycleAppIdentity.ResolveAppId(User);
+    private LifecycleAppIdentity.AppIdResolution AuthenticatedAppId() => LifecycleAppIdentity.ResolveAppId(User);
 
     /// <summary>
     /// A 403 written directly rather than via <c>Forbid()</c>, which would delegate to an

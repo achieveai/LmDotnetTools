@@ -15,10 +15,9 @@ public class MockProviderHostLifetimeTests
     public async Task StartAsync_BindsLoopback_AndExposesBaseUrl()
     {
         await using var lifetime = new MockProviderHostLifetime(
-            () => ScriptedSseResponder.New()
-                .ForRole("any", _ => true).Turn(t => t.Text("ok"))
-                .Build(),
-            NullLogger<MockProviderHostLifetime>.Instance);
+            () => ScriptedSseResponder.New().ForRole("any", _ => true).Turn(t => t.Text("ok")).Build(),
+            NullLogger<MockProviderHostLifetime>.Instance
+        );
 
         await lifetime.StartAsync(CancellationToken.None);
 
@@ -35,7 +34,8 @@ public class MockProviderHostLifetimeTests
         // app running when only the mock host can't bind.
         await using var lifetime = new MockProviderHostLifetime(
             () => throw new InvalidOperationException("scenario failed to load"),
-            NullLogger<MockProviderHostLifetime>.Instance);
+            NullLogger<MockProviderHostLifetime>.Instance
+        );
 
         var act = async () => await lifetime.StartAsync(CancellationToken.None);
 
@@ -52,11 +52,10 @@ public class MockProviderHostLifetimeTests
             () =>
             {
                 Interlocked.Increment(ref responderInvoked);
-                return ScriptedSseResponder.New()
-                    .ForRole("any", _ => true).Turn(t => t.Text("ok"))
-                    .Build();
+                return ScriptedSseResponder.New().ForRole("any", _ => true).Turn(t => t.Text("ok")).Build();
             },
-            NullLogger<MockProviderHostLifetime>.Instance);
+            NullLogger<MockProviderHostLifetime>.Instance
+        );
 
         await lifetime.DisposeAsync();
         await lifetime.StartAsync(CancellationToken.None);
@@ -69,10 +68,9 @@ public class MockProviderHostLifetimeTests
     public async Task StopAsync_NoOp_WhenNeverStarted()
     {
         await using var lifetime = new MockProviderHostLifetime(
-            () => ScriptedSseResponder.New()
-                .ForRole("any", _ => true).Turn(t => t.Text("ok"))
-                .Build(),
-            NullLogger<MockProviderHostLifetime>.Instance);
+            () => ScriptedSseResponder.New().ForRole("any", _ => true).Turn(t => t.Text("ok")).Build(),
+            NullLogger<MockProviderHostLifetime>.Instance
+        );
 
         var act = async () => await lifetime.StopAsync(CancellationToken.None);
 
@@ -83,10 +81,9 @@ public class MockProviderHostLifetimeTests
     public async Task DisposeAsync_IsIdempotent()
     {
         var lifetime = new MockProviderHostLifetime(
-            () => ScriptedSseResponder.New()
-                .ForRole("any", _ => true).Turn(t => t.Text("ok"))
-                .Build(),
-            NullLogger<MockProviderHostLifetime>.Instance);
+            () => ScriptedSseResponder.New().ForRole("any", _ => true).Turn(t => t.Text("ok")).Build(),
+            NullLogger<MockProviderHostLifetime>.Instance
+        );
 
         await lifetime.StartAsync(CancellationToken.None);
         await lifetime.DisposeAsync();

@@ -11,7 +11,9 @@ public class ReviewSlotPoolTests : IDisposable
 
     /// <summary>Where a planted link points. Outside the pool, so following one is visible as an escape.</summary>
     private readonly string _outsideRoot = Path.Combine(
-        Path.GetTempPath(), "crd-outside-" + Guid.NewGuid().ToString("N"));
+        Path.GetTempPath(),
+        "crd-outside-" + Guid.NewGuid().ToString("N")
+    );
 
     public void Dispose()
     {
@@ -45,8 +47,10 @@ public class ReviewSlotPoolTests : IDisposable
         slot.ScratchPath.Should().Be(Path.Combine(slot.HostPath, "scratch"));
         Directory.Exists(slot.HostPath).Should().BeTrue();
         Directory.Exists(slot.ScratchPath).Should().BeTrue();
-        Directory.Exists(slot.StorePath).Should().BeFalse(
-            "repository ownership starts only after the slot is mounted through SandboxClient");
+        Directory
+            .Exists(slot.StorePath)
+            .Should()
+            .BeFalse("repository ownership starts only after the slot is mounted through SandboxClient");
     }
 
     [Fact]
@@ -61,8 +65,9 @@ public class ReviewSlotPoolTests : IDisposable
         var second = await pool.LeaseAsync(default);
 
         second.Should().Be(first);
-        File.Exists(Path.Combine(second.StorePath, "partial")).Should().BeTrue(
-            "the pool does not classify or repair repository state");
+        File.Exists(Path.Combine(second.StorePath, "partial"))
+            .Should()
+            .BeTrue("the pool does not classify or repair repository state");
     }
 
     [Fact]
@@ -96,7 +101,8 @@ public class ReviewSlotPoolTests : IDisposable
             _hostRoot,
             "scratch",
             NullLogger<ReviewSlotPool>.Instance,
-            slotDirPrefix: "review-slot-");
+            slotDirPrefix: "review-slot-"
+        );
 
         var slot = await pool.LeaseAsync(default);
 
@@ -116,7 +122,8 @@ public class ReviewSlotPoolTests : IDisposable
             _hostRoot,
             "scratch",
             NullLogger<ReviewSlotPool>.Instance,
-            slotDirPrefix: "review-slot-");
+            slotDirPrefix: "review-slot-"
+        );
 
         var name = pool.SlotDirectoryName(index);
 
@@ -126,8 +133,8 @@ public class ReviewSlotPoolTests : IDisposable
     [Fact]
     public void Ctor_WithABlankSlotPrefix_ThrowsArgumentException()
     {
-        var act = () => new ReviewSlotPool(
-            1, _hostRoot, "scratch", NullLogger<ReviewSlotPool>.Instance, slotDirPrefix: "  ");
+        var act = () =>
+            new ReviewSlotPool(1, _hostRoot, "scratch", NullLogger<ReviewSlotPool>.Instance, slotDirPrefix: "  ");
 
         act.Should().Throw<ArgumentException>();
     }
@@ -143,8 +150,12 @@ public class ReviewSlotPoolTests : IDisposable
         var act = async () => await pool.LeaseAsync(default);
 
         await act.Should().ThrowAsync<SlotAddressUnusableException>();
-        Directory.Exists(Path.Combine(_outsideRoot, "scratch")).Should().BeFalse(
-            "CreateDirectory succeeds through a junction, so an unguarded lease builds the slot outside the pool");
+        Directory
+            .Exists(Path.Combine(_outsideRoot, "scratch"))
+            .Should()
+            .BeFalse(
+                "CreateDirectory succeeds through a junction, so an unguarded lease builds the slot outside the pool"
+            );
     }
 
     [Fact]
@@ -157,7 +168,8 @@ public class ReviewSlotPoolTests : IDisposable
 
         var act = async () => await pool.LeaseAsync(default);
 
-        await act.Should().ThrowAsync<SlotAddressUnusableException>()
+        await act.Should()
+            .ThrowAsync<SlotAddressUnusableException>()
             .WithMessage("*store*", "the store is the path the clone and the wipe both write to");
     }
 
@@ -171,7 +183,8 @@ public class ReviewSlotPoolTests : IDisposable
 
         var act = async () => await pool.LeaseAsync(default);
 
-        await act.Should().ThrowAsync<SlotAddressUnusableException>()
+        await act.Should()
+            .ThrowAsync<SlotAddressUnusableException>()
             .WithMessage("*scratch*", "the lease creates the scratch dir, and the preparer later clears it");
     }
 
@@ -187,12 +200,14 @@ public class ReviewSlotPoolTests : IDisposable
         var act = async () => await pool.LeaseAsync(default);
 
         var refusal = await act.Should().ThrowAsync<SlotAddressUnusableException>();
-        refusal.Which.Message.Should()
+        refusal
+            .Which.Message.Should()
             .Contain($"'{Path.Combine(_hostRoot, "slot-0")}'")
             .And.NotContain(
                 Path.Combine(_hostRoot, "slot-0", "store"),
                 "checking a child resolves THROUGH the slot dir, so a child-first order reports an entry the "
-                    + "operator will never find at the address the message gives");
+                    + "operator will never find at the address the message gives"
+            );
     }
 
     [Fact]

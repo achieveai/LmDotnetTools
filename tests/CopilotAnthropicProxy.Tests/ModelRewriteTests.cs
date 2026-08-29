@@ -37,18 +37,17 @@ public sealed class ModelRewriteTests
     public void TryRewriteModel_preserves_cache_control_thinking_system_and_unknown_fields()
     {
         const string json = """
-        {
-          "model": "claude-3-5-haiku-20241022",
-          "max_tokens": 100,
-          "thinking": { "type": "enabled", "budget_tokens": 1024 },
-          "system": [ { "type": "text", "text": "sys", "cache_control": { "type": "ephemeral" } } ],
-          "messages": [ { "role": "user", "content": "hi" } ],
-          "anthropic_unknown": { "nested": [1, 2, 3] }
-        }
-        """;
+            {
+              "model": "claude-3-5-haiku-20241022",
+              "max_tokens": 100,
+              "thinking": { "type": "enabled", "budget_tokens": 1024 },
+              "system": [ { "type": "text", "text": "sys", "cache_control": { "type": "ephemeral" } } ],
+              "messages": [ { "role": "user", "content": "hi" } ],
+              "anthropic_unknown": { "nested": [1, 2, 3] }
+            }
+            """;
 
-        var ok = ProxyModelResolver.TryRewriteModel(
-            Encoding.UTF8.GetBytes(json), "opus-x", out var rewritten, out _);
+        var ok = ProxyModelResolver.TryRewriteModel(Encoding.UTF8.GetBytes(json), "opus-x", out var rewritten, out _);
 
         ok.Should().BeTrue();
         var node = JsonNode.Parse(rewritten)!.AsObject();
@@ -65,8 +64,7 @@ public sealed class ModelRewriteTests
     [InlineData("\"a string\"")]
     public void TryRewriteModel_returns_false_for_non_object_bodies(string body)
     {
-        var ok = ProxyModelResolver.TryRewriteModel(
-            Encoding.UTF8.GetBytes(body), "opus-x", out _, out _);
+        var ok = ProxyModelResolver.TryRewriteModel(Encoding.UTF8.GetBytes(body), "opus-x", out _, out _);
 
         ok.Should().BeFalse();
     }
@@ -75,15 +73,14 @@ public sealed class ModelRewriteTests
     public void TryRewriteModel_strips_context_management_field()
     {
         const string json = """
-        {
-          "model": "claude-3-5-haiku",
-          "max_tokens": 5,
-          "context_management": { "edits": [ { "type": "clear_tool_uses_20250919" } ] }
-        }
-        """;
+            {
+              "model": "claude-3-5-haiku",
+              "max_tokens": 5,
+              "context_management": { "edits": [ { "type": "clear_tool_uses_20250919" } ] }
+            }
+            """;
 
-        var ok = ProxyModelResolver.TryRewriteModel(
-            Encoding.UTF8.GetBytes(json), "opus-x", out var rewritten, out _);
+        var ok = ProxyModelResolver.TryRewriteModel(Encoding.UTF8.GetBytes(json), "opus-x", out var rewritten, out _);
 
         ok.Should().BeTrue();
         var node = JsonNode.Parse(rewritten)!.AsObject();
@@ -107,30 +104,35 @@ public sealed class ModelRewriteTests
     [InlineData("/v1/messages")]
     [InlineData("/v1/messages/count_tokens")]
     public async Task Forwarded_request_strips_beta_header_and_context_management_but_preserves_other_fields(
-        string path)
+        string path
+    )
     {
         HttpRequestMessage? forwarded = null;
         string? forwardedBody = null;
-        await using var factory = new ProxyWebAppFactory(async (req, ct) =>
-        {
-            forwarded = req;
-            forwardedBody = req.Content is null ? null : await req.Content.ReadAsStringAsync(ct);
-            return TestUpstream.Json(path.EndsWith("count_tokens") ? "{\"input_tokens\":7}" : "{\"type\":\"message\"}");
-        });
+        await using var factory = new ProxyWebAppFactory(
+            async (req, ct) =>
+            {
+                forwarded = req;
+                forwardedBody = req.Content is null ? null : await req.Content.ReadAsStringAsync(ct);
+                return TestUpstream.Json(
+                    path.EndsWith("count_tokens") ? "{\"input_tokens\":7}" : "{\"type\":\"message\"}"
+                );
+            }
+        );
         using var client = factory.CreateClient();
 
         const string json = """
-        {
-          "model": "claude-3-5-haiku-20241022",
-          "max_tokens": 100,
-          "thinking": { "type": "enabled", "budget_tokens": 1024 },
-          "context_management": { "edits": [ { "type": "clear_tool_uses_20250919" } ] },
-          "system": [ { "type": "text", "text": "sys", "cache_control": { "type": "ephemeral" } } ],
-          "tools": [ { "name": "get_weather", "input_schema": { "type": "object" } } ],
-          "messages": [ { "role": "user", "content": "hi" } ],
-          "anthropic_unknown": { "nested": [1, 2, 3] }
-        }
-        """;
+            {
+              "model": "claude-3-5-haiku-20241022",
+              "max_tokens": 100,
+              "thinking": { "type": "enabled", "budget_tokens": 1024 },
+              "context_management": { "edits": [ { "type": "clear_tool_uses_20250919" } ] },
+              "system": [ { "type": "text", "text": "sys", "cache_control": { "type": "ephemeral" } } ],
+              "tools": [ { "name": "get_weather", "input_schema": { "type": "object" } } ],
+              "messages": [ { "role": "user", "content": "hi" } ],
+              "anthropic_unknown": { "nested": [1, 2, 3] }
+            }
+            """;
 
         using var request = new HttpRequestMessage(HttpMethod.Post, path)
         {
@@ -141,7 +143,8 @@ public sealed class ModelRewriteTests
         using var response = await client.SendAsync(request);
 
         response.IsSuccessStatusCode.Should().BeTrue();
-        forwarded!.Headers.Contains("anthropic-beta")
+        forwarded!
+            .Headers.Contains("anthropic-beta")
             .Should()
             .BeFalse("Copilot rejects the whole request if any beta value is unrecognized");
 
@@ -157,21 +160,23 @@ public sealed class ModelRewriteTests
     public async Task Forwarded_request_body_has_the_configured_model()
     {
         string? forwardedBody = null;
-        await using var factory = new ProxyWebAppFactory(async (req, ct) =>
-        {
-            forwardedBody = req.Content is null ? null : await req.Content.ReadAsStringAsync(ct);
-            return TestUpstream.Json("{\"type\":\"message\"}");
-        });
+        await using var factory = new ProxyWebAppFactory(
+            async (req, ct) =>
+            {
+                forwardedBody = req.Content is null ? null : await req.Content.ReadAsStringAsync(ct);
+                return TestUpstream.Json("{\"type\":\"message\"}");
+            }
+        );
         using var client = factory.CreateClient();
 
         using var response = await client.PostAsync(
             "/v1/messages",
-            new StringContent("{\"model\":\"whatever\",\"max_tokens\":5}", Encoding.UTF8, "application/json"));
+            new StringContent("{\"model\":\"whatever\",\"max_tokens\":5}", Encoding.UTF8, "application/json")
+        );
 
         response.IsSuccessStatusCode.Should().BeTrue();
         forwardedBody.Should().NotBeNull();
-        JsonNode.Parse(forwardedBody!)!["model"]!.GetValue<string>()
-            .Should().Be(ProxyWebAppFactory.ConfiguredModel);
+        JsonNode.Parse(forwardedBody!)!["model"]!.GetValue<string>().Should().Be(ProxyWebAppFactory.ConfiguredModel);
     }
 
     [Fact]
@@ -181,28 +186,36 @@ public sealed class ModelRewriteTests
         // code_interpreter and mcp. It accepts web_search, which is dropped anyway because it is
         // still a hosted tool and the translated Anthropic route drops web_search_20250305 too.
         const string json = """
-        {
-          "model": "gpt-5.3-codex",
-          "tools": [
-            { "type": "function", "name": "shell", "parameters": { "type": "object" } },
-            { "type": "image_generation" },
-            { "type": "custom", "name": "apply_patch" },
-            { "type": "local_shell" },
-            { "type": "code_interpreter", "container": { "type": "auto" } },
-            { "type": "mcp", "server_label": "x" },
-            { "type": "web_search" }
-          ]
-        }
-        """;
+            {
+              "model": "gpt-5.3-codex",
+              "tools": [
+                { "type": "function", "name": "shell", "parameters": { "type": "object" } },
+                { "type": "image_generation" },
+                { "type": "custom", "name": "apply_patch" },
+                { "type": "local_shell" },
+                { "type": "code_interpreter", "container": { "type": "auto" } },
+                { "type": "mcp", "server_label": "x" },
+                { "type": "web_search" }
+              ]
+            }
+            """;
 
         var ok = ProxyModelResolver.TryRewriteModel(
-            Encoding.UTF8.GetBytes(json), "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+            Encoding.UTF8.GetBytes(json),
+            "gpt-5.3-codex",
+            out var rewritten,
+            out _,
+            stripHostedTools: true
+        );
 
         ok.Should().BeTrue();
         var tools = JsonNode.Parse(rewritten)!["tools"]!.AsArray();
         tools.Select(t => t!["type"]!.GetValue<string>()).Should().Equal("function", "custom");
         tools[0]!["name"]!.GetValue<string>().Should().Be("shell");
-        tools[1]!["name"]!.GetValue<string>().Should().Be("apply_patch", "current Codex sends apply_patch as a freeform custom tool");
+        tools[1]!["name"]!
+            .GetValue<string>()
+            .Should()
+            .Be("apply_patch", "current Codex sends apply_patch as a freeform custom tool");
     }
 
     [Fact]
@@ -211,7 +224,12 @@ public sealed class ModelRewriteTests
         var body = Encoding.UTF8.GetBytes("""{"model":"m","tools":[{"type":"image_generation"}]}""");
 
         var ok = ProxyModelResolver.TryRewriteModel(
-            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+            body,
+            "gpt-5.3-codex",
+            out var rewritten,
+            out _,
+            stripHostedTools: true
+        );
 
         ok.Should().BeTrue();
         JsonNode.Parse(rewritten)!.AsObject().ContainsKey("tools").Should().BeFalse();
@@ -221,10 +239,16 @@ public sealed class ModelRewriteTests
     public void TryRewriteModel_drops_tool_entries_that_are_not_typed_objects()
     {
         var body = Encoding.UTF8.GetBytes(
-            """{"model":"m","tools":["nonsense",42,null,{"noType":true},{"type":7},{"type":"function","name":"ok"}]}""");
+            """{"model":"m","tools":["nonsense",42,null,{"noType":true},{"type":7},{"type":"function","name":"ok"}]}"""
+        );
 
         var ok = ProxyModelResolver.TryRewriteModel(
-            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+            body,
+            "gpt-5.3-codex",
+            out var rewritten,
+            out _,
+            stripHostedTools: true
+        );
 
         ok.Should().BeTrue();
         var tools = JsonNode.Parse(rewritten)!["tools"]!.AsArray();
@@ -255,7 +279,12 @@ public sealed class ModelRewriteTests
         );
 
         var ok = ProxyModelResolver.TryRewriteModel(
-            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+            body,
+            "gpt-5.3-codex",
+            out var rewritten,
+            out _,
+            stripHostedTools: true
+        );
 
         ok.Should().BeTrue();
         var obj = JsonNode.Parse(rewritten)!.AsObject();
@@ -275,7 +304,12 @@ public sealed class ModelRewriteTests
         );
 
         var ok = ProxyModelResolver.TryRewriteModel(
-            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+            body,
+            "gpt-5.3-codex",
+            out var rewritten,
+            out _,
+            stripHostedTools: true
+        );
 
         ok.Should().BeTrue();
         var obj = JsonNode.Parse(rewritten)!.AsObject();
@@ -297,7 +331,12 @@ public sealed class ModelRewriteTests
         );
 
         var ok = ProxyModelResolver.TryRewriteModel(
-            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+            body,
+            "gpt-5.3-codex",
+            out var rewritten,
+            out _,
+            stripHostedTools: true
+        );
 
         ok.Should().BeTrue();
         var obj = JsonNode.Parse(rewritten)!.AsObject();
@@ -320,7 +359,12 @@ public sealed class ModelRewriteTests
         );
 
         var ok = ProxyModelResolver.TryRewriteModel(
-            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+            body,
+            "gpt-5.3-codex",
+            out var rewritten,
+            out _,
+            stripHostedTools: true
+        );
 
         ok.Should().BeTrue();
         JsonNode.Parse(rewritten)!.AsObject().ContainsKey("tool_choice").Should().BeTrue();
@@ -336,7 +380,12 @@ public sealed class ModelRewriteTests
         );
 
         var ok = ProxyModelResolver.TryRewriteModel(
-            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+            body,
+            "gpt-5.3-codex",
+            out var rewritten,
+            out _,
+            stripHostedTools: true
+        );
 
         ok.Should().BeTrue();
         JsonNode.Parse(rewritten)!["tool_choice"]!["name"]!.GetValue<string>().Should().Be("unknown");

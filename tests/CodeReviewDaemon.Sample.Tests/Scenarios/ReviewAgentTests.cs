@@ -27,9 +27,7 @@ public sealed class ReviewAgentTests : LoggingTestBase
     private const string RunId = "run-42";
 
     public ReviewAgentTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     /// <summary>A deadline far enough out that no test in this class trips it accidentally.</summary>
     private static DateTimeOffset Later => DateTimeOffset.UtcNow.AddMinutes(30);
@@ -38,7 +36,12 @@ public sealed class ReviewAgentTests : LoggingTestBase
         new(agent, LoggerFactory.CreateLogger<ReviewAgent>(), suppressSpawning);
 
     private static TextMessage Assistant(string text) =>
-        new() { Text = text, Role = Role.Assistant, RunId = RunId };
+        new()
+        {
+            Text = text,
+            Role = Role.Assistant,
+            RunId = RunId,
+        };
 
     [Fact]
     public async Task CollectProvisionalAsync_fails_when_the_agent_stream_was_severed_mid_answer()
@@ -49,11 +52,11 @@ public sealed class ReviewAgentTests : LoggingTestBase
         var agent = new FakeMultiTurnAgent(
             RunId,
             Assistant("## Review\nMust: null check missing in Foo.cs:10"),
-            new StreamRecoveryMessage("thread-1", RunId, "gen-1", StreamRecoveryReason.SlowConsumer));
+            new StreamRecoveryMessage("thread-1", RunId, "gen-1", StreamRecoveryReason.SlowConsumer)
+        );
         var sut = Create(agent);
 
-        var collect = async () =>
-            await sut.CollectProvisionalAsync("Review this diff", Later, CancellationToken.None);
+        var collect = async () => await sut.CollectProvisionalAsync("Review this diff", Later, CancellationToken.None);
 
         _ = await collect.Should().ThrowAsync<InvalidOperationException>();
     }
@@ -90,7 +93,12 @@ public sealed class ReviewAgentTests : LoggingTestBase
         var agent = new FakeMultiTurnAgent(
             RunId,
             new TextUpdateMessage { Text = "partial", Role = Role.Assistant },
-            new TextMessage { Text = "let me think...", Role = Role.Assistant, IsThinking = true },
+            new TextMessage
+            {
+                Text = "let me think...",
+                Role = Role.Assistant,
+                IsThinking = true,
+            },
             Assistant("The review body.")
         );
 
@@ -117,10 +125,30 @@ public sealed class ReviewAgentTests : LoggingTestBase
         // final generation's text, so the narration never leaks into the persisted review.
         var agent = new FakeMultiTurnAgent(
             RunId,
-            new TextUpdateMessage { Text = "Let me check the file.", Role = Role.Assistant, GenerationId = "g1" },
-            new TextUpdateMessage { Text = "Sub-agents returned empty; proceeding.", Role = Role.Assistant, GenerationId = "g2" },
-            new TextUpdateMessage { Text = "## Review\n", Role = Role.Assistant, GenerationId = "g3" },
-            new TextUpdateMessage { Text = "Approve with comments.", Role = Role.Assistant, GenerationId = "g3" }
+            new TextUpdateMessage
+            {
+                Text = "Let me check the file.",
+                Role = Role.Assistant,
+                GenerationId = "g1",
+            },
+            new TextUpdateMessage
+            {
+                Text = "Sub-agents returned empty; proceeding.",
+                Role = Role.Assistant,
+                GenerationId = "g2",
+            },
+            new TextUpdateMessage
+            {
+                Text = "## Review\n",
+                Role = Role.Assistant,
+                GenerationId = "g3",
+            },
+            new TextUpdateMessage
+            {
+                Text = "Approve with comments.",
+                Role = Role.Assistant,
+                GenerationId = "g3",
+            }
         );
 
         var result = await Create(agent).CollectProvisionalAsync("diff", Later, CancellationToken.None);
@@ -136,7 +164,12 @@ public sealed class ReviewAgentTests : LoggingTestBase
         // authoritative review — only the synthesis answer is, and that one throws when blank.
         var agent = new FakeMultiTurnAgent(
             RunId,
-            new TextMessage { Text = "let me think...", Role = Role.Assistant, IsThinking = true }
+            new TextMessage
+            {
+                Text = "let me think...",
+                Role = Role.Assistant,
+                IsThinking = true,
+            }
         );
 
         var result = await Create(agent).CollectProvisionalAsync("diff", Later, CancellationToken.None);
@@ -164,12 +197,18 @@ public sealed class ReviewAgentTests : LoggingTestBase
     {
         // The whole point of Task 5: ONE agent, ONE conversation, two turns. The authoritative review is
         // the SECOND answer — written after the children settled — not the provisional first one.
-        var agent = new FakeMultiTurnAgent(RunId, Assistant("provisional — children still running"))
-            .ThenReplies(Assistant("## Review\nAuthoritative, after settlement."));
+        var agent = new FakeMultiTurnAgent(RunId, Assistant("provisional — children still running")).ThenReplies(
+            Assistant("## Review\nAuthoritative, after settlement.")
+        );
         var sut = Create(agent);
 
         var provisional = await sut.CollectProvisionalAsync("review input", Later, CancellationToken.None);
-        var final = await sut.SynthesizeFinalAsync("synthesize now", allowInlinePosting: true, Later, CancellationToken.None);
+        var final = await sut.SynthesizeFinalAsync(
+            "synthesize now",
+            allowInlinePosting: true,
+            Later,
+            CancellationToken.None
+        );
 
         agent.ReceivedInputs.Should().HaveCount(2, "the provisional turn, then the synthesis turn");
         agent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text.Should().Be("review input");
@@ -193,16 +232,20 @@ public sealed class ReviewAgentTests : LoggingTestBase
             {
                 events.Add($"suppress@{agent.ReceivedInputs.Count}");
                 return new DelegateDisposable(() => events.Add($"release@{agent.ReceivedInputs.Count}"));
-            });
+            }
+        );
 
         _ = await sut.CollectProvisionalAsync("review input", Later, CancellationToken.None);
         events.Should().BeEmpty("the provisional turn may still spawn sub-agents");
 
         _ = await sut.SynthesizeFinalAsync("synthesize now", allowInlinePosting: false, Later, CancellationToken.None);
 
-        events.Should().Equal(
-            ["suppress@1", "release@2"],
-            "spawning is suppressed before the synthesis turn starts and released only after it ends");
+        events
+            .Should()
+            .Equal(
+                ["suppress@1", "release@2"],
+                "spawning is suppressed before the synthesis turn starts and released only after it ends"
+            );
     }
 
     [Fact]
@@ -215,7 +258,8 @@ public sealed class ReviewAgentTests : LoggingTestBase
         var sut = Create(agent);
 
         _ = await sut.CollectProvisionalAsync("review input", Later, CancellationToken.None);
-        var act = () => sut.SynthesizeFinalAsync("synthesize now", allowInlinePosting: true, Later, CancellationToken.None);
+        var act = () =>
+            sut.SynthesizeFinalAsync("synthesize now", allowInlinePosting: true, Later, CancellationToken.None);
 
         (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(boom);
     }
@@ -225,12 +269,19 @@ public sealed class ReviewAgentTests : LoggingTestBase
     {
         // A blank synthesis is indistinguishable from "no review": there is nothing authoritative to
         // persist, post or judge, so it fails loudly instead of promoting an empty artifact.
-        var agent = new FakeMultiTurnAgent(RunId, Assistant("provisional"))
-            .ThenReplies(new TextMessage { Text = "thinking", Role = Role.Assistant, IsThinking = true });
+        var agent = new FakeMultiTurnAgent(RunId, Assistant("provisional")).ThenReplies(
+            new TextMessage
+            {
+                Text = "thinking",
+                Role = Role.Assistant,
+                IsThinking = true,
+            }
+        );
         var sut = Create(agent);
 
         _ = await sut.CollectProvisionalAsync("review input", Later, CancellationToken.None);
-        var act = () => sut.SynthesizeFinalAsync("synthesize now", allowInlinePosting: true, Later, CancellationToken.None);
+        var act = () =>
+            sut.SynthesizeFinalAsync("synthesize now", allowInlinePosting: true, Later, CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*no review text*");
     }
@@ -246,7 +297,12 @@ public sealed class ReviewAgentTests : LoggingTestBase
         var sut = Create(agent);
 
         _ = await sut.CollectProvisionalAsync("review input", deadline, CancellationToken.None);
-        _ = await sut.SynthesizeFinalAsync("synthesize now", allowInlinePosting: false, deadline, CancellationToken.None);
+        _ = await sut.SynthesizeFinalAsync(
+            "synthesize now",
+            allowInlinePosting: false,
+            deadline,
+            CancellationToken.None
+        );
 
         agent.Deadlines.Should().Equal(deadline, deadline);
     }
@@ -257,7 +313,8 @@ public sealed class ReviewAgentTests : LoggingTestBase
         var agent = new FakeMultiTurnAgent(RunId, Assistant("provisional"));
         var sut = Create(agent);
 
-        var act = () => sut.CollectProvisionalAsync("review input", DateTimeOffset.UtcNow.AddSeconds(-1), CancellationToken.None);
+        var act = () =>
+            sut.CollectProvisionalAsync("review input", DateTimeOffset.UtcNow.AddSeconds(-1), CancellationToken.None);
 
         await act.Should().ThrowAsync<TimeoutException>();
         agent.ReceivedInputs.Should().BeEmpty("an expired budget must not start a turn it cannot finish");

@@ -61,7 +61,8 @@ public sealed record PreparedToolInvocation
         {
             throw new InvalidOperationException(
                 "ToBlockedResult was called on an approved invocation — this would report an "
-                    + "allowed call as refused.");
+                    + "allowed call as refused."
+            );
         }
 
         return new ToolCallResult(ToolCallId, BlockedMessage)

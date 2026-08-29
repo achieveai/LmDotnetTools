@@ -40,9 +40,7 @@ public static class CopilotModelsResponse
     /// </summary>
     public static IEnumerable<JsonElement> EnumerateModelEntries(JsonElement root)
     {
-        var list = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data)
-            ? data
-            : root;
+        var list = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data) ? data : root;
 
         if (list.ValueKind != JsonValueKind.Array)
         {
@@ -74,7 +72,8 @@ public static class CopilotModelsResponse
     /// </summary>
     public static JsonElement GetSupportedEndpoints(JsonElement item)
     {
-        return item.ValueKind == JsonValueKind.Object
+        return
+            item.ValueKind == JsonValueKind.Object
             && item.TryGetProperty("supported_endpoints", out var endpoints)
             && endpoints.ValueKind == JsonValueKind.Array
             ? endpoints
@@ -96,8 +95,10 @@ public static class CopilotModelsResponse
 
         foreach (var value in endpoints.EnumerateArray())
         {
-            if (value.ValueKind == JsonValueKind.String
-                && string.Equals(value.GetString(), endpoint, StringComparison.OrdinalIgnoreCase))
+            if (
+                value.ValueKind == JsonValueKind.String
+                && string.Equals(value.GetString(), endpoint, StringComparison.OrdinalIgnoreCase)
+            )
             {
                 return true;
             }
@@ -112,7 +113,8 @@ public static class CopilotModelsResponse
     /// </summary>
     public static string? GetString(JsonElement item, string propertyName)
     {
-        return item.ValueKind == JsonValueKind.Object
+        return
+            item.ValueKind == JsonValueKind.Object
             && item.TryGetProperty(propertyName, out var el)
             && el.ValueKind == JsonValueKind.String
             ? el.GetString()

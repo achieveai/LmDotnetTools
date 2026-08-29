@@ -58,8 +58,7 @@ public class McpConfigurationTests
     {
         const string json = """{"mcpServers":{"server1":{"command":"node","args":["a.js"]}}}""";
 
-        var roundTripped = JsonSerializer.Serialize(
-            JsonSerializer.Deserialize<McpConfiguration>(json));
+        var roundTripped = JsonSerializer.Serialize(JsonSerializer.Deserialize<McpConfiguration>(json));
         using var doc = JsonDocument.Parse(roundTripped);
         var server1 = doc.RootElement.GetProperty("mcpServers").GetProperty("server1");
 

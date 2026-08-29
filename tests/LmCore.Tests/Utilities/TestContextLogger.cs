@@ -47,7 +47,10 @@ public static class TestContextLogger
 
             // Normalize async state machine frames:
             // typeName like "<MyTest>d__12" and methodName "MoveNext".
-            if (typeName.StartsWith("<", StringComparison.Ordinal) && typeName.Contains(">d__", StringComparison.Ordinal))
+            if (
+                typeName.StartsWith("<", StringComparison.Ordinal)
+                && typeName.Contains(">d__", StringComparison.Ordinal)
+            )
             {
                 var closeIndex = typeName.IndexOf('>');
                 if (closeIndex > 1)

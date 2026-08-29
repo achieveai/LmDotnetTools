@@ -117,8 +117,7 @@ internal sealed class TaskCoordinator
     }
 
     /// <summary>Returns an already-composed spawn unit by its exact correlation name.</summary>
-    public SpawnUnit? FindComposedUnit(string name) =>
-        _composed.TryGetValue(name, out var unit) ? unit : null;
+    public SpawnUnit? FindComposedUnit(string name) => _composed.TryGetValue(name, out var unit) ? unit : null;
 
     /// <summary>Whether <paramref name="name"/> is a currently-expected (composed) unit name.</summary>
     public bool IsExpectedUnit(string name) => _tasksByName.ContainsKey(name);
@@ -486,9 +485,7 @@ internal sealed class TaskCoordinator
 
         if (task.OutputSchema is { } schema)
         {
-            parts.Add(
-                "Return ONLY a JSON object that conforms to this schema:\n" + schema.ToJsonString()
-            );
+            parts.Add("Return ONLY a JSON object that conforms to this schema:\n" + schema.ToJsonString());
         }
 
         return string.Join("\n\n", parts);
@@ -556,9 +553,12 @@ internal sealed class TaskCoordinator
         // Markdown fence; an embedded object can be an example/status fragment inside a larger report and
         // must not replace that report. Never fail the task for "not valid JSON".
         var trimmed = resultText.Trim();
-        var structured = parsed is not null
-            && (string.Equals(extractedJson, trimmed, StringComparison.Ordinal)
-                || IsPureJsonFence(trimmed, extractedJson));
+        var structured =
+            parsed is not null
+            && (
+                string.Equals(extractedJson, trimmed, StringComparison.Ordinal)
+                || IsPureJsonFence(trimmed, extractedJson)
+            );
         RecordValidated(taskRef, structured ? parsed! : JsonValue.Create(resultText));
     }
 
@@ -641,15 +641,11 @@ internal sealed class TaskCoordinator
             {
                 StateWriter.Apply(_liveState(), writes, value);
             }
-            catch (Exception ex)
-                when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
             {
                 // Only the structural exception TYPE name is recorded; ex.Message can echo the submitted
                 // value and must not land in durable/projected state (see HandleFailure).
-                HandleFailure(
-                    taskRef,
-                    $"task output could not be written to state ({ex.GetType().Name})"
-                );
+                HandleFailure(taskRef, $"task output could not be written to state ({ex.GetType().Name})");
                 return;
             }
         }
@@ -770,9 +766,7 @@ internal sealed class TaskCoordinator
 
         static void RemoveByUnit(Dictionary<string, TaskRef> map, string unitName)
         {
-            foreach (
-                var key in map.Where(kv => kv.Value.Name == unitName).Select(kv => kv.Key).ToList()
-            )
+            foreach (var key in map.Where(kv => kv.Value.Name == unitName).Select(kv => kv.Key).ToList())
             {
                 _ = map.Remove(key);
             }
@@ -856,10 +850,7 @@ internal sealed class TaskCoordinator
 
         /// <summary>The stable unit name, computed once and cached.</summary>
         public string Name =>
-            _name ??=
-                Index is { } index
-                    ? $"{NodeId}:{Visit}:{TaskId}:{index}"
-                    : $"{NodeId}:{Visit}:{TaskId}";
+            _name ??= Index is { } index ? $"{NodeId}:{Visit}:{TaskId}:{index}" : $"{NodeId}:{Visit}:{TaskId}";
 
         /// <summary>The serialized <see cref="OutputSchema"/>, serialized once and cached; <c>null</c> when there is no schema.</summary>
         public string? OutputSchemaJson =>

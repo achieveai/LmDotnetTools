@@ -12,19 +12,20 @@ namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Transport;
 internal sealed class CopilotRpcTraceWriter : IAsyncDisposable
 {
     private static readonly HashSet<string> RedactedKeys = new(
-    [
-        "apiKey",
-        "api_key",
-        "authorization",
-        "token",
-        "access_token",
-        "refresh_token",
-        "github_token",
-        "githubToken",
-        "copilot_api_key",
-        "copilotApiKey",
-    ],
-        StringComparer.OrdinalIgnoreCase);
+        [
+            "apiKey",
+            "api_key",
+            "authorization",
+            "token",
+            "access_token",
+            "refresh_token",
+            "github_token",
+            "githubToken",
+            "copilot_api_key",
+            "copilotApiKey",
+        ],
+        StringComparer.OrdinalIgnoreCase
+    );
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly string _sessionId;
@@ -80,13 +81,15 @@ internal sealed class CopilotRpcTraceWriter : IAsyncDisposable
 
             if (payloadElement.ValueKind == JsonValueKind.Object)
             {
-                var hasMethod = payloadElement.TryGetProperty("method", out var methodProp)
-                                && methodProp.ValueKind == JsonValueKind.String;
+                var hasMethod =
+                    payloadElement.TryGetProperty("method", out var methodProp)
+                    && methodProp.ValueKind == JsonValueKind.String;
                 var hasId = payloadElement.TryGetProperty("id", out var idProp);
                 var hasResult = payloadElement.TryGetProperty("result", out _);
                 var hasError = payloadElement.TryGetProperty("error", out _);
 
-                messageKind = hasMethod && hasId ? "request"
+                messageKind =
+                    hasMethod && hasId ? "request"
                     : hasMethod ? "notification"
                     : hasId && (hasResult || hasError) ? "response"
                     : "unknown";
@@ -106,11 +109,12 @@ internal sealed class CopilotRpcTraceWriter : IAsyncDisposable
                     };
                 }
 
-                if (payloadElement.TryGetProperty("params", out var paramsProp)
-                    && paramsProp.ValueKind == JsonValueKind.Object)
+                if (
+                    payloadElement.TryGetProperty("params", out var paramsProp)
+                    && paramsProp.ValueKind == JsonValueKind.Object
+                )
                 {
-                    sessionId = TryGetString(paramsProp, "sessionId")
-                        ?? TryGetString(paramsProp, "session_id");
+                    sessionId = TryGetString(paramsProp, "sessionId") ?? TryGetString(paramsProp, "session_id");
                 }
             }
         }
@@ -121,18 +125,20 @@ internal sealed class CopilotRpcTraceWriter : IAsyncDisposable
         }
 
         var payloadHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payloadJson)));
-        var envelope = JsonSerializer.Serialize(new
-        {
-            timestamp_utc = DateTimeOffset.UtcNow.ToString("O"),
-            copilot_session_id = _sessionId,
-            direction,
-            message_kind = messageKind ?? "unknown",
-            rpc_id = rpcId,
-            method,
-            session_id = sessionId,
-            payload_sha256 = payloadHash,
-            payload = payloadJson,
-        });
+        var envelope = JsonSerializer.Serialize(
+            new
+            {
+                timestamp_utc = DateTimeOffset.UtcNow.ToString("O"),
+                copilot_session_id = _sessionId,
+                direction,
+                message_kind = messageKind ?? "unknown",
+                rpc_id = rpcId,
+                method,
+                session_id = sessionId,
+                payload_sha256 = payloadHash,
+                payload = payloadJson,
+            }
+        );
 
         await _writeLock.WaitAsync(ct);
         try
@@ -153,7 +159,8 @@ internal sealed class CopilotRpcTraceWriter : IAsyncDisposable
                 "{event_type} {event_status} {error_code}",
                 "copilot.rpc_trace.write",
                 "failed",
-                "trace_write_failed");
+                "trace_write_failed"
+            );
         }
         finally
         {
@@ -242,8 +249,7 @@ internal sealed class CopilotRpcTraceWriter : IAsyncDisposable
 
     private static string? TryGetString(JsonElement obj, string propertyName)
     {
-        return obj.TryGetProperty(propertyName, out var property)
-               && property.ValueKind == JsonValueKind.String
+        return obj.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
             ? property.GetString()
             : null;
     }

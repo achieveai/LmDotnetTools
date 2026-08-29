@@ -21,7 +21,8 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// <param name="Findings">The round's specialist findings, structured for counting.</param>
 internal sealed record ReviewNotesArtifacts(
     IReadOnlyList<ReviewArtifactFile> Files,
-    ReviewFindingsArtifactPayload Findings);
+    ReviewFindingsArtifactPayload Findings
+);
 
 /// <summary>
 /// The one sanctioned way transcript text — anything a review agent or its tools produced — is allowed to
@@ -62,9 +63,9 @@ internal static partial class UntrustedTranscriptText
     /// </summary>
     private static readonly (string Token, string Replacement)[] MarkerDelimiters =
     [
-        ("【", "[!"),   // 【 — the opening half of the OpenAI-style tool-call marker
-        ("】", "!]"),   // 】
-        ("<|", "<!|"),      // the opening half of the ChatML-style special-token marker
+        ("【", "[!"), // 【 — the opening half of the OpenAI-style tool-call marker
+        ("】", "!]"), // 】
+        ("<|", "<!|"), // the opening half of the ChatML-style special-token marker
         ("|>", "|!>"),
     ];
 
@@ -119,16 +120,15 @@ internal static partial class UntrustedTranscriptText
         if (text.Length > maxChars)
         {
             var dropped = text.Length - maxChars;
-            text = text[..maxChars]
+            text =
+                text[..maxChars]
                 + $"\n\n[daemon: truncated — {dropped.ToString("N0", CultureInfo.InvariantCulture)} "
                 + "further characters omitted]";
         }
 
         var fence = new string('`', Math.Max(3, LongestBacktickRun(text) + 1));
         // The trailing newline guard keeps a body that ends mid-line from gluing itself onto the closing fence.
-        return text.Length == 0
-            ? $"{fence}{info}\n(empty)\n{fence}"
-            : $"{fence}{info}\n{text}\n{fence}";
+        return text.Length == 0 ? $"{fence}{info}\n(empty)\n{fence}" : $"{fence}{info}\n{text}\n{fence}";
     }
 
     private static int LongestBacktickRun(string text)
@@ -150,7 +150,10 @@ internal static partial class UntrustedTranscriptText
     /// </summary>
     public static string Inline(string? raw, int maxChars = 120)
     {
-        var text = Sanitize(raw).Replace('\n', ' ').Replace('\t', ' ').Replace("`", string.Empty, StringComparison.Ordinal);
+        var text = Sanitize(raw)
+            .Replace('\n', ' ')
+            .Replace('\t', ' ')
+            .Replace("`", string.Empty, StringComparison.Ordinal);
         text = WhitespaceRun().Replace(text, " ").Trim();
         if (text.Length > maxChars)
         {
@@ -226,7 +229,8 @@ internal sealed record ReviewNotesArtifactContext(
     string? StoreRoot,
     string? NotesDir,
     string? PrevHeadSha,
-    ReviewSubAgentTreeSnapshot Roster);
+    ReviewSubAgentTreeSnapshot Roster
+);
 
 /// <summary>
 /// Builds the per-PR notes artifacts the daemon commits alongside <c>review.md</c>.
@@ -276,7 +280,8 @@ internal sealed class ReviewNotesArtifactBuilder
         string notesRelPath,
         ReviewNotesArtifactContext context,
         CancellationToken cancellationToken,
-        string? shippedReviewBody = null)
+        string? shippedReviewBody = null
+    )
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(context);
@@ -288,16 +293,22 @@ internal sealed class ReviewNotesArtifactBuilder
         // Built from the specialists' OWN words as read back out of their transcripts — the same text the
         // per-agent findings files carry, taken before the artifact size budget trims anything, so a finding
         // cut from a file for space is still reconciled.
-        var sources = findings
-            .Select(f => new ReviewFindingSource(f.Label, f.Template, f.OwnText))
-            .ToArray();
+        var sources = findings.Select(f => new ReviewFindingSource(f.Label, f.Template, f.OwnText)).ToArray();
         var comparable = !string.IsNullOrWhiteSpace(shippedReviewBody);
         var reconciled = ReviewFindingReconciler.Reconcile(sources, shippedReviewBody);
         var reconciliationFileName = $"{ReviewFindingReconciler.FileNamePrefix}{round}.md";
         var reconciliation = ReviewFindingReconciler.Render(round, sources, reconciled, shippedReviewBody);
 
         var contextFile = BuildContextFile(
-            run, repo, round, context, lead, findings, reconciliationFileName, reconciled.Count);
+            run,
+            repo,
+            round,
+            context,
+            lead,
+            findings,
+            reconciliationFileName,
+            reconciled.Count
+        );
 
         List<ReviewArtifactFile> files =
         [
@@ -310,7 +321,12 @@ internal sealed class ReviewNotesArtifactBuilder
         _logger.LogInformation(
             "Run {RunId}: daemon authored {Count} notes artifact(s) for round {Round} "
                 + "({AgentCount} reviewer transcript(s), {FailureCount} unreadable).",
-            run.Id, files.Count, round, findings.Count, findings.Count(f => !f.TranscriptRead) + (lead.TranscriptRead ? 0 : 1));
+            run.Id,
+            files.Count,
+            round,
+            findings.Count,
+            findings.Count(f => !f.TranscriptRead) + (lead.TranscriptRead ? 0 : 1)
+        );
 
         // The disposition of every specialist finding, as a rate rather than an anecdote. Logged on every
         // build including the one where nothing changed, because a number that only appears when something
@@ -334,13 +350,19 @@ internal sealed class ReviewNotesArtifactBuilder
             reconciled.Count(r => r.Outcome == ReviewFindingOutcome.Reframed),
             reconciled.Count(r => r.Outcome == ReviewFindingOutcome.MergedInto),
             reconciled.Count(r => r.Outcome == ReviewFindingOutcome.Dropped),
-            comparable);
+            comparable
+        );
 
         // The same reconciled list, serialised a second way. The markdown above is what an author reads; this
         // is what a query counts. Both come off the one `reconciled` variable, so the artifact cannot report a
         // finding the table omits or vice versa.
         var payload = ReviewFindingsArtifactPayload.Build(
-            context.ReviewRound, sources, reconciled, comparable, run.PromptTemplateHash);
+            context.ReviewRound,
+            sources,
+            reconciled,
+            comparable,
+            run.PromptTemplateHash
+        );
 
         // A row that was extracted and then failed to reach the record is the one failure this whole artifact
         // cannot tolerate, because it makes the count silently low and a low count reads exactly like a quiet
@@ -360,9 +382,11 @@ internal sealed class ReviewNotesArtifactBuilder
                 payload.Shortfall,
                 string.Join(
                     ", ",
-                    payload.Sources
-                        .Where(s => s.Parsed != s.Recorded)
-                        .Select(s => $"{s.Label} {s.Parsed}->{s.Recorded}")));
+                    payload
+                        .Sources.Where(s => s.Parsed != s.Recorded)
+                        .Select(s => $"{s.Label} {s.Parsed}->{s.Recorded}")
+                )
+            );
         }
 
         return new ReviewNotesArtifacts(files, payload);
@@ -414,7 +438,8 @@ internal sealed class ReviewNotesArtifactBuilder
         string Label,
         string Template,
         TranscriptState State,
-        string OwnText)
+        string OwnText
+    )
     {
         public bool TranscriptRead =>
             State is TranscriptState.NoMessages or TranscriptState.FilteredEmpty or TranscriptState.Read;
@@ -430,11 +455,14 @@ internal sealed class ReviewNotesArtifactBuilder
         ReviewRun run,
         string round,
         ReviewNotesArtifactContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         const string Label = "lead reviewer (primary)";
         var header = new StringBuilder()
-            .Append("# Lead reviewer conclusions — round ").Append(round).AppendLine()
+            .Append("# Lead reviewer conclusions — round ")
+            .Append(round)
+            .AppendLine()
             .AppendLine()
             .AppendLine("> Written by the review daemon, not by the agent below. This is the primary review")
             .AppendLine("> agent — the one that read the specialists' results and decided the verdict that")
@@ -444,26 +472,38 @@ internal sealed class ReviewNotesArtifactBuilder
             .AppendLine()
             .AppendLine("| Field | Value |")
             .AppendLine("| --- | --- |")
-            .Append("| Model | ").Append(UntrustedTranscriptText.Inline(context.ModelId)).AppendLine(" |")
-            .Append("| Modality | ").Append(context.ToolAssisted ? "tool-assisted" : "diff-only").AppendLine(" |")
+            .Append("| Model | ")
+            .Append(UntrustedTranscriptText.Inline(context.ModelId))
+            .AppendLine(" |")
+            .Append("| Modality | ")
+            .Append(context.ToolAssisted ? "tool-assisted" : "diff-only")
+            .AppendLine(" |")
             .Append("| Specialists dispatched | ")
-            .Append(context.Roster.Nodes.Count.ToString(CultureInfo.InvariantCulture)).AppendLine(" |")
+            .Append(context.Roster.Nodes.Count.ToString(CultureInfo.InvariantCulture))
+            .AppendLine(" |")
             .AppendLine()
             .AppendLine("## Transcript")
             .AppendLine();
 
         var read = await AppendTranscriptAsync(
-            header,
-            run,
-            context,
-            Label,
-            LeadTemplate,
-            static (source, threadId, ct) => source.GetRootTranscriptAsync(threadId, ct),
-            cancellationToken).ConfigureAwait(false);
+                header,
+                run,
+                context,
+                Label,
+                LeadTemplate,
+                static (source, threadId, ct) => source.GetRootTranscriptAsync(threadId, ct),
+                cancellationToken
+            )
+            .ConfigureAwait(false);
 
         return new FindingsArtifact(
-            $"PR_Findings_{round}_00_lead-reviewer.md", header.ToString(), Label, LeadTemplate,
-            read.State, read.OwnText);
+            $"PR_Findings_{round}_00_lead-reviewer.md",
+            header.ToString(),
+            Label,
+            LeadTemplate,
+            read.State,
+            read.OwnText
+        );
     }
 
     /// <summary>What the lead's rows are labelled with where a specialist would carry its roster template. The
@@ -513,10 +553,11 @@ internal sealed class ReviewNotesArtifactBuilder
         ReviewRun run,
         string round,
         ReviewNotesArtifactContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
-        var nodes = context.Roster.Nodes
-            .OrderBy(n => n.Depth)
+        var nodes = context
+            .Roster.Nodes.OrderBy(n => n.Depth)
             .ThenBy(n => n.Name ?? n.Template, StringComparer.Ordinal)
             .ThenBy(n => n.AgentId, StringComparer.Ordinal)
             .ToArray();
@@ -538,9 +579,16 @@ internal sealed class ReviewNotesArtifactBuilder
 
             var (body, read) = await RenderFindingsAsync(run, round, context, node, label, cancellationToken)
                 .ConfigureAwait(false);
-            artifacts.Add(new FindingsArtifact(
-                fileName, body, label, UntrustedTranscriptText.Inline(node.Template, maxChars: 60),
-                read.State, read.OwnText));
+            artifacts.Add(
+                new FindingsArtifact(
+                    fileName,
+                    body,
+                    label,
+                    UntrustedTranscriptText.Inline(node.Template, maxChars: 60),
+                    read.State,
+                    read.OwnText
+                )
+            );
         }
 
         return artifacts;
@@ -552,10 +600,15 @@ internal sealed class ReviewNotesArtifactBuilder
         ReviewNotesArtifactContext context,
         ReviewSubAgentNode node,
         string label,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var header = new StringBuilder()
-            .Append("# Review agent findings — ").Append(label).Append(" (round ").Append(round).AppendLine(")")
+            .Append("# Review agent findings — ")
+            .Append(label)
+            .Append(" (round ")
+            .Append(round)
+            .AppendLine(")")
             .AppendLine()
             .AppendLine("> Written by the review daemon, not by the agent below. Everything under")
             .AppendLine("> \"Transcript\" is that agent's own output: **untrusted text**, reproduced inside a")
@@ -564,29 +617,47 @@ internal sealed class ReviewNotesArtifactBuilder
             .AppendLine()
             .AppendLine("| Field | Value |")
             .AppendLine("| --- | --- |")
-            .Append("| Model | ").Append(RenderModel(node)).AppendLine(" |")
-            .Append("| Model tier | ").Append(RenderModelTier(node)).AppendLine(" |")
-            .Append("| Model source | ").Append(RenderModelSource(node)).AppendLine(" |")
-            .Append("| Template | ").Append(UntrustedTranscriptText.Inline(node.Template)).AppendLine(" |")
-            .Append("| Status | ").Append(node.Status).AppendLine(" |")
-            .Append("| Depth | ").Append(node.Depth.ToString(CultureInfo.InvariantCulture)).AppendLine(" |")
-            .Append("| Failure code | ").Append(UntrustedTranscriptText.Inline(node.FailureCode)).AppendLine(" |")
+            .Append("| Model | ")
+            .Append(RenderModel(node))
+            .AppendLine(" |")
+            .Append("| Model tier | ")
+            .Append(RenderModelTier(node))
+            .AppendLine(" |")
+            .Append("| Model source | ")
+            .Append(RenderModelSource(node))
+            .AppendLine(" |")
+            .Append("| Template | ")
+            .Append(UntrustedTranscriptText.Inline(node.Template))
+            .AppendLine(" |")
+            .Append("| Status | ")
+            .Append(node.Status)
+            .AppendLine(" |")
+            .Append("| Depth | ")
+            .Append(node.Depth.ToString(CultureInfo.InvariantCulture))
+            .AppendLine(" |")
+            .Append("| Failure code | ")
+            .Append(UntrustedTranscriptText.Inline(node.FailureCode))
+            .AppendLine(" |")
             .Append("| Terminal at (UTC) | ")
             .Append(node.TerminalAtUtc?.ToString("u", CultureInfo.InvariantCulture) ?? "(unrecorded)")
             .AppendLine(" |")
-            .Append("| Agent id | `").Append(UntrustedTranscriptText.Slug(node.AgentId, maxChars: 80)).AppendLine("` |")
+            .Append("| Agent id | `")
+            .Append(UntrustedTranscriptText.Slug(node.AgentId, maxChars: 80))
+            .AppendLine("` |")
             .AppendLine()
             .AppendLine("## Transcript")
             .AppendLine();
 
         var read = await AppendTranscriptAsync(
-            header,
-            run,
-            context,
-            label,
-            UntrustedTranscriptText.Inline(node.Template, maxChars: 60),
-            (source, threadId, ct) => source.GetTranscriptAsync(threadId, node.AgentId, ct),
-            cancellationToken).ConfigureAwait(false);
+                header,
+                run,
+                context,
+                label,
+                UntrustedTranscriptText.Inline(node.Template, maxChars: 60),
+                (source, threadId, ct) => source.GetTranscriptAsync(threadId, node.AgentId, ct),
+                cancellationToken
+            )
+            .ConfigureAwait(false);
 
         return (header.ToString(), read);
     }
@@ -613,7 +684,8 @@ internal sealed class ReviewNotesArtifactBuilder
             CancellationToken,
             Task<IReadOnlyList<ReviewAgentTranscriptEntry>>
         > fetch,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (_transcripts is null || string.IsNullOrWhiteSpace(context.HostedThreadId))
         {
@@ -622,7 +694,8 @@ internal sealed class ReviewNotesArtifactBuilder
                     ? "_No transcript source is configured for this review modality, so only the roster facts "
                         + "above could be recorded._"
                     : "_This review has no hosted conversation id, so its agents' transcripts could not be "
-                        + "addressed._");
+                        + "addressed._"
+            );
             return RetainedTranscript.Unread(TranscriptState.NotAddressable);
         }
 
@@ -636,9 +709,11 @@ internal sealed class ReviewNotesArtifactBuilder
             // Loud in the log, and visible in the artifact — the whole point is that a missing reviewer
             // record can no longer look like a reviewer that had nothing to say.
             _logger.LogWarning(
-                ex, "Run {RunId}: could not read the transcript for {Label}; "
-                    + "recording the gap in its findings file.",
-                run.Id, label);
+                ex,
+                "Run {RunId}: could not read the transcript for {Label}; " + "recording the gap in its findings file.",
+                run.Id,
+                label
+            );
             header
                 .AppendLine("_The daemon could not read this transcript from the review host:_")
                 .AppendLine()
@@ -665,7 +740,12 @@ internal sealed class ReviewNotesArtifactBuilder
                     + "agent-authored content — {Omitted} of {Total} message(s) were filtered as tool traffic, "
                     + "token accounting, or empty payloads, and nothing remaining is this agent's own turn. "
                     + "Its findings file exists and says so; treat it as a gap, not as a clean review.",
-                run.Id, label, template, retention.OmittedMessages, retention.TotalMessages);
+                run.Id,
+                label,
+                template,
+                retention.OmittedMessages,
+                retention.TotalMessages
+            );
         }
 
         return retention;
@@ -683,7 +763,8 @@ internal sealed class ReviewNotesArtifactBuilder
         TranscriptState State,
         int TotalMessages,
         int OmittedMessages,
-        string OwnText)
+        string OwnText
+    )
     {
         /// <summary>A read that never produced entries at all — nothing addressed, or the host refused.</summary>
         public static RetainedTranscript Unread(TranscriptState state) => new(state, 0, 0, string.Empty);
@@ -711,7 +792,9 @@ internal sealed class ReviewNotesArtifactBuilder
     /// </para>
     /// </summary>
     private static RetainedTranscript AppendRetainedEntries(
-        StringBuilder header, IReadOnlyList<ReviewAgentTranscriptEntry> entries)
+        StringBuilder header,
+        IReadOnlyList<ReviewAgentTranscriptEntry> entries
+    )
     {
         if (entries.Count == 0)
         {
@@ -724,12 +807,12 @@ internal sealed class ReviewNotesArtifactBuilder
         if (retained.Length == 0)
         {
             header
-                .Append("_All ").Append(entries.Count.ToString(CultureInfo.InvariantCulture))
+                .Append("_All ")
+                .Append(entries.Count.ToString(CultureInfo.InvariantCulture))
                 .AppendLine(" of this agent's messages were tool traffic, token accounting, or empty")
                 .AppendLine("payloads — it produced no prose of its own._");
             AppendReadButEmpty(header, entries.Count, entries.Count);
-            return new RetainedTranscript(
-                TranscriptState.FilteredEmpty, entries.Count, entries.Count, string.Empty);
+            return new RetainedTranscript(TranscriptState.FilteredEmpty, entries.Count, entries.Count, string.Empty);
         }
 
         var budget = UntrustedTranscriptText.MaxArtifactChars;
@@ -748,27 +831,28 @@ internal sealed class ReviewNotesArtifactBuilder
 
             written++;
             header
-                .Append("### ").Append(written.ToString(CultureInfo.InvariantCulture)).Append(". ")
+                .Append("### ")
+                .Append(written.ToString(CultureInfo.InvariantCulture))
+                .Append(". ")
                 .Append(UntrustedTranscriptText.Inline(entry.Role, maxChars: 24))
-                .Append(" · ").Append(UntrustedTranscriptText.Inline(entry.MessageType, maxChars: 40));
+                .Append(" · ")
+                .Append(UntrustedTranscriptText.Inline(entry.MessageType, maxChars: 40));
             if (entry.TimestampUtc is { } ts)
             {
                 header.Append(" · ").Append(ts.ToString("u", CultureInfo.InvariantCulture));
             }
 
-            header
-                .AppendLine()
-                .AppendLine()
-                .AppendLine(UntrustedTranscriptText.Fence(entry.Body))
-                .AppendLine();
+            header.AppendLine().AppendLine().AppendLine(UntrustedTranscriptText.Fence(entry.Body)).AppendLine();
         }
 
         if (dropped > 0)
         {
             header
                 .AppendLine()
-                .Append("_[daemon: ").Append(dropped.ToString(CultureInfo.InvariantCulture))
-                .Append(" of ").Append(entries.Count.ToString(CultureInfo.InvariantCulture))
+                .Append("_[daemon: ")
+                .Append(dropped.ToString(CultureInfo.InvariantCulture))
+                .Append(" of ")
+                .Append(entries.Count.ToString(CultureInfo.InvariantCulture))
                 .AppendLine(" message(s) omitted as tool traffic, token accounting, or empty payloads —")
                 .AppendLine("this file keeps what the reviewer concluded, not how it looked things up]_");
         }
@@ -787,7 +871,8 @@ internal sealed class ReviewNotesArtifactBuilder
             state,
             entries.Count,
             dropped,
-            string.Join("\n\n", ownTurns.Select(e => UntrustedTranscriptText.Sanitize(e.Body))));
+            string.Join("\n\n", ownTurns.Select(e => UntrustedTranscriptText.Sanitize(e.Body)))
+        );
     }
 
     /// <summary>
@@ -799,10 +884,14 @@ internal sealed class ReviewNotesArtifactBuilder
     private static void AppendReadButEmpty(StringBuilder header, int omitted, int total) =>
         header
             .AppendLine()
-            .Append("_").Append(ReadButEmptyMarker).AppendLine("_")
+            .Append("_")
+            .Append(ReadButEmptyMarker)
+            .AppendLine("_")
             .AppendLine()
-            .Append("_").Append(omitted.ToString(CultureInfo.InvariantCulture))
-            .Append(" of ").Append(total.ToString(CultureInfo.InvariantCulture))
+            .Append("_")
+            .Append(omitted.ToString(CultureInfo.InvariantCulture))
+            .Append(" of ")
+            .Append(total.ToString(CultureInfo.InvariantCulture))
             .AppendLine(" message(s) were filtered as tool traffic, token accounting or empty")
             .AppendLine("payloads, and nothing left is this agent's own turn. The review host **did** answer, so")
             .AppendLine("this is not a read failure; and the agent **did** produce messages, so this is not a")
@@ -859,10 +948,12 @@ internal sealed class ReviewNotesArtifactBuilder
         FindingsArtifact lead,
         IReadOnlyList<FindingsArtifact> findings,
         string reconciliationFileName,
-        int reconciledCount)
+        int reconciledCount
+    )
     {
         var builder = new StringBuilder()
-            .Append("# PR review context — round ").AppendLine(round)
+            .Append("# PR review context — round ")
+            .AppendLine(round)
             .AppendLine()
             .AppendLine("Authored by the review daemon from its own run state. No agent wrote this file.")
             .AppendLine()
@@ -870,34 +961,67 @@ internal sealed class ReviewNotesArtifactBuilder
             .AppendLine()
             .AppendLine("| Field | Value |")
             .AppendLine("| --- | --- |")
-            .Append("| Repository | ").Append(UntrustedTranscriptText.Inline(repo.DisplayName)).AppendLine(" |")
-            .Append("| Provider | ").Append(UntrustedTranscriptText.Inline(repo.Provider)).AppendLine(" |")
-            .Append("| Pull request | ").Append(UntrustedTranscriptText.Inline(run.PrId)).AppendLine(" |")
-            .Append("| Review run id | ").Append(run.Id.ToString(CultureInfo.InvariantCulture)).AppendLine(" |")
-            .Append("| Round | ").Append(round).AppendLine(" |")
-            .Append("| Head sha | `").Append(UntrustedTranscriptText.Slug(run.HeadSha, maxChars: 64)).AppendLine("` |")
-            .Append("| Previous head sha | `")
-            .Append(context.PrevHeadSha is null ? "(first review)" : UntrustedTranscriptText.Slug(context.PrevHeadSha, maxChars: 64))
+            .Append("| Repository | ")
+            .Append(UntrustedTranscriptText.Inline(repo.DisplayName))
+            .AppendLine(" |")
+            .Append("| Provider | ")
+            .Append(UntrustedTranscriptText.Inline(repo.Provider))
+            .AppendLine(" |")
+            .Append("| Pull request | ")
+            .Append(UntrustedTranscriptText.Inline(run.PrId))
+            .AppendLine(" |")
+            .Append("| Review run id | ")
+            .Append(run.Id.ToString(CultureInfo.InvariantCulture))
+            .AppendLine(" |")
+            .Append("| Round | ")
+            .Append(round)
+            .AppendLine(" |")
+            .Append("| Head sha | `")
+            .Append(UntrustedTranscriptText.Slug(run.HeadSha, maxChars: 64))
             .AppendLine("` |")
-            .Append("| Model | ").Append(UntrustedTranscriptText.Inline(context.ModelId)).AppendLine(" |")
-            .Append("| Modality | ").Append(context.ToolAssisted ? "tool-assisted" : "diff-only").AppendLine(" |")
-            .Append("| Mode | ").Append(UntrustedTranscriptText.Inline(run.Mode)).AppendLine(" |")
+            .Append("| Previous head sha | `")
+            .Append(
+                context.PrevHeadSha is null
+                    ? "(first review)"
+                    : UntrustedTranscriptText.Slug(context.PrevHeadSha, maxChars: 64)
+            )
+            .AppendLine("` |")
+            .Append("| Model | ")
+            .Append(UntrustedTranscriptText.Inline(context.ModelId))
+            .AppendLine(" |")
+            .Append("| Modality | ")
+            .Append(context.ToolAssisted ? "tool-assisted" : "diff-only")
+            .AppendLine(" |")
+            .Append("| Mode | ")
+            .Append(UntrustedTranscriptText.Inline(run.Mode))
+            .AppendLine(" |")
             .AppendLine()
             .AppendLine("## Where it ran")
             .AppendLine()
             .AppendLine("| Field | Value |")
             .AppendLine("| --- | --- |")
-            .Append("| Checkout root | ").Append(PathCell(context.CheckoutRoot)).AppendLine(" |")
-            .Append("| Store root | ").Append(PathCell(context.StoreRoot)).AppendLine(" |")
-            .Append("| Notes dir | ").Append(PathCell(context.NotesDir)).AppendLine(" |")
-            .Append("| Hosted conversation | ").Append(PathCell(context.HostedThreadId)).AppendLine(" |")
-            .Append("| Daemon thread | ").Append(PathCell(context.LocalThreadId)).AppendLine(" |")
+            .Append("| Checkout root | ")
+            .Append(PathCell(context.CheckoutRoot))
+            .AppendLine(" |")
+            .Append("| Store root | ")
+            .Append(PathCell(context.StoreRoot))
+            .AppendLine(" |")
+            .Append("| Notes dir | ")
+            .Append(PathCell(context.NotesDir))
+            .AppendLine(" |")
+            .Append("| Hosted conversation | ")
+            .Append(PathCell(context.HostedThreadId))
+            .AppendLine(" |")
+            .Append("| Daemon thread | ")
+            .Append(PathCell(context.LocalThreadId))
+            .AppendLine(" |")
             .AppendLine()
             .AppendLine("## Review agents dispatched")
             .AppendLine()
             // Deliberately stated above the table rather than as a row in it: the lead was not dispatched,
             // it is the review. Putting it in the roster table would misreport what the roster contains.
-            .Append("The primary (lead) reviewer's own transcript is in `").Append(lead.FileName)
+            .Append("The primary (lead) reviewer's own transcript is in `")
+            .Append(lead.FileName)
             .AppendLine("`.")
             .AppendLine();
 
@@ -910,20 +1034,27 @@ internal sealed class ReviewNotesArtifactBuilder
             builder
                 .AppendLine("| # | Agent | Model | Template | Status | Findings file |")
                 .AppendLine("| --- | --- | --- | --- | --- | --- |");
-            var nodes = context.Roster.Nodes
-                .OrderBy(n => n.Depth)
+            var nodes = context
+                .Roster.Nodes.OrderBy(n => n.Depth)
                 .ThenBy(n => n.Name ?? n.Template, StringComparer.Ordinal)
                 .ThenBy(n => n.AgentId, StringComparer.Ordinal)
                 .ToArray();
             for (var i = 0; i < findings.Count && i < nodes.Length; i++)
             {
                 builder
-                    .Append("| ").Append((i + 1).ToString(CultureInfo.InvariantCulture))
-                    .Append(" | ").Append(findings[i].Label)
-                    .Append(" | ").Append(RenderModel(nodes[i]))
-                    .Append(" | ").Append(UntrustedTranscriptText.Inline(nodes[i].Template))
-                    .Append(" | ").Append(nodes[i].Status)
-                    .Append(" | `").Append(findings[i].FileName).AppendLine("` |");
+                    .Append("| ")
+                    .Append((i + 1).ToString(CultureInfo.InvariantCulture))
+                    .Append(" | ")
+                    .Append(findings[i].Label)
+                    .Append(" | ")
+                    .Append(RenderModel(nodes[i]))
+                    .Append(" | ")
+                    .Append(UntrustedTranscriptText.Inline(nodes[i].Template))
+                    .Append(" | ")
+                    .Append(nodes[i].Status)
+                    .Append(" | `")
+                    .Append(findings[i].FileName)
+                    .AppendLine("` |");
             }
         }
 
@@ -936,17 +1067,24 @@ internal sealed class ReviewNotesArtifactBuilder
             .AppendLine()
             .AppendLine($"- `review.md` — the authoritative review body")
             .AppendLine($"- `PR_Context_{round}.md` — this file")
-            .Append("- `").Append(lead.FileName).Append("` — ").Append(lead.Label)
+            .Append("- `")
+            .Append(lead.FileName)
+            .Append("` — ")
+            .Append(lead.Label)
             .AppendLine(ManifestNote(lead));
         foreach (var artifact in findings)
         {
             builder
-                .Append("- `").Append(artifact.FileName).Append("` — ").Append(artifact.Label)
+                .Append("- `")
+                .Append(artifact.FileName)
+                .Append("` — ")
+                .Append(artifact.Label)
                 .AppendLine(ManifestNote(artifact));
         }
 
         builder
-            .Append("- `").Append(reconciliationFileName)
+            .Append("- `")
+            .Append(reconciliationFileName)
             .Append("` — what the shipped review did with each specialist finding (")
             .Append(reconciledCount.ToString(CultureInfo.InvariantCulture))
             .AppendLine(" mapped). Deliberately")
@@ -962,14 +1100,14 @@ internal sealed class ReviewNotesArtifactBuilder
     /// FAILED and a read that succeeded and carried nothing are different problems and must not share a line.
     /// The unavailable wording is unchanged from the read-failure posture that already works.
     /// </summary>
-    private static string ManifestNote(FindingsArtifact artifact) => artifact.State switch
-    {
-        TranscriptState.NotAddressable or TranscriptState.ReadFailed =>
-            " (transcript unavailable — see the file)",
-        TranscriptState.FilteredEmpty =>
-            " (transcript read, but none of this agent's own output survived — see the file)",
-        _ => string.Empty,
-    };
+    private static string ManifestNote(FindingsArtifact artifact) =>
+        artifact.State switch
+        {
+            TranscriptState.NotAddressable or TranscriptState.ReadFailed => " (transcript unavailable — see the file)",
+            TranscriptState.FilteredEmpty =>
+                " (transcript read, but none of this agent's own output survived — see the file)",
+            _ => string.Empty,
+        };
 
     private static string PathCell(string? value) =>
         string.IsNullOrWhiteSpace(value) ? "(none)" : $"`{UntrustedTranscriptText.Inline(value, maxChars: 200)}`";

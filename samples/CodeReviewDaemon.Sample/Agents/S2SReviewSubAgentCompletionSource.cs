@@ -17,8 +17,7 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// completion barrier for S2S review mode.
 /// </para>
 /// </summary>
-internal sealed class S2SReviewSubAgentCompletionSource
-    : IReviewSubAgentCompletionSource, IReviewAgentTranscriptSource
+internal sealed class S2SReviewSubAgentCompletionSource : IReviewSubAgentCompletionSource, IReviewAgentTranscriptSource
 {
     private readonly LmStreamingS2SClient _client;
 
@@ -32,17 +31,17 @@ internal sealed class S2SReviewSubAgentCompletionSource
     public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
         ReviewRun run,
         string parentThreadId,
-        CancellationToken ct) =>
-        _client.GetSubAgentTreeAsync(parentThreadId, ct);
+        CancellationToken ct
+    ) => _client.GetSubAgentTreeAsync(parentThreadId, ct);
 
     public Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetTranscriptAsync(
         string rootThreadId,
         string agentId,
-        CancellationToken ct) =>
-        _client.GetAgentTranscriptAsync(rootThreadId, agentId, ct);
+        CancellationToken ct
+    ) => _client.GetAgentTranscriptAsync(rootThreadId, agentId, ct);
 
     public Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetRootTranscriptAsync(
         string rootThreadId,
-        CancellationToken ct) =>
-        _client.GetConversationTranscriptAsync(rootThreadId, ct);
+        CancellationToken ct
+    ) => _client.GetConversationTranscriptAsync(rootThreadId, ct);
 }

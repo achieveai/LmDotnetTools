@@ -26,7 +26,8 @@ public class MarketplaceSubAgentLoaderTests
     {
         var template = MarketplaceSubAgentLoader.MapToTemplate(
             Agent("code-reviewer", "Reviews code for bugs", plugin: "pr-toolkit", marketplace: "official"),
-            AgentFactory);
+            AgentFactory
+        );
 
         template.Name.Should().Be("code-reviewer");
         template.Description.Should().Be("Reviews code for bugs");
@@ -56,27 +57,33 @@ public class MarketplaceSubAgentLoaderTests
     public void MapCatalog_FlattensAgentsAcrossMarketplacesAndPlugins()
     {
         var catalog = Catalog(
-            Marketplace("official", error: null,
+            Marketplace(
+                "official",
+                error: null,
                 Plugin("pr-toolkit", Agent("code-reviewer"), Agent("test-analyzer")),
-                Plugin("debugging", Agent("logging-review"))),
-            Marketplace("community", error: null,
-                Plugin("orleans", Agent("orleans-reviewer"))));
+                Plugin("debugging", Agent("logging-review"))
+            ),
+            Marketplace("community", error: null, Plugin("orleans", Agent("orleans-reviewer")))
+        );
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
-        result.Keys.Should().BeEquivalentTo(
-            "pr-toolkit:code-reviewer",
-            "pr-toolkit:test-analyzer",
-            "debugging:logging-review",
-            "orleans:orleans-reviewer");
+        result
+            .Keys.Should()
+            .BeEquivalentTo(
+                "pr-toolkit:code-reviewer",
+                "pr-toolkit:test-analyzer",
+                "debugging:logging-review",
+                "orleans:orleans-reviewer"
+            );
     }
 
     [Fact]
     public void MapCatalog_SkipsAgentsWithBlankName()
     {
         var catalog = Catalog(
-            Marketplace("official", error: null,
-                Plugin("p", Agent("good"), Agent("   "), Agent(""))));
+            Marketplace("official", error: null, Plugin("p", Agent("good"), Agent("   "), Agent("")))
+        );
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
@@ -87,9 +94,13 @@ public class MarketplaceSubAgentLoaderTests
     public void MapCatalog_SameBareNameInDifferentPlugins_PreservesBothQualifiedEntries()
     {
         var catalog = Catalog(
-            Marketplace("official", error: null,
+            Marketplace(
+                "official",
+                error: null,
                 Plugin("a", Agent("dup", description: "FIRST")),
-                Plugin("b", Agent("dup", description: "SECOND"))));
+                Plugin("b", Agent("dup", description: "SECOND"))
+            )
+        );
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
@@ -103,9 +114,13 @@ public class MarketplaceSubAgentLoaderTests
     public void MapCatalog_DuplicateQualifiedKey_KeepsFirstOccurrence()
     {
         var catalog = Catalog(
-            Marketplace("official", error: null,
+            Marketplace(
+                "official",
+                error: null,
                 Plugin("same", Agent("dup", description: "FIRST")),
-                Plugin("same", Agent("dup", description: "SECOND"))));
+                Plugin("same", Agent("dup", description: "SECOND"))
+            )
+        );
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
@@ -117,8 +132,8 @@ public class MarketplaceSubAgentLoaderTests
     public void MapCatalog_BlankPluginContainerName_FallsBackToAgentPlugin()
     {
         var catalog = Catalog(
-            Marketplace("official", error: null,
-                Plugin("", Agent("reviewer", plugin: "actual-plugin"))));
+            Marketplace("official", error: null, Plugin("", Agent("reviewer", plugin: "actual-plugin")))
+        );
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
@@ -132,7 +147,8 @@ public class MarketplaceSubAgentLoaderTests
         // not blow up the mapping nor contribute phantom agents.
         var catalog = Catalog(
             Marketplace("broken", error: "could not read marketplace.json"),
-            Marketplace("official", error: null, Plugin("p", Agent("ok"))));
+            Marketplace("official", error: null, Plugin("p", Agent("ok")))
+        );
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
@@ -148,7 +164,8 @@ public class MarketplaceSubAgentLoaderTests
         };
         var catalog = MarketplaceSubAgentLoader.MapCatalog(
             Catalog(Marketplace("official", null, Plugin("p", Agent("code-reviewer")))),
-            AgentFactory);
+            AgentFactory
+        );
 
         MarketplaceSubAgentLoader.MergeFillGaps(existing, catalog, NullLogger.Instance);
 
@@ -170,13 +187,11 @@ public class MarketplaceSubAgentLoaderTests
             DefaultOptions = new GenerateReplyOptions { ModelId = "tier-5-model" },
             IsModelTierResolved = true,
         };
-        var existing = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
-        {
-            ["p:code-reviewer"] = kept,
-        };
+        var existing = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal) { ["p:code-reviewer"] = kept };
         var catalog = MarketplaceSubAgentLoader.MapCatalog(
             Catalog(Marketplace("official", null, Plugin("p", Agent("code-reviewer", description: "catalog stub")))),
-            AgentFactory);
+            AgentFactory
+        );
 
         MarketplaceSubAgentLoader.MergeFillGaps(existing, catalog, NullLogger.Instance);
 

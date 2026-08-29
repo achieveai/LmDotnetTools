@@ -18,11 +18,7 @@ public class SandboxSessionRegistryMarketplacesTests
     [Fact]
     public async Task Configured_marketplaces_are_sent_as_json_array_on_create()
     {
-        var options = new SandboxGatewayOptions
-        {
-            BaseUrl = GatewayBaseUrl,
-            Marketplaces = "official, claude_plugins",
-        };
+        var options = new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, Marketplaces = "official, claude_plugins" };
         var (registry, capture) = CreateRegistry(options);
 
         _ = await registry.GetOrCreateSessionAsync();
@@ -81,7 +77,8 @@ public class SandboxSessionRegistryMarketplacesTests
         var (registry, capture) = CreateRegistry(options);
 
         _ = await registry.GetOrCreateSessionAsync(
-            new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["ClaudePlugins", "superpowers"]));
+            new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["ClaudePlugins", "superpowers"])
+        );
 
         ReadMarketplaces(capture.Body).Should().Equal("ClaudePlugins", "superpowers");
     }
@@ -92,8 +89,7 @@ public class SandboxSessionRegistryMarketplacesTests
         var options = new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, Marketplaces = "official" };
         var (registry, capture) = CreateRegistry(options);
 
-        _ = await registry.GetOrCreateSessionAsync(
-            new WorkspaceRef("ws-2", DirectoryRelPath: null, Marketplaces: []));
+        _ = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-2", DirectoryRelPath: null, Marketplaces: []));
 
         ReadMarketplaces(capture.Body).Should().Equal("official");
     }
@@ -108,7 +104,8 @@ public class SandboxSessionRegistryMarketplacesTests
         var (registry, capture) = CreateRegistry(options);
 
         _ = await registry.GetOrCreateSessionAsync(
-            new WorkspaceRef("ws-1", PluginSelection: [new SandboxPluginRef("official", "code-review")]));
+            new WorkspaceRef("ws-1", PluginSelection: [new SandboxPluginRef("official", "code-review")])
+        );
 
         using var doc = JsonDocument.Parse(capture.Body!);
         var selection = doc.RootElement.GetProperty("pluginSelection");
@@ -256,14 +253,13 @@ public class SandboxSessionRegistryMarketplacesTests
     private static IReadOnlyList<string> ReadMarketplaces(string? body)
     {
         using var doc = JsonDocument.Parse(body!);
-        return [.. doc.RootElement.GetProperty("marketplaces")
-            .EnumerateArray()
-            .Select(e => e.GetString()!)];
+        return [.. doc.RootElement.GetProperty("marketplaces").EnumerateArray().Select(e => e.GetString()!)];
     }
 
     private static (SandboxSessionRegistry Registry, BodyCapture Capture) CreateRegistry(
         SandboxGatewayOptions options,
-        string? createResponseOverride = null)
+        string? createResponseOverride = null
+    )
     {
         const string defaultCreateResponse = """
             { "session_id": "sess-1", "container_id": "c-1",
@@ -288,7 +284,8 @@ public class SandboxSessionRegistryMarketplacesTests
         var gateway = new SandboxGatewayLifetime(
             options,
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK))));
+            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)))
+        );
 
         var auth = new AuthOptions();
         var registry = new SandboxSessionRegistry(
@@ -299,7 +296,9 @@ public class SandboxSessionRegistryMarketplacesTests
             auth,
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance
+            )
+        );
 
         return (registry, capture);
     }
@@ -313,7 +312,7 @@ public class SandboxSessionRegistryMarketplacesTests
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(respond(request));
+            CancellationToken cancellationToken
+        ) => Task.FromResult(respond(request));
     }
 }

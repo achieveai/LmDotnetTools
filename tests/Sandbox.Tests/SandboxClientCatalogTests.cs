@@ -262,8 +262,12 @@ public class SandboxClientCatalogTests
     [InlineData("""{"selected":["official",null],"marketplaces":[]}""")]
     [InlineData("""{"selected":[],"marketplaces":[null]}""")]
     [InlineData("""{"selected":[],"marketplaces":[{"alias":"official","plugins":[null]}]}""")]
-    [InlineData("""{"selected":[],"marketplaces":[{"alias":"official","plugins":[{"name":"p","skills":[null],"agents":[]}]}]}""")]
-    [InlineData("""{"selected":[],"marketplaces":[{"alias":"official","plugins":[{"name":"p","skills":[],"agents":[null]}]}]}""")]
+    [InlineData(
+        """{"selected":[],"marketplaces":[{"alias":"official","plugins":[{"name":"p","skills":[null],"agents":[]}]}]}"""
+    )]
+    [InlineData(
+        """{"selected":[],"marketplaces":[{"alias":"official","plugins":[{"name":"p","skills":[],"agents":[null]}]}]}"""
+    )]
     public async Task PreviewMarketplacesAsync_NullCollectionElement_ThrowsProtocol_NotNullReference(string body)
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
@@ -351,7 +355,11 @@ public class SandboxClientCatalogTests
         // yet recognize (a future gateway addition) round-trips like any other kind, rather than
         // being rejected as malformed.
         var (client, handler) = TestSupport.CreateBorrowedClient();
-        handler.OnJson(HttpMethod.Get, "/api/v1/sandboxes/sess-1/discovered", """{"discovered":[{"kind":"future_kind_v2","path":"/workspace/whatever"}]}""");
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/sess-1/discovered",
+            """{"discovered":[{"kind":"future_kind_v2","path":"/workspace/whatever"}]}"""
+        );
 
         var items = await client.ListDiscoveredAsync("sess-1");
 

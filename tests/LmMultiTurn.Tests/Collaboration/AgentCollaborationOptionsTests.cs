@@ -64,10 +64,7 @@ public class AgentCollaborationOptionsTests
                 nameof(AgentCollaborationOptions.MaxClosedEntries)
             },
             {
-                new AgentCollaborationOptions
-                {
-                    TranscriptVisibility = (TranscriptVisibilityMode)99,
-                },
+                new AgentCollaborationOptions { TranscriptVisibility = (TranscriptVisibilityMode)99 },
                 nameof(AgentCollaborationOptions.TranscriptVisibility)
             },
         };

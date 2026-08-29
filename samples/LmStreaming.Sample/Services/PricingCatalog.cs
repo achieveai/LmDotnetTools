@@ -86,7 +86,8 @@ public static class PricingCatalog
     /// </summary>
     public static IServiceCollection AddConfiguredPricing(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration
+    )
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -147,39 +148,41 @@ public static class PricingCatalog
                 rejected?.Add(
                     $"'{entry.Key}' has PromptPerMillion={Describe(prompt)} and "
                         + $"CompletionPerMillion={Describe(completion)}; a rate must be present, finite and "
-                        + "not negative (zero is allowed, for a free model)");
+                        + "not negative (zero is allowed, for a free model)"
+                );
                 continue;
             }
 
-            var pricing = new PricingConfig
-            {
-                PromptPerMillion = promptRate,
-                CompletionPerMillion = completionRate,
-            };
+            var pricing = new PricingConfig { PromptPerMillion = promptRate, CompletionPerMillion = completionRate };
 
             // One provider entry per name the model answers to, all carrying the SAME rate. The resolver
             // indexes provider model_names alongside the catalog id, so this is how an alias becomes
             // resolvable; identical rates mean the aliases agree and none is dropped as ambiguous.
             var names = new List<string> { entry.Key };
             names.AddRange(
-                entry.GetSection("Aliases").GetChildren()
+                entry
+                    .GetSection("Aliases")
+                    .GetChildren()
                     .Select(a => a.Value)
                     .Where(a => !string.IsNullOrWhiteSpace(a))
-                    .Select(a => a!));
+                    .Select(a => a!)
+            );
 
-            models.Add(new ModelConfig
-            {
-                Id = entry.Key,
-                Providers =
-                [
-                    .. names.Select(name => new ProviderConfig
-                    {
-                        Name = ConfiguredProviderName,
-                        ModelName = name,
-                        Pricing = pricing,
-                    }),
-                ],
-            });
+            models.Add(
+                new ModelConfig
+                {
+                    Id = entry.Key,
+                    Providers =
+                    [
+                        .. names.Select(name => new ProviderConfig
+                        {
+                            Name = ConfiguredProviderName,
+                            ModelName = name,
+                            Pricing = pricing,
+                        }),
+                    ],
+                }
+            );
         }
 
         return new AppConfig { Models = models };
@@ -212,7 +215,8 @@ public static class PricingCatalog
         {
             logger.LogWarning(
                 "Pricing entry dropped: {Reason}. Its models resolve to no cost at all rather than to a wrong one.",
-                reason);
+                reason
+            );
         }
     }
 

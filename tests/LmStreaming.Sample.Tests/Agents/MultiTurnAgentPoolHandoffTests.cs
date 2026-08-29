@@ -92,7 +92,8 @@ public class MultiTurnAgentPoolHandoffTests
         pool.TryGetHandoffState("thread-behind", out var state).Should().BeTrue();
         state.IsBusy.Should().BeTrue();
         (await pool.TryReleaseIdleAgentAsync("thread-behind", state))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+            .Should()
+            .Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
     }
 
     [Fact]
@@ -127,12 +128,14 @@ public class MultiTurnAgentPoolHandoffTests
         await Wait.UntilAsync(
             () => pool.TryGetHandoffState("thread-drained", out var s) && !s.IsBusy,
             "the run assignment naming input-1 retires it from the ledger",
-            timeout: TimeSpan.FromSeconds(30));
+            timeout: TimeSpan.FromSeconds(30)
+        );
 
         // The clock never moved, so what cleared the ledger is the evidence and not the backstop.
         pool.TryGetHandoffState("thread-drained", out var state).Should().BeTrue();
         (await pool.TryReleaseIdleAgentAsync("thread-drained", state))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
+            .Should()
+            .Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
     }
 
     [Fact]
@@ -167,7 +170,8 @@ public class MultiTurnAgentPoolHandoffTests
         pool.TryGetHandoffState("thread-two", out var state).Should().BeTrue();
         state.IsBusy.Should().BeTrue("input-2 was never named by any run assignment");
         (await pool.TryReleaseIdleAgentAsync("thread-two", state))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+            .Should()
+            .Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
     }
 
     [Fact]
@@ -195,7 +199,8 @@ public class MultiTurnAgentPoolHandoffTests
         pool.TryGetHandoffState("thread-wedged", out var later).Should().BeTrue();
         later.IsBusy.Should().BeFalse();
         (await pool.TryReleaseIdleAgentAsync("thread-wedged", later))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
+            .Should()
+            .Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
     }
 
     [Fact]
@@ -231,10 +236,12 @@ public class MultiTurnAgentPoolHandoffTests
         // run_1 ends. The queued turn has still not started, and the grace has not been running.
         agent.IsRunning = false;
         pool.TryGetHandoffState("thread-resumed", out var afterwards).Should().BeTrue();
-        afterwards.IsBusy.Should().BeTrue(
-            "the entry was working for that whole stretch, so none of it counts against the grace");
+        afterwards
+            .IsBusy.Should()
+            .BeTrue("the entry was working for that whole stretch, so none of it counts against the grace");
         (await pool.TryReleaseIdleAgentAsync("thread-resumed", afterwards))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+            .Should()
+            .Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
     }
 
     [Fact]
@@ -293,7 +300,8 @@ public class MultiTurnAgentPoolHandoffTests
         var replacement = await pool.RecreateAgentWithModeAsync(
             "thread-switch",
             SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
-            ownerUserId: Alice);
+            ownerUserId: Alice
+        );
 
         replacement.Should().NotBeSameAs(original, "the switch replaced the agent");
 
@@ -302,8 +310,9 @@ public class MultiTurnAgentPoolHandoffTests
         // busy for the whole grace and then clear - with the turn just as lost and thirty seconds of
         // refused handoffs added on top.
         pool.TryGetHandoffState("thread-switch", out var after).Should().BeTrue();
-        after.IsBusy.Should().BeFalse(
-            "the replacement holds no work, and pretending otherwise would not bring the turn back");
+        after
+            .IsBusy.Should()
+            .BeFalse("the replacement holds no work, and pretending otherwise would not bring the turn back");
     }
 
     [Fact]
@@ -326,7 +335,8 @@ public class MultiTurnAgentPoolHandoffTests
         agent.IsRunning = true;
 
         (await pool.TryReleaseIdleAgentAsync("thread-window", state))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+            .Should()
+            .Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
         pool.TryGetHandoffState("thread-window", out _).Should().BeTrue();
     }
 
@@ -368,7 +378,8 @@ public class MultiTurnAgentPoolHandoffTests
         await pool.RemoveAgentAsync("thread-gone");
 
         (await pool.TryReleaseIdleAgentAsync("thread-gone", state))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.NotPooled);
+            .Should()
+            .Be(MultiTurnAgentPool.AgentReleaseOutcome.NotPooled);
     }
 
     [Fact]
@@ -402,9 +413,12 @@ public class MultiTurnAgentPoolHandoffTests
         // ...and BOTH are distinguishable from a thread that has no entry, which is the distinction
         // the two-accessor shape could not make.
         await pool.RemoveAgentAsync("thread-frozen");
-        pool.TryGetHandoffState("thread-frozen", out _).Should().BeFalse(
-            "a caller must never be handed a state that says 'frozen to no app' for a thread whose "
-                + "entry is simply gone");
+        pool.TryGetHandoffState("thread-frozen", out _)
+            .Should()
+            .BeFalse(
+                "a caller must never be handed a state that says 'frozen to no app' for a thread whose "
+                    + "entry is simply gone"
+            );
     }
 
     [Fact]
@@ -420,14 +434,16 @@ public class MultiTurnAgentPoolHandoffTests
         // the receipt id is minted, which is what makes the ledger complete rather than merely
         // well-maintained: the send here goes through exactly the method those three sites call.
         await using var pool = CreatePool(agentFactory: threadId => new PooledReportingAgent(threadId));
-        var agent = (PooledReportingAgent)pool.GetOrCreateAgent(
-            "thread-reported",
-            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
-            requestedProviderId: null,
-            requestResponseDumpFileName: null,
-            requestedWorkspaceId: null,
-            callerCredential: null,
-            ownerUserId: Alice);
+        var agent = (PooledReportingAgent)
+            pool.GetOrCreateAgent(
+                "thread-reported",
+                SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+                requestedProviderId: null,
+                requestResponseDumpFileName: null,
+                requestedWorkspaceId: null,
+                callerCredential: null,
+                ownerUserId: Alice
+            );
 
         // Non-vacuity anchor: before any accept the entry really is releasable, so the Busy below
         // cannot be an entry that was never idle to begin with. The loop parks without draining, so
@@ -438,15 +454,14 @@ public class MultiTurnAgentPoolHandoffTests
         var receipt = await agent.SendAsync([new TextMessage { Text = "relayed", Role = Role.User }]);
 
         pool.TryGetHandoffState("thread-reported", out var state).Should().BeTrue();
-        state.IsBusy.Should().BeTrue(
-            "the agent reported the accept itself, so the pool knows a turn is in hand");
+        state.IsBusy.Should().BeTrue("the agent reported the accept itself, so the pool knows a turn is in hand");
 
         (await pool.TryReleaseIdleAgentAsync("thread-reported", state))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+            .Should()
+            .Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
         pool.TryGetHandoffState("thread-reported", out _).Should().BeTrue("the entry must survive");
 
-        receipt.ReceiptId.Should().NotBeNullOrEmpty(
-            "the id the pool holds is the one the sender was given");
+        receipt.ReceiptId.Should().NotBeNullOrEmpty("the id the pool holds is the one the sender was given");
     }
 
     [Fact]
@@ -462,15 +477,18 @@ public class MultiTurnAgentPoolHandoffTests
         var time = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
         await using var pool = CreatePool(
             time,
-            agentFactory: threadId => new PooledReportingAgent(threadId) { DrainInputs = true });
-        var agent = (PooledReportingAgent)pool.GetOrCreateAgent(
-            "thread-reported-drain",
-            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
-            requestedProviderId: null,
-            requestResponseDumpFileName: null,
-            requestedWorkspaceId: null,
-            callerCredential: null,
-            ownerUserId: Alice);
+            agentFactory: threadId => new PooledReportingAgent(threadId) { DrainInputs = true }
+        );
+        var agent = (PooledReportingAgent)
+            pool.GetOrCreateAgent(
+                "thread-reported-drain",
+                SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+                requestedProviderId: null,
+                requestResponseDumpFileName: null,
+                requestedWorkspaceId: null,
+                callerCredential: null,
+                ownerUserId: Alice
+            );
 
         _ = await agent.SendAsync([new TextMessage { Text = "relayed", Role = Role.User }]);
 
@@ -487,11 +505,13 @@ public class MultiTurnAgentPoolHandoffTests
         await Wait.UntilAsync(
             () => pool.TryGetHandoffState("thread-reported-drain", out var s) && !s.IsBusy,
             "the run assignment naming the reported id retires it from the ledger",
-            timeout: TimeSpan.FromSeconds(30));
+            timeout: TimeSpan.FromSeconds(30)
+        );
 
         pool.TryGetHandoffState("thread-reported-drain", out var state).Should().BeTrue();
         (await pool.TryReleaseIdleAgentAsync("thread-reported-drain", state))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
+            .Should()
+            .Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
     }
 
     [Fact]
@@ -514,24 +534,31 @@ public class MultiTurnAgentPoolHandoffTests
         // fallback) was never a fallback at all: it covers four of the seven accept paths.
         await using var pool = CreatePool(agentFactory: threadId => new SilentPooledAgent(threadId));
 
-        var act = () => pool.GetOrCreateAgent(
-            "thread-silent",
-            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
-            requestedProviderId: null,
-            requestResponseDumpFileName: null,
-            requestedWorkspaceId: null,
-            callerCredential: null,
-            ownerUserId: Alice);
+        var act = () =>
+            pool.GetOrCreateAgent(
+                "thread-silent",
+                SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+                requestedProviderId: null,
+                requestResponseDumpFileName: null,
+                requestedWorkspaceId: null,
+                callerCredential: null,
+                ownerUserId: Alice
+            );
 
-        act.Should().Throw<InvalidOperationException>()
+        act.Should()
+            .Throw<InvalidOperationException>()
             .WithMessage($"*{nameof(IAcceptanceReportingAgent)}*")
-            .WithMessage($"*{nameof(SilentPooledAgent)}*",
-                "the refusal has to name the type that has to change, or it is a puzzle rather than "
-                    + "a diagnosis");
+            .WithMessage(
+                $"*{nameof(SilentPooledAgent)}*",
+                "the refusal has to name the type that has to change, or it is a puzzle rather than " + "a diagnosis"
+            );
 
-        pool.TryGetHandoffState("thread-silent", out _).Should().BeFalse(
-            "a refused agent must leave no entry behind - a half-registered thread would be worse "
-                + "than the hole this closes");
+        pool.TryGetHandoffState("thread-silent", out _)
+            .Should()
+            .BeFalse(
+                "a refused agent must leave no entry behind - a half-registered thread would be worse "
+                    + "than the hole this closes"
+            );
     }
 
     /// <summary>
@@ -552,27 +579,29 @@ public class MultiTurnAgentPoolHandoffTests
             List<IMessage> messages,
             string? inputId = null,
             string? parentRunId = null,
-            CancellationToken ct = default) =>
+            CancellationToken ct = default
+        ) =>
             ValueTask.FromResult(
-                new SendReceipt(inputId ?? Guid.NewGuid().ToString("N"), inputId, DateTimeOffset.UtcNow));
+                new SendReceipt(inputId ?? Guid.NewGuid().ToString("N"), inputId, DateTimeOffset.UtcNow)
+            );
 
         public async ValueTask<SendReceipt?> TrySendAsync(
             List<IMessage> messages,
             string? inputId = null,
             string? parentRunId = null,
-            CancellationToken ct = default) =>
-            await SendAsync(messages, inputId, parentRunId, ct);
+            CancellationToken ct = default
+        ) => await SendAsync(messages, inputId, parentRunId, ct);
 
 #pragma warning disable CS1998, IDE0391 // Async iterator without await — an intentionally empty stub.
         public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
             UserInput userInput,
-            [EnumeratorCancellation] CancellationToken ct = default)
+            [EnumeratorCancellation] CancellationToken ct = default
+        )
         {
             yield break;
         }
 
-        public async IAsyncEnumerable<IMessage> SubscribeAsync(
-            [EnumeratorCancellation] CancellationToken ct = default)
+        public async IAsyncEnumerable<IMessage> SubscribeAsync([EnumeratorCancellation] CancellationToken ct = default)
         {
             yield break;
         }
@@ -599,19 +628,18 @@ public class MultiTurnAgentPoolHandoffTests
         // whose window cannot be pinned deterministically. What is pinned is the state that race
         // produces, wired exactly as CreateAgentEntry wires it.
         await using var pool = CreatePool(agentFactory: threadId => new PooledReportingAgent(threadId));
-        var pooled = (PooledReportingAgent)pool.GetOrCreateAgent(
-            "thread-reported-swap",
-            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
-            requestedProviderId: null,
-            requestResponseDumpFileName: null,
-            requestedWorkspaceId: null,
-            callerCredential: null,
-            ownerUserId: Alice);
+        var pooled = (PooledReportingAgent)
+            pool.GetOrCreateAgent(
+                "thread-reported-swap",
+                SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+                requestedProviderId: null,
+                requestResponseDumpFileName: null,
+                requestedWorkspaceId: null,
+                callerCredential: null,
+                ownerUserId: Alice
+            );
 
-        await using var stray = new PooledReportingAgent("thread-reported-swap")
-        {
-            InputAcceptanceObserver = pool,
-        };
+        await using var stray = new PooledReportingAgent("thread-reported-swap") { InputAcceptanceObserver = pool };
         stray.Should().NotBeSameAs(pooled);
 
         // The stray reports - for a thread whose entry is a different agent - and is REFUSED (#442).
@@ -623,9 +651,13 @@ public class MultiTurnAgentPoolHandoffTests
         var thrown = await act.Should().ThrowAsync<InputAcceptanceRefusedException>();
         thrown.Which.ThreadId.Should().Be("thread-reported-swap");
 
-        stray.QueuedInputCount.Should().Be(0,
-            "the refused turn must not be sitting in the stray's channel - unqueued is the whole "
-                + "difference between a retryable failure and a silently lost turn");
+        stray
+            .QueuedInputCount.Should()
+            .Be(
+                0,
+                "the refused turn must not be sitting in the stray's channel - unqueued is the whole "
+                    + "difference between a retryable failure and a silently lost turn"
+            );
 
         pool.TryGetHandoffState("thread-reported-swap", out var state).Should().BeTrue();
         state.IsBusy.Should().BeFalse("the pooled agent never accepted that input");
@@ -649,15 +681,18 @@ public class MultiTurnAgentPoolHandoffTests
         MultiTurnAgentPool pool,
         string threadId,
         string ownerUserId,
-        SandboxCredential? callerCredential = null) =>
-        (FakeMultiTurnAgent)pool.GetOrCreateAgent(
-            threadId,
-            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
-            requestedProviderId: null,
-            requestResponseDumpFileName: null,
-            requestedWorkspaceId: null,
-            callerCredential: callerCredential,
-            ownerUserId: ownerUserId);
+        SandboxCredential? callerCredential = null
+    ) =>
+        (FakeMultiTurnAgent)
+            pool.GetOrCreateAgent(
+                threadId,
+                SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+                requestedProviderId: null,
+                requestResponseDumpFileName: null,
+                requestedWorkspaceId: null,
+                callerCredential: callerCredential,
+                ownerUserId: ownerUserId
+            );
 
     /// <summary>
     /// Puts an accepted id into the pool's ledger the only way anything can since #442: as the
@@ -674,8 +709,8 @@ public class MultiTurnAgentPoolHandoffTests
         MultiTurnAgentPool pool,
         string threadId,
         string inputId,
-        IMultiTurnAgent acceptedBy) =>
-        ((IInputAcceptanceObserver)pool).OnInputAccepted(threadId, inputId, acceptedBy);
+        IMultiTurnAgent acceptedBy
+    ) => ((IInputAcceptanceObserver)pool).OnInputAccepted(threadId, inputId, acceptedBy);
 
     /// <param name="timeProvider">Drives the accepted-input grace; the system clock when omitted.</param>
     /// <param name="agentFactory">
@@ -685,14 +720,17 @@ public class MultiTurnAgentPoolHandoffTests
     /// </param>
     private static MultiTurnAgentPool CreatePool(
         TimeProvider? timeProvider = null,
-        Func<string, IMultiTurnAgent>? agentFactory = null) =>
+        Func<string, IMultiTurnAgent>? agentFactory = null
+    ) =>
         new(
             // KeepSubscriptionOpen: the pool subscribes to every agent it creates and retires accepted
             // inputs on the run assignment that names them, so the stand-in has to keep that stream up.
-            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(
-                agentFactory?.Invoke(threadId)
-                    ?? new FakeMultiTurnAgent(threadId) { KeepSubscriptionOpen = true }),
-            NullLogger<MultiTurnAgentPool>.Instance)
+            (threadId, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(
+                    agentFactory?.Invoke(threadId) ?? new FakeMultiTurnAgent(threadId) { KeepSubscriptionOpen = true }
+                ),
+            NullLogger<MultiTurnAgentPool>.Instance
+        )
         {
             TimeProvider = timeProvider ?? TimeProvider.System,
         };

@@ -49,13 +49,15 @@ public sealed record SubAgentSnapshot(
     DateTimeOffset? TerminalAtUtc = null,
     string? EffectiveModelId = null,
     int? EffectiveModelIntelligence = null,
-    string ModelSelectionSource = "unknown");
+    string ModelSelectionSource = "unknown"
+);
 
 /// <summary>Final model-routing decision captured when a sub-agent provider is built.</summary>
 public sealed record SubAgentModelRouting(
     string? EffectiveModelId,
     int? EffectiveModelIntelligence,
-    string SelectionSource);
+    string SelectionSource
+);
 
 /// <summary>
 /// Manages sub-agent lifecycle: spawning, monitoring, resuming, and disposal.
@@ -204,8 +206,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// queue, and the restart path all need the same two values at different times, and every one of
     /// them already knows the agent id. Empty whenever collaboration is off.
     /// </remarks>
-    private readonly ConcurrentDictionary<string, SubAgentAdmission> _admissions = new(
-        StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SubAgentAdmission> _admissions = new(StringComparer.Ordinal);
 
     /// <summary>What the collaboration granted a spawn: the child's own handle, and its capacity slot.</summary>
     private sealed record SubAgentAdmission(AgentCollaborationSetup Child, AgentCapacityLease Lease);
@@ -232,7 +233,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         string templateName,
         SubAgentTemplate template,
         string? role,
-        string? description)
+        string? description
+    )
     {
         if (Collaboration is not { } parent)
         {
@@ -244,7 +246,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             throw new SubAgentCollaborationException(
                 SubAgentCollaborationFailureCodes.DepthLimit,
                 $"Maximum delegation depth ({parent.Options.MaxDelegationDepth}) reached. "
-                    + "This agent cannot spawn sub-agents; do the work itself or report back.");
+                    + "This agent cannot spawn sub-agents; do the work itself or report back."
+            );
         }
 
         // Precedence, strongest first. (1) A role-fixed template owns its own label so a spawning LLM
@@ -265,7 +268,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             throw new SubAgentCollaborationException(
                 SubAgentCollaborationFailureCodes.InvalidRole,
                 $"Template '{templateName}' pins its own role and cannot be relabelled. "
-                    + "Omit the 'role' parameter, or spawn from a template that allows one.");
+                    + "Omit the 'role' parameter, or spawn from a template that allows one."
+            );
         }
 
         var effectiveRole = roleIsFixed ? template.Role : trusted?.Role ?? role;
@@ -275,7 +279,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 SubAgentCollaborationFailureCodes.InvalidRole,
                 roleIsFixed
                     ? $"Template '{templateName}' pins its own role but declares none."
-                    : "The 'role' parameter is required while collaboration is enabled.");
+                    : "The 'role' parameter is required while collaboration is enabled."
+            );
         }
 
         var effectiveDescription = trusted?.Description ?? description;
@@ -284,7 +289,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             throw new SubAgentCollaborationException(
                 SubAgentCollaborationFailureCodes.InvalidDescription,
                 "The 'description' parameter is required while collaboration is enabled: other agents "
-                    + "use it to decide whether to contact this one.");
+                    + "use it to decide whether to contact this one."
+            );
         }
 
         AgentCollaborationContext childContext;
@@ -293,30 +299,25 @@ public sealed class SubAgentManager : IAsyncDisposable
             // A spawn made BY a workflow controller is that workflow's delegate, not an ordinary sub-agent:
             // naming it accurately is what lets a roster tell workflow work apart from free delegation. The
             // depth arithmetic is unaffected — only the controller hop itself is delegation-free.
-            var childKind = parent.Context.Kind == AgentKind.WorkflowController
-                ? AgentKind.WorkflowDelegate
-                : AgentKind.SubAgent;
+            var childKind =
+                parent.Context.Kind == AgentKind.WorkflowController ? AgentKind.WorkflowDelegate : AgentKind.SubAgent;
 
-            childContext = parent.Context.CreateChild(
-                agentId,
-                childKind,
-                effectiveRole,
-                effectiveDescription);
+            childContext = parent.Context.CreateChild(agentId, childKind, effectiveRole, effectiveDescription);
         }
         catch (ArgumentException ex)
         {
             // Length/shape rejection. The exception text describes the BOUND, never the value, so it is
             // safe to hand back to the caller verbatim.
-            throw new SubAgentCollaborationException(
-                SubAgentCollaborationFailureCodes.InvalidMetadata,
-                ex.Message);
+            throw new SubAgentCollaborationException(SubAgentCollaborationFailureCodes.InvalidMetadata, ex.Message);
         }
 
-        var lease = parent.Directory.TryAcquireCapacity(agentId)
+        var lease =
+            parent.Directory.TryAcquireCapacity(agentId)
             ?? throw new SubAgentCollaborationException(
                 SubAgentCollaborationFailureCodes.CapacityExhausted,
                 $"This collaboration already holds its maximum of {parent.Options.MaxTotalAgents} "
-                    + "agents. Wait for one to finish before spawning another.");
+                    + "agents. Wait for one to finish before spawning another."
+            );
 
         var registration = parent.Directory.TryRegister(
             childContext,
@@ -324,14 +325,16 @@ public sealed class SubAgentManager : IAsyncDisposable
             AgentCollaborationStatuses.Queued,
             new SubAgentWriteEndpoint(this, agentId),
             readEndpoint: null,
-            agentType: templateName);
+            agentType: templateName
+        );
 
         if (!registration.Succeeded)
         {
             _ = lease.Release();
             throw new SubAgentCollaborationException(
                 registration.FailureCode ?? SubAgentCollaborationFailureCodes.RegistrationFailed,
-                $"The collaboration refused this sub-agent ({registration.FailureCode}).");
+                $"The collaboration refused this sub-agent ({registration.FailureCode})."
+            );
         }
 
         _admissions[agentId] = new SubAgentAdmission(parent.ForChild(childContext, effectiveName), lease);
@@ -382,7 +385,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         Func<Task>? persistUsageAsync = null,
         MultiTurnLifecycleServices? lifecycleServices = null,
         AgentCollaborationSetup? collaboration = null,
-        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null)
+        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null
+    )
     {
         ArgumentNullException.ThrowIfNull(parentAgent);
         ArgumentNullException.ThrowIfNull(parentContracts);
@@ -392,18 +396,12 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         if (options.MaxConcurrentSubAgents <= 0)
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(options),
-                "MaxConcurrentSubAgents must be greater than zero."
-            );
+            throw new ArgumentOutOfRangeException(nameof(options), "MaxConcurrentSubAgents must be greater than zero.");
         }
 
         if (options.MaxQueuedSubAgents < 0)
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(options),
-                "MaxQueuedSubAgents cannot be negative."
-            );
+            throw new ArgumentOutOfRangeException(nameof(options), "MaxQueuedSubAgents cannot be negative.");
         }
 
         // Checked here rather than where a spawned child builds its bounded output channel: that read
@@ -411,10 +409,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         // instead of as bad configuration.
         if (options.OutputChannelCapacity <= 0)
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(options),
-                "OutputChannelCapacity must be greater than zero."
-            );
+            throw new ArgumentOutOfRangeException(nameof(options), "OutputChannelCapacity must be greater than zero.");
         }
 
         _parentAgent = parentAgent;
@@ -440,9 +435,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         Collaboration = collaboration;
         // Fall back to a direct one-hop relay when no upstream root target was supplied.
         _descendantQuestionSink = descendantQuestionSink ?? RelayDescendantQuestionToParentAsync;
-        _concurrencyGate = new SemaphoreSlim(
-            options.MaxConcurrentSubAgents,
-            options.MaxConcurrentSubAgents);
+        _concurrencyGate = new SemaphoreSlim(options.MaxConcurrentSubAgents, options.MaxConcurrentSubAgents);
 
         // Start the defer-queue pump. Its first action parks on _queueSignal (initialized above via its
         // field initializer), so this call returns to the ctor immediately without consuming a thread.
@@ -457,7 +450,6 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         _ = await _parentAgent.SendAsync([notify], ct: ct);
     }
-
 
     /// <summary>
     /// The concrete model ids a spawn's <c>model</c> override may name, surfaced to the <c>Agent</c> tool
@@ -497,7 +489,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         int? modelIntelligence = null,
         string? spawningToolCallId = null,
         string? role = null,
-        string? description = null)
+        string? description = null
+    )
     {
         // Snapshot the live source view so a concurrent TryRegister cannot make the
         // diagnostic Available list inconsistent with the lookup that produced template.
@@ -508,11 +501,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             // different, actionable messages so the caller (a controller/parent LLM) can self-correct
             // by re-calling with an EXACT name rather than collapsing to general-purpose. Both surface
             // as a recoverable {error} tool result (see SubAgentToolProvider.HandleAgentToolAsync).
-            var message = suggestions.Count > 0
-                ? $"Ambiguous subagent_type '{templateName}'. It matches multiple agents: "
-                    + $"{string.Join(", ", suggestions)}. Re-call Agent with one of these EXACT names."
-                : $"Unknown template '{templateName}'. "
-                    + $"Available: {string.Join(", ", templates.Keys)}";
+            var message =
+                suggestions.Count > 0
+                    ? $"Ambiguous subagent_type '{templateName}'. It matches multiple agents: "
+                        + $"{string.Join(", ", suggestions)}. Re-call Agent with one of these EXACT names."
+                    : $"Unknown template '{templateName}'. " + $"Available: {string.Join(", ", templates.Keys)}";
             // No paramName: this message is surfaced verbatim to the calling LLM as a recoverable
             // tool error, so the ArgumentException "(Parameter 'templateName')" suffix is just noise.
             throw new ArgumentException(message);
@@ -526,7 +519,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         {
             _logger.LogInformation(
                 "Resolved subagent_type '{Requested}' to registered template '{Resolved}' by name match",
-                templateName, resolvedName);
+                templateName,
+                resolvedName
+            );
         }
 
         templateName = resolvedName;
@@ -551,9 +546,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         // (a controller/loop that forgot, or a direct spawn), derive a readable one from the
         // resolved template so the agent never surfaces in telemetry - or as a SendMessage
         // target - as a bare guid. An explicitly supplied name is always kept verbatim.
-        var effectiveName = string.IsNullOrWhiteSpace(name)
-            ? DeriveReadableName(templateName, agentId)
-            : name;
+        var effectiveName = string.IsNullOrWhiteSpace(name) ? DeriveReadableName(templateName, agentId) : name;
 
         ct.ThrowIfCancellationRequested();
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
@@ -587,7 +580,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 lineage,
                 runInBackground,
                 gateGuard,
-                ct);
+                ct
+            );
 
             // Past this point the monitor owns the concurrency gate; do not release it here.
             if (runInBackground)
@@ -653,7 +647,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         _logger.LogInformation(
             "Sub-agent pool full ({Max} in flight); queued spawn {AgentId} from template {Template} "
                 + "(background={Background}). It will start when a slot frees.",
-            _options.MaxConcurrentSubAgents, agentId, templateName, runInBackground);
+            _options.MaxConcurrentSubAgents,
+            agentId,
+            templateName,
+            runInBackground
+        );
 
         if (runInBackground)
         {
@@ -690,7 +688,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         AgentLineage lineage,
         bool runInBackground,
         GateReleaseGuard gateGuard,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         SubAgentState? state = null;
 
@@ -768,16 +767,21 @@ public sealed class SubAgentManager : IAsyncDisposable
                 _agents[agentId] = state;
                 if (!string.IsNullOrWhiteSpace(effectiveName))
                 {
-                    if (_namesToIds.TryGetValue(effectiveName, out var existingId)
+                    if (
+                        _namesToIds.TryGetValue(effectiveName, out var existingId)
                         && existingId != agentId
-                        && _agents.ContainsKey(existingId))
+                        && _agents.ContainsKey(existingId)
+                    )
                     {
                         displacedNameOwnerId = existingId;
                         _logger.LogWarning(
                             "Sub-agent name '{Name}' already maps to agent {ExistingId}; reassigning it "
                                 + "to the newly spawned agent {AgentId}. SendMessage by this name will now "
                                 + "address the new agent.",
-                            effectiveName, existingId, agentId);
+                            effectiveName,
+                            existingId,
+                            agentId
+                        );
                     }
 
                     _namesToIds[effectiveName] = agentId;
@@ -795,12 +799,15 @@ public sealed class SubAgentManager : IAsyncDisposable
             state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, state.CurrentRunGeneration, cts.Token);
 
             // Send the task as user input (triggers first turn)
-            _ = await agent.SendAsync(
-                [new TextMessage { Role = Role.User, Text = task }], ct: ct);
+            _ = await agent.SendAsync([new TextMessage { Role = Role.User, Text = task }], ct: ct);
 
             _logger.LogInformation(
                 "Spawned sub-agent {AgentId} from template {Template} (background={Background}) with task length {TaskLength}",
-                agentId, templateName, runInBackground, task?.Length ?? 0);
+                agentId,
+                templateName,
+                runInBackground,
+                task?.Length ?? 0
+            );
 
             return state;
         }
@@ -822,8 +829,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // State may have been constructed but rejected at the shutdown-serialized registration
                 // boundary, or it may have registered and failed later. The shared cleanup handles both:
                 // dictionary removals are idempotent and it disposes the constructed loop/provider.
-                await CleanupFailedSpawnAsync(
-                    agentId, effectiveName, state, gateGuard, displacedNameOwnerId);
+                await CleanupFailedSpawnAsync(agentId, effectiveName, state, gateGuard, displacedNameOwnerId);
             }
 
             throw;
@@ -871,9 +877,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             {
                 await _concurrencyGate.WaitAsync(waitCts?.Token ?? pumpCt);
             }
-            catch (OperationCanceledException) when (
-                queued.CallerCancellation.IsCancellationRequested && !pumpCt.IsCancellationRequested
-            )
+            catch (OperationCanceledException)
+                when (queued.CallerCancellation.IsCancellationRequested && !pumpCt.IsCancellationRequested)
             {
                 CancelQueuedSpawn(queued, queued.CallerCancellation);
                 continue;
@@ -910,7 +915,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                     queued.Lineage,
                     queued.RunInBackground,
                     gateGuard,
-                    queued.RunInBackground ? pumpCt : queued.CallerCancellation);
+                    queued.RunInBackground ? pumpCt : queued.CallerCancellation
+                );
 
                 if (queued.RunInBackground)
                 {
@@ -929,7 +935,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                 _logger.LogError(
                     ex,
                     "Queued sub-agent {AgentId} (template {Template}) failed to start after dequeue.",
-                    queued.AgentId, queued.TemplateName);
+                    queued.AgentId,
+                    queued.TemplateName
+                );
                 _ = queued.StateReady.TrySetException(ex);
             }
         }
@@ -950,10 +958,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     private void RemoveQueuedSpawn(QueuedSpawn queued)
     {
         _ = _queuedSpawns.TryRemove(queued.AgentId, out _);
-        if (
-            _queuedNamesToIds.TryGetValue(queued.EffectiveName, out var mapped)
-            && mapped == queued.AgentId
-        )
+        if (_queuedNamesToIds.TryGetValue(queued.EffectiveName, out var mapped) && mapped == queued.AgentId)
         {
             _ = _queuedNamesToIds.TryRemove(queued.EffectiveName, out _);
         }
@@ -986,16 +991,17 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <c>"spawned"</c> for a spawn that started immediately or <c>"queued"</c> for one deferred to the
     /// pump because the pool was full.
     /// </summary>
-    private static string SerializeSpawnReceipt(
-        string agentId, string name, string templateName, string status)
+    private static string SerializeSpawnReceipt(string agentId, string name, string templateName, string status)
     {
-        return JsonSerializer.Serialize(new
-        {
-            agent_id = agentId,
-            name,
-            template = templateName,
-            status,
-        });
+        return JsonSerializer.Serialize(
+            new
+            {
+                agent_id = agentId,
+                name,
+                template = templateName,
+                status,
+            }
+        );
     }
 
     /// <summary>
@@ -1006,10 +1012,14 @@ public sealed class SubAgentManager : IAsyncDisposable
     private static void ObserveTaskFault(Task task)
     {
         _ = task.ContinueWith(
-            static t => { _ = t.Exception; },
+            static t =>
+            {
+                _ = t.Exception;
+            },
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
+            TaskScheduler.Default
+        );
     }
 
     /// <summary>
@@ -1044,7 +1054,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         string requested,
         IReadOnlyDictionary<string, SubAgentTemplate> templates,
         out string resolved,
-        out IReadOnlyList<string> suggestions)
+        out IReadOnlyList<string> suggestions
+    )
     {
         ArgumentNullException.ThrowIfNull(templates);
         resolved = string.Empty;
@@ -1146,21 +1157,19 @@ public sealed class SubAgentManager : IAsyncDisposable
         string? name,
         SubAgentState state,
         GateReleaseGuard gateGuard,
-        string? displacedNameOwnerId = null)
+        string? displacedNameOwnerId = null
+    )
     {
         _ = _agents.TryRemove(agentId, out _);
         RetireFromCollaboration(agentId, "error");
-        if (!string.IsNullOrWhiteSpace(name)
-            && _namesToIds.TryGetValue(name, out var mappedId)
-            && mappedId == agentId)
+        if (!string.IsNullOrWhiteSpace(name) && _namesToIds.TryGetValue(name, out var mappedId) && mappedId == agentId)
         {
             // This spawn owns the name only because it took it from a live predecessor. Restoring it
             // rather than deleting it keeps that predecessor addressable by name; a plain remove would
             // let a failed spawn strip a working agent of a name it never lost on its own account. Only
             // when the predecessor is still live - it may have been retired meanwhile, in which case the
             // name is genuinely orphaned and removed.
-            if (!string.IsNullOrWhiteSpace(displacedNameOwnerId)
-                && _agents.ContainsKey(displacedNameOwnerId))
+            if (!string.IsNullOrWhiteSpace(displacedNameOwnerId) && _agents.ContainsKey(displacedNameOwnerId))
             {
                 _namesToIds[name] = displacedNameOwnerId;
             }
@@ -1199,26 +1208,31 @@ public sealed class SubAgentManager : IAsyncDisposable
             await AwaitBoundedTaskAsync(state.MonitorTask, $"MonitorTask for sub-agent {agentId}", "spawn cleanup");
         }
 
-        try { await state.Agent.DisposeAsync(); }
+        try
+        {
+            await state.Agent.DisposeAsync();
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Agent dispose failed during spawn cleanup for sub-agent {AgentId}", agentId);
         }
 
-        try { await state.DisposeOwnedProviderAgentAsync(); }
+        try
+        {
+            await state.DisposeOwnedProviderAgentAsync();
+        }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Provider dispose failed during spawn cleanup for sub-agent {AgentId}",
-                agentId
-            );
+            _logger.LogWarning(ex, "Provider dispose failed during spawn cleanup for sub-agent {AgentId}", agentId);
         }
 
         state.Cts.Dispose();
         if (state.Store is IAsyncDisposable disposableStore)
         {
-            try { await disposableStore.DisposeAsync(); }
+            try
+            {
+                await disposableStore.DisposeAsync();
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Store dispose failed during spawn cleanup for sub-agent {AgentId}", agentId);
@@ -1239,14 +1253,10 @@ public sealed class SubAgentManager : IAsyncDisposable
         string target,
         string prompt,
         bool runInBackground = false,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
-        return await SendMessageAsync(
-            target,
-            new TextMessage { Role = Role.User, Text = prompt },
-            runInBackground,
-            ct
-        );
+        return await SendMessageAsync(target, new TextMessage { Role = Role.User, Text = prompt }, runInBackground, ct);
     }
 
     /// <summary>
@@ -1263,7 +1273,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         string target,
         IMessage message,
         bool runInBackground,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(message);
 
@@ -1318,7 +1329,9 @@ public sealed class SubAgentManager : IAsyncDisposable
 
                 _logger.LogInformation(
                     "Sent message to running sub-agent {AgentId} ({MessageLength} chars)",
-                    agentId, messageLength);
+                    agentId,
+                    messageLength
+                );
 
                 wasRunning = true;
                 break;
@@ -1350,12 +1363,14 @@ public sealed class SubAgentManager : IAsyncDisposable
         {
             ObserveCompletionFaults(state);
 
-            return JsonSerializer.Serialize(new
-            {
-                agent_id = agentId,
-                name = state.Name,
-                status = wasRunning ? "message_sent" : "resumed",
-            });
+            return JsonSerializer.Serialize(
+                new
+                {
+                    agent_id = agentId,
+                    name = state.Name,
+                    status = wasRunning ? "message_sent" : "resumed",
+                }
+            );
         }
 
         return await AwaitCompletionAsync(state, ct);
@@ -1378,12 +1393,12 @@ public sealed class SubAgentManager : IAsyncDisposable
     public async Task<SubAgentContextDeliveryResult> TryDeliverToRunningAsync(
         string agentId,
         IReadOnlyList<IMessage> messages,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(messages);
 
-        if (!TryResolveAgentId(agentId, out var resolvedId)
-            || !_agents.TryGetValue(resolvedId, out var state))
+        if (!TryResolveAgentId(agentId, out var resolvedId) || !_agents.TryGetValue(resolvedId, out var state))
         {
             // Not one of this sink's sub-agents (unknown id/name, or a pre-registration race). The caller
             // keeps looking / drops without marking-seen so a gateway redelivery can still route it.
@@ -1429,7 +1444,8 @@ public sealed class SubAgentManager : IAsyncDisposable
     private static async Task<bool> InjectIntoRunningLoopAsync(
         SubAgentState state,
         IReadOnlyList<IMessage> messages,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         using var linkedCts = state.LinkLifecycleToken(ct);
         var payload = messages as List<IMessage> ?? [.. messages];
@@ -1457,9 +1473,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             return agentId;
         }
 
-        throw new ArgumentException(
-            $"Unknown sub-agent '{target}'. Provide a valid agent id or name.",
-            nameof(target));
+        throw new ArgumentException($"Unknown sub-agent '{target}'. Provide a valid agent id or name.", nameof(target));
     }
 
     /// <summary>
@@ -1495,16 +1509,14 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Restarts a finished (completed/error/stopped) sub-agent's run with a new message.
     /// On success the new monitor owns the concurrency gate; on failure the gate is released.
     /// </summary>
-    private async Task RestartRunAsync(
-        SubAgentState state,
-        IMessage message,
-        CancellationToken ct)
+    private async Task RestartRunAsync(SubAgentState state, IMessage message, CancellationToken ct)
     {
         if (!await _concurrencyGate.WaitAsync(TimeSpan.FromSeconds(5), ct))
         {
             throw new InvalidOperationException(
-                $"Max concurrent sub-agents ({_options.MaxConcurrentSubAgents}) " +
-                $"reached. Cannot resume agent '{state.AgentId}'.");
+                $"Max concurrent sub-agents ({_options.MaxConcurrentSubAgents}) "
+                    + $"reached. Cannot resume agent '{state.AgentId}'."
+            );
         }
 
         // One independent release-guard instance for this gate-acquisition epoch (see
@@ -1541,14 +1553,16 @@ public sealed class SubAgentManager : IAsyncDisposable
             // otherwise wedge this restart — and every caller behind it — forever (#404).
             if (state.RunTask != null)
             {
-                await AwaitBoundedTaskAsync(
-                    state.RunTask, $"Old RunTask for sub-agent {state.AgentId}", "restart");
+                await AwaitBoundedTaskAsync(state.RunTask, $"Old RunTask for sub-agent {state.AgentId}", "restart");
             }
 
             if (state.MonitorTask != null)
             {
                 await AwaitBoundedTaskAsync(
-                    state.MonitorTask, $"Old MonitorTask for sub-agent {state.AgentId}", "restart");
+                    state.MonitorTask,
+                    $"Old MonitorTask for sub-agent {state.AgentId}",
+                    "restart"
+                );
             }
 
             state.Cts.Dispose();
@@ -1558,24 +1572,27 @@ public sealed class SubAgentManager : IAsyncDisposable
             // be reused — a failed disposal may have left it partially torn down. Also rebuild when a
             // previous restart attempt failed and disposed the live loop itself, which leaves this state
             // registered around an agent that can no longer accept a run.
-            if (state.HasDisposedOwnedProviderAgent
+            if (
+                state.HasDisposedOwnedProviderAgent
                 || state.OwnedProviderTerminalDisposeFailed
-                || state.HasDisposedAgentLoop)
+                || state.HasDisposedAgentLoop
+            )
             {
                 var previousAgent = state.Agent;
                 var previousStore = state.Store;
-                var (replacementAgent, replacementStore, replacementOwnedProviderAgent, replacementRouting) = await CreateSubAgentAsync(
-                    state.AgentId,
-                    state.Template,
-                    state.ModelOverride,
-                    state.AddTools,
-                    state.RemoveTools,
-                    state.ModelIntelligence,
-                    // The rebuilt agent is the same sub-agent, so it keeps the lineage captured
-                    // when it was first spawned rather than acquiring a new one from whatever run
-                    // happens to be in flight now.
-                    state.Lineage
-                );
+                var (replacementAgent, replacementStore, replacementOwnedProviderAgent, replacementRouting) =
+                    await CreateSubAgentAsync(
+                        state.AgentId,
+                        state.Template,
+                        state.ModelOverride,
+                        state.AddTools,
+                        state.RemoveTools,
+                        state.ModelIntelligence,
+                        // The rebuilt agent is the same sub-agent, so it keeps the lineage captured
+                        // when it was first spawned rather than acquiring a new one from whatever run
+                        // happens to be in flight now.
+                        state.Lineage
+                    );
 
                 // Presentation-only: the replacement is now built and we are about to dispose the previous
                 // instance (which ends any focused observer's stream). Mark the restart in flight BEFORE
@@ -1584,7 +1601,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // backpressure drop. Cleared under the same lock by SwapLiveAgentAndSignalReplaced below.
                 state.SignalRestartStarting();
 
-                try { await previousAgent.DisposeAsync(); }
+                try
+                {
+                    await previousAgent.DisposeAsync();
+                }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(
@@ -1599,7 +1619,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                     && !ReferenceEquals(previousStore, replacementStore)
                 )
                 {
-                    try { await disposablePreviousStore.DisposeAsync(); }
+                    try
+                    {
+                        await disposablePreviousStore.DisposeAsync();
+                    }
                     catch (Exception ex)
                     {
                         _logger.LogWarning(
@@ -1616,7 +1639,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // when it had been cleanly disposed the flag is false and this block is skipped.
                 if (state.OwnedProviderTerminalDisposeFailed)
                 {
-                    try { await state.DisposeOwnedProviderAgentAsync(); }
+                    try
+                    {
+                        await state.DisposeOwnedProviderAgentAsync();
+                    }
                     catch (Exception ex)
                     {
                         // Retry failed a second time: we are about to overwrite the OwnedProviderAgent
@@ -1658,8 +1684,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             // Recover conversation history after replacing a completed owned-provider loop, so a
             // continuation uses the fresh provider pipeline while retaining persisted context.
-            if (state.Store != null
-                && state.Agent is MultiTurnAgentBase agentBase)
+            if (state.Store != null && state.Agent is MultiTurnAgentBase agentBase)
             {
                 _ = await agentBase.RecoverAsync();
             }
@@ -1697,7 +1722,9 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             _logger.LogInformation(
                 "Resumed sub-agent {AgentId} ({MessageLength} chars)",
-                state.AgentId, (message as ICanGetText)?.GetText()?.Length ?? 0);
+                state.AgentId,
+                (message as ICanGetText)?.GetText()?.Length ?? 0
+            );
         }
         catch
         {
@@ -1720,20 +1747,29 @@ public sealed class SubAgentManager : IAsyncDisposable
             // behind it) indefinitely.
             if (state.RunTask != null)
             {
-                await AwaitBoundedTaskAsync(
-                    state.RunTask, $"RunTask for sub-agent {state.AgentId}", "restart cleanup");
+                await AwaitBoundedTaskAsync(state.RunTask, $"RunTask for sub-agent {state.AgentId}", "restart cleanup");
             }
 
             if (state.MonitorTask != null)
             {
                 await AwaitBoundedTaskAsync(
-                    state.MonitorTask, $"MonitorTask for sub-agent {state.AgentId}", "restart cleanup");
+                    state.MonitorTask,
+                    $"MonitorTask for sub-agent {state.AgentId}",
+                    "restart cleanup"
+                );
             }
 
-            try { await state.Agent.DisposeAsync(); }
+            try
+            {
+                await state.Agent.DisposeAsync();
+            }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Agent dispose failed during restart cleanup for sub-agent {AgentId}", state.AgentId);
+                _logger.LogWarning(
+                    ex,
+                    "Agent dispose failed during restart cleanup for sub-agent {AgentId}",
+                    state.AgentId
+                );
             }
 
             // The live loop is now dead but this sub-agent deliberately stays registered, so the NEXT
@@ -1742,7 +1778,10 @@ public sealed class SubAgentManager : IAsyncDisposable
             // dispose that itself threw leaves the provider guard back at Idle.
             state.MarkAgentLoopDisposed();
 
-            try { await state.DisposeOwnedProviderAgentAsync(); }
+            try
+            {
+                await state.DisposeOwnedProviderAgentAsync();
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(
@@ -1770,33 +1809,39 @@ public sealed class SubAgentManager : IAsyncDisposable
         var snapshots = new List<SubAgentSnapshot>(_agents.Count + _queuedSpawns.Count);
         foreach (var queued in _queuedSpawns.Values)
         {
-            snapshots.Add(new SubAgentSnapshot(
-                AgentId: queued.AgentId,
-                Name: queued.EffectiveName,
-                TemplateName: queued.TemplateName,
-                Task: queued.Task,
-                Status: SubAgentStatus.Queued,
-                ThreadId: $"subagent-{queued.AgentId}",
-                LastActivityUtc: null,
-                TerminalAtUtc: null,
-                EffectiveModelId: null,
-                EffectiveModelIntelligence: null,
-                ModelSelectionSource: "pending"));
+            snapshots.Add(
+                new SubAgentSnapshot(
+                    AgentId: queued.AgentId,
+                    Name: queued.EffectiveName,
+                    TemplateName: queued.TemplateName,
+                    Task: queued.Task,
+                    Status: SubAgentStatus.Queued,
+                    ThreadId: $"subagent-{queued.AgentId}",
+                    LastActivityUtc: null,
+                    TerminalAtUtc: null,
+                    EffectiveModelId: null,
+                    EffectiveModelIntelligence: null,
+                    ModelSelectionSource: "pending"
+                )
+            );
         }
         foreach (var state in _agents.Values)
         {
-            snapshots.Add(new SubAgentSnapshot(
-                AgentId: state.AgentId,
-                Name: state.Name,
-                TemplateName: state.TemplateName,
-                Task: state.Task,
-                Status: state.Status,
-                ThreadId: state.Agent.ThreadId,
-                LastActivityUtc: GetLastActivityUtc(state),
-                TerminalAtUtc: state.TerminalAtUtc,
-                EffectiveModelId: state.EffectiveModelId,
-                EffectiveModelIntelligence: state.EffectiveModelIntelligence,
-                ModelSelectionSource: state.ModelSelectionSource));
+            snapshots.Add(
+                new SubAgentSnapshot(
+                    AgentId: state.AgentId,
+                    Name: state.Name,
+                    TemplateName: state.TemplateName,
+                    Task: state.Task,
+                    Status: state.Status,
+                    ThreadId: state.Agent.ThreadId,
+                    LastActivityUtc: GetLastActivityUtc(state),
+                    TerminalAtUtc: state.TerminalAtUtc,
+                    EffectiveModelId: state.EffectiveModelId,
+                    EffectiveModelIntelligence: state.EffectiveModelIntelligence,
+                    ModelSelectionSource: state.ModelSelectionSource
+                )
+            );
         }
 
         return snapshots;
@@ -1849,8 +1894,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <returns>True if a registered sub-agent was resolved; false otherwise.</returns>
     public bool TryGetAgent(string target, out IMultiTurnAgent? agent)
     {
-        if (TryResolveAgentId(target, out var agentId)
-            && _agents.TryGetValue(agentId, out var state))
+        if (TryResolveAgentId(target, out var agentId) && _agents.TryGetValue(agentId, out var state))
         {
             agent = state.Agent;
             return true;
@@ -1881,7 +1925,8 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <returns>An async stream of the child's messages spanning any owned-provider restart swaps.</returns>
     public async IAsyncEnumerable<IMessage> SubscribeToAgentAcrossRestartsAsync(
         string target,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         while (!ct.IsCancellationRequested)
         {
@@ -1970,7 +2015,8 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     private static async IAsyncEnumerable<IMessage> SubscribeUntilDisposedAsync(
         IMultiTurnAgent agent,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         await using var messages = agent.SubscribeAsync(ct).GetAsyncEnumerator(ct);
 
@@ -2012,18 +2058,20 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         if (_queuedSpawns.TryGetValue(agentId, out var queued))
         {
-            status = JsonSerializer.Serialize(new
-            {
-                agent_id = queued.AgentId,
-                name = queued.EffectiveName,
-                status = "queued",
-                template = queued.TemplateName,
-                task = queued.Task,
-                recent_turns = Array.Empty<object>(),
-                last_result = (string?)null,
-                send_to_parent_failed = false,
-                send_to_parent_error = (string?)null,
-            });
+            status = JsonSerializer.Serialize(
+                new
+                {
+                    agent_id = queued.AgentId,
+                    name = queued.EffectiveName,
+                    status = "queued",
+                    template = queued.TemplateName,
+                    task = queued.Task,
+                    recent_turns = Array.Empty<object>(),
+                    last_result = (string?)null,
+                    send_to_parent_failed = false,
+                    send_to_parent_error = (string?)null,
+                }
+            );
             return true;
         }
 
@@ -2034,8 +2082,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         // Get the last 3 turns from the buffer
-        var recentTurns = state.TurnBuffer
-            .ToArray()
+        var recentTurns = state
+            .TurnBuffer.ToArray()
             .TakeLast(3)
             .Select(t => new
             {
@@ -2047,18 +2095,20 @@ public sealed class SubAgentManager : IAsyncDisposable
             })
             .ToArray();
 
-        status = JsonSerializer.Serialize(new
-        {
-            agent_id = agentId,
-            name = state.Name,
-            status = state.Status.ToString().ToLowerInvariant(),
-            template = state.TemplateName,
-            task = state.Task,
-            recent_turns = recentTurns,
-            last_result = state.LastResult,
-            send_to_parent_failed = state.SendToParentFailed,
-            send_to_parent_error = state.SendToParentError,
-        });
+        status = JsonSerializer.Serialize(
+            new
+            {
+                agent_id = agentId,
+                name = state.Name,
+                status = state.Status.ToString().ToLowerInvariant(),
+                template = state.TemplateName,
+                task = state.Task,
+                recent_turns = recentTurns,
+                last_result = state.LastResult,
+                send_to_parent_failed = state.SendToParentFailed,
+                send_to_parent_error = state.SendToParentError,
+            }
+        );
         return true;
     }
 
@@ -2182,15 +2232,16 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         // Build the typed snapshots for the recent turns
-        var recentTurns = state.TurnBuffer
-            .ToArray()
+        var recentTurns = state
+            .TurnBuffer.ToArray()
             .TakeLast(3)
             .Select(t => new SubAgentTurnSnapshot(
                 MessageType: t.MessageType,
                 ToolName: t.ToolName,
                 ToolArgsPreview: t.ToolArgsPreview,
                 TextPreview: t.TextPreview,
-                Timestamp: t.Timestamp))
+                Timestamp: t.Timestamp
+            ))
             .ToList()
             .AsReadOnly();
 
@@ -2319,7 +2370,10 @@ public sealed class SubAgentManager : IAsyncDisposable
         // Stop the defer-queue pump FIRST so it can't register a new sub-agent into _agents while we
         // tear the collection down below. Cancelling _pumpCts unblocks the pump's WaitAsync calls; the
         // pump then faults any still-queued spawns (so a foreground caller unblocks) and exits.
-        try { await _pumpCts.CancelAsync(); }
+        try
+        {
+            await _pumpCts.CancelAsync();
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to cancel sub-agent spawn pump during disposal");
@@ -2334,13 +2388,19 @@ public sealed class SubAgentManager : IAsyncDisposable
         {
             // Each step is isolated to prevent cascading failures:
             // if StopAsync throws, we still await tasks, dispose the agent, etc.
-            try { await state.Cts.CancelAsync(); }
+            try
+            {
+                await state.Cts.CancelAsync();
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "CancelAsync failed for sub-agent {AgentId}", state.AgentId);
             }
 
-            try { await state.Agent.StopAsync(TimeSpan.FromSeconds(5)); }
+            try
+            {
+                await state.Agent.StopAsync(TimeSpan.FromSeconds(5));
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "StopAsync failed for sub-agent {AgentId}", state.AgentId);
@@ -2357,10 +2417,17 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             if (state.MonitorTask != null)
             {
-                await AwaitBoundedTaskAsync(state.MonitorTask, $"MonitorTask for sub-agent {state.AgentId}", "disposal");
+                await AwaitBoundedTaskAsync(
+                    state.MonitorTask,
+                    $"MonitorTask for sub-agent {state.AgentId}",
+                    "disposal"
+                );
             }
 
-            try { await state.Agent.DisposeAsync(); }
+            try
+            {
+                await state.Agent.DisposeAsync();
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "DisposeAsync failed for sub-agent {AgentId}", state.AgentId);
@@ -2371,13 +2438,19 @@ public sealed class SubAgentManager : IAsyncDisposable
             // ends cleanly instead of hanging for a swap that will never come. Never affects execution.
             state.SignalAgentReplaced(null);
 
-            try { await state.DisposeOwnedProviderAgentAsync(); }
+            try
+            {
+                await state.DisposeOwnedProviderAgentAsync();
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Provider dispose failed for sub-agent {AgentId}", state.AgentId);
             }
 
-            try { state.Cts.Dispose(); }
+            try
+            {
+                state.Cts.Dispose();
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "CTS dispose failed for sub-agent {AgentId}", state.AgentId);
@@ -2385,7 +2458,10 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             if (state.Store is IAsyncDisposable disposableStore)
             {
-                try { await disposableStore.DisposeAsync(); }
+                try
+                {
+                    await disposableStore.DisposeAsync();
+                }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Store dispose failed for sub-agent {AgentId}", state.AgentId);
@@ -2549,10 +2625,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// but it is by the time the store first persists. Falls back to the plain
     /// <see cref="SubAgentOptions.DefaultConversationStoreFactory"/> for hosts that set only that one.
     /// </summary>
-    private IConversationStore? ResolveChildStore(
-        string agentId,
-        SubAgentTemplate template,
-        AgentLineage lineage)
+    private IConversationStore? ResolveChildStore(string agentId, SubAgentTemplate template, AgentLineage lineage)
     {
         var childThreadId = SubAgentThreadId(agentId);
 
@@ -2566,11 +2639,12 @@ public sealed class SubAgentManager : IAsyncDisposable
             return provenanceStoreFactory.Invoke(
                 childThreadId,
                 lineage.ParentThreadId,
-                queryThreadId => ListAgents()
-                    .FirstOrDefault(snapshot => string.Equals(
-                        snapshot.ThreadId,
-                        queryThreadId,
-                        StringComparison.Ordinal)));
+                queryThreadId =>
+                    ListAgents()
+                        .FirstOrDefault(snapshot =>
+                            string.Equals(snapshot.ThreadId, queryThreadId, StringComparison.Ordinal)
+                        )
+            );
         }
 
         return _options.DefaultConversationStoreFactory?.Invoke(childThreadId);
@@ -2611,7 +2685,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         string? modelOverride,
         int? modelIntelligence,
         string? tierResolvedModel,
-        string? effectiveModelId)
+        string? effectiveModelId
+    )
     {
         if (!string.IsNullOrWhiteSpace(modelOverride))
         {
@@ -2650,14 +2725,20 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>
     /// Creates a MultiTurnAgentLoop configured for a sub-agent with filtered tools.
     /// </summary>
-    private async Task<(IMultiTurnAgent Agent, IConversationStore? Store, IStreamingAgent? OwnedProviderAgent, SubAgentModelRouting Routing)> CreateSubAgentAsync(
+    private async Task<(
+        IMultiTurnAgent Agent,
+        IConversationStore? Store,
+        IStreamingAgent? OwnedProviderAgent,
+        SubAgentModelRouting Routing
+    )> CreateSubAgentAsync(
         string agentId,
         SubAgentTemplate template,
         string? modelOverride,
         string[]? addTools,
         string[]? removeTools,
         int? modelIntelligence,
-        AgentLineage lineage)
+        AgentLineage lineage
+    )
     {
         // Guard the free-form `model` override before anything downstream consumes it. The Agent tool
         // exposes `model` as an unconstrained string, so a parent/controller LLM can fill it with an
@@ -2668,15 +2749,18 @@ public sealed class SubAgentManager : IAsyncDisposable
         // does not validate, DROP it (log once) and fall through to tier/parent resolution exactly as if
         // no override had been given. With no validator (the default) the override passes through
         // unchanged, so every non-host consumer keeps the previous behavior.
-        if (!string.IsNullOrWhiteSpace(modelOverride)
+        if (
+            !string.IsNullOrWhiteSpace(modelOverride)
             && _options.ModelOverrideValidator is { } isKnownModel
-            && !isKnownModel(modelOverride))
+            && !isKnownModel(modelOverride)
+        )
         {
             _logger.LogWarning(
                 "Sub-agent {AgentId} requested unknown model override {ModelOverride}; ignoring it and "
-                + "falling back to the tier/parent model",
+                    + "falling back to the tier/parent model",
                 agentId,
-                modelOverride);
+                modelOverride
+            );
             modelOverride = null;
         }
 
@@ -2720,11 +2804,23 @@ public sealed class SubAgentManager : IAsyncDisposable
                     modelOverride,
                     modelIntelligence,
                     tierResolvedModel,
-                    ResolveSubAgentOptions(template.DefaultOptions, effectiveModel, _parentModelId, _parentMaxToken)?.ModelId));
+                    ResolveSubAgentOptions(
+                        template.DefaultOptions,
+                        effectiveModel,
+                        _parentModelId,
+                        _parentMaxToken
+                    )?.ModelId
+                )
+            );
         }
 
         // Resolve the sub-agent's options with model + budget inheritance (override > tier > template > parent).
-        var defaultOptions = ResolveSubAgentOptions(template.DefaultOptions, effectiveModel, _parentModelId, _parentMaxToken);
+        var defaultOptions = ResolveSubAgentOptions(
+            template.DefaultOptions,
+            effectiveModel,
+            _parentModelId,
+            _parentMaxToken
+        );
         IStreamingAgent providerAgent;
         IStreamingAgent? ownedProviderAgent = null;
         IConversationStore? store = null;
@@ -2733,9 +2829,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         {
             if (template.CharacteristicsAgentFactory is { } characteristicsFactory)
             {
-                var modelId = string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
-                    ? null
-                    : defaultOptions.ModelId;
+                var modelId = string.IsNullOrWhiteSpace(defaultOptions?.ModelId) ? null : defaultOptions.ModelId;
                 // The conversation default counts as an explicit selection HERE and only here: the
                 // characteristics factory hands back the parent agent unchanged unless one of these two
                 // flags is set, so without it the operator's configured model would be resolved, threaded
@@ -2762,18 +2856,22 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // not how hard it thinks — and InheritedEffort is the abstract, re-shaped-per-child-model
                 // knob (unlike InheritedReasoning), so carrying it across to a different model is safe.
                 // Suppressing it here would quietly trade a model upgrade for an effort downgrade.
-                var effectiveEffort = template.Effort
-                    ?? (!string.IsNullOrWhiteSpace(modelOverride)
+                var effectiveEffort =
+                    template.Effort
+                    ?? (
+                        !string.IsNullOrWhiteSpace(modelOverride)
                         || template.IsModelExplicitlySelected
                         || isModelTierResolved
-                        ? null
-                        : _options.InheritedEffort);
+                            ? null
+                            : _options.InheritedEffort
+                    );
                 var provider = characteristicsFactory(
                     new SubAgentCharacteristics(modelId, effectiveEffort)
                     {
                         IsModelExplicitlySelected = modelExplicitlySelected,
                         IsModelTierResolved = isModelTierResolved,
-                    });
+                    }
+                );
                 providerAgent = provider.Agent;
                 ownedProviderAgent = provider.OwnsAgent ? provider.Agent : null;
 
@@ -2785,8 +2883,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 if (provider.ExtraProperties.Count > 0)
                 {
                     var requestExtraProperties =
-                        defaultOptions?.ExtraProperties
-                        ?? ImmutableDictionary<string, object?>.Empty;
+                        defaultOptions?.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty;
                     defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
                     {
                         // Template/request values intentionally win over generated reasoning metadata.
@@ -2810,14 +2907,13 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // frontmatter tier. CharacteristicsAgentFactory is intentionally removed when rebinding that
                 // template to the controller, so use the preserved DefaultOptions model as the plain-path
                 // provider choice when no per-spawn override/tier supersedes it.
-                var plainProviderModel = !string.IsNullOrWhiteSpace(effectiveModel)
-                    ? effectiveModel
+                var plainProviderModel =
+                    !string.IsNullOrWhiteSpace(effectiveModel) ? effectiveModel
                     : (template.IsModelExplicitlySelected || template.IsModelTierResolved)
-                        && !string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
+                    && !string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
                         ? defaultOptions.ModelId
-                        : null;
-                if (!string.IsNullOrWhiteSpace(plainProviderModel)
-                    && _options.TierAgentFactory is { } tierAgentFactory)
+                    : null;
+                if (!string.IsNullOrWhiteSpace(plainProviderModel) && _options.TierAgentFactory is { } tierAgentFactory)
                 {
                     providerAgent = tierAgentFactory(plainProviderModel);
                     ownedProviderAgent = providerAgent;
@@ -2833,9 +2929,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // explicit, per-spawn-tier, OR template-tier model — a different model may use a different
                 // transport than the shaped metadata targets) and carries no reasoning of its own, so a template
                 // that set ExtraProperties still wins.
-                if (_options.InheritedReasoning is { Count: > 0 } inheritedReasoning
+                if (
+                    _options.InheritedReasoning is { Count: > 0 } inheritedReasoning
                     && string.IsNullOrWhiteSpace(plainProviderModel)
-                    && (defaultOptions is null || defaultOptions.ExtraProperties.Count == 0))
+                    && (defaultOptions is null || defaultOptions.ExtraProperties.Count == 0)
+                )
                 {
                     defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
                     {
@@ -2859,8 +2957,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             // Build a fresh FunctionRegistry with filtered parent tools
             var registry = new FunctionRegistry();
-            var enabledSet = BuildEnabledToolSet(
-                template.EnabledTools, addTools, removeTools);
+            var enabledSet = BuildEnabledToolSet(template.EnabledTools, addTools, removeTools);
             var inheritedToolNames = new List<string>();
 
             foreach (var contract in _parentContracts)
@@ -2920,8 +3017,10 @@ public sealed class SubAgentManager : IAsyncDisposable
             // its OWN instance here — before the loop below snapshots what its own sub-agents inherit, so
             // the child advertises the tool while the grandchild is handed the same factory rather than
             // this instance. Only collaborating children have an agent id to be bound to.
-            if (childCollaboration is { } childAgent
-                && _options.ChildToolProviderFactory?.Invoke(childAgent.AgentId) is { } childToolProvider)
+            if (
+                childCollaboration is { } childAgent
+                && _options.ChildToolProviderFactory?.Invoke(childAgent.AgentId) is { } childToolProvider
+            )
             {
                 _ = registry.AddProvider(childToolProvider);
             }
@@ -2947,8 +3046,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     // authority this level's host holds over ITS spawns (see ForChildLoop).
                     subAgentOptions: childParticipatesInCollaboration ? _childOptions : null,
                     subAgentTemplateSource: childParticipatesInCollaboration ? _source : null,
-                    lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(
-                        _lifecycleServices, lineage),
+                    lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(_lifecycleServices, lineage),
                     collaboration: childCollaboration,
                     descendantQuestionSink: _descendantQuestionSink
                 ),
@@ -2957,12 +3055,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // Capture the FINAL resolved model and the winning selection input together. This is the
                 // authoritative presentation record; callers must not reconstruct routing from the LLM's raw
                 // Agent arguments because workflow authority may have replaced placeholder values.
-                BuildRouting(
-                    template,
-                    modelOverride,
-                    modelIntelligence,
-                    tierResolvedModel,
-                    defaultOptions?.ModelId)
+                BuildRouting(template, modelOverride, modelIntelligence, tierResolvedModel, defaultOptions?.ModelId)
             );
         }
         catch
@@ -2973,7 +3066,10 @@ public sealed class SubAgentManager : IAsyncDisposable
             // so they can't mask the real cause.
             if (store is IAsyncDisposable disposableStore)
             {
-                try { await disposableStore.DisposeAsync(); }
+                try
+                {
+                    await disposableStore.DisposeAsync();
+                }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(
@@ -2984,7 +3080,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 }
             }
 
-            try { await DisposeProviderAgentAsync(ownedProviderAgent); }
+            try
+            {
+                await DisposeProviderAgentAsync(ownedProviderAgent);
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(
@@ -3034,14 +3133,14 @@ public sealed class SubAgentManager : IAsyncDisposable
         GenerateReplyOptions? templateDefaults,
         string? modelOverride,
         string? parentModelId,
-        int? parentMaxToken = null)
+        int? parentMaxToken = null
+    )
     {
         var templateModel = templateDefaults?.ModelId;
-        var model = !string.IsNullOrWhiteSpace(modelOverride)
-            ? modelOverride
-            : !string.IsNullOrWhiteSpace(templateModel)
-                ? templateModel
-                : parentModelId;
+        var model =
+            !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride
+            : !string.IsNullOrWhiteSpace(templateModel) ? templateModel
+            : parentModelId;
 
         var hasModel = !string.IsNullOrWhiteSpace(model);
         // Only apply an inherited budget when the template didn't set its own — the template always wins.
@@ -3058,7 +3157,10 @@ public sealed class SubAgentManager : IAsyncDisposable
         if (hasModel)
         {
             // hasModel == !IsNullOrWhiteSpace(model), so model is non-null here (the compiler can't infer it).
-            resolved = resolved with { ModelId = model! };
+            resolved = resolved with
+            {
+                ModelId = model!,
+            };
         }
 
         if (inheritBudget)
@@ -3076,11 +3178,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     internal static HashSet<string>? BuildEnabledToolSet(
         IReadOnlyList<string>? templateEnabledTools,
         string[]? addTools,
-        string[]? removeTools)
+        string[]? removeTools
+    )
     {
-        if (templateEnabledTools == null
-            && addTools == null
-            && removeTools == null)
+        if (templateEnabledTools == null && addTools == null && removeTools == null)
         {
             return null; // No filtering
         }
@@ -3108,8 +3209,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // removeTools without a base set: cannot remove from "all tools"
                 // since we don't know the full tool list here. Treat as error.
                 throw new InvalidOperationException(
-                    "Cannot specify removeTools without enabledTools or addTools. " +
-                    "Use template EnabledTools to define the base set, then remove from it.");
+                    "Cannot specify removeTools without enabledTools or addTools. "
+                        + "Use template EnabledTools to define the base set, then remove from it."
+                );
             }
 
             foreach (var tool in removeTools)
@@ -3143,7 +3245,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         SubAgentState state,
         GateReleaseGuard gateGuard,
         long runGeneration,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         string? lastTextContent = null;
 
@@ -3208,7 +3311,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                     }
 
                     throw new InvalidOperationException(
-                        $"The sub-agent's message stream was severed ({recovery.Reason}) before the run completed.");
+                        $"The sub-agent's message stream was severed ({recovery.Reason}) before the run completed."
+                    );
                 }
 
                 var summary = CreateTurnSummary(msg);
@@ -3238,9 +3342,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // Track the last assistant text for the completion result. Subscribers
                 // receive raw deltas, so accumulate TextUpdateMessage deltas per
                 // generation; a consolidated TextMessage (non-streaming mock) is taken as-is.
-                if (msg is TextUpdateMessage tu
-                    && tu.Role == Role.Assistant
-                    && !tu.IsThinking)
+                if (msg is TextUpdateMessage tu && tu.Role == Role.Assistant && !tu.IsThinking)
                 {
                     // A new generation resets the accumulator so we keep only the most
                     // recent assistant message, not earlier turns' text.
@@ -3253,9 +3355,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     _ = textBuilder.Append(tu.Text);
                     lastTextContent = textBuilder.ToString();
                 }
-                else if (msg is TextMessage tm
-                    && tm.Role == Role.Assistant
-                    && !tm.IsThinking)
+                else if (msg is TextMessage tm && tm.Role == Role.Assistant && !tm.IsThinking)
                 {
                     textGenerationId = tm.GenerationId;
                     _ = textBuilder.Clear().Append(tm.Text);
@@ -3275,15 +3375,18 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // UsageMessage is included as the provider-independent backstop: every construction site
                 // for all three sits downstream of an actual provider turn, so none can appear for the
                 // zero-model-turn run this flag exists to identify.
-                if (msg is TextMessage { Role: Role.Assistant }
-                    or TextUpdateMessage { Role: Role.Assistant }
-                    or ToolCallMessage
-                    or ToolCallUpdateMessage
-                    or ToolsCallMessage
-                    or ToolsCallUpdateMessage
-                    or ReasoningMessage
-                    or ReasoningUpdateMessage
-                    or UsageMessage)
+                if (
+                    msg
+                    is TextMessage { Role: Role.Assistant }
+                        or TextUpdateMessage { Role: Role.Assistant }
+                        or ToolCallMessage
+                        or ToolCallUpdateMessage
+                        or ToolsCallMessage
+                        or ToolsCallUpdateMessage
+                        or ReasoningMessage
+                        or ReasoningUpdateMessage
+                        or UsageMessage
+                )
                 {
                     sawModelOutput = true;
                 }
@@ -3306,11 +3409,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // argument validation and returns an inline error never arms it. And unlike the loop's
                 // live deferred-call registry, a delivered message cannot be erased by the answer
                 // arriving: that erasure is precisely the race this whole fix exists to close.
-                if (msg is ToolCallResultMessage { IsDeferred: true } deferredAsk
+                if (
+                    msg is ToolCallResultMessage { IsDeferred: true } deferredAsk
                     && string.Equals(
                         deferredAsk.ToolName,
                         AskUserQuestionToolProvider.ToolName,
-                        StringComparison.Ordinal))
+                        StringComparison.Ordinal
+                    )
+                )
                 {
                     state.LatchParkedOnQuestion();
                     latchedThisRun = true;
@@ -3331,9 +3437,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                         await beforeClassify(state, rcm);
                     }
 
-                    var awaitingQuestion = !rcm.HasPendingMessages
-                        && !rcm.IsError
-                        && await HasPendingAskUserQuestionAsync(state);
+                    var awaitingQuestion =
+                        !rcm.HasPendingMessages && !rcm.IsError && await HasPendingAskUserQuestionAsync(state);
 
                     // The window this closes (#262) opens the instant the question is resolved and closes
                     // when the answer-triggered work produces its text: awaitingQuestion is already false
@@ -3361,7 +3466,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                     //
                     // Bounded to at most one A plus one B per parking: only one run can arm the latch, and
                     // B consumes it (see HandleRunCompletionAsync).
-                    var awaitingAnswerText = !awaitingQuestion
+                    var awaitingAnswerText =
+                        !awaitingQuestion
                         && !rcm.HasPendingMessages
                         && !rcm.IsError
                         && lastTextContent is null
@@ -3383,8 +3489,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                     }
 
                     await HandleRunCompletionAsync(
-                        state, rcm, lastTextContent, awaitingQuestion, awaitingAnswerText,
-                        latchedThisRun, ct);
+                        state,
+                        rcm,
+                        lastTextContent,
+                        awaitingQuestion,
+                        awaitingAnswerText,
+                        latchedThisRun,
+                        ct
+                    );
                     lastTextContent = null;
                     textGenerationId = null;
                     sawModelOutput = false;
@@ -3409,10 +3521,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // with Running (which would advertise a dead run).
             var faulted = state.MarkRunFaulted(runGeneration);
             state.SendToParentError = $"Monitor failed: {ex.Message}";
-            _logger.LogError(
-                ex,
-                "Error monitoring sub-agent {AgentId}",
-                state.AgentId);
+            _logger.LogError(ex, "Error monitoring sub-agent {AgentId}", state.AgentId);
 
             if (faulted)
             {
@@ -3477,7 +3586,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         bool awaitingQuestion,
         bool awaitingAnswerText,
         bool latchedThisRun,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         // A run that still has queued messages is NOT terminal: another run will follow and reuse the
         // same loop/provider, so neither flip the sub-agent terminal nor dispose its owned provider
@@ -3501,11 +3611,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             // eventual run is what performs the one true final completion (see the non-awaiting branch
             // below, invoked again for that later RunCompletedMessage).
             var awaitingResultText =
-                $"<sub-agent name=\"{state.TemplateName}\" " +
-                $"id=\"{state.AgentId}\">\n" +
-                $"[AwaitingAnswer] Task: {state.Task}\n" +
-                $"Result: (awaiting the human's answer to a pending question)\n" +
-                $"</sub-agent>";
+                $"<sub-agent name=\"{state.TemplateName}\" "
+                + $"id=\"{state.AgentId}\">\n"
+                + $"[AwaitingAnswer] Task: {state.Task}\n"
+                + $"Result: (awaiting the human's answer to a pending question)\n"
+                + $"</sub-agent>";
 
             // Surface a descendant's pending question to the root conversation immediately (#246): the
             // client navigates only on this distinct kind (never SubAgentCompletion/ClientNotification),
@@ -3520,8 +3630,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                     detail: awaitingResultText,
                     sourceToolName: "Agent",
                     sourceToolCallId: state.AgentId,
-                    label: state.TemplateName),
-                ct);
+                    label: state.TemplateName
+                ),
+                ct
+            );
 
             if (state.NotifyParentOnCompletion)
             {
@@ -3567,7 +3679,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             _logger.LogDebug(
                 "Sub-agent {AgentId} completed a run with no assistant text while awaiting the output of "
                     + "its answered question; keeping it non-terminal so the real answer can settle it.",
-                state.AgentId);
+                state.AgentId
+            );
             return;
         }
 
@@ -3595,7 +3708,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         // sub-agent is still addressable, and a collaboration message to it restarts it in place.
         SyncCollaborationStatus(
             state.AgentId,
-            rcm.IsError ? AgentCollaborationStatuses.Error : AgentCollaborationStatuses.Completed);
+            rcm.IsError ? AgentCollaborationStatuses.Error : AgentCollaborationStatuses.Completed
+        );
 
         // The concurrency slot is released by the monitor (via its GateReleaseGuard), exactly
         // once per gate-acquisition epoch — not here, because a single monitor may handle
@@ -3606,18 +3720,17 @@ public sealed class SubAgentManager : IAsyncDisposable
         // EndTerminalDisposal clears the terminating flag so a later restart's re-arm admits injects.
         try
         {
-            try { await state.DisposeOwnedProviderAgentAsync(); }
+            try
+            {
+                await state.DisposeOwnedProviderAgentAsync();
+            }
             catch (Exception ex)
             {
                 // Poison the run's provider: a continuation must rebuild a fresh one rather than reuse
                 // this partially-disposed instance (the restart path retries disposing it). Clearing the
                 // terminating flag below still lets a restart proceed — but against a fresh provider.
                 state.MarkOwnedProviderTerminalDisposeFailed();
-                _logger.LogWarning(
-                    ex,
-                    "Provider dispose failed at completion for sub-agent {AgentId}",
-                    state.AgentId
-                );
+                _logger.LogWarning(ex, "Provider dispose failed at completion for sub-agent {AgentId}", state.AgentId);
             }
         }
         finally
@@ -3628,17 +3741,17 @@ public sealed class SubAgentManager : IAsyncDisposable
         if (rcm.IsError)
         {
             var errorText =
-                $"<sub-agent name=\"{state.TemplateName}\" " +
-                $"id=\"{state.AgentId}\">\n" +
-                $"[Error] Task: {state.Task}\n" +
-                $"Error: {rcm.ErrorMessage}\n" +
-                $"</sub-agent>";
+                $"<sub-agent name=\"{state.TemplateName}\" "
+                + $"id=\"{state.AgentId}\">\n"
+                + $"[Error] Task: {state.Task}\n"
+                + $"Error: {rcm.ErrorMessage}\n"
+                + $"</sub-agent>";
 
             // Fault the synchronous waiter (if any); a background spawn observes
             // this fault via ObserveCompletionFaults so it is never unobserved.
             _ = state.TryCompleteWithException(
-                new SubAgentExecutionException(
-                    state.AgentId, state.TemplateName, rcm.ErrorMessage));
+                new SubAgentExecutionException(state.AgentId, state.TemplateName, rcm.ErrorMessage)
+            );
 
             // Claim-and-record, not a bare read: an observer arming concurrently must either win
             // (we relay nothing, it delivers) or lose (we relay, its arm is rejected). See
@@ -3660,11 +3773,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             var result = lastTextContent ?? "(no text response)";
 
             var resultText =
-                $"<sub-agent name=\"{state.TemplateName}\" " +
-                $"id=\"{state.AgentId}\">\n" +
-                $"[Completed] Task: {state.Task}\n" +
-                $"Result: {result}\n" +
-                $"</sub-agent>";
+                $"<sub-agent name=\"{state.TemplateName}\" "
+                + $"id=\"{state.AgentId}\">\n"
+                + $"[Completed] Task: {state.Task}\n"
+                + $"Result: {result}\n"
+                + $"</sub-agent>";
 
             _ = state.TryCompleteWithResult(result);
 
@@ -3674,7 +3787,6 @@ public sealed class SubAgentManager : IAsyncDisposable
                 await SendToParentAsync(state, resultText);
             }
         }
-
     }
 
     /// <summary>
@@ -3693,7 +3805,8 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         var deferred = await loop.GetDeferredToolCallsAsync();
         return deferred.Any(d =>
-            string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal));
+            string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)
+        );
     }
 
     /// <summary>
@@ -3719,14 +3832,19 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
 
             var deferred = await loop.GetDeferredToolCallsAsync(ct);
-            if (deferred.Any(d =>
-                string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)))
+            if (
+                deferred.Any(d =>
+                    string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)
+                )
+            )
             {
                 return true;
             }
 
-            if (loop.SubAgentManager is { } childManager
-                && await childManager.HasPendingAskUserQuestionInDescendantsAsync(ct))
+            if (
+                loop.SubAgentManager is { } childManager
+                && await childManager.HasPendingAskUserQuestionInDescendantsAsync(ct)
+            )
             {
                 return true;
             }
@@ -3760,19 +3878,18 @@ public sealed class SubAgentManager : IAsyncDisposable
             var threadId = state.Agent.ThreadId;
             await state.Store.UpdateMetadataAsync(
                 threadId,
-                existing => existing
+                existing =>
+                    existing
                     ?? new ThreadMetadata
                     {
                         ThreadId = threadId,
                         LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    });
+                    }
+            );
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Failed to persist terminal state for sub-agent {AgentId}",
-                state.AgentId);
+            _logger.LogWarning(ex, "Failed to persist terminal state for sub-agent {AgentId}", state.AgentId);
         }
     }
 
@@ -3783,10 +3900,14 @@ public sealed class SubAgentManager : IAsyncDisposable
     private static void ObserveCompletionFaults(SubAgentState state)
     {
         _ = state.Completion.Task.ContinueWith(
-            static t => { _ = t.Exception; },
+            static t =>
+            {
+                _ = t.Exception;
+            },
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
+            TaskScheduler.Default
+        );
     }
 
     /// <summary>
@@ -3825,20 +3946,21 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Deliver the completion as a typed notification, not a plain user turn: the parent LLM
             // reads it as an async response to the sub-agent spawn, and the UI renders a pill. The raw
             // <sub-agent …> block stays in Detail so downstream parsers (e.g. LmWorkflow) still find it.
-            _ = await _parentAgent.SendAsync(
-                [NotifyMessage.Create(
+            _ = await _parentAgent.SendAsync([
+                NotifyMessage.Create(
                     NotifyKinds.SubAgentCompletion,
                     detail: text,
                     sourceToolName: "Agent",
                     sourceToolCallId: state.AgentId,
-                    label: state.TemplateName)]);
+                    label: state.TemplateName
+                ),
+            ]);
         }
         catch (Exception ex)
         {
             state.SendToParentFailed = true;
             state.SendToParentError = ex.Message;
-            _logger.LogError(
-                ex, "Failed to send sub-agent result to parent");
+            _logger.LogError(ex, "Failed to send sub-agent result to parent");
         }
     }
 
@@ -3864,7 +3986,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             // landmine (#196, BUG 3).
             SubAgentThreadId(state.AgentId),
             UsageExecutionKind.SubAgent,
-            state.EffectiveModelId ?? _parentModelId);
+            state.EffectiveModelId ?? _parentModelId
+        );
 
     /// <summary>
     /// Builds the conversation thread id for a sub-agent's own loop from its agent id. Centralized so the
@@ -3928,10 +4051,8 @@ public sealed class SubAgentManager : IAsyncDisposable
 
     private static string? Truncate(string? text, int maxLength)
     {
-        return text == null
-            ? null
-            : text.Length <= maxLength
-            ? text
+        return text == null ? null
+            : text.Length <= maxLength ? text
             : text[..maxLength] + "...";
     }
 
@@ -3957,7 +4078,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             EventId eventId,
             TState state,
             Exception? exception,
-            Func<TState, Exception?, string> formatter)
+            Func<TState, Exception?, string> formatter
+        )
         {
             inner.Log(logLevel, eventId, state, exception, formatter);
         }

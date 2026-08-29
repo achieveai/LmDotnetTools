@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class NaturalToolUseParserMiddlewareTests
@@ -1085,7 +1086,13 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
-                (messages, options, token) => { if (options != null) { capturedOptions = options; } }
+                (messages, options, token) =>
+                {
+                    if (options != null)
+                    {
+                        capturedOptions = options;
+                    }
+                }
             )
             .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
@@ -1436,7 +1443,12 @@ public class NaturalToolUseParserMiddlewareTests
             {
                 var message = result.ElementAt(i);
                 var content = message is ICanGetText textMessage ? textMessage.GetText() : "[No text content]";
-                TestContextLogger.LogDebug("Message detail. Index: {Index}, MessageType: {MessageType}, Content: {Content}", i, message.GetType().Name, content);
+                TestContextLogger.LogDebug(
+                    "Message detail. Index: {Index}, MessageType: {MessageType}, Content: {Content}",
+                    i,
+                    message.GetType().Name,
+                    content
+                );
             }
         }
 

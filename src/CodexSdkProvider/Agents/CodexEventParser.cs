@@ -14,20 +14,22 @@ internal static class CodexEventParser
             return null;
         }
 
-        if (root.Value.TryGetProperty("threadId", out var threadIdProp)
-            && threadIdProp.ValueKind == JsonValueKind.String)
+        if (
+            root.Value.TryGetProperty("threadId", out var threadIdProp)
+            && threadIdProp.ValueKind == JsonValueKind.String
+        )
         {
             return threadIdProp.GetString();
         }
 
         return root.Value.TryGetProperty("thread_id", out var threadIdSnake)
             && threadIdSnake.ValueKind == JsonValueKind.String
-            ? threadIdSnake.GetString()
+                ? threadIdSnake.GetString()
             : root.Value.TryGetProperty("thread", out var threadProp)
             && threadProp.ValueKind == JsonValueKind.Object
             && threadProp.TryGetProperty("id", out var idProp)
             && idProp.ValueKind == JsonValueKind.String
-            ? idProp.GetString()
+                ? idProp.GetString()
             : null;
     }
 
@@ -38,20 +40,19 @@ internal static class CodexEventParser
             return null;
         }
 
-        if (root.Value.TryGetProperty("turnId", out var turnIdProp)
-            && turnIdProp.ValueKind == JsonValueKind.String)
+        if (root.Value.TryGetProperty("turnId", out var turnIdProp) && turnIdProp.ValueKind == JsonValueKind.String)
         {
             return turnIdProp.GetString();
         }
 
         return root.Value.TryGetProperty("turn_id", out var turnIdSnake)
             && turnIdSnake.ValueKind == JsonValueKind.String
-            ? turnIdSnake.GetString()
+                ? turnIdSnake.GetString()
             : root.Value.TryGetProperty("turn", out var turnProp)
             && turnProp.ValueKind == JsonValueKind.Object
             && turnProp.TryGetProperty("id", out var idProp)
             && idProp.ValueKind == JsonValueKind.String
-            ? idProp.GetString()
+                ? idProp.GetString()
             : null;
     }
 
@@ -62,14 +63,13 @@ internal static class CodexEventParser
             return null;
         }
 
-        return root.Value.TryGetProperty("status", out var statusProp)
-            && statusProp.ValueKind == JsonValueKind.String
-            ? statusProp.GetString()
+        return root.Value.TryGetProperty("status", out var statusProp) && statusProp.ValueKind == JsonValueKind.String
+                ? statusProp.GetString()
             : root.Value.TryGetProperty("turn", out var turnProp)
             && turnProp.ValueKind == JsonValueKind.Object
             && turnProp.TryGetProperty("status", out var turnStatus)
             && turnStatus.ValueKind == JsonValueKind.String
-            ? turnStatus.GetString()
+                ? turnStatus.GetString()
             : null;
     }
 
@@ -84,14 +84,14 @@ internal static class CodexEventParser
             && errorProp.ValueKind == JsonValueKind.Object
             && errorProp.TryGetProperty("message", out var messageProp)
             && messageProp.ValueKind == JsonValueKind.String
-            ? messageProp.GetString()
+                ? messageProp.GetString()
             : root.Value.TryGetProperty("turn", out var turnProp)
             && turnProp.ValueKind == JsonValueKind.Object
             && turnProp.TryGetProperty("error", out var turnErrorProp)
             && turnErrorProp.ValueKind == JsonValueKind.Object
             && turnErrorProp.TryGetProperty("message", out var turnMessageProp)
             && turnMessageProp.ValueKind == JsonValueKind.String
-            ? turnMessageProp.GetString()
+                ? turnMessageProp.GetString()
             : null;
     }
 
@@ -104,15 +104,18 @@ internal static class CodexEventParser
                 return error.GetString();
             }
 
-            if (error.ValueKind == JsonValueKind.Object
+            if (
+                error.ValueKind == JsonValueKind.Object
                 && TryGetProperty(error, "message", out var message)
-                && message.ValueKind == JsonValueKind.String)
+                && message.ValueKind == JsonValueKind.String
+            )
             {
                 return message.GetString();
             }
         }
 
-        return TryGetProperty(payload, "message", out var fallbackMessage)
+        return
+            TryGetProperty(payload, "message", out var fallbackMessage)
             && fallbackMessage.ValueKind == JsonValueKind.String
             ? fallbackMessage.GetString()
             : null;
@@ -120,19 +123,17 @@ internal static class CodexEventParser
 
     public static string? GetPropertyString(JsonElement? root, string propertyName)
     {
-        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object
-            ? null
-            : root.Value.TryGetProperty(propertyName, out var property)
-            && property.ValueKind == JsonValueKind.String
-            ? property.GetString()
+        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object ? null
+            : root.Value.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
             : null;
     }
 
     public static JsonElement? GetPropertyElement(JsonElement? root, string propertyName)
     {
-        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object
-            ? null
-            : root.Value.TryGetProperty(propertyName, out var property) ? property.Clone() : null;
+        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object ? null
+            : root.Value.TryGetProperty(propertyName, out var property) ? property.Clone()
+            : null;
     }
 
     public static bool TryGetProperty(JsonElement root, string propertyName, out JsonElement value)
@@ -150,32 +151,32 @@ internal static class CodexEventParser
     public static bool IsItemStartedMethod(string method)
     {
         return string.Equals(method, "item/started", StringComparison.Ordinal)
-               || string.Equals(method, "item.started", StringComparison.Ordinal);
+            || string.Equals(method, "item.started", StringComparison.Ordinal);
     }
 
     public static bool IsItemCompletedMethod(string method)
     {
         return string.Equals(method, "item/completed", StringComparison.Ordinal)
-               || string.Equals(method, "item.completed", StringComparison.Ordinal);
+            || string.Equals(method, "item.completed", StringComparison.Ordinal);
     }
 
     public static bool IsWebSearchBeginMethod(string method)
     {
         return string.Equals(method, "codex/event/web_search_begin", StringComparison.Ordinal)
-               || string.Equals(method, "codex.event.web_search_begin", StringComparison.Ordinal);
+            || string.Equals(method, "codex.event.web_search_begin", StringComparison.Ordinal);
     }
 
     public static bool IsWebSearchEndMethod(string method)
     {
         return string.Equals(method, "codex/event/web_search_end", StringComparison.Ordinal)
-               || string.Equals(method, "codex.event.web_search_end", StringComparison.Ordinal);
+            || string.Equals(method, "codex.event.web_search_end", StringComparison.Ordinal);
     }
 
     public static bool IsInProgress(string status)
     {
         return string.Equals(status, "in_progress", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "inProgress", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "inprogress", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(status, "inProgress", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "inprogress", StringComparison.OrdinalIgnoreCase);
     }
 
     public static bool IsTerminalTurnStatus(string status)
@@ -186,27 +187,29 @@ internal static class CodexEventParser
     public static bool IsTurnFailureStatus(string? status)
     {
         return string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "interrupted", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(status, "interrupted", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase);
     }
 
     public static bool IsTurnFailureNotification(string method)
     {
         return string.Equals(method, "turn/failed", StringComparison.Ordinal)
-               || string.Equals(method, "turn.failed", StringComparison.Ordinal)
-               || string.Equals(method, "turn/interrupted", StringComparison.Ordinal)
-               || string.Equals(method, "turn.interrupted", StringComparison.Ordinal)
-               || string.Equals(method, "turn/cancelled", StringComparison.Ordinal)
-               || string.Equals(method, "turn.cancelled", StringComparison.Ordinal)
-               || string.Equals(method, "turn/canceled", StringComparison.Ordinal)
-               || string.Equals(method, "turn.canceled", StringComparison.Ordinal);
+            || string.Equals(method, "turn.failed", StringComparison.Ordinal)
+            || string.Equals(method, "turn/interrupted", StringComparison.Ordinal)
+            || string.Equals(method, "turn.interrupted", StringComparison.Ordinal)
+            || string.Equals(method, "turn/cancelled", StringComparison.Ordinal)
+            || string.Equals(method, "turn.cancelled", StringComparison.Ordinal)
+            || string.Equals(method, "turn/canceled", StringComparison.Ordinal)
+            || string.Equals(method, "turn.canceled", StringComparison.Ordinal);
     }
 
     public static string NormalizeInternalToolStatus(string? status, bool hasError)
     {
         return string.IsNullOrWhiteSpace(status)
-            ? hasError ? "error" : "success"
+            ? hasError
+                ? "error"
+                : "success"
             : status switch
             {
                 "completed" => hasError ? "error" : "success",
@@ -242,7 +245,8 @@ internal static class CodexEventParser
         JsonElement? parameters,
         out JsonElement item,
         out string toolName,
-        out string toolCallId)
+        out string toolCallId
+    )
     {
         item = default;
         toolName = string.Empty;
@@ -253,14 +257,15 @@ internal static class CodexEventParser
             return false;
         }
 
-        if (!TryGetProperty(parameters.Value, "item", out var itemElement)
-            || itemElement.ValueKind != JsonValueKind.Object)
+        if (
+            !TryGetProperty(parameters.Value, "item", out var itemElement)
+            || itemElement.ValueKind != JsonValueKind.Object
+        )
         {
             return false;
         }
 
-        if (!TryGetProperty(itemElement, "type", out var typeElement)
-            || typeElement.ValueKind != JsonValueKind.String)
+        if (!TryGetProperty(itemElement, "type", out var typeElement) || typeElement.ValueKind != JsonValueKind.String)
         {
             return false;
         }
@@ -271,9 +276,10 @@ internal static class CodexEventParser
             return false;
         }
 
-        var callId = GetPropertyString(itemElement, "id")
-                     ?? GetPropertyString(itemElement, "call_id")
-                     ?? GetPropertyString(itemElement, "callId");
+        var callId =
+            GetPropertyString(itemElement, "id")
+            ?? GetPropertyString(itemElement, "call_id")
+            ?? GetPropertyString(itemElement, "callId");
         if (string.IsNullOrWhiteSpace(callId))
         {
             return false;
@@ -289,7 +295,8 @@ internal static class CodexEventParser
         Dictionary<string, object?> destination,
         string toolName,
         JsonElement payload,
-        bool isResultPayload)
+        bool isResultPayload
+    )
     {
         switch (toolName)
         {
@@ -337,7 +344,12 @@ internal static class CodexEventParser
         }
     }
 
-    public static void AddStringField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
+    public static void AddStringField(
+        Dictionary<string, object?> destination,
+        JsonElement payload,
+        string targetName,
+        params string[] sourceCandidates
+    )
     {
         var names = sourceCandidates.Length == 0 ? [targetName] : sourceCandidates;
         foreach (var candidate in names)
@@ -350,7 +362,12 @@ internal static class CodexEventParser
         }
     }
 
-    public static void AddIntField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
+    public static void AddIntField(
+        Dictionary<string, object?> destination,
+        JsonElement payload,
+        string targetName,
+        params string[] sourceCandidates
+    )
     {
         var names = sourceCandidates.Length == 0 ? [targetName] : sourceCandidates;
         foreach (var candidate in names)
@@ -374,7 +391,12 @@ internal static class CodexEventParser
         }
     }
 
-    public static void AddRawField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
+    public static void AddRawField(
+        Dictionary<string, object?> destination,
+        JsonElement payload,
+        string targetName,
+        params string[] sourceCandidates
+    )
     {
         var names = sourceCandidates.Length == 0 ? [targetName] : sourceCandidates;
         foreach (var candidate in names)
@@ -395,6 +417,8 @@ internal static class CodexEventParser
 
     public static string Truncate(string value)
     {
-        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Length <= 2_000 ? value : value[..2_000];
+        return string.IsNullOrWhiteSpace(value) ? string.Empty
+            : value.Length <= 2_000 ? value
+            : value[..2_000];
     }
 }

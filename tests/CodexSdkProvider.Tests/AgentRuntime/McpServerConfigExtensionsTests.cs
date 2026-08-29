@@ -11,7 +11,8 @@ public class McpServerConfigExtensionsTests
         var source = McpServerConfig.CreateStdio(
             "node",
             ["a.js", "--flag"],
-            new Dictionary<string, string> { ["K"] = "V" });
+            new Dictionary<string, string> { ["K"] = "V" }
+        );
 
         var codex = source.ToCodexConfig();
 

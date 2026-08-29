@@ -34,7 +34,8 @@ internal sealed class FakeCliProcess : IDisposable
             stderr: new StreamReader(new MemoryStream()),
             // A real process closes stdout when it exits, and that end-of-stream is what lets the
             // transport's read loop finish.
-            onExit: _stdout.SignalEndOfStream);
+            onExit: _stdout.SignalEndOfStream
+        );
 
         Launcher = new Handoff(_handle);
     }
@@ -52,13 +53,9 @@ internal sealed class FakeCliProcess : IDisposable
 
         using var doc = JsonDocument.Parse(line);
         var root = doc.RootElement;
-        Assert.False(
-            root.TryGetProperty("error", out var error),
-            $"expected a result, got an error: {error}");
+        Assert.False(root.TryGetProperty("error", out var error), $"expected a result, got an error: {error}");
 
-        return new FakeCliResponse(
-            root.GetProperty("id").GetInt64(),
-            root.GetProperty("result").Clone());
+        return new FakeCliResponse(root.GetProperty("id").GetInt64(), root.GetProperty("result").Clone());
     }
 
     public void Dispose()
@@ -71,8 +68,7 @@ internal sealed class FakeCliProcess : IDisposable
     /// <summary>Stdout as the transport sees it: lines on demand, then end-of-stream.</summary>
     private sealed class ScriptedOutputStream : Stream
     {
-        private readonly Channel<ReadOnlyMemory<byte>> _chunks =
-            Channel.CreateUnbounded<ReadOnlyMemory<byte>>();
+        private readonly Channel<ReadOnlyMemory<byte>> _chunks = Channel.CreateUnbounded<ReadOnlyMemory<byte>>();
 
         private ReadOnlyMemory<byte> _unread;
 
@@ -90,19 +86,18 @@ internal sealed class FakeCliProcess : IDisposable
             set => throw new NotSupportedException();
         }
 
-        public ValueTask EmitLineAsync(string line) =>
-            _chunks.Writer.WriteAsync(Encoding.UTF8.GetBytes(line + "\n"));
+        public ValueTask EmitLineAsync(string line) => _chunks.Writer.WriteAsync(Encoding.UTF8.GetBytes(line + "\n"));
 
         public void SignalEndOfStream() => _chunks.Writer.TryComplete();
 
         public override async ValueTask<int> ReadAsync(
             Memory<byte> buffer,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             if (_unread.IsEmpty)
             {
-                if (!await _chunks.Reader.WaitToReadAsync(cancellationToken)
-                    || !_chunks.Reader.TryRead(out var chunk))
+                if (!await _chunks.Reader.WaitToReadAsync(cancellationToken) || !_chunks.Reader.TryRead(out var chunk))
                 {
                     return 0;
                 }
@@ -120,24 +115,19 @@ internal sealed class FakeCliProcess : IDisposable
             byte[] buffer,
             int offset,
             int count,
-            CancellationToken cancellationToken) =>
-            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+            CancellationToken cancellationToken
+        ) => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
 
         public override int Read(byte[] buffer, int offset, int count) =>
-            ReadAsync(buffer.AsMemory(offset, count), CancellationToken.None)
-                .AsTask()
-                .GetAwaiter()
-                .GetResult();
+            ReadAsync(buffer.AsMemory(offset, count), CancellationToken.None).AsTask().GetAwaiter().GetResult();
 
         public override void Flush() { }
 
-        public override long Seek(long offset, SeekOrigin origin) =>
-            throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
 
         public override void SetLength(long value) => throw new NotSupportedException();
 
-        public override void Write(byte[] buffer, int offset, int count) =>
-            throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
         protected override void Dispose(bool disposing)
         {
@@ -181,8 +171,7 @@ internal sealed class FakeCliProcess : IDisposable
             }
         }
 
-        public override void Write(byte[] buffer, int offset, int count) =>
-            Write(buffer.AsSpan(offset, count));
+        public override void Write(byte[] buffer, int offset, int count) => Write(buffer.AsSpan(offset, count));
 
         // The transport serializes its own writes, so a whole line arrives before the next one
         // starts; the lock only guards against a flush racing that on another thread.
@@ -205,19 +194,13 @@ internal sealed class FakeCliProcess : IDisposable
             }
         }
 
-        public override ValueTask WriteAsync(
-            ReadOnlyMemory<byte> buffer,
-            CancellationToken cancellationToken = default)
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
             Write(buffer.Span);
             return ValueTask.CompletedTask;
         }
 
-        public override Task WriteAsync(
-            byte[] buffer,
-            int offset,
-            int count,
-            CancellationToken cancellationToken)
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             Write(buffer.AsSpan(offset, count));
             return Task.CompletedTask;
@@ -225,11 +208,9 @@ internal sealed class FakeCliProcess : IDisposable
 
         public override void Flush() { }
 
-        public override int Read(byte[] buffer, int offset, int count) =>
-            throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
-        public override long Seek(long offset, SeekOrigin origin) =>
-            throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
 
         public override void SetLength(long value) => throw new NotSupportedException();
     }
@@ -238,18 +219,14 @@ internal sealed class FakeCliProcess : IDisposable
     {
         public Task<IProcessHandle> LaunchAsync(
             ProcessLaunchRequest request,
-            CancellationToken cancellationToken = default) => Task.FromResult(handle);
+            CancellationToken cancellationToken = default
+        ) => Task.FromResult(handle);
     }
 
-    private sealed class Handle(
-        StreamWriter stdin,
-        StreamReader stdout,
-        StreamReader stderr,
-        Action onExit)
+    private sealed class Handle(StreamWriter stdin, StreamReader stdout, StreamReader stderr, Action onExit)
         : IProcessHandle
     {
-        private readonly TaskCompletionSource<int> _exited = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<int> _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool HasExited { get; private set; }
 

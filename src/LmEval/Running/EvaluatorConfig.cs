@@ -152,11 +152,7 @@ public sealed class EvaluatorConfig
         var arbiter = options.ArbiterJudge;
 
         var humanSources = (humanSignalSources ?? []).ToList();
-        var weights = reliabilityWeights.ToDictionary(
-            kv => kv.Key,
-            kv => kv.Value,
-            StringComparer.Ordinal
-        );
+        var weights = reliabilityWeights.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
 
         var builder = new StringBuilder();
 
@@ -169,11 +165,8 @@ public sealed class EvaluatorConfig
                 .Append(
                     string.Join(
                         TaskTypeSeparator,
-                        gate
-                            .AppliesTo.OrderBy(t => t, StringComparer.Ordinal)
-                            .Select(t =>
-                                Field(t, "Gate task type", gate.GateId, TaskTypeSeparator)
-                            )
+                        gate.AppliesTo.OrderBy(t => t, StringComparer.Ordinal)
+                            .Select(t => Field(t, "Gate task type", gate.GateId, TaskTypeSeparator))
                     )
                 )
                 .Append(Separator)
@@ -191,13 +184,7 @@ public sealed class EvaluatorConfig
                 .Append(Separator)
                 .Append(Field(judge.ModelFamily, "Judge model family", judge.JudgeId))
                 .Append(Separator)
-                .Append(
-                    Field(
-                        FingerprintOf(judge, "Judge", judge.JudgeId),
-                        "Judge fingerprint",
-                        judge.JudgeId
-                    )
-                )
+                .Append(Field(FingerprintOf(judge, "Judge", judge.JudgeId), "Judge fingerprint", judge.JudgeId))
                 .Append('\n');
         }
 
@@ -233,12 +220,7 @@ public sealed class EvaluatorConfig
             .Append("options\n")
             .Append(options.AbstainFloor.ToString("R", System.Globalization.CultureInfo.InvariantCulture))
             .Append(Separator)
-            .Append(
-                options.DispersionAlarm?.ToString(
-                    "R",
-                    System.Globalization.CultureInfo.InvariantCulture
-                ) ?? "none"
-            )
+            .Append(options.DispersionAlarm?.ToString("R", System.Globalization.CultureInfo.InvariantCulture) ?? "none")
             .Append('\n');
 
         // The snapshot id AND the weights it names. The count leads the entries so that a judge id
@@ -255,9 +237,7 @@ public sealed class EvaluatorConfig
             _ = builder
                 .Append(Field(weight.Key, "Reliability weight judge id", weight.Key))
                 .Append(Separator)
-                .Append(
-                    weight.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)
-                )
+                .Append(weight.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture))
                 .Append('\n');
         }
 
@@ -266,9 +246,7 @@ public sealed class EvaluatorConfig
             .Append(
                 string.Join(
                     Separator,
-                    humanSources
-                        .OrderBy(s => s, StringComparer.Ordinal)
-                        .Select(s => Field(s, "Human signal source", s))
+                    humanSources.OrderBy(s => s, StringComparer.Ordinal).Select(s => Field(s, "Human signal source", s))
                 )
             )
             .Append('\n');
@@ -289,9 +267,8 @@ public sealed class EvaluatorConfig
 
     /// <summary>Builds the gauntlet this configuration describes, so the hash names what ran.</summary>
     /// <param name="logger">Optional diagnostics for the gauntlet.</param>
-    public JudgeGauntlet BuildGauntlet(
-        Microsoft.Extensions.Logging.ILogger<JudgeGauntlet>? logger = null
-    ) => new(Gates, Judges, Aggregator, Options, logger);
+    public JudgeGauntlet BuildGauntlet(Microsoft.Extensions.Logging.ILogger<JudgeGauntlet>? logger = null) =>
+        new(Gates, Judges, Aggregator, Options, logger);
 
     /// <summary>
     /// Joins a gate's task types inside one field. A comma rather than the unit separator because
@@ -316,12 +293,7 @@ public sealed class EvaluatorConfig
     /// so it is refused for the same reason and with the same consequence.
     /// </para>
     /// </summary>
-    private static string Field(
-        string value,
-        string kind,
-        string owner,
-        char? listSeparator = null
-    )
+    private static string Field(string value, string kind, string owner, char? listSeparator = null)
     {
         var forgesListBoundary = listSeparator is { } separator && value.Contains(separator);
 

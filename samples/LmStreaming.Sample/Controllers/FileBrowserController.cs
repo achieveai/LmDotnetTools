@@ -45,14 +45,27 @@ public sealed class FileBrowserController(
         InvalidPath,
     }
 
-    private readonly record struct ResolvedTarget(bool Success, string ServerPath, SandboxEntryType Type, long? Size, ResolveFailure Failure)
+    private readonly record struct ResolvedTarget(
+        bool Success,
+        string ServerPath,
+        SandboxEntryType Type,
+        long? Size,
+        ResolveFailure Failure
+    )
     {
-        public static ResolvedTarget Ok(string serverPath, SandboxEntryType type, long? size) => new(true, serverPath, type, size, ResolveFailure.None);
+        public static ResolvedTarget Ok(string serverPath, SandboxEntryType type, long? size) =>
+            new(true, serverPath, type, size, ResolveFailure.None);
 
         public static ResolvedTarget Fail(ResolveFailure failure) => new(false, string.Empty, default, null, failure);
     }
 
-    private readonly record struct SessionContext(bool Ok, SandboxSession? Session, string? WorkspaceId, IActionResult? Error, bool NoSession);
+    private readonly record struct SessionContext(
+        bool Ok,
+        SandboxSession? Session,
+        string? WorkspaceId,
+        IActionResult? Error,
+        bool NoSession
+    );
 
     // -------- Endpoints --------
 
@@ -82,13 +95,22 @@ public sealed class FileBrowserController(
 
             if (target.Type != SandboxEntryType.Directory)
             {
-                return BadRequest(new { error = "not_a_directory", code = "not_a_directory", threadId });
+                return BadRequest(
+                    new
+                    {
+                        error = "not_a_directory",
+                        code = "not_a_directory",
+                        threadId,
+                    }
+                );
             }
 
             var entries = await fileBrowser.ListWorkspaceDirectoryAsync(session.SessionId, target.ServerPath, ct);
             var shown = entries.Take(FileBrowserLimits.MaxListingRows).Select(FileEntryDto.From).ToList();
             var moreCount = Math.Max(0, entries.Count - FileBrowserLimits.MaxListingRows);
-            return Ok(new DirectoryListingDto(context.WorkspaceId ?? string.Empty, target.ServerPath, shown, moreCount));
+            return Ok(
+                new DirectoryListingDto(context.WorkspaceId ?? string.Empty, target.ServerPath, shown, moreCount)
+            );
         }
         catch (SandboxException ex)
         {
@@ -117,24 +139,52 @@ public sealed class FileBrowserController(
 
             if (target.Type != SandboxEntryType.File)
             {
-                return BadRequest(new { error = "not_a_file", code = "not_a_file", threadId });
+                return BadRequest(
+                    new
+                    {
+                        error = "not_a_file",
+                        code = "not_a_file",
+                        threadId,
+                    }
+                );
             }
 
             // Deterministic 413 from the authoritative listed size — refuse an over-cap file without
             // reading a byte, so an oversize download is rejected without truncation.
             if (target.Size is > FileBrowserLimits.MaxDownloadBytes)
             {
-                return StatusCode(StatusCodes.Status413PayloadTooLarge, new { error = "file_too_large", code = "file_too_large", threadId });
+                return StatusCode(
+                    StatusCodes.Status413PayloadTooLarge,
+                    new
+                    {
+                        error = "file_too_large",
+                        code = "file_too_large",
+                        threadId,
+                    }
+                );
             }
 
-            var bytes = await fileBrowser.ReadWorkspaceFileBytesAsync(session.SessionId, target.ServerPath, FileBrowserLimits.MaxDownloadBytes, ct);
+            var bytes = await fileBrowser.ReadWorkspaceFileBytesAsync(
+                session.SessionId,
+                target.ServerPath,
+                FileBrowserLimits.MaxDownloadBytes,
+                ct
+            );
             Response.Headers["X-Content-Type-Options"] = "nosniff";
             var fileName = LastComponent(target.ServerPath);
             return File(bytes, "application/octet-stream", fileDownloadName: fileName);
         }
         catch (SandboxException ex) when (IsOverCap(ex))
         {
-            return StatusCode(StatusCodes.Status413PayloadTooLarge, new { error = "file_too_large", code = "file_too_large", threadId });
+            return StatusCode(
+                StatusCodes.Status413PayloadTooLarge,
+                new
+                {
+                    error = "file_too_large",
+                    code = "file_too_large",
+                    threadId,
+                }
+            );
         }
         catch (SandboxException ex)
         {
@@ -186,7 +236,12 @@ public sealed class FileBrowserController(
                 return Ok(new PreviewResultDto(false, "too_large", null, null));
             }
 
-            var bytes = await fileBrowser.ReadWorkspaceFileBytesAsync(session.SessionId, target.ServerPath, FileBrowserLimits.PreviewByteCap + 1, ct);
+            var bytes = await fileBrowser.ReadWorkspaceFileBytesAsync(
+                session.SessionId,
+                target.ServerPath,
+                FileBrowserLimits.PreviewByteCap + 1,
+                ct
+            );
             if (bytes.LongLength > FileBrowserLimits.PreviewByteCap)
             {
                 return Ok(new PreviewResultDto(false, "too_large", null, null));
@@ -195,7 +250,9 @@ public sealed class FileBrowserController(
             string text;
             try
             {
-                text = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true).GetString(bytes);
+                text = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true).GetString(
+                    bytes
+                );
             }
             catch (DecoderFallbackException)
             {
@@ -232,7 +289,13 @@ public sealed class FileBrowserController(
     [HttpPost]
     [RequestSizeLimit(FileBrowserLimits.MaxUploadRequestBytes)]
     [RequestFormLimits(MultipartBodyLengthLimit = FileBrowserLimits.MaxUploadRequestBytes)]
-    public async Task<IActionResult> Upload(string threadId, [FromQuery] string? path, [FromForm(Name = "file")] IFormFile? file, [FromForm(Name = "relativePath")] string? relativePath, CancellationToken ct)
+    public async Task<IActionResult> Upload(
+        string threadId,
+        [FromQuery] string? path,
+        [FromForm(Name = "file")] IFormFile? file,
+        [FromForm(Name = "relativePath")] string? relativePath,
+        CancellationToken ct
+    )
     {
         var context = await ResolveSessionAsync(threadId, AccessAction.Write, isListing: false, ct);
         if (!context.Ok)
@@ -242,7 +305,14 @@ public sealed class FileBrowserController(
 
         if (file is null)
         {
-            return BadRequest(new { error = "no_file", code = "no_file", threadId });
+            return BadRequest(
+                new
+                {
+                    error = "no_file",
+                    code = "no_file",
+                    threadId,
+                }
+            );
         }
 
         // Resolve the destination path components. A flat upload validates the single base name; a folder
@@ -253,21 +323,43 @@ public sealed class FileBrowserController(
         {
             if (!IsValidBaseName(file.FileName))
             {
-                return BadRequest(new { error = "invalid_file_name", code = "invalid_file_name", threadId });
+                return BadRequest(
+                    new
+                    {
+                        error = "invalid_file_name",
+                        code = "invalid_file_name",
+                        threadId,
+                    }
+                );
             }
 
             destSegments = [file.FileName];
         }
         else if (!TryValidateRelativePath(relativePath, out destSegments))
         {
-            return BadRequest(new { error = "invalid_path", code = "invalid_path", threadId });
+            return BadRequest(
+                new
+                {
+                    error = "invalid_path",
+                    code = "invalid_path",
+                    threadId,
+                }
+            );
         }
 
         // Declared-length check first, then re-check the OBSERVED bytes while reading — a lying declared
         // length can never smuggle more than the cap into the workspace.
         if (file.Length > FileBrowserLimits.MaxFileBytes)
         {
-            return StatusCode(StatusCodes.Status413PayloadTooLarge, new { error = "file_too_large", code = "file_too_large", threadId });
+            return StatusCode(
+                StatusCodes.Status413PayloadTooLarge,
+                new
+                {
+                    error = "file_too_large",
+                    code = "file_too_large",
+                    threadId,
+                }
+            );
         }
 
         var session = context.Session!;
@@ -281,11 +373,19 @@ public sealed class FileBrowserController(
 
             if (target.Type != SandboxEntryType.Directory)
             {
-                return BadRequest(new { error = "not_a_directory", code = "not_a_directory", threadId });
+                return BadRequest(
+                    new
+                    {
+                        error = "not_a_directory",
+                        code = "not_a_directory",
+                        threadId,
+                    }
+                );
             }
 
             var relativeDestination = string.Join('/', destSegments);
-            var serverPath = target.ServerPath.Length == 0 ? relativeDestination : $"{target.ServerPath}/{relativeDestination}";
+            var serverPath =
+                target.ServerPath.Length == 0 ? relativeDestination : $"{target.ServerPath}/{relativeDestination}";
 
             // Folder upload: create the validated parent chain ONE component at a time, rejecting any symlink or
             // file component, then guard the leaf the same way. A plain `mkdir -p` would silently FOLLOW a symlink
@@ -293,13 +393,25 @@ public sealed class FileBrowserController(
             // the chain against the authoritative listing prevents that. Flat uploads keep their single write.
             if (!string.IsNullOrEmpty(relativePath))
             {
-                var chain = await EnsureDirectoryChainAsync(session.SessionId, target.ServerPath, destSegments[..^1], threadId, ct);
+                var chain = await EnsureDirectoryChainAsync(
+                    session.SessionId,
+                    target.ServerPath,
+                    destSegments[..^1],
+                    threadId,
+                    ct
+                );
                 if (!chain.Ok)
                 {
                     return chain.Error!;
                 }
 
-                var leafConflict = await RejectNonFileLeafAsync(session.SessionId, chain.FinalDir, destSegments[^1], threadId, ct);
+                var leafConflict = await RejectNonFileLeafAsync(
+                    session.SessionId,
+                    chain.FinalDir,
+                    destSegments[^1],
+                    threadId,
+                    ct
+                );
                 if (leafConflict is not null)
                 {
                     return leafConflict;
@@ -309,7 +421,15 @@ public sealed class FileBrowserController(
             var bytes = await ReadUploadWithinCapAsync(file, ct);
             if (bytes is null)
             {
-                return StatusCode(StatusCodes.Status413PayloadTooLarge, new { error = "file_too_large", code = "file_too_large", threadId });
+                return StatusCode(
+                    StatusCodes.Status413PayloadTooLarge,
+                    new
+                    {
+                        error = "file_too_large",
+                        code = "file_too_large",
+                        threadId,
+                    }
+                );
             }
 
             await fileBrowser.WriteWorkspaceFileBytesAsync(session.SessionId, serverPath, bytes, ct);
@@ -318,7 +438,14 @@ public sealed class FileBrowserController(
         }
         catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Conflict)
         {
-            return Conflict(new { error = "target_busy", code = "target_busy", threadId });
+            return Conflict(
+                new
+                {
+                    error = "target_busy",
+                    code = "target_busy",
+                    threadId,
+                }
+            );
         }
         catch (SandboxException ex)
         {
@@ -333,7 +460,12 @@ public sealed class FileBrowserController(
     /// symlink is a conflict (never followed, unlike a plain <c>mkdir -p</c>).
     /// </summary>
     [HttpPost("directory")]
-    public async Task<IActionResult> CreateDirectory(string threadId, [FromQuery] string? path, [FromBody] CreateDirectoryRequest? request, CancellationToken ct)
+    public async Task<IActionResult> CreateDirectory(
+        string threadId,
+        [FromQuery] string? path,
+        [FromBody] CreateDirectoryRequest? request,
+        CancellationToken ct
+    )
     {
         var context = await ResolveSessionAsync(threadId, AccessAction.Write, isListing: false, ct);
         if (!context.Ok)
@@ -346,7 +478,14 @@ public sealed class FileBrowserController(
         var name = request?.Name;
         if (name is null || !IsValidBaseName(name))
         {
-            return BadRequest(new { error = "invalid_folder_name", code = "invalid_folder_name", threadId });
+            return BadRequest(
+                new
+                {
+                    error = "invalid_folder_name",
+                    code = "invalid_folder_name",
+                    threadId,
+                }
+            );
         }
 
         var session = context.Session!;
@@ -360,7 +499,14 @@ public sealed class FileBrowserController(
 
             if (target.Type != SandboxEntryType.Directory)
             {
-                return BadRequest(new { error = "not_a_directory", code = "not_a_directory", threadId });
+                return BadRequest(
+                    new
+                    {
+                        error = "not_a_directory",
+                        code = "not_a_directory",
+                        threadId,
+                    }
+                );
             }
 
             var dirPath = target.ServerPath.Length == 0 ? name : $"{target.ServerPath}/{name}";
@@ -374,19 +520,37 @@ public sealed class FileBrowserController(
                 .ToList();
             if (existing.Count > 1)
             {
-                return BadRequest(new { error = "ambiguous_path", code = "ambiguous_path", threadId });
+                return BadRequest(
+                    new
+                    {
+                        error = "ambiguous_path",
+                        code = "ambiguous_path",
+                        threadId,
+                    }
+                );
             }
 
             if (existing.Count == 1)
             {
                 return existing[0].Type == SandboxEntryType.Directory
                     ? Ok(new CreateDirectoryResultDto(dirPath))
-                    : Conflict(new { error = "path_conflict", code = "path_conflict", threadId });
+                    : Conflict(
+                        new
+                        {
+                            error = "path_conflict",
+                            code = "path_conflict",
+                            threadId,
+                        }
+                    );
             }
 
             // A single `mkdir --` under the verified-real parent; `--` keeps a leading-dash name an operand.
             string[] argv = ["mkdir", "--", dirPath];
-            var result = await fileBrowser.ExecuteWorkspaceCommandAsync(session.SessionId, new SandboxCommand(argv), ct);
+            var result = await fileBrowser.ExecuteWorkspaceCommandAsync(
+                session.SessionId,
+                new SandboxCommand(argv),
+                ct
+            );
             if (result.ExitCode != 0)
             {
                 logger.LogWarning(
@@ -395,7 +559,15 @@ public sealed class FileBrowserController(
                     result.ExitCode,
                     PathDepth(dirPath)
                 );
-                return UnprocessableEntity(new { error = "create_directory_failed", code = "create_directory_failed", exitCode = result.ExitCode, threadId });
+                return UnprocessableEntity(
+                    new
+                    {
+                        error = "create_directory_failed",
+                        code = "create_directory_failed",
+                        exitCode = result.ExitCode,
+                        threadId,
+                    }
+                );
             }
 
             logger.LogInformation(
@@ -407,7 +579,14 @@ public sealed class FileBrowserController(
         }
         catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Conflict)
         {
-            return Conflict(new { error = "target_busy", code = "target_busy", threadId });
+            return Conflict(
+                new
+                {
+                    error = "target_busy",
+                    code = "target_busy",
+                    threadId,
+                }
+            );
         }
         catch (SandboxException ex)
         {
@@ -436,16 +615,28 @@ public sealed class FileBrowserController(
 
             if (target.ServerPath.Length == 0)
             {
-                return BadRequest(new { error = "cannot_delete_root", code = "cannot_delete_root", threadId });
+                return BadRequest(
+                    new
+                    {
+                        error = "cannot_delete_root",
+                        code = "cannot_delete_root",
+                        threadId,
+                    }
+                );
             }
 
             // Build the argv SOLELY from the server-returned final type. `--` terminates option parsing so a
             // leading-dash name is an operand, never a flag.
-            string[] argv = target.Type == SandboxEntryType.Directory
-                ? ["rm", "-r", "--", target.ServerPath]
-                : ["rm", "--", target.ServerPath];
+            string[] argv =
+                target.Type == SandboxEntryType.Directory
+                    ? ["rm", "-r", "--", target.ServerPath]
+                    : ["rm", "--", target.ServerPath];
 
-            var result = await fileBrowser.ExecuteWorkspaceCommandAsync(session.SessionId, new SandboxCommand(argv), ct);
+            var result = await fileBrowser.ExecuteWorkspaceCommandAsync(
+                session.SessionId,
+                new SandboxCommand(argv),
+                ct
+            );
             if (result.ExitCode != 0)
             {
                 logger.LogWarning(
@@ -455,7 +646,15 @@ public sealed class FileBrowserController(
                     result.ExitCode,
                     target.ServerPath
                 );
-                return UnprocessableEntity(new { error = "delete_failed", code = "delete_failed", exitCode = result.ExitCode, threadId });
+                return UnprocessableEntity(
+                    new
+                    {
+                        error = "delete_failed",
+                        code = "delete_failed",
+                        exitCode = result.ExitCode,
+                        threadId,
+                    }
+                );
             }
 
             logger.LogInformation(
@@ -498,7 +697,12 @@ public sealed class FileBrowserController(
     /// <param name="action">What this route does to the conversation: read for content, write for changes.</param>
     /// <param name="isListing">Whether a missing sandbox session is a 200 state (listing) or a 409.</param>
     /// <param name="ct">Cancellation token.</param>
-    private async Task<SessionContext> ResolveSessionAsync(string threadId, AccessAction action, bool isListing, CancellationToken ct)
+    private async Task<SessionContext> ResolveSessionAsync(
+        string threadId,
+        AccessAction action,
+        bool isListing,
+        CancellationToken ct
+    )
     {
         var metadata = await store.LoadMetadataAsync(threadId, ct);
 
@@ -541,7 +745,15 @@ public sealed class FileBrowserController(
                 false,
                 null,
                 workspaceId,
-                StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "sandbox_unavailable", code = "sandbox_unavailable", threadId }),
+                StatusCode(
+                    StatusCodes.Status503ServiceUnavailable,
+                    new
+                    {
+                        error = "sandbox_unavailable",
+                        code = "sandbox_unavailable",
+                        threadId,
+                    }
+                ),
                 false
             );
         }
@@ -563,7 +775,14 @@ public sealed class FileBrowserController(
                     false,
                     null,
                     workspaceId,
-                    Conflict(new { error = "caller_credential_conflict", code = "caller_credential_conflict", threadId }),
+                    Conflict(
+                        new
+                        {
+                            error = "caller_credential_conflict",
+                            code = "caller_credential_conflict",
+                            threadId,
+                        }
+                    ),
                     false
                 );
             case SandboxSessionResolutionOutcome.NoSession:
@@ -576,7 +795,20 @@ public sealed class FileBrowserController(
 
     /// <summary>The one 404 both the missing-row branch and an existence-hiding refusal answer with.</summary>
     private SessionContext UnknownThreadContext(string threadId) =>
-        new(false, null, null, NotFound(new { error = "unknown_thread", code = "unknown_thread", threadId }), false);
+        new(
+            false,
+            null,
+            null,
+            NotFound(
+                new
+                {
+                    error = "unknown_thread",
+                    code = "unknown_thread",
+                    threadId,
+                }
+            ),
+            false
+        );
 
     /// <summary>
     /// Turns one refused decision into the response that carries it.
@@ -616,7 +848,15 @@ public sealed class FileBrowserController(
             false,
             null,
             null,
-            StatusCode(StatusCodes.Status403Forbidden, new { error = "forbidden", code = access.Reason, threadId }),
+            StatusCode(
+                StatusCodes.Status403Forbidden,
+                new
+                {
+                    error = "forbidden",
+                    code = access.Reason,
+                    threadId,
+                }
+            ),
             false
         );
     }
@@ -706,24 +946,81 @@ public sealed class FileBrowserController(
     private IActionResult ResolveFailureResult(ResolveFailure failure, string threadId) =>
         failure switch
         {
-            ResolveFailure.NotFound => NotFound(new { error = "not_found", code = "not_found", threadId }),
-            ResolveFailure.Ambiguous => BadRequest(new { error = "ambiguous_path", code = "ambiguous_path", threadId }),
-            ResolveFailure.NotADirectory => BadRequest(new { error = "not_a_directory", code = "not_a_directory", threadId }),
-            _ => BadRequest(new { error = "invalid_path", code = "invalid_path", threadId }),
+            ResolveFailure.NotFound => NotFound(
+                new
+                {
+                    error = "not_found",
+                    code = "not_found",
+                    threadId,
+                }
+            ),
+            ResolveFailure.Ambiguous => BadRequest(
+                new
+                {
+                    error = "ambiguous_path",
+                    code = "ambiguous_path",
+                    threadId,
+                }
+            ),
+            ResolveFailure.NotADirectory => BadRequest(
+                new
+                {
+                    error = "not_a_directory",
+                    code = "not_a_directory",
+                    threadId,
+                }
+            ),
+            _ => BadRequest(
+                new
+                {
+                    error = "invalid_path",
+                    code = "invalid_path",
+                    threadId,
+                }
+            ),
         };
 
     private IActionResult MapSandbox(SandboxException ex, string threadId)
     {
         if (string.Equals(ex.ErrorCode, "session_not_found", StringComparison.Ordinal))
         {
-            return Conflict(new { error = "session_expired", code = "session_expired", threadId });
+            return Conflict(
+                new
+                {
+                    error = "session_expired",
+                    code = "session_expired",
+                    threadId,
+                }
+            );
         }
 
         return ex.Kind switch
         {
-            SandboxErrorKind.NotFound => NotFound(new { error = "not_found", code = "not_found", threadId }),
-            SandboxErrorKind.Conflict => Conflict(new { error = "target_busy", code = "target_busy", threadId }),
-            _ => StatusCode(StatusCodes.Status502BadGateway, new { error = "gateway_error", code = "gateway_error", threadId }),
+            SandboxErrorKind.NotFound => NotFound(
+                new
+                {
+                    error = "not_found",
+                    code = "not_found",
+                    threadId,
+                }
+            ),
+            SandboxErrorKind.Conflict => Conflict(
+                new
+                {
+                    error = "target_busy",
+                    code = "target_busy",
+                    threadId,
+                }
+            ),
+            _ => StatusCode(
+                StatusCodes.Status502BadGateway,
+                new
+                {
+                    error = "gateway_error",
+                    code = "gateway_error",
+                    threadId,
+                }
+            ),
         };
     }
 
@@ -743,8 +1040,10 @@ public sealed class FileBrowserController(
 
     private static string? ReadWorkspaceId(ThreadMetadata metadata)
     {
-        if (metadata.Properties is null
-            || !metadata.Properties.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var value))
+        if (
+            metadata.Properties is null
+            || !metadata.Properties.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var value)
+        )
         {
             return null;
         }
@@ -843,7 +1142,13 @@ public sealed class FileBrowserController(
     /// a folder-upload relative path can never be written through a symlink out of the resolved directory. The
     /// residual create-then-write atomicity boundary is tracked separately by #213.
     /// </summary>
-    private async Task<DirectoryChainResult> EnsureDirectoryChainAsync(string sessionId, string baseDir, IReadOnlyList<string> segments, string threadId, CancellationToken ct)
+    private async Task<DirectoryChainResult> EnsureDirectoryChainAsync(
+        string sessionId,
+        string baseDir,
+        IReadOnlyList<string> segments,
+        string threadId,
+        CancellationToken ct
+    )
     {
         var currentDir = baseDir;
         for (var i = 0; i < segments.Count; i++)
@@ -857,14 +1162,32 @@ public sealed class FileBrowserController(
 
             if (matches.Count > 1)
             {
-                return DirectoryChainResult.Fail(BadRequest(new { error = "ambiguous_path", code = "ambiguous_path", threadId }));
+                return DirectoryChainResult.Fail(
+                    BadRequest(
+                        new
+                        {
+                            error = "ambiguous_path",
+                            code = "ambiguous_path",
+                            threadId,
+                        }
+                    )
+                );
             }
 
             if (matches.Count == 1)
             {
                 if (matches[0].Type != SandboxEntryType.Directory)
                 {
-                    return DirectoryChainResult.Fail(Conflict(new { error = "path_conflict", code = "path_conflict", threadId }));
+                    return DirectoryChainResult.Fail(
+                        Conflict(
+                            new
+                            {
+                                error = "path_conflict",
+                                code = "path_conflict",
+                                threadId,
+                            }
+                        )
+                    );
                 }
             }
             else
@@ -879,7 +1202,17 @@ public sealed class FileBrowserController(
                         result.ExitCode,
                         PathDepth(nextDir)
                     );
-                    return DirectoryChainResult.Fail(UnprocessableEntity(new { error = "mkdir_failed", code = "mkdir_failed", exitCode = result.ExitCode, threadId }));
+                    return DirectoryChainResult.Fail(
+                        UnprocessableEntity(
+                            new
+                            {
+                                error = "mkdir_failed",
+                                code = "mkdir_failed",
+                                exitCode = result.ExitCode,
+                                threadId,
+                            }
+                        )
+                    );
                 }
             }
 
@@ -894,7 +1227,13 @@ public sealed class FileBrowserController(
     /// but a symlink or directory at the destination is rejected so a write is never followed through a symlink
     /// or made to clobber a directory. Returns a conflict result to short-circuit, or <c>null</c> to proceed.
     /// </summary>
-    private async Task<IActionResult?> RejectNonFileLeafAsync(string sessionId, string parentDir, string leaf, string threadId, CancellationToken ct)
+    private async Task<IActionResult?> RejectNonFileLeafAsync(
+        string sessionId,
+        string parentDir,
+        string leaf,
+        string threadId,
+        CancellationToken ct
+    )
     {
         var entries = await fileBrowser.ListWorkspaceDirectoryAsync(sessionId, parentDir, ct);
         var matches = entries
@@ -907,12 +1246,26 @@ public sealed class FileBrowserController(
 
         if (matches.Count > 1)
         {
-            return BadRequest(new { error = "ambiguous_path", code = "ambiguous_path", threadId });
+            return BadRequest(
+                new
+                {
+                    error = "ambiguous_path",
+                    code = "ambiguous_path",
+                    threadId,
+                }
+            );
         }
 
         return matches[0].Type == SandboxEntryType.File
             ? null
-            : Conflict(new { error = "path_conflict", code = "path_conflict", threadId });
+            : Conflict(
+                new
+                {
+                    error = "path_conflict",
+                    code = "path_conflict",
+                    threadId,
+                }
+            );
     }
 
     /// <summary>The number of '/'-separated components in a workspace-relative server path (0 for the root). Content-free metadata for logs.</summary>

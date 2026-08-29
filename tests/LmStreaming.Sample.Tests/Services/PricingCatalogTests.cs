@@ -37,23 +37,27 @@ public class PricingCatalogTests
         return services.BuildServiceProvider().GetRequiredService<IPricingResolver>();
     }
 
-    private static UsageRecord Observation(string effectiveModel, long input, long output) => new()
-    {
-        LogicalCallId = "call-1",
-        ProviderAttemptId = "attempt-1",
-        RootConversationId = "conv-1",
-        RequestedModel = effectiveModel,
-        EffectiveModel = effectiveModel,
-        InputTokens = input,
-        OutputTokens = output,
-    };
+    private static UsageRecord Observation(string effectiveModel, long input, long output) =>
+        new()
+        {
+            LogicalCallId = "call-1",
+            ProviderAttemptId = "attempt-1",
+            RootConversationId = "conv-1",
+            RequestedModel = effectiveModel,
+            EffectiveModel = effectiveModel,
+            InputTokens = input,
+            OutputTokens = output,
+        };
 
     [Fact]
     public void AReviewRunsUsageRecord_CarriesACostWhenTheHostConfiguresTheModelItRan()
     {
-        var resolver = ResolverFrom(Config(
-            ("Pricing:Models:claude-sonnet-4-5:PromptPerMillion", "3"),
-            ("Pricing:Models:claude-sonnet-4-5:CompletionPerMillion", "15")));
+        var resolver = ResolverFrom(
+            Config(
+                ("Pricing:Models:claude-sonnet-4-5:PromptPerMillion", "3"),
+                ("Pricing:Models:claude-sonnet-4-5:CompletionPerMillion", "15")
+            )
+        );
         var ledger = new UsageLedger("conv-1", resolver);
 
         var record = ledger.UpsertAttempt(Observation("claude-sonnet-4-5", 1_000_000, 200_000));
@@ -66,10 +70,13 @@ public class PricingCatalogTests
     [Fact]
     public void TheConfiguredCatalogVersion_IsStampedOnEveryResolvedRate()
     {
-        var resolver = ResolverFrom(Config(
-            ("Pricing:Version", "2026-08-01"),
-            ("Pricing:Models:claude-sonnet-4-5:PromptPerMillion", "3"),
-            ("Pricing:Models:claude-sonnet-4-5:CompletionPerMillion", "15")));
+        var resolver = ResolverFrom(
+            Config(
+                ("Pricing:Version", "2026-08-01"),
+                ("Pricing:Models:claude-sonnet-4-5:PromptPerMillion", "3"),
+                ("Pricing:Models:claude-sonnet-4-5:CompletionPerMillion", "15")
+            )
+        );
 
         var pricing = resolver.Resolve("claude-sonnet-4-5");
 
@@ -84,10 +91,13 @@ public class PricingCatalogTests
     [Fact]
     public void AModelStampedUnderAnAliasStillResolves()
     {
-        var resolver = ResolverFrom(Config(
-            ("Pricing:Models:claude-sonnet-4-5:PromptPerMillion", "3"),
-            ("Pricing:Models:claude-sonnet-4-5:CompletionPerMillion", "15"),
-            ("Pricing:Models:claude-sonnet-4-5:Aliases:0", "anthropic/claude-sonnet-4.5")));
+        var resolver = ResolverFrom(
+            Config(
+                ("Pricing:Models:claude-sonnet-4-5:PromptPerMillion", "3"),
+                ("Pricing:Models:claude-sonnet-4-5:CompletionPerMillion", "15"),
+                ("Pricing:Models:claude-sonnet-4-5:Aliases:0", "anthropic/claude-sonnet-4.5")
+            )
+        );
 
         // A usage record carries only the effective model id, and the id a host stamps is frequently the
         // provider's name for the model rather than the catalog key. A catalog that indexes only the key
@@ -99,9 +109,12 @@ public class PricingCatalogTests
     [Fact]
     public void AnUnconfiguredModel_ResolvesToUnavailable_NotToZero()
     {
-        var resolver = ResolverFrom(Config(
-            ("Pricing:Models:claude-sonnet-4-5:PromptPerMillion", "3"),
-            ("Pricing:Models:claude-sonnet-4-5:CompletionPerMillion", "15")));
+        var resolver = ResolverFrom(
+            Config(
+                ("Pricing:Models:claude-sonnet-4-5:PromptPerMillion", "3"),
+                ("Pricing:Models:claude-sonnet-4-5:CompletionPerMillion", "15")
+            )
+        );
         var ledger = new UsageLedger("conv-1", resolver);
 
         // Flat-rate ids (Copilot) carry no public per-token price. "Unavailable" is the correct state; a
@@ -115,8 +128,7 @@ public class PricingCatalogTests
     [Fact]
     public void AnEntryMissingHalfItsRate_IsSkipped_RatherThanPricedAtZeroForTheMissingHalf()
     {
-        var resolver = ResolverFrom(Config(
-            ("Pricing:Models:partial:PromptPerMillion", "2.5")));
+        var resolver = ResolverFrom(Config(("Pricing:Models:partial:PromptPerMillion", "2.5")));
 
         resolver.Resolve("partial").Should().BeNull();
     }
@@ -127,9 +139,12 @@ public class PricingCatalogTests
     [InlineData("-3", "-15")]
     public void ANegativeRate_IsSkipped_RatherThanSummedIntoANegativeCost(string prompt, string completion)
     {
-        var resolver = ResolverFrom(Config(
-            ("Pricing:Models:typo:PromptPerMillion", prompt),
-            ("Pricing:Models:typo:CompletionPerMillion", completion)));
+        var resolver = ResolverFrom(
+            Config(
+                ("Pricing:Models:typo:PromptPerMillion", prompt),
+                ("Pricing:Models:typo:CompletionPerMillion", completion)
+            )
+        );
 
         // #378 shipped with no rates in the repository precisely so a wrong number can never be summed and
         // believed. An operator's stray minus sign reintroduces exactly that: a cost that is reported, and
@@ -143,13 +158,14 @@ public class PricingCatalogTests
     [InlineData("Infinity", "15")]
     [InlineData("3", "Infinity")]
     [InlineData("-Infinity", "15")]
-    public void ANonFiniteRate_IsSkipped_RatherThanOverflowingTheConversionToDecimal(
-        string prompt,
-        string completion)
+    public void ANonFiniteRate_IsSkipped_RatherThanOverflowingTheConversionToDecimal(string prompt, string completion)
     {
-        var resolver = ResolverFrom(Config(
-            ("Pricing:Models:stray-e:PromptPerMillion", prompt),
-            ("Pricing:Models:stray-e:CompletionPerMillion", completion)));
+        var resolver = ResolverFrom(
+            Config(
+                ("Pricing:Models:stray-e:PromptPerMillion", prompt),
+                ("Pricing:Models:stray-e:CompletionPerMillion", completion)
+            )
+        );
 
         // NaN and infinity have no decimal representation, so PricingConfigResolver's (decimal) cast throws
         // OverflowException — one mistyped rate takes down pricing for every model the host runs, not just
@@ -165,18 +181,22 @@ public class PricingCatalogTests
     [InlineData("-Infinity", "15")]
     public void ANonFiniteRate_IsRefusedByTheCatalogItself_NotOnlyByTheResolverDownstream(
         string prompt,
-        string completion)
+        string completion
+    )
     {
         // The sibling test above asserts through PricingConfigResolver, which discards a non-finite rate for
         // reasons of its OWN: its ambiguity check compares candidate rates with `==`, and NaN != NaN, so a
         // NaN reaching the resolver is dropped as "ambiguous" whatever BuildCatalog decided. A rule pinned
         // only there is pinned to somebody else's accident (#431). This asserts the drop where the decision
         // is actually made, so BuildCatalog's own refusal survives a change to the resolver.
-        var catalog = PricingCatalog.BuildCatalog(Config(
-            ("Pricing:Models:stray-e:PromptPerMillion", prompt),
-            ("Pricing:Models:stray-e:CompletionPerMillion", completion),
-            ("Pricing:Models:sound:PromptPerMillion", "3"),
-            ("Pricing:Models:sound:CompletionPerMillion", "15")));
+        var catalog = PricingCatalog.BuildCatalog(
+            Config(
+                ("Pricing:Models:stray-e:PromptPerMillion", prompt),
+                ("Pricing:Models:stray-e:CompletionPerMillion", completion),
+                ("Pricing:Models:sound:PromptPerMillion", "3"),
+                ("Pricing:Models:sound:CompletionPerMillion", "15")
+            )
+        );
 
         // Which row pins which conjunct, so a later reader does not over-claim: the INFINITY rows are what
         // distinguish `double.IsFinite` — delete it and +Infinity sails through `value >= 0`, turning these
@@ -195,9 +215,12 @@ public class PricingCatalogTests
     [Fact]
     public void AZeroRate_IsAFreeModel_AndMustStillResolve()
     {
-        var resolver = ResolverFrom(Config(
-            ("Pricing:Models:free-model:PromptPerMillion", "0"),
-            ("Pricing:Models:free-model:CompletionPerMillion", "0")));
+        var resolver = ResolverFrom(
+            Config(
+                ("Pricing:Models:free-model:PromptPerMillion", "0"),
+                ("Pricing:Models:free-model:CompletionPerMillion", "0")
+            )
+        );
         var ledger = new UsageLedger("conv-1", resolver);
 
         // The case most likely to be broken by an over-eager "reject falsy rates" fix. Zero is a real,
@@ -217,9 +240,9 @@ public class PricingCatalogTests
         var sink = new CapturingLoggerProvider();
         var services = new ServiceCollection();
         _ = services.AddLogging(b => b.AddProvider(sink));
-        _ = services.AddConfiguredPricing(Config(
-            ("Pricing:Models:typo:PromptPerMillion", "-3"),
-            ("Pricing:Models:typo:CompletionPerMillion", "15")));
+        _ = services.AddConfiguredPricing(
+            Config(("Pricing:Models:typo:PromptPerMillion", "-3"), ("Pricing:Models:typo:CompletionPerMillion", "15"))
+        );
 
         _ = services.BuildServiceProvider().GetRequiredService<IPricingResolver>();
 
@@ -249,7 +272,8 @@ public class PricingCatalogTests
                 EventId eventId,
                 TState state,
                 Exception? exception,
-                Func<TState, Exception?, string> formatter)
+                Func<TState, Exception?, string> formatter
+            )
             {
                 lock (messages)
                 {
@@ -273,9 +297,12 @@ public class PricingCatalogTests
     {
         var services = new ServiceCollection();
         _ = services.AddLogging();
-        _ = services.AddConfiguredPricing(Config(
-            ("Pricing:Models:claude-sonnet-4-5:PromptPerMillion", "3"),
-            ("Pricing:Models:claude-sonnet-4-5:CompletionPerMillion", "15")));
+        _ = services.AddConfiguredPricing(
+            Config(
+                ("Pricing:Models:claude-sonnet-4-5:PromptPerMillion", "3"),
+                ("Pricing:Models:claude-sonnet-4-5:CompletionPerMillion", "15")
+            )
+        );
 
         var catalog = services.BuildServiceProvider().GetRequiredService<IOptions<AppConfig>>().Value;
 
@@ -285,13 +312,16 @@ public class PricingCatalogTests
     [Fact]
     public void OneNamePricedTwoWays_IsDropped_RatherThanResolvedToWhicheverCameFirst()
     {
-        var resolver = ResolverFrom(Config(
-            ("Pricing:Models:model-a:PromptPerMillion", "3"),
-            ("Pricing:Models:model-a:CompletionPerMillion", "15"),
-            ("Pricing:Models:model-a:Aliases:0", "shared-name"),
-            ("Pricing:Models:model-b:PromptPerMillion", "1"),
-            ("Pricing:Models:model-b:CompletionPerMillion", "5"),
-            ("Pricing:Models:model-b:Aliases:0", "shared-name")));
+        var resolver = ResolverFrom(
+            Config(
+                ("Pricing:Models:model-a:PromptPerMillion", "3"),
+                ("Pricing:Models:model-a:CompletionPerMillion", "15"),
+                ("Pricing:Models:model-a:Aliases:0", "shared-name"),
+                ("Pricing:Models:model-b:PromptPerMillion", "1"),
+                ("Pricing:Models:model-b:CompletionPerMillion", "5"),
+                ("Pricing:Models:model-b:Aliases:0", "shared-name")
+            )
+        );
 
         // A confident wrong cost is worse than an absent one: it is summed, reported and believed. The
         // unambiguously-priced ids either side of the conflict still resolve.

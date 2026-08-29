@@ -79,7 +79,10 @@ public sealed class OpenAiResponsesAgentGenerationIdTests
         const string runGenerationId = "run-gen-ABC";
         const string opaqueResponseId = "resp_OPAQUE_xyz";
 
-        using var agent = new OpenAiResponsesAgent("test", new ScriptedClient(FunctionCallStreamWithResponseId(opaqueResponseId)));
+        using var agent = new OpenAiResponsesAgent(
+            "test",
+            new ScriptedClient(FunctionCallStreamWithResponseId(opaqueResponseId))
+        );
         var stream = await agent.GenerateReplyStreamingAsync(
             [new TextMessage { Role = Role.User, Text = "go" }],
             new GenerateReplyOptions { GenerationId = runGenerationId }
@@ -105,7 +108,10 @@ public sealed class OpenAiResponsesAgentGenerationIdTests
     public async Task Falls_back_to_synthetic_generation_id_when_options_have_none()
     {
         // When the run advertises no GenerationId, the provider's own id remains (no behavior change).
-        using var agent = new OpenAiResponsesAgent("test", new ScriptedClient(FunctionCallStreamWithResponseId("resp_X")));
+        using var agent = new OpenAiResponsesAgent(
+            "test",
+            new ScriptedClient(FunctionCallStreamWithResponseId("resp_X"))
+        );
         var stream = await agent.GenerateReplyStreamingAsync([new TextMessage { Role = Role.User, Text = "go" }]);
 
         var toolCalls = new List<ToolsCallMessage>();

@@ -49,16 +49,33 @@ public class WorkflowControllerTranscriptResilienceTests
         var store = new InMemoryConversationStore();
         var logger = new ListLogger();
 
-        var before = Row(new TextMessage { Text = "before corrupt", Role = Role.User, RunId = RunId }, threadId, 1);
+        var before = Row(
+            new TextMessage
+            {
+                Text = "before corrupt",
+                Role = Role.User,
+                RunId = RunId,
+            },
+            threadId,
+            1
+        );
         var corrupt = before with { Id = "corrupt-record-1", Timestamp = 2, MessageJson = CorruptJson };
-        var after = Row(new TextMessage { Text = "after corrupt", Role = Role.Assistant, RunId = RunId }, threadId, 3);
+        var after = Row(
+            new TextMessage
+            {
+                Text = "after corrupt",
+                Role = Role.Assistant,
+                RunId = RunId,
+            },
+            threadId,
+            3
+        );
 
         await store.AppendMessagesAsync(threadId, [before, corrupt, after]);
 
         var transcript = await EndpointFor(threadId, store, logger).GetTranscriptAsync();
 
-        transcript.OfType<TextMessage>().Select(m => m.Text)
-            .Should().Equal(["before corrupt", "after corrupt"]);
+        transcript.OfType<TextMessage>().Select(m => m.Text).Should().Equal(["before corrupt", "after corrupt"]);
         // Exactly the two healthy siblings — the corrupt row contributes nothing, not even a placeholder.
         transcript.Should().HaveCount(2);
 
@@ -72,8 +89,7 @@ public class WorkflowControllerTranscriptResilienceTests
     // only reconciles results against calls (or only the reverse) passes one of these and no-ops on the other.
     [InlineData(true)]
     [InlineData(false)]
-    public async Task GetTranscriptAsync_ReturnsNeitherHalfOfAToolPair_WhenEitherHalfIsCorrupt(
-        bool corruptTheCall)
+    public async Task GetTranscriptAsync_ReturnsNeitherHalfOfAToolPair_WhenEitherHalfIsCorrupt(bool corruptTheCall)
     {
         // ORIGIN A — corruption. A tool call and its result are TWO separate persisted rows
         // (MessagePersistenceConverter is strictly 1:1), so the per-record skip ORPHANS the partner of the
@@ -83,7 +99,16 @@ public class WorkflowControllerTranscriptResilienceTests
         var threadId = $"wf-transcript-corrupt-{(corruptTheCall ? "call" : "result")}";
         var store = new InMemoryConversationStore();
 
-        var text = Row(new TextMessage { Text = HealthyText, Role = Role.User, RunId = RunId }, threadId, 1);
+        var text = Row(
+            new TextMessage
+            {
+                Text = HealthyText,
+                Role = Role.User,
+                RunId = RunId,
+            },
+            threadId,
+            1
+        );
         var callRow = Row(CallMessage(), threadId, 2);
         var resultRow = Row(ResultMessage(), threadId, 3);
 
@@ -107,7 +132,8 @@ public class WorkflowControllerTranscriptResilienceTests
     [InlineData(true)] // the RESULT row was never written — a dangling tool_use
     [InlineData(false)] // the CALL row was never written — a dangling tool_result
     public async Task GetTranscriptAsync_DropsAnUnpairedToolMessage_WhenItsPartnerRowIsSimplyAbsent(
-        bool resultRowAbsent)
+        bool resultRowAbsent
+    )
     {
         // ORIGIN B — no corruption anywhere. MultiTurnAgentBase.PersistMessageAsync appends one row at a
         // time and SWALLOWS an append failure, so a lost append leaves a permanently half-written tool
@@ -118,7 +144,16 @@ public class WorkflowControllerTranscriptResilienceTests
         var store = new InMemoryConversationStore();
         var logger = new ListLogger();
 
-        var text = Row(new TextMessage { Text = HealthyText, Role = Role.User, RunId = RunId }, threadId, 1);
+        var text = Row(
+            new TextMessage
+            {
+                Text = HealthyText,
+                Role = Role.User,
+                RunId = RunId,
+            },
+            threadId,
+            1
+        );
         var survivingHalf = Row(resultRowAbsent ? CallMessage() : ResultMessage(), threadId, 2);
 
         // The partner row is simply never appended.
@@ -149,9 +184,23 @@ public class WorkflowControllerTranscriptResilienceTests
         var store = new InMemoryConversationStore();
         var logger = new ListLogger();
 
-        var healthy = Row(new TextMessage { Text = HealthyText, Role = Role.User, RunId = RunId }, threadId, 1);
+        var healthy = Row(
+            new TextMessage
+            {
+                Text = HealthyText,
+                Role = Role.User,
+                RunId = RunId,
+            },
+            threadId,
+            1
+        );
         // Unreadable #1: a damaged row with no tool pairing involved at all.
-        var corruptText = healthy with { Id = "corrupt-record-1", Timestamp = 2, MessageJson = CorruptJson };
+        var corruptText = healthy with
+        {
+            Id = "corrupt-record-1",
+            Timestamp = 2,
+            MessageJson = CorruptJson,
+        };
         // Unreadable #2 is the result; the perfectly readable call it answers is then the UNPAIRED one, so
         // the two terms are produced by genuinely different mechanisms rather than counted twice.
         var callRow = Row(CallMessage(), threadId, 3);
@@ -162,8 +211,7 @@ public class WorkflowControllerTranscriptResilienceTests
         var transcript = await EndpointFor(threadId, store, logger).GetTranscriptAsync();
 
         // Positive control: the summary is only meaningful if the read itself behaved as claimed.
-        transcript.OfType<TextMessage>().Select(m => m.Text)
-            .Should().ContainSingle().Which.Should().Be(HealthyText);
+        transcript.OfType<TextMessage>().Select(m => m.Text).Should().ContainSingle().Which.Should().Be(HealthyText);
         transcript.Should().HaveCount(1);
 
         AssertDropSummary(logger, restored: 1, attempted: 4, unreadable: 2, unpaired: 1);
@@ -182,10 +230,20 @@ public class WorkflowControllerTranscriptResilienceTests
         await store.AppendMessagesAsync(
             threadId,
             [
-                Row(new TextMessage { Text = HealthyText, Role = Role.User, RunId = RunId }, threadId, 1),
+                Row(
+                    new TextMessage
+                    {
+                        Text = HealthyText,
+                        Role = Role.User,
+                        RunId = RunId,
+                    },
+                    threadId,
+                    1
+                ),
                 Row(CallMessage(), threadId, 2),
                 Row(ResultMessage(), threadId, 3),
-            ]);
+            ]
+        );
 
         var transcript = await EndpointFor(threadId, store, logger).GetTranscriptAsync();
 
@@ -205,19 +263,13 @@ public class WorkflowControllerTranscriptResilienceTests
     ///     dropping either term of the guard turns one of them RED. The (0, N) direction is the load-bearing
     ///     one: that origin fires <c>onSkipped</c> zero times, so the summary is its only report.
     /// </remarks>
-    private static void AssertDropSummary(
-        ListLogger logger,
-        int restored,
-        int attempted,
-        int unreadable,
-        int unpaired)
+    private static void AssertDropSummary(ListLogger logger, int restored, int attempted, int unreadable, int unpaired)
     {
-        var summary = logger.Entries.Should()
+        var summary = logger
+            .Entries.Should()
             .ContainSingle(e => e.Message.Contains("persisted records for the workflow controller transcript"))
             .Which;
-        summary.Level.Should().Be(
-            LogLevel.Warning,
-            "records were dropped, so the summary must not sit at Information");
+        summary.Level.Should().Be(LogLevel.Warning, "records were dropped, so the summary must not sit at Information");
         summary.Message.Should().Contain($"Read {restored} of {attempted} persisted records");
         summary.Message.Should().Contain($"{unreadable} unreadable").And.Contain($"{unpaired} unpaired");
     }
@@ -230,23 +282,30 @@ public class WorkflowControllerTranscriptResilienceTests
     /// </summary>
     private static void AssertNoOrphanSurvives(IReadOnlyList<IMessage> transcript)
     {
-        transcript.OfType<ToolCallMessage>().Should().BeEmpty(
-            "a tool call with no matching result is rejected by every provider");
-        transcript.OfType<ToolCallResultMessage>().Should().BeEmpty(
-            "a tool result with no matching call is rejected by every provider");
+        transcript
+            .OfType<ToolCallMessage>()
+            .Should()
+            .BeEmpty("a tool call with no matching result is rejected by every provider");
+        transcript
+            .OfType<ToolCallResultMessage>()
+            .Should()
+            .BeEmpty("a tool result with no matching call is rejected by every provider");
 
-        transcript.OfType<TextMessage>().Select(m => m.Text)
-            .Should().ContainSingle().Which.Should().Be(HealthyText);
+        transcript.OfType<TextMessage>().Select(m => m.Text).Should().ContainSingle().Which.Should().Be(HealthyText);
         transcript.Should().HaveCount(1);
     }
 
     private static WorkflowControllerEndpoint EndpointFor(
         string threadId,
         IConversationStore store,
-        ILogger? logger = null) => new(() => AgentCollaborationStatuses.Completed, threadId, store, logger);
+        ILogger? logger = null
+    ) => new(() => AgentCollaborationStatuses.Completed, threadId, store, logger);
 
     private static PersistedMessage Row(IMessage message, string threadId, long timestamp) =>
-        MessagePersistenceConverter.ToPersistedMessage(message, threadId, RunId) with { Timestamp = timestamp };
+        MessagePersistenceConverter.ToPersistedMessage(message, threadId, RunId) with
+        {
+            Timestamp = timestamp,
+        };
 
     private static ToolCallMessage CallMessage() =>
         new()

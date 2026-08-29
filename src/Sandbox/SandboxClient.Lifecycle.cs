@@ -20,7 +20,8 @@ public sealed partial class SandboxClient
         ArgumentNullException.ThrowIfNull(request);
 
         var dto = ToWireDto(request, _options.AppId);
-        using var response = await SendRestAsync(HttpMethod.Post, "api/v1/sandboxes", dto, sessionId: null, ct).ConfigureAwait(false);
+        using var response = await SendRestAsync(HttpMethod.Post, "api/v1/sandboxes", dto, sessionId: null, ct)
+            .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             throw MapErrorResponse(response, "sandbox creation");
@@ -54,7 +55,8 @@ public sealed partial class SandboxClient
             throw MapErrorResponse(response, $"sandbox '{sessionId}'");
         }
 
-        var payload = await ReadSandboxResponseOrThrowAsync(response, $"sandbox '{sessionId}'", ct).ConfigureAwait(false);
+        var payload = await ReadSandboxResponseOrThrowAsync(response, $"sandbox '{sessionId}'", ct)
+            .ConfigureAwait(false);
         var info = ToSandboxInfo(payload, $"sandbox '{sessionId}'", (int)response.StatusCode);
         SeedWorkspaceMountId(info);
         return info;
@@ -73,7 +75,8 @@ public sealed partial class SandboxClient
     /// </summary>
     public async Task<IReadOnlyList<SandboxInfo>> ListAsync(CancellationToken ct = default)
     {
-        using var response = await SendRestAsync(HttpMethod.Get, "api/v1/sandboxes", body: null, sessionId: null, ct).ConfigureAwait(false);
+        using var response = await SendRestAsync(HttpMethod.Get, "api/v1/sandboxes", body: null, sessionId: null, ct)
+            .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             throw MapErrorResponse(response, "sandbox list");
@@ -82,7 +85,9 @@ public sealed partial class SandboxClient
         ListSandboxesResponseDto? payload;
         try
         {
-            payload = await response.Content.ReadFromJsonAsync<ListSandboxesResponseDto>(SandboxJson.RestOptions, ct).ConfigureAwait(false);
+            payload = await response
+                .Content.ReadFromJsonAsync<ListSandboxesResponseDto>(SandboxJson.RestOptions, ct)
+                .ConfigureAwait(false);
         }
         catch (JsonException ex)
         {
@@ -98,7 +103,12 @@ public sealed partial class SandboxClient
         // otherwise NullReference when we read entry.SessionId below. A null-attributed entry
         // (session_id: null) is a valid, expected case (an unassigned/dormant container) and is
         // filtered out, distinct from a null ENTRY (a malformed collection element).
-        var entries = SelectNonNullOrThrow(payload?.Sandboxes, static entry => entry, "sandbox list", (int)response.StatusCode);
+        var entries = SelectNonNullOrThrow(
+            payload?.Sandboxes,
+            static entry => entry,
+            "sandbox list",
+            (int)response.StatusCode
+        );
 
         return
         [
@@ -152,14 +162,23 @@ public sealed partial class SandboxClient
             Marketplaces: request.Marketplaces.Count > 0 ? [.. request.Marketplaces] : null,
             // Tri-state passthrough: null stays null (field omitted by RestOptions' WhenWritingNull),
             // an empty selection is sent as an explicit empty array.
-            PluginSelection: request.PluginSelection is null ? null : [.. request.PluginSelection.Select(ToPluginRefDto)]
+            PluginSelection: request.PluginSelection is null
+                ? null
+                : [.. request.PluginSelection.Select(ToPluginRefDto)]
         );
 
     private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>
         new(pluginRef.Marketplace, pluginRef.Plugin);
 
     private static AuthProviderDto ToDto(SandboxAuthProvider provider) =>
-        new(provider.Id, provider.Type, provider.Endpoint, provider.GatewayAuth, provider.CacheTtlSeconds, provider.RequiredScopes);
+        new(
+            provider.Id,
+            provider.Type,
+            provider.Endpoint,
+            provider.GatewayAuth,
+            provider.CacheTtlSeconds,
+            provider.RequiredScopes
+        );
 
     private static NetworkRuleDto ToDto(SandboxNetworkRule rule) =>
         new(
@@ -190,7 +209,11 @@ public sealed partial class SandboxClient
     /// rather than a "not supported" resolution: "the gateway never reported one" is a strictly
     /// weaker claim than "the gateway said it does not support filtering".
     /// </summary>
-    private static SandboxPluginResolution? ToPluginResolution(PluginResolutionDto? dto, string operation, int statusCode) =>
+    private static SandboxPluginResolution? ToPluginResolution(
+        PluginResolutionDto? dto,
+        string operation,
+        int statusCode
+    ) =>
         dto is null
             ? null
             : new SandboxPluginResolution(
@@ -235,7 +258,12 @@ public sealed partial class SandboxClient
             return null;
         }
 
-        var entries = SelectNonNullOrThrow(refs, static entry => entry, $"the '{field}' plugin list of {operation}", statusCode);
+        var entries = SelectNonNullOrThrow(
+            refs,
+            static entry => entry,
+            $"the '{field}' plugin list of {operation}",
+            statusCode
+        );
         try
         {
             return [.. entries.Select(ToPluginRef)];
@@ -307,7 +335,9 @@ public sealed partial class SandboxClient
         CreateSandboxResponseDto? payload;
         try
         {
-            payload = await response.Content.ReadFromJsonAsync<CreateSandboxResponseDto>(SandboxJson.RestOptions, ct).ConfigureAwait(false);
+            payload = await response
+                .Content.ReadFromJsonAsync<CreateSandboxResponseDto>(SandboxJson.RestOptions, ct)
+                .ConfigureAwait(false);
         }
         catch (JsonException ex)
         {

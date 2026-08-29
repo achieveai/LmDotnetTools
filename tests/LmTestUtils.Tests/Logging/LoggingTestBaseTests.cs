@@ -47,7 +47,12 @@ public class LoggingTestBaseTests : LoggingTestBase
     {
         // Arrange
         LogTestStart();
-        var testData = new { Name = "Test", Value = 123, Nested = new { Inner = "data" } };
+        var testData = new
+        {
+            Name = "Test",
+            Value = 123,
+            Nested = new { Inner = "data" },
+        };
 
         // Act
         LogData("testData", testData);

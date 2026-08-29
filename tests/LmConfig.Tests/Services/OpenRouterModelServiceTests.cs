@@ -33,18 +33,20 @@ public class OpenRouterModelServiceTests : IDisposable
                 ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("openrouter.ai")),
                 ItExpr.IsAny<CancellationToken>()
             )
-            .ReturnsAsync((HttpRequestMessage request, CancellationToken _) =>
-            {
-                var content = request.RequestUri!.ToString().Contains("/api/frontend/models")
-                    ? modelsJsonResponse
-                    : detailsJsonResponse;
-
-                return new HttpResponseMessage
+            .ReturnsAsync(
+                (HttpRequestMessage request, CancellationToken _) =>
                 {
-                    StatusCode = System.Net.HttpStatusCode.OK,
-                    Content = new StringContent(content),
-                };
-            });
+                    var content = request.RequestUri!.ToString().Contains("/api/frontend/models")
+                        ? modelsJsonResponse
+                        : detailsJsonResponse;
+
+                    return new HttpResponseMessage
+                    {
+                        StatusCode = System.Net.HttpStatusCode.OK,
+                        Content = new StringContent(content),
+                    };
+                }
+            );
     }
 
     private static void ClearCache()

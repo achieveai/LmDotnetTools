@@ -156,9 +156,7 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
         // merge key is kind-runId-generationId-messageOrderIdx, and the provider's opaque per-response
         // id never matches the run, which breaks tool-call grouping (the pillbox bug). Fall back to a
         // synthetic id only when the run advertises none.
-        var generationId = string.IsNullOrEmpty(runGenerationId)
-            ? Guid.NewGuid().ToString("N")
-            : runGenerationId;
+        var generationId = string.IsNullOrEmpty(runGenerationId) ? Guid.NewGuid().ToString("N") : runGenerationId;
         var pendingFunctionCalls = new Dictionary<string, PendingFunctionCall>(StringComparer.Ordinal);
         var textBuffers = new Dictionary<int, StringBuilder>();
         // Tool calls already surfaced, keyed by call_id, so the delta-correlated path and the
@@ -344,11 +342,10 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                     when fnDone.Type == ResponseEventTypes.OutputItemDone
                         && TryReadString(fnDone.Item, "type", out var fnDoneType)
                         && fnDoneType == "function_call":
-                    var doneCallId = TryReadString(fnDone.Item, "call_id", out var doneCid)
-                        ? doneCid
-                        : TryReadString(fnDone.Item, "id", out var doneIid)
-                            ? doneIid
-                            : null;
+                    var doneCallId =
+                        TryReadString(fnDone.Item, "call_id", out var doneCid) ? doneCid
+                        : TryReadString(fnDone.Item, "id", out var doneIid) ? doneIid
+                        : null;
                     if (doneCallId is not null && emittedToolCallIds.Add(doneCallId))
                     {
                         yield return new ToolsCallMessage
@@ -357,8 +354,12 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                             [
                                 new ToolCall
                                 {
-                                    FunctionName = TryReadString(fnDone.Item, "name", out var doneName) ? doneName : string.Empty,
-                                    FunctionArgs = TryReadString(fnDone.Item, "arguments", out var doneArgs) ? doneArgs : "{}",
+                                    FunctionName = TryReadString(fnDone.Item, "name", out var doneName)
+                                        ? doneName
+                                        : string.Empty,
+                                    FunctionArgs = TryReadString(fnDone.Item, "arguments", out var doneArgs)
+                                        ? doneArgs
+                                        : "{}",
                                     ToolCallId = doneCallId,
                                     Index = fnDone.OutputIndex,
                                 },
@@ -506,7 +507,8 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
     {
         // Non-throwing: optional usage telemetry must never abort an otherwise valid stream just
         // because a count is encoded in a way GetInt32() would reject (out-of-range / non-int number).
-        return parent.TryGetProperty(objectProperty, out var nestedEl)
+        return
+            parent.TryGetProperty(objectProperty, out var nestedEl)
             && nestedEl.ValueKind == JsonValueKind.Object
             && nestedEl.TryGetProperty(numberProperty, out var valueEl)
             && valueEl.ValueKind == JsonValueKind.Number

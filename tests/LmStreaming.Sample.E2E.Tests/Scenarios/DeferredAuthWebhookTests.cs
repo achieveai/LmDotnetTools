@@ -43,16 +43,11 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
         """;
 
     public DeferredAuthWebhookTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private E2EWebAppFactory NewFactory(int holdTimeoutSeconds = 15)
     {
-        var responder = ScriptedSseResponder.New()
-            .ForRole("noop", _ => true)
-                .Turn(t => t.Text("ok"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("noop", _ => true).Turn(t => t.Text("ok")).Build();
         var factory = new E2EWebAppFactory(
             "test",
             new ScriptedBuilder(responder.AsAnthropicHandler()),
@@ -60,8 +55,10 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
             {
                 ["Auth:Webhook:HoldTimeoutSeconds"] = holdTimeoutSeconds.ToString(),
                 ["Auth:Webhook:PollIntervalSeconds"] = "0.2",
-            });
-        factory.Services.GetRequiredService<SessionSecretStore>()
+            }
+        );
+        factory
+            .Services.GetRequiredService<SessionSecretStore>()
             .SaveAsync(SessionId, SharedSecret)
             .GetAwaiter()
             .GetResult();
@@ -73,7 +70,8 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
         HttpClient client,
         string provider = "github",
         string? body = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var request = new HttpRequestMessage(HttpMethod.Post, $"/api/auth/webhook/{provider}")
         {
@@ -84,29 +82,38 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
     }
 
     private static Task SeedGitHubTokenAsync(E2EWebAppFactory factory, string token = "deferred-token-abc") =>
-        factory.Services.GetRequiredService<IOAuthTokenStore>().SaveAsync(new OAuthTokenRecord(
-            Provider: "github",
-            Account: "octocat",
-            RefreshToken: string.Empty,
-            AccessToken: token,
-            AccessTokenExpiresAtUtc: DateTimeOffset.UtcNow.AddYears(1),
-            Scopes: ["repo", "read:org"]));
+        factory
+            .Services.GetRequiredService<IOAuthTokenStore>()
+            .SaveAsync(
+                new OAuthTokenRecord(
+                    Provider: "github",
+                    Account: "octocat",
+                    RefreshToken: string.Empty,
+                    AccessToken: token,
+                    AccessTokenExpiresAtUtc: DateTimeOffset.UtcNow.AddYears(1),
+                    Scopes: ["repo", "read:org"]
+                )
+            );
 
     private static Task ClearGitHubTokenAsync(E2EWebAppFactory factory) =>
         factory.Services.GetRequiredService<IOAuthTokenStore>().RemoveAsync("github");
 
     private static bool IsFrame(JsonDocument doc, string type, string? providerId = null)
     {
-        if (doc.RootElement.ValueKind != JsonValueKind.Object
+        if (
+            doc.RootElement.ValueKind != JsonValueKind.Object
             || !doc.RootElement.TryGetProperty("$type", out var typeProp)
-            || !string.Equals(typeProp.GetString(), type, StringComparison.Ordinal))
+            || !string.Equals(typeProp.GetString(), type, StringComparison.Ordinal)
+        )
         {
             return false;
         }
 
         return providerId is null
-            || (doc.RootElement.TryGetProperty("providerId", out var p)
-                && string.Equals(p.GetString(), providerId, StringComparison.Ordinal));
+            || (
+                doc.RootElement.TryGetProperty("providerId", out var p)
+                && string.Equals(p.GetString(), providerId, StringComparison.Ordinal)
+            );
     }
 
     [Fact]
@@ -117,15 +124,17 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
         using var client = factory.CreateClient();
         await ClearGitHubTokenAsync(factory);
 
-        await using var ws = new WebSocketTestClient(
-            await factory.ConnectWebSocketAsync("deferred-auth-happy"));
+        await using var ws = new WebSocketTestClient(await factory.ConnectWebSocketAsync("deferred-auth-happy"));
         Logger.LogInformation("WebSocket connected; POSTing webhook with no token (expect it to be HELD)");
 
         var webhookTask = PostWebhookAsync(factory, client);
 
-        using (var required = await ws.WaitForFrameAsync(
-            f => IsFrame(f, "auth_required", "github"),
-            TimeSpan.FromSeconds(10)))
+        using (
+            var required = await ws.WaitForFrameAsync(
+                f => IsFrame(f, "auth_required", "github"),
+                TimeSpan.FromSeconds(10)
+            )
+        )
         {
             Logger.LogInformation("Received auth_required frame: {Frame}", required.RootElement.ToString());
             required.RootElement.GetProperty("signinUrl").GetString().Should().Be("/auth/github");
@@ -148,9 +157,12 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
             pair[1].GetString().Should().Be("Bearer deferred-token-abc");
         }
 
-        using (var completed = await ws.WaitForFrameAsync(
-            f => IsFrame(f, "auth_completed", "github"),
-            TimeSpan.FromSeconds(10)))
+        using (
+            var completed = await ws.WaitForFrameAsync(
+                f => IsFrame(f, "auth_completed", "github"),
+                TimeSpan.FromSeconds(10)
+            )
+        )
         {
             Logger.LogInformation("Received auth_completed frame");
         }
@@ -192,8 +204,7 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
         using var client = factory.CreateClient();
         await ClearGitHubTokenAsync(factory);
 
-        await using var ws = new WebSocketTestClient(
-            await factory.ConnectWebSocketAsync("deferred-auth-concurrent"));
+        await using var ws = new WebSocketTestClient(await factory.ConnectWebSocketAsync("deferred-auth-concurrent"));
 
         var webhook1 = PostWebhookAsync(factory, client);
         var webhook2 = PostWebhookAsync(factory, client);
@@ -218,7 +229,8 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
 
                 return IsFrame(f, "auth_completed", "github");
             },
-            TimeSpan.FromSeconds(15));
+            TimeSpan.FromSeconds(15)
+        );
 
         authRequiredCount.Should().Be(1, "concurrent holds for the same provider must prompt once");
 
@@ -258,11 +270,13 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
         coordinator.Snapshot().Should().ContainSingle("the webhook must be held before the client connects");
 
         // A client connecting mid-hold must still be prompted (replay-on-connect).
-        await using var ws = new WebSocketTestClient(
-            await factory.ConnectWebSocketAsync("deferred-auth-late-join"));
-        using (var required = await ws.WaitForFrameAsync(
-            f => IsFrame(f, "auth_required", "github"),
-            TimeSpan.FromSeconds(10)))
+        await using var ws = new WebSocketTestClient(await factory.ConnectWebSocketAsync("deferred-auth-late-join"));
+        using (
+            var required = await ws.WaitForFrameAsync(
+                f => IsFrame(f, "auth_required", "github"),
+                TimeSpan.FromSeconds(10)
+            )
+        )
         {
             required.RootElement.GetProperty("signinUrl").GetString().Should().Be("/auth/github");
         }
@@ -284,8 +298,7 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
         using var factory = NewFactory();
         using var client = factory.CreateClient();
 
-        await using var ws = new WebSocketTestClient(
-            await factory.ConnectWebSocketAsync("deferred-auth-hostlist"));
+        await using var ws = new WebSocketTestClient(await factory.ConnectWebSocketAsync("deferred-auth-hostlist"));
 
         // m365 token toward api.github.com: blocked by the host allowlist BEFORE token acquisition,
         // so the deny must be immediate (no hold) and no sign-in prompt must be broadcast.
@@ -313,11 +326,11 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
         doc.RootElement.GetProperty("reason").GetString().Should().Contain("not allowed");
         stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5), "host-allowlist denies must not be held");
 
-        var waitForPrompt = async () => await ws.WaitForFrameAsync(
-            f => IsFrame(f, "auth_required"),
-            TimeSpan.FromSeconds(1.5));
-        _ = await waitForPrompt.Should().ThrowAsync<TimeoutException>(
-            "no sign-in prompt may be broadcast for a host-allowlist deny");
+        var waitForPrompt = async () =>
+            await ws.WaitForFrameAsync(f => IsFrame(f, "auth_required"), TimeSpan.FromSeconds(1.5));
+        _ = await waitForPrompt
+            .Should()
+            .ThrowAsync<TimeoutException>("no sign-in prompt may be broadcast for a host-allowlist deny");
         LogTestEnd();
     }
 

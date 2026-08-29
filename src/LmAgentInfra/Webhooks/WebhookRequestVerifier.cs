@@ -77,7 +77,8 @@ public sealed record WebhookVerificationInput(
     byte[] Body,
     string? Signature,
     string? Timestamp,
-    string? DeliveryId);
+    string? DeliveryId
+);
 
 /// <summary>
 /// The deterministic half of the webhook security layer (ADR 0005): given a callback's classification
@@ -106,12 +107,14 @@ public sealed class WebhookRequestVerifier
         WebhookSigningSecret signingSecret,
         IEnumerable<string> allowedProviders,
         TimeSpan timestampTolerance,
-        long maxBodyBytes)
+        long maxBodyBytes
+    )
     {
         _signingSecret = signingSecret ?? throw new ArgumentNullException(nameof(signingSecret));
         _allowedProviders = new HashSet<string>(
             allowedProviders ?? throw new ArgumentNullException(nameof(allowedProviders)),
-            StringComparer.OrdinalIgnoreCase);
+            StringComparer.OrdinalIgnoreCase
+        );
         _timestampTolerance = timestampTolerance;
         _maxBodyBytes = maxBodyBytes;
     }
@@ -140,9 +143,11 @@ public sealed class WebhookRequestVerifier
             return new WebhookVerificationResult(WebhookRejection.BodyTooLarge);
         }
 
-        if (string.IsNullOrWhiteSpace(input.Signature)
+        if (
+            string.IsNullOrWhiteSpace(input.Signature)
             || string.IsNullOrWhiteSpace(input.Timestamp)
-            || string.IsNullOrWhiteSpace(input.DeliveryId))
+            || string.IsNullOrWhiteSpace(input.DeliveryId)
+        )
         {
             return new WebhookVerificationResult(WebhookRejection.MissingHeaders);
         }
@@ -179,8 +184,14 @@ public sealed class WebhookRequestVerifier
         {
             sent = DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
         }
-        else if (!DateTimeOffset.TryParse(
-            timestamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out sent))
+        else if (
+            !DateTimeOffset.TryParse(
+                timestamp,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out sent
+            )
+        )
         {
             return false;
         }

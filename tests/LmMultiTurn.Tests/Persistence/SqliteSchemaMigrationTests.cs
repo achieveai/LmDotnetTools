@@ -51,7 +51,8 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
             {
                 DataSource = _databasePath,
                 Mode = SqliteOpenMode.ReadWriteCreate,
-            }.ToString());
+            }.ToString()
+        );
         await connection.OpenAsync();
         return connection;
     }
@@ -68,7 +69,8 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=$name;";
         _ = command.Parameters.AddWithValue("$name", table);
-        return Convert.ToInt64(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture) > 0;
+        return Convert.ToInt64(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture)
+            > 0;
     }
 
     [Fact]
@@ -78,12 +80,14 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
         await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
 
-        (await ReadUserVersionAsync(connection))
-            .Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
-        SqliteSchemaInitializer.LatestSchemaVersion.Should().Be(
-            4,
-            "slice 2 adds the thread_metadata owner columns (3) and resource_grants (4) on top of "
-                + "slice 1's two steps");
+        (await ReadUserVersionAsync(connection)).Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
+        SqliteSchemaInitializer
+            .LatestSchemaVersion.Should()
+            .Be(
+                4,
+                "slice 2 adds the thread_metadata owner columns (3) and resource_grants (4) on top of "
+                    + "slice 1's two steps"
+            );
     }
 
     [Fact]
@@ -94,12 +98,16 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
 
         // Step 1 - the eight tables that already shipped.
-        (await TableExistsAsync(connection, "messages")).Should().BeTrue();
+        (await TableExistsAsync(connection, "messages"))
+            .Should()
+            .BeTrue();
         (await TableExistsAsync(connection, "thread_metadata")).Should().BeTrue();
         (await TableExistsAsync(connection, "notify_waits")).Should().BeTrue();
 
         // Step 2 - the tenant registry.
-        (await TableExistsAsync(connection, "tenants")).Should().BeTrue();
+        (await TableExistsAsync(connection, "tenants"))
+            .Should()
+            .BeTrue();
         (await TableExistsAsync(connection, "tenant_admins")).Should().BeTrue();
     }
 
@@ -128,16 +136,17 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         await using var connection = await OpenAsync();
         await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
 
-        (await ReadUserVersionAsync(connection))
-            .Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
+        (await ReadUserVersionAsync(connection)).Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
         (await TableExistsAsync(connection, "tenants")).Should().BeTrue();
         (await TableExistsAsync(connection, "resource_grants")).Should().BeTrue();
 
         using var read = connection.CreateCommand();
         read.CommandText = "SELECT last_updated FROM thread_metadata WHERE thread_id = 'legacy-thread';";
         var lastUpdated = await read.ExecuteScalarAsync();
-        Convert.ToInt64(lastUpdated, System.Globalization.CultureInfo.InvariantCulture)
-            .Should().Be(42, "the upgrade must not lose a pre-existing row");
+        Convert
+            .ToInt64(lastUpdated, System.Globalization.CultureInfo.InvariantCulture)
+            .Should()
+            .Be(42, "the upgrade must not lose a pre-existing row");
     }
 
     [Fact]
@@ -148,8 +157,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
         await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
 
-        (await ReadUserVersionAsync(connection))
-            .Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
+        (await ReadUserVersionAsync(connection)).Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
     }
 
     [Fact]
@@ -165,8 +173,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         await using (var stamp = await OpenAsync())
         {
             using var command = stamp.CreateCommand();
-            command.CommandText =
-                $"PRAGMA user_version = {SqliteSchemaInitializer.LatestSchemaVersion};";
+            command.CommandText = $"PRAGMA user_version = {SqliteSchemaInitializer.LatestSchemaVersion};";
             _ = await command.ExecuteNonQueryAsync();
         }
 
@@ -174,9 +181,11 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
 
         (await TableExistsAsync(connection, "tenants"))
-            .Should().BeFalse("step 2 was already recorded as applied, so it must not run again");
+            .Should()
+            .BeFalse("step 2 was already recorded as applied, so it must not run again");
         (await TableExistsAsync(connection, "thread_metadata"))
-            .Should().BeFalse("step 1 was already recorded as applied, so it must not run again");
+            .Should()
+            .BeFalse("step 1 was already recorded as applied, so it must not run again");
     }
 
     [Fact]
@@ -209,14 +218,12 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         await using var connection = await OpenAsync();
         await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
 
-        (await TableExistsAsync(connection, "tenants"))
-            .Should().BeTrue("step 2 had not been applied");
-        (await TableExistsAsync(connection, "resource_grants"))
-            .Should().BeTrue("step 4 had not been applied");
+        (await TableExistsAsync(connection, "tenants")).Should().BeTrue("step 2 had not been applied");
+        (await TableExistsAsync(connection, "resource_grants")).Should().BeTrue("step 4 had not been applied");
         (await TableExistsAsync(connection, "messages"))
-            .Should().BeFalse("step 1 was already recorded as applied, so it must be skipped");
-        (await ReadUserVersionAsync(connection))
-            .Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
+            .Should()
+            .BeFalse("step 1 was already recorded as applied, so it must be skipped");
+        (await ReadUserVersionAsync(connection)).Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
     }
 
     [Fact]
@@ -238,10 +245,11 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
         using var count = connection.CreateCommand();
         count.CommandText = "SELECT COUNT(*) FROM tenants;";
-        Convert.ToInt64(await count.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture)
-            .Should().Be(1);
-        (await ReadUserVersionAsync(connection))
-            .Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
+        Convert
+            .ToInt64(await count.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture)
+            .Should()
+            .Be(1);
+        (await ReadUserVersionAsync(connection)).Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
     }
 
     [Fact]
@@ -262,7 +270,8 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
             using var stamp = seed.CreateCommand();
             stamp.CommandText = FormattableString.Invariant(
-                $"PRAGMA user_version = {SqliteSchemaInitializer.LatestSchemaVersion + 1};");
+                $"PRAGMA user_version = {SqliteSchemaInitializer.LatestSchemaVersion + 1};"
+            );
             _ = await stamp.ExecuteNonQueryAsync();
         }
 
@@ -272,9 +281,12 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
         _ = (await act.Should().ThrowAsync<NotSupportedException>())
             .Which.Message.Should()
-            .Contain((SqliteSchemaInitializer.LatestSchemaVersion + 1).ToString(
-                System.Globalization.CultureInfo.InvariantCulture),
-                "an operator reading the crash needs to see which version the file is at");
+            .Contain(
+                (SqliteSchemaInitializer.LatestSchemaVersion + 1).ToString(
+                    System.Globalization.CultureInfo.InvariantCulture
+                ),
+                "an operator reading the crash needs to see which version the file is at"
+            );
     }
 
     [Fact]
@@ -326,14 +338,12 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         await using var connection = await OpenAsync();
         await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
 
-        (await ReadUserVersionAsync(connection))
-            .Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
+        (await ReadUserVersionAsync(connection)).Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
 
         // The columns step 3 adds are present...
         foreach (var column in new[] { "tenant_id", "owner_user_id", "owner_app_id", "visibility" })
         {
-            (await ColumnExistsAsync(connection, "thread_metadata", column))
-                .Should().BeTrue($"step 3 adds {column}");
+            (await ColumnExistsAsync(connection, "thread_metadata", column)).Should().BeTrue($"step 3 adds {column}");
         }
 
         // ...and the rows that were there before the ALTER are still there, unmodified, with the
@@ -351,32 +361,34 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         {
             while (await reader.ReadAsync())
             {
-                rows.Add((
-                    reader.GetString(0),
-                    reader.IsDBNull(1) ? null : reader.GetString(1),
-                    reader.GetInt64(2),
-                    reader.IsDBNull(3) ? null : reader.GetString(3),
-                    reader.IsDBNull(4)));
+                rows.Add(
+                    (
+                        reader.GetString(0),
+                        reader.IsDBNull(1) ? null : reader.GetString(1),
+                        reader.GetInt64(2),
+                        reader.IsDBNull(3) ? null : reader.GetString(3),
+                        reader.IsDBNull(4)
+                    )
+                );
             }
         }
 
-        _ = rows.Should().Equal(
-            ("thread-kept-1", "run-a", 111L, """{"title":"first"}""", true),
-            ("thread-kept-2", null, 222L, """{"title":"second"}""", true));
+        _ = rows.Should()
+            .Equal(
+                ("thread-kept-1", "run-a", 111L, """{"title":"first"}""", true),
+                ("thread-kept-2", null, 222L, """{"title":"second"}""", true)
+            );
     }
 
-    private static async Task<bool> ColumnExistsAsync(
-        SqliteConnection connection,
-        string table,
-        string column)
+    private static async Task<bool> ColumnExistsAsync(SqliteConnection connection, string table, string column)
     {
         using var command = connection.CreateCommand();
         command.CommandText = FormattableString.Invariant(
-            $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = $name;");
+            $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = $name;"
+        );
         _ = command.Parameters.AddWithValue("$name", column);
-        return Convert.ToInt64(
-            await command.ExecuteScalarAsync(),
-            System.Globalization.CultureInfo.InvariantCulture) > 0;
+        return Convert.ToInt64(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture)
+            > 0;
     }
 
     [Fact]

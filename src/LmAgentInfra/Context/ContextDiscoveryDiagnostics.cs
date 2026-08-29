@@ -16,8 +16,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Context;
 /// </remarks>
 public sealed class ContextDiscoveryDiagnostics
 {
-    private readonly ConcurrentDictionary<string, SessionReceived> _received =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SessionReceived> _received = new(StringComparer.Ordinal);
 
     private long _routedCount;
     private long _droppedCount;
@@ -39,13 +38,15 @@ public sealed class ContextDiscoveryDiagnostics
         _ = _received.AddOrUpdate(
             sessionId,
             _ => new SessionReceived(1, now, kind, path),
-            (_, existing) => existing with
-            {
-                Count = existing.Count + 1,
-                LastReceivedAt = now,
-                LastKind = kind,
-                LastPath = path,
-            });
+            (_, existing) =>
+                existing with
+                {
+                    Count = existing.Count + 1,
+                    LastReceivedAt = now,
+                    LastKind = kind,
+                    LastPath = path,
+                }
+        );
     }
 
     /// <summary>
@@ -86,7 +87,8 @@ public sealed class ContextDiscoveryDiagnostics
         new(
             Interlocked.Read(ref _routedCount),
             Interlocked.Read(ref _droppedCount),
-            Interlocked.Read(ref _fallbackCount));
+            Interlocked.Read(ref _fallbackCount)
+        );
 }
 
 /// <summary>
@@ -109,8 +111,4 @@ public sealed record RoutingOutcomeCounts(long Routed, long Dropped, long Fallba
 /// Per-session tally of received context-discovery webhooks. <see cref="LastKind"/> /
 /// <see cref="LastPath"/> describe the most recent arrival only.
 /// </summary>
-public sealed record SessionReceived(
-    long Count,
-    DateTimeOffset LastReceivedAt,
-    string? LastKind,
-    string? LastPath);
+public sealed record SessionReceived(long Count, DateTimeOffset LastReceivedAt, string? LastKind, string? LastPath);

@@ -28,9 +28,7 @@ public class AgentCollaborationDirectoryConcurrencyTests
     private const int Racers = 16;
     private const int Attempts = 8;
 
-    private static AgentCollaborationDirectory CreateDirectory(
-        AgentCollaborationOptions? options = null
-    )
+    private static AgentCollaborationDirectory CreateDirectory(AgentCollaborationOptions? options = null)
     {
         return new AgentCollaborationDirectory(
             CollaborationId,
@@ -95,8 +93,7 @@ public class AgentCollaborationDirectoryConcurrencyTests
                 .Where(result => !result.Succeeded)
                 .Should()
                 .OnlyContain(result =>
-                    result.FailureCode == AgentDirectoryFailureCodes.DuplicateAgentId
-                    && result.Entry == null
+                    result.FailureCode == AgentDirectoryFailureCodes.DuplicateAgentId && result.Entry == null
                 );
             directory.Count.Should().Be(2);
         }
@@ -142,16 +139,11 @@ public class AgentCollaborationDirectoryConcurrencyTests
             var root = RegisterRoot(directory);
             var children = Enumerable
                 .Range(0, Racers)
-                .Select(index =>
-                    root.CreateChild($"agent-{index}", AgentKind.SubAgent, "reviewer", "reviews")
-                )
+                .Select(index => root.CreateChild($"agent-{index}", AgentKind.SubAgent, "reviewer", "reviews"))
                 .ToArray();
             var results = new AgentRegistrationResult[Racers];
 
-            Race(
-                Racers,
-                index => results[index] = directory.TryRegister(children[index], $"name-{index}", "running")
-            );
+            Race(Racers, index => results[index] = directory.TryRegister(children[index], $"name-{index}", "running"));
 
             results.Should().OnlyContain(result => result.Succeeded);
             directory.Count.Should().Be(Racers + 1);
@@ -179,27 +171,18 @@ public class AgentCollaborationDirectoryConcurrencyTests
             var root = RegisterRoot(directory);
             var children = Enumerable
                 .Range(0, Racers)
-                .Select(index =>
-                    root.CreateChild($"agent-{index}", AgentKind.SubAgent, "reviewer", "reviews")
-                )
+                .Select(index => root.CreateChild($"agent-{index}", AgentKind.SubAgent, "reviewer", "reviews"))
                 .ToArray();
 
             // Distinct identifiers, one shared name: every racer is admitted, but the name they all
             // claimed must end up owned by none of them.
             Race(
                 Racers,
-                index =>
-                    directory
-                        .TryRegister(children[index], "reviewer", "running")
-                        .Succeeded.Should()
-                        .BeTrue()
+                index => directory.TryRegister(children[index], "reviewer", "running").Succeeded.Should().BeTrue()
             );
 
             directory.Count.Should().Be(Racers + 1);
-            directory
-                .Resolve("reviewer")
-                .FailureCode.Should()
-                .Be(AgentDirectoryFailureCodes.AmbiguousName);
+            directory.Resolve("reviewer").FailureCode.Should().Be(AgentDirectoryFailureCodes.AmbiguousName);
 
             // Ambiguity must not cost the agents their identity: each is still reachable by the
             // canonical identifier that the name was only ever a convenience for.
@@ -219,9 +202,7 @@ public class AgentCollaborationDirectoryConcurrencyTests
             var root = RegisterRoot(directory);
             var children = Enumerable
                 .Range(0, Racers)
-                .Select(index =>
-                    root.CreateChild($"agent-{index}", AgentKind.SubAgent, "reviewer", "reviews")
-                )
+                .Select(index => root.CreateChild($"agent-{index}", AgentKind.SubAgent, "reviewer", "reviews"))
                 .ToArray();
             var observed = new ConcurrentBag<string>();
 
@@ -233,10 +214,7 @@ public class AgentCollaborationDirectoryConcurrencyTests
                 {
                     if (index % 2 == 0)
                     {
-                        directory
-                            .TryRegister(children[index], $"name-{index}", "running")
-                            .Succeeded.Should()
-                            .BeTrue();
+                        directory.TryRegister(children[index], $"name-{index}", "running").Succeeded.Should().BeTrue();
                     }
                     else if (directory.TryUpdateStatus("agent-root", "completed"))
                     {

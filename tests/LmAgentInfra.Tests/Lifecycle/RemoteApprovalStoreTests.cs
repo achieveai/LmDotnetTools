@@ -54,9 +54,7 @@ public sealed class RemoteApprovalStoreTests
 
         ticket.Request.ArgumentsHash.Should().Be(CanonicalToolArguments.Freeze(ArgumentsJson).Sha256Hex);
         ticket.Request.ExpiresAt.Should().Be(expiry);
-        ticket
-            .Request.Arguments.Should()
-            .BeNull("what an approver may see is decided per subscriber, not stored here");
+        ticket.Request.Arguments.Should().BeNull("what an approver may see is decided per subscriber, not stored here");
     }
 
     // ---- First decision wins ---------------------------------------------------------------
@@ -133,9 +131,7 @@ public sealed class RemoteApprovalStoreTests
         var reversal = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed));
 
         reversal.Status.Should().Be(RemoteApprovalSettleStatus.Contradicted);
-        reversal
-            .Outcome.Should()
-            .Be(WireOutcomes.Denied, "the answer reported back is the one that is in force");
+        reversal.Outcome.Should().Be(WireOutcomes.Denied, "the answer reported back is the one that is in force");
         (await ticket.Decision)
             .Decision.Should()
             .Be(WireOutcomes.Denied, "an allow arriving second must not overturn a deny");
@@ -150,10 +146,7 @@ public sealed class RemoteApprovalStoreTests
         var store = CreateStore(new ManualTimeProvider(Now));
         using var ticket = Register(store, AppA);
 
-        var settlement = store.Settle(
-            Owner(AppA),
-            Decide(ticket, WireOutcomes.Allowed, hash: new string('a', 64))
-        );
+        var settlement = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, hash: new string('a', 64)));
 
         settlement.Status.Should().Be(RemoteApprovalSettleStatus.Mismatched);
         settlement.Outcome.Should().BeNull();
@@ -171,10 +164,7 @@ public sealed class RemoteApprovalStoreTests
         var store = CreateStore(new ManualTimeProvider(Now));
         using var ticket = Register(store, AppA);
 
-        store
-            .Settle(Owner(AppA), Decide(ticket, outcome))
-            .Status.Should()
-            .Be(RemoteApprovalSettleStatus.Mismatched);
+        store.Settle(Owner(AppA), Decide(ticket, outcome)).Status.Should().Be(RemoteApprovalSettleStatus.Mismatched);
     }
 
     // ---- Every frozen approver must allow -----------------------------------------------------
@@ -342,10 +332,7 @@ public sealed class RemoteApprovalStoreTests
         retry.Status.Should().NotBe(RemoteApprovalSettleStatus.Recorded);
         retry
             .Outcome.Should()
-            .Be(
-                WireOutcomes.Allowed,
-                "the set completed, so SubA's earlier allow now has a standing answer to report"
-            );
+            .Be(WireOutcomes.Allowed, "the set completed, so SubA's earlier allow now has a standing answer to report");
         (await ticket.Decision).Decision.Should().Be(WireOutcomes.Allowed);
         store.PendingCount.Should().Be(0, "an answered request holds no admission slot");
     }
@@ -534,10 +521,7 @@ public sealed class RemoteApprovalStoreTests
         denied.Should().Be(1);
         (await ticket.Decision)
             .Decision.Should()
-            .Be(
-                WireOutcomes.Denied,
-                "unanimity can no longer be reached, so the outcome is already settled"
-            );
+            .Be(WireOutcomes.Denied, "unanimity can no longer be reached, so the outcome is already settled");
         store.PendingCount.Should().Be(0, "the admission slot is freed rather than held until expiry");
     }
 
@@ -551,9 +535,7 @@ public sealed class RemoteApprovalStoreTests
         store.InvalidateForSubscription(Owner(AppA), SubB).Should().Be(0);
 
         mine.Decision.IsCompleted.Should().BeFalse("this request has a different approver");
-        theirs
-            .Decision.IsCompleted.Should()
-            .BeFalse("and this one belongs to a different owner entirely");
+        theirs.Decision.IsCompleted.Should().BeFalse("and this one belongs to a different owner entirely");
         store.PendingCount.Should().Be(2);
     }
 
@@ -595,14 +577,14 @@ public sealed class RemoteApprovalStoreTests
         var decision = Decide(ticket, WireOutcomes.Allowed);
 
         var foreign = store.Settle(Owner(AppB), decision);
-        var invented = store.Settle(Owner(AppB), Decide(ticket, WireOutcomes.Allowed, requestId: WithForeignEpoch(ticket.Request.RequestId)));
+        var invented = store.Settle(
+            Owner(AppB),
+            Decide(ticket, WireOutcomes.Allowed, requestId: WithForeignEpoch(ticket.Request.RequestId))
+        );
 
         foreign
             .Should()
-            .Be(
-                invented,
-                "probing another owner's ids must teach a caller exactly as much as probing invented ones"
-            );
+            .Be(invented, "probing another owner's ids must teach a caller exactly as much as probing invented ones");
         foreign.Should().Be(NothingToDecide);
         store
             .Settle(Owner(AppA), decision)
@@ -755,19 +737,14 @@ public sealed class RemoteApprovalStoreTests
     // ---- Helpers --------------------------------------------------------------------------------
 
     /// <summary>The single answer every "there is nothing here to decide" path must produce.</summary>
-    private static readonly RemoteApprovalSettlement NothingToDecide =
-        new(RemoteApprovalSettleStatus.Unknown, null);
+    private static readonly RemoteApprovalSettlement NothingToDecide = new(RemoteApprovalSettleStatus.Unknown, null);
 
     private static RemoteApprovalStore CreateStore(
         ManualTimeProvider clock,
         Action<RemoteApprovalOptions>? configure = null
     )
     {
-        var options = new RemoteApprovalOptions
-        {
-            Enabled = true,
-            TombstoneRetention = Retention,
-        };
+        var options = new RemoteApprovalOptions { Enabled = true, TombstoneRetention = Retention };
         configure?.Invoke(options);
         return new RemoteApprovalStore(options, clock, NullLogger<RemoteApprovalStore>.Instance);
     }
@@ -784,16 +761,8 @@ public sealed class RemoteApprovalStoreTests
             ExpiresAt = expiresAt,
         };
 
-    private static RemoteApprovalTicket Register(
-        RemoteApprovalStore store,
-        string appId,
-        params string[] approvers
-    ) =>
-        store.TryRegister(
-            Owner(appId),
-            Call(Now.AddMinutes(5)),
-            approvers.Length == 0 ? [SubA] : approvers
-        )!;
+    private static RemoteApprovalTicket Register(RemoteApprovalStore store, string appId, params string[] approvers) =>
+        store.TryRegister(Owner(appId), Call(Now.AddMinutes(5)), approvers.Length == 0 ? [SubA] : approvers)!;
 
     private static ToolApprovalDecision Decide(
         RemoteApprovalTicket ticket,

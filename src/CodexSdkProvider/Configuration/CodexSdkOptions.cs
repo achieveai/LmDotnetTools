@@ -40,12 +40,12 @@ public record CodexSdkOptions
     /// </summary>
     public IReadOnlyList<string> DisabledFeatures { get; init; } =
     [
-        "shell_tool",           // Disable shell command execution
+        "shell_tool", // Disable shell command execution
         "apply_patch_freeform", // Disable freeform file patching
-        "unified_exec",         // Disable PTY-backed exec
-        "multi_agent",          // Disable multi-agent coordination
-        "apps",                 // Disable apps feature
-        "apps_mcp_gateway",     // Disable apps MCP gateway
+        "unified_exec", // Disable PTY-backed exec
+        "multi_agent", // Disable multi-agent coordination
+        "apps", // Disable apps feature
+        "apps_mcp_gateway", // Disable apps MCP gateway
     ];
 
     public string? BaseUrl { get; init; }
@@ -78,7 +78,11 @@ public record CodexSdkOptions
     /// Use <see cref="InitialThreadId"/> to seed the first-run thread id when no
     /// metadata is persisted yet.
     /// </remarks>
-    [Obsolete("CodexSessionId is a trace-only label and does not control session lifetime. Use " + nameof(InitialThreadId) + " to drive cross-run thread resume.")]
+    [Obsolete(
+        "CodexSessionId is a trace-only label and does not control session lifetime. Use "
+            + nameof(InitialThreadId)
+            + " to drive cross-run thread resume."
+    )]
     public string? CodexSessionId { get; init; }
 
     /// <summary>

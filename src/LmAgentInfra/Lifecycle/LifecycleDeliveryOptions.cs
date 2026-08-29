@@ -199,20 +199,14 @@ public sealed class LifecycleDeliveryOptions
 
         if (MaxRetryDelay < RetryBaseDelay)
         {
-            throw Invalid(
-                nameof(MaxRetryDelay),
-                $"must not be less than {nameof(RetryBaseDelay)} ({RetryBaseDelay})"
-            );
+            throw Invalid(nameof(MaxRetryDelay), $"must not be less than {nameof(RetryBaseDelay)} ({RetryBaseDelay})");
         }
 
         // An attempt that cannot finish inside the delivery's own budget can never succeed, so this
         // combination would burn the deadline on a single doomed attempt.
         if (AttemptTimeout > DeliveryDeadline)
         {
-            throw Invalid(
-                nameof(AttemptTimeout),
-                $"must not exceed {nameof(DeliveryDeadline)} ({DeliveryDeadline})"
-            );
+            throw Invalid(nameof(AttemptTimeout), $"must not exceed {nameof(DeliveryDeadline)} ({DeliveryDeadline})");
         }
     }
 

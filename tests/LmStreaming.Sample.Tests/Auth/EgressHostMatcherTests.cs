@@ -8,13 +8,13 @@ namespace LmStreaming.Sample.Tests.Auth;
 public sealed class EgressHostMatcherTests
 {
     [Theory]
-    [InlineData("api.example.com", "api.example.com", true)]      // exact
-    [InlineData("api.example.com", "API.EXAMPLE.COM", true)]      // case-insensitive
-    [InlineData("*.example.com", "sub.example.com", true)]        // wildcard suffix
-    [InlineData("*.example.com", "a.b.example.com", true)]        // multi-label wildcard suffix
-    [InlineData("*.example.com", "example.com", false)]           // wildcard does not match apex
-    [InlineData("*.example.com", "evil-example.com", false)]      // wildcard requires the dot separator
-    [InlineData("api.example.com", "other.example.com", false)]   // exact non-match
+    [InlineData("api.example.com", "api.example.com", true)] // exact
+    [InlineData("api.example.com", "API.EXAMPLE.COM", true)] // case-insensitive
+    [InlineData("*.example.com", "sub.example.com", true)] // wildcard suffix
+    [InlineData("*.example.com", "a.b.example.com", true)] // multi-label wildcard suffix
+    [InlineData("*.example.com", "example.com", false)] // wildcard does not match apex
+    [InlineData("*.example.com", "evil-example.com", false)] // wildcard requires the dot separator
+    [InlineData("api.example.com", "other.example.com", false)] // exact non-match
     public void IsAllowed_matches_exact_and_wildcard(string pattern, string host, bool expected) =>
         EgressHostMatcher.IsAllowed([pattern], host).Should().Be(expected);
 
@@ -41,23 +41,23 @@ public sealed class EgressHostMatcherTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData("*")]                        // bare wildcard
-    [InlineData("*.com")]                     // wildcard covering a bare TLD
-    [InlineData("*.")]                        // empty wildcard suffix
-    [InlineData("https://example.com")]       // scheme
-    [InlineData("example.com/path")]          // path
-    [InlineData("example.com:443")]           // port
-    [InlineData("example.com.")]              // trailing dot
-    [InlineData(" example.com")]              // leading whitespace
-    [InlineData("exa mple.com")]              // inner space
-    [InlineData("-bad.example.com")]          // label starts with hyphen
+    [InlineData("*")] // bare wildcard
+    [InlineData("*.com")] // wildcard covering a bare TLD
+    [InlineData("*.")] // empty wildcard suffix
+    [InlineData("https://example.com")] // scheme
+    [InlineData("example.com/path")] // path
+    [InlineData("example.com:443")] // port
+    [InlineData("example.com.")] // trailing dot
+    [InlineData(" example.com")] // leading whitespace
+    [InlineData("exa mple.com")] // inner space
+    [InlineData("-bad.example.com")] // label starts with hyphen
     [InlineData("localhost")]
     [InlineData("127.0.0.1")]
     [InlineData("127.9.9.9")]
     [InlineData("0.0.0.0")]
     [InlineData("::1")]
     [InlineData("[::1]")]
-    [InlineData("169.254.169.254")]           // cloud metadata
+    [InlineData("169.254.169.254")] // cloud metadata
     [InlineData("metadata.google.internal")]
     public void ValidateHostPattern_rejects_invalid_or_dangerous_hosts(string? pattern) =>
         EgressHostMatcher.ValidateHostPattern(pattern).Should().NotBeNull();
@@ -101,9 +101,9 @@ public sealed class EgressHostMatcherTests
     [Theory]
     [InlineData("github.com", true)]
     [InlineData("api.github.com", true)]
-    [InlineData("*.github.com", true)]           // wildcard entry covering a managed host
+    [InlineData("*.github.com", true)] // wildcard entry covering a managed host
     [InlineData("dev.azure.com", true)]
-    [InlineData("sub.dev.azure.com", true)]      // managed *.dev.azure.com covers it
+    [InlineData("sub.dev.azure.com", true)] // managed *.dev.azure.com covers it
     [InlineData("myorg.visualstudio.com", true)] // managed *.visualstudio.com covers it
     [InlineData("graph.microsoft.com", true)]
     [InlineData("api.example.com", false)]

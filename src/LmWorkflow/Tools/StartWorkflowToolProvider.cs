@@ -37,7 +37,12 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
 
     /// <summary>Every tool name this provider exposes; a host keeps these out of sub-agent inheritance.</summary>
     public static readonly IReadOnlyList<string> ToolNames =
-        [StartWorkflowToolName, GetWorkflowsToolName, CheckWorkflowToolName, WaitWorkflowToolName];
+    [
+        StartWorkflowToolName,
+        GetWorkflowsToolName,
+        CheckWorkflowToolName,
+        WaitWorkflowToolName,
+    ];
 
     /// <summary>
     ///     How many workflow ids an unknown-id error may list. Bounded so a long-lived conversation with
@@ -314,10 +319,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                 || workflowElement.ValueKind != JsonValueKind.Object
             )
             {
-                return ToolHandlerResult.FromError(
-                    "The 'workflow' object parameter is required.",
-                    "invalid_args"
-                );
+                return ToolHandlerResult.FromError("The 'workflow' object parameter is required.", "invalid_args");
             }
 
             WorkflowDefinition definition;
@@ -490,9 +492,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
 
             try
             {
-                var result = await _manager
-                    .WaitAsync(workflowId, timeout, cancellationToken)
-                    .ConfigureAwait(false);
+                var result = await _manager.WaitAsync(workflowId, timeout, cancellationToken).ConfigureAwait(false);
                 return ToolHandlerResult.FromText(Serialize(result));
             }
             catch (UnknownWorkflowException ex)
@@ -513,10 +513,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
     /// </remarks>
     private string DescribeUnknownWorkflow(UnknownWorkflowException ex)
     {
-        var ids = _manager.ListRuns()
-            .Select(r => r.WorkflowId)
-            .OrderBy(id => id, StringComparer.Ordinal)
-            .ToArray();
+        var ids = _manager.ListRuns().Select(r => r.WorkflowId).OrderBy(id => id, StringComparer.Ordinal).ToArray();
 
         if (ids.Length == 0)
         {
@@ -525,9 +522,8 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                 + "do not resolve here.";
         }
 
-        var suffix = ids.Length > MaxListedWorkflowIds
-            ? $" (showing {MaxListedWorkflowIds} of {ids.Length})"
-            : string.Empty;
+        var suffix =
+            ids.Length > MaxListedWorkflowIds ? $" (showing {MaxListedWorkflowIds} of {ids.Length})" : string.Empty;
 
         return $"{ex.Message} Use one of the workflow ids you supplied to StartWorkflowAgent: "
             + $"{string.Join(", ", ids.Take(MaxListedWorkflowIds))}{suffix}. GetWorkflows lists them all. "
@@ -565,10 +561,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
         catch (JsonException ex)
         {
             doc = null;
-            error = ToolHandlerResult.FromError(
-                $"Tool arguments are not valid JSON: {ex.Message}",
-                "invalid_args"
-            );
+            error = ToolHandlerResult.FromError($"Tool arguments are not valid JSON: {ex.Message}", "invalid_args");
             return false;
         }
     }
@@ -579,12 +572,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
     ///     non-numeric string) returns <c>false</c> with an error, so an invalid input is rejected rather than
     ///     silently collapsing to an unbounded wait. Valid values are clamped to <c>Task.WaitAsync</c>'s range.
     /// </summary>
-    private static bool TryReadTimeout(
-        JsonElement root,
-        string propertyName,
-        out TimeSpan? timeout,
-        out string? error
-    )
+    private static bool TryReadTimeout(JsonElement root, string propertyName, out TimeSpan? timeout, out string? error)
     {
         timeout = null;
         error = null;

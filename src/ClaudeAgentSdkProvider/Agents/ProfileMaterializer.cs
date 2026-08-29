@@ -19,8 +19,8 @@ public sealed record MaterializedProfile : IDisposable
     ///     MCP servers contributed by the profile. The caller merges these into the
     ///     final MCP dictionary, with profile entries winning on key collision.
     /// </summary>
-    public IReadOnlyDictionary<string, McpServerConfig> McpServers { get; init; }
-        = new Dictionary<string, McpServerConfig>();
+    public IReadOnlyDictionary<string, McpServerConfig> McpServers { get; init; } =
+        new Dictionary<string, McpServerConfig>();
 
     /// <summary>
     ///     System prompt supplied by the profile, or <c>null</c> if absent. The caller
@@ -88,11 +88,15 @@ public static class ProfileMaterializer
     /// </remarks>
     public static MaterializedProfile Materialize(AgentRuntimeProfile? profile)
     {
-        if (profile is null
-            || (profile.Skills.Count == 0
+        if (
+            profile is null
+            || (
+                profile.Skills.Count == 0
                 && profile.SubAgents.Count == 0
                 && profile.McpServers.Count == 0
-                && string.IsNullOrEmpty(profile.SystemPrompt)))
+                && string.IsNullOrEmpty(profile.SystemPrompt)
+            )
+        )
         {
             return new MaterializedProfile();
         }
@@ -147,7 +151,8 @@ public static class ProfileMaterializer
                     break;
                 default:
                     throw new InvalidOperationException(
-                        $"Unhandled ContentSource variant for skill '{skill.Name}': {skill.Source.GetType().Name}");
+                        $"Unhandled ContentSource variant for skill '{skill.Name}': {skill.Source.GetType().Name}"
+                    );
             }
         }
     }
@@ -164,9 +169,7 @@ public static class ProfileMaterializer
         }
         else
         {
-            throw new FileNotFoundException(
-                $"Skill source path not found for '{skillName}': {sourcePath}",
-                sourcePath);
+            throw new FileNotFoundException($"Skill source path not found for '{skillName}': {sourcePath}", sourcePath);
         }
     }
 
@@ -188,7 +191,8 @@ public static class ProfileMaterializer
                     break;
                 default:
                     throw new InvalidOperationException(
-                        $"Unhandled ContentSource variant for sub-agent '{subAgent.Name}': {subAgent.Source.GetType().Name}");
+                        $"Unhandled ContentSource variant for sub-agent '{subAgent.Name}': {subAgent.Source.GetType().Name}"
+                    );
             }
         }
     }
@@ -205,12 +209,15 @@ public static class ProfileMaterializer
         {
             throw new FileNotFoundException(
                 $"Sub-agent source path not found for '{subAgentName}': {sourcePath}",
-                sourcePath);
+                sourcePath
+            );
         }
 
-        var firstMd = Directory.EnumerateFiles(sourcePath, "*.md").FirstOrDefault()
+        var firstMd =
+            Directory.EnumerateFiles(sourcePath, "*.md").FirstOrDefault()
             ?? throw new FileNotFoundException(
-                $"Sub-agent source dir contains no .md file for '{subAgentName}': {sourcePath}");
+                $"Sub-agent source dir contains no .md file for '{subAgentName}': {sourcePath}"
+            );
         File.Copy(firstMd, target, overwrite: true);
     }
 
@@ -221,13 +228,16 @@ public static class ProfileMaterializer
             throw new ArgumentException($"Profile {kind} name cannot be empty.", nameof(name));
         }
 
-        if (name.Contains("..", StringComparison.Ordinal)
+        if (
+            name.Contains("..", StringComparison.Ordinal)
             || name.IndexOfAny(['/', '\\']) >= 0
-            || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
+        )
         {
             throw new ArgumentException(
                 $"Profile {kind} name '{name}' contains invalid characters or path separators.",
-                nameof(name));
+                nameof(name)
+            );
         }
     }
 
@@ -240,8 +250,7 @@ public static class ProfileMaterializer
             : fullRoot + Path.DirectorySeparatorChar;
         if (!fullCandidate.StartsWith(rootWithSep, StringComparison.Ordinal))
         {
-            throw new ArgumentException(
-                $"Resolved path '{fullCandidate}' escapes staging root '{fullRoot}'.");
+            throw new ArgumentException($"Resolved path '{fullCandidate}' escapes staging root '{fullRoot}'.");
         }
         return fullCandidate;
     }

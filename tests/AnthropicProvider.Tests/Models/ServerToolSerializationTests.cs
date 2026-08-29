@@ -134,11 +134,7 @@ public class ServerToolSerializationTests
     [Fact]
     public void MapFunctionsAndBuiltInTools_BuiltInOnly()
     {
-        var builtInTools = new List<object>
-        {
-            new AnthropicWebSearchTool(),
-            new AnthropicCodeExecutionTool(),
-        };
+        var builtInTools = new List<object> { new AnthropicWebSearchTool(), new AnthropicCodeExecutionTool() };
 
         var tools = AnthropicRequest.MapFunctionsAndBuiltInTools(null, builtInTools);
 
@@ -323,7 +319,8 @@ public class ServerToolSerializationTests
         Assert.Equal("web_search", doc.RootElement.GetProperty("function_name").GetString());
         Assert.False(
             doc.RootElement.TryGetProperty("function_args", out _),
-            "Null function_args should be omitted from serialization");
+            "Null function_args should be omitted from serialization"
+        );
     }
 
     [Fact]

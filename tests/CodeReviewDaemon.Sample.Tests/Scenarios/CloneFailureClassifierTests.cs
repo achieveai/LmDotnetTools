@@ -14,16 +14,15 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class CloneFailureClassifierTests : LoggingTestBase
 {
     public CloneFailureClassifierTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     [Fact]
     public void Repository_not_found_is_classified_as_not_found()
     {
         var diagnosis = CloneFailureClassifier.Classify(
             exitCode: 128,
-            stderr: "remote: Repository not found.\nfatal: repository 'https://github.com/acme/reviewbot.git/' not found");
+            stderr: "remote: Repository not found.\nfatal: repository 'https://github.com/acme/reviewbot.git/' not found"
+        );
 
         diagnosis.Kind.Should().Be(CloneFailureKind.RepositoryNotFound);
         diagnosis.ExitCode.Should().Be(CloneFailureClassifier.NotFoundExitCode);
@@ -35,7 +34,8 @@ public sealed class CloneFailureClassifierTests : LoggingTestBase
     {
         var diagnosis = CloneFailureClassifier.Classify(
             exitCode: 128,
-            stderr: "remote: Permission to acme/reviewbot.git denied to bot.\nfatal: unable to access");
+            stderr: "remote: Permission to acme/reviewbot.git denied to bot.\nfatal: unable to access"
+        );
 
         diagnosis.Kind.Should().Be(CloneFailureKind.PermissionDenied);
         diagnosis.ExitCode.Should().Be(CloneFailureClassifier.PermissionExitCode);
@@ -46,7 +46,8 @@ public sealed class CloneFailureClassifierTests : LoggingTestBase
     {
         var diagnosis = CloneFailureClassifier.Classify(
             exitCode: 128,
-            stderr: "fatal: Authentication failed for 'https://github.com/acme/reviewbot.git/'");
+            stderr: "fatal: Authentication failed for 'https://github.com/acme/reviewbot.git/'"
+        );
 
         diagnosis.Kind.Should().Be(CloneFailureKind.BadCredential);
         diagnosis.ExitCode.Should().Be(CloneFailureClassifier.BadCredentialExitCode);
@@ -57,7 +58,8 @@ public sealed class CloneFailureClassifierTests : LoggingTestBase
     {
         var diagnosis = CloneFailureClassifier.Classify(
             exitCode: 128,
-            stderr: "fatal: unable to access 'https://github.com/...': Could not resolve host: github.com");
+            stderr: "fatal: unable to access 'https://github.com/...': Could not resolve host: github.com"
+        );
 
         diagnosis.Kind.Should().Be(CloneFailureKind.TransientGateway);
         diagnosis.ExitCode.Should().Be(CloneFailureClassifier.TransientExitCode);
@@ -66,12 +68,12 @@ public sealed class CloneFailureClassifierTests : LoggingTestBase
     [Fact]
     public void An_unrecognized_failure_is_classified_as_unknown_and_surfaces_the_stderr()
     {
-        var diagnosis = CloneFailureClassifier.Classify(
-            exitCode: 1,
-            stderr: "fatal: something nobody anticipated");
+        var diagnosis = CloneFailureClassifier.Classify(exitCode: 1, stderr: "fatal: something nobody anticipated");
 
         diagnosis.Kind.Should().Be(CloneFailureKind.Unknown);
         diagnosis.ExitCode.Should().Be(CloneFailureClassifier.UnknownExitCode);
-        diagnosis.Message.Should().Contain("something nobody anticipated", "an unknown failure must still surface the raw stderr");
+        diagnosis
+            .Message.Should()
+            .Contain("something nobody anticipated", "an unknown failure must still surface the raw stderr");
     }
 }

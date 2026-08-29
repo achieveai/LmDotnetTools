@@ -23,22 +23,21 @@ public class AskUserQuestionToolProviderTests
         _tool = provider.GetFunctions().Single(f => f.Contract.Name == AskUserQuestionToolProvider.ToolName);
     }
 
-    private static string ValidArgs() => JsonSerializer.Serialize(new
-    {
-        context = "Need to know which color to use.",
-        questions = new[]
-        {
+    private static string ValidArgs() =>
+        JsonSerializer.Serialize(
             new
             {
-                prompt = "Which color?",
-                options = new object[]
+                context = "Need to know which color to use.",
+                questions = new[]
                 {
-                    new { label = "Red" },
-                    new { label = "Blue", value = "blue-value" },
+                    new
+                    {
+                        prompt = "Which color?",
+                        options = new object[] { new { label = "Red" }, new { label = "Blue", value = "blue-value" } },
+                    },
                 },
-            },
-        },
-    });
+            }
+        );
 
     private Task<ToolHandlerResult> InvokeAsync(string argsJson, string? toolCallId = "tc_1") =>
         _tool.Handler(argsJson, new ToolCallContext { ToolCallId = toolCallId }, CancellationToken.None);
@@ -61,15 +60,19 @@ public class AskUserQuestionToolProviderTests
     [Fact]
     public async Task ValidCall_WithFourQuestions_ReturnsDeferred()
     {
-        var args = JsonSerializer.Serialize(new
-        {
-            context = "batch",
-            questions = Enumerable.Range(0, 4).Select(i => new
+        var args = JsonSerializer.Serialize(
+            new
             {
-                prompt = $"Q{i}",
-                options = new[] { new { label = "A" }, new { label = "B" } },
-            }),
-        });
+                context = "batch",
+                questions = Enumerable
+                    .Range(0, 4)
+                    .Select(i => new
+                    {
+                        prompt = $"Q{i}",
+                        options = new[] { new { label = "A" }, new { label = "B" } },
+                    }),
+            }
+        );
 
         var result = await InvokeAsync(args);
         result.Should().BeOfType<ToolHandlerResult.Deferred>();
@@ -106,10 +109,9 @@ public class AskUserQuestionToolProviderTests
     [Fact]
     public async Task MissingContext_ReturnsError()
     {
-        var args = JsonSerializer.Serialize(new
-        {
-            questions = new[] { new { prompt = "Q", options = new[] { new { label = "A" } } } },
-        });
+        var args = JsonSerializer.Serialize(
+            new { questions = new[] { new { prompt = "Q", options = new[] { new { label = "A" } } } } }
+        );
 
         var result = await InvokeAsync(args);
         ErrorCode(result).Should().Be("missing_context");
@@ -118,11 +120,9 @@ public class AskUserQuestionToolProviderTests
     [Fact]
     public async Task EmptyContext_ReturnsError()
     {
-        var args = JsonSerializer.Serialize(new
-        {
-            context = "   ",
-            questions = new[] { new { prompt = "Q", options = new[] { new { label = "A" } } } },
-        });
+        var args = JsonSerializer.Serialize(
+            new { context = "   ", questions = new[] { new { prompt = "Q", options = new[] { new { label = "A" } } } } }
+        );
 
         var result = await InvokeAsync(args);
         ErrorCode(result).Should().Be("missing_context");
@@ -139,15 +139,15 @@ public class AskUserQuestionToolProviderTests
     [Fact]
     public async Task FiveQuestions_ReturnsInvalidQuestionCount()
     {
-        var args = JsonSerializer.Serialize(new
-        {
-            context = "ctx",
-            questions = Enumerable.Range(0, 5).Select(i => new
+        var args = JsonSerializer.Serialize(
+            new
             {
-                prompt = $"Q{i}",
-                options = new[] { new { label = "A" } },
-            }),
-        });
+                context = "ctx",
+                questions = Enumerable
+                    .Range(0, 5)
+                    .Select(i => new { prompt = $"Q{i}", options = new[] { new { label = "A" } } }),
+            }
+        );
 
         var result = await InvokeAsync(args);
         ErrorCode(result).Should().Be("invalid_question_count");
@@ -156,11 +156,9 @@ public class AskUserQuestionToolProviderTests
     [Fact]
     public async Task QuestionWithNoOptions_ReturnsNoOptions()
     {
-        var args = JsonSerializer.Serialize(new
-        {
-            context = "ctx",
-            questions = new[] { new { prompt = "Q", options = Array.Empty<object>() } },
-        });
+        var args = JsonSerializer.Serialize(
+            new { context = "ctx", questions = new[] { new { prompt = "Q", options = Array.Empty<object>() } } }
+        );
 
         var result = await InvokeAsync(args);
         ErrorCode(result).Should().Be("no_options");
@@ -169,18 +167,16 @@ public class AskUserQuestionToolProviderTests
     [Fact]
     public async Task DuplicateOptionValues_ReturnsDuplicateOptionValues()
     {
-        var args = JsonSerializer.Serialize(new
-        {
-            context = "ctx",
-            questions = new[]
+        var args = JsonSerializer.Serialize(
+            new
             {
-                new
+                context = "ctx",
+                questions = new[]
                 {
-                    prompt = "Q",
-                    options = new[] { new { label = "Red" }, new { label = "Red" } },
+                    new { prompt = "Q", options = new[] { new { label = "Red" }, new { label = "Red" } } },
                 },
-            },
-        });
+            }
+        );
 
         var result = await InvokeAsync(args);
         ErrorCode(result).Should().Be("duplicate_option_values");
@@ -191,18 +187,20 @@ public class AskUserQuestionToolProviderTests
     {
         // "value" defaults to "label" when omitted — an explicit value colliding with another
         // option's defaulted value is still a duplicate.
-        var args = JsonSerializer.Serialize(new
-        {
-            context = "ctx",
-            questions = new[]
+        var args = JsonSerializer.Serialize(
+            new
             {
-                new
+                context = "ctx",
+                questions = new[]
                 {
-                    prompt = "Q",
-                    options = new object[] { new { label = "Red" }, new { label = "Crimson", value = "Red" } },
+                    new
+                    {
+                        prompt = "Q",
+                        options = new object[] { new { label = "Red" }, new { label = "Crimson", value = "Red" } },
+                    },
                 },
-            },
-        });
+            }
+        );
 
         var result = await InvokeAsync(args);
         ErrorCode(result).Should().Be("duplicate_option_values");

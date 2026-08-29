@@ -28,12 +28,7 @@ internal sealed class SnapshotPersister
     ///     prompt as a fire-and-forget for such stores; an async store's save simply chains behind its
     ///     still-running predecessor.
     /// </summary>
-    public void Enqueue(
-        IWorkflowStore store,
-        string instanceId,
-        WorkflowInstanceSnapshot snapshot,
-        ILogger? logger
-    )
+    public void Enqueue(IWorkflowStore store, string instanceId, WorkflowInstanceSnapshot snapshot, ILogger? logger)
     {
         lock (_saveLock)
         {

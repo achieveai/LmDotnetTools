@@ -10,9 +10,8 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class ServerToolIntegrationTests : LoggingTestBase
 {
-    public ServerToolIntegrationTests(ITestOutputHelper output) : base(output)
-    {
-    }
+    public ServerToolIntegrationTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Fact]
     public async Task WebSearch_RequestCapture_VerifiesBuiltInToolsSent()
@@ -21,7 +20,9 @@ public class ServerToolIntegrationTests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
@@ -80,7 +81,9 @@ public class ServerToolIntegrationTests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
@@ -93,10 +96,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools =
-            [
-                new AnthropicWebSearchTool { MaxUses = 5 },
-            ],
+            BuiltInTools = [new AnthropicWebSearchTool { MaxUses = 5 }],
             Functions =
             [
                 new FunctionContract
@@ -155,16 +155,8 @@ public class ServerToolIntegrationTests : LoggingTestBase
             BuiltInTools = [new AnthropicWebSearchTool()],
             Functions =
             [
-                new FunctionContract
-                {
-                    Name = "get_weather",
-                    Description = "Get weather information for a location",
-                },
-                new FunctionContract
-                {
-                    Name = "calculate",
-                    Description = "Calculate a math expression",
-                },
+                new FunctionContract { Name = "get_weather", Description = "Get weather information for a location" },
+                new FunctionContract { Name = "calculate", Description = "Calculate a math expression" },
             ],
         };
 
@@ -230,8 +222,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         Logger.LogTrace("Got {Count} response messages", responseList.Count);
         foreach (var msg in responseList)
         {
-            Logger.LogTrace("Response message: {MessageType}, Role={Role}",
-                msg.GetType().Name, msg.Role);
+            Logger.LogTrace("Response message: {MessageType}, Role={Role}", msg.GetType().Name, msg.Role);
         }
 
         // Verify we got server tool messages
@@ -281,8 +272,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         await foreach (var msg in await agent.GenerateReplyStreamingAsync(messages, options))
         {
             responseMessages.Add(msg);
-            Logger.LogTrace("Streamed message: {MessageType}, Role={Role}",
-                msg.GetType().Name, msg.Role);
+            Logger.LogTrace("Streamed message: {MessageType}, Role={Role}", msg.GetType().Name, msg.Role);
         }
 
         Logger.LogTrace("Streaming complete, got {Count} messages", responseMessages.Count);
@@ -291,7 +281,8 @@ public class ServerToolIntegrationTests : LoggingTestBase
         Assert.NotEmpty(responseMessages);
 
         // Should have: text, server_tool_use (as ToolCallUpdateMessage), server_tool_result, text (with citations)
-        var serverToolUse = responseMessages.OfType<ToolCallUpdateMessage>()
+        var serverToolUse = responseMessages
+            .OfType<ToolCallUpdateMessage>()
             .LastOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(serverToolUse);
         Assert.Equal("web_search", serverToolUse.FunctionName);
@@ -321,8 +312,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
             var cited = citationMessages.First();
             Assert.NotNull(cited.Citations);
             Assert.NotEmpty(cited.Citations);
-            Logger.LogTrace("TextWithCitations verified: {CitationCount} citations",
-                cited.Citations.Count);
+            Logger.LogTrace("TextWithCitations verified: {CitationCount} citations", cited.Citations.Count);
         }
     }
 
@@ -363,8 +353,11 @@ public class ServerToolIntegrationTests : LoggingTestBase
         Assert.True(toolResult.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
         Assert.Equal(ExecutionTarget.ProviderServer, toolResult.ExecutionTarget);
-        Logger.LogTrace("Error result verified: IsError={IsError}, ErrorCode={ErrorCode}",
-            toolResult.IsError, toolResult.ErrorCode);
+        Logger.LogTrace(
+            "Error result verified: IsError={IsError}, ErrorCode={ErrorCode}",
+            toolResult.IsError,
+            toolResult.ErrorCode
+        );
     }
 
     [Fact]
@@ -386,7 +379,9 @@ public class ServerToolIntegrationTests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
@@ -407,8 +402,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         await foreach (var msg in await agent.GenerateReplyStreamingAsync(messages, options))
         {
             responseMessages.Add(msg);
-            Logger.LogTrace("Instruction chain streamed: {MessageType}, Role={Role}",
-                msg.GetType().Name, msg.Role);
+            Logger.LogTrace("Instruction chain streamed: {MessageType}, Role={Role}", msg.GetType().Name, msg.Role);
         }
 
         Logger.LogTrace("Instruction chain streaming complete, got {Count} messages", responseMessages.Count);
@@ -424,7 +418,8 @@ public class ServerToolIntegrationTests : LoggingTestBase
         // Verify the streamed response contains server tool messages
         Assert.NotEmpty(responseMessages);
 
-        var serverToolUse = responseMessages.OfType<ToolCallUpdateMessage>()
+        var serverToolUse = responseMessages
+            .OfType<ToolCallUpdateMessage>()
             .LastOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(serverToolUse);
         Assert.Equal("web_search", serverToolUse.FunctionName);
@@ -442,7 +437,9 @@ public class ServerToolIntegrationTests : LoggingTestBase
         Assert.NotEmpty(citedText.Citations);
         Assert.Equal("https://example.com", citedText.Citations[0].Url);
 
-        Logger.LogTrace("Instruction chain test passed: ServerToolUse, ServerToolResult, TextWithCitations all verified");
+        Logger.LogTrace(
+            "Instruction chain test passed: ServerToolUse, ServerToolResult, TextWithCitations all verified"
+        );
     }
 
     [Fact]
@@ -452,7 +449,9 @@ public class ServerToolIntegrationTests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
@@ -506,7 +505,9 @@ public class ServerToolIntegrationTests : LoggingTestBase
 
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
-            LoggerFactory, requestCapture, chunkDelayMs: 0
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
@@ -527,8 +528,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         await foreach (var msg in await agent.GenerateReplyStreamingAsync(turn1Messages, options))
         {
             turn1Responses.Add(msg);
-            Logger.LogTrace("Turn 1 message: {MessageType}, Role={Role}",
-                msg.GetType().Name, msg.Role);
+            Logger.LogTrace("Turn 1 message: {MessageType}, Role={Role}", msg.GetType().Name, msg.Role);
         }
 
         Logger.LogTrace("Turn 1 complete, got {Count} messages", turn1Responses.Count);
@@ -537,7 +537,8 @@ public class ServerToolIntegrationTests : LoggingTestBase
         Assert.Contains(turn1Responses, m => m is ToolCallResultMessage);
 
         // Verify the serialized payload fields are accessible after turn 1
-        var toolUse1 = turn1Responses.OfType<ToolCallUpdateMessage>()
+        var toolUse1 = turn1Responses
+            .OfType<ToolCallUpdateMessage>()
             .Last(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.Equal(ExecutionTarget.ProviderServer, toolUse1.ExecutionTarget);
         var inputJson = toolUse1.FunctionArgs;
@@ -575,8 +576,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
             await foreach (var msg in await agent.GenerateReplyStreamingAsync(turn2Messages, options))
             {
                 turn2Responses.Add(msg);
-                Logger.LogTrace("Turn 2 message: {MessageType}, Role={Role}",
-                    msg.GetType().Name, msg.Role);
+                Logger.LogTrace("Turn 2 message: {MessageType}, Role={Role}", msg.GetType().Name, msg.Role);
             }
         });
 
@@ -597,160 +597,187 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var events = new List<SseEvent>
         {
             // message_start
-            new() {
+            new()
+            {
                 Event = "message_start",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "message_start",
-                    message = new
+                Data = JsonSerializer.Serialize(
+                    new
                     {
-                        id = "msg_stream_01",
-                        type = "message",
-                        role = "assistant",
-                        model = "claude-sonnet-4-20250514",
-                        content = Array.Empty<object>(),
-                        stop_reason = (string?)null,
-                        usage = new { input_tokens = 100, output_tokens = 0 },
-                    },
-                }),
+                        type = "message_start",
+                        message = new
+                        {
+                            id = "msg_stream_01",
+                            type = "message",
+                            role = "assistant",
+                            model = "claude-sonnet-4-20250514",
+                            content = Array.Empty<object>(),
+                            stop_reason = (string?)null,
+                            usage = new { input_tokens = 100, output_tokens = 0 },
+                        },
+                    }
+                ),
             },
-
             // Content block 0: text "Let me search for that."
-            new() {
+            new()
+            {
                 Event = "content_block_start",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "content_block_start",
-                    index = 0,
-                    content_block = new { type = "text", text = "" },
-                }),
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_start",
+                        index = 0,
+                        content_block = new { type = "text", text = "" },
+                    }
+                ),
             },
-            new() {
+            new()
+            {
                 Event = "content_block_delta",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "content_block_delta",
-                    index = 0,
-                    delta = new { type = "text_delta", text = "Let me search for that." },
-                }),
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_delta",
+                        index = 0,
+                        delta = new { type = "text_delta", text = "Let me search for that." },
+                    }
+                ),
             },
-            new() {
+            new()
+            {
                 Event = "content_block_stop",
                 Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 }),
             },
-
             // Content block 1: server_tool_use (web_search)
-            new() {
+            new()
+            {
                 Event = "content_block_start",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "content_block_start",
-                    index = 1,
-                    content_block = new
+                Data = JsonSerializer.Serialize(
+                    new
                     {
-                        type = "server_tool_use",
-                        id = "srvtoolu_stream_01",
-                        name = "web_search",
-                        input = new { },
-                    },
-                }),
+                        type = "content_block_start",
+                        index = 1,
+                        content_block = new
+                        {
+                            type = "server_tool_use",
+                            id = "srvtoolu_stream_01",
+                            name = "web_search",
+                            input = new { },
+                        },
+                    }
+                ),
             },
-            new() {
+            new()
+            {
                 Event = "content_block_delta",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "content_block_delta",
-                    index = 1,
-                    delta = new { type = "input_json_delta", partial_json = "{\"query\":\"latest AI news\"}" },
-                }),
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_delta",
+                        index = 1,
+                        delta = new { type = "input_json_delta", partial_json = "{\"query\":\"latest AI news\"}" },
+                    }
+                ),
             },
-            new() {
+            new()
+            {
                 Event = "content_block_stop",
                 Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 1 }),
             },
-
             // Content block 2: web_search_tool_result
-            new() {
+            new()
+            {
                 Event = "content_block_start",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "content_block_start",
-                    index = 2,
-                    content_block = new
+                Data = JsonSerializer.Serialize(
+                    new
                     {
-                        type = "web_search_tool_result",
-                        tool_use_id = "srvtoolu_stream_01",
-                        content = new[]
-                    {
-                        new
+                        type = "content_block_start",
+                        index = 2,
+                        content_block = new
                         {
-                            type = "web_search_result",
-                            url = "https://news.example.com/ai",
-                            title = "Latest AI News",
-                            encrypted_content = "encrypted...",
-                            page_age = "2 hours ago",
+                            type = "web_search_tool_result",
+                            tool_use_id = "srvtoolu_stream_01",
+                            content = new[]
+                            {
+                                new
+                                {
+                                    type = "web_search_result",
+                                    url = "https://news.example.com/ai",
+                                    title = "Latest AI News",
+                                    encrypted_content = "encrypted...",
+                                    page_age = "2 hours ago",
+                                },
+                            },
                         },
-                    },
-                    },
-                }),
+                    }
+                ),
             },
-            new() {
+            new()
+            {
                 Event = "content_block_stop",
                 Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 2 }),
             },
-
             // Content block 3: text with citations
-            new() {
+            new()
+            {
                 Event = "content_block_start",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "content_block_start",
-                    index = 3,
-                    content_block = new
+                Data = JsonSerializer.Serialize(
+                    new
                     {
-                        type = "text",
-                        text = "",
-                        citations = new[]
-                    {
-                        new
+                        type = "content_block_start",
+                        index = 3,
+                        content_block = new
                         {
-                            type = "web_search_result_location",
-                            url = "https://news.example.com/ai",
-                            title = "Latest AI News",
-                            cited_text = "AI developments in 2026",
+                            type = "text",
+                            text = "",
+                            citations = new[]
+                            {
+                                new
+                                {
+                                    type = "web_search_result_location",
+                                    url = "https://news.example.com/ai",
+                                    title = "Latest AI News",
+                                    cited_text = "AI developments in 2026",
+                                },
+                            },
                         },
-                    },
-                    },
-                }),
+                    }
+                ),
             },
-            new() {
+            new()
+            {
                 Event = "content_block_delta",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "content_block_delta",
-                    index = 3,
-                    delta = new { type = "text_delta", text = "Based on my search, AI developments in 2026 are significant." },
-                }),
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_delta",
+                        index = 3,
+                        delta = new
+                        {
+                            type = "text_delta",
+                            text = "Based on my search, AI developments in 2026 are significant.",
+                        },
+                    }
+                ),
             },
-            new() {
+            new()
+            {
                 Event = "content_block_stop",
                 Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 3 }),
             },
-
             // message_delta and message_stop
-            new() {
+            new()
+            {
                 Event = "message_delta",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "message_delta",
-                    delta = new { stop_reason = "end_turn", stop_sequence = (string?)null },
-                    usage = new { input_tokens = 200, output_tokens = 80 },
-                }),
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "message_delta",
+                        delta = new { stop_reason = "end_turn", stop_sequence = (string?)null },
+                        usage = new { input_tokens = 200, output_tokens = 80 },
+                    }
+                ),
             },
-            new() {
-                Event = "message_stop",
-                Data = JsonSerializer.Serialize(new { type = "message_stop" }),
-            }
+            new() { Event = "message_stop", Data = JsonSerializer.Serialize(new { type = "message_stop" }) },
         };
 
         return events;
@@ -763,105 +790,116 @@ public class ServerToolIntegrationTests : LoggingTestBase
     {
         var events = new List<SseEvent>
         {
-            new() {
+            new()
+            {
                 Event = "message_start",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "message_start",
-                    message = new
+                Data = JsonSerializer.Serialize(
+                    new
                     {
-                        id = "msg_err_01",
-                        type = "message",
-                        role = "assistant",
-                        model = "claude-sonnet-4-20250514",
-                        content = Array.Empty<object>(),
-                        stop_reason = (string?)null,
-                        usage = new { input_tokens = 50, output_tokens = 0 },
-                    },
-                }),
+                        type = "message_start",
+                        message = new
+                        {
+                            id = "msg_err_01",
+                            type = "message",
+                            role = "assistant",
+                            model = "claude-sonnet-4-20250514",
+                            content = Array.Empty<object>(),
+                            stop_reason = (string?)null,
+                            usage = new { input_tokens = 50, output_tokens = 0 },
+                        },
+                    }
+                ),
             },
-
             // server_tool_use
-            new() {
+            new()
+            {
                 Event = "content_block_start",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "content_block_start",
-                    index = 0,
-                    content_block = new
+                Data = JsonSerializer.Serialize(
+                    new
                     {
-                        type = "server_tool_use",
-                        id = "srvtoolu_err_01",
-                        name = "web_search",
-                        input = new { },
-                    },
-                }),
+                        type = "content_block_start",
+                        index = 0,
+                        content_block = new
+                        {
+                            type = "server_tool_use",
+                            id = "srvtoolu_err_01",
+                            name = "web_search",
+                            input = new { },
+                        },
+                    }
+                ),
             },
-            new() {
+            new()
+            {
                 Event = "content_block_stop",
                 Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 }),
             },
-
             // web_search_tool_result with error
-            new() {
+            new()
+            {
                 Event = "content_block_start",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "content_block_start",
-                    index = 1,
-                    content_block = new
+                Data = JsonSerializer.Serialize(
+                    new
                     {
-                        type = "web_search_tool_result",
-                        tool_use_id = "srvtoolu_err_01",
-                        content = new
+                        type = "content_block_start",
+                        index = 1,
+                        content_block = new
                         {
-                            type = "web_search_tool_result_error",
-                            error_code = "max_uses_exceeded",
+                            type = "web_search_tool_result",
+                            tool_use_id = "srvtoolu_err_01",
+                            content = new { type = "web_search_tool_result_error", error_code = "max_uses_exceeded" },
                         },
-                    },
-                }),
+                    }
+                ),
             },
-            new() {
+            new()
+            {
                 Event = "content_block_stop",
                 Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 1 }),
             },
-
             // text response after error
-            new() {
+            new()
+            {
                 Event = "content_block_start",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "content_block_start",
-                    index = 2,
-                    content_block = new { type = "text", text = "" },
-                }),
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_start",
+                        index = 2,
+                        content_block = new { type = "text", text = "" },
+                    }
+                ),
             },
-            new() {
+            new()
+            {
                 Event = "content_block_delta",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "content_block_delta",
-                    index = 2,
-                    delta = new { type = "text_delta", text = "I was unable to search due to rate limits." },
-                }),
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "content_block_delta",
+                        index = 2,
+                        delta = new { type = "text_delta", text = "I was unable to search due to rate limits." },
+                    }
+                ),
             },
-            new() {
+            new()
+            {
                 Event = "content_block_stop",
                 Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 2 }),
             },
-            new() {
+            new()
+            {
                 Event = "message_delta",
-                Data = JsonSerializer.Serialize(new
-                {
-                    type = "message_delta",
-                    delta = new { stop_reason = "end_turn", stop_sequence = (string?)null },
-                    usage = new { input_tokens = 50, output_tokens = 20 },
-                }),
+                Data = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "message_delta",
+                        delta = new { stop_reason = "end_turn", stop_sequence = (string?)null },
+                        usage = new { input_tokens = 50, output_tokens = 20 },
+                    }
+                ),
             },
-            new() {
-                Event = "message_stop",
-                Data = JsonSerializer.Serialize(new { type = "message_stop" }),
-            }
+            new() { Event = "message_stop", Data = JsonSerializer.Serialize(new { type = "message_stop" }) },
         };
 
         return events;

@@ -60,7 +60,8 @@ internal sealed class LocalShellWorkspaceBrowser(string root, string shell) : IW
                     Environment.GetEnvironmentVariable("ProgramW6432"),
                 }
                     .Where(programFiles => !string.IsNullOrWhiteSpace(programFiles))
-                    .Select(programFiles => Path.Combine(programFiles!, "Git", "usr", "bin", "sh.exe")));
+                    .Select(programFiles => Path.Combine(programFiles!, "Git", "usr", "bin", "sh.exe"))
+            );
 
         return candidates.FirstOrDefault(File.Exists);
     }
@@ -69,13 +70,16 @@ internal sealed class LocalShellWorkspaceBrowser(string root, string shell) : IW
         string threadId,
         string persistedWorkspaceId,
         SandboxCredential? requestCredential,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         Task.FromResult(
             new SandboxSessionResolution(
                 SandboxSessionResolutionOutcome.Resolved,
                 new SandboxSession(persistedWorkspaceId, "sess-local", "/workspace", root),
                 "app",
-                null));
+                null
+            )
+        );
 
     /// <summary>
     /// The background seam (#253). This double never modelled provenance in the first place — it
@@ -85,19 +89,21 @@ internal sealed class LocalShellWorkspaceBrowser(string root, string shell) : IW
     public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionForBackgroundAsync(
         string threadId,
         string persistedWorkspaceId,
-        CancellationToken ct = default) =>
-        ResolveThreadWorkspaceSessionAsync(threadId, persistedWorkspaceId, requestCredential: null, ct);
+        CancellationToken ct = default
+    ) => ResolveThreadWorkspaceSessionAsync(threadId, persistedWorkspaceId, requestCredential: null, ct);
 
     public Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(
         string sessionId,
         string relativePath,
-        CancellationToken ct = default) => Task.FromResult<IReadOnlyList<SandboxDirectoryEntry>>([]);
+        CancellationToken ct = default
+    ) => Task.FromResult<IReadOnlyList<SandboxDirectoryEntry>>([]);
 
     public Task<byte[]> ReadWorkspaceFileBytesAsync(
         string sessionId,
         string relativePath,
         long? maxBytes,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var full = Resolve(relativePath);
         return Task.FromResult(File.Exists(full) ? File.ReadAllBytes(full) : []);
@@ -107,7 +113,8 @@ internal sealed class LocalShellWorkspaceBrowser(string root, string shell) : IW
         string sessionId,
         string relativePath,
         byte[] bytes,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var full = Resolve(relativePath);
         _ = Directory.CreateDirectory(Path.GetDirectoryName(full)!);
@@ -117,7 +124,8 @@ internal sealed class LocalShellWorkspaceBrowser(string root, string shell) : IW
     public async Task<SandboxCommandResult> ExecuteWorkspaceCommandAsync(
         string sessionId,
         SandboxCommand command,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var startInfo = new ProcessStartInfo(shell)
         {
@@ -146,8 +154,7 @@ internal sealed class LocalShellWorkspaceBrowser(string root, string shell) : IW
         }
 
         using var process =
-            Process.Start(startInfo)
-            ?? throw new InvalidOperationException($"Could not start '{shell}'.");
+            Process.Start(startInfo) ?? throw new InvalidOperationException($"Could not start '{shell}'.");
 
         var stdout = await process.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
         var stderr = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);

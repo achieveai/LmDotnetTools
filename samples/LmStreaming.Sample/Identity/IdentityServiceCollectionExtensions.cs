@@ -23,9 +23,7 @@ public static class IdentityServiceCollectionExtensions
     /// </summary>
     /// <param name="services">Service collection.</param>
     /// <param name="configuration">Root configuration.</param>
-    public static IServiceCollection AddSampleIdentity(
-        this IServiceCollection services,
-        IConfiguration configuration)
+    public static IServiceCollection AddSampleIdentity(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -35,7 +33,8 @@ public static class IdentityServiceCollectionExtensions
 
         _ = services.AddSingleton<IAuditSink>(sp => new LoggingAuditSink(
             sp.GetRequiredService<ILoggerFactory>(),
-            sp.GetRequiredService<TimeProvider>()));
+            sp.GetRequiredService<TimeProvider>()
+        ));
 
         // Constructed inline for the same reason the notify-wait store is (see Program.cs): an
         // ISqliteConnectionFactory is IAsyncDisposable-only, and a container-tracked
@@ -57,15 +56,15 @@ public static class IdentityServiceCollectionExtensions
         var identityConnectionFactory = new SqliteConnectionFactory(databasePath);
 
         _ = services.AddSingleton<ITenantStore>(_ => new SqliteTenantStore(identityConnectionFactory));
-        _ = services.AddSingleton<IResourceGrantStore>(
-            _ => new SqliteResourceGrantStore(identityConnectionFactory));
+        _ = services.AddSingleton<IResourceGrantStore>(_ => new SqliteResourceGrantStore(identityConnectionFactory));
 
         _ = services.AddSingleton<IEnforcementGate, OptionsEnforcementGate>();
         _ = services.AddSingleton<IResourceAccessPolicy>(sp => new ResourceAccessPolicy(
             sp.GetRequiredService<IResourceGrantStore>(),
             sp.GetRequiredService<IAuditSink>(),
             sp.GetRequiredService<IEnforcementGate>(),
-            sp.GetRequiredService<TimeProvider>()));
+            sp.GetRequiredService<TimeProvider>()
+        ));
 
         _ = services.AddSingleton<PrincipalFactory>();
 
@@ -114,7 +113,8 @@ public static class IdentityServiceCollectionExtensions
             {
                 _ = IdentityMiddleware.PromoteWebSocketCredential(context.Request);
                 await next(context).ConfigureAwait(false);
-            });
+            }
+        );
 
         _ = app.UseAuthentication();
         _ = app.UseAuthorization();
@@ -212,12 +212,16 @@ public static class IdentityServiceCollectionExtensions
         // real one still boots - it has a working front door. Trimmed before comparing, matching what
         // ServiceCallerPrincipalSource compares.
         var secretConfigured = !string.IsNullOrWhiteSpace(
-            services.GetRequiredService<IConfiguration>()[InboundS2SAuthAttribute.SecretConfigKey]);
+            services.GetRequiredService<IConfiguration>()[InboundS2SAuthAttribute.SecretConfigKey]
+        );
 
-        if (secretConfigured
+        if (
+            secretConfigured
             && options.Apps.Any(app =>
                 !string.IsNullOrWhiteSpace(app.Value?.TenantId)
-                && !string.Equals(app.Value.TenantId.Trim(), options.LegacyTenantId, StringComparison.Ordinal)))
+                && !string.Equals(app.Value.TenantId.Trim(), options.LegacyTenantId, StringComparison.Ordinal)
+            )
+        )
         {
             return;
         }
@@ -231,7 +235,8 @@ public static class IdentityServiceCollectionExtensions
                 + $"{IdentityOptions.SectionName}:Apps entry naming a TenantId other than "
                 + $"{IdentityOptions.SectionName}:LegacyTenantId, for service callers; "
                 + "or register an IRequestPrincipalSource of your own. Set "
-                + $"{IdentityOptions.SectionName}:Enforce to false to run without authentication.");
+                + $"{IdentityOptions.SectionName}:Enforce to false to run without authentication."
+        );
     }
 
     /// <summary>
@@ -255,9 +260,7 @@ public static class IdentityServiceCollectionExtensions
             return;
         }
 
-        _ = authenticationBuilder.AddMicrosoftIdentityWebApi(
-            configuration,
-            IdentityController.AzureAdSectionName);
+        _ = authenticationBuilder.AddMicrosoftIdentityWebApi(configuration, IdentityController.AzureAdSectionName);
 
         AddPrincipalResolution(services);
     }
@@ -288,7 +291,8 @@ public static class IdentityServiceCollectionExtensions
                 var inner = options.Events?.OnTokenValidated;
                 options.Events ??= new JwtBearerEvents();
                 options.Events.OnTokenValidated = context => OnTokenValidatedAsync(context, inner);
-            });
+            }
+        );
 
         // Deliberately in the SAME statement block as the handler above, not merely on the same
         // branch. The Configure call above is the only wiring that ever writes
@@ -307,9 +311,7 @@ public static class IdentityServiceCollectionExtensions
     /// answer about THIS pipeline rather than about ASP.NET Core's scheme registry, which answers a
     /// wider question this pipeline cannot act on.
     /// </remarks>
-    private sealed class BearerPrincipalStashMarker
-    {
-    }
+    private sealed class BearerPrincipalStashMarker { }
 
     /// <summary>
     /// Runs the inner <c>OnTokenValidated</c> first, then resolves our own principal and stashes it
@@ -322,7 +324,8 @@ public static class IdentityServiceCollectionExtensions
     /// </remarks>
     internal static async Task OnTokenValidatedAsync(
         TokenValidatedContext context,
-        Func<TokenValidatedContext, Task>? inner)
+        Func<TokenValidatedContext, Task>? inner
+    )
     {
         ArgumentNullException.ThrowIfNull(context);
 
@@ -351,10 +354,10 @@ public static class IdentityServiceCollectionExtensions
             .ResolveInteractiveAsync(
                 context.Principal!,
                 context.HttpContext.TraceIdentifier,
-                context.HttpContext.RequestAborted)
+                context.HttpContext.RequestAborted
+            )
             .ConfigureAwait(false);
 
         context.HttpContext.Items[IdentityHttpItems.ResolutionKey] = resolution;
     }
-
 }

@@ -13,7 +13,8 @@ public class ConversationStatusResolverTests
     [InlineData(RunStatus.Interrupted, ConversationRunStatus.Interrupted)]
     public async Task ResolveByRunIdAsync_MapsEachRunStatus_ToItsConversationRunStatus(
         RunStatus runStatus,
-        ConversationRunStatus expected)
+        ConversationRunStatus expected
+    )
     {
         var store = new InMemoryConversationStore();
         await store.UpsertRunLedgerAsync(Entry(ThreadId, "run-1", runStatus, "input-1"));
@@ -76,7 +77,8 @@ public class ConversationStatusResolverTests
             [
                 MessagePersistenceConverter.ToPersistedMessage(partial, ThreadId, "run-1"),
                 MessagePersistenceConverter.ToPersistedMessage(final, ThreadId, "run-1"),
-            ]);
+            ]
+        );
         var resolver = new ConversationStatusResolver(store, store);
 
         var result = await resolver.ResolveByRunIdAsync(ThreadId, "run-1");
@@ -95,7 +97,8 @@ public class ConversationStatusResolverTests
         var toolCall = new ToolCallMessage { FunctionName = "search", ToolCallId = "call-1" };
         await store.AppendMessagesAsync(
             ThreadId,
-            [MessagePersistenceConverter.ToPersistedMessage(toolCall, ThreadId, "run-1")]);
+            [MessagePersistenceConverter.ToPersistedMessage(toolCall, ThreadId, "run-1")]
+        );
         var resolver = new ConversationStatusResolver(store, store);
 
         var result = await resolver.ResolveByRunIdAsync(ThreadId, "run-1");
@@ -112,13 +115,18 @@ public class ConversationStatusResolverTests
         var userPrompt = new TextMessage { Text = "please do the thing", Role = Role.User };
         await store.AppendMessagesAsync(
             ThreadId,
-            [MessagePersistenceConverter.ToPersistedMessage(userPrompt, ThreadId, "run-1")]);
+            [MessagePersistenceConverter.ToPersistedMessage(userPrompt, ThreadId, "run-1")]
+        );
         var resolver = new ConversationStatusResolver(store, store);
 
         var result = await resolver.ResolveByRunIdAsync(ThreadId, "run-1");
 
         result!.Status.Should().Be(ConversationRunStatus.Errored);
-        result.Response.Should().BeNull("a run that never produced an assistant answer must not echo the user's own prompt back as the response");
+        result
+            .Response.Should()
+            .BeNull(
+                "a run that never produced an assistant answer must not echo the user's own prompt back as the response"
+            );
     }
 
     [Fact]
@@ -126,14 +134,25 @@ public class ConversationStatusResolverTests
     {
         var store = new InMemoryConversationStore();
         await store.UpsertRunLedgerAsync(Entry(ThreadId, "run-1", RunStatus.Completed, "input-1"));
-        var thinking = new TextMessage { Text = "reasoning about the request...", Role = Role.Assistant, IsThinking = true };
-        var answer = new TextMessage { Text = "final answer", Role = Role.Assistant, IsThinking = false };
+        var thinking = new TextMessage
+        {
+            Text = "reasoning about the request...",
+            Role = Role.Assistant,
+            IsThinking = true,
+        };
+        var answer = new TextMessage
+        {
+            Text = "final answer",
+            Role = Role.Assistant,
+            IsThinking = false,
+        };
         await store.AppendMessagesAsync(
             ThreadId,
             [
                 MessagePersistenceConverter.ToPersistedMessage(thinking, ThreadId, "run-1"),
                 MessagePersistenceConverter.ToPersistedMessage(answer, ThreadId, "run-1"),
-            ]);
+            ]
+        );
         var resolver = new ConversationStatusResolver(store, store);
 
         var result = await resolver.ResolveByRunIdAsync(ThreadId, "run-1");
@@ -191,10 +210,13 @@ public class ConversationStatusResolverTests
         var result = await resolver.ResolveByInputIdAsync(ThreadId, "input-1");
 
         result.Should().NotBeNull("this input is live work — a caller told 'unknown' answers by re-sending");
-        result!.Status.Should().Be(
-            ConversationRunStatus.InProgress,
-            "the acceptance snapshot only had to keep the input from vanishing; the run row it was drained "
-                + "into is what the answer is built from");
+        result!
+            .Status.Should()
+            .Be(
+                ConversationRunStatus.InProgress,
+                "the acceptance snapshot only had to keep the input from vanishing; the run row it was drained "
+                    + "into is what the answer is built from"
+            );
         result.RunId.Should().Be("run-1");
     }
 
@@ -238,7 +260,8 @@ public class ConversationStatusResolverTests
         var text = new TextMessage { Text = "shared answer", Role = Role.Assistant };
         await store.AppendMessagesAsync(
             ThreadId,
-            [MessagePersistenceConverter.ToPersistedMessage(text, ThreadId, "run-1")]);
+            [MessagePersistenceConverter.ToPersistedMessage(text, ThreadId, "run-1")]
+        );
         var resolver = new ConversationStatusResolver(store, store);
 
         var first = await resolver.ResolveByInputIdAsync(ThreadId, "input-1");
@@ -259,7 +282,8 @@ public class ConversationStatusResolverTests
         var text = new TextMessage { Text = "first run answer", Role = Role.Assistant };
         await store.AppendMessagesAsync(
             ThreadId,
-            [MessagePersistenceConverter.ToPersistedMessage(text, ThreadId, "run-1")]);
+            [MessagePersistenceConverter.ToPersistedMessage(text, ThreadId, "run-1")]
+        );
         var resolver = new ConversationStatusResolver(store, store);
 
         var first = await resolver.ResolveByInputIdAsync(ThreadId, "input-1");
@@ -272,11 +296,7 @@ public class ConversationStatusResolverTests
         first.RunId.Should().NotBe(second.RunId);
     }
 
-    private static RunLedgerEntry Entry(
-        string threadId,
-        string runId,
-        RunStatus status,
-        params string[] inputIds)
+    private static RunLedgerEntry Entry(string threadId, string runId, RunStatus status, params string[] inputIds)
     {
         var now = DateTimeOffset.UtcNow;
         return new RunLedgerEntry(threadId, runId, status, inputIds, now, now);

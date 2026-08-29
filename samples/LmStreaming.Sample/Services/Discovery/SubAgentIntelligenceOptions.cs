@@ -12,10 +12,7 @@ internal sealed class SubAgentIntelligenceOptions
     /// </summary>
     public Dictionary<int, string[]> Tiers { get; init; } = [];
 
-    internal static SubAgentIntelligenceOptions Load(
-        IConfiguration configuration,
-        ILogger logger
-    )
+    internal static SubAgentIntelligenceOptions Load(IConfiguration configuration, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(logger);
@@ -40,12 +37,7 @@ internal sealed class SubAgentIntelligenceOptions
             }
             catch (InvalidOperationException ex)
             {
-                logger.LogError(
-                    ex,
-                    "Ignoring invalid {SectionName}:Tiers:{Tier} mapping",
-                    SectionName,
-                    tier
-                );
+                logger.LogError(ex, "Ignoring invalid {SectionName}:Tiers:{Tier} mapping", SectionName, tier);
                 continue;
             }
 

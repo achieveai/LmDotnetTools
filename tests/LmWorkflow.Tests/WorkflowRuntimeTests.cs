@@ -110,7 +110,10 @@ public class WorkflowRuntimeTests
         runtime.Visits.Should().Contain(new KeyValuePair<string, int>("start", 1));
 
         // Inputs are cloned from the definition.
-        runtime.Inputs["topic"]!.GetValue<string>().Should().Be("widgets");
+        runtime.Inputs["topic"]!
+            .GetValue<string>()
+            .Should()
+            .Be("widgets");
 
         // Every node gets an empty outputs bag.
         runtime.Outputs.Should().ContainKeys("start", "analyze", "done");
@@ -201,9 +204,7 @@ public class WorkflowRuntimeTests
         runtime.ObserveResult("never_registered", """{ "summary": "x" }""", isError: false);
 
         var projection = runtime.GetProjection(null);
-        projection["unmatched"]!.AsArray().Select(n => n!.GetValue<string>())
-            .Should()
-            .Contain("never_registered");
+        projection["unmatched"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Contain("never_registered");
     }
 
     [Fact]
@@ -266,11 +267,17 @@ public class WorkflowRuntimeTests
         runtime.SignalCompletion();
 
         // State is fully applied by completion...
-        runtime.State["authored"]!.AsArray().Should().HaveCount(2);
+        runtime.State["authored"]!
+            .AsArray()
+            .Should()
+            .HaveCount(2);
 
         // ...and the captured result MUST reflect that final state, not the mid-flight snapshot frozen at the
         // eager transition-time render. This is the regression guard for the resultTemplate completion race.
-        runtime.Result!["authored"]!.AsArray().Should().HaveCount(2);
+        runtime.Result!["authored"]!
+            .AsArray()
+            .Should()
+            .HaveCount(2);
     }
 
     [Fact]
@@ -379,10 +386,7 @@ public class WorkflowRuntimeTests
             runtime.ObserveResult($"unmatched_{i}", """{ "summary": "x" }""", isError: false);
         }
 
-        var unmatched = runtime
-            .GetProjection(null)["unmatched"]!.AsArray()
-            .Select(n => n!.GetValue<string>())
-            .ToList();
+        var unmatched = runtime.GetProjection(null)["unmatched"]!.AsArray().Select(n => n!.GetValue<string>()).ToList();
 
         unmatched.Should().HaveCount(50);
         unmatched.Should().Contain("unmatched_59"); // most recent retained
@@ -397,7 +401,13 @@ public class WorkflowRuntimeTests
         var runtime = LoadedRuntime();
 
         runtime.AddNode(
-            new ProceduralNode { Id = "extra", Title = "Extra", Next = [], TaskList = [] },
+            new ProceduralNode
+            {
+                Id = "extra",
+                Title = "Extra",
+                Next = [],
+                TaskList = [],
+            },
             previousNodeId: "analyze",
             nextNodeId: null
         );
@@ -416,10 +426,17 @@ public class WorkflowRuntimeTests
 
         // "nextNodeId" alone only wires an OUTGOING edge from the new node; with no "previousNodeId" it
         // gets no incoming edge, so it can never be reachable from "start".
-        var act = () => runtime.AddNode(
-            new ProceduralNode { Id = "spare", Title = "Spare", Next = [] },
-            previousNodeId: null,
-            nextNodeId: "done");
+        var act = () =>
+            runtime.AddNode(
+                new ProceduralNode
+                {
+                    Id = "spare",
+                    Title = "Spare",
+                    Next = [],
+                },
+                previousNodeId: null,
+                nextNodeId: "done"
+            );
 
         act.Should().Throw<WorkflowValidationException>().WithMessage("*unreachable*");
         runtime.Definition!.Nodes.Should().NotContain(n => n.Id == "spare");
@@ -431,9 +448,15 @@ public class WorkflowRuntimeTests
         var runtime = LoadedRuntime();
 
         runtime.AddNode(
-            new ProceduralNode { Id = "extra", Title = "Extra", Next = [] },
+            new ProceduralNode
+            {
+                Id = "extra",
+                Title = "Extra",
+                Next = [],
+            },
             previousNodeId: "analyze",
-            nextNodeId: "done");
+            nextNodeId: "done"
+        );
 
         var analyze = runtime.Definition!.Nodes.Single(n => n.Id == "analyze");
         analyze.Should().BeOfType<ProceduralNode>().Which.Next.Should().Contain("extra");
@@ -459,7 +482,11 @@ public class WorkflowRuntimeTests
         var runtime = LoadedRuntime();
 
         var act = () =>
-            runtime.AddNode(new TerminalNode { Id = "analyze", Title = "Duplicate" }, previousNodeId: "start", nextNodeId: null);
+            runtime.AddNode(
+                new TerminalNode { Id = "analyze", Title = "Duplicate" },
+                previousNodeId: "start",
+                nextNodeId: null
+            );
 
         act.Should().Throw<InvalidOperationException>().WithMessage("*already exists*");
     }
@@ -470,7 +497,11 @@ public class WorkflowRuntimeTests
         var runtime = LoadedRuntimeWithConditionalNode();
 
         var act = () =>
-            runtime.AddNode(new TerminalNode { Id = "extra", Title = "Extra" }, previousNodeId: "gate", nextNodeId: null);
+            runtime.AddNode(
+                new TerminalNode { Id = "extra", Title = "Extra" },
+                previousNodeId: "gate",
+                nextNodeId: null
+            );
 
         act.Should().Throw<InvalidOperationException>().WithMessage("*SetWorkflow*");
         runtime.Definition!.Nodes.Should().NotContain(n => n.Id == "extra");
@@ -531,9 +562,9 @@ public class WorkflowRuntimeTests
         noOp.MaxVisits.Should().Be(2);
         noOp.OnMaxVisits.Should().Be("done");
         var rendered = SimpleWorkflowTranslator.FromDefinition(runtime.Definition);
-        var reparsed = SimpleWorkflow.Deserialize(
-            JsonSerializer.Serialize(rendered, SimpleWorkflow.OutputJsonOptions)
-        ).ToDefinition();
+        var reparsed = SimpleWorkflow
+            .Deserialize(JsonSerializer.Serialize(rendered, SimpleWorkflow.OutputJsonOptions))
+            .ToDefinition();
         var roundTripped = reparsed.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "work");
         roundTripped.Next.Should().Equal(noOp.Next);
         roundTripped.MaxVisits.Should().Be(2);

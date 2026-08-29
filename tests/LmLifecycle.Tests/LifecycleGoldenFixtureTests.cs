@@ -33,8 +33,7 @@ public class LifecycleGoldenFixtureTests
         "{\"delivery_id\":\"dlv-1\",\"delivery_sequence\":7,\"event\":" + MinimalEventJson + "}";
 
     /// <summary>The hash the approval fixtures are pinned against, in the lowercase hex the contract requires.</summary>
-    private const string ArgumentsHash =
-        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    private const string ArgumentsHash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
 
     /// <summary>The copy that goes to one approver: every field populated, <c>subscription_id</c> included.</summary>
     private const string AddressedApprovalRequestJson =
@@ -117,15 +116,9 @@ public class LifecycleGoldenFixtureTests
     public void Timestamps_are_normalized_to_utc_before_encoding()
     {
         var utc = LifecycleTestData.Minimal();
-        var sameInstantInAnotherOffset = utc with
-        {
-            OccurredAt = utc.OccurredAt.ToOffset(TimeSpan.FromHours(5.5)),
-        };
+        var sameInstantInAnotherOffset = utc with { OccurredAt = utc.OccurredAt.ToOffset(TimeSpan.FromHours(5.5)) };
 
-        LifecycleSerializer
-            .Serialize(sameInstantInAnotherOffset)
-            .Should()
-            .Be(LifecycleSerializer.Serialize(utc));
+        LifecycleSerializer.Serialize(sameInstantInAnotherOffset).Should().Be(LifecycleSerializer.Serialize(utc));
     }
 
     [Fact]
@@ -171,7 +164,11 @@ public class LifecycleGoldenFixtureTests
         // empty: `""` would read as "addressed to a subscription whose id is blank", which is a claim,
         // where absence is the truth. Note that the other unset members are still written as `""` —
         // omission here is `subscription_id` being genuinely null, not a general empty-string rule.
-        var hostCopy = ApprovalRequest() with { SubscriptionId = null, Arguments = null };
+        var hostCopy = ApprovalRequest() with
+        {
+            SubscriptionId = null,
+            Arguments = null,
+        };
 
         var encoded = Encode(hostCopy);
         encoded.Should().Be(HostApprovalRequestJson);
@@ -221,12 +218,8 @@ public class LifecycleGoldenFixtureTests
         // decoded value reproduces the bytes, and the UTF-8 encoder agrees with the text one. Both are
         // asserted once per target framework, so a net8.0/net9.0 divergence in the in-box
         // System.Text.Json fails here rather than corrupting a signature in production.
-        Encode(Decode<ToolApprovalRequest>(AddressedApprovalRequestJson))
-            .Should()
-            .Be(AddressedApprovalRequestJson);
-        Encode(Decode<ToolApprovalDecision>(FullApprovalDecisionJson))
-            .Should()
-            .Be(FullApprovalDecisionJson);
+        Encode(Decode<ToolApprovalRequest>(AddressedApprovalRequestJson)).Should().Be(AddressedApprovalRequestJson);
+        Encode(Decode<ToolApprovalDecision>(FullApprovalDecisionJson)).Should().Be(FullApprovalDecisionJson);
 
         JsonSerializer
             .SerializeToUtf8Bytes(ApprovalRequest(), LifecycleSerializer.Options)
@@ -240,11 +233,9 @@ public class LifecycleGoldenFixtureTests
     /// than adding overloads to the serializer keeps the fixture honest — it pins the bytes the
     /// shipping call site actually produces.
     /// </summary>
-    private static string Encode<T>(T value) =>
-        JsonSerializer.Serialize(value, LifecycleSerializer.Options);
+    private static string Encode<T>(T value) => JsonSerializer.Serialize(value, LifecycleSerializer.Options);
 
-    private static T Decode<T>(string json) =>
-        JsonSerializer.Deserialize<T>(json, LifecycleSerializer.Options)!;
+    private static T Decode<T>(string json) => JsonSerializer.Deserialize<T>(json, LifecycleSerializer.Options)!;
 
     private static ToolApprovalRequest ApprovalRequest() =>
         new()

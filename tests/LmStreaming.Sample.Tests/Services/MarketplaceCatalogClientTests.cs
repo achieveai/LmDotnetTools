@@ -79,8 +79,10 @@ public class MarketplaceCatalogClientTests
 
         _ = await client.GetCatalogAsync(["official", "claude_plugins"]);
 
-        handler.LastRequest!.RequestUri!.ToString()
-            .Should().Be($"{GatewayBaseUrl}/api/v1/marketplaces/preview?marketplaces=official%2Cclaude_plugins");
+        handler
+            .LastRequest!.RequestUri!.ToString()
+            .Should()
+            .Be($"{GatewayBaseUrl}/api/v1/marketplaces/preview?marketplaces=official%2Cclaude_plugins");
     }
 
     [Fact]
@@ -90,8 +92,7 @@ public class MarketplaceCatalogClientTests
 
         _ = await client.GetCatalogAsync();
 
-        handler.LastRequest!.RequestUri!.ToString()
-            .Should().Be($"{GatewayBaseUrl}/api/v1/marketplaces/preview");
+        handler.LastRequest!.RequestUri!.ToString().Should().Be($"{GatewayBaseUrl}/api/v1/marketplaces/preview");
     }
 
     [Fact]
@@ -99,8 +100,11 @@ public class MarketplaceCatalogClientTests
     {
         var (client, _) = CreateClient(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
         {
-            Content = new StringContent("""{"error":"unknown marketplace alias(es): nope"}""",
-                Encoding.UTF8, "application/json"),
+            Content = new StringContent(
+                """{"error":"unknown marketplace alias(es): nope"}""",
+                Encoding.UTF8,
+                "application/json"
+            ),
         });
 
         var act = async () => await client.GetCatalogAsync(["nope"]);
@@ -185,13 +189,15 @@ public class MarketplaceCatalogClientTests
         new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
     private static (MarketplaceCatalogClient Client, StubHandler Handler) CreateClient(
-        Func<HttpRequestMessage, HttpResponseMessage> respond)
+        Func<HttpRequestMessage, HttpResponseMessage> respond
+    )
     {
         var handler = new StubHandler(respond);
         var client = new MarketplaceCatalogClient(
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
             new HttpClient(handler),
-            NullLogger<MarketplaceCatalogClient>.Instance);
+            NullLogger<MarketplaceCatalogClient>.Instance
+        );
         return (client, handler);
     }
 
@@ -201,7 +207,8 @@ public class MarketplaceCatalogClientTests
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             LastRequest = request;
             return Task.FromResult(respond(request));

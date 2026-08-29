@@ -74,19 +74,13 @@ public static class StateWriter
         ArgumentException.ThrowIfNullOrEmpty(to);
         if (!to.StartsWith(StatePrefix, StringComparison.Ordinal))
         {
-            throw new ArgumentException(
-                $"WriteSpec.To must start with '{StatePrefix}' but was '{to}'.",
-                nameof(to)
-            );
+            throw new ArgumentException($"WriteSpec.To must start with '{StatePrefix}' but was '{to}'.", nameof(to));
         }
 
         var segments = JsonPath.Parse(to[StatePrefix.Length..]);
         if (segments is null || segments.Count == 0)
         {
-            throw new ArgumentException(
-                $"WriteSpec.To '{to}' does not address a state destination.",
-                nameof(to)
-            );
+            throw new ArgumentException($"WriteSpec.To '{to}' does not address a state destination.", nameof(to));
         }
 
         return segments;
@@ -96,10 +90,7 @@ public static class StateWriter
     ///     Walks to the parent container of the final destination segment, creating intermediate
     ///     <see cref="JsonObject"/>s for any missing (or non-object) property segments.
     /// </summary>
-    private static JsonObject GetOrCreateParent(
-        JsonObject root,
-        IReadOnlyList<PathSegment> destination
-    )
+    private static JsonObject GetOrCreateParent(JsonObject root, IReadOnlyList<PathSegment> destination)
     {
         var current = root;
         for (var i = 0; i < destination.Count - 1; i++)
@@ -167,9 +158,7 @@ public static class StateWriter
     {
         if (source is not JsonObject sourceObject)
         {
-            throw new InvalidOperationException(
-                "WriteMode.Merge requires the source value to be a JSON object."
-            );
+            throw new InvalidOperationException("WriteMode.Merge requires the source value to be a JSON object.");
         }
 
         if (parent[key] is JsonObject target)
@@ -195,9 +184,7 @@ public static class StateWriter
     {
         if (segment.IsIndex)
         {
-            throw new NotSupportedException(
-                "Array-index destination segments are not supported in V1 state writes."
-            );
+            throw new NotSupportedException("Array-index destination segments are not supported in V1 state writes.");
         }
 
         return segment.Name!;

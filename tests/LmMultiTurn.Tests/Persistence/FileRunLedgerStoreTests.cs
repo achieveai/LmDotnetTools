@@ -193,7 +193,8 @@ public class FileRunLedgerStoreTests : IDisposable
         string runId,
         RunStatus status,
         IReadOnlyList<string> inputIds,
-        DateTimeOffset? createdAt = null)
+        DateTimeOffset? createdAt = null
+    )
     {
         var timestamp = createdAt ?? DateTimeOffset.UtcNow;
         return new RunLedgerEntry(threadId, runId, status, inputIds, timestamp, timestamp);

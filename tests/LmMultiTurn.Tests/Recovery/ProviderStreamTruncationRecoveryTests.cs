@@ -54,7 +54,8 @@ public class ProviderStreamTruncationRecoveryTests
             $"thread-{Guid.NewGuid():N}",
             includeAskUserQuestionTool: false,
             includeNotifyClientTool: false,
-            store: new InMemoryConversationStore());
+            store: new InMemoryConversationStore()
+        );
 
         // Bounded rather than unbounded: if recovery ever stopped happening, the run would sit waiting
         // on a stream that is never coming, and a test that hangs reports nothing.
@@ -62,9 +63,12 @@ public class ProviderStreamTruncationRecoveryTests
         _ = loop.RunAsync(cts.Token);
 
         var collected = new List<IMessage>();
-        await foreach (var message in loop.ExecuteRunAsync(
-            new UserInput([new TextMessage { Text = ScriptedReplyPrompt, Role = Role.User }]),
-            cts.Token))
+        await foreach (
+            var message in loop.ExecuteRunAsync(
+                new UserInput([new TextMessage { Text = ScriptedReplyPrompt, Role = Role.User }]),
+                cts.Token
+            )
+        )
         {
             collected.Add(message);
         }
@@ -72,22 +76,34 @@ public class ProviderStreamTruncationRecoveryTests
         // The transport cut the first body mid-delta. Reaching a second POST at all is the proof that
         // the resulting HttpIOException survived the client's SSE reader, the agent's event mapping,
         // and the loop's own catch filter with its ResponseEnded classification intact.
-        transport.RequestCount.Should().Be(
-            2,
-            "the truncated attempt is retried exactly once, which requires the interruption to have "
-                + "been classified as recoverable rather than fatal");
+        transport
+            .RequestCount.Should()
+            .Be(
+                2,
+                "the truncated attempt is retried exactly once, which requires the interruption to have "
+                    + "been classified as recoverable rather than fatal"
+            );
 
         var abandoned = collected.OfType<GenerationAbandonedMessage>().Should().ContainSingle().Subject;
-        var reply = collected.OfType<TextMessage>().Where(m => m.Role == Role.Assistant).Should()
-            .ContainSingle("only the replacement attempt finishes a message").Subject;
+        var reply = collected
+            .OfType<TextMessage>()
+            .Where(m => m.Role == Role.Assistant)
+            .Should()
+            .ContainSingle("only the replacement attempt finishes a message")
+            .Subject;
 
         reply.Text.Trim().Split(' ').Should().HaveCount(4, "the retry received the whole scripted reply");
-        reply.GenerationId.Should().NotBe(
-            abandoned.GenerationId,
-            "the replacement work is a new generation, so a client can discard the abandoned one wholesale");
+        reply
+            .GenerationId.Should()
+            .NotBe(
+                abandoned.GenerationId,
+                "the replacement work is a new generation, so a client can discard the abandoned one wholesale"
+            );
 
-        collected.OfType<RunCompletedMessage>().Should().AllSatisfy(
-            run => run.IsError.Should().BeFalse("a recovered interruption is invisible to the caller"));
+        collected
+            .OfType<RunCompletedMessage>()
+            .Should()
+            .AllSatisfy(run => run.IsError.Should().BeFalse("a recovered interruption is invisible to the caller"));
     }
 
     /// <summary>
@@ -101,8 +117,7 @@ public class ProviderStreamTruncationRecoveryTests
     /// </remarks>
     private sealed class TruncateFirstResponseHandler : HttpMessageHandler
     {
-        private readonly HttpMessageInvoker _inner =
-            new(new OpenAiResponsesTestSseMessageHandler { ChunkDelayMs = 0 });
+        private readonly HttpMessageInvoker _inner = new(new OpenAiResponsesTestSseMessageHandler { ChunkDelayMs = 0 });
 
         private int _requestCount;
 
@@ -110,7 +125,8 @@ public class ProviderStreamTruncationRecoveryTests
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             var attempt = Interlocked.Increment(ref _requestCount);
             var full = await _inner.SendAsync(request, cancellationToken);
@@ -161,9 +177,7 @@ public class ProviderStreamTruncationRecoveryTests
         private readonly byte[] _prefix = Encoding.UTF8.GetBytes(prefix);
         private int _position;
 
-        public override ValueTask<int> ReadAsync(
-            Memory<byte> buffer,
-            CancellationToken cancellationToken = default)
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
             if (_position < _prefix.Length)
             {
@@ -192,9 +206,7 @@ public class ProviderStreamTruncationRecoveryTests
             set => throw new NotSupportedException();
         }
 
-        public override void Flush()
-        {
-        }
+        public override void Flush() { }
 
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
 

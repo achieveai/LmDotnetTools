@@ -15,23 +15,66 @@ public class MessageExtensionsWithIdsTests
         const string opaque = "provider-opaque-id";
         return new TheoryData<string, IMessage>
         {
-            { nameof(TextMessage), new TextMessage { Text = "t", Role = Role.Assistant, GenerationId = opaque } },
-            { nameof(TextUpdateMessage), new TextUpdateMessage { Text = "t", Role = Role.Assistant, GenerationId = opaque } },
+            {
+                nameof(TextMessage),
+                new TextMessage
+                {
+                    Text = "t",
+                    Role = Role.Assistant,
+                    GenerationId = opaque,
+                }
+            },
+            {
+                nameof(TextUpdateMessage),
+                new TextUpdateMessage
+                {
+                    Text = "t",
+                    Role = Role.Assistant,
+                    GenerationId = opaque,
+                }
+            },
             {
                 nameof(TextWithCitationsMessage),
-                new TextWithCitationsMessage { Text = "t", Role = Role.Assistant, GenerationId = opaque }
+                new TextWithCitationsMessage
+                {
+                    Text = "t",
+                    Role = Role.Assistant,
+                    GenerationId = opaque,
+                }
             },
             {
                 nameof(ToolCallMessage),
-                new ToolCallMessage { ToolCallId = "c1", FunctionName = "f", FunctionArgs = "{}", Role = Role.Assistant, GenerationId = opaque }
+                new ToolCallMessage
+                {
+                    ToolCallId = "c1",
+                    FunctionName = "f",
+                    FunctionArgs = "{}",
+                    Role = Role.Assistant,
+                    GenerationId = opaque,
+                }
             },
             {
                 nameof(ToolCallUpdateMessage),
-                new ToolCallUpdateMessage { ToolCallId = "c1", FunctionName = "f", FunctionArgs = "{}", Role = Role.Assistant, IsUpdate = true, GenerationId = opaque }
+                new ToolCallUpdateMessage
+                {
+                    ToolCallId = "c1",
+                    FunctionName = "f",
+                    FunctionArgs = "{}",
+                    Role = Role.Assistant,
+                    IsUpdate = true,
+                    GenerationId = opaque,
+                }
             },
             {
                 nameof(ToolCallResultMessage),
-                new ToolCallResultMessage { ToolCallId = "c1", ToolName = "f", Result = "{}", Role = Role.User, GenerationId = opaque }
+                new ToolCallResultMessage
+                {
+                    ToolCallId = "c1",
+                    ToolName = "f",
+                    Result = "{}",
+                    Role = Role.User,
+                    GenerationId = opaque,
+                }
             },
             {
                 nameof(ToolsCallMessage),
@@ -43,23 +86,55 @@ public class MessageExtensionsWithIdsTests
             },
             {
                 nameof(ToolsCallResultMessage),
-                new ToolsCallResultMessage { Role = Role.User, ToolCallResults = [new ToolCallResult("c1", "{}")], GenerationId = opaque }
+                new ToolsCallResultMessage
+                {
+                    Role = Role.User,
+                    ToolCallResults = [new ToolCallResult("c1", "{}")],
+                    GenerationId = opaque,
+                }
             },
             {
                 nameof(ReasoningMessage),
-                new ReasoningMessage { Reasoning = "r", Role = Role.Assistant, GenerationId = opaque }
+                new ReasoningMessage
+                {
+                    Reasoning = "r",
+                    Role = Role.Assistant,
+                    GenerationId = opaque,
+                }
             },
             {
                 nameof(ReasoningUpdateMessage),
-                new ReasoningUpdateMessage { Reasoning = "r", Role = Role.Assistant, GenerationId = opaque }
+                new ReasoningUpdateMessage
+                {
+                    Reasoning = "r",
+                    Role = Role.Assistant,
+                    GenerationId = opaque,
+                }
             },
             {
                 nameof(UsageMessage),
-                new UsageMessage { Usage = new Usage { PromptTokens = 1, CompletionTokens = 1, TotalTokens = 2 }, Role = Role.Assistant, GenerationId = opaque }
+                new UsageMessage
+                {
+                    Usage = new Usage
+                    {
+                        PromptTokens = 1,
+                        CompletionTokens = 1,
+                        TotalTokens = 2,
+                    },
+                    Role = Role.Assistant,
+                    GenerationId = opaque,
+                }
             },
             {
                 nameof(AgentMessage),
-                AgentMessage.Create("agentmsg-1", AgentMessageType.Question, "agent-7", "build-fixer", body: "b", generationId: opaque)
+                AgentMessage.Create(
+                    "agentmsg-1",
+                    AgentMessageType.Question,
+                    "agent-7",
+                    "build-fixer",
+                    body: "b",
+                    generationId: opaque
+                )
             },
         };
     }

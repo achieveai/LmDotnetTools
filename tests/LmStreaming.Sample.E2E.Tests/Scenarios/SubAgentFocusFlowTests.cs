@@ -66,12 +66,14 @@ public sealed class SubAgentFocusFlowTests
         // 1) Scripted plan: a two-turn background worker (turn 1 = first answer, turn 2 = the
         //    restart answer) plus a parent that spawns it in the background then acknowledges. Both
         //    child runs share the ScriptedBuilder's single plan queue, so the restart consumes turn 2.
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("bg-worker", ctx => ctx.SystemPromptContains(WorkerMarker))
-                .Turn(t => t.Text(FirstAnswer))
-                .Turn(t => t.Text(SecondAnswer))
+            .Turn(t => t.Text(FirstAnswer))
+            .Turn(t => t.Text(SecondAnswer))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.ToolCall(
+            .Turn(t =>
+                t.ToolCall(
                     "Agent",
                     new
                     {
@@ -79,28 +81,32 @@ public sealed class SubAgentFocusFlowTests
                         prompt = "do work",
                         name = "bg1",
                         run_in_background = true,
-                    }))
-                .Turn(t => t.Text("Parent kicked off the background worker."))
+                    }
+                )
+            )
+            .Turn(t => t.Text("Parent kicked off the background worker."))
             .Build();
 
         var builder = new ScriptedBuilder(
             responder,
-            subAgentFactory: (_, providerAgentFactory) => new SubAgentOptions
-            {
-                Templates = new Dictionary<string, SubAgentTemplate>
+            subAgentFactory: (_, providerAgentFactory) =>
+                new SubAgentOptions
                 {
-                    // AgentFactory = providerAgentFactory: a restart recreates the child provider from
-                    // the SAME scripted responder, so its next scripted turn (turn 2) is served.
-                    ["bg_worker"] = new SubAgentTemplate
+                    Templates = new Dictionary<string, SubAgentTemplate>
                     {
-                        Name = "BackgroundWorker",
-                        SystemPrompt = WorkerMarker,
-                        AgentFactory = providerAgentFactory,
-                        MaxTurnsPerRun = 5,
+                        // AgentFactory = providerAgentFactory: a restart recreates the child provider from
+                        // the SAME scripted responder, so its next scripted turn (turn 2) is served.
+                        ["bg_worker"] = new SubAgentTemplate
+                        {
+                            Name = "BackgroundWorker",
+                            SystemPrompt = WorkerMarker,
+                            AgentFactory = providerAgentFactory,
+                            MaxTurnsPerRun = 5,
+                        },
                     },
-                },
-                MaxConcurrentSubAgents = 5,
-            });
+                    MaxConcurrentSubAgents = 5,
+                }
+        );
 
         using var factory = new E2EWebAppFactory(providerMode, builder);
 
@@ -119,7 +125,8 @@ public sealed class SubAgentFocusFlowTests
         {
             parentFrames.ToolCallNames().Should().Contain("Agent");
 
-            var receipt = parentFrames.ToolCallResults()
+            var receipt = parentFrames
+                .ToolCallResults()
                 .FirstOrDefault(r => r.Contains("agent_id", StringComparison.Ordinal));
             receipt.Should().NotBeNull("a background spawn returns a JSON receipt carrying the agent id");
 
@@ -134,7 +141,12 @@ public sealed class SubAgentFocusFlowTests
         //    (poll by condition, bounded by the harness timeout — no sleeps), then assert its projected
         //    SubAgentSummary shape. Proves ListSubAgents surfaces the real spawned child.
         var summary = await WaitForSubAgentAsync(
-            http, threadId, agentId, status => status == "completed", TimeSpan.FromSeconds(30));
+            http,
+            threadId,
+            agentId,
+            status => status == "completed",
+            TimeSpan.FromSeconds(30)
+        );
 
         summary.GetProperty("agentId").GetString().Should().Be(agentId);
         summary.GetProperty("template").GetString().Should().Be("bg_worker");
@@ -151,15 +163,20 @@ public sealed class SubAgentFocusFlowTests
         var messagesBody = await messagesResponse.Content.ReadAsStringAsync();
         using (var messagesDoc = JsonDocument.Parse(messagesBody))
         {
-            messagesDoc.RootElement.ValueKind.Should().Be(
-                JsonValueKind.Array, "the child transcript endpoint returns a JSON array");
+            messagesDoc
+                .RootElement.ValueKind.Should()
+                .Be(JsonValueKind.Array, "the child transcript endpoint returns a JSON array");
 
             // Exact substring matching over the normalized/persisted content is brittle across wire
             // formats, so assert the durable fact (a non-empty transcript) and surface the body on failure.
-            messagesDoc.RootElement.GetArrayLength().Should().BeGreaterThan(
-                0,
-                "the child's persisted transcript is the focus replay source; response body was: {0}",
-                messagesBody);
+            messagesDoc
+                .RootElement.GetArrayLength()
+                .Should()
+                .BeGreaterThan(
+                    0,
+                    "the child's persisted transcript is the focus replay source; response body was: {0}",
+                    messagesBody
+                );
         }
 
         // 5) Focus + relayed follow-up: connect /ws/subagent to the FINISHED child and send one message.
@@ -171,12 +188,18 @@ public sealed class SubAgentFocusFlowTests
         await childClient.SendUserMessageAsync("continue please");
         using (var childFrames = await childClient.CollectUntilDoneAsync(TimeSpan.FromSeconds(30)))
         {
-            childFrames.ConcatText().Should().Contain(
-                SecondAnswer,
-                "focusing the finished child and relaying a follow-up must restart it and stream its next turn");
+            childFrames
+                .ConcatText()
+                .Should()
+                .Contain(
+                    SecondAnswer,
+                    "focusing the finished child and relaying a follow-up must restart it and stream its next turn"
+                );
 
-            childFrames.OfMessageType("done").Should().NotBeEmpty(
-                "the restarted child's run completes, so the focused stream must end with a done sentinel");
+            childFrames
+                .OfMessageType("done")
+                .Should()
+                .NotBeEmpty("the restarted child's run completes, so the focused stream must end with a done sentinel");
         }
 
         // 6) Cleanup is deterministic via the compiler-ordered disposals: childClient (await using) first,
@@ -196,15 +219,15 @@ public sealed class SubAgentFocusFlowTests
         string threadId,
         string agentId,
         Func<string?, bool> statusPredicate,
-        TimeSpan timeout)
+        TimeSpan timeout
+    )
     {
         using var cts = new CancellationTokenSource(timeout);
         var lastBody = "<none>";
 
         while (!cts.IsCancellationRequested)
         {
-            using var response = await http.GetAsync(
-                $"/api/conversations/{threadId}/subagents", cts.Token);
+            using var response = await http.GetAsync($"/api/conversations/{threadId}/subagents", cts.Token);
             response.StatusCode.Should().Be(HttpStatusCode.OK);
 
             lastBody = await response.Content.ReadAsStringAsync(cts.Token);
@@ -212,10 +235,12 @@ public sealed class SubAgentFocusFlowTests
 
             foreach (var entry in doc.RootElement.EnumerateArray())
             {
-                if (entry.TryGetProperty("agentId", out var idProp)
+                if (
+                    entry.TryGetProperty("agentId", out var idProp)
                     && string.Equals(idProp.GetString(), agentId, StringComparison.Ordinal)
                     && entry.TryGetProperty("status", out var statusProp)
-                    && statusPredicate(statusProp.GetString()))
+                    && statusPredicate(statusProp.GetString())
+                )
                 {
                     return entry.Clone();
                 }
@@ -226,6 +251,7 @@ public sealed class SubAgentFocusFlowTests
 
         throw new TimeoutException(
             $"Sub-agent '{agentId}' did not reach the expected status within {timeout}. "
-            + $"Last subagents list body: {lastBody}");
+                + $"Last subagents list body: {lastBody}"
+        );
     }
 }

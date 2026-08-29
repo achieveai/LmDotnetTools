@@ -25,20 +25,26 @@ namespace LmMultiTurn.Tests;
 /// </summary>
 public class CodexAndCopilotForkSemanticsTests : LoggingTestBase
 {
-    public CodexAndCopilotForkSemanticsTests(ITestOutputHelper output) : base(output) { }
+    public CodexAndCopilotForkSemanticsTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Fact]
     public async Task CodexAgentLoop_WithParentRunId_PublishesForkedCompletion()
     {
-        var fakeClient = new MinimalCodexClient(
-        [
+        var fakeClient = new MinimalCodexClient([
             Event("thread.started", """{"type":"thread.started","thread_id":"thread_codex_fork"}"""),
-            Event("item.completed", """
+            Event(
+                "item.completed",
+                """
                 {"type":"item.completed","item":{"id":"msg_1","type":"agent_message","text":"ok"}}
-                """),
-            Event("turn.completed", """
+                """
+            ),
+            Event(
+                "turn.completed",
+                """
                 {"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}
-                """),
+                """
+            ),
         ]);
 
         await using var loop = new CodexAgentLoop(
@@ -48,14 +54,13 @@ public class CodexAndCopilotForkSemanticsTests : LoggingTestBase
             enabledTools: null,
             threadId: "codex-fork-test",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var input = new UserInput(
-            [new TextMessage { Role = Role.User, Text = "hi" }],
-            ParentRunId: "codex-parent-1");
+        var input = new UserInput([new TextMessage { Role = Role.User, Text = "hi" }], ParentRunId: "codex-parent-1");
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
@@ -76,15 +81,20 @@ public class CodexAndCopilotForkSemanticsTests : LoggingTestBase
     [Fact]
     public async Task CodexAgentLoop_WithoutParentRunId_NotForked()
     {
-        var fakeClient = new MinimalCodexClient(
-        [
+        var fakeClient = new MinimalCodexClient([
             Event("thread.started", """{"type":"thread.started","thread_id":"thread_codex_no_fork"}"""),
-            Event("item.completed", """
+            Event(
+                "item.completed",
+                """
                 {"type":"item.completed","item":{"id":"msg_1","type":"agent_message","text":"ok"}}
-                """),
-            Event("turn.completed", """
+                """
+            ),
+            Event(
+                "turn.completed",
+                """
                 {"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}
-                """),
+                """
+            ),
         ]);
 
         await using var loop = new CodexAgentLoop(
@@ -94,7 +104,8 @@ public class CodexAndCopilotForkSemanticsTests : LoggingTestBase
             enabledTools: null,
             threadId: "codex-no-fork-test",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -121,24 +132,27 @@ public class CodexAndCopilotForkSemanticsTests : LoggingTestBase
             sessionId: "sess_copilot_fork",
             events:
             [
-                SessionUpdate("sess_copilot_fork", """
+                SessionUpdate(
+                    "sess_copilot_fork",
+                    """
                     {"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ok"}}
-                    """),
+                    """
+                ),
                 PromptCompleted("""{"usage":{"inputTokens":1,"outputTokens":1,"cachedInputTokens":0}}"""),
-            ]);
+            ]
+        );
 
         await using var loop = new CopilotAgentLoop(
             new CopilotSdkOptions(),
             threadId: "copilot-fork-test",
             clientFactory: (_, _) => fakeClient,
-            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>()
+        );
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var input = new UserInput(
-            [new TextMessage { Role = Role.User, Text = "hi" }],
-            ParentRunId: "copilot-parent-1");
+        var input = new UserInput([new TextMessage { Role = Role.User, Text = "hi" }], ParentRunId: "copilot-parent-1");
 
         var messages = new List<IMessage>();
         await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
@@ -240,9 +254,8 @@ public class CodexAndCopilotForkSemanticsTests : LoggingTestBase
         public string DependencyState => "ready";
 
         public void ConfigureDynamicToolExecutor(
-            Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor)
-        {
-        }
+            Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor
+        ) { }
 
         public Task StartOrResumeThreadAsync(CodexBridgeInitOptions options, CancellationToken ct = default)
         {
@@ -251,12 +264,13 @@ public class CodexAndCopilotForkSemanticsTests : LoggingTestBase
             return Task.CompletedTask;
         }
 
-        public Task EnsureStartedAsync(CodexBridgeInitOptions options, CancellationToken ct = default)
-            => StartOrResumeThreadAsync(options, ct);
+        public Task EnsureStartedAsync(CodexBridgeInitOptions options, CancellationToken ct = default) =>
+            StartOrResumeThreadAsync(options, ct);
 
         public async IAsyncEnumerable<CodexTurnEventEnvelope> RunStreamingAsync(
             string input,
-            [EnumeratorCancellation] CancellationToken ct = default)
+            [EnumeratorCancellation] CancellationToken ct = default
+        )
         {
             foreach (var item in _events)
             {
@@ -295,9 +309,8 @@ public class CodexAndCopilotForkSemanticsTests : LoggingTestBase
         public string DependencyState => "ready";
 
         public void ConfigureDynamicToolExecutor(
-            Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor)
-        {
-        }
+            Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor
+        ) { }
 
         public Task StartOrResumeSessionAsync(CopilotBridgeInitOptions options, CancellationToken ct = default)
         {
@@ -306,12 +319,13 @@ public class CodexAndCopilotForkSemanticsTests : LoggingTestBase
             return Task.CompletedTask;
         }
 
-        public Task EnsureStartedAsync(CopilotBridgeInitOptions options, CancellationToken ct = default)
-            => StartOrResumeSessionAsync(options, ct);
+        public Task EnsureStartedAsync(CopilotBridgeInitOptions options, CancellationToken ct = default) =>
+            StartOrResumeSessionAsync(options, ct);
 
         public async IAsyncEnumerable<CopilotTurnEventEnvelope> RunStreamingAsync(
             string input,
-            [EnumeratorCancellation] CancellationToken ct = default)
+            [EnumeratorCancellation] CancellationToken ct = default
+        )
         {
             foreach (var item in _events)
             {

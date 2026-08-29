@@ -64,19 +64,25 @@ public sealed class StreamingResumeToolPillsTests
         // advances, followed by a deliberately long final text turn. The scripted SSE handler streams
         // in small delayed chunks, so a multi-thousand-word tail keeps the backend run in-flight for
         // several seconds — the window during which we switch away and back.
-        var role = ScriptedSseResponder
-            .New()
-            .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"));
+        var role = ScriptedSseResponder.New().ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"));
 
         for (var i = 0; i < ToolCallCount; i++)
         {
             var n = i;
-            role = role.Turn(t => t.ToolCall("calculate", new { a = n, operation = "add", b = 1 }));
+            role = role.Turn(t =>
+                t.ToolCall(
+                    "calculate",
+                    new
+                    {
+                        a = n,
+                        operation = "add",
+                        b = 1,
+                    }
+                )
+            );
         }
 
-        var responder = role
-            .Turn(t => t.TextLen(6_000))
-            .Build();
+        var responder = role.Turn(t => t.TextLen(6_000)).Build();
 
         await using var session = await _fixture.OpenAsync(providerMode, responder.HandlerFor(providerMode));
         var page = session.Page;
@@ -113,7 +119,8 @@ public sealed class StreamingResumeToolPillsTests
                         server.Send(frame.Binary ?? []);
                     }
                 });
-            });
+            }
+        );
 
         // RouteWebSocketAsync only intercepts WebSockets created on a document loaded AFTER it is
         // registered (it installs a page-init wrapper around WebSocket). OpenAsync already navigated,
@@ -136,7 +143,10 @@ public sealed class StreamingResumeToolPillsTests
         await page.ToolCallPills().WaitForCountAtLeastAsync(ToolCallCount, timeoutMs: 30_000);
         (await page.ToolCallPills().CountAsync())
             .Should()
-            .Be(ToolCallCount, "live streaming renders exactly one pill per tool call (no duplication before any switch)");
+            .Be(
+                ToolCallCount,
+                "live streaming renders exactly one pill per tool call (no duplication before any switch)"
+            );
 
         // Conversation A is added to the sidebar on its first send.
         await page.ConversationItems().WaitForCountAtLeastAsync(1);
@@ -160,7 +170,10 @@ public sealed class StreamingResumeToolPillsTests
         var runStateJson = await GetRunStateAsync(page, threadIdA!);
         runStateJson
             .Should()
-            .Contain("\"isInProgress\":true", "the pooled run must still be live at switch-back so the WebSocket resume path fires");
+            .Contain(
+                "\"isInProgress\":true",
+                "the pooled run must still be live at switch-back so the WebSocket resume path fires"
+            );
 
         // 6) The stream only goes idle if the RESUMED WebSocket delivered RunCompleted. Without an
         //    active resume the spinner stays stuck and this times out.
@@ -170,7 +183,10 @@ public sealed class StreamingResumeToolPillsTests
         // switched away), so its presence confirms the resumed stream actually delivered new content.
         (await page.AssistantText().CountAsync())
             .Should()
-            .BeGreaterThanOrEqualTo(1, "the resumed live stream delivered the final summary text after the replayed tool calls");
+            .BeGreaterThanOrEqualTo(
+                1,
+                "the resumed live stream delivered the final summary text after the replayed tool calls"
+            );
 
         // 7) THE ASSERTION: each tool call renders as exactly ONE pill after the resume. Without the
         //    runId-stamp fix, the WS-replayed (runId-less → 'default') tool calls fail to merge with
@@ -181,14 +197,17 @@ public sealed class StreamingResumeToolPillsTests
             .Be(
                 ToolCallCount,
                 "the resumed run must MERGE replayed tool calls with rehydrated history, not duplicate them — "
-                    + "a count above 12 is the stuck/duplicated-pill bug");
+                    + "a count above 12 is the stuck/duplicated-pill bug"
+            );
 
-        responder.RemainingTurns["parent"]
+        responder
+            .RemainingTurns["parent"]
             .Should()
             .Be(0, "the full scripted plan ran to completion server-side regardless of the client switch");
 
         await session.SaveSuccessScreenshotAsync(
-            $"StreamingResume.Many_tool_calls_resolve_after_switch_away_and_back_{providerMode}");
+            $"StreamingResume.Many_tool_calls_resolve_after_switch_away_and_back_{providerMode}"
+        );
     }
 
     /// <summary>
@@ -211,9 +230,7 @@ public sealed class StreamingResumeToolPillsTests
             || text.Contains("\"$type\":\"tools_call\"", StringComparison.Ordinal)
             || text.Contains("\"$type\":\"tools_call_update\"", StringComparison.Ordinal);
 
-        return isToolFrame
-            ? Regex.Replace(text, ",\"[Rr]unId\":\"[^\"]*\"", string.Empty)
-            : text;
+        return isToolFrame ? Regex.Replace(text, ",\"[Rr]unId\":\"[^\"]*\"", string.Empty) : text;
     }
 
     /// <summary>
@@ -224,6 +241,7 @@ public sealed class StreamingResumeToolPillsTests
     {
         return page.EvaluateAsync<string>(
             "async (tid) => { const r = await fetch(`${location.origin}/api/conversations/${encodeURIComponent(tid)}/run-state`, { headers: { 'Accept': 'application/json' } }); return await r.text(); }",
-            threadId);
+            threadId
+        );
     }
 }

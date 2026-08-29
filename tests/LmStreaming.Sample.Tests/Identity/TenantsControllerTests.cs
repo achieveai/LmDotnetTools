@@ -38,7 +38,8 @@ internal sealed class RecordingTenantStore : ITenantStore
     public Task<TenantProvisionOutcome> ProvisionAsync(
         TenantRecord tenant,
         string firstAdminUpn,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (ProvisionFailure?.Invoke(tenant) is { } failure)
         {
@@ -58,8 +59,8 @@ internal sealed class RecordingTenantStore : ITenantStore
         string upn,
         string userId,
         DateTimeOffset boundAt,
-        CancellationToken ct = default) =>
-        Task.FromResult(false);
+        CancellationToken ct = default
+    ) => Task.FromResult(false);
 
     public Task<bool> IsTenantAdminAsync(string tenantId, string userId, CancellationToken ct = default) =>
         Task.FromResult(false);
@@ -76,8 +77,8 @@ internal sealed class RecordingTenantStore : ITenantStore
     public Task<bool> TryEnsureQuarantineTenantAsync(
         string tenantId,
         DateTimeOffset createdAt,
-        CancellationToken ct = default) =>
-        Task.FromResult(QuarantineAvailable);
+        CancellationToken ct = default
+    ) => Task.FromResult(QuarantineAvailable);
 }
 
 /// <summary>
@@ -110,38 +111,40 @@ public sealed class TenantsControllerTests
     private async Task<TestServer> StartAsync(string? secret)
     {
         var host = await new HostBuilder()
-            .ConfigureWebHost(webHost => webHost
-                .UseTestServer()
-                .ConfigureAppConfiguration(config =>
-                {
-                    if (secret is not null)
+            .ConfigureWebHost(webHost =>
+                webHost
+                    .UseTestServer()
+                    .ConfigureAppConfiguration(config =>
                     {
-                        _ = config.AddInMemoryCollection(
-                            new Dictionary<string, string?>
-                            {
-                                [OperatorSecretAuthAttribute.SecretConfigKey] = secret,
-                            });
-                    }
-                })
-                .ConfigureServices(services =>
-                {
-                    _ = services.AddSingleton<ITenantStore>(_store);
-                    _ = services.AddSingleton<IAuditSink>(_audit);
-                    _ = services.AddSingleton(TimeProvider.System);
+                        if (secret is not null)
+                        {
+                            _ = config.AddInMemoryCollection(
+                                new Dictionary<string, string?>
+                                {
+                                    [OperatorSecretAuthAttribute.SecretConfigKey] = secret,
+                                }
+                            );
+                        }
+                    })
+                    .ConfigureServices(services =>
+                    {
+                        _ = services.AddSingleton<ITenantStore>(_store);
+                        _ = services.AddSingleton<IAuditSink>(_audit);
+                        _ = services.AddSingleton(TimeProvider.System);
 
-                    // Added when TenantsController gained the adopt-legacy route (#302). These
-                    // tests are about the operator-secret guard and are unchanged by it; the
-                    // registrations exist only so the controller can be constructed.
-                    _ = services.AddSingleton<IConversationStore>(new InMemoryConversationStore());
-                    _ = services.Configure<IdentityOptions>(_ => { });
-                    _ = services.AddControllers()
-                        .AddApplicationPart(typeof(TenantsController).Assembly);
-                })
-                .Configure(app =>
-                {
-                    _ = app.UseRouting();
-                    _ = app.UseEndpoints(endpoints => endpoints.MapControllers());
-                }))
+                        // Added when TenantsController gained the adopt-legacy route (#302). These
+                        // tests are about the operator-secret guard and are unchanged by it; the
+                        // registrations exist only so the controller can be constructed.
+                        _ = services.AddSingleton<IConversationStore>(new InMemoryConversationStore());
+                        _ = services.Configure<IdentityOptions>(_ => { });
+                        _ = services.AddControllers().AddApplicationPart(typeof(TenantsController).Assembly);
+                    })
+                    .Configure(app =>
+                    {
+                        _ = app.UseRouting();
+                        _ = app.UseEndpoints(endpoints => endpoints.MapControllers());
+                    })
+            )
             .StartAsync();
 
         return host.GetTestServer();
@@ -162,7 +165,8 @@ public sealed class TenantsControllerTests
     private static Task<HttpResponseMessage> PostBodyAsync<TBody>(
         TestServer server,
         string? presentedSecret,
-        TBody body)
+        TBody body
+    )
     {
         var client = server.CreateClient();
         if (presentedSecret is not null)
@@ -252,8 +256,7 @@ public sealed class TenantsControllerTests
         // so explicitly.
         _ = response.StatusCode.Should().Be(HttpStatusCode.Conflict);
         _ = _store.Provisioned.Should().BeEmpty();
-        _ = _audit.Administrations.Should().ContainSingle()
-            .Which.Outcome.Should().Be(AdministrationOutcome.Rejected);
+        _ = _audit.Administrations.Should().ContainSingle().Which.Outcome.Should().Be(AdministrationOutcome.Rejected);
     }
 
     [Fact]
@@ -298,4 +301,3 @@ public sealed class TenantsControllerTests
         _ = _store.Provisioned.Should().BeEmpty();
     }
 }
-

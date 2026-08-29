@@ -385,15 +385,17 @@ public sealed class SseStreamHttpContent : HttpContent
             // Server tool result - emit as text containing the result info
             else if (message.ServerToolResult is not null)
             {
-                var resultText = message.ServerToolResult.ErrorCode != null
-                    ? $"[Server Tool Error: {message.ServerToolResult.Name} - {message.ServerToolResult.ErrorCode}]"
-                    : $"[Server Tool Result: {message.ServerToolResult.Name}]";
+                var resultText =
+                    message.ServerToolResult.ErrorCode != null
+                        ? $"[Server Tool Error: {message.ServerToolResult.Name} - {message.ServerToolResult.ErrorCode}]"
+                        : $"[Server Tool Result: {message.ServerToolResult.Name}]";
                 choices = choices.Concat(ChunkTextMessage(msgIndex, resultText, _wordsPerChunk));
             }
             // Text with citations - emit as regular text (citations are metadata)
             else if (message.TextWithCitations is not null)
             {
-                var text = message.TextWithCitations.Text
+                var text =
+                    message.TextWithCitations.Text
                     ?? (
                         message.TextWithCitations.Length is int len
                             ? string.Join(" ", GenerateLoremChunks(len, _wordsPerChunk))

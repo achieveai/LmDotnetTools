@@ -19,9 +19,7 @@ public class ProgramPortResolutionTests
 
             var programType = typeof(LmStreaming.Sample.Controllers.DiagnosticsController).Assembly.GetType("Program");
             programType.Should().NotBeNull();
-            var method = programType!.GetMethod(
-                "ResolveCodexMcpPort",
-                BindingFlags.NonPublic | BindingFlags.Static);
+            var method = programType!.GetMethod("ResolveCodexMcpPort", BindingFlags.NonPublic | BindingFlags.Static);
 
             method.Should().NotBeNull();
             var resolved = (int)(method!.Invoke(null, null) ?? 0);

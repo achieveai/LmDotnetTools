@@ -14,13 +14,10 @@ internal sealed class TempSqliteDatabase : IDisposable
         Path = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(),
             "codereviewdaemon-db-tests",
-            Guid.NewGuid().ToString("N") + ".db");
+            Guid.NewGuid().ToString("N") + ".db"
+        );
         _ = Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-        ConnectionString = new SqliteConnectionStringBuilder
-        {
-            DataSource = Path,
-            Pooling = false,
-        }.ToString();
+        ConnectionString = new SqliteConnectionStringBuilder { DataSource = Path, Pooling = false }.ToString();
     }
 
     public string Path { get; }

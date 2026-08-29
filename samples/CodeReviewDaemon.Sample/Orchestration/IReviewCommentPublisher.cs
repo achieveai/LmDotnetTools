@@ -25,7 +25,8 @@ internal interface IReviewCommentPublisher
     Task<PostedComment?> FindPostedCommentAsync(
         ReviewCommentTarget target,
         string idempotencyKey,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken
+    );
 
     /// <summary>
     /// Posts <paramref name="body"/> as a review comment on the target PR, embedding
@@ -36,7 +37,8 @@ internal interface IReviewCommentPublisher
         ReviewCommentTarget target,
         string idempotencyKey,
         string body,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken
+    );
 
     /// <summary>
     /// Lists the review comments/threads ALREADY on the target PR (inline findings + review summaries for
@@ -46,7 +48,8 @@ internal interface IReviewCommentPublisher
     /// </summary>
     Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
         ReviewCommentTarget target,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken
+    );
 }
 
 /// <summary>Where a review comment is posted: the normalized repo and the PR within it.</summary>
@@ -74,7 +77,8 @@ internal sealed record ExistingReviewComment(
     string? Author,
     bool IsActive = true,
     DateTimeOffset? PublishedAt = null,
-    string? ThreadId = null);
+    string? ThreadId = null
+);
 
 /// <summary>
 /// How a provider renders one fetched comment body into <see cref="ExistingReviewComment.Body"/>: flattened

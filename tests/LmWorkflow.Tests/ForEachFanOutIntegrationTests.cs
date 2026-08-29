@@ -47,15 +47,9 @@ public class ForEachFanOutIntegrationTests
                     var match = Regex.Match(task?.Text ?? string.Empty, @"idx=(\d+)");
                     var idx = match.Success ? match.Groups[1].Value : "x";
                     return Task.FromResult(
-                        ToAsyncEnumerable(
-                            [
-                                new TextMessage
-                                {
-                                    Text = $$"""{ "text": "done-{{idx}}" }""",
-                                    Role = Role.Assistant,
-                                },
-                            ]
-                        )
+                        ToAsyncEnumerable([
+                            new TextMessage { Text = $$"""{ "text": "done-{{idx}}" }""", Role = Role.Assistant },
+                        ])
                     );
                 }
             );
@@ -116,10 +110,7 @@ public class ForEachFanOutIntegrationTests
             [
                 ToolCall(
                     "SetWorkflow",
-                    new JsonObject
-                    {
-                        ["definition"] = JsonNode.Parse(Phase4Fixtures.ForEachWorkflow("all")),
-                    },
+                    new JsonObject { ["definition"] = JsonNode.Parse(Phase4Fixtures.ForEachWorkflow("all")) },
                     "tc_setwf"
                 ),
             ],
@@ -132,12 +123,7 @@ public class ForEachFanOutIntegrationTests
                 ),
             ],
             3 => [ToolCall("GetWorkflow", [], "tc_get")],
-            4 =>
-            [
-                SpawnCall(0),
-                SpawnCall(1),
-                SpawnCall(2),
-            ],
+            4 => [SpawnCall(0), SpawnCall(1), SpawnCall(2)],
             5 =>
             [
                 ToolCall(

@@ -27,12 +27,7 @@ internal sealed class ManualTimeProvider : TimeProvider
         }
     }
 
-    public override ITimer CreateTimer(
-        TimerCallback callback,
-        object? state,
-        TimeSpan dueTime,
-        TimeSpan period
-    )
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
         ManualTimer timer;
         lock (_gate)
@@ -106,8 +101,7 @@ internal sealed class ManualTimeProvider : TimeProvider
                     return false;
                 }
 
-                _dueAt =
-                    dueTime == Timeout.InfiniteTimeSpan ? null : _owner.GetUtcNow() + dueTime;
+                _dueAt = dueTime == Timeout.InfiniteTimeSpan ? null : _owner.GetUtcNow() + dueTime;
                 _period = period;
             }
 

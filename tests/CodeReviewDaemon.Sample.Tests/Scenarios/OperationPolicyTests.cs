@@ -22,11 +22,10 @@ public sealed class OperationPolicyTests
                 ReviewBotHost: "github.com",
                 ReviewBotRepoPath: "/acme/reviewbot",
                 ApiHost: "api.github.com",
-                AllowedSubmodules:
-                [
-                    new SubmoduleAllowRule("github.com", "/acme/shared-lib"),
-                ]),
-            allowWriteOperations);
+                AllowedSubmodules: [new SubmoduleAllowRule("github.com", "/acme/shared-lib")]
+            ),
+            allowWriteOperations
+        );
 
     [Fact]
     public void FetchTarget_allows_upload_pack_on_the_target_repo()
@@ -39,14 +38,18 @@ public sealed class OperationPolicyTests
                 "github",
                 "github.com",
                 "GET",
-                "/acme/widgets.git/info/refs?service=git-upload-pack"));
+                "/acme/widgets.git/info/refs?service=git-upload-pack"
+            )
+        );
         var negotiate = policy.Decide(
             new OperationRequest(
                 SandboxOperation.FetchTarget,
                 "github",
                 "github.com",
                 "POST",
-                "/acme/widgets.git/git-upload-pack"));
+                "/acme/widgets.git/git-upload-pack"
+            )
+        );
 
         advertise.IsAllowed.Should().BeTrue();
         negotiate.IsAllowed.Should().BeTrue();
@@ -63,7 +66,9 @@ public sealed class OperationPolicyTests
                 "github",
                 "github.com",
                 "POST",
-                "/acme/widgets.git/git-receive-pack"));
+                "/acme/widgets.git/git-receive-pack"
+            )
+        );
 
         decision.IsAllowed.Should().BeFalse("the target repo is read-only — no push");
     }
@@ -79,7 +84,9 @@ public sealed class OperationPolicyTests
                 "github",
                 "evil.example.com",
                 "GET",
-                "/acme/widgets.git/info/refs?service=git-upload-pack"));
+                "/acme/widgets.git/info/refs?service=git-upload-pack"
+            )
+        );
 
         decision.IsAllowed.Should().BeFalse();
     }
@@ -96,7 +103,9 @@ public sealed class OperationPolicyTests
                 "github",
                 "github.com",
                 "GET",
-                "/acme/widgets-secrets.git/info/refs?service=git-upload-pack"));
+                "/acme/widgets-secrets.git/info/refs?service=git-upload-pack"
+            )
+        );
 
         decision.IsAllowed.Should().BeFalse();
     }
@@ -112,7 +121,9 @@ public sealed class OperationPolicyTests
                 "github",
                 "github.com",
                 "GET",
-                "/acme/widgets.git/../../acme/reviewbot.git/info/refs?service=git-upload-pack"));
+                "/acme/widgets.git/../../acme/reviewbot.git/info/refs?service=git-upload-pack"
+            )
+        );
 
         decision.IsAllowed.Should().BeFalse();
     }
@@ -128,14 +139,18 @@ public sealed class OperationPolicyTests
                 "github",
                 "github.com",
                 "POST",
-                "/acme/reviewbot.git/git-receive-pack"));
+                "/acme/reviewbot.git/git-receive-pack"
+            )
+        );
         var deniedFetchService = policy.Decide(
             new OperationRequest(
                 SandboxOperation.PushReviewBot,
                 "github",
                 "github.com",
                 "POST",
-                "/acme/reviewbot.git/git-upload-pack"));
+                "/acme/reviewbot.git/git-upload-pack"
+            )
+        );
 
         allowed.IsAllowed.Should().BeTrue();
         deniedFetchService.IsAllowed.Should().BeFalse();
@@ -152,7 +167,9 @@ public sealed class OperationPolicyTests
                 "github",
                 "github.com",
                 "POST",
-                "/acme/widgets.git/git-receive-pack"));
+                "/acme/widgets.git/git-receive-pack"
+            )
+        );
 
         decision.IsAllowed.Should().BeFalse("the daemon must never push to the repo under review");
     }
@@ -168,14 +185,18 @@ public sealed class OperationPolicyTests
                 "github",
                 "github.com",
                 "POST",
-                "/contributor/widgets.git/git-upload-pack"));
+                "/contributor/widgets.git/git-upload-pack"
+            )
+        );
         var push = policy.Decide(
             new OperationRequest(
                 SandboxOperation.FetchForkHead,
                 "github",
                 "github.com",
                 "POST",
-                "/contributor/widgets.git/git-receive-pack"));
+                "/contributor/widgets.git/git-receive-pack"
+            )
+        );
 
         fetch.IsAllowed.Should().BeTrue();
         push.IsAllowed.Should().BeFalse();
@@ -192,14 +213,18 @@ public sealed class OperationPolicyTests
                 "github",
                 "github.com",
                 "GET",
-                "/acme/shared-lib.git/info/refs?service=git-upload-pack"));
+                "/acme/shared-lib.git/info/refs?service=git-upload-pack"
+            )
+        );
         var denied = policy.Decide(
             new OperationRequest(
                 SandboxOperation.FetchSubmodule,
                 "github",
                 "github.com",
                 "GET",
-                "/random/private.git/info/refs?service=git-upload-pack"));
+                "/random/private.git/info/refs?service=git-upload-pack"
+            )
+        );
 
         allowed.IsAllowed.Should().BeTrue();
         denied.IsAllowed.Should().BeFalse();
@@ -216,21 +241,27 @@ public sealed class OperationPolicyTests
                 "github",
                 "api.github.com",
                 "POST",
-                "/repos/acme/widgets/pulls/7/comments"));
+                "/repos/acme/widgets/pulls/7/comments"
+            )
+        );
         var wrongMethod = policy.Decide(
             new OperationRequest(
                 SandboxOperation.PostReviewComment,
                 "github",
                 "api.github.com",
                 "GET",
-                "/repos/acme/widgets/pulls/7/comments"));
+                "/repos/acme/widgets/pulls/7/comments"
+            )
+        );
         var wrongHost = policy.Decide(
             new OperationRequest(
                 SandboxOperation.PostReviewComment,
                 "github",
                 "github.com",
                 "POST",
-                "/repos/acme/widgets/pulls/7/comments"));
+                "/repos/acme/widgets/pulls/7/comments"
+            )
+        );
 
         ok.IsAllowed.Should().BeTrue();
         wrongMethod.IsAllowed.Should().BeFalse();
@@ -251,14 +282,18 @@ public sealed class OperationPolicyTests
                 "github",
                 "github.com",
                 "POST",
-                "/acme/reviewbot.git/git-receive-pack"));
+                "/acme/reviewbot.git/git-receive-pack"
+            )
+        );
         var post = collectOnly.Decide(
             new OperationRequest(
                 SandboxOperation.PostReviewComment,
                 "github",
                 "api.github.com",
                 "POST",
-                "/repos/acme/widgets/pulls/7/comments"));
+                "/repos/acme/widgets/pulls/7/comments"
+            )
+        );
 
         push.IsAllowed.Should().BeFalse("a collect-only B variant has no push capability");
         post.IsAllowed.Should().BeFalse("a collect-only B variant has no post capability");
@@ -271,22 +306,30 @@ public sealed class OperationPolicyTests
         // push/post token (fail closed both ways) — there is no token for it to misuse.
         var collectOnly = CreatePolicy(allowWriteOperations: false);
 
-        collectOnly.ShouldInjectCredential(
-            new OperationRequest(
-                SandboxOperation.PushReviewBot,
-                "github",
-                "github.com",
-                "POST",
-                "/acme/reviewbot.git/git-receive-pack"))
-            .Should().BeFalse();
-        collectOnly.ShouldInjectCredential(
-            new OperationRequest(
-                SandboxOperation.PostReviewComment,
-                "github",
-                "api.github.com",
-                "POST",
-                "/repos/acme/widgets/pulls/7/comments"))
-            .Should().BeFalse();
+        collectOnly
+            .ShouldInjectCredential(
+                new OperationRequest(
+                    SandboxOperation.PushReviewBot,
+                    "github",
+                    "github.com",
+                    "POST",
+                    "/acme/reviewbot.git/git-receive-pack"
+                )
+            )
+            .Should()
+            .BeFalse();
+        collectOnly
+            .ShouldInjectCredential(
+                new OperationRequest(
+                    SandboxOperation.PostReviewComment,
+                    "github",
+                    "api.github.com",
+                    "POST",
+                    "/repos/acme/widgets/pulls/7/comments"
+                )
+            )
+            .Should()
+            .BeFalse();
     }
 
     [Fact]
@@ -301,7 +344,9 @@ public sealed class OperationPolicyTests
                 "github",
                 "github.com",
                 "GET",
-                "/acme/widgets.git/info/refs?service=git-upload-pack"));
+                "/acme/widgets.git/info/refs?service=git-upload-pack"
+            )
+        );
 
         fetch.IsAllowed.Should().BeTrue("fetching the target repo is read-only, not a write operation");
     }
@@ -317,13 +362,15 @@ public sealed class OperationPolicyTests
             "github",
             "github.com",
             "POST",
-            "/acme/widgets.git/git-receive-pack");
+            "/acme/widgets.git/git-receive-pack"
+        );
         var allowedRequest = new OperationRequest(
             SandboxOperation.PushReviewBot,
             "github",
             "github.com",
             "POST",
-            "/acme/reviewbot.git/git-receive-pack");
+            "/acme/reviewbot.git/git-receive-pack"
+        );
 
         policy.ShouldInjectCredential(deniedRequest).Should().BeFalse();
         policy.ShouldInjectCredential(allowedRequest).Should().BeTrue();

@@ -17,22 +17,27 @@ public class CopilotEventTranslatorUnmappedKindTests
         var translator = new CopilotEventTranslator(options, logger);
 
         const string unmappedKind = "some_unknown_kind";
-        var envelope = JsonDocument.Parse($$"""
-            {
-              "type": "session/update",
-              "sessionId": "sess_x",
-              "update": { "sessionUpdate": "{{unmappedKind}}" }
-            }
-            """).RootElement;
+        var envelope = JsonDocument
+            .Parse(
+                $$"""
+                {
+                  "type": "session/update",
+                  "sessionId": "sess_x",
+                  "update": { "sessionUpdate": "{{unmappedKind}}" }
+                }
+                """
+            )
+            .RootElement;
 
         var result = translator.ConvertEventToMessages(envelope, runId: "run_1", generationId: "gen_1");
 
         result.Should().BeEmpty("unmapped kinds must not produce messages");
 
-        var matching = logger.Entries
-            .Where(e =>
+        var matching = logger
+            .Entries.Where(e =>
                 e.Level == LogLevel.Information
-                && string.Equals(GetProp(e.State, "event_type"), "copilot.session_update.unmapped"))
+                && string.Equals(GetProp(e.State, "event_type"), "copilot.session_update.unmapped")
+            )
             .ToList();
 
         matching.Should().HaveCount(1, "exactly one Information-level diagnostic must fire for an unmapped kind");
@@ -61,7 +66,8 @@ public class CopilotEventTranslatorUnmappedKindTests
     {
         public List<LogEntry> Entries { get; } = [];
 
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
 
         public bool IsEnabled(LogLevel logLevel) => true;
 
@@ -70,7 +76,8 @@ public class CopilotEventTranslatorUnmappedKindTests
             EventId eventId,
             TState state,
             Exception? exception,
-            Func<TState, Exception?, string> formatter)
+            Func<TState, Exception?, string> formatter
+        )
         {
             var props = new List<KeyValuePair<string, object?>>();
             if (state is IEnumerable<KeyValuePair<string, object?>> structured)
@@ -82,8 +89,5 @@ public class CopilotEventTranslatorUnmappedKindTests
         }
     }
 
-    private sealed record LogEntry(
-        LogLevel Level,
-        string Message,
-        IReadOnlyList<KeyValuePair<string, object?>> State);
+    private sealed record LogEntry(LogLevel Level, string Message, IReadOnlyList<KeyValuePair<string, object?>> State);
 }

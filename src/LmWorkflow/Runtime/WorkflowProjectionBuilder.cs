@@ -214,8 +214,7 @@ internal static class WorkflowProjectionBuilder
         foreach (var branch in conditional.Branches)
         {
             var matched =
-                branch.StructuredCondition is { } condition
-                && ConditionEvaluator.Evaluate(condition, context);
+                branch.StructuredCondition is { } condition && ConditionEvaluator.Evaluate(condition, context);
             evaluations.Add(new JsonObject { ["to"] = branch.To, ["matched"] = matched });
             recommended ??= matched ? branch.To : null;
         }

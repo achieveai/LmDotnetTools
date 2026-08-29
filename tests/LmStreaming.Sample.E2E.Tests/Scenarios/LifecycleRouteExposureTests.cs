@@ -122,11 +122,7 @@ public sealed class LifecycleRouteExposureTests : LoggingTestBase
     private E2EWebAppFactory NewFactory(IDictionary<string, string?>? settings = null)
     {
         // Any scripted handler works — nothing here creates an agent; only the route table is read.
-        var responder = ScriptedSseResponder
-            .New()
-            .ForRole("noop", _ => true)
-            .Turn(t => t.Text("ok"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("noop", _ => true).Turn(t => t.Text("ok")).Build();
 
         return new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()), settings);
     }

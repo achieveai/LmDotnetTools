@@ -33,9 +33,7 @@ internal sealed class RecordingLifecyclePublisher : ILifecyclePublisher
     /// <summary>The event types in publication order — usually the whole assertion.</summary>
     public IReadOnlyList<string> EventTypes => [.. Events.Select(e => e.EventType)];
 
-    public ValueTask PublishAsync(
-        LifecycleEventEnvelope envelope,
-        CancellationToken ct = default)
+    public ValueTask PublishAsync(LifecycleEventEnvelope envelope, CancellationToken ct = default)
     {
         lock (_gate)
         {
@@ -49,10 +47,7 @@ internal sealed class RecordingLifecyclePublisher : ILifecyclePublisher
     public TPayload PayloadAt<TPayload>(int index)
         where TPayload : class
     {
-        LifecycleSerializer
-            .TryReadPayload<TPayload>(Events[index], out var payload)
-            .Should()
-            .BeTrue();
+        LifecycleSerializer.TryReadPayload<TPayload>(Events[index], out var payload).Should().BeTrue();
         return payload!;
     }
 
@@ -71,9 +66,5 @@ internal sealed class RecordingLifecyclePublisher : ILifecyclePublisher
 
     /// <summary>The correlation blocks of every event published under <paramref name="eventType"/>, in order.</summary>
     public IReadOnlyList<LifecycleCorrelation> CorrelationsFor(string eventType) =>
-        [
-            .. Events
-                .Where(e => e.EventType == eventType)
-                .Select(e => e.Correlation ?? new LifecycleCorrelation()),
-        ];
+        [.. Events.Where(e => e.EventType == eventType).Select(e => e.Correlation ?? new LifecycleCorrelation())];
 }

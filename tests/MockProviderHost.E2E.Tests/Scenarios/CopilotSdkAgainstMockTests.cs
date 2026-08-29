@@ -34,7 +34,8 @@ public sealed class CopilotSdkAgainstMockTests
         // LMDOTNET_RUN_COPILOT_E2E=1 once a stable probe contract is recorded in the README.
         Skip.If(
             Environment.GetEnvironmentVariable("LMDOTNET_RUN_COPILOT_E2E") != "1",
-            "Set LMDOTNET_RUN_COPILOT_E2E=1 to run the Copilot CLI investigation probe.");
+            "Set LMDOTNET_RUN_COPILOT_E2E=1 to run the Copilot CLI investigation probe."
+        );
 
         var (available, reason) = CopilotCliPrerequisites.Detect();
         Skip.IfNot(available, reason ?? "Copilot CLI not available.");
@@ -43,9 +44,10 @@ public sealed class CopilotSdkAgainstMockTests
         // `COPILOT_PROVIDER_WIRE_API=completions`. The responder draining its parent turn
         // is the ground-truth signal that the CLI actually reached /v1/chat/completions
         // (and therefore that BYOK bypassed GitHub OAuth).
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("parent", _ => true)
-                .Turn(t => t.Text("hello from the scripted parent"))
+            .Turn(t => t.Text("hello from the scripted parent"))
             .Build();
         await using var fixture = await EphemeralHostFixture.StartAsync(responder);
 
@@ -120,16 +122,27 @@ public sealed class CopilotSdkAgainstMockTests
         {
             if (proc is { HasExited: false })
             {
-                try { proc.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+                try
+                {
+                    proc.Kill(entireProcessTree: true);
+                }
+                catch
+                { /* best-effort */
+                }
             }
             proc?.Dispose();
         }
 
-        responder.RemainingTurns["parent"].Should().Be(0,
-            "the Copilot CLI under test should reach the mock host's /v1/chat/completions when "
-            + "BYOK env vars are set (COPILOT_PROVIDER_BASE_URL/_TYPE/_API_KEY/_WIRE_API). "
-            + "If this assertion fails, see the probe matrix in samples/MockProviderHost/README.md "
-            + "to determine whether to investigate the CLI invocation shape, the env-var contract, "
-            + "or to record a RED verdict for the follow-up E2E issue.");
+        responder
+            .RemainingTurns["parent"]
+            .Should()
+            .Be(
+                0,
+                "the Copilot CLI under test should reach the mock host's /v1/chat/completions when "
+                    + "BYOK env vars are set (COPILOT_PROVIDER_BASE_URL/_TYPE/_API_KEY/_WIRE_API). "
+                    + "If this assertion fails, see the probe matrix in samples/MockProviderHost/README.md "
+                    + "to determine whether to investigate the CLI invocation shape, the env-var contract, "
+                    + "or to record a RED verdict for the follow-up E2E issue."
+            );
     }
 }

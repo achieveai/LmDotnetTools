@@ -67,10 +67,9 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
         OperationPolicy policy,
         string provider,
         ILogger<OperationPolicyHandler> logger,
-        IPolicyRefusalRecorder? refusals = null)
-        : this([policy ?? throw new ArgumentNullException(nameof(policy))], provider, logger, refusals)
-    {
-    }
+        IPolicyRefusalRecorder? refusals = null
+    )
+        : this([policy ?? throw new ArgumentNullException(nameof(policy))], provider, logger, refusals) { }
 
     /// <summary>
     /// Enforces a set of per-repo policies (PR #121 H2): a request is allowed when <b>any</b> policy
@@ -90,7 +89,8 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
         IReadOnlyList<OperationPolicy> policies,
         string provider,
         ILogger<OperationPolicyHandler> logger,
-        IPolicyRefusalRecorder? refusals = null)
+        IPolicyRefusalRecorder? refusals = null
+    )
     {
         ArgumentNullException.ThrowIfNull(policies);
         _policies = [.. policies];
@@ -102,7 +102,8 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
 
     protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -114,14 +115,13 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
             _logger.LogWarning(
                 "Blocked an untagged {Method} request to {Uri}: no SandboxOperation classification.",
                 request.Method,
-                request.RequestUri);
-            RecordRefusal(
-                "(untagged)",
-                request,
-                "request was not classified with a SandboxOperation");
+                request.RequestUri
+            );
+            RecordRefusal("(untagged)", request, "request was not classified with a SandboxOperation");
             throw new OperationDeniedException(
                 SandboxOperation.ReadProviderMetadata,
-                "request was not classified with a SandboxOperation");
+                "request was not classified with a SandboxOperation"
+            );
         }
 
         var operationRequest = new OperationRequest(
@@ -129,7 +129,8 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
             _provider,
             request.RequestUri?.Host ?? string.Empty,
             request.Method.Method,
-            request.RequestUri is null ? string.Empty : request.RequestUri.PathAndQuery);
+            request.RequestUri is null ? string.Empty : request.RequestUri.PathAndQuery
+        );
 
         // Allow when ANY allow-listed repo's policy both permits AND would inject the credential; deny
         // only when every policy denies. Both halves of the fail-closed-both-ways guarantee are required.
@@ -147,15 +148,17 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
 
         // No policy permitted the request. Withhold the credential the moment it is denied, then block egress.
         request.Headers.Authorization = null;
-        var reason = _policies.Count == 0
-            ? "no repository is allow-listed for this provider"
-            : lastDeny?.Reason ?? "denied by every per-repo policy";
+        var reason =
+            _policies.Count == 0
+                ? "no repository is allow-listed for this provider"
+                : lastDeny?.Reason ?? "denied by every per-repo policy";
         _logger.LogWarning(
             "Denied {Operation} {Method} {Uri}: {Reason}",
             operation,
             request.Method,
             request.RequestUri,
-            reason);
+            reason
+        );
         RecordRefusal(operation.Value.ToString(), request, reason);
         throw new OperationDeniedException(operation.Value, reason);
     }
@@ -173,15 +176,18 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
         }
 
         var method = request.Method.Method;
-        _refusals.Record(new PolicyRefusalRecord(
-            DateTimeOffset.UtcNow,
-            OperationPolicy.IsMutatingMethod(method)
-                ? PolicyRefusalKind.ProviderWrite
-                : PolicyRefusalKind.ProviderRead,
-            _provider,
-            subject,
-            method,
-            request.RequestUri?.ToString() ?? "(no uri)",
-            reason));
+        _refusals.Record(
+            new PolicyRefusalRecord(
+                DateTimeOffset.UtcNow,
+                OperationPolicy.IsMutatingMethod(method)
+                    ? PolicyRefusalKind.ProviderWrite
+                    : PolicyRefusalKind.ProviderRead,
+                _provider,
+                subject,
+                method,
+                request.RequestUri?.ToString() ?? "(no uri)",
+                reason
+            )
+        );
     }
 }

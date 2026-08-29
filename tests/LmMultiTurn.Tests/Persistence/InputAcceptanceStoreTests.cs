@@ -16,8 +16,7 @@ namespace LmMultiTurn.Tests.Persistence;
 /// </summary>
 public sealed class InputAcceptanceStoreTests : IAsyncLifetime
 {
-    private readonly string _root =
-        Path.Combine(Path.GetTempPath(), $"InputAcceptanceStoreTests_{Guid.NewGuid():N}");
+    private readonly string _root = Path.Combine(Path.GetTempPath(), $"InputAcceptanceStoreTests_{Guid.NewGuid():N}");
     private readonly List<IAsyncDisposable> _disposables = [];
 
     /// <summary>The shipped implementations. Each case is run against every one of them.</summary>
@@ -70,7 +69,8 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     private IInputAcceptanceStore CreateStore(
         StoreKind kind,
         string backingName = "default",
-        TimeProvider? clock = null)
+        TimeProvider? clock = null
+    )
     {
         switch (kind)
         {
@@ -91,7 +91,8 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         string inputId = "idem:1:review-run-7",
         InputAcceptanceState state = InputAcceptanceState.Pending,
         bool spawningSuppressed = true,
-        Guid? reservationId = null) =>
+        Guid? reservationId = null
+    ) =>
         new(
             "thread-1",
             inputId,
@@ -99,7 +100,8 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
             state,
             spawningSuppressed,
             IdempotencyHonored: true,
-            reservationId ?? Guid.NewGuid());
+            reservationId ?? Guid.NewGuid()
+        );
 
     [Theory]
     [MemberData(nameof(AllStores))]
@@ -144,11 +146,7 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         var admission = Admission();
         _ = await store.TryReserveAcceptanceAsync(admission);
 
-        var resolved = admission with
-        {
-            State = InputAcceptanceState.Unenforced,
-            SpawningSuppressed = false,
-        };
+        var resolved = admission with { State = InputAcceptanceState.Unenforced, SpawningSuppressed = false };
         var applied = await store.TryRecordOutcomeAsync(resolved);
 
         applied.Should().BeTrue();
@@ -170,15 +168,13 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         var intruder = owner with { ReservationId = Guid.NewGuid(), SpawningSuppressed = false };
 
         var completed = await store.TryRecordOutcomeAsync(intruder);
-        var released = await store.TryReleaseAcceptanceAsync(
-            owner.ThreadId,
-            owner.InputId,
-            intruder.ReservationId);
+        var released = await store.TryReleaseAcceptanceAsync(owner.ThreadId, owner.InputId, intruder.ReservationId);
 
         completed.Should().BeFalse();
         released.Should().BeFalse();
         (await store.GetAcceptanceAsync(owner.ThreadId, owner.InputId))
-            .Should().Be(owner, "the owner's record must be exactly as it left it");
+            .Should()
+            .Be(owner, "the owner's record must be exactly as it left it");
     }
 
     [Theory]
@@ -192,7 +188,8 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         var released = await store.TryReleaseAcceptanceAsync(
             abandoned.ThreadId,
             abandoned.InputId,
-            abandoned.ReservationId);
+            abandoned.ReservationId
+        );
         var retry = Admission();
         var retryLost = await store.TryReserveAcceptanceAsync(retry);
 
@@ -231,14 +228,16 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         var admissionB = Admission(inputId);
         var results = await Task.WhenAll(
             Task.Run(() => storeA.TryReserveAcceptanceAsync(admissionA)),
-            Task.Run(() => storeB.TryReserveAcceptanceAsync(admissionB)));
+            Task.Run(() => storeB.TryReserveAcceptanceAsync(admissionB))
+        );
 
         results.Count(r => r is null).Should().Be(1, "exactly one caller may be told it owns the input");
         var stored = await storeA.GetAcceptanceAsync("thread-1", inputId);
         stored.Should().NotBeNull();
         results.Should().Contain(r => r == stored, "the loser must be handed the record the winner wrote");
         new[] { admissionA.ReservationId, admissionB.ReservationId }
-            .Should().Contain(stored!.ReservationId, "the record must be the winner's, not a merge of both");
+            .Should()
+            .Contain(stored!.ReservationId, "the record must be the winner's, not a merge of both");
     }
 
     /// <summary>
@@ -259,9 +258,7 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     {
         const int Racers = 8;
         const int ContestedInputs = 20;
-        var stores = Enumerable.Range(0, Racers)
-            .Select(_ => CreateStore(StoreKind.File, "contended"))
-            .ToArray();
+        var stores = Enumerable.Range(0, Racers).Select(_ => CreateStore(StoreKind.File, "contended")).ToArray();
 
         for (var round = 0; round < ContestedInputs; round++)
         {
@@ -271,18 +268,23 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
             // rather than one observing another's completed write.
             var admissions = stores.Select(_ => Admission(inputId)).ToArray();
             var results = await Task.WhenAll(
-                stores.Select((store, i) => Task.Run(() => store.TryReserveAcceptanceAsync(admissions[i]))));
+                stores.Select((store, i) => Task.Run(() => store.TryReserveAcceptanceAsync(admissions[i])))
+            );
 
-            results.Count(r => r is null)
-                .Should().Be(1, "exactly one caller may be told it owns input {0}", inputId);
+            results.Count(r => r is null).Should().Be(1, "exactly one caller may be told it owns input {0}", inputId);
             var stored = await stores[0].GetAcceptanceAsync("thread-1", inputId);
             stored.Should().NotBeNull();
-            results.Where(r => r is not null)
-                .Should().AllSatisfy(
+            results
+                .Where(r => r is not null)
+                .Should()
+                .AllSatisfy(
                     r => r.Should().Be(stored),
-                    "every loser must be handed the record the winner wrote, in full");
-            admissions.Select(a => a.ReservationId)
-                .Should().Contain(stored!.ReservationId, "the record must be one racer's, not a merge");
+                    "every loser must be handed the record the winner wrote, in full"
+                );
+            admissions
+                .Select(a => a.ReservationId)
+                .Should()
+                .Contain(stored!.ReservationId, "the record must be one racer's, not a merge");
         }
     }
 
@@ -310,9 +312,7 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         const int Racers = 6;
         const int ContestedInputs = 40;
         var acceptancesDir = Path.Combine(_root, Backing, "thread-1", "acceptances");
-        var stores = Enumerable.Range(0, Racers)
-            .Select(_ => CreateStore(StoreKind.File, Backing))
-            .ToArray();
+        var stores = Enumerable.Range(0, Racers).Select(_ => CreateStore(StoreKind.File, Backing)).ToArray();
 
         var observer = new RecordObserver(acceptancesDir);
         observer.Start();
@@ -324,18 +324,20 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
                 var inputId = $"idem:1:visible-{round}";
                 var admissions = stores.Select(_ => Admission(inputId)).ToArray();
                 var results = await Task.WhenAll(
-                    stores.Select((store, i) => Task.Run(() => store.TryReserveAcceptanceAsync(admissions[i]))));
+                    stores.Select((store, i) => Task.Run(() => store.TryReserveAcceptanceAsync(admissions[i])))
+                );
 
                 var winner = Array.FindIndex(results, r => r is null);
                 winner.Should().BeGreaterThanOrEqualTo(0, "exactly one racer owns input {0}", inputId);
 
                 // Retracting keeps the directory to a single live record, so the observer's every pass lands
                 // on the record actually being contended rather than on a growing pile of settled ones.
-                (await stores[winner].TryReleaseAcceptanceAsync(
-                        "thread-1",
-                        inputId,
-                        admissions[winner].ReservationId))
-                    .Should().BeTrue();
+                (
+                    await stores[winner]
+                        .TryReleaseAcceptanceAsync("thread-1", inputId, admissions[winner].ReservationId)
+                )
+                    .Should()
+                    .BeTrue();
             }
         }
         finally
@@ -343,12 +345,15 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
             observer.StopAndJoin();
         }
 
-        observer.Opened.Should().BeGreaterThan(
-            ContestedInputs,
-            "an observer that never got a record open proves nothing about what is observable");
-        observer.Unreadable.Should().Be(
-            0,
-            "a record the store lets anyone open must already carry the content that open is for");
+        observer
+            .Opened.Should()
+            .BeGreaterThan(
+                ContestedInputs,
+                "an observer that never got a record open proves nothing about what is observable"
+            );
+        observer
+            .Unreadable.Should()
+            .Be(0, "a record the store lets anyone open must already carry the content that open is for");
     }
 
     /// <summary>
@@ -369,11 +374,7 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         internal RecordObserver(string acceptancesDir)
         {
             _acceptancesDir = acceptancesDir;
-            _thread = new Thread(Watch)
-            {
-                IsBackground = true,
-                Name = "acceptance-record-observer",
-            };
+            _thread = new Thread(Watch) { IsBackground = true, Name = "acceptance-record-observer" };
         }
 
         internal int Opened => Volatile.Read(ref _opened);
@@ -396,9 +397,7 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
                 string[] records;
                 try
                 {
-                    records = Directory.Exists(_acceptancesDir)
-                        ? Directory.GetFiles(_acceptancesDir, "*.json")
-                        : [];
+                    records = Directory.Exists(_acceptancesDir) ? Directory.GetFiles(_acceptancesDir, "*.json") : [];
                 }
                 catch (IOException)
                 {
@@ -423,7 +422,8 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
                     FileAccess.Read,
                     FileShare.ReadWrite | FileShare.Delete,
                     bufferSize: 0,
-                    FileOptions.None);
+                    FileOptions.None
+                );
                 content = new byte[stream.Length];
                 stream.ReadExactly(content);
             }
@@ -475,19 +475,15 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
             (await storeA.TryReserveAcceptanceAsync(admission)).Should().BeNull();
 
             var released = await Task.WhenAll(
-                Task.Run(() => storeA.TryReleaseAcceptanceAsync(
-                    admission.ThreadId,
-                    admission.InputId,
-                    admission.ReservationId)),
-                Task.Run(() => storeB.TryReleaseAcceptanceAsync(
-                    admission.ThreadId,
-                    admission.InputId,
-                    admission.ReservationId)));
+                Task.Run(() =>
+                    storeA.TryReleaseAcceptanceAsync(admission.ThreadId, admission.InputId, admission.ReservationId)
+                ),
+                Task.Run(() =>
+                    storeB.TryReleaseAcceptanceAsync(admission.ThreadId, admission.InputId, admission.ReservationId)
+                )
+            );
 
-            released.Count(r => r).Should().Be(
-                1,
-                "only one caller can have removed the record (round {0})",
-                round);
+            released.Count(r => r).Should().Be(1, "only one caller can have removed the record (round {0})", round);
             (await storeA.GetAcceptanceAsync(admission.ThreadId, admission.InputId)).Should().BeNull();
         }
     }
@@ -511,40 +507,56 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         const int Retries = 4;
         const int HandoffsPerRetry = 120;
         const string InputId = "idem:1:retracted-under-compensation";
-        var stores = Enumerable.Range(0, Retries)
+        var stores = Enumerable
+            .Range(0, Retries)
             .Select(_ => CreateStore(StoreKind.File, "reserve-vs-retract"))
             .ToArray();
 
-        var contenders = stores.Select(store => Task.Run(async () =>
-        {
-            for (int taken = 0, attempts = 0; taken < HandoffsPerRetry; attempts++)
-            {
-                attempts.Should().BeLessThan(
-                    HandoffsPerRetry * 500,
-                    "a contender that can never take a repeatedly-freed id would hang the test");
-
-                var admission = Admission(InputId);
-                if (await store.TryReserveAcceptanceAsync(admission) is not null)
+        var contenders = stores
+            .Select(store =>
+                Task.Run(async () =>
                 {
-                    continue;
-                }
+                    for (int taken = 0, attempts = 0; taken < HandoffsPerRetry; attempts++)
+                    {
+                        attempts
+                            .Should()
+                            .BeLessThan(
+                                HandoffsPerRetry * 500,
+                                "a contender that can never take a repeatedly-freed id would hang the test"
+                            );
 
-                taken++;
-                (await store.TryReleaseAcceptanceAsync(
-                        admission.ThreadId,
-                        admission.InputId,
-                        admission.ReservationId))
-                    .Should().BeTrue("a contender must be able to give back the id it was granted");
-            }
-        })).ToArray();
+                        var admission = Admission(InputId);
+                        if (await store.TryReserveAcceptanceAsync(admission) is not null)
+                        {
+                            continue;
+                        }
+
+                        taken++;
+                        (
+                            await store.TryReleaseAcceptanceAsync(
+                                admission.ThreadId,
+                                admission.InputId,
+                                admission.ReservationId
+                            )
+                        )
+                            .Should()
+                            .BeTrue("a contender must be able to give back the id it was granted");
+                    }
+                })
+            )
+            .ToArray();
 
         var settle = async () => await Task.WhenAll(contenders);
 
-        _ = await settle.Should().NotThrowAsync(
-            "a reservation refused for an id that is free by the time it looks must be re-attempted, not "
-            + "reported as a store failure");
+        _ = await settle
+            .Should()
+            .NotThrowAsync(
+                "a reservation refused for an id that is free by the time it looks must be re-attempted, not "
+                    + "reported as a store failure"
+            );
         (await stores[0].GetAcceptanceAsync("thread-1", InputId))
-            .Should().BeNull("every admission taken in the race was given back");
+            .Should()
+            .BeNull("every admission taken in the race was given back");
     }
 
     /// <summary>
@@ -580,19 +592,15 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         using (var held = new FileStream(gateFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
         {
             var refused = await SettleUnderExpiredBudgetAsync(
-                later.TryReleaseAcceptanceAsync(
-                    admission.ThreadId,
-                    admission.InputId,
-                    admission.ReservationId),
-                clock);
+                later.TryReleaseAcceptanceAsync(admission.ThreadId, admission.InputId, admission.ReservationId),
+                clock
+            );
             refused.Should().BeFalse("the held handle is a mutation in flight");
         }
 
-        (await later.TryReleaseAcceptanceAsync(
-                admission.ThreadId,
-                admission.InputId,
-                admission.ReservationId))
-            .Should().BeTrue("closing the handle releases the gate, leftover file and all");
+        (await later.TryReleaseAcceptanceAsync(admission.ThreadId, admission.InputId, admission.ReservationId))
+            .Should()
+            .BeTrue("closing the handle releases the gate, leftover file and all");
     }
 
     /// <summary>
@@ -624,16 +632,14 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         // `await using` finishing the close — the caller here is releasing ITS OWN valid reservation, and
         // has every right to succeed once the gate frees up rather than being told it lost outright.
         var held = new FileStream(gateFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
-        var release = store.TryReleaseAcceptanceAsync(
-            admission.ThreadId,
-            admission.InputId,
-            admission.ReservationId);
+        var release = store.TryReleaseAcceptanceAsync(admission.ThreadId, admission.InputId, admission.ReservationId);
 
         await Task.Delay(50);
         await held.DisposeAsync();
 
-        (await release).Should().BeTrue(
-            "a gate contended for only an instant must be retried, not answered as a permanent refusal");
+        (await release)
+            .Should()
+            .BeTrue("a gate contended for only an instant must be retried, not answered as a permanent refusal");
         (await store.GetAcceptanceAsync(admission.ThreadId, admission.InputId)).Should().BeNull();
     }
 
@@ -662,15 +668,13 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         _ = await store.TryReserveAcceptanceAsync(admission);
         await File.WriteAllTextAsync(SoleAcceptanceRecordFile(backing), onDisk);
 
-        var read = ExpireSettleBudgetAsync(
-            store.GetAcceptanceAsync(admission.ThreadId, admission.InputId),
-            clock);
+        var read = ExpireSettleBudgetAsync(store.GetAcceptanceAsync(admission.ThreadId, admission.InputId), clock);
         var reserve = ExpireSettleBudgetAsync(store.TryReserveAcceptanceAsync(Admission()), clock);
 
-        _ = await read.Should().ThrowAsync<IOException>(
-            "an in-progress claim is an admitted input, not an absent one");
-        _ = await reserve.Should().ThrowAsync<IOException>(
-            "the caller must not be handed ownership of an input someone else is claiming");
+        _ = await read.Should().ThrowAsync<IOException>("an in-progress claim is an admitted input, not an absent one");
+        _ = await reserve
+            .Should()
+            .ThrowAsync<IOException>("the caller must not be handed ownership of an input someone else is claiming");
     }
 
     /// <summary>
@@ -695,8 +699,9 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
             await Task.Delay(1);
         }
 
-        inFlight.IsCompleted.Should().BeTrue(
-            "the call must settle once its budget is spent, not wait on a clock that no longer moves");
+        inFlight
+            .IsCompleted.Should()
+            .BeTrue("the call must settle once its budget is spent, not wait on a clock that no longer moves");
         return await inFlight;
     }
 
@@ -746,13 +751,13 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         // Take and give back the id purely to learn the record's name, then put a DIRECTORY there: the
         // exclusive create can now never succeed, so the call is pinned in the retry loop and cannot settle
         // on its own before the tree is pulled out from under it.
-        (await store.TryReserveAcceptanceAsync(admission)).Should().BeNull();
+        (await store.TryReserveAcceptanceAsync(admission))
+            .Should()
+            .BeNull();
         var recordFile = SoleAcceptanceRecordFile(Backing);
-        (await store.TryReleaseAcceptanceAsync(
-                admission.ThreadId,
-                admission.InputId,
-                admission.ReservationId))
-            .Should().BeTrue();
+        (await store.TryReleaseAcceptanceAsync(admission.ThreadId, admission.InputId, admission.ReservationId))
+            .Should()
+            .BeTrue();
         _ = Directory.CreateDirectory(recordFile);
 
         using var cancel = new CancellationTokenSource();
@@ -764,23 +769,22 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         // One rename, never a recursive delete: see the remarks above. The blocked call holds no handle on
         // anything under the thread directory — its create is refused outright and it never opens the record
         // for reading in this arm — so the rename cannot be contended by the very call it is arranging for.
-        Directory.Move(
-            Path.Combine(_root, Backing, "thread-1"),
-            Path.Combine(_root, Backing + "-detached"));
+        Directory.Move(Path.Combine(_root, Backing, "thread-1"), Path.Combine(_root, Backing + "-detached"));
         await Task.Delay(100);
 
         cancel.Cancel();
         var settle = async () => await reserve;
 
-        _ = await settle.Should().ThrowAsync<OperationCanceledException>(
-            "a retry loop with nothing to wait on must still yield, and a yield is what sees the token");
+        _ = await settle
+            .Should()
+            .ThrowAsync<OperationCanceledException>(
+                "a retry loop with nothing to wait on must still yield, and a yield is what sees the token"
+            );
     }
 
     /// <summary>The one admission record under a file-backed store, located without assuming its name.</summary>
     private string SoleAcceptanceRecordFile(string backingName) =>
-        Directory.EnumerateFiles(
-            Path.Combine(_root, backingName, "thread-1", "acceptances"),
-            "*.json").Single();
+        Directory.EnumerateFiles(Path.Combine(_root, backingName, "thread-1", "acceptances"), "*.json").Single();
 
     /// <summary>
     /// The record has to survive a process restart intact — including the enum, which a durable format can

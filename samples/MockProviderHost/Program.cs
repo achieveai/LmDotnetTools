@@ -9,15 +9,16 @@ string? scenario = Environment.GetEnvironmentVariable("LM_MOCK_SCENARIO");
 
 for (int i = 0; i < args.Length; i++)
 {
-    if (string.Equals(args[i], "--port", StringComparison.OrdinalIgnoreCase)
+    if (
+        string.Equals(args[i], "--port", StringComparison.OrdinalIgnoreCase)
         && i + 1 < args.Length
-        && int.TryParse(args[i + 1], out var parsedPort))
+        && int.TryParse(args[i + 1], out var parsedPort)
+    )
     {
         port = parsedPort;
         i++;
     }
-    else if (string.Equals(args[i], "--scenario", StringComparison.OrdinalIgnoreCase)
-        && i + 1 < args.Length)
+    else if (string.Equals(args[i], "--scenario", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
     {
         scenario = args[i + 1];
         i++;
@@ -32,9 +33,6 @@ bootLogger.LogInformation("Loading scenario '{Scenario}'", scenario);
 
 var responder = JsonScenarioLoader.Load(scenario);
 
-var app = MockProviderHostBuilder.Build(
-    responder,
-    urls: [$"http://127.0.0.1:{port}"],
-    loggerFactory: loggerFactory);
+var app = MockProviderHostBuilder.Build(responder, urls: [$"http://127.0.0.1:{port}"], loggerFactory: loggerFactory);
 
 await app.RunAsync();

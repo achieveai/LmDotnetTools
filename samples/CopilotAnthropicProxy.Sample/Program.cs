@@ -139,12 +139,10 @@ builder.Services.AddSingleton(sp =>
 
 var webToolsOptions = WebToolsOptions.FromEnvironment();
 builder.Services.AddSingleton(webToolsOptions);
-builder.Services.AddSingleton(sp =>
-    new JinaWebProvider(
-        webToolsOptions,
-        sp.GetRequiredService<ILoggerFactory>().CreateLogger<JinaWebProvider>()
-    )
-);
+builder.Services.AddSingleton(sp => new JinaWebProvider(
+    webToolsOptions,
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<JinaWebProvider>()
+));
 builder.Services.AddSingleton<McpJinaToolCatalog>();
 builder.Services.AddSingleton<McpToolSnapshotStore>();
 builder.Services.AddSingleton<McpToolComposition>();
@@ -317,10 +315,7 @@ foreach (var path in new[] { "/v1/responses", "/responses" })
 // /mcp and /mcp/readonly — transparent MCP (Streamable HTTP) proxy. Every HTTP method is routed
 // here (not just GET/POST/DELETE) so an unsupported method gets ProxyMcp's own MCP/JSON-RPC-shaped
 // 405, not the shared Anthropic-shaped fallback 404.
-app.Map(
-    "/mcp",
-    ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout, config.KeepAliveInterval, config.MaxBodyBytes)
-);
+app.Map("/mcp", ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout, config.KeepAliveInterval, config.MaxBodyBytes));
 app.Map(
     "/mcp/readonly",
     ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout, config.KeepAliveInterval, config.MaxBodyBytes)
@@ -386,9 +381,7 @@ internal sealed record ProxyConfig
             ),
             EnableDeviceFlow = ParseBool(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_ENABLE_DEVICE_FLOW")),
             ModelOverride = NullIfBlank(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL")),
-            ModelEndpointsOverride = ParseList(
-                Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL_ENDPOINTS")
-            ),
+            ModelEndpointsOverride = ParseList(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL_ENDPOINTS")),
             MaxBodyBytes = ParseLong(
                 Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_MAX_BODY_BYTES"),
                 DefaultMaxBodyBytes
@@ -2039,12 +2032,7 @@ internal static class ProxyHttp
                 var frames = translator.Next(payload.Trim());
                 if (frames.Count == 0)
                 {
-                    reportedSilentDrop = ReportSilentlyDroppedEvent(
-                        logger,
-                        outboundModel,
-                        payload,
-                        reportedSilentDrop
-                    );
+                    reportedSilentDrop = ReportSilentlyDroppedEvent(logger, outboundModel, payload, reportedSilentDrop);
                     return true;
                 }
 
@@ -2304,8 +2292,7 @@ internal static class ProxyHttp
     /// </summary>
     private static string ExtractErrorMessage(string body, ILogger logger)
     {
-        const string opaque =
-            "The upstream Copilot API returned an error. See the proxy log for the response body.";
+        const string opaque = "The upstream Copilot API returned an error. See the proxy log for the response body.";
 
         try
         {
@@ -2453,7 +2440,13 @@ internal static class ProxyHttp
     }
 
     /// <summary>Writes an error in the envelope shape the INBOUND dialect expects.</summary>
-    public static Task WriteErrorAsync(HttpContext ctx, ProxyDialect dialect, int status, string type, string message) =>
+    public static Task WriteErrorAsync(
+        HttpContext ctx,
+        ProxyDialect dialect,
+        int status,
+        string type,
+        string message
+    ) =>
         dialect == ProxyDialect.AnthropicMessages
             ? WriteAnthropicErrorAsync(ctx, status, type, message)
             : WriteOpenAiErrorAsync(ctx, status, type, message);
@@ -2850,10 +2843,7 @@ internal static class ProxyMcp
             response["id"] = requestId.DeepClone();
         }
 
-        await ctx.Response.Body.WriteAsync(
-            Encoding.UTF8.GetBytes(response.ToJsonString()),
-            ctx.RequestAborted
-        );
+        await ctx.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(response.ToJsonString()), ctx.RequestAborted);
     }
 }
 

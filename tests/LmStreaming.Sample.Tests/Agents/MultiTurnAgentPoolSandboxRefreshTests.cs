@@ -28,7 +28,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
                         new WorkspaceRef("workspace-1"),
                         credential,
                         credential,
-                        sessionId),
+                        sessionId
+                    ),
                 };
             },
             providerRegistry: null,
@@ -45,7 +46,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             requestedProviderId: "provider-1",
             requestResponseDumpFileName: "dump-1",
             requestedWorkspaceId: "workspace-1",
-            callerCredential: credential);
+            callerCredential: credential
+        );
         sessionId = "sess-2";
 
         var result = await pool.EnsureCurrentAgentAsync("thread-1", credential);
@@ -72,7 +74,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             credential,
             () => "sess-1",
             (_, _) => Task.FromResult(new SandboxSession("workspace-1", "sess-2", "workspace", "/workspace")),
-            created);
+            created
+        );
 
         var original = pool.GetOrCreateAgent(
             "thread-socket",
@@ -80,7 +83,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             requestedProviderId: null,
             requestResponseDumpFileName: null,
             requestedWorkspaceId: "workspace-1",
-            callerCredential: credential);
+            callerCredential: credential
+        );
 
         var result = await pool.EnsureCurrentAgentAsync("thread-socket", credential, replace: false);
 
@@ -100,15 +104,18 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             credential,
             () => sessionId,
             (_, _) => Task.FromResult(new SandboxSession("workspace-1", "sess-2", "workspace", "/workspace")),
-            created);
+            created
+        );
 
-        var original = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
-            "thread-active",
-            Mode,
-            requestedProviderId: null,
-            requestResponseDumpFileName: null,
-            requestedWorkspaceId: "workspace-1",
-            callerCredential: credential);
+        var original = (FakeMultiTurnAgent)
+            pool.GetOrCreateAgent(
+                "thread-active",
+                Mode,
+                requestedProviderId: null,
+                requestResponseDumpFileName: null,
+                requestedWorkspaceId: "workspace-1",
+                callerCredential: credential
+            );
         original.CurrentRunId = "run-1";
         original.IsRunning = true;
         sessionId = "sess-2";
@@ -150,15 +157,18 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             () => sessionId,
             (_, _) => Task.FromResult(new SandboxSession("workspace-1", "sess-2", "workspace", "/workspace")),
             created,
-            time);
+            time
+        );
 
-        var original = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
-            "thread-queued-refresh",
-            Mode,
-            requestedProviderId: null,
-            requestResponseDumpFileName: null,
-            requestedWorkspaceId: "workspace-1",
-            callerCredential: credential);
+        var original = (FakeMultiTurnAgent)
+            pool.GetOrCreateAgent(
+                "thread-queued-refresh",
+                Mode,
+                requestedProviderId: null,
+                requestResponseDumpFileName: null,
+                requestedWorkspaceId: "workspace-1",
+                callerCredential: credential
+            );
 
         // Exactly the state the sender is owed an answer in: accepted, no run id, not running.
         original.CurrentRunId = null;
@@ -168,9 +178,12 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         sessionId = "sess-2";
         var whileQueued = await pool.EnsureCurrentAgentAsync("thread-queued-refresh", credential);
 
-        whileQueued.Status.Should().Be(
-            MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred,
-            "an accepted input the agent has not started is work in hand, so the refresh must wait");
+        whileQueued
+            .Status.Should()
+            .Be(
+                MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred,
+                "an accepted input the agent has not started is work in hand, so the refresh must wait"
+            );
         whileQueued.Agent.Should().BeSameAs(original);
         created.Should().ContainSingle("the entry holding the queued turn must not have been replaced");
 
@@ -186,7 +199,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         await Wait.UntilAsync(
             () => pool.TryGetHandoffState("thread-queued-refresh", out var state) && !state.IsBusy,
             "the assignment echoing the accepted input retires it from the ledger",
-            timeout: TimeSpan.FromSeconds(30));
+            timeout: TimeSpan.FromSeconds(30)
+        );
 
         var onceDrained = await pool.EnsureCurrentAgentAsync("thread-queued-refresh", credential);
         onceDrained.Status.Should().Be(MultiTurnAgentPool.AgentRefreshStatus.Replaced);
@@ -216,7 +230,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
                         new WorkspaceRef("workspace-1"),
                         credential,
                         credential,
-                        "sess-1"),
+                        "sess-1"
+                    ),
                 };
             },
             providerRegistry: null,
@@ -224,7 +239,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             NullLogger<MultiTurnAgentPool>.Instance,
             bindingSink: new RecordingBindingSink(),
             liveSessionResolver: (_, _) =>
-                Task.FromResult(new SandboxSession("workspace-1", "sess-2", "workspace", "/workspace")));
+                Task.FromResult(new SandboxSession("workspace-1", "sess-2", "workspace", "/workspace"))
+        );
 
         var original = pool.GetOrCreateAgent(
             "thread-failed-refresh",
@@ -232,7 +248,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             requestedProviderId: null,
             requestResponseDumpFileName: null,
             requestedWorkspaceId: "workspace-1",
-            callerCredential: credential);
+            callerCredential: credential
+        );
 
         Func<Task> act = () => pool.EnsureCurrentAgentAsync("thread-failed-refresh", credential);
 
@@ -255,7 +272,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             {
                 resolverCalls++;
                 return Task.FromResult(new SandboxSession("workspace-1", "sess-2", "workspace", "/workspace"));
-            });
+            }
+        );
 
         var original = pool.GetOrCreateAgent("thread-plain", SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
@@ -282,7 +300,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
                 resolverCalls++;
                 return Task.FromResult(new SandboxSession("workspace-1", "sess-2", "workspace", "/workspace"));
             },
-            created);
+            created
+        );
 
         _ = pool.GetOrCreateAgent(
             "thread-foreign",
@@ -290,7 +309,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             requestedProviderId: null,
             requestResponseDumpFileName: null,
             requestedWorkspaceId: "workspace-1",
-            callerCredential: owner);
+            callerCredential: owner
+        );
 
         Func<Task> act = () => pool.EnsureCurrentAgentAsync("thread-foreign", foreign);
 
@@ -323,7 +343,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
                         new WorkspaceRef("workspace-1"),
                         owner,
                         owner,
-                        sessionId),
+                        sessionId
+                    ),
                 };
             },
             providerRegistry: null,
@@ -341,20 +362,21 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             requestResponseDumpFileName: null,
             requestedWorkspaceId: "workspace-1",
             callerCredential: owner,
-            ownerUserId: "dir-a:alice");
+            ownerUserId: "dir-a:alice"
+        );
         sessionId = "sess-2";
 
         var refreshed = await pool.EnsureCurrentAgentAsync("thread-frozen", owner, ownerUserId: "dir-a:alice");
 
-        refreshed.Status.Should().Be(
-            MultiTurnAgentPool.AgentRefreshStatus.Replaced,
-            "the assertions below are about the REPLACEMENT entry, not the original");
+        refreshed
+            .Status.Should()
+            .Be(
+                MultiTurnAgentPool.AgentRefreshStatus.Replaced,
+                "the assertions below are about the REPLACEMENT entry, not the original"
+            );
         created.Should().HaveCount(2);
 
-        Func<Task> bobsTurn = () => pool.EnsureCurrentAgentAsync(
-            "thread-frozen",
-            owner,
-            ownerUserId: "dir-b:bob");
+        Func<Task> bobsTurn = () => pool.EnsureCurrentAgentAsync("thread-frozen", owner, ownerUserId: "dir-b:bob");
 
         var conflict = await bobsTurn.Should().ThrowAsync<PrincipalConflictException>();
         conflict.Which.ExistingUserId.Should().Be("dir-a:alice");
@@ -362,10 +384,12 @@ public class MultiTurnAgentPoolSandboxRefreshTests
 
         // Companion assertion: fixing the principal must not quietly drop the credential the same
         // call already carried correctly.
-        Func<Task> foreignCaller = () => pool.EnsureCurrentAgentAsync(
-            "thread-frozen",
-            new SandboxCredential("intruder", "key"),
-            ownerUserId: "dir-a:alice");
+        Func<Task> foreignCaller = () =>
+            pool.EnsureCurrentAgentAsync(
+                "thread-frozen",
+                new SandboxCredential("intruder", "key"),
+                ownerUserId: "dir-a:alice"
+            );
 
         _ = await foreignCaller.Should().ThrowAsync<SandboxCredentialConflictException>();
     }
@@ -393,7 +417,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
                         new WorkspaceRef("workspace-1"),
                         owner,
                         owner,
-                        sessionId),
+                        sessionId
+                    ),
                 };
             },
             providerRegistry: null,
@@ -411,23 +436,19 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             requestResponseDumpFileName: null,
             requestedWorkspaceId: "workspace-1",
             callerCredential: owner,
-            ownerUserId: null);
+            ownerUserId: null
+        );
         sessionId = "sess-2";
 
-        var refreshed = await pool.EnsureCurrentAgentAsync(
-            "thread-unowned",
-            owner,
-            ownerUserId: "dir-b:bob");
+        var refreshed = await pool.EnsureCurrentAgentAsync("thread-unowned", owner, ownerUserId: "dir-b:bob");
 
         refreshed.Status.Should().Be(MultiTurnAgentPool.AgentRefreshStatus.Replaced);
 
-        Func<Task> carolsTurn = () => pool.EnsureCurrentAgentAsync(
-            "thread-unowned",
-            owner,
-            ownerUserId: "dir-c:carol");
+        Func<Task> carolsTurn = () => pool.EnsureCurrentAgentAsync("thread-unowned", owner, ownerUserId: "dir-c:carol");
 
-        await carolsTurn.Should().NotThrowAsync(
-            "the refresh must carry the entry's own (absent) principal forward, not adopt Bob's");
+        await carolsTurn
+            .Should()
+            .NotThrowAsync("the refresh must carry the entry's own (absent) principal forward, not adopt Bob's");
     }
 
     private static MultiTurnAgentPool CreatePool(
@@ -435,7 +456,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         Func<string> sessionId,
         Func<SandboxEstablishedBinding, CancellationToken, Task<SandboxSession>> resolver,
         List<FakeMultiTurnAgent> created,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         return new MultiTurnAgentPool(
             context =>
@@ -450,14 +472,16 @@ public class MultiTurnAgentPoolSandboxRefreshTests
                         new WorkspaceRef("workspace-1"),
                         credential,
                         credential,
-                        sessionId()),
+                        sessionId()
+                    ),
                 };
             },
             providerRegistry: null,
             conversationStore: null,
             NullLogger<MultiTurnAgentPool>.Instance,
             bindingSink: new RecordingBindingSink(),
-            liveSessionResolver: resolver)
+            liveSessionResolver: resolver
+        )
         {
             TimeProvider = timeProvider ?? TimeProvider.System,
         };
@@ -488,7 +512,6 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         MultiTurnAgentPool pool,
         string threadId,
         string inputId,
-        IMultiTurnAgent acceptedBy) =>
-        ((IInputAcceptanceObserver)pool).OnInputAccepted(threadId, inputId, acceptedBy);
-
+        IMultiTurnAgent acceptedBy
+    ) => ((IInputAcceptanceObserver)pool).OnInputAccepted(threadId, inputId, acceptedBy);
 }
