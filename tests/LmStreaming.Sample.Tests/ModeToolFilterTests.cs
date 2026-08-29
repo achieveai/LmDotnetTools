@@ -70,13 +70,14 @@ public sealed class ModeToolFilterTests
         var workspace = SystemChatModes.GetById(SystemChatModes.WorkspaceAgentModeId);
 
         workspace.Should().NotBeNull();
-        // Function tools are curated via the sandbox MCP gateway, so the function allow-list is empty...
-        workspace!.EnabledTools.Should().BeEmpty();
-        // ...but web_search is declared on the dedicated built-in field, decoupled from enabledTools.
+        // Function tools are curated via the sandbox MCP gateway, so enabledTools carries only the
+        // shared todo-board family (no sample demo tools, and no web names either)...
+        workspace!.EnabledTools.Should().NotContain(["get_weather", "calculate", "web_search", "WebSearch"]);
+        // ...while web_search is declared on the dedicated built-in field, decoupled from enabledTools.
         workspace.EnabledBuiltInTools.Should().Contain("web_search");
 
         // Resolution mirrors Program.cs: EnabledBuiltInTools governs (falling back to EnabledTools only
-        // when null). So web_search survives even though enabledTools is empty.
+        // when null). So web_search survives even though enabledTools does not name it.
         var allowList = workspace.EnabledBuiltInTools ?? workspace.EnabledTools;
         var result = ModeToolFilter.FilterBuiltInTools(WebSearchBuiltIns(), allowList);
 

@@ -25,7 +25,10 @@ public class SystemChatModesTests
         mode.Description.Should().Contain("sandboxed workspace");
         mode.SystemPrompt.Should().Contain("You MUST use the sandbox tools");
         mode.SystemPrompt.Should().Contain("Read, Write, Edit, Glob, Grep, Bash, PowerShell");
-        mode.EnabledTools.Should().BeEmpty();
+        // Function tools stay curated (no sample demo tools); the one family enabledTools names is
+        // the shared todo board's, whose full-list pin lives in ProgramModeToolNarrowingTests.
+        mode.EnabledTools.Should().NotBeEmpty();
+        mode.EnabledTools.Should().Contain("add-task").And.NotContain("get_weather");
     }
 
     [Fact]
