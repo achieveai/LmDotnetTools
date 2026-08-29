@@ -13,6 +13,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.TodoBoard;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Models;
@@ -686,6 +687,61 @@ public class ConversationsController(
 
         var usage = await ConversationUsageProjection.LoadAsync(store, threadId, ct);
         return usage is null ? NotFound() : Ok(usage);
+    }
+
+    /// <summary>
+    /// Returns the conversation's todo board (#583): the task rows the agent and its sub-agents have
+    /// written, in tree order, with their nesting, notes and status. Read-only. Returns 404 when the
+    /// conversation has no board at all — which is the signal to render NOTHING, not an empty board:
+    /// the CLI-backed providers ship their own task tracking and never register these tools.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// PRECEDENCE. The live board wins whenever it holds rows; otherwise the persisted projection does.
+    /// The asymmetry is deliberate. A live board that is EMPTY carries no information — it is equally
+    /// the state of a conversation whose agent has not touched the board yet, one recreated by a
+    /// mode/provider swap, and one restored after a restart, all of which get a fresh task tool. A
+    /// persisted board carries real rows somebody wrote. Preferring the live board merely because it
+    /// exists would blank the panel on every restart, which is the "stale UI is worse than no UI"
+    /// failure with the sign flipped.
+    /// </para>
+    /// <para>
+    /// WRITE-THROUGH. A non-empty live board is persisted on the way out, and this read is the only
+    /// writer PR 1 has — the change-driven, debounced save arrives with the push frame in PR 2. Empty
+    /// live boards are deliberately NOT written: doing so would let a single post-restart read erase
+    /// the very projection the paragraph above exists to preserve. A persist failure is logged and
+    /// swallowed, never surfaced: the caller asked to READ the board, and it is in hand.
+    /// </para>
+    /// </remarks>
+    [HttpGet("{threadId}/todos")]
+    public async Task<IActionResult> GetTodos(string threadId, CancellationToken ct = default)
+    {
+        if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
+        {
+            return denied;
+        }
+
+        var live = agentPool.GetTodoBoard(threadId)?.GetTodoBoardSnapshot(threadId);
+        if (live is { IsEmpty: false })
+        {
+            try
+            {
+                await ConversationTodoProjection.SaveAsync(store, live, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Failed to persist the todo board for thread {ThreadId}; returning the live board anyway",
+                    threadId
+                );
+            }
+
+            return Ok(live);
+        }
+
+        var persisted = await ConversationTodoProjection.LoadAsync(store, threadId, ct);
+        return persisted is null ? NotFound() : Ok(persisted);
     }
 
     /// <summary>

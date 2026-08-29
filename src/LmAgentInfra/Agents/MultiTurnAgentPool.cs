@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
@@ -159,6 +160,14 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     {
         /// <summary>The sandbox binding to publish on a successful commit, or null for a non-workspace agent.</summary>
         public SandboxEstablishedBinding? StagedBinding { get; init; }
+
+        /// <summary>
+        /// The conversation's live todo board, or <c>null</c> when this agent ships no task tooling
+        /// (the CLI-backed providers bring their own tracking). The factory constructs the board's
+        /// owner while wiring the per-conversation tool registry; handing it back here is what gives
+        /// the read path a reference to the RUNNING instance instead of a discarded one.
+        /// </summary>
+        public ITodoBoardSource? TodoBoard { get; init; }
     }
 
     /// <summary>
@@ -223,6 +232,13 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         public string? WorkspaceId { get; init; }
         public string? RequestResponseDumpFileName { get; init; }
         public IReadOnlyList<IAsyncDisposable>? OwnedResources { get; init; }
+
+        /// <summary>
+        /// This conversation's live todo board, or <c>null</c> when the agent ships no task tooling.
+        /// Not owned by the entry and never disposed through it: the board is plain in-memory state
+        /// belonging to the tool instance in the agent's function registry, and it dies with the entry.
+        /// </summary>
+        public ITodoBoardSource? TodoBoard { get; init; }
 
         /// <summary>
         /// The sandbox credential of the caller that created this thread's agent — <c>null</c> for
@@ -1178,6 +1194,21 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     public AgentProfile? GetAgentMode(string threadId)
     {
         return _agents.TryGetValue(threadId, out var entry) ? entry.Mode : null;
+    }
+
+    /// <summary>
+    /// The live todo board for a thread, or null when no agent is pooled for it or the pooled agent
+    /// ships no task tooling.
+    /// </summary>
+    /// <remarks>
+    /// The sub-agents of a conversation deliberately do NOT get a board of their own: a spawn
+    /// repopulates its registry from the parent's handlers, which close over the parent's single task
+    /// tool instance. One conversation, one board — reading it here reads what every descendant wrote.
+    /// </remarks>
+    /// <param name="threadId">The thread identifier.</param>
+    public ITodoBoardSource? GetTodoBoard(string threadId)
+    {
+        return _agents.TryGetValue(threadId, out var entry) ? entry.TodoBoard : null;
     }
 
     /// <summary>
@@ -2345,6 +2376,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             WorkspaceId = workspaceId,
             RequestResponseDumpFileName = requestResponseDumpFileName,
             OwnedResources = result.OwnedResources,
+            TodoBoard = result.TodoBoard,
             CallerCredential = callerCredential,
             OwnerUserId = ownerUserId,
             EstablishedBinding = result.StagedBinding,
