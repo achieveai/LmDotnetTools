@@ -26,6 +26,12 @@ const props = defineProps<{
   threadId: string;
   /** Workspace-relative path, exactly as carried on the task row. */
   path: string;
+  /**
+   * True while the layout reserves an expanded sidebar column on the left (#594 D6, #603 F-001):
+   * the backdrop then stops at that column's edge so conversation switching stays a single click.
+   * See `.artifact-preview-beside-sidebar` below for why this is geometry, not z-index.
+   */
+  besideSidebar?: boolean;
 }>();
 
 const emit = defineEmits<{ close: [] }>();
@@ -75,7 +81,12 @@ onBeforeUnmount(() => abort.abort());
 </script>
 
 <template>
-  <BaseModal :title="props.path" data-test-id="artifact-preview-modal" @close="emit('close')">
+  <BaseModal
+    :title="props.path"
+    :class="{ 'artifact-preview-beside-sidebar': props.besideSidebar }"
+    data-test-id="artifact-preview-modal"
+    @close="emit('close')"
+  >
     <div class="artifact-preview">
       <div v-if="isLoading" class="artifact-preview-message" data-testid="artifact-preview-loading">
         Loading preview…
@@ -112,6 +123,32 @@ onBeforeUnmount(() => abort.abort());
 </template>
 
 <style scoped>
+/* #594 D6, reworked for #603 F-001: keep single-click conversation switching while the preview is
+   open — by GEOMETRY, not stacking. The first cut lifted the sidebar to z-index 1001, which also
+   reordered painting: below 1200px viewport width the opaque 280px sidebar painted over the
+   centred 640px dialog's left third and stole its clicks (including the per-row delete buttons
+   sitting under the dialog's rectangle). Instead, THIS modal's backdrop simply starts at the
+   sidebar column's right edge: sidebar and dialog are disjoint at every width, nothing is lifted
+   above any other modal's z-1000 backdrop, and backdrop-click-to-close keeps working on the
+   backdrop that exists. The class lands on BaseModal's root (`.modal-backdrop`) via the child-root
+   scope-id fallthrough; repeating `.modal-backdrop` in the selector out-specifies BaseModal's own
+   `inset: 0` (0,3,0 vs 0,2,0), so bundle source order never decides the cascade. 280px mirrors
+   `.conversation-sidebar`'s width — the pair is cross-checked by a source guard in
+   ChatLayout.test.ts. */
+.modal-backdrop.artifact-preview-beside-sidebar {
+  left: 280px;
+}
+
+/* At ConversationSidebar's own <=768px breakpoint the sidebar is a self-overlaying drawer, not a
+   reserved column, so the backdrop returns to full viewport and covers it like every other modal.
+   Same compound selector, later in this block: wins over the base rule by order within ONE file,
+   which the compiler preserves. */
+@media (max-width: 768px) {
+  .modal-backdrop.artifact-preview-beside-sidebar {
+    left: 0;
+  }
+}
+
 .artifact-preview {
   min-width: 320px;
   max-width: 720px;

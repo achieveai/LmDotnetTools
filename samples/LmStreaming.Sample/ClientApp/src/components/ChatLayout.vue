@@ -239,22 +239,15 @@ const { tasks: todoTasks, hasBoard: hasTodoBoard } = useTodoBoard(
 // same conversation whose task carries the chip.
 const artifactPreviewPath = ref<string | null>(null);
 
-/**
- * Mirrors the modal's v-if (spelled inline there so the template type-narrows the props): whenever
- * the modal is mounted, the sidebar carries the stacking class that lifts it above the backdrop.
- */
-const artifactPreviewOpen = computed(
-  () => artifactPreviewPath.value !== null && subAgentParentThreadId.value !== null
-);
-
 function openArtifactPreview(path: string): void {
   artifactPreviewPath.value = path;
 }
 
 // A conversation switch unmounts the modal rather than leaving it previewing the OLD thread's file
 // against the NEW thread's workspace. This is also the second half of the #594 D6 fix: with the
-// sidebar raised above the backdrop (see `.sidebar-over-artifact-preview`), clicking another
-// conversation actually reaches the sidebar, and THIS watch is what closes the modal for it.
+// preview's backdrop stopping at the sidebar's edge (`.artifact-preview-beside-sidebar`,
+// ArtifactPreviewModal.vue), clicking another conversation actually reaches the sidebar, and THIS
+// watch is what closes the modal for it.
 watch(subAgentParentThreadId, () => {
   artifactPreviewPath.value = null;
 });
@@ -755,14 +748,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="chat-layout" data-testid="chat-layout">
-    <!-- `sidebar-over-artifact-preview` (#594 D6): while the artifact preview is open, the sidebar
-         is raised above the modal's full-viewport backdrop so switching conversations stays a
-         single pointer click — the backdrop otherwise swallows it. The sidebar stays MOUNTED and
-         merely gains a class, so no click-outside handler loses its target mid-dispatch (the
-         self-removing-control trap ConversationSidebar's own sort dropdown documents). -->
     <ConversationSidebar
       v-if="!focusMode"
-      :class="{ 'sidebar-over-artifact-preview': artifactPreviewOpen }"
       :conversations="conversations"
       :current-thread-id="currentThreadId"
       :is-loading="conversationsLoading"
@@ -999,15 +986,19 @@ onBeforeUnmount(() => {
 
     <!-- Mounted beside the board rather than inside it so the panel stays stateless. Gated on the
          board's thread id: with no started conversation there is no workspace to preview against.
-         `:key` forces a REMOUNT when a different chip is clicked while the modal is open — the
-         sidebar raised above the backdrop (#594 D6) makes overlapping chips reachable in principle,
-         and a reused instance would keep the first file's body under the second file's title
-         (`onMounted` fetches once). -->
+         `beside-sidebar` (#594 D6, reworked for #603 F-001): while the EXPANDED sidebar column is
+         on screen, the modal pulls its own backdrop off it so switching conversations stays a
+         single pointer click — nothing is z-lifted, so no element can paint over the dialog and no
+         other modal's backdrop is pierced. `:key` forces a REMOUNT when a different chip is clicked
+         while the modal is open — chips sit under the backdrop today so that path is unreachable,
+         but a reused instance would keep the first file's body under the second file's title
+         (`onMounted` fetches once), so the guard is kept for whatever opens a preview next. -->
     <ArtifactPreviewModal
       v-if="artifactPreviewPath && subAgentParentThreadId"
       :key="artifactPreviewPath"
       :thread-id="subAgentParentThreadId"
       :path="artifactPreviewPath"
+      :beside-sidebar="!sidebarCollapsed && !focusMode"
       @close="artifactPreviewPath = null"
     />
 
@@ -1033,18 +1024,6 @@ onBeforeUnmount(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-}
-
-/* #594 D6: the artifact preview's backdrop is fixed inset-0 at z-index 1000 (BaseModal), which
-   swallowed every pointer click on the sidebar — switching conversations while previewing took a
-   dispatched click. Lifting the sidebar above the backdrop keeps it interactive: one click on a
-   conversation switches it, and the `watch(subAgentParentThreadId)` above closes the modal. Scoped
-   to THIS modal via the class (bound only while it is open), so every other modal still covers the
-   whole viewport. This targets the child component's root element, which carries the parent's
-   scope id. Backdrop-click-to-close elsewhere on the backdrop is unchanged. */
-.sidebar-over-artifact-preview {
-  position: relative;
-  z-index: 1001;
 }
 
 .chat-view {

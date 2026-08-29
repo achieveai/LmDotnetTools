@@ -1981,6 +1981,8 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
   // This one carries the marker and a close control wired to the same `close` emit the real modal
   // raises (through BaseModal), and skips the preview fetch the real one fires on mount.
   const ArtifactPreviewModalStub = defineComponent({
+    // Declared so the D6 test below can assert the prop ChatLayout drives, not a fallthrough attr.
+    props: { besideSidebar: { type: Boolean, default: false } },
     emits: ['close'],
     template:
       '<div data-test-id="artifact-preview-modal">'
@@ -2060,34 +2062,67 @@ describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () 
     expect(wrapper.find('[data-test-id="artifact-preview-modal"]').exists()).toBe(true);
   });
 
-  it('lifts the sidebar above the backdrop only while the modal is open (#594 D6)', async () => {
-    // The class is the testable seam of the D6 fix: jsdom computes no stacking contexts, so the
-    // z-index CSS itself is pinned by the source-text guard below; THIS pins that the class comes
-    // and goes with the modal. Fallthrough class lands on the stub's root element.
+  it('tells the modal an expanded sidebar column is beside it, and stops when it collapses (#594 D6)', async () => {
+    // The prop is the testable seam of the reworked D6 fix (#603 F-001): jsdom computes no layout,
+    // so the backdrop geometry itself is pinned by the source-text guards below; THIS pins that
+    // ChatLayout only claims the column while the sidebar is actually expanded — collapsed, the
+    // 280px offset would expose an unclickable dead strip instead of a sidebar.
     const wrapper = await mountWithOpenModal();
-    expect(wrapper.find('.sidebar-over-artifact-preview').exists()).toBe(true);
+    expect(wrapper.getComponent(ArtifactPreviewModalStub).props('besideSidebar')).toBe(true);
 
-    await wrapper.get('[data-test="modal-close"]').trigger('click');
-    expect(wrapper.find('.sidebar-over-artifact-preview').exists()).toBe(false);
+    wrapper.findComponent({ name: 'ConversationSidebar' }).vm.$emit('toggle-collapse');
+    await flushPromises();
+    expect(wrapper.getComponent(ArtifactPreviewModalStub).props('besideSidebar')).toBe(false);
   });
 });
 
 /**
- * Source-text guard for the D6 stacking CSS, following the `AppShellLayout.test.ts` precedent:
- * jsdom lays nothing out, so "the sidebar is clickable above the backdrop" reduces to these
- * declarations existing and agreeing with BaseModal's backdrop.
+ * Source-text guards for the D6 sidebar-beside-preview GEOMETRY (#594 D6, reworked for #603
+ * F-001), following the `AppShellLayout.test.ts` precedent: jsdom lays nothing out, so "the
+ * sidebar is clickable and nothing occludes the open dialog" reduces to these declarations
+ * existing and agreeing across the files that must move together.
  */
-describe('ChatLayout sidebar-over-backdrop stacking (#594 D6, source text)', () => {
+describe('ChatLayout artifact-preview / sidebar geometry (#594 D6 / #603 F-001, source text)', () => {
   const readSrc = (rel: string) =>
     fs.readFileSync(path.resolve(__dirname, rel), 'utf-8') as string;
 
-  it('raises .sidebar-over-artifact-preview above BaseModal\'s z-index 1000 backdrop', () => {
-    const chatLayout = readSrc('../../components/ChatLayout.vue');
-    expect(chatLayout).toMatch(/\.sidebar-over-artifact-preview\s*\{[^}]*position:\s*relative/);
-    expect(chatLayout).toMatch(/\.sidebar-over-artifact-preview\s*\{[^}]*z-index:\s*1001/);
-    // The relationship this depends on: if the backdrop's layer ever moves, this fails and points
-    // straight at the pair that must move together.
+  it('never lifts layout chrome into the modal layer: every z-index in ChatLayout and ConversationSidebar stays below BaseModal\'s 1000 backdrop', () => {
+    // The layer this invariant is measured against.
     const baseModal = readSrc('../../components/BaseModal.vue');
     expect(baseModal).toMatch(/\.modal-backdrop\s*\{[^}]*z-index:\s*1000/);
+    // The #603 F-001 defect: a `z-index: 1001` lift on the sidebar made the opaque 280px column
+    // paint OVER the centred dialog's left third (and steal its clicks, delete buttons included)
+    // at every viewport below 1200px — and pierced every OTHER modal's z-1000 backdrop too, since
+    // a stacking lift cannot pick which backdrop it climbs. D6 is solved by backdrop geometry
+    // instead (see the guards below), so no rule in these files may reach the modal layer at all.
+    for (const rel of ['../../components/ChatLayout.vue', '../../components/ConversationSidebar.vue']) {
+      const layers = [...readSrc(rel).matchAll(/z-index:\s*(\d+)/g)].map((m) => Number(m[1]));
+      expect(
+        layers.every((z) => z < 1000),
+        `${rel} declares z-index >= 1000 (found: ${layers.join(', ')}) — layout chrome must stay under the modal layer`
+      ).toBe(true);
+    }
+  });
+
+  it('stops the preview backdrop exactly at the sidebar column it exposes — the pair that must move together', () => {
+    const modal = readSrc('../../components/ArtifactPreviewModal.vue');
+    // Repeating `.modal-backdrop` in the compound selector is load-bearing: 0,3,0 out-specifies
+    // BaseModal's `inset: 0` at 0,2,0, so bundle source order never decides the cascade.
+    expect(modal).toMatch(
+      /\.modal-backdrop\.artifact-preview-beside-sidebar\s*\{[^}]*left:\s*280px/
+    );
+    const sidebar = readSrc('../../components/ConversationSidebar.vue');
+    expect(sidebar).toMatch(/\.conversation-sidebar\s*\{[^}]*width:\s*280px/);
+  });
+
+  it('returns the backdrop to full viewport at the sidebar\'s own mobile breakpoint', () => {
+    // At <=768px ConversationSidebar becomes a self-overlaying drawer, not a reserved column; a
+    // 280px offset there would squeeze the dialog into the sliver of a phone screen.
+    const modal = readSrc('../../components/ArtifactPreviewModal.vue');
+    expect(modal).toMatch(
+      /@media\s*\(max-width:\s*768px\)\s*\{\s*\.modal-backdrop\.artifact-preview-beside-sidebar\s*\{[^}]*left:\s*0/
+    );
+    const sidebar = readSrc('../../components/ConversationSidebar.vue');
+    expect(sidebar).toMatch(/@media\s*\(max-width:\s*768px\)/);
   });
 });
