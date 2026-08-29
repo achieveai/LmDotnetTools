@@ -1505,6 +1505,7 @@ public class TaskManagerTests
         task.Title.Should().Be("Pre-existing task");
         task.Assignee.Should().BeNull();
         task.BlockedBy.Should().BeEmpty();
+        task.Artifacts.Should().BeEmpty();
         task.Times.Should().BeNull();
 
         // And it keeps working going forward under the new rules.
@@ -1522,6 +1523,7 @@ public class TaskManagerTests
         manager.AddTask("Dependent");
         manager.ClaimTask("1", "rev-a");
         manager.BlockTask("2", ["1"]);
+        manager.AttachArtifact("1", "docs/spec.md");
 
         // Act
         var json = manager.JsonSerializeTasks();
@@ -1537,9 +1539,167 @@ public class TaskManagerTests
         blocker.Times.Should().NotBeNull();
         blocker.Times!.CreatedAt.Should().NotBeNull();
         blocker.Times.ClaimedAt.Should().NotBeNull();
+        blocker.Artifacts.Should().ContainSingle().Which.Should().Be("docs/spec.md");
 
         dependent.Status.Should().Be(TaskManager.TaskStatus.Blocked);
         dependent.BlockedBy.Should().ContainSingle().Which.Should().Be("1");
+    }
+
+    #endregion
+
+    #region Artifact Tests (attach-artifact, PR 5)
+
+    [Fact]
+    public void AttachArtifact_WithAWorkspaceRelativePath_AttachesIt()
+    {
+        _taskManager.AddTask("Build the renderer");
+
+        var result = _taskManager.AttachArtifact("1", "src/renderers/registry.ts");
+
+        result.IsError.Should().BeFalse();
+        result.Text.Should().Be("Attached artifact to task 1: src/renderers/registry.ts");
+        _taskManager
+            .GetTasks()
+            .Single()
+            .Artifacts.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("src/renderers/registry.ts");
+    }
+
+    [Fact]
+    public void AttachArtifact_NormalizesDotAndEmptySegments()
+    {
+        // Mutation that must go red: storing the raw path instead of the normalized one. The chip
+        // and the preview endpoint both key on the clean form.
+        _taskManager.AddTask("Write the doc");
+
+        var result = _taskManager.AttachArtifact("1", "./docs//todo/./spec.md");
+
+        result.IsError.Should().BeFalse();
+        _taskManager.GetTasks().Single().Artifacts.Should().ContainSingle().Which.Should().Be("docs/todo/spec.md");
+    }
+
+    /// <summary>
+    ///     The board must never carry a host path (#583 PR 5): a host path silently breaks after a
+    ///     restart, and an escaping one would point the preview endpoint outside the workspace. The
+    ///     rules mirror the sandbox SDK's <c>WorkspaceRelativePath</c>, lexically and host-independently.
+    /// </summary>
+    [Theory]
+    [InlineData("/etc/passwd")] // POSIX absolute
+    [InlineData("C:/work/spec.md")] // drive prefix, forward slashes
+    [InlineData("C:\\work\\spec.md")] // drive prefix, backslashes
+    [InlineData("docs\\spec.md")] // any backslash at all
+    [InlineData("\\\\host\\share\\x")] // UNC root
+    [InlineData("docs/../../etc/passwd")] // parent-directory escape
+    [InlineData("..")] // bare escape
+    [InlineData("")] // empty
+    [InlineData("   ")] // whitespace
+    [InlineData(".")] // normalizes to the workspace root, which is not a file
+    [InlineData("a/\0b")] // NUL byte
+    public void AttachArtifact_RejectsNonWorkspaceRelativePaths(string path)
+    {
+        _taskManager.AddTask("Build the renderer");
+
+        var result = _taskManager.AttachArtifact("1", path);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("invalid_artifact_path");
+        result.Text.Should().StartWith("Error: ");
+        _taskManager.GetTasks().Single().Artifacts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AttachArtifact_ToAMissingTask_ReportsTaskNotFound()
+    {
+        var result = _taskManager.AttachArtifact("999", "docs/spec.md");
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_not_found");
+    }
+
+    [Fact]
+    public void AttachArtifact_SamePathTwice_IsIdempotentNotDuplicated()
+    {
+        _taskManager.AddTask("Write the doc");
+        _taskManager.AttachArtifact("1", "docs/spec.md");
+
+        // The second attach normalizes to the same clean path, so it must not double the chip.
+        var result = _taskManager.AttachArtifact("1", "./docs/spec.md");
+
+        result.IsError.Should().BeFalse();
+        result.Text.Should().Be("Artifact already attached to task 1: docs/spec.md");
+        _taskManager.GetTasks().Single().Artifacts.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void AttachArtifact_OnANestedTask_ReachesIt()
+    {
+        _taskManager.AddTask("Parent");
+        _taskManager.AddTask("Child", "1");
+
+        var result = _taskManager.AttachArtifact("1.1", "out/report.md");
+
+        result.IsError.Should().BeFalse();
+        _taskManager
+            .GetTasks()
+            .Single()
+            .SubTasks.Single()
+            .Artifacts.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("out/report.md");
+    }
+
+    [Fact]
+    public void ListTasks_RendersArtifactsAsPlainBulletsUnderTheTask()
+    {
+        // Byte-exact like the other rendering pins: artifacts render after notes, as unnumbered
+        // bullets (nothing addresses an artifact by index), indented with the task.
+        _taskManager.AddTask("Renderer registry");
+        _taskManager.AddNote("1", noteText: "schema landed");
+        _taskManager.AttachArtifact("1", "src/renderers/registry.ts");
+        _taskManager.AttachArtifact("1", "src/components/ToolPill.vue");
+
+        var result = _taskManager.ListTasks().Text;
+
+        var expected =
+            "# 📋 Task List\n"
+            + "\n"
+            + "**Status**: 0 in progress | 1 pending | 0 blocked | 0 completed\n"
+            + "**Total**: 1 active tasks\n"
+            + "\n"
+            + "[ ] 1. Renderer registry\n"
+            + "  Notes:\n"
+            + "  1. schema landed\n"
+            + "  Artifacts:\n"
+            + "  - src/renderers/registry.ts\n"
+            + "  - src/components/ToolPill.vue";
+
+        result.Should().Be(expected);
+    }
+
+    [Fact]
+    public void GetTask_ListsAttachedArtifacts()
+    {
+        _taskManager.AddTask("Renderer registry");
+        _taskManager.AttachArtifact("1", "src/renderers/registry.ts");
+
+        var result = _taskManager.GetTask("1").Text;
+
+        result.Should().Contain("Artifacts (1):");
+        result.Should().Contain("- src/renderers/registry.ts");
+    }
+
+    [Fact]
+    public void GetTodoBoardSnapshot_CarriesArtifactsOntoTheWireNode()
+    {
+        _taskManager.AddTask("Renderer registry");
+        _taskManager.AttachArtifact("1", "src/renderers/registry.ts");
+
+        var snapshot = _taskManager.GetTodoBoardSnapshot("conv-1");
+
+        snapshot.Tasks.Single().Artifacts.Should().ContainSingle().Which.Should().Be("src/renderers/registry.ts");
     }
 
     #endregion
@@ -1943,6 +2103,7 @@ public class TaskManagerTests
     [InlineData("assign-task", "invalid_args")]
     [InlineData("claim-task", "invalid_args")]
     [InlineData("block-task", "task_not_found")]
+    [InlineData("attach-artifact", "invalid_artifact_path")]
     public void EveryTool_ReportsItsDomainFailureWithACode(string tool, string expectedErrorCode)
     {
         var manager = SeededManager();
@@ -1974,6 +2135,7 @@ public class TaskManagerTests
     [InlineData("assign-task")]
     [InlineData("claim-task")]
     [InlineData("block-task")]
+    [InlineData("attach-artifact")]
     public void EveryTool_LeavesItsSuccessUnmarked(string tool)
     {
         var manager = SeededManager();
@@ -2038,8 +2200,8 @@ public class TaskManagerTests
         var functions = new TypeFunctionProvider(new TaskManager()).GetFunctions().ToList();
 
         // The original eleven, plus assign-task, claim-task and block-task from PR4's
-        // coordination fields.
-        functions.Should().HaveCount(14);
+        // coordination fields, plus attach-artifact from PR5.
+        functions.Should().HaveCount(15);
         functions.Should().OnlyContain(f => f.Contract.ReturnType == typeof(string));
     }
 
@@ -2069,6 +2231,7 @@ public class TaskManagerTests
             "assign-task" => manager.AssignTask("1", string.Empty),
             "claim-task" => manager.ClaimTask("1", string.Empty),
             "block-task" => manager.BlockTask("1", ["999"]),
+            "attach-artifact" => manager.AttachArtifact("1", "/etc/passwd"),
             _ => throw new ArgumentOutOfRangeException(nameof(tool), tool, "unknown tool"),
         };
     }
@@ -2091,6 +2254,7 @@ public class TaskManagerTests
             "assign-task" => manager.AssignTask("1", "rev-a"),
             "claim-task" => manager.ClaimTask("1", "rev-a"),
             "block-task" => BlockOnASecondTask(manager),
+            "attach-artifact" => manager.AttachArtifact("1", "docs/spec.md"),
             _ => throw new ArgumentOutOfRangeException(nameof(tool), tool, "unknown tool"),
         };
     }

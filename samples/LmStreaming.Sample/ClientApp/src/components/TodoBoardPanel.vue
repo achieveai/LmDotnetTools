@@ -4,6 +4,7 @@ import { TodoStatus, type TodoTask } from '@/types/todo';
 import {
   TODO_STATUS_GLYPH,
   TODO_STATUS_LABEL,
+  artifactFileName,
   countTodoTasks,
   findActiveTaskId,
   flattenTodoTasks,
@@ -31,6 +32,12 @@ import {
 const props = defineProps<{
   tasks: TodoTask[];
 }>();
+
+/**
+ * A chip click bubbles the workspace-relative path up to ChatLayout, which owns the preview modal
+ * — the panel stays stateless and never learns the thread id the preview endpoint needs.
+ */
+const emit = defineEmits<{ openArtifact: [path: string] }>();
 
 const expanded = ref(true);
 const removedExpanded = ref(false);
@@ -174,6 +181,25 @@ watch(activeTaskId, () => {
           </div>
           <div v-if="noteFor(row)" class="todo-note" data-testid="todo-row-note">
             {{ noteFor(row) }}
+          </div>
+          <!-- Artifact chips (#583, PR 5): every row shows its attached files, unlike the note
+               sub-line, because a chip is the row's evidence and reference material — hiding it on
+               inactive rows would hide exactly the tasks a reviewer wants to open. -->
+          <div v-if="row.artifacts.length > 0" class="todo-artifacts">
+            <button
+              v-for="artifact in row.artifacts"
+              :key="artifact"
+              class="todo-artifact-chip"
+              data-testid="todo-artifact-chip"
+              :data-artifact-path="artifact"
+              :title="artifact"
+              @click="emit('openArtifact', artifact)"
+            >
+              <span class="todo-artifact-glyph" aria-hidden="true">▪</span>
+              <span class="todo-artifact-name" data-testid="todo-artifact-name">{{
+                artifactFileName(artifact)
+              }}</span>
+            </button>
           </div>
         </li>
       </ul>
@@ -438,6 +464,42 @@ watch(activeTaskId, () => {
 .status-Completed .todo-pill {
   background: #d9f0e3;
   color: #146c43;
+}
+
+/* Artifact chips: small filename pills under the row line, full path on the tooltip. */
+.todo-artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 12px 6px 32px;
+}
+
+.todo-artifact-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid #d8dde3;
+  border-radius: 8px;
+  background: #fff;
+  color: #495057;
+  font-size: 10px;
+  line-height: 1.6;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.todo-artifact-chip:hover {
+  background: #e9ecef;
+  border-color: #c4ccd4;
+}
+
+.todo-artifact-glyph {
+  color: #6c757d;
+  font-size: 8px;
 }
 
 /* One line, clipped. A note that needs more than a line belongs in the transcript, not here. */

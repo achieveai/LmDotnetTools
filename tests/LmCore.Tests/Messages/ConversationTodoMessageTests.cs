@@ -28,6 +28,7 @@ public class ConversationTodoMessageTests
                     Status = TodoTaskStatus.InProgress,
                     Title = "Wire the SSE endpoint",
                     Notes = ["waiting on schema"],
+                    Artifacts = ["docs/todo-board/spec.md"],
                     SubTasks =
                     [
                         new TodoTaskNode
@@ -174,6 +175,7 @@ public class ConversationTodoMessageTests
         Assert.Equal("InProgress", task.GetProperty("status").GetString());
         Assert.Equal("Wire the SSE endpoint", task.GetProperty("title").GetString());
         Assert.Equal("waiting on schema", task.GetProperty("notes")[0].GetString());
+        Assert.Equal("docs/todo-board/spec.md", task.GetProperty("artifacts")[0].GetString());
 
         var subTask = task.GetProperty("subTasks")[0];
         Assert.Equal("1.1", subTask.GetProperty("id").GetString());
@@ -195,6 +197,8 @@ public class ConversationTodoMessageTests
         Assert.Equal(0, leaf.GetProperty("notes").GetArrayLength());
         Assert.Equal(JsonValueKind.Array, leaf.GetProperty("subTasks").ValueKind);
         Assert.Equal(0, leaf.GetProperty("subTasks").GetArrayLength());
+        Assert.Equal(JsonValueKind.Array, leaf.GetProperty("artifacts").ValueKind);
+        Assert.Equal(0, leaf.GetProperty("artifacts").GetArrayLength());
     }
 
     [Fact]

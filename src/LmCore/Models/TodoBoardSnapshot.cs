@@ -69,6 +69,17 @@ public sealed record TodoTaskNode
     [JsonPropertyName("notes")]
     public IReadOnlyList<string> Notes { get; init; } = [];
 
+    /// <summary>
+    ///     Workspace-relative file paths attached to the row via <c>attach-artifact</c> (#583, PR 5).
+    ///     Never host paths: the tool boundary validates and normalizes before anything reaches this
+    ///     type, so what goes onto the wire is exactly what the file-browser preview endpoint accepts.
+    ///     Never null; empty when there are none. Additive to schema version 1 — a snapshot persisted
+    ///     before this field existed reads back with it simply empty, and the client tolerates both
+    ///     shapes, so the version is deliberately not bumped.
+    /// </summary>
+    [JsonPropertyName("artifacts")]
+    public IReadOnlyList<string> Artifacts { get; init; } = [];
+
     /// <summary>Nested rows. Never null; empty when the row is a leaf.</summary>
     [JsonPropertyName("subTasks")]
     public IReadOnlyList<TodoTaskNode> SubTasks { get; init; } = [];

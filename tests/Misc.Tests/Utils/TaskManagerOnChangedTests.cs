@@ -147,6 +147,24 @@ public class TaskManagerOnChangedTests
     }
 
     [Fact]
+    public void AttachArtifact_FiresOnce_AndARefusedPathDoesNot()
+    {
+        // The chip is board-visible, so a successful attach must push a frame. Mutation that must
+        // go red: removing the NotifyIfChanged wrapper from AttachArtifact, or firing on refusals.
+        _ = _taskManager.AddTask("Task one");
+        _changes = 0;
+
+        var attached = _taskManager.AttachArtifact("1", "docs/spec.md");
+        var refused = _taskManager.AttachArtifact("1", "/etc/passwd");
+        var missing = _taskManager.AttachArtifact("42", "docs/spec.md");
+
+        attached.ErrorCode.Should().BeNull();
+        refused.ErrorCode.Should().Be("invalid_artifact_path");
+        missing.ErrorCode.Should().Be("task_not_found");
+        _changes.Should().Be(1);
+    }
+
+    [Fact]
     public void FailedClaimsAssignmentsAndBlocks_DoNotFire()
     {
         // Same rule as every other mutating tool: a refusal changed nothing, so no frame and no

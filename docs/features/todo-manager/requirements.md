@@ -99,10 +99,12 @@ the shipped behaviour, the criterion has been amended and the amendment is calle
 3. **Status Indicators**: WHEN displaying tasks THEN it SHALL use `[ ]` for not started, `[-]` for in progress, `[x]` for completed and `[~]` for removed, with a trailing ` (removed)` on a removed task
    - *Amended.* The removed marker is stated explicitly. It was previously `[d]`; `[~]` was chosen because it reads as "struck through" rather than as an abbreviation, and nothing else in the format uses `~`.
 4. **Notes Display**: WHEN tasks have notes THEN it SHALL display them indented under the task with numbering
-5. **Markdown Format**: WHEN returning task list THEN it SHALL emit the format shown in "Worked Example" below
+5. **Artifacts Display**: WHEN tasks have attached artifacts (Requirement 9) THEN it SHALL display them after the notes block, indented under the task, as an `Artifacts:` label followed by one unnumbered `- <path>` bullet per artifact — unnumbered because, unlike notes, no tool addresses an artifact by index
+   - *Added with Requirement 9.* Renumbers the criteria that follow.
+6. **Markdown Format**: WHEN returning task list THEN it SHALL emit the format shown in "Worked Example" below
    - *Amended.* The original criterion pointed at a "provided example" that this document never contained. The example below is the format the implementation actually produces, and `tests/Misc.Tests/Utils/TaskManagerTests.cs` pins it byte for byte.
-6. **Header On Empty**: WHEN there are no tasks, or none match the filter, THEN it SHALL still emit the header, followed by "No tasks found." or "No tasks match the specified criteria." A bare sentence with no header gives the model no clue which tool answered it.
-7. **Line Endings**: WHEN rendering THEN lines SHALL be separated by `\n` regardless of host platform, so the output is identical on Windows and elsewhere
+7. **Header On Empty**: WHEN there are no tasks, or none match the filter, THEN it SHALL still emit the header, followed by "No tasks found." or "No tasks match the specified criteria." A bare sentence with no header gives the model no clue which tool answered it.
+8. **Line Endings**: WHEN rendering THEN lines SHALL be separated by `\n` regardless of host platform, so the output is identical on Windows and elsewhere
 
 ### Worked Example
 
@@ -132,7 +134,10 @@ tag because completing it required claiming it first (Requirement 8.8) and `assi
 durable ownership that survives the `Completed` transition rather than being cleared — see
 Requirement 8 for the coordination fields (`Blocked`, `assignee`, `blockedBy`, elapsed-time)
 that this document was amended to cover, and the row-suffix rendering (`[@assignee]`,
-`(Nm)`, `(blocked by ...)`) they add.
+`(Nm)`, `(blocked by ...)`) they add. A task with attached artifacts (Requirement 9)
+additionally renders an `Artifacts:` block of `- <path>` bullets directly after its notes,
+at the same indent — `ListTasks_RendersArtifactsAsPlainBulletsUnderTheTask` pins that
+rendering byte for byte.
 
 ### Requirement 6: Markdown Generation Method
 - **User Story**: As a developer, I need a method to generate markdown representation so that I can get formatted output programmatically.
@@ -150,11 +155,11 @@ that this document was amended to cover, and the row-suffix rendering (`[@assign
 #### Acceptance Criteria:
 1. **Provider Implementation**: WHEN creating TaskManager THEN it SHALL be a plain class whose `[Function]`-annotated methods are surfaced by `TypeFunctionProvider`; it SHALL NOT implement `IFunctionProvider` itself
    - *Amended.* Hand-rolling `IFunctionProvider` would duplicate the reflection the framework already does.
-2. **Function Registration**: WHEN getting functions THEN `TypeFunctionProvider` SHALL return FunctionDescriptor objects for all fourteen operations: add-task, bulk-initialize, update-task, delete-task, get-task, add-note, edit-note, delete-note, list-notes, list-tasks, search-tasks, claim-task, assign-task, block-task
-   - *Amended.* The original eleven operations are unchanged; `claim-task`, `assign-task`, and `block-task` were added for the coordination fields in Requirement 8.
+2. **Function Registration**: WHEN getting functions THEN `TypeFunctionProvider` SHALL return FunctionDescriptor objects for all fifteen operations: add-task, bulk-initialize, update-task, delete-task, get-task, add-note, edit-note, delete-note, list-notes, list-tasks, search-tasks, claim-task, assign-task, block-task, attach-artifact
+   - *Amended.* The original eleven operations are unchanged; `claim-task`, `assign-task`, and `block-task` were added for the coordination fields in Requirement 8, and `attach-artifact` for the file artifacts in Requirement 9.
 3. **Parameter Mapping**: WHEN functions are called THEN arguments SHALL bind even when the model's JSON types differ from the declared ones — a quoted number onto a numeric parameter, an unquoted number onto a string parameter — and a parameter the model omitted SHALL take its declared C# default rather than the type's zero value
 4. **Error Handling**: WHEN operations fail THEN it SHALL return descriptive error messages instead of throwing exceptions, and SHOULD mark the tool result as an error so the model and the host can tell a failure from a successful answer whose text happens to start with "Error"
-   - *Amended.* Both halves are shipped. Every failure returns a message rather than throwing, and all fourteen tools return `FunctionResult`, so a domain failure reaches the model with `IsError = true` and a lower_snake_case error code (`task_not_found`, `invalid_args`, `invalid_task_id`, `invalid_status`, `note_index_out_of_range`, `task_not_claimable`, `task_blocked`, `task_already_claimed`, `task_not_claimed`) while a success carries no code. The text on the wire is unchanged — only `Text` is serialized — so the contract still advertises `string`.
+   - *Amended.* Both halves are shipped. Every failure returns a message rather than throwing, and all fifteen tools return `FunctionResult`, so a domain failure reaches the model with `IsError = true` and a lower_snake_case error code (`task_not_found`, `invalid_args`, `invalid_task_id`, `invalid_status`, `note_index_out_of_range`, `task_not_claimable`, `task_blocked`, `task_already_claimed`, `task_not_claimed`, `invalid_artifact_path`) while a success carries no code. The text on the wire is unchanged — only `Text` is serialized — so the contract still advertises `string`.
 5. **Statefulness**: WHEN a provider is built around a live instance THEN its descriptors SHALL be marked `IsStateful`, so hosts that only accept stateless tools exclude it rather than sharing one conversation's list with another
 
 ### Requirement 8: Coordination Fields (Assignee, Claim/Lease, Blocked)
@@ -208,3 +213,30 @@ that this document was amended to cover, and the row-suffix rendering (`[@assign
 9. **Backward Compatibility**: WHEN loading a persisted task tree written before these
    fields existed THEN `assignee`, `blockedBy`, and the timestamp fields SHALL default to
    absent/empty rather than failing to deserialize
+
+### Requirement 9: File Artifacts (attach-artifact)
+
+- **User Story**: As an agent producing files while working a task, I need to attach them to
+  the task so that the board can surface them as chips and any other agent picking up or
+  reviewing the task can read the substance instead of asking for it.
+
+#### Acceptance Criteria:
+1. **Attach Function**: WHEN "attach-artifact" is called with a `taskId` and a `path` THEN
+   the path SHALL be recorded on that task's `artifacts` list and rendered by "list-tasks"
+   (Requirement 5.5) and "get-task"
+2. **Workspace-Relative Only**: WHEN validating the path THEN it SHALL be accepted only as a
+   workspace-relative, forward-slash path — a NUL byte, any backslash (covering Windows
+   drive/UNC/device roots and mixed-separator traversal), a POSIX-absolute path, a
+   drive-letter prefix, or any `..` segment SHALL be refused with `invalid_artifact_path`.
+   A host path must never reach the stored list or the wire: it silently breaks after a
+   restart, and the workspace-relative form is exactly what the file-browser preview
+   endpoint accepts
+3. **Normalization**: WHEN a path passes validation THEN it SHALL be stored normalized —
+   empty and `.` segments dropped, segments joined with `/` — and a path that normalizes to
+   the workspace root (not a file) SHALL be refused
+4. **Idempotence**: WHEN the same (normalized) path is attached to the same task twice THEN
+   the second call SHALL succeed without duplicating the entry, and its result text SHALL
+   say the artifact was already attached
+5. **Persistence**: WHEN a task tree or board snapshot is serialized THEN `artifacts` SHALL
+   round-trip with it — including through `FromSnapshot` rehydration, unlike the in-memory
+   lease fields — and a tree persisted before this field existed SHALL load with it empty
