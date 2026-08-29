@@ -14,7 +14,8 @@
 > They are preserved verbatim as historical references. Work items are tracked as fresh issues
 > under #526.
 >
-> **Status pass, 2026-08-28.** The stack resumed and ran to 30 merged PRs across five review rounds.
+> **Status pass, 2026-08-28.** The stack resumed and ran to 21 merged stack PRs (`#527` plus the 20
+> items below) across five review rounds.
 > **20 of the 21 work items in the DO table below are merged to `main`** (items 1–20; see each row
 > for its PR and commit). Only **item 21** — `#567`, the host-git watchdog + orphaned-pack sweeper
 > fd guard, split out of item 16 on 2026-08-28 — remains open. The MONITOR defects M4–M8 are now
@@ -44,9 +45,8 @@ Last updated: 2026-08-27 UTC · Branch `daemon/review-reliability-and-pr-coverag
 
 > **CURRENT DECISION: STOPPED (2026-08-27), THEN RESUMED.** The audit is complete; the owner elected
 > to take no further branch or PR action on 2026-08-27, then resumed the effort as a stack of small
-> PRs off `main`. As of 2026-08-28, 20 of the 21 DO items have merged (30 PRs across five review
-> rounds); only item 21 (`#567`) is still open. See the status pass note above and the DO table for
-> per-item evidence.
+> PRs off `main`. As of 2026-08-28, 20 of the 21 DO items have merged (21 stack PRs); only item 21
+> (`#567`) is still open. See the status pass note above and the DO table for per-item evidence.
 
 ---
 
@@ -88,7 +88,7 @@ item's PR and commit. Sizes are LOC from the audit, not hours.
 |7|**#82 — first-review sentinel guard + standing rate check.** Commits `51ac92a4` + `20b8c272`, ~702 LOC. Main has the detection primitive `IsNoNewFindingsSentinel` but no control.|—|yes|**MERGED — PR #564 (#542), `4b82ecaf`.**|
 |8|**#115 — findings persistence.** Commits `b9a5bc75` + `f64530ab`, ~629 LOC.|—|yes|**MERGED — PR #563 (#543), `4656b0af`.** Landed after item 4 (`ReviewFindingReconciler`), as planned.|
 |9|**#116 — prose-aware knowledge ranking.** Commits `d18cc96c` / `309319b6`, ~457 LOC. Removes a dead heavy scoring term (`ScopeBonus = 3`, `KnowledgeDigest.cs:29`) still live on main.|—|yes|**MERGED — PR #566 (#544), `a4d6f02d`.**|
-|10|**PR-polling `$top`/`$skip` pagination.** Extractable from checkpoint `d7e64e3e`. Small, high impact.|—|yes|**MERGED — PR #554 (#537), `12426648`** (landed as a `MaxPagesPerPoll` reader, not literal `$top`/`$skip`). Fixes M7.|
+|10|**PR-polling `$top`/`$skip` pagination.** Extractable from checkpoint `d7e64e3e`. Small, high impact.|—|yes|**MERGED — PR #554 (#537), `12426648`** — `AdoPrProvider.cs:117` sends `$top`, `:145` sends `$skip`, exactly as scoped. Fixes M7.|
 |11|**#122 — prompt-template provenance producer.** Commit `b782237e`. Small; makes a column main already has, reads, and ships to its eval corpus stop being NULL.|—|yes|**MERGED — PR #556 (#538), `204482a4`.** Fixes M8.|
 |12|**#112 — unrelated-histories vs indeterminate.** Commit `db27fb30`, ~228 prod LOC + 381 test. `"unrelated histor"` has 0 hits on main. Stops the daemon reporting its own watchdog timeout to an author as "your branch descends from nothing".|—|yes|**MERGED — PR #569 (#545), `30b32486`.**|
 |13|**#123/#119 — model forwarding + empty-tier guard.** Commit `763f028a`, ~90 prod LOC. Main's `S2SReviewAgentLoopFactory.cs:131-134` discards the requested model id, so the escalation ladder re-runs the same model. **Keep the spend-neutrality pin** (`KnowledgeModelId` held at luna).|—|yes|**MERGED — PR #565 (#546), `926bedb6`.**|
