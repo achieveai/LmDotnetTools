@@ -2066,11 +2066,74 @@ try
                     // the silent failure #587 changed the code to prevent. The logger gives that
                     // last-resort catch a voice for whatever else a subscriber might throw.
                     taskManager.OnChangedLogger = loggerFactory.CreateLogger<TaskManager>();
-                    taskManager.OnChanged = () =>
+                    taskManager.OnChanged += () =>
                     {
                         todoPublisher.PublishTodoBoardFrame(() => taskManager.GetTodoBoardSnapshot(threadId));
                         todoBoardWriter.Schedule();
                     };
+
+                    // PR 6 of the todo-board plan (#583): the board talks back. Assignment notices
+                    // (N1, on by default) and budgeted stalled-agent nudges (N2-N4, default OFF) ride
+                    // the SAME OnChanged multicast the frame publisher and the durable writer use —
+                    // the F-007 slot fix is what makes a third subscriber possible at all. The service
+                    // is constructed AFTER hydration on purpose: whatever FromSnapshot restored is its
+                    // baseline, so a recreate/restart cannot re-notify every pre-existing assignee.
+                    var todoNudgeOptions = TodoNudgeOptions.FromConfiguration(builder.Configuration);
+                    if (todoNudgeOptions.AnyNudgeEnabled)
+                    {
+                        var nudgeAgent = agent;
+                        var nudgeService = new TodoNudgeService(
+                            todoNudgeOptions,
+                            taskManager.GetTasks,
+                            // A name that resolves to a live sub-agent is nudged there; anything else
+                            // would land in the root conversation and is gated on the explicit opt-in.
+                            name =>
+                                nudgeAgent.SubAgentManager is { } manager && manager.TryGetAgent(name, out _)
+                                    ? TodoNudgeTargetKind.SubAgent
+                                    : TodoNudgeTargetKind.RootConversation,
+                            async (name, message, ct) =>
+                            {
+                                var target =
+                                    nudgeAgent.SubAgentManager is { } manager
+                                    && manager.TryGetAgent(name, out var subAgent)
+                                    && subAgent is not null
+                                        ? subAgent
+                                        : nudgeAgent;
+                                return await target.TrySendAsync([message], ct: ct) is not null;
+                            },
+                            TimeProvider.System,
+                            loggerFactory.CreateLogger<TodoNudgeService>()
+                        );
+                        taskManager.OnChanged += nudgeService.OnBoardChangedHook;
+
+                        // The stall tiers need run boundaries, which only the pump observes — so it
+                        // exists only when a stall tier is on (shipped default: it is not built).
+                        if (todoNudgeOptions.AnyStallNudgeEnabled)
+                        {
+                            ownedResources.Add(
+                                new TodoNudgeEventPump(
+                                    nudgeAgent,
+                                    nudgeService,
+                                    agentId =>
+                                    {
+                                        var snapshot = nudgeAgent
+                                            .SubAgentManager?.ListAgents()
+                                            .FirstOrDefault(s =>
+                                                string.Equals(s.AgentId, agentId, StringComparison.Ordinal)
+                                            );
+                                        return snapshot is null
+                                            ? null
+                                            : new TodoNudgeSubAgentRun(
+                                                snapshot.Name ?? snapshot.AgentId,
+                                                Errored: snapshot.Status == SubAgentStatus.Error,
+                                                Cancelled: snapshot.Status == SubAgentStatus.Stopped
+                                            );
+                                    },
+                                    loggerFactory.CreateLogger<TodoNudgeEventPump>()
+                                )
+                            );
+                        }
+                    }
 
                     return new MultiTurnAgentPool.AgentCreationResult(
                         agent,
