@@ -10,6 +10,7 @@ import type {
   ToolCallMessage,
   AuthEvent,
   AuthRequiredEvent,
+  ConversationTodoMessage,
 } from '@/types';
 import {
   MessageType,
@@ -31,6 +32,7 @@ import {
   isNotifyMessage,
   isAgentMessage,
   isConversationUsageMessage,
+  isConversationTodoMessage,
   normalizeReasoningVisibility,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
@@ -198,6 +200,14 @@ export function useChat(options: UseChatOptions = {}) {
   const transport = ref<TransportType>(initialTransport);
   const threadId = ref<string | null>(null);
   const currentRunId = ref<string | null>(null);
+
+  /**
+   * Newest `conversation_todo` push frame (#583). Held here only because `handleMessage` is where
+   * frames land; the board itself is owned by `useTodoBoard`, which watches this ref. Keeping the
+   * board out of `useChat` is deliberate — the panel must be testable without the chat machinery,
+   * and `useChat` must not grow a second store.
+   */
+  const conversationTodo = ref<ConversationTodoMessage | null>(null);
 
   /**
    * Replaces the usage banner with a folded conversation-wide aggregate (#196). The authoritative source
@@ -933,6 +943,14 @@ export function useChat(options: UseChatOptions = {}) {
         providerReportedCostMicros: msg.providerReportedCostMicros ?? null,
         currency: msg.currency ?? 'USD',
       };
+      return;
+    }
+
+    // Live ToDo-board snapshot (#583). SET, never accumulate — the server sends the whole board on
+    // every change, so the newest frame is the whole truth and a missed frame self-heals on the next
+    // one. The board state itself lives in useTodoBoard, which watches this ref.
+    if (isConversationTodoMessage(msg)) {
+      conversationTodo.value = msg;
       return;
     }
 
@@ -2139,6 +2157,7 @@ export function useChat(options: UseChatOptions = {}) {
     usage,
     cumulativeUsage,
     cumulativeCost,
+    conversationTodo,
     transport,
     threadId,
     currentRunId,

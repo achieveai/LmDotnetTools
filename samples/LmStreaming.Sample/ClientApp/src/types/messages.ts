@@ -1,3 +1,5 @@
+import type { TodoTask } from './todo';
+
 /**
  * Message type discriminators matching C# IMessageJsonConverter.GetDiscriminatorFromType()
  */
@@ -28,6 +30,8 @@ export const MessageType = {
   Agent: 'agent',
   // Live-only conversation-wide usage frame (folded across sub-agents/workflow descendants, #196)
   ConversationUsage: 'conversation_usage',
+  // Live-only ToDo-board snapshot for the work panel (#583)
+  ConversationTodo: 'conversation_todo',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -462,6 +466,26 @@ export interface ConversationUsageMessage extends IMessage {
 }
 
 /**
+ * ConversationTodoMessage matching C# ConversationTodoMessage.cs (#583).
+ *
+ * A live-only frame carrying the conversation's WHOLE ToDo board on every change — the mutating task
+ * tools return short acks ("Added task 3: ..."), never the list, so the client cannot reconstruct the
+ * board from tool results and needs this feed instead. Like the conversation-usage frame it is a
+ * complete snapshot, so the client SETs the board from it rather than accumulating; the newest frame
+ * is the whole truth. Transient: never persisted — the board survives reload via
+ * `GET /conversations/{id}/todos`.
+ *
+ * `tasks` carries only the CURRENT `TaskItem` fields (#312). PRs 4-5 add assignee, blockedBy,
+ * artifacts and timestamps; a client running ahead of its server simply does not see them.
+ */
+export interface ConversationTodoMessage extends IMessage {
+  $type: typeof MessageType.ConversationTodo;
+  /** The conversation this board belongs to; lets a client drop a frame meant for another thread. */
+  threadId?: string;
+  tasks: TodoTask[];
+}
+
+/**
  * Union type for all message types
  */
 export type Message =
@@ -484,7 +508,8 @@ export type Message =
   | TextWithCitationsMessage
   | NotifyMessage
   | AgentMessage
-  | ConversationUsageMessage;
+  | ConversationUsageMessage
+  | ConversationTodoMessage;
 
 // Type guard functions
 
@@ -570,6 +595,10 @@ export function isAgentMessage(msg: IMessage): msg is AgentMessage {
 
 export function isConversationUsageMessage(msg: IMessage): msg is ConversationUsageMessage {
   return msg.$type === MessageType.ConversationUsage;
+}
+
+export function isConversationTodoMessage(msg: IMessage): msg is ConversationTodoMessage {
+  return msg.$type === MessageType.ConversationTodo;
 }
 
 /**
