@@ -334,6 +334,9 @@ public class ConversationsControllerTodosTests
         _ = taskManager.AddTask("Add the map", parentId: "1");
         _ = taskManager.AddNote("1", noteText: "waiting on schema");
         _ = taskManager.UpdateTask("1", "in progress");
+        // Completing a task now requires an active claim (PR #587's coordination fields), so claim
+        // it before completing rather than flipping status directly.
+        _ = taskManager.UpdateTask("1.1", "in progress", "test-agent");
         _ = taskManager.UpdateTask("1.1", "completed");
 
         var store = new InMemoryConversationStore();

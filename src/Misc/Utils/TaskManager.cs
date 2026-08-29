@@ -1349,10 +1349,20 @@ Examples:
     ///     Projects one task and its subtree onto the transport-facing board shape.
     /// </summary>
     /// <remarks>
-    ///     The status mapping is written out member by member rather than cast across the two enums. They
-    ///     are structurally identical today and a cast would work; it would also stop working silently the
-    ///     day a member is INSERTED into one of them, re-labelling every persisted and in-flight row by
-    ///     one position. Spelling it out makes that day a compile error instead.
+    ///     The status mapping is written out member by member rather than cast across the two enums. A
+    ///     cast would work today, since the two enums are structurally identical, and it would also stop
+    ///     working silently the day a member is INSERTED into one of them, re-labelling every persisted
+    ///     and in-flight row by one position.
+    ///     <para>
+    ///     A C# switch expression over an enum still requires a catch-all arm for values outside the
+    ///     named set (CS8524) even when every named member is listed, so this cannot be a true
+    ///     compile-time exhaustiveness check — a future <see cref="TaskStatus" /> member left unmapped
+    ///     falls into the discard below rather than failing to build. It throws instead of guessing a
+    ///     status, so the gap surfaces as a loud runtime failure on the read path rather than a silently
+    ///     wrong board (this is how <see cref="TaskStatus.Blocked" /> was caught: it compiled clean
+    ///     against a stale <c>_ =&gt; TodoTaskStatus.NotStarted</c> discard and every Blocked task
+    ///     rendered as NotStarted until this method was updated).
+    ///     </para>
     /// </remarks>
     private static TodoTaskNode ToBoardNode(TaskItem task)
     {
@@ -1363,9 +1373,14 @@ Examples:
             {
                 TaskStatus.NotStarted => TodoTaskStatus.NotStarted,
                 TaskStatus.InProgress => TodoTaskStatus.InProgress,
+                TaskStatus.Blocked => TodoTaskStatus.Blocked,
                 TaskStatus.Completed => TodoTaskStatus.Completed,
                 TaskStatus.Removed => TodoTaskStatus.Removed,
-                _ => TodoTaskStatus.NotStarted,
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(task),
+                    task.Status,
+                    $"Unmapped {nameof(TaskStatus)} value; add an explicit arm above rather than falling through."
+                ),
             },
             Title = task.Title,
             Notes = [.. task.Notes],

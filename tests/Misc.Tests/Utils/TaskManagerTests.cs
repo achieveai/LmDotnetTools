@@ -4,6 +4,7 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using FluentAssertions;
 using Microsoft.Extensions.Time.Testing;
@@ -1154,6 +1155,22 @@ public class TaskManagerTests
 
         claimAttempt.IsError.Should().BeTrue();
         claimAttempt.ErrorCode.Should().Be("task_blocked");
+    }
+
+    [Fact]
+    public void GetTodoBoardSnapshot_ForABlockedTask_CarriesTodoTaskStatusBlocked()
+    {
+        // Pins ToBoardNode's status mapping for the newest TaskStatus member: a mutation that
+        // maps Blocked to any other TodoTaskStatus (e.g. InProgress) must turn this test red, since
+        // no other Misc.Tests test exercises GetTodoBoardSnapshot at all.
+        _taskManager.AddTask("The blocker");
+        _taskManager.AddTask("The dependent");
+        _taskManager.BlockTask("2", ["1"]);
+
+        var snapshot = _taskManager.GetTodoBoardSnapshot("thread-1");
+
+        var dependent = snapshot.Tasks.Single(t => t.Id == "2");
+        dependent.Status.Should().Be(TodoTaskStatus.Blocked);
     }
 
     [Fact]
