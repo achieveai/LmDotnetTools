@@ -1681,7 +1681,18 @@ try
                     var triggerOptions = SampleTriggerRegistrations.Build(
                         sandboxEnabled: sandboxSession is not null,
                         subAgentManagerAccessor: () => agent?.SubAgentManager,
-                        loggerFactory: loggerFactory
+                        loggerFactory: loggerFactory,
+                        // #142: the real Bash-tool exit bridge. Scoped to THIS conversation's sandbox
+                        // session via the registry's credentialed file surface; the observer polls the
+                        // wait-file convention (.lm-waits/<handle>/{exit,out}) and never runs commands
+                        // itself — execution policy stays in the Bash tool.
+                        processExitObserver: sandboxSession is not null
+                            ? new SandboxProcessExitObserver(
+                                new WorkspaceWaitFileReader(sandboxRegistry, sandboxSession.SessionId),
+                                TimeProvider.System,
+                                logger: loggerFactory.CreateLogger<SandboxProcessExitObserver>()
+                            )
+                            : null
                     ) with
                     {
                         NotifyWaitStore = isTestMode ? notifyWaitStore : null,
