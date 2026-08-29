@@ -797,14 +797,12 @@ Examples:
                 return $"Cleared blockedBy on task {task.DisplayId}.";
             }
 
-            if (ids.Contains(task.DisplayId))
-            {
-                return FunctionResult.Error(
-                    InvalidArgumentsCode,
-                    $"Error: Task {task.DisplayId} cannot be listed as its own blocker."
-                );
-            }
-
+            // Store canonical DisplayIds, never the raw input strings: FindTaskByStringId
+            // resolves "01", "+1", and " 1" all to task 1, but the self-block guard, the cycle
+            // DFS, and AutoUnblockDependentsOf all compare ordinal strings — a raw non-canonical
+            // id would slip every one of them (self-deadlock accepted, cycle accepted,
+            // auto-unblock missed).
+            var resolvedIds = new List<string>();
             foreach (var id in ids)
             {
                 var (blocker, blockerError) = FindTaskByStringId(id);
@@ -827,13 +825,26 @@ Examples:
                         $"Error: Task '{id}' is {NormalizeStatusText(blocker.Status)} and cannot block task {task.DisplayId} — a resolved task never completes again to lift the block. Re-open it first (update-task {id} \"not started\") if it should block again."
                     );
                 }
+
+                if (!resolvedIds.Contains(blocker.DisplayId))
+                {
+                    resolvedIds.Add(blocker.DisplayId);
+                }
+            }
+
+            if (resolvedIds.Contains(task.DisplayId))
+            {
+                return FunctionResult.Error(
+                    InvalidArgumentsCode,
+                    $"Error: Task {task.DisplayId} cannot be listed as its own blocker."
+                );
             }
 
             // Reject an edge that closes a cycle (#595, review 587/FU-4): every member of a
             // blockedBy cycle waits on another member, auto-unblock only fires on completion, and
             // completion requires a claim the block refuses — so the deadlock would be silent and
             // permanent, escapable only by someone noticing and clearing an edge by hand.
-            if (FindBlockCyclePath(task, ids) is { } cyclePath)
+            if (FindBlockCyclePath(task, resolvedIds) is { } cyclePath)
             {
                 return FunctionResult.Error(
                     BlockCycleCode,
@@ -842,12 +853,12 @@ Examples:
             }
 
             task.BlockedBy.Clear();
-            task.BlockedBy.AddRange(ids);
+            task.BlockedBy.AddRange(resolvedIds);
             task.Status = TaskStatus.Blocked;
             // Not being actively worked while blocked; a live lease no longer means anything.
             task.ClaimedAt = null;
 
-            return $"Task {task.DisplayId} is now blocked by {string.Join(", ", ids)}.";
+            return $"Task {task.DisplayId} is now blocked by {string.Join(", ", resolvedIds)}.";
         }
     }
 

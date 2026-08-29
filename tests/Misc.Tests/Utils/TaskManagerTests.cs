@@ -1259,6 +1259,81 @@ public class TaskManagerTests
     }
 
     [Fact]
+    public void BlockTask_OnItselfViaNonCanonicalId_IsRefusedAsSelfBlock()
+    {
+        // "01" resolves to task 1 (FindTaskByStringId int-parses), but the self-block guard
+        // compares ordinal strings — storing the raw "01" would slip it and mint a permanent
+        // self-deadlock. Blocker ids must be canonicalized to the resolved DisplayId before
+        // the guard runs. Mutation that must go red: storing the raw id instead of
+        // blocker.DisplayId in BlockTaskCore.
+        _taskManager.AddTask("Task A");
+
+        var result = _taskManager.BlockTask("1", ["01"]);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("invalid_args");
+        result.Text.Should().Contain("its own blocker");
+        _taskManager.GetTasks().Single().Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void BlockTask_ClosingACycleViaNonCanonicalId_IsRefused()
+    {
+        // 1 blocked by 2, then block 2 on "01" — "01" resolves to task 1, so the edge closes
+        // the cycle 2 -> 1 -> 2 and must be refused exactly like the canonical form.
+        _taskManager.AddTask("Task A");
+        _taskManager.AddTask("Task B");
+        _taskManager.BlockTask("1", ["2"]).IsError.Should().BeFalse();
+
+        var result = _taskManager.BlockTask("2", ["01"]);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("block_cycle");
+        _taskManager.GetTasks().Single(t => t.Id == "2").Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void BlockTask_ExistingEdgeStoredViaNonCanonicalId_StillClosesTheCycleAndIsRefused()
+    {
+        // The cycle DFS compares ordinal strings when walking stored edges, so an edge recorded
+        // as the raw "02" would hide task 2 from the walk and let 2 -> 1 -> 2 through. Storing
+        // the canonical DisplayId keeps the DFS sound. Mutation that must go red: storing the
+        // raw id instead of blocker.DisplayId in BlockTaskCore.
+        _taskManager.AddTask("Task A");
+        _taskManager.AddTask("Task B");
+        _taskManager.BlockTask("1", ["02"]).IsError.Should().BeFalse();
+        _taskManager.GetTasks().Single(t => t.Id == "1").BlockedBy.Should().Equal("2");
+
+        var result = _taskManager.BlockTask("2", ["1"]);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("block_cycle");
+        _taskManager.GetTasks().Single(t => t.Id == "2").Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void CompletingABlocker_AutoUnblocksADependentBlockedViaNonCanonicalId()
+    {
+        // AutoUnblockDependentsOf does Remove(completedTask.DisplayId) — a stored raw "01" would
+        // never match "1", leaving the dependent Blocked forever with a satisfied blocker
+        // (Req 8.5). The stored edge must be the canonical DisplayId.
+        _taskManager.AddTask("The blocker");
+        _taskManager.AddTask("The dependent");
+        _taskManager.BlockTask("2", ["01"]).IsError.Should().BeFalse();
+        _taskManager.GetTasks().Single(t => t.Id == "2").BlockedBy.Should().Equal("1");
+        _taskManager.ClaimTask("1", "rev-a");
+
+        var completeResult = _taskManager.UpdateTask("1", "completed");
+
+        completeResult.IsError.Should().BeFalse();
+        completeResult.Text.Should().Contain("Unblocked: 2");
+
+        var dependent = _taskManager.GetTasks().Single(t => t.Id == "2");
+        dependent.Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+        dependent.BlockedBy.Should().BeEmpty();
+    }
+
+    [Fact]
     public void BlockTask_ThatWouldCloseADirectCycle_IsRefusedAndNamesTheCycle()
     {
         // #595 (review 587/FU-4): 1 <-> 2 used to be accepted, leaving both tasks permanently
