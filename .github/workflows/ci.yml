@@ -42,6 +42,38 @@ jobs:
         shell: pwsh
         run: ./scripts/ci-test.ps1
 
+  daemon-tests-linux:
+    # The .NET gate above is windows-latest, and until this job existed that was the ONLY place .NET
+    # tests ran. Some of the daemon's behaviour is not observable there at all: the orphaned-pack
+    # sweeper's open-descriptor guard reads /proc/<pid>/fd, which has no Windows equivalent, so its
+    # four tests are LinuxOnlyFact and report skipped on the Windows leg. A guard whose tests can only
+    # ever skip is a guard nobody has run.
+    #
+    # Deliberately ONE project rather than the solution. The claim this job makes is narrow — "the
+    # daemon's platform-sensitive behaviour holds on Linux" — and CodeReviewDaemon.Sample.Tests is
+    # where all of it lives. Widening it to the solution would buy a second full test matrix, and the
+    # duplicate coverage would be paid for on every PR. The Windows leg stays the whole-repo gate.
+    name: Review daemon tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            10.0.x
+            9.0.x
+            8.0.x
+
+      # No formatting or packaging gate here: those are the Windows leg's job and repeating them would
+      # only produce a second red for the same cause.
+      - name: Run the review daemon test project
+        run: dotnet test tests/CodeReviewDaemon.Sample.Tests/CodeReviewDaemon.Sample.Tests.csproj
+
   clientapp-tests:
     name: ClientApp unit tests (vitest)
     runs-on: ubuntu-latest
