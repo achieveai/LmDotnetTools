@@ -133,6 +133,43 @@ describe('useTodoBoard — REST hydrate', () => {
     expect(board.activeTaskId.value).toBe('1');
   });
 
+  it('parses the real PR-1 body, envelope fields and all', async () => {
+    // Verbatim from src/LmCore/Models/TodoBoardSnapshot.cs: the snapshot sits at the TOP LEVEL (no
+    // board/items/snapshot wrapper) and carries schemaVersion + capturedAtUtc alongside tasks.
+    mocks.getConversationTodos.mockResolvedValue({
+      threadId: 't1',
+      schemaVersion: 1,
+      capturedAtUtc: '2026-08-28T12:00:00+00:00',
+      tasks: wireTasks(),
+    });
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    await board.hydrate();
+
+    expect(board.rows.value.map((r) => r.id)).toEqual(['1', '1.1', '2']);
+  });
+
+  it('ignores an unrecognized schemaVersion rather than blanking the board', async () => {
+    // Rejecting a whole board on a version bump would blank a panel that could still render most of
+    // it. The tolerant per-task parser is the guard, not a version gate.
+    mocks.getConversationTodos.mockResolvedValue({
+      threadId: 't1',
+      schemaVersion: 99,
+      tasks: wireTasks(),
+    });
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    await board.hydrate();
+
+    expect(board.hasBoard.value).toBe(true);
+  });
+
   it('holds the loading flag only while in flight', async () => {
     const gate = deferred<{ tasks: unknown[] }>();
     mocks.getConversationTodos.mockReturnValue(gate.promise);

@@ -212,6 +212,9 @@ vi.mock('@/composables/useChat', async () => {
           cachedTokens: 0,
           cacheCreationTokens: 0,
         }),
+        // Hoisted useTodoBoard(...) watches this eagerly to establish its dependency, so unlike the
+        // lazily-read fields above it must actually be present here (#583).
+        conversationTodo: ref(null),
         pendingMessages: ref([]),
         pendingAuthRequests: computed(() => []),
         dismissAuthRequest: vi.fn(),
