@@ -30,7 +30,7 @@ The Todo Manager is an in-memory task management system that provides LLM-access
 ## Current Implementation
 
 `src/Misc/Utils/TaskManager.cs` already implements this feature and has done since before
-this specification was written. It is a plain class whose eleven `[Function]`-annotated
+this specification was written. It is a plain class whose `[Function]`-annotated
 methods are surfaced by `TypeFunctionProvider`, and it is wired up per conversation in
 `samples/LmStreaming.Sample/Program.cs`. Its tests live in
 `tests/Misc.Tests/Utils/TaskManagerTests.cs`.
@@ -73,6 +73,7 @@ the shipped behaviour, the criterion has been amended and the amendment is calle
 1. **Function Exposure**: WHEN registering functions THEN "update-task" SHALL be available with parameters for `taskId` and `status`
    - *Amended.* The parameter is `taskId`, not `task_id` — see the note on Requirement 2.1.
 2. **Status Validation**: WHEN updating status THEN it SHALL accept "not started", "in progress", "completed", or "removed", along with the hyphenated and underscored spellings a model is apt to emit ("not-started", "in-progress", "to-do", ...)
+   - *Amended.* "update-task" SHALL refuse a direct "blocked" target and direct the caller to "block-task" instead — see Requirement 8.1. Setting `in progress` with an `agent` name now goes through the claim/lease path in Requirement 8.3, and setting `completed` now requires the task to be `InProgress` with a non-null `assignee` — see Requirement 8.8.
 3. **Task Lookup**: WHEN updating task status THEN it SHALL find tasks by dotted path across all hierarchy levels
 4. **Error Handling**: WHEN `taskId` is invalid THEN it SHALL return error message in markdown format
 5. **Response Format**: WHEN status is successfully updated THEN it SHALL return confirmation message in markdown format
@@ -111,21 +112,27 @@ summary block appears only for an unfiltered, non-`mainOnly` listing.
 ```text
 # 📋 Task List
 
-**Status**: 1 in progress | 2 pending | 1 completed
+**Status**: 1 in progress | 2 pending | 0 blocked | 1 completed
 **Total**: 3 active tasks
 
 [-] 1. Design API
   Notes:
   1. Rate limit is 100/min
   2. Auth via JWT
-  [x] 1.1. Define endpoints
+  [x] 1.1. Define endpoints [@tester]
     [ ] 1.1.1. Validate JWT
   [~] 1.2. Draft schema (removed)
 [ ] 2. Ship it
 ```
 
 Note that the counts describe *active* work: a `[~]` removed task is excluded from
-"**Total**: N active tasks" and from the pending count.
+"**Total**: N active tasks" and from the pending count. The blocked count is now named
+explicitly rather than folded silently into "pending", and task 1.1 carries a `[@tester]`
+tag because completing it required claiming it first (Requirement 8.8) and `assignee` is
+durable ownership that survives the `Completed` transition rather than being cleared — see
+Requirement 8 for the coordination fields (`Blocked`, `assignee`, `blockedBy`, elapsed-time)
+that this document was amended to cover, and the row-suffix rendering (`[@assignee]`,
+`(Nm)`, `(blocked by ...)`) they add.
 
 ### Requirement 6: Markdown Generation Method
 - **User Story**: As a developer, I need a method to generate markdown representation so that I can get formatted output programmatically.
@@ -143,8 +150,61 @@ Note that the counts describe *active* work: a `[~]` removed task is excluded fr
 #### Acceptance Criteria:
 1. **Provider Implementation**: WHEN creating TaskManager THEN it SHALL be a plain class whose `[Function]`-annotated methods are surfaced by `TypeFunctionProvider`; it SHALL NOT implement `IFunctionProvider` itself
    - *Amended.* Hand-rolling `IFunctionProvider` would duplicate the reflection the framework already does.
-2. **Function Registration**: WHEN getting functions THEN `TypeFunctionProvider` SHALL return FunctionDescriptor objects for all eleven operations: add-task, bulk-initialize, update-task, delete-task, get-task, add-note, edit-note, delete-note, list-notes, list-tasks, search-tasks
+2. **Function Registration**: WHEN getting functions THEN `TypeFunctionProvider` SHALL return FunctionDescriptor objects for all fourteen operations: add-task, bulk-initialize, update-task, delete-task, get-task, add-note, edit-note, delete-note, list-notes, list-tasks, search-tasks, claim-task, assign-task, block-task
+   - *Amended.* The original eleven operations are unchanged; `claim-task`, `assign-task`, and `block-task` were added for the coordination fields in Requirement 8.
 3. **Parameter Mapping**: WHEN functions are called THEN arguments SHALL bind even when the model's JSON types differ from the declared ones — a quoted number onto a numeric parameter, an unquoted number onto a string parameter — and a parameter the model omitted SHALL take its declared C# default rather than the type's zero value
 4. **Error Handling**: WHEN operations fail THEN it SHALL return descriptive error messages instead of throwing exceptions, and SHOULD mark the tool result as an error so the model and the host can tell a failure from a successful answer whose text happens to start with "Error"
-   - *Amended.* Both halves are shipped. Every failure returns a message rather than throwing, and all eleven tools return `FunctionResult`, so a domain failure reaches the model with `IsError = true` and a lower_snake_case error code (`task_not_found`, `invalid_args`, `invalid_task_id`, `invalid_status`, `note_index_out_of_range`) while a success carries no code. The text on the wire is unchanged — only `Text` is serialized — so the contract still advertises `string`.
+   - *Amended.* Both halves are shipped. Every failure returns a message rather than throwing, and all fourteen tools return `FunctionResult`, so a domain failure reaches the model with `IsError = true` and a lower_snake_case error code (`task_not_found`, `invalid_args`, `invalid_task_id`, `invalid_status`, `note_index_out_of_range`, `task_not_claimable`, `task_blocked`, `task_already_claimed`, `task_not_claimed`) while a success carries no code. The text on the wire is unchanged — only `Text` is serialized — so the contract still advertises `string`.
 5. **Statefulness**: WHEN a provider is built around a live instance THEN its descriptors SHALL be marked `IsStateful`, so hosts that only accept stateless tools exclude it rather than sharing one conversation's list with another
+
+### Requirement 8: Coordination Fields (Assignee, Claim/Lease, Blocked)
+
+- **User Story**: As an orchestrator handing work to other agents, I need to assign tasks,
+  claim them by name, block on dependencies, and see when a claim has gone stale, so that
+  multiple agents can coordinate through one task list without stepping on each other.
+
+#### Acceptance Criteria:
+1. **Blocked Status**: WHEN a task cannot proceed THEN "block-task" SHALL set its status to
+   `Blocked` and record the blocking task IDs in `blockedBy`; "update-task" SHALL refuse a
+   direct `blocked` status target and point the caller at `block-task` instead, so `Status`
+   and `BlockedBy` never disagree
+2. **Assignee**: WHEN a task is created, assigned via "assign-task", or claimed via
+   "claim-task" THEN it SHALL carry an `assignee` (agent name); a sub-task created under an
+   assigned parent SHALL inherit the parent's assignee unless the caller overrides it
+   - *Amended.* "assign-task" refuses to reassign a task whose current `InProgress` claim is
+     still live (not stale by Requirement 8.3's threshold), returning `task_already_claimed`
+     — the same rule "claim-task" enforces, so assignment can never silently steal a live
+     lease. Reassigning over a *stale* claim succeeds but resets the task to `NotStarted`
+     (clearing `claimedAt`) rather than leaving it `InProgress` under the new name, so
+     assignment alone can never violate Requirement 8.4's one-in-progress-per-assignee
+     invariant and the new assignee must claim the task explicitly before completing it.
+3. **Claim Is A Lease, Not A Lock**: WHEN "claim-task" is called with an agent name THEN it
+   SHALL move `NotStarted -> InProgress` and stamp `claimedAt`; a second agent's claim
+   attempt SHALL be refused *unless* the existing claim is older than the staleness
+   threshold (15 minutes by default), in which case the lease is taken over. Staleness is
+   derived from `claimedAt` on read — there is no background sweeper
+4. **One In-Progress Task Per Assignee**: WHEN an agent claims a new task THEN any other
+   task already `InProgress` under that same assignee SHALL be released back to
+   `NotStarted` (its assignee kept, `claimedAt` cleared) rather than left running in
+   parallel
+5. **Blocked Tasks Are Not Claimable**: WHEN a task is `Blocked` THEN every route that can
+   move it to `InProgress` — "claim-task", "update-task" (with or without an `agent`), and
+   "claim-task"'s same-holder lease refresh — SHALL refuse it until every ID in `blockedBy`
+   is resolved
+   - *Amended.* The original wording scoped this guard to "claim-task" alone; a plain
+     `update-task <id> "in progress"` with no `agent` moved the status without going through
+     "claim-task" at all, so it could bypass the block. The guard is now a single shared
+     check (`RefuseIfBlocked`) applied by every route, so `Status` and `BlockedBy` can never
+     disagree.
+6. **Auto-Unblock On Completion**: WHEN a task completes THEN every other task that named it
+   in `blockedBy` SHALL have that ID removed, and SHALL return to `NotStarted` once its
+   `blockedBy` list is empty
+7. **Timestamps**: WHEN a task is created, claimed, or completed THEN `createdAt`,
+   `claimedAt`, and `completedAt` SHALL be stamped from an injectable clock
+   (`TimeProvider`), so tests can assert on them deterministically
+8. **Completion Requires An Active Claim**: WHEN "update-task" is asked to mark a task
+   `completed` THEN it SHALL require the task to currently be `InProgress` with a non-null
+   `assignee`, and SHALL return a descriptive error (not a silent no-op) otherwise
+9. **Backward Compatibility**: WHEN loading a persisted task tree written before these
+   fields existed THEN `assignee`, `blockedBy`, and the timestamp fields SHALL default to
+   absent/empty rather than failing to deserialize

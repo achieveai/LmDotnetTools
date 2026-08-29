@@ -9,8 +9,12 @@ namespace AchieveAi.LmDotnetTools.LmCore.Models;
 /// </summary>
 /// <remarks>
 ///     Serialized as the member NAME, not an ordinal: the client's type union is written against
-///     <c>"NotStarted" | "InProgress" | "Completed" | "Removed"</c>, and an ordinal would silently
-///     re-map every row the day a member is inserted rather than appended.
+///     <c>"NotStarted" | "InProgress" | "Completed" | "Removed" | "Blocked"</c>, and an ordinal
+///     would silently re-map every row the day a member is inserted rather than appended.
+///     <c>Blocked</c> was appended after the other four for exactly that reason — the client's
+///     type union does not yet list it (tracked as #584), but the client's parser already has a
+///     tested fallback for an unrecognized status name, so an older client degrades gracefully
+///     rather than breaking.
 /// </remarks>
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum TodoTaskStatus
@@ -26,6 +30,11 @@ public enum TodoTaskStatus
 
     /// <summary>Struck out — kept for history, grouped away in the UI.</summary>
     Removed,
+
+    /// <summary>Waiting on one or more other tasks before it can be claimed. Appended rather than
+    /// inserted so existing ordinals — irrelevant to the name-based wire format, but still a
+    /// convention worth keeping — never shift.</summary>
+    Blocked,
 }
 
 /// <summary>
