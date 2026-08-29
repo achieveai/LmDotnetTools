@@ -40,6 +40,29 @@
     <!-- Common Tags -->
     <PackageTags>dotnet;ai;llm;language-model;achieve-ai</PackageTags>
   </PropertyGroup>
+
+  <!-- Payload diet: trim build-output files that are never consumed at runtime here. -->
+  <PropertyGroup>
+    <!-- Only build/copy the English satellite resource assemblies for referenced tooling
+         (e.g. VSTest, xunit runners). Without this, MSBuild copies one localized
+         *.resources.dll per referenced package per culture it ships (cs/de/es/fr/it/ja/ko/pl/
+         pt-BR/ru/tr/zh-Hans/zh-Hant), none of which this repo's tests or samples localize into
+         or read. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Drop only .xml from the files that ride along when a referenced assembly is copied to a
+         project's output. SDK default (Microsoft.Common.CurrentVersion.targets) is
+         ".pdb;.xml;.pri;.dll.config;.exe.config" - this keeps everything except .xml, which is
+         each dependency's XML doc comment file. Nothing in this repo reads XML docs at runtime
+         (no Swagger/Swashbuckle XML-doc ingestion, no reflection-based doc readers) - confirmed
+         by repo-wide search - so that copy is pure waste. .pri/.dll.config/.exe.config are kept
+         at their default: no measured savings and each has a real consumer (WinRT/UWP resource
+         index files, app/exe .config redirects) that this property would otherwise silently
+         break for a future project that needs one. This does not affect
+         GenerateDocumentationFile: each project still produces its own .xml doc file in its own
+         bin output; it just stops that file from being copied into every downstream
+         project/test/sample that references it. -->
+    <AllowedReferenceRelatedFileExtensions>.pdb;.pri;.dll.config;.exe.config</AllowedReferenceRelatedFileExtensions>
+  </PropertyGroup>
   
   <!-- Build and Test Logging Configuration -->
   <PropertyGroup>

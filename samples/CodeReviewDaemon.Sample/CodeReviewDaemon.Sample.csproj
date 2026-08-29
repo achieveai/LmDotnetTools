@@ -11,7 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- SQLite is the daemon's orchestration source of truth (review_run / poll_cursor /
-         review_outbox / review_artifact). Pinned to the version already used across LmCore /
+         review_outbox / review_artifact). Pinned to the version already used across
          LmMultiTurn / Misc. -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.5" />
     <!-- Optional structured JSONL logging for the daemon's own logs (CodeReviewDaemon:LogFilePath) —
