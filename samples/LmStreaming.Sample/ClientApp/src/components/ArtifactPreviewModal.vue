@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import BaseModal from './BaseModal.vue';
 import { NoSessionError, previewFile } from '@/api/fileBrowserApi';
 import type { PreviewResult } from '@/types/fileBrowser';
@@ -45,10 +45,20 @@ const renderedMarkdown = computed(() =>
   previewText.value !== null && isMarkdown.value ? parseMarkdown(previewText.value) : ''
 );
 
+/**
+ * Cancels the in-flight preview read when the modal unmounts (596/F-005). Unmounting already
+ * prevented a stale paint — a late response writes into dead refs — but the request itself ran to
+ * completion and was discarded, up to a 256 KiB read for nothing on every conversation switch.
+ */
+const abort = new AbortController();
+
 onMounted(async () => {
   try {
-    result.value = await previewFile(props.threadId, props.path);
+    result.value = await previewFile(props.threadId, props.path, abort.signal);
   } catch (e) {
+    // Our own unmount-time abort is not a failure — and the component is gone, so there is nothing
+    // to say it to. (`fetch` rejects an aborted call with DOMException 'AbortError'.)
+    if (abort.signal.aborted) return;
     // The board is an accessory: a failed preview degrades to a message inside the modal, never
     // to an error banner over the chat. Recorded at debug like the board's own load failures.
     errorText.value =
@@ -57,9 +67,11 @@ onMounted(async () => {
         : 'Could not load the preview.';
     log.debug('Artifact preview failed', { path: props.path, error: e });
   } finally {
-    isLoading.value = false;
+    if (!abort.signal.aborted) isLoading.value = false;
   }
 });
+
+onBeforeUnmount(() => abort.abort());
 </script>
 
 <template>

@@ -88,6 +88,35 @@ describe('ArtifactPreviewModal — rendering states', () => {
   });
 });
 
+describe('ArtifactPreviewModal — in-flight fetch cancellation (596/F-005)', () => {
+  it('hands the preview fetch an AbortSignal and aborts it on unmount', async () => {
+    // A preview in flight when the conversation switches used to run to completion — up to a
+    // 256 KiB read — only to be discarded because the component was already unmounted.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => new Promise<Response>(() => {})); // never resolves
+
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', path: 'docs/spec.md' },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    const init = fetchSpy.mock.calls[0][1] as RequestInit | undefined;
+    const signal = init?.signal;
+    // The signal must actually reach fetch — an AbortController nothing listens to cancels nothing.
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal!.aborted).toBe(false);
+
+    wrapper.unmount();
+    expect(signal!.aborted).toBe(true);
+  });
+
+  // NOTE deliberately untested: the catch's `if (abort.signal.aborted) return;` guard only runs
+  // after unmount, where writing the dead refs it skips would be invisible anyway — a test for it
+  // could not go red under any compiling mutation, and a pin that cannot fail is worse than none.
+});
+
 describe('ArtifactPreviewModal — chrome', () => {
   it('titles the modal with the full path and closes via BaseModal', async () => {
     const { wrapper } = await mountModal(jsonResponse(textPreview), 'docs/todo-board/spec.md');

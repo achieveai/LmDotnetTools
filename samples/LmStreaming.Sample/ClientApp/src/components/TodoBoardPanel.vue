@@ -151,10 +151,11 @@ watch(activeTaskId, () => {
         <span class="todo-progress-label">{{ counts.done }}/{{ counts.total }}</span>
       </div>
 
-      <!-- Reachable when every row on the board is Removed: the mount gate counts all tasks, this
-           list shows only the live ones. -->
+      <!-- Reachable ONLY when every row on the board is Removed: the mount gate counts all tasks,
+           this list shows only the live ones. So the wording must not claim nothing was ever here —
+           tasks exist, struck out, behind the removed accordion right below (584). -->
       <div v-if="liveRows.length === 0" class="todo-message" data-testid="todo-empty">
-        No tasks yet.
+        No active tasks.
       </div>
 
       <ul
@@ -466,6 +467,17 @@ watch(activeTaskId, () => {
   color: #146c43;
 }
 
+/* Blocked reads as a warning, not an error: the row is waiting on other tasks, nothing failed.
+   Amber keeps it visually distinct from the gray "todo" pill it used to fall back to (#594 D4). */
+.status-Blocked .todo-pill {
+  background: #fff3cd;
+  color: #997404;
+}
+
+.status-Blocked .todo-glyph {
+  color: #997404;
+}
+
 /* Artifact chips: small filename pills under the row line, full path on the tooltip. */
 .todo-artifacts {
   display: flex;
@@ -479,6 +491,7 @@ watch(activeTaskId, () => {
   align-items: center;
   gap: 4px;
   max-width: 100%;
+  min-width: 0;
   padding: 1px 8px;
   border: 1px solid #d8dde3;
   border-radius: 8px;
@@ -487,9 +500,6 @@ watch(activeTaskId, () => {
   font-size: 10px;
   line-height: 1.6;
   cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .todo-artifact-chip:hover {
@@ -500,6 +510,19 @@ watch(activeTaskId, () => {
 .todo-artifact-glyph {
   color: #6c757d;
   font-size: 8px;
+  flex: none;
+}
+
+/* The ellipsis rules live HERE, not on the chip (596/F-007): `text-overflow` applies to a block
+   container's own inline content, never to a flex container's items, so on the inline-flex chip a
+   long name was clipped by `overflow: hidden` with no `…` to signal it. The name span is a block
+   inside the flex row; `min-width: 0` lets it shrink below its content so the ellipsis can engage. */
+.todo-artifact-name {
+  display: block;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* One line, clipped. A note that needs more than a line belongs in the transcript, not here. */
