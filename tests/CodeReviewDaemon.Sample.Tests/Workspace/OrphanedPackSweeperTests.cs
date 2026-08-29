@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Workspace;
@@ -321,6 +324,158 @@ public sealed class OrphanedPackSweeperTests : IDisposable
         File.Exists(fetch.TempPack).Should().BeFalse();
     }
 
+    [LinuxOnlyFact("the descriptor race this pins is only visible through /proc/<pid>/fd")]
+    [SupportedOSPlatform("linux")] // The attribute above is what enforces this; CA1416 cannot read it.
+    public async Task A_fetch_the_watchdog_kills_sweeps_the_pack_its_dying_index_pack_still_held()
+    {
+        // THE INTEGRATION CASE, and the one every test above structurally cannot reach: they all call
+        // SweepNew directly, after their own kill has been waited out. Production sweeps on the line after
+        // Kill(entireProcessTree: true), and a descriptor is released as the kernel tears the process down
+        // rather than when the signal lands. index-pack is a GRANDCHILD — reparented to init when git dies,
+        // reaped there, not by us — so waiting on our own Process is not enough either. Sweep too early and
+        // /proc still shows the holder, the guard spares the file, the sweep reports nothing, and the
+        // multi-gigabyte leak looks in the log exactly like the guard doing its job.
+        //
+        // Driven through RunAsync end to end on purpose: the kill has to come from the watchdog, on the real
+        // path, or this proves nothing about production. Nothing here is timing-guessed — the remote stalls
+        // and stays stalled, so the idle timeout is what fires.
+        using var lab = GitLab.Create(_root);
+        lab.StallTheRemoteMidPack();
+
+        var logger = new CapturingLogger<HostGitCommandRunner>();
+        var runner = new HostGitCommandRunner(
+            _ => Task.FromResult<IReadOnlyList<GitProviderToken>>([]),
+            logger,
+            adoOrgs: null,
+            idleTimeout: TimeSpan.FromSeconds(3),
+            maxDuration: TimeSpan.FromSeconds(90)
+        );
+
+        var result = await runner.RunAsync(new SandboxCommand(["git", "fetch", "origin"], lab.Store), default);
+
+        result
+            .ExitCode.Should()
+            .Be(124, "the stalled fetch must be killed by the idle watchdog rather than finish or hang");
+
+        // The load-bearing assertion. "Removed N" can only be logged when the sweep actually took a file,
+        // so this fails both ways it can be wrong: it goes red if the guard was consulted too early and
+        // spared the orphan, and it goes red if no temp pack was ever written and the whole scenario was
+        // vacuous. The alternative log line — "swept NOTHING" — is what the unfixed code produces here.
+        logger
+            .MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .ContainMatch(
+                "*had abandoned*temporary pack file(s)*",
+                "the killed fetch left a half-written pack and the sweep must have taken it; a "
+                    + "'swept NOTHING' line here means the descriptor was still held when the sweep ran"
+            );
+
+        Directory
+            .GetFiles(PackDirectory(lab.Store), "tmp_pack_*")
+            .Should()
+            .BeEmpty("the pack directory must be returned to its pre-fetch state");
+    }
+
+    [LinuxOnlyFact("holding a descriptor across the kill is only observable through /proc/<pid>/fd")]
+    [SupportedOSPlatform("linux")] // The attribute above is what enforces this; CA1416 cannot read it.
+    public async Task The_sweep_waits_for_a_pack_still_held_at_kill_time_instead_of_giving_up_on_it()
+    {
+        // THE MUTATION-PROOF HALF, and the reason it does not simply reuse the test above. What the fix adds
+        // is a bounded WAIT between the kill and the sweep, and the test above cannot prove it: measured,
+        // that test stays green with the wait collapsed to zero, because at this fixture's scale index-pack
+        // is reaped inside the time Kill() itself takes to walk the tree. A green mutation names an untested
+        // claim rather than a safe one, so the window is made deterministic here instead of raced for.
+        //
+        // A descriptor held by THIS process across the kill is that window, at a duration the test chooses:
+        // opened while the fetch is still writing, released about a second and a half after the watchdog
+        // fires, and well inside the five-second deadline. Sweep without waiting and the pack is spared and
+        // reported unswept; wait, and the same pack is taken the moment its holder lets go. The holder is a
+        // stand-in for a dying index-pack and is honest about being one — it is indistinguishable to the
+        // guard, which knows only "some process has this open".
+        using var lab = GitLab.Create(_root);
+        lab.StallTheRemoteMidPack();
+
+        var packDirectory = PackDirectory(lab.Store);
+        var opened = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var holder = Task.Run(() => HoldTheFirstTempPack(packDirectory, TimeSpan.FromSeconds(4), opened));
+
+        var logger = new CapturingLogger<HostGitCommandRunner>();
+        var runner = new HostGitCommandRunner(
+            _ => Task.FromResult<IReadOnlyList<GitProviderToken>>([]),
+            logger,
+            adoOrgs: null,
+            idleTimeout: TimeSpan.FromSeconds(3),
+            maxDuration: TimeSpan.FromSeconds(90)
+        );
+
+        var result = await runner.RunAsync(new SandboxCommand(["git", "fetch", "origin"], lab.Store), default);
+        await holder;
+
+        result.ExitCode.Should().Be(124, "the stalled fetch must be killed by the idle watchdog");
+
+        // Non-vacuity: without this the test could pass having held nothing, which is the same run as the
+        // one above and proves nothing about waiting.
+        var pack = await opened.Task;
+        pack.Should().StartWith(packDirectory, "the held file must be the fetch's own temp pack");
+
+        logger
+            .MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .ContainMatch(
+                "*had abandoned*temporary pack file(s)*",
+                "the sweep must wait out the descriptor and then take the pack; a 'swept NOTHING' line "
+                    + "means it sampled /proc while the holder was still there and gave up"
+            );
+
+        File.Exists(pack).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Opens the first temp pack to appear in <paramref name="packDirectory"/>, holds it for
+    /// <paramref name="hold"/>, and reports which file it took. Polls rather than watches because the file is
+    /// created by a process the test does not own and lives for a few seconds at most.
+    /// </summary>
+    private static void HoldTheFirstTempPack(string packDirectory, TimeSpan hold, TaskCompletionSource<string> opened)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            var candidate = Directory.Exists(packDirectory)
+                ? Directory.GetFiles(packDirectory, "tmp_pack_*").FirstOrDefault()
+                : null;
+
+            if (candidate is not null)
+            {
+                try
+                {
+                    using var stream = new FileStream(
+                        candidate,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete
+                    );
+                    _ = opened.TrySetResult(candidate);
+                    Thread.Sleep(hold);
+                }
+                catch (Exception ex)
+                {
+                    _ = opened.TrySetException(ex);
+                }
+
+                return;
+            }
+
+            Thread.Sleep(5);
+        }
+
+        _ = opened.TrySetException(
+            new InvalidOperationException(
+                "the stalled fetch never created a temp pack, so there was nothing to hold and this test "
+                    + "would have proved nothing about waiting for one."
+            )
+        );
+    }
+
     private static int TempPackCount(string repo) =>
         Directory.Exists(PackDirectory(repo)) ? Directory.GetFiles(PackDirectory(repo), "tmp_pack_*").Length : 0;
 
@@ -417,6 +572,57 @@ public sealed class OrphanedPackSweeperTests : IDisposable
             }
 
             return new GitLab(root, store);
+        }
+
+        /// <summary>
+        /// Makes the NEXT fetch stall mid-pack and stay stalled, so a watchdog can kill it at a moment when
+        /// <c>index-pack</c> is demonstrably alive and holding a half-written <c>tmp_pack_*</c>.
+        /// <para>
+        /// SIGSTOP is not usable for this. <see cref="StartFetchAndFreezeWhileWriting"/> owns the process it
+        /// freezes; a fetch driven through <c>HostGitCommandRunner.RunAsync</c> is owned by the runner, and
+        /// the test never gets a handle on it — the kill has to come from the watchdog or it is not the
+        /// production path being tested. So the stall is arranged on the REMOTE side instead, where the test
+        /// still has control: <c>upload-pack</c>'s stdout is passed through a reader that takes a fixed
+        /// prefix and then stops reading. The pipe fills, the server blocks writing, the client's
+        /// <c>index-pack</c> blocks reading with its temp pack open, and the client goes silent — which is
+        /// exactly the shape of the production stall (<c>curl 56 Recv failure</c>) the idle timeout exists
+        /// to catch. The prefix is large enough that <c>index-pack</c> has certainly created its temp file
+        /// and far smaller than the payload, so the transfer cannot slip through and finish.
+        /// </para>
+        /// </summary>
+        [SupportedOSPlatform("linux")]
+        public void StallTheRemoteMidPack()
+        {
+            var script = Path.Combine(_root, "stalling-upload-pack.sh");
+            File.WriteAllText(
+                script,
+                // `stdbuf -o0`, and it is load-bearing rather than defensive. upload-pack is INTERACTIVE
+                // before it is bulk: it writes a ~300-byte ref advertisement and then waits on stdin for
+                // the client's wants. Any reader that holds those 300 bytes rather than passing them
+                // through deadlocks the exchange before a single pack byte exists — the client never gets
+                // the advertisement, so it never answers, so no pack is ever sent. Both natural spellings
+                // do exactly that, and both were measured doing it here (fetch silent from 0.1s, killed
+                // with NO temp pack, so the test failed for a reason unrelated to the sweep):
+                // `dd bs=4096 count=64 iflag=fullblock` blocks waiting to fill its first block, and plain
+                // `head -c` writes through stdio, which is FULLY buffered when stdout is a pipe. Unbuffered
+                // `head` forwards the advertisement immediately and then stops at the byte limit; `sleep`
+                // inherits the pipe's read end and holds it open, so upload-pack blocks on its next write
+                // once the kernel buffer fills. Verified: a 254 KB temp pack, and the transfer stopped
+                // roughly two orders of magnitude short of the payload.
+                "#!/bin/sh\n" + "git upload-pack \"$@\" | { stdbuf -o0 head -c 262144; sleep 60; }\n"
+            );
+            File.SetUnixFileMode(
+                script,
+                UnixFileMode.UserRead
+                    | UnixFileMode.UserWrite
+                    | UnixFileMode.UserExecute
+                    | UnixFileMode.GroupRead
+                    | UnixFileMode.GroupExecute
+                    | UnixFileMode.OtherRead
+                    | UnixFileMode.OtherExecute
+            );
+
+            Git(Store, "config", "remote.origin.uploadpack", script);
         }
 
         /// <summary>

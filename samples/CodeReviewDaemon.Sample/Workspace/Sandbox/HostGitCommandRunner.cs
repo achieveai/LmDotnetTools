@@ -118,6 +118,35 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
     /// </summary>
     private static readonly TimeSpan S_drainDeadline = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// How long the sweep may wait for a killed tree to actually let go of the packs it was writing.
+    /// <para>
+    /// This exists because <c>Kill(entireProcessTree: true)</c> only DELIVERS signals. The descriptor
+    /// <c>index-pack</c> holds on its <c>tmp_pack_*</c> is released as the kernel tears that process down,
+    /// which is not synchronous with the signal and is not covered by waiting on our own direct child —
+    /// <c>index-pack</c> is a grandchild, reparented to init and reaped there. Sweeping on the next line
+    /// therefore samples <c>/proc</c> while the writer is still visible, spares the file it was created to
+    /// remove, and logs nothing: the multi-gigabyte leak survives, and the log reads exactly like the guard
+    /// working. The test fixture for this file has always waited here; production did not, and that gap is
+    /// the whole of the defect.
+    /// </para>
+    /// <para>
+    /// Bounded, and generously: five seconds is orders of magnitude more than a reap takes, so reaching it
+    /// means something is genuinely wrong rather than merely slow. On expiry the sweep still runs — the
+    /// open-handle guard is what makes that safe, and it is consulted again inside the sweep — but the
+    /// outcome is reported rather than silently accepted. The cost is paid only on a kill, and the one path
+    /// where it is felt is shutdown, which is bounded by the same five seconds.
+    /// </para>
+    /// </summary>
+    private static readonly TimeSpan S_reapDeadline = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// How often the reap wait re-checks. Each check that finds a candidate walks the readable descriptor
+    /// tables, so this is coarse enough not to spin on that and fine enough that the common case — already
+    /// reaped — costs one poll.
+    /// </summary>
+    private static readonly TimeSpan S_reapPollInterval = TimeSpan.FromMilliseconds(50);
+
     private readonly Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> _credentialsSource;
     private readonly ILogger<HostGitCommandRunner> _logger;
     private readonly IReadOnlyCollection<string>? _adoOrgs;
@@ -303,10 +332,19 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
         {
             KillTree(process);
 
+            // The kill only delivers the signal; the pack descriptor is released as the tree is torn down.
+            // Sweeping without waiting for that finds the dying writer still holding the file, spares it,
+            // and leaks the gigabytes this whole class exists to reclaim. See S_reapDeadline. Skipped
+            // entirely when no snapshot was taken, so a killed `rev-parse` still costs nothing.
+            var (settled, waited) = preexistingTempPacks is null
+                ? (true, TimeSpan.Zero)
+                : await WaitForKilledTreeAsync(process, command.WorkingDirectory, preexistingTempPacks)
+                    .ConfigureAwait(false);
+
             // Both exits from here abandon a half-written pack, so both sweep. Ordered before the rethrow
             // deliberately: shutdown mid-fetch is not the rare case it reads as — it is how the daemon stops
             // every time, and skipping cleanup there would leak on the most common kill of all.
-            SweepAbandonedPacks(command.WorkingDirectory, preexistingTempPacks, verb ?? argv[0]);
+            SweepAbandonedPacks(command.WorkingDirectory, preexistingTempPacks, verb ?? argv[0], settled, waited);
 
             // The caller's cancellation wins: on shutdown nobody wants a result, and reporting one as a
             // failed run would mark every in-flight review RetryPending on every stop.
@@ -568,6 +606,61 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
     }
 
     /// <summary>
+    /// Waits for a killed tree to stop holding the packs it was writing, bounded by
+    /// <see cref="S_reapDeadline"/>. Returns whether it settled, and how long that took.
+    /// </summary>
+    /// <remarks>
+    /// Two conditions, and the second is the one that matters. <see cref="Process.HasExited"/> covers our own
+    /// direct child, which is all <see cref="Process"/> can tell us about — but the process holding the
+    /// descriptor is <c>index-pack</c>, a GRANDCHILD, which on Linux is reparented to init when git dies and
+    /// reaped there rather than by us. So the tree's exit is observed through the descriptors themselves,
+    /// which is both the honest signal and precisely the one the sweep is about to consult.
+    /// <para>
+    /// Never throws and never waits unbounded: a cleanup path that can hang is worse than the leak it is
+    /// cleaning up after, and this one runs on every shutdown.
+    /// </para>
+    /// </remarks>
+    private static async Task<(bool Settled, TimeSpan Waited)> WaitForKilledTreeAsync(
+        Process process,
+        string? workingDirectory,
+        IReadOnlySet<string> preexisting
+    )
+    {
+        var waited = Stopwatch.StartNew();
+
+        while (true)
+        {
+            if (HasExited(process) && !OrphanedPackSweeper.AnyNewTempPackStillOpen(workingDirectory, preexisting))
+            {
+                return (true, waited.Elapsed);
+            }
+
+            if (waited.Elapsed >= S_reapDeadline)
+            {
+                return (false, waited.Elapsed);
+            }
+
+            await Task.Delay(S_reapPollInterval).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Whether the child has been reaped. Any failure answers YES, so a process we can no longer ask about
+    /// cannot hold the reap wait at its deadline.
+    /// </summary>
+    private static bool HasExited(Process process)
+    {
+        try
+        {
+            return process.HasExited;
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Removes the temp packs this command abandoned, and says how much that reclaimed. Reported at Warning
     /// rather than Debug because it is the audible half of the fix: a sweep that runs and says nothing is
     /// indistinguishable from a sweep that never runs, which is exactly how the original leak stayed
@@ -588,7 +681,13 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
     /// snapshot are both required, and neither is configurable.
     /// </para>
     /// </remarks>
-    private void SweepAbandonedPacks(string? workingDirectory, IReadOnlySet<string>? preexisting, string verb)
+    private void SweepAbandonedPacks(
+        string? workingDirectory,
+        IReadOnlySet<string>? preexisting,
+        string verb,
+        bool settled,
+        TimeSpan waited
+    )
     {
         if (preexisting is null)
         {
@@ -596,18 +695,42 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
         }
 
         var (files, bytes) = OrphanedPackSweeper.SweepNew(workingDirectory, preexisting, _logger);
-        if (files == 0)
+        if (files > 0)
+        {
+            _logger.LogWarning(
+                "Killed git {Verb} in '{WorkingDirectory}' had abandoned {Files} temporary pack file(s); "
+                    + "removed them, reclaiming {ReclaimedMegabytes:0.#} MB "
+                    + "(tree released them after {WaitSeconds:0.##}s).",
+                verb,
+                workingDirectory,
+                files,
+                bytes / (1024d * 1024d),
+                waited.TotalSeconds
+            );
+            return;
+        }
+
+        // Zero swept is TWO OUTCOMES that must not look alike, and conflating them is how this defect hid.
+        // "Nothing was abandoned" is the ordinary case and rightly says nothing. "Something was abandoned
+        // and could not be taken" is a live leak of gigabytes, and it used to return down the same silent
+        // path — so the failure mode was shaped exactly like success. Only the second is reported.
+        var stillHeld = OrphanedPackSweeper.AnyNewTempPackStillOpen(workingDirectory, preexisting);
+        if (!stillHeld && settled)
         {
             return;
         }
 
         _logger.LogWarning(
-            "Killed git {Verb} in '{WorkingDirectory}' had abandoned {Files} temporary pack file(s); "
-                + "removed them, reclaiming {ReclaimedMegabytes:0.#} MB.",
+            "Killed git {Verb} in '{WorkingDirectory}' swept NOTHING (still held open by a live process: "
+                + "{StillHeld}; killed tree settled within the deadline: {TreeSettled}, after "
+                + "{WaitSeconds:0.##}s). Any temp pack it abandoned is still on disk, and nothing reclaims "
+                + "one inside a useful window — git only prunes temp files past gc.pruneExpire, which "
+                + "defaults to two weeks.",
             verb,
             workingDirectory,
-            files,
-            bytes / (1024d * 1024d)
+            stillHeld,
+            settled,
+            waited.TotalSeconds
         );
     }
 

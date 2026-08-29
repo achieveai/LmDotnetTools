@@ -114,32 +114,24 @@ internal static class OrphanedPackSweeper
             // case pays nothing for it.
             IReadOnlySet<string>? openNow = null;
 
-            foreach (var packDirectory in PackDirectories(workingDirectory))
+            foreach (var file in NewTempPacks(workingDirectory, preexisting))
             {
-                foreach (var file in TempPackFiles(packDirectory))
+                openNow ??= OpenTempPackPaths();
+                if (openNow.Contains(file))
                 {
-                    if (preexisting.Contains(file))
-                    {
-                        continue;
-                    }
+                    // Someone is still writing it. That is a live fetch, not our abandoned one, and
+                    // deleting it would corrupt an operation that is going to succeed.
+                    logger.LogInformation(
+                        "Leaving git temp pack '{Path}' alone: another process still holds it open.",
+                        file
+                    );
+                    continue;
+                }
 
-                    openNow ??= OpenTempPackPaths();
-                    if (openNow.Contains(file))
-                    {
-                        // Someone is still writing it. That is a live fetch, not our abandoned one, and
-                        // deleting it would corrupt an operation that is going to succeed.
-                        logger.LogInformation(
-                            "Leaving git temp pack '{Path}' alone: another process still holds it open.",
-                            file
-                        );
-                        continue;
-                    }
-
-                    if (TryDelete(file, logger, out var size))
-                    {
-                        files++;
-                        bytes += size;
-                    }
+                if (TryDelete(file, logger, out var size))
+                {
+                    files++;
+                    bytes += size;
                 }
             }
         }
@@ -157,6 +149,69 @@ internal static class OrphanedPackSweeper
         }
 
         return (files, bytes);
+    }
+
+    /// <summary>
+    /// Whether any temp pack that appeared since <paramref name="preexisting"/> was taken is STILL held open
+    /// by some process. This is the same evidence <see cref="SweepNew"/> uses to spare a file, exposed as a
+    /// question so a caller that has just KILLED the writer can wait for the answer to become false instead
+    /// of sampling it once and losing the race.
+    /// <para>
+    /// It is needed because a descriptor is not released by the signal, it is released as the kernel tears
+    /// the process down. Sweeping on the line after <c>Kill(entireProcessTree: true)</c> therefore finds the
+    /// dying <c>index-pack</c> still holding its <c>tmp_pack_*</c>, spares it, and reports nothing removed —
+    /// a multi-gigabyte leak that reads in the log exactly like the guard doing its job.
+    /// </para>
+    /// <para>
+    /// Cheap on the path that matters: with no candidates it returns without touching <see cref="ProcRoot"/>
+    /// at all, which is every kill of a command that had not begun writing a pack. Any failure answers
+    /// FALSE rather than true — this decides how long to WAIT, and a probe that cannot see anything must not
+    /// hold the daemon at its deadline on every kill. Sweep safety does not rest on this: it rests on
+    /// <see cref="OpenTempPackPaths"/>, which is consulted again inside the sweep itself.
+    /// </para>
+    /// </summary>
+    public static bool AnyNewTempPackStillOpen(string? workingDirectory, IReadOnlySet<string> preexisting)
+    {
+        ArgumentNullException.ThrowIfNull(preexisting);
+
+        try
+        {
+            IReadOnlySet<string>? openNow = null;
+            foreach (var candidate in NewTempPacks(workingDirectory, preexisting))
+            {
+                openNow ??= OpenTempPackPaths();
+                if (openNow.Contains(candidate))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // See the summary: unreadable is answered as "nobody holds it", because the only thing this
+            // answer controls is a bounded wait.
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Temp packs present now that were absent from <paramref name="preexisting"/> — the candidate set, and
+    /// the single place the snapshot rule is applied so the sweep and the still-open probe cannot come to
+    /// different conclusions about what counts as ours.
+    /// </summary>
+    private static IEnumerable<string> NewTempPacks(string? workingDirectory, IReadOnlySet<string> preexisting)
+    {
+        foreach (var packDirectory in PackDirectories(workingDirectory))
+        {
+            foreach (var file in TempPackFiles(packDirectory))
+            {
+                if (!preexisting.Contains(file))
+                {
+                    yield return file;
+                }
+            }
+        }
     }
 
     /// <summary>
