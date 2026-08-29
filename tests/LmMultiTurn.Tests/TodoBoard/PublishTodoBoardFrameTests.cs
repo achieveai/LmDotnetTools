@@ -64,7 +64,7 @@ public class PublishTodoBoardFrameTests
             cts.Token
         );
 
-        loop.PublishTodoBoardFrame(BuildSnapshot("todo-thread"));
+        loop.PublishTodoBoardFrame(() => BuildSnapshot("todo-thread"));
 
         await drain.WaitAsync(received.Task, FrameWait);
         var delivered = await received.Task;
@@ -106,7 +106,7 @@ public class PublishTodoBoardFrameTests
             cts.Token
         );
 
-        loop.PublishTodoBoardFrame(BuildSnapshot("subagent-abc123"));
+        loop.PublishTodoBoardFrame(() => BuildSnapshot("subagent-abc123"));
 
         await drain.WaitAsync(received.Task, FrameWait);
         var delivered = await received.Task;
@@ -151,7 +151,7 @@ public class PublishTodoBoardFrameTests
             cts.Token
         );
 
-        publishingLoop.PublishTodoBoardFrame(BuildSnapshot("thread-a"));
+        publishingLoop.PublishTodoBoardFrame(() => BuildSnapshot("thread-a"));
 
         // Wait until the frame demonstrably made it through the publishing loop's channel; only then is
         // "the other loop saw nothing" evidence rather than a race won by asserting too early.
@@ -163,12 +163,88 @@ public class PublishTodoBoardFrameTests
     }
 
     [Fact]
-    public async Task PublishTodoBoardFrame_NullSnapshot_IsIgnored()
+    public async Task PublishTodoBoardFrame_NullCapture_PublishesNoFrame_AndLaterFramesStillFlow()
     {
+        // "No board yet" (the capture returned null) must publish nothing — but proving a NEGATIVE
+        // needs a control, or the test passes vacuously when the subscription itself is broken
+        // (#590 review F-008). So: publish a null-yielding capture, then a real one, and assert the
+        // ONLY frame that arrives is the real one. Mutation that must go red: publishing a frame for
+        // a null capture (e.g. substituting an empty board).
         await using var loop = BuildLoop("todo-thread");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
 
-        var act = () => loop.PublishTodoBoardFrame(null);
+        var frames = new List<ConversationTodoMessage>();
+        var realFrameSeen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var drain = LoopSubscription.StartDraining(
+            loop,
+            msg =>
+            {
+                if (msg is ConversationTodoMessage frame)
+                {
+                    lock (frames)
+                    {
+                        frames.Add(frame);
+                    }
 
-        act.Should().NotThrow();
+                    _ = realFrameSeen.TrySetResult(true);
+                }
+            },
+            cts.Token
+        );
+
+        loop.PublishTodoBoardFrame(() => null);
+        loop.PublishTodoBoardFrame(() => BuildSnapshot("todo-thread"));
+
+        await drain.WaitAsync(realFrameSeen.Task, FrameWait);
+
+        lock (frames)
+        {
+            frames.Should().ContainSingle("the null capture must not have produced a frame of its own");
+            frames[0].Tasks.Should().ContainSingle().Which.Title.Should().Be("Wire the SSE endpoint");
+        }
+
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task PublishTodoBoardFrame_ThrowingCapture_IsContained_AndLaterFramesStillFlow()
+    {
+        // #590 review SC-2: the capture delegate runs INSIDE the publish guard. #587 made
+        // TaskManager.GetTodoBoardSnapshot throw loudly on an unmapped status, and TaskManager's
+        // OnChanged dispatch would swallow that silently — so the capture must fault where the loop
+        // logs it, and a faulted capture must not poison subsequent publishes. Mutation that must go
+        // red: hoisting the capture invocation out of the guarded region (the throw would then
+        // escape to the caller and this act would blow up).
+        await using var loop = BuildLoop("todo-thread");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        var received = new TaskCompletionSource<ConversationTodoMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var drain = LoopSubscription.StartDraining(
+            loop,
+            msg =>
+            {
+                if (msg is ConversationTodoMessage frame)
+                {
+                    _ = received.TrySetResult(frame);
+                }
+            },
+            cts.Token
+        );
+
+        var act = () =>
+            loop.PublishTodoBoardFrame(() =>
+                throw new InvalidOperationException("Unmapped TaskStatus value 'Removed'")
+            );
+        act.Should().NotThrow("a partial-capture fault must be logged, not thrown into the mutation path");
+
+        loop.PublishTodoBoardFrame(() => BuildSnapshot("todo-thread"));
+
+        await drain.WaitAsync(received.Task, FrameWait);
+        var delivered = await received.Task;
+        delivered.Tasks.Should().ContainSingle();
+
+        await cts.CancelAsync();
     }
 }

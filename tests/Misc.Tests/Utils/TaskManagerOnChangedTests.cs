@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using FluentAssertions;
 using Xunit;
@@ -70,6 +71,106 @@ public class TaskManagerOnChangedTests
         _ = _taskManager.ManageNotes("1", noteIndex: 1, action: "delete");
 
         _changes.Should().Be(3);
+    }
+
+    [Fact]
+    public void ClaimTask_FiresOnce_AndTheHookSeesTheClaimApplied()
+    {
+        // #590 review SC-1: claim-task mutates board-visible state (NotStarted -> InProgress) but was
+        // not wrapped, so a claim repainted nobody's panel and was never persisted. Mutation that must
+        // go red: removing the NotifyIfChanged wrapper from ClaimTask.
+        _ = _taskManager.AddTask("Task one");
+        _changes = 0;
+
+        var statusesSeen = new List<AchieveAi.LmDotnetTools.LmCore.Models.TodoTaskStatus>();
+        _taskManager.OnChanged = () =>
+        {
+            _changes++;
+            statusesSeen.Add(_taskManager.GetTodoBoardSnapshot("conv-1").Tasks[0].Status);
+        };
+
+        var result = _taskManager.ClaimTask("1", "agent-a");
+
+        result.ErrorCode.Should().BeNull();
+        _changes.Should().Be(1);
+        statusesSeen
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(AchieveAi.LmDotnetTools.LmCore.Models.TodoTaskStatus.InProgress);
+    }
+
+    [Fact]
+    public void ClaimTask_Refresh_FiresToo()
+    {
+        // A refresh mutates only the lease timestamp — not board-visible today, but it becomes the
+        // staleness signal the moment PR 4 surfaces it, so the hook deliberately fires there as well.
+        _ = _taskManager.AddTask("Task one");
+        _ = _taskManager.ClaimTask("1", "agent-a");
+        _changes = 0;
+
+        var refresh = _taskManager.ClaimTask("1", "agent-a");
+
+        refresh.ErrorCode.Should().BeNull();
+        refresh.Text.Should().Contain("refreshed");
+        _changes.Should().Be(1);
+    }
+
+    [Fact]
+    public void AssignTask_FiresOnce()
+    {
+        // Mutation that must go red: removing the NotifyIfChanged wrapper from AssignTask.
+        _ = _taskManager.AddTask("Task one");
+        _changes = 0;
+
+        var result = _taskManager.AssignTask("1", "rev-a");
+
+        result.ErrorCode.Should().BeNull();
+        _changes.Should().Be(1);
+    }
+
+    [Fact]
+    public void BlockTask_FiresOncePerCall_ForBothSetAndClear()
+    {
+        // Blocking flips the row to Blocked and clearing flips it back — both board-visible.
+        // Mutation that must go red: removing the NotifyIfChanged wrapper from BlockTask.
+        _ = _taskManager.AddTask("Task one");
+        _ = _taskManager.AddTask("Task two");
+        _changes = 0;
+
+        var block = _taskManager.BlockTask("2", ["1"]);
+        var clear = _taskManager.BlockTask("2", []);
+
+        block.ErrorCode.Should().BeNull();
+        clear.ErrorCode.Should().BeNull();
+        _changes.Should().Be(2);
+    }
+
+    [Fact]
+    public void FailedClaimsAssignmentsAndBlocks_DoNotFire()
+    {
+        // Same rule as every other mutating tool: a refusal changed nothing, so no frame and no
+        // durable write. Mutation that must go red: ClaimTask/AssignTask/BlockTask firing
+        // unconditionally instead of only when ErrorCode is null.
+        _ = _taskManager.AddTask("Task one");
+        _ = _taskManager.AddTask("Task two");
+        _ = _taskManager.BlockTask("2", ["1"]); // setup: task 2 refuses claims below
+        _changes = 0;
+
+        FunctionResult[] refusals =
+        [
+            _taskManager.ClaimTask("1", ""), // invalid_args
+            _taskManager.ClaimTask("42", "agent-a"), // task_not_found
+            _taskManager.ClaimTask("2", "agent-a"), // task_blocked
+            _taskManager.AssignTask("1", " "), // invalid_args
+            _taskManager.AssignTask("42", "rev-a"), // task_not_found
+            _taskManager.BlockTask("42", ["1"]), // task_not_found
+            _taskManager.BlockTask("1", ["1"]), // self-blocker
+            _taskManager.BlockTask("1", ["99"]), // blocker not found
+        ];
+
+        refusals.Should().OnlyContain(r => r.ErrorCode != null, "every shape above must actually be a refusal");
+        _changes.Should().Be(0);
     }
 
     [Fact]

@@ -268,20 +268,43 @@ public class TodoBoardPersistenceWriterTests
     [Fact]
     public async Task DeclinedWrite_IsFinalNotTransient_SoItIsNotRetriedForever()
     {
-        // #586 hardens SaveAsync to decline a write for a nonexistent conversation by THROWING from the
-        // update callback (there is no no-op value a callback can return — every store persists what it
-        // gets back). A deleted conversation is a permanent decline, not a transient fault: treating it
-        // as one would retry forever on the background drain and report a permanently dirty boundary.
-        // Mutation that must go red: removing the InvalidOperationException catch in PersistLatestAsync.
+        // SaveAsync declines a write for a deleted conversation by THROWING TodoBoardDeclinedException
+        // from the update callback (there is no no-op value a callback can return — every store
+        // persists what it gets back). A deleted conversation is a permanent decline, not a transient
+        // fault: treating it as one would retry forever on the background drain.
+        //
+        // The decline path itself must execute (#590 review F-003a): the mock seeds the metadata row so
+        // SaveAsync's pre-probe passes, then hands the update callback `existing: null` — the
+        // delete-between-probe-and-write race — so the projection's own `if (existing is null) throw`
+        // runs for real. Mutations that must go red: removing the TodoBoardDeclinedException catch in
+        // PersistLatestAsync, AND deleting the projection's decline throw itself.
         var inner = new InMemoryConversationStore();
         await SeedMetadataRowAsync(inner);
 
         var writes = 0;
-        var store = WrapStore(
-            inner,
-            onWriteEntered: () => Interlocked.Increment(ref writes),
-            writeGate: () => throw new InvalidOperationException("conversation conv-1 no longer exists")
-        );
+        var store = new Mock<IConversationStore>();
+        _ = store
+            .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns((string id, CancellationToken ct) => inner.LoadMetadataAsync(id, ct));
+        _ = store
+            .Setup(s =>
+                s.UpdateMetadataAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                (string _, Func<ThreadMetadata?, ThreadMetadata> update, CancellationToken _) =>
+                {
+                    _ = Interlocked.Increment(ref writes);
+                    // The row vanished between the probe and the write: the store's serialized
+                    // transform sees no existing metadata. Whatever the callback returns would be
+                    // persisted — only its throw prevents the write.
+                    var written = update(null);
+                    return inner.UpdateMetadataAsync("conv-1", _ => written);
+                }
+            );
 
         await using var writer = new TodoBoardPersistenceWriter(store.Object, "conv-1", () => Board("orphaned"));
 
@@ -289,12 +312,51 @@ public class TodoBoardPersistenceWriterTests
         var durable = await writer.FlushAsync().WaitAsync(WaitBudget);
 
         durable.Should().BeTrue("a decline settles the schedule; only a transient failure stays pending");
+        writes.Should().Be(1);
 
-        // And nothing retries it on a second boundary.
+        // Nothing retries it on a second boundary, and — decisively — nothing was written.
         (await writer.FlushAsync().WaitAsync(WaitBudget))
             .Should()
             .BeTrue();
         writes.Should().Be(1);
+        (await ConversationTodoProjection.LoadAsync(inner, "conv-1")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task StoreFault_EvenAnInvalidOperationSubtype_StaysPendingAndFailsTheBoundary()
+    {
+        // #590 review F-003b: the decline signal rides an InvalidOperationException SUBTYPE, and the
+        // store infrastructure throws InvalidOperationException subtypes of its own —
+        // ObjectDisposedException from SqliteConnectionFactory.GetConnectionAsync derives from it. A
+        // catch keyed on the base type would swallow such a store fault as a satisfied write: FlushAsync
+        // would report a clean boundary and the disposal warning would never fire, with a false
+        // "conversation no longer exists" record as the only trace. Mutation that must go red: widening
+        // the writer's catch back to InvalidOperationException.
+        var inner = new InMemoryConversationStore();
+        await SeedMetadataRowAsync(inner);
+
+        var writes = 0;
+        var storeDisposed = true;
+        var store = WrapStore(
+            inner,
+            onWriteEntered: () => Interlocked.Increment(ref writes),
+            writeGate: () =>
+                storeDisposed ? throw new ObjectDisposedException("SqliteConnectionFactory") : Task.CompletedTask
+        );
+
+        await using var writer = new TodoBoardPersistenceWriter(store.Object, "conv-1", () => Board("must land"));
+
+        writer.Schedule();
+        var firstBoundary = await writer.FlushAsync().WaitAsync(WaitBudget);
+        firstBoundary.Should().BeFalse("a store fault is not a decline and must not be reported as durable");
+
+        storeDisposed = false;
+        var secondBoundary = await writer.FlushAsync().WaitAsync(WaitBudget);
+        secondBoundary.Should().BeTrue();
+        writes.Should().BeGreaterThanOrEqualTo(2, "the faulted write must have been retried");
+
+        var persisted = await ConversationTodoProjection.LoadAsync(inner, "conv-1");
+        persisted!.Tasks.Should().ContainSingle().Which.Title.Should().Be("must land");
     }
 
     [Fact]

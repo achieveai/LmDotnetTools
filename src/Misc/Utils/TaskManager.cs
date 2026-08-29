@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.Misc.Utils;
 
@@ -94,9 +95,10 @@ public class TaskManager : ITodoBoardSource
 
     /// <summary>
     ///     Best-effort change hook (#583, PR 2): invoked once per SUCCESSFUL mutating tool call — add,
-    ///     bulk-initialize, status update, delete, and every note mutation — after the internal lock is
-    ///     released. The owning host wires it to publish the live <c>conversation_todo</c> frame, exactly
-    ///     as the usage ledger's aggregate-changed callback feeds the usage banner.
+    ///     bulk-initialize, status update, claim, assign, block, delete, and every note mutation — after
+    ///     the internal lock is released. The owning host wires it to publish the live
+    ///     <c>conversation_todo</c> frame, exactly as the usage ledger's aggregate-changed callback feeds
+    ///     the usage banner.
     /// </summary>
     /// <remarks>
     ///     <para>
@@ -112,9 +114,18 @@ public class TaskManager : ITodoBoardSource
     public Action? OnChanged { get; set; }
 
     /// <summary>
+    ///     Optional logger for the change hook's last-resort catch. Wired by the same host that wires
+    ///     <see cref="OnChanged" />; when null, a throwing subscriber is swallowed silently — which is
+    ///     why subscribers own their own guarding and logging first.
+    /// </summary>
+    public ILogger? OnChangedLogger { get; set; }
+
+    /// <summary>
     ///     Fires <see cref="OnChanged" /> when <paramref name="result" /> reports success, passing the
     ///     result through unchanged. A throwing subscriber is swallowed: the mutation already succeeded,
-    ///     and a failed UI push must not convert a successful tool call into a tool error.
+    ///     and a failed UI push must not convert a successful tool call into a tool error. Swallowed is
+    ///     not silent — the subscriber going down takes the live push AND the durable write with it, so
+    ///     the escape is logged loudly when a logger is wired.
     /// </summary>
     private FunctionResult NotifyIfChanged(FunctionResult result)
     {
@@ -124,9 +135,12 @@ public class TaskManager : ITodoBoardSource
             {
                 OnChanged?.Invoke();
             }
-            catch
+            catch (Exception ex)
             {
-                // Best-effort by contract; the publish side owns its own logging.
+                OnChangedLogger?.LogError(
+                    ex,
+                    "OnChanged subscriber threw; the live todo-board push and durable save were skipped for this mutation"
+                );
             }
         }
 
@@ -174,10 +188,10 @@ Examples:
             string? assignee = null
     )
     {
-        return NotifyIfChanged(AddTaskCore(title, parentId));
+        return NotifyIfChanged(AddTaskCore(title, parentId, assignee));
     }
 
-    private FunctionResult AddTaskCore(string title, string? parentId)
+    private FunctionResult AddTaskCore(string title, string? parentId, string? assignee)
     {
         if (string.IsNullOrWhiteSpace(title))
         {
@@ -440,10 +454,10 @@ Examples:
             string? agent = null
     )
     {
-        return NotifyIfChanged(UpdateTaskCore(taskId, status));
+        return NotifyIfChanged(UpdateTaskCore(taskId, status, agent));
     }
 
-    private FunctionResult UpdateTaskCore(string taskId, string status)
+    private FunctionResult UpdateTaskCore(string taskId, string status, string? agent)
     {
         lock (_sync)
         {
@@ -560,6 +574,14 @@ Examples:
         [Description("Your agent name — recorded as the claim holder")] string agent
     )
     {
+        // The claim-refresh path mutates only the lease timestamp, which is not board-visible
+        // today — but it will be the moment PR 4 surfaces staleness, so the hook fires there too
+        // rather than being discovered missing later.
+        return NotifyIfChanged(ClaimTaskCore(taskId, agent));
+    }
+
+    private FunctionResult ClaimTaskCore(string taskId, string agent)
+    {
         if (string.IsNullOrWhiteSpace(agent))
         {
             return FunctionResult.Error(InvalidArgumentsCode, "Error: agent cannot be empty.");
@@ -625,6 +647,13 @@ Examples:
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Agent name to assign this task to")] string assignee
     )
+    {
+        // Assignee is not on TodoTaskNode yet, so this fires a frame whose board looks unchanged —
+        // wrapped anyway so PR 4 surfacing the assignee does not have to rediscover the hook.
+        return NotifyIfChanged(AssignTaskCore(taskId, assignee));
+    }
+
+    private FunctionResult AssignTaskCore(string taskId, string assignee)
     {
         if (string.IsNullOrWhiteSpace(assignee))
         {
@@ -705,6 +734,11 @@ Examples:
         [Description("Task IDs this task is blocked on. Pass an empty list to clear the block.")]
             List<string>? blockedBy = null
     )
+    {
+        return NotifyIfChanged(BlockTaskCore(taskId, blockedBy));
+    }
+
+    private FunctionResult BlockTaskCore(string taskId, List<string>? blockedBy)
     {
         lock (_sync)
         {
@@ -1890,6 +1924,105 @@ Examples:
         return tasks == null
             ? new TaskManager(timeProvider)
             : new TaskManager(tasks, timeProvider, DefaultLeaseStaleAfter);
+    }
+
+    public static TaskManager FromSnapshot(TodoBoardSnapshot snapshot)
+    {
+        return FromSnapshot(snapshot, TimeProvider.System);
+    }
+
+    /// <summary>
+    ///     Rehydrates a manager from a persisted board snapshot (#583 PR 2, review F-002), so a pool
+    ///     entry recreated after eviction, a provider/mode swap, or a restart starts from the durable
+    ///     board instead of empty — where its very first mutation would persist a one-row board over
+    ///     the real one (the writer's empty-board guard cannot help once one row exists, and the
+    ///     projection's monotonic guard cannot either, because the fresh capture is genuinely newer).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Ids are restored EXACTLY: each row's dotted <c>id</c> becomes its <c>DisplayId</c>, the
+    ///         per-level numeric id is the path's last segment, and the id counters advance past the
+    ///         highest hydrated value — so ids stay stable across the recreate and never collide with
+    ///         rows added afterwards. This is why hydration does not go through <c>BulkInitialize</c>,
+    ///         which would renumber from 1, flatten nesting to one level, and reset every status.
+    ///     </para>
+    ///     <para>
+    ///         Only what the board snapshot carries comes back: id, status, title, notes, subtree. The
+    ///         claim/lease fields (<c>assignee</c>, <c>claimedAt</c>) and <c>blockedBy</c> are not part
+    ///         of the persisted projection — leases are in-memory by design, so every rehydrated task
+    ///         arrives lease-less, and a <see cref="TaskStatus.Blocked" /> row arrives with an empty
+    ///         <c>blockedBy</c> (clear it with <c>block-task</c>, or re-block with real ids; automatic
+    ///         unblock cannot fire for it because there is no recorded blocker to complete).
+    ///     </para>
+    /// </remarks>
+    public static TaskManager FromSnapshot(TodoBoardSnapshot snapshot, TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        var state = new ManagerState();
+        var maxRootId = 0;
+        foreach (var (node, index) in snapshot.Tasks.Select(static (node, index) => (node, index)))
+        {
+            var item = FromBoardNode(node, parentId: null, position: index + 1);
+            state.RootTasks.Add(item);
+            maxRootId = Math.Max(maxRootId, item.Id);
+        }
+
+        state.NextId = maxRootId + 1;
+        return new TaskManager(state, timeProvider, DefaultLeaseStaleAfter);
+    }
+
+    private static PrivateTaskItem FromBoardNode(TodoTaskNode node, int? parentId, int position)
+    {
+        // The per-level numeric id is the dotted path's last segment ("1.2.3" -> 3). A segment that
+        // does not parse (malformed persisted data) falls back to the row's 1-based position, which
+        // keeps hydration total rather than throwing away the whole board for one bad id.
+        var lastSegment = node.Id[(node.Id.LastIndexOf('.') + 1)..];
+        var id = int.TryParse(lastSegment, out var parsed) && parsed > 0 ? parsed : position;
+
+        var item = new PrivateTaskItem
+        {
+            Id = id,
+            DisplayId = node.Id,
+            Title = node.Title,
+            Status = FromBoardStatus(node.Status),
+            ParentId = parentId,
+        };
+        item.Notes.AddRange(node.Notes);
+
+        var maxSubId = 0;
+        foreach (var (subNode, index) in node.SubTasks.Select(static (subNode, index) => (subNode, index)))
+        {
+            var subItem = FromBoardNode(subNode, parentId: id, position: index + 1);
+            item.SubTasks.Add(subItem);
+            maxSubId = Math.Max(maxSubId, subItem.Id);
+        }
+
+        item.NextSubTaskId = maxSubId + 1;
+        return item;
+    }
+
+    /// <summary>
+    ///     Reverse of <see cref="ToBoardNode" />'s status mapping, under the same discipline: member by
+    ///     member, never a cast (a cast re-labels every row the day a member is inserted), throwing on
+    ///     an unmapped member so the gap is a loud failure instead of a silently wrong board.
+    /// </summary>
+    private static TaskStatus FromBoardStatus(TodoTaskStatus status)
+    {
+        return status switch
+        {
+            TodoTaskStatus.NotStarted => TaskStatus.NotStarted,
+            TodoTaskStatus.InProgress => TaskStatus.InProgress,
+            TodoTaskStatus.Blocked => TaskStatus.Blocked,
+            TodoTaskStatus.Completed => TaskStatus.Completed,
+            TodoTaskStatus.Removed => TaskStatus.Removed,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(status),
+                status,
+                $"Unmapped {nameof(TodoTaskStatus)} value; add an explicit arm above rather than falling through."
+            ),
+        };
     }
 
     private string GetTaskCounts(string countType)

@@ -138,6 +138,33 @@ public class ConversationTodoProjectionTests
     }
 
     [Fact]
+    public async Task LoadAsync_ReadsABoardPersistedByThePreviousBuild_WithPascalCaseRowKeys()
+    {
+        // #590 review F-001: PR 2 pinned TodoTaskNode's rows to camelCase for the transport channels,
+        // which also changed the AT-REST shape — but #586 persisted rows with PascalCase keys, and
+        // Id/Status/Title are `required`, so a case-SENSITIVE read throws and the tolerant catch turns
+        // every pre-PR-2 board into "absent" (GET /todos 404s with nothing logged). This test pins
+        // cross-VERSION compatibility with a literal blob in the exact shape #586 wrote — a same-build
+        // write/read round-trip cannot catch this class of break by construction. Mutation that must go
+        // red: dropping PropertyNameCaseInsensitive from the projection's read options.
+        var store = new InMemoryConversationStore();
+        const string preExistingBlob = """
+            {"ThreadId":"conv-1","SchemaVersion":1,"CapturedAtUtc":"2026-08-28T12:00:00+00:00","Tasks":[{"Id":"1","Status":"InProgress","Title":"Wire the SSE endpoint","Notes":["waiting on schema"],"SubTasks":[{"Id":"1.1","Status":"Completed","Title":"Add the map","Notes":[],"SubTasks":[]}]},{"Id":"2","Status":"NotStarted","Title":"Vitest coverage","Notes":[],"SubTasks":[]}]}
+            """;
+        await SetRawPropertyAsync(store, "conv-1", preExistingBlob);
+
+        var loaded = await ConversationTodoProjection.LoadAsync(store, "conv-1");
+
+        loaded.Should().NotBeNull("a board persisted by the previous build must still read back");
+        loaded!.Tasks.Should().HaveCount(2);
+        loaded.Tasks[0].Id.Should().Be("1");
+        loaded.Tasks[0].Status.Should().Be(TodoTaskStatus.InProgress);
+        loaded.Tasks[0].SubTasks.Should().ContainSingle().Which.Id.Should().Be("1.1");
+        loaded.Tasks[0].SubTasks[0].Status.Should().Be(TodoTaskStatus.Completed);
+        loaded.Tasks[1].Status.Should().Be(TodoTaskStatus.NotStarted);
+    }
+
+    [Fact]
     public void FromMetadata_ReturnsNull_WhenNoProjectionPresent()
     {
         ConversationTodoProjection.FromMetadata(null).Should().BeNull();

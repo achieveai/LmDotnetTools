@@ -613,22 +613,34 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// frame stamped with an acting sub-agent's thread would be silently dropped by the client, which
     /// only accepts frames for the open conversation.
     /// </remarks>
-    /// <param name="snapshot">The board as captured by the conversation's task tool. Null is ignored.</param>
-    public void PublishTodoBoardFrame(TodoBoardSnapshot? snapshot)
+    /// <param name="capture">
+    ///     Produces the board to publish; a null result is ignored. Taken as a delegate — not a
+    ///     ready-made snapshot — so the CAPTURE runs inside this method's guard: #587 made
+    ///     <c>GetTodoBoardSnapshot</c> deliberately partial (an unmapped status member throws), and a
+    ///     capture evaluated at the call site would throw before ever reaching this try, landing in the
+    ///     task tool's last-resort catch and silently taking the durable save's <c>Schedule()</c> down
+    ///     with it.
+    /// </param>
+    public void PublishTodoBoardFrame(Func<TodoBoardSnapshot?> capture)
     {
-        if (snapshot is null)
-        {
-            return;
-        }
+        ArgumentNullException.ThrowIfNull(capture);
 
         try
         {
+            var snapshot = capture();
+            if (snapshot is null)
+            {
+                return;
+            }
+
             var frame = ConversationTodoMessage.FromSnapshot(snapshot, ThreadId);
             _ = PublishToAllAsync(frame, CancellationToken.None);
         }
         catch (Exception ex)
         {
-            Logger.LogDebug(ex, "Failed to publish live todo-board frame for thread {ThreadId}", ThreadId);
+            // Warning, not Debug: a capture fault here is the loud runtime failure #587 bought on
+            // purpose (an unmapped status member), not best-effort publish noise.
+            Logger.LogWarning(ex, "Failed to capture or publish live todo-board frame for thread {ThreadId}", ThreadId);
         }
     }
 
