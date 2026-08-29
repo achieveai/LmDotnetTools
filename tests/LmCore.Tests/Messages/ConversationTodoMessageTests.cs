@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
@@ -58,6 +59,53 @@ public class ConversationTodoMessageTests
         var frame = ConversationTodoMessage.FromSnapshot(snapshot, "loop-thread");
 
         Assert.Equal("loop-thread", frame.ThreadId);
+    }
+
+    [Fact]
+    public void ThreadId_IsRequiredAndNonNullable_SoNoEmitterCanOmitIt()
+    {
+        // #584 F-003: the client's guard drops frames for other conversations, but it is INERT when the
+        // id is absent. An optional field would let a future emitter silently disable that guard by
+        // omission, so the protocol type itself refuses. Mutation that must go red: relaxing the
+        // property to an optional `string?`.
+        var property = typeof(ConversationTodoMessage).GetProperty(nameof(ConversationTodoMessage.ThreadId))!;
+
+        Assert.Contains(
+            property.GetCustomAttributes(inherit: false),
+            a => a.GetType().FullName == "System.Runtime.CompilerServices.RequiredMemberAttribute"
+        );
+
+        // Non-nullable in the C# type, widening IMessage.ThreadId's nullable declaration.
+        var nullability = new NullabilityInfoContext().Create(property);
+        Assert.Equal(NullabilityState.NotNull, nullability.WriteState);
+    }
+
+    [Fact]
+    public void FromSnapshot_RefusesABlankThreadId_RatherThanEmittingAnUnroutableFrame()
+    {
+        // `required` alone would accept "" — which leaves the client's guard exactly as inert as an
+        // omitted id. Mutation that must go red: dropping the ThrowIfNullOrWhiteSpace guard.
+        var snapshot = BuildSnapshot();
+
+        Assert.Throws<ArgumentNullException>(() => ConversationTodoMessage.FromSnapshot(snapshot, null!));
+        Assert.Throws<ArgumentException>(() => ConversationTodoMessage.FromSnapshot(snapshot, ""));
+        Assert.Throws<ArgumentException>(() => ConversationTodoMessage.FromSnapshot(snapshot, "   "));
+    }
+
+    [Fact]
+    public void Serialize_AlwaysEmitsThreadId_NeverOmitsIt()
+    {
+        // Belt to the client's suspenders: whatever the serializer's ignore conditions, the id is on the
+        // wire. Mutation that must go red: re-adding [JsonIgnore(WhenWritingNull)] together with an
+        // optional property.
+        IMessage frame = ConversationTodoMessage.FromSnapshot(BuildSnapshot(), "conv-1");
+
+        var json = JsonSerializer.Serialize(frame, JsonSerializerOptionsFactory.CreateForProduction());
+        var root = JsonDocument.Parse(json).RootElement;
+
+        Assert.True(root.TryGetProperty("threadId", out var threadId));
+        Assert.Equal(JsonValueKind.String, threadId.ValueKind);
+        Assert.False(string.IsNullOrWhiteSpace(threadId.GetString()));
     }
 
     [Fact]

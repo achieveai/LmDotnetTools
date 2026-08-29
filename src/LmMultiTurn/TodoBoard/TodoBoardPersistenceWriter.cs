@@ -151,6 +151,23 @@ public sealed class TodoBoardPersistenceWriter : IAsyncDisposable
             return;
         }
 
-        await ConversationTodoProjection.SaveAsync(_store, snapshot, ct);
+        try
+        {
+            await ConversationTodoProjection.SaveAsync(_store, snapshot, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // The store's update callback DECLINED the write — the conversation was deleted between the
+            // probe above and the write. There is no no-op return value a callback can hand back (every
+            // IConversationStore persists whatever it returns), so the projection declines by throwing.
+            // A decline is final, not a transient fault: rethrowing would keep the write pending and
+            // retry a deleted conversation forever, and would surface on the background drain rather
+            // than at any caller. Swallow it, once, with a record.
+            _logger?.LogDebug(
+                ex,
+                "Todo-board persistence for thread {ThreadId} was declined; the conversation no longer exists",
+                _threadId
+            );
+        }
     }
 }

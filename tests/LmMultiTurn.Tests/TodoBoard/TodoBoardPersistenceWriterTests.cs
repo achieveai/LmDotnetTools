@@ -265,6 +265,38 @@ public class TodoBoardPersistenceWriterTests
     }
 
     [Fact]
+    public async Task DeclinedWrite_IsFinalNotTransient_SoItIsNotRetriedForever()
+    {
+        // #586 hardens SaveAsync to decline a write for a nonexistent conversation by THROWING from the
+        // update callback (there is no no-op value a callback can return — every store persists what it
+        // gets back). A deleted conversation is a permanent decline, not a transient fault: treating it
+        // as one would retry forever on the background drain and report a permanently dirty boundary.
+        // Mutation that must go red: removing the InvalidOperationException catch in PersistLatestAsync.
+        var inner = new InMemoryConversationStore();
+        await SeedMetadataRowAsync(inner);
+
+        var writes = 0;
+        var store = WrapStore(
+            inner,
+            onWriteEntered: () => Interlocked.Increment(ref writes),
+            writeGate: () => throw new InvalidOperationException("conversation conv-1 no longer exists")
+        );
+
+        await using var writer = new TodoBoardPersistenceWriter(store.Object, "conv-1", () => Board("orphaned"));
+
+        writer.Schedule();
+        var durable = await writer.FlushAsync().WaitAsync(WaitBudget);
+
+        durable.Should().BeTrue("a decline settles the schedule; only a transient failure stays pending");
+
+        // And nothing retries it on a second boundary.
+        (await writer.FlushAsync().WaitAsync(WaitBudget))
+            .Should()
+            .BeTrue();
+        writes.Should().Be(1);
+    }
+
+    [Fact]
     public async Task FailedWrite_StaysPending_AndTheNextFlushRetriesIt()
     {
         // Inherited from the coalescing engine, asserted here because durability is THIS writer's whole

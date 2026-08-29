@@ -27,10 +27,15 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 /// </remarks>
 public sealed record ConversationTodoMessage : IMessage, ITransientMessage
 {
-    /// <summary>The conversation whose board this is. Clients drop frames for other conversations.</summary>
+    /// <summary>
+    ///     The conversation whose board this is. <b>Required and never omitted</b>, widening
+    ///     <see cref="IMessage.ThreadId" />'s nullable declaration to a non-null guarantee here: the
+    ///     client's guard drops frames whose id differs from the active conversation, and that guard is
+    ///     INERT when the id is absent (#584 F-003). An optional field would let a future emitter silently
+    ///     disable the guard by omission, so the type refuses to be constructed without one.
+    /// </summary>
     [JsonPropertyName("threadId")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ThreadId { get; init; }
+    public required string ThreadId { get; init; }
 
     /// <summary>
     ///     Schema version carried through from the snapshot unchanged — it is load-bearing on the read
@@ -72,10 +77,14 @@ public sealed record ConversationTodoMessage : IMessage, ITransientMessage
     ///     claim a conversation other than the one whose subscribers receive it.
     /// </summary>
     /// <param name="snapshot">The board as captured by the conversation's task tool.</param>
-    /// <param name="threadId">The publishing conversation's id.</param>
+    /// <param name="threadId">The publishing conversation's id. Required; never null or blank.</param>
     public static ConversationTodoMessage FromSnapshot(TodoBoardSnapshot snapshot, string threadId)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+
+        // A blank id passes `required` but leaves the client's guard just as inert as an absent one, so
+        // the frame refuses to exist rather than going out unroutable.
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
 
         return new ConversationTodoMessage
         {
