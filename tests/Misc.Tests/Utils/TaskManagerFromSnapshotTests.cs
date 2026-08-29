@@ -2,6 +2,7 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using FluentAssertions;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
 namespace AchieveAi.LmDotnetTools.Misc.Tests.Utils;
@@ -179,5 +180,87 @@ public class TaskManagerFromSnapshotTests
         // The normalized row is honest: it is claimable, matching what the guards would enforce.
         var claim = rehydrated.ClaimTask("2", "agent-c");
         claim.IsError.Should().BeFalse();
+    }
+
+    [Fact]
+    public void FromSnapshot_RoundTripsTheClaim_SoTheSameAgentCanCompleteAfterARecreate()
+    {
+        // #595 D2, the exact reproduction: claim in turn 1, reconnect recreates the agent via
+        // FromSnapshot, and the turn-2 completion used to fail task_not_claimed because the
+        // snapshot carried no assignee. Serialized JSON in the loop so the wire must actually
+        // carry the field. Mutation that must go red: dropping Assignee from ToBoardNode or
+        // FromBoardNode.
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-08-29T12:00:00Z"));
+        var manager = new TaskManager(clock);
+        _ = manager.AddTask("The claimed row");
+        _ = manager.ClaimTask("1", "agent-a");
+
+        var json = JsonSerializer.Serialize(manager.GetTodoBoardSnapshot("conv-1"));
+        var persisted = JsonSerializer.Deserialize<TodoBoardSnapshot>(json)!;
+        var rehydrated = TaskManager.FromSnapshot(persisted, clock);
+
+        var row = rehydrated.GetTasks().Single();
+        row.Status.Should().Be(TaskManager.TaskStatus.InProgress);
+        row.Assignee.Should().Be("agent-a");
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+        var complete = rehydrated.UpdateTask("1", "completed");
+        complete.IsError.Should().BeFalse("the agent that claimed the row must still hold it after the recreate");
+        rehydrated.GetTasks().Single().Status.Should().Be(TaskManager.TaskStatus.Completed);
+    }
+
+    [Fact]
+    public void FromSnapshot_RoundTripsClaimedAt_SoTheLeaseAgesFromTheTrueClaim_NotTheCapture()
+    {
+        // The lease timestamp must round-trip as DATA, not be refit at hydration: a foreign claim
+        // is refused while the true lease is live, and succeeds the moment the TRUE claim age
+        // crosses the staleness threshold — two minutes after a capture whose instant, if it were
+        // used as the lease age, would keep refusing for another thirteen. Mutation that must go
+        // red: dropping ClaimedAt from the round-trip (the capture-instant fallback then keeps the
+        // takeover refused).
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-08-29T12:00:00Z"));
+        var manager = new TaskManager(clock);
+        _ = manager.AddTask("The claimed row");
+        _ = manager.ClaimTask("1", "agent-a"); // claimedAt = 12:00
+
+        clock.Advance(TimeSpan.FromMinutes(14)); // captured at 12:14
+        var json = JsonSerializer.Serialize(manager.GetTodoBoardSnapshot("conv-1"));
+        var rehydrated = TaskManager.FromSnapshot(JsonSerializer.Deserialize<TodoBoardSnapshot>(json)!, clock);
+
+        // 12:14 — the lease is 14 minutes old by the round-tripped claimedAt: still live.
+        var earlyForeignClaim = rehydrated.ClaimTask("1", "agent-b");
+        earlyForeignClaim.IsError.Should().BeTrue();
+        earlyForeignClaim.ErrorCode.Should().Be("task_already_claimed");
+
+        // 12:16 — 16 minutes after the TRUE claim (stale), 2 minutes after the capture (not).
+        clock.Advance(TimeSpan.FromMinutes(2));
+        var takeover = rehydrated.ClaimTask("1", "agent-b");
+        takeover.IsError.Should().BeFalse("the lease went stale by the true claim age, which must have survived");
+        takeover.Text.Should().Contain("stale lease from agent-a");
+    }
+
+    [Fact]
+    public void FromSnapshot_LegacyClaimedRowWithoutClaimedAt_AgesItsLeaseFromTheCaptureInstant()
+    {
+        // Literal-payload compat (#595 D2): a snapshot persisted before the lease fields
+        // round-tripped can carry an InProgress row with an assignee added by hand-off but no
+        // claimedAt. Without the capture-instant fallback the lease would read as freshly claimed
+        // on every staleness check and never go stale — a wedged row if its agent is gone.
+        // Mutation that must go red: removing the ClaimedAt-from-CapturedAtUtc normalization.
+        const string legacyJson = """
+            {"ThreadId":"conv-1","SchemaVersion":1,"CapturedAtUtc":"2026-08-29T12:00:00+00:00","Tasks":[{"id":"1","status":"InProgress","title":"Claimed before the restart","notes":[],"assignee":"agent-a","subTasks":[]}]}
+            """;
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-08-29T12:10:00Z"));
+        var rehydrated = TaskManager.FromSnapshot(JsonSerializer.Deserialize<TodoBoardSnapshot>(legacyJson)!, clock);
+
+        // 12:10 — ten minutes since the capture the lease was aged from: still live.
+        var earlyForeignClaim = rehydrated.ClaimTask("1", "agent-b");
+        earlyForeignClaim.IsError.Should().BeTrue();
+        earlyForeignClaim.ErrorCode.Should().Be("task_already_claimed");
+
+        // 12:16 — past the staleness threshold measured from the capture: the lease can be taken.
+        clock.Advance(TimeSpan.FromMinutes(6));
+        var takeover = rehydrated.ClaimTask("1", "agent-b");
+        takeover.IsError.Should().BeFalse("a legacy lease must be able to go stale rather than wedging the row");
     }
 }

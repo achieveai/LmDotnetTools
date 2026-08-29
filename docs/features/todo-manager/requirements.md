@@ -227,12 +227,20 @@ rendering byte for byte.
 9. **Backward Compatibility**: WHEN loading a persisted task tree written before these
    fields existed THEN `assignee`, `blockedBy`, and the timestamp fields SHALL default to
    absent/empty rather than failing to deserialize
-10. **Blocked Survives Restart** *(added by #595, review 590/D-1)*: WHEN a board snapshot is
-    serialized THEN `blockedBy` SHALL round-trip with it — including through `FromSnapshot`
-    rehydration, like `artifacts` (Requirement 9.5) and unlike the in-memory lease fields —
-    so a `Blocked` row keeps refusing claims after a restart. A `Blocked` row hydrated from
-    a snapshot persisted before `blockedBy` round-tripped has no restorable blockers and
-    SHALL be normalized to `NotStarted` rather than left rendering a block nothing enforces
+10. **Coordination State Survives Restart** *(added by #595, reviews 590/D-1 and D2)*: WHEN a
+    board snapshot is serialized THEN `blockedBy`, `assignee`, and the timestamps
+    (`createdAt`, `claimedAt`, `completedAt`) SHALL round-trip with it — including through
+    `FromSnapshot` rehydration, like `artifacts` (Requirement 9.5) — so after a restart a
+    `Blocked` row keeps refusing claims, the agent that claimed a row can still complete it,
+    and a live lease still refuses foreign claims until it goes stale by Requirement 8.3's
+    threshold. Rows hydrated from snapshots persisted before these fields existed SHALL be
+    normalized to states the guards can honestly enforce: a `Blocked` row with no restorable
+    blockers becomes `NotStarted` (rather than rendering a block nothing enforces); an
+    `InProgress` row with an `assignee` but no restorable `claimedAt` has its lease aged
+    from the snapshot's `CapturedAtUtc` (so it can still go stale rather than reading as
+    freshly claimed forever); and an `InProgress` row with no `assignee` at all self-heals
+    on the next claim. Restoring these fields is hydration, not a transition — it SHALL NOT
+    fire the change hook
 
 ### Requirement 9: File Artifacts (attach-artifact)
 
@@ -258,8 +266,10 @@ rendering byte for byte.
    the second call SHALL succeed without duplicating the entry, and its result text SHALL
    say the artifact was already attached
 5. **Persistence**: WHEN a task tree or board snapshot is serialized THEN `artifacts` SHALL
-   round-trip with it — including through `FromSnapshot` rehydration, unlike the in-memory
-   lease fields — and a tree persisted before this field existed SHALL load with it empty
+   round-trip with it — including through `FromSnapshot` rehydration, a discipline the
+   coordination fields joined in Requirement 8.10 — and a tree persisted before this field
+   existed SHALL load with it empty
+
 ### Requirement 10: Nudges — The Board Talks Back (#583 PR 6)
 
 - **User Story**: As an orchestrator, I want the board to notify an assignee when work is
@@ -300,3 +310,8 @@ rendering byte for byte.
 8. **Multicast Change Hook**: `TaskManager.OnChanged` SHALL be a real multicast event —
    subscribing the nudge bookkeeping SHALL NOT displace the live-frame publisher or the
    durable writer, and one subscriber throwing SHALL NOT starve the subscribers behind it
+=======
+   round-trip with it — including through `FromSnapshot` rehydration, a discipline the
+   coordination fields joined in Requirement 8.10 — and a tree persisted before this field
+   existed SHALL load with it empty
+>>>>>>> ee24dc05 (fix(todo-board): round-trip assignee and lease timestamps so claims survive agent recreation (#595))

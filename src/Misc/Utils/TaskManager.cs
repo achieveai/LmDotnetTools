@@ -588,9 +588,9 @@ Examples:
         [Description("Your agent name — recorded as the claim holder")] string agent
     )
     {
-        // The claim-refresh path mutates only the lease timestamp, which is not board-visible
-        // today — but it will be the moment PR 4 surfaces staleness, so the hook fires there too
-        // rather than being discovered missing later.
+        // The claim-refresh path mutates only the lease timestamp — board-visible since #595 put
+        // claimedAt on TodoTaskNode, so the hook firing here keeps the persisted lease age (and
+        // any staleness rendering built on it) current rather than frozen at the original claim.
         return NotifyIfChanged(ClaimTaskCore(taskId, agent));
     }
 
@@ -662,8 +662,9 @@ Examples:
         [Description("Agent name to assign this task to")] string assignee
     )
     {
-        // Assignee is not on TodoTaskNode yet, so this fires a frame whose board looks unchanged —
-        // wrapped anyway so PR 4 surfacing the assignee does not have to rediscover the hook.
+        // Assignee is on TodoTaskNode since #595, so this fires a frame the board can actually
+        // render differently — and the durable write behind the same hook is what lets the
+        // assignment survive an agent recreation.
         return NotifyIfChanged(AssignTaskCore(taskId, assignee));
     }
 
@@ -1728,6 +1729,10 @@ Examples:
             Notes = [.. task.Notes],
             Artifacts = [.. task.Artifacts],
             BlockedBy = [.. task.BlockedBy],
+            Assignee = task.Assignee,
+            CreatedAt = task.Times?.CreatedAt,
+            ClaimedAt = task.Times?.ClaimedAt,
+            CompletedAt = task.Times?.CompletedAt,
             SubTasks = [.. task.SubTasks.Select(ToBoardNode)],
         };
     }
@@ -2203,15 +2208,22 @@ Examples:
     ///         which would renumber from 1, flatten nesting to one level, and reset every status.
     ///     </para>
     ///     <para>
-    ///         Only what the board snapshot carries comes back: id, status, title, notes, artifacts,
-    ///         <c>blockedBy</c>, subtree. The claim/lease fields (<c>assignee</c>, <c>claimedAt</c>)
-    ///         are not part of the persisted projection — leases are in-memory by design, so every
-    ///         rehydrated task arrives lease-less. <c>blockedBy</c> DOES round-trip (#595, review
-    ///         590/D-1), so a <see cref="TaskStatus.Blocked" /> row keeps its recorded blockers and
-    ///         its enforcement across the restart; a Blocked row from a snapshot persisted before
-    ///         <c>blockedBy</c> existed arrives with no restorable blockers and is normalized to
-    ///         <see cref="TaskStatus.NotStarted" /> rather than left rendering a block nothing
-    ///         enforces (re-block it with <c>block-task</c> if the dependency still holds).
+    ///         Everything the board snapshot carries comes back: id, status, title, notes, artifacts,
+    ///         <c>blockedBy</c>, <c>assignee</c>, the timestamps, and the subtree. The coordination
+    ///         fields all round-trip as of #595: <c>blockedBy</c> (review 590/D-1) so a
+    ///         <see cref="TaskStatus.Blocked" /> row keeps its recorded blockers and its enforcement
+    ///         across the restart, and <c>assignee</c>/<c>claimedAt</c> (D2) so the agent that
+    ///         claimed a row before the recreate can still complete it and a live lease still
+    ///         refuses foreign claims until it actually goes stale.
+    ///     </para>
+    ///     <para>
+    ///         Rows from snapshots persisted before those fields existed are normalized to states
+    ///         the guards can honestly enforce: a Blocked row with no restorable blockers becomes
+    ///         <see cref="TaskStatus.NotStarted" /> rather than rendering a block nothing enforces
+    ///         (re-block it with <c>block-task</c> if the dependency still holds); an InProgress row
+    ///         with an assignee but no restorable <c>claimedAt</c> has its lease aged from the
+    ///         snapshot's capture instant so it can still go stale; and an InProgress row with no
+    ///         assignee at all self-heals on the next claim, which adopts it cleanly.
     ///     </para>
     /// </remarks>
     public static TaskManager FromSnapshot(TodoBoardSnapshot snapshot, TimeProvider timeProvider)
@@ -2223,7 +2235,7 @@ Examples:
         var maxRootId = 0;
         foreach (var (node, index) in snapshot.Tasks.Select(static (node, index) => (node, index)))
         {
-            var item = FromBoardNode(node, parentId: null, position: index + 1);
+            var item = FromBoardNode(node, parentId: null, position: index + 1, snapshot.CapturedAtUtc);
             state.RootTasks.Add(item);
             maxRootId = Math.Max(maxRootId, item.Id);
         }
@@ -2232,7 +2244,12 @@ Examples:
         return new TaskManager(state, timeProvider, DefaultLeaseStaleAfter);
     }
 
-    private static PrivateTaskItem FromBoardNode(TodoTaskNode node, int? parentId, int position)
+    private static PrivateTaskItem FromBoardNode(
+        TodoTaskNode node,
+        int? parentId,
+        int position,
+        DateTimeOffset capturedAtUtc
+    )
     {
         // The per-level numeric id is the dotted path's last segment ("1.2.3" -> 3). A segment that
         // does not parse (malformed persisted data) falls back to the row's 1-based position, which
@@ -2247,6 +2264,15 @@ Examples:
             Title = node.Title,
             Status = FromBoardStatus(node.Status),
             ParentId = parentId,
+            // The claim is part of the persisted board too (#595, D2): without it, the very agent
+            // that claimed a row before the recreate could no longer complete it (task_not_claimed),
+            // and a foreign agent could claim over a lease that was still live. Restoring these
+            // fields is hydration, not a transition — no OnChanged can fire here, because the
+            // manager is still being constructed and the hook is only wired by the host afterwards.
+            Assignee = node.Assignee,
+            CreatedAt = node.CreatedAt,
+            ClaimedAt = node.ClaimedAt,
+            CompletedAt = node.CompletedAt,
         };
         item.Notes.AddRange(node.Notes);
         // Artifacts are part of the persisted board (unlike leases): workspace-relative by the tool
@@ -2267,10 +2293,20 @@ Examples:
             item.Status = TaskStatus.NotStarted;
         }
 
+        if (item.Status == TaskStatus.InProgress && item.Assignee != null && item.ClaimedAt == null)
+        {
+            // A claimed row from a snapshot persisted before claimedAt round-tripped (or with the
+            // field stripped) must not read as freshly claimed forever: IsLeaseStale falls back to
+            // "now" when both timestamps are absent, so the lease could never go stale and the row
+            // would wedge if its agent is gone. Ageing it from the capture instant is the honest
+            // floor — the claim is at least that old.
+            item.ClaimedAt = capturedAtUtc;
+        }
+
         var maxSubId = 0;
         foreach (var (subNode, index) in node.SubTasks.Select(static (subNode, index) => (subNode, index)))
         {
-            var subItem = FromBoardNode(subNode, parentId: id, position: index + 1);
+            var subItem = FromBoardNode(subNode, parentId: id, position: index + 1, capturedAtUtc);
             item.SubTasks.Add(subItem);
             maxSubId = Math.Max(maxSubId, subItem.Id);
         }

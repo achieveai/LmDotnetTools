@@ -92,6 +92,33 @@ public sealed record TodoTaskNode
     [JsonPropertyName("blockedBy")]
     public IReadOnlyList<string> BlockedBy { get; init; } = [];
 
+    /// <summary>
+    ///     Agent name holding or owning this row, exactly as <c>claim-task</c>/<c>assign-task</c>
+    ///     recorded it (#595, D2). Persisted so a claim survives agent recreation: without it, a
+    ///     rehydrated <see cref="TodoTaskStatus.InProgress" /> row arrived assignee-less and the very
+    ///     agent that claimed it could no longer complete it (<c>task_not_claimed</c>). Null when
+    ///     unassigned. Additive to schema version 1, same contract as <see cref="BlockedBy" />.
+    /// </summary>
+    [JsonPropertyName("assignee")]
+    public string? Assignee { get; init; }
+
+    /// <summary>When the row was created. Null on rows persisted before timestamps round-tripped.</summary>
+    [JsonPropertyName("createdAt")]
+    public DateTimeOffset? CreatedAt { get; init; }
+
+    /// <summary>
+    ///     When the current claim was taken or last refreshed (#595, D2). Persisted alongside
+    ///     <see cref="Assignee" /> so lease staleness keeps meaning something across a restart —
+    ///     an absent value would otherwise make every rehydrated lease read as freshly claimed and
+    ///     never go stale. Null when the row is not claimed.
+    /// </summary>
+    [JsonPropertyName("claimedAt")]
+    public DateTimeOffset? ClaimedAt { get; init; }
+
+    /// <summary>When the row was completed. Null unless the row is completed.</summary>
+    [JsonPropertyName("completedAt")]
+    public DateTimeOffset? CompletedAt { get; init; }
+
     /// <summary>Nested rows. Never null; empty when the row is a leaf.</summary>
     [JsonPropertyName("subTasks")]
     public IReadOnlyList<TodoTaskNode> SubTasks { get; init; } = [];
