@@ -246,7 +246,8 @@ export async function createDirectory(
  * Deletes an entry (file or directory — the server derives which; no flags are sent).
  * @throws {NoSessionError} on 409 no_session_yet.
  * @throws {CredentialConflictError} on 409 caller_credential_conflict.
- * @throws {FileBrowserError} on other non-204 statuses (422 delete_failed, 400 cannot_delete_root, 404).
+ * @throws {FileBrowserError} on other non-204 statuses (409 entry_changed when the entry was concurrently
+ *   replaced by one of a different kind, 422 delete_failed, 400 cannot_delete_root, 404).
  */
 export async function deleteEntry(
   threadId: string,

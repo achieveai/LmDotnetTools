@@ -572,25 +572,59 @@ public class FileBrowserControllerTests
     // -------- Delete --------
 
     [Fact]
-    public async Task Delete_File_RunsRmDashDash_AndReturns204()
+    public async Task Delete_File_RunsGuardedPointOfUseRm_AndReturns204()
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [File("a.txt")];
         var result = await controller.Delete(ThreadId, "a.txt", CancellationToken.None);
         result.Should().BeOfType<NoContentResult>();
         browser.Commands.Should().ContainSingle();
-        browser.Commands[0].Arguments.Should().Equal("rm", "--", "a.txt");
+        // ONE sh invocation carries the kind re-check AND the rm (#213); the kind and path are positional
+        // parameters, never interpolated into the script text.
+        browser
+            .Commands[0]
+            .Arguments.Should()
+            .Equal("sh", "-c", FileBrowserController.DeleteScript, "sh", "f", "a.txt");
     }
 
     [Fact]
-    public async Task Delete_Directory_RunsRmRecursive_FromServerType()
+    public async Task Delete_Directory_RunsGuardedRecursiveRm_FromServerType()
     {
         var (controller, browser) = Build();
-        // The client cannot force -r: the recursion is derived from the SERVER-returned directory type.
+        // The client cannot force -r: the recursion is derived from the SERVER-returned directory type,
+        // and the script re-verifies that type at the point of use before its rm -r runs.
         browser.Listings[""] = [Dir("sub")];
         var result = await controller.Delete(ThreadId, "sub", CancellationToken.None);
         result.Should().BeOfType<NoContentResult>();
-        browser.Commands[0].Arguments.Should().Equal("rm", "-r", "--", "sub");
+        browser.Commands[0].Arguments.Should().Equal("sh", "-c", FileBrowserController.DeleteScript, "sh", "d", "sub");
+    }
+
+    [Fact]
+    public async Task Delete_Symlink_RunsGuardedNonRecursiveRm_WithSymlinkKind()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Symlink("link")];
+        var result = await controller.Delete(ThreadId, "link", CancellationToken.None);
+        result.Should().BeOfType<NoContentResult>();
+        browser.Commands[0].Arguments.Should().Equal("sh", "-c", FileBrowserController.DeleteScript, "sh", "l", "link");
+    }
+
+    [Fact]
+    public async Task Delete_EntryChangedExit_Returns409EntryChanged()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("sub")];
+        browser.ExecResult = new SandboxCommandResult
+        {
+            ExitCode = FileBrowserController.EntryChangedExitCode,
+            StandardOutput = "",
+            StandardError = "",
+            OperationId = "op",
+        };
+        var result = await controller.Delete(ThreadId, "sub", CancellationToken.None);
+        // The script's "no longer the resolved kind" exit maps to 409 entry_changed, NOT the generic 422:
+        // the caller must learn the object it verified was substituted, not that "rm failed".
+        result.Should().BeOfType<ConflictObjectResult>();
     }
 
     [Fact]

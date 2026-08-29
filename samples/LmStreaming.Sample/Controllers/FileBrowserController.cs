@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
@@ -66,6 +67,67 @@ public sealed class FileBrowserController(
         IActionResult? Error,
         bool NoSession
     );
+
+    /// <summary>
+    /// Exit code <see cref="DeleteScript"/> answers when the leaf is no longer the kind the resolve
+    /// authorized (or no longer exists). Distinct from <c>rm</c>'s own failures (which exit 1) so the
+    /// controller can tell "the object you verified was substituted" (409 <c>entry_changed</c>) apart from
+    /// "the removal itself failed" (422 <c>delete_failed</c>). Internal so the tests pin the mapping
+    /// against the same value the script carries.
+    /// </summary>
+    internal const int EntryChangedExitCode = 61;
+
+    /// <summary>
+    /// The point-of-use delete: re-verifies the leaf's kind and removes it in ONE command invocation
+    /// (#213). <c>$1</c> is the expected kind (<c>d</c>/<c>f</c>/<c>l</c>, from the server-returned
+    /// resolve type), <c>$2</c> the server-resolved path; both arrive as positional parameters — no
+    /// dynamic value is ever interpolated into the script text (the <c>ConversationTranscriptWriter</c>
+    /// discipline). Built from concatenated literals so the line endings are LF regardless of checkout.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// What this closes: previously the controller CHOSE between <c>rm</c> and <c>rm -r</c> from the
+    /// resolve-time type, a full gateway round trip before the removal ran — an entry substituted in that
+    /// gap got the other object's removal (a directory's recursive <c>rm -r</c> aimed at a substituted
+    /// file, most sharply). Now the kind check runs in the sandbox, inside the same <c>sh</c> invocation,
+    /// immediately before an <c>exec rm</c>; a mismatch exits <see cref="EntryChangedExitCode"/> and
+    /// removes nothing. <c>[ ! -L ]</c> is checked FIRST for the d/f arms because <c>[ -d ]</c>/<c>[ -f ]</c>
+    /// follow symlinks: a link substituted for the resolved entry must be refused as a change of kind,
+    /// never classified by its target.
+    /// </para>
+    /// <para>
+    /// What this narrows rather than closes (deferred, per #213's V2 ask): the check→<c>rm</c> window
+    /// INSIDE the script — POSIX offers no type-conditional unlink, so like the transcript writer's path
+    /// guard this turns a race an attacker could win at leisure (plant between two HTTP round trips) into
+    /// one against microseconds in the same process. Path-COMPONENT races (a parent directory swapped
+    /// under the resolved path) are likewise out of V1 scope: closing them needs an atomic
+    /// resolve-and-act primitive (entry handle / conditional op) from the sandbox gateway, which its REST
+    /// surface does not expose today. Both residues stay within the workspace the caller already fully
+    /// controls — the gateway independently enforces escape-containment on every operation.
+    /// </para>
+    /// <para>
+    /// The <c>*</c> arm is unreachable by construction (the kind letter comes from an exhaustive enum
+    /// switch) and fails CLOSED with a distinct code if it is ever reached anyway.
+    /// </para>
+    /// </remarks>
+    internal static readonly string DeleteScript =
+        "kind=\"$1\"\n"
+        + "p=\"$2\"\n"
+        + "case \"$kind\" in\n"
+        + "d) { [ ! -L \"$p\" ] && [ -d \"$p\" ]; } || exit "
+        + ExitToken
+        + "\n   exec rm -r -- \"$p\" ;;\n"
+        + "f) { [ ! -L \"$p\" ] && [ -f \"$p\" ]; } || exit "
+        + ExitToken
+        + "\n   exec rm -- \"$p\" ;;\n"
+        + "l) [ -L \"$p\" ] || exit "
+        + ExitToken
+        + "\n   exec rm -- \"$p\" ;;\n"
+        + "*) exit 64 ;;\n"
+        + "esac\n";
+
+    /// <summary><see cref="EntryChangedExitCode"/> as the literal the script carries — one definition, two spellings kept equal by construction.</summary>
+    private static string ExitToken => EntryChangedExitCode.ToString(CultureInfo.InvariantCulture);
 
     // -------- Endpoints --------
 
@@ -594,7 +656,14 @@ public sealed class FileBrowserController(
         }
     }
 
-    /// <summary>Deletes a workspace file/directory via an <c>rm</c> assembled from the SERVER-verified entry type (no client-supplied type/recursion).</summary>
+    /// <summary>
+    /// Deletes a workspace file/directory. The entry type comes from the SERVER-verified resolve (no
+    /// client-supplied type/recursion), and the removal RE-VERIFIES that type at the point of use: one
+    /// <see cref="DeleteScript"/> invocation checks the leaf is still the resolved kind and runs the
+    /// matching <c>rm</c> in the same command, so the resolve→use gap across two gateway round trips can
+    /// no longer choose the wrong removal (#213). An entry substituted in between answers 409
+    /// <c>entry_changed</c> instead of acting on the substituted object.
+    /// </summary>
     [HttpDelete]
     public async Task<IActionResult> Delete(string threadId, [FromQuery] string? path, CancellationToken ct)
     {
@@ -625,18 +694,44 @@ public sealed class FileBrowserController(
                 );
             }
 
-            // Build the argv SOLELY from the server-returned final type. `--` terminates option parsing so a
-            // leading-dash name is an operand, never a flag.
-            string[] argv =
-                target.Type == SandboxEntryType.Directory
-                    ? ["rm", "-r", "--", target.ServerPath]
-                    : ["rm", "--", target.ServerPath];
+            // The expected kind is derived SOLELY from the server-returned resolve type, then RE-CHECKED by
+            // the script itself immediately before the `rm` — the script, not this process, decides whether
+            // the entry is still that kind. Both values travel as positional parameters ($1/$2), never
+            // interpolated into the script text, and `--` keeps a leading-dash name an operand.
+            var kind = target.Type switch
+            {
+                SandboxEntryType.Directory => "d",
+                SandboxEntryType.Symlink => "l",
+                _ => "f",
+            };
+            string[] argv = ["sh", "-c", DeleteScript, "sh", kind, target.ServerPath];
 
             var result = await fileBrowser.ExecuteWorkspaceCommandAsync(
                 session.SessionId,
                 new SandboxCommand(argv),
                 ct
             );
+            if (result.ExitCode == EntryChangedExitCode)
+            {
+                // The leaf is no longer the kind the resolve authorized (or is gone): the object the caller
+                // pointed at has been concurrently replaced, so refuse rather than act on the substitute.
+                logger.LogWarning(
+                    "File browser delete refused for thread {ThreadId} session {SessionId}: {Path} changed kind after resolve (expected {Kind})",
+                    threadId,
+                    session.SessionId,
+                    target.ServerPath,
+                    kind
+                );
+                return Conflict(
+                    new
+                    {
+                        error = "entry_changed",
+                        code = "entry_changed",
+                        threadId,
+                    }
+                );
+            }
+
             if (result.ExitCode != 0)
             {
                 logger.LogWarning(
@@ -1139,8 +1234,11 @@ public sealed class FileBrowserController(
     /// Ensures every <paramref name="segments"/> component under <paramref name="baseDir"/> exists as a REAL
     /// directory, creating missing ones one at a time with <c>mkdir --</c> (never <c>mkdir -p</c>, which would
     /// follow a symlink in the chain). An existing file OR symlink component is rejected — never traversed — so
-    /// a folder-upload relative path can never be written through a symlink out of the resolved directory. The
-    /// residual create-then-write atomicity boundary is tracked separately by #213.
+    /// a folder-upload relative path can never be written through a symlink out of the resolved directory.
+    /// The residual check→write component races along this chain are the deferred half of #213: the leaf
+    /// write itself is an atomic temp-write-plus-rename at the gateway (a substituted leaf symlink is
+    /// REPLACED by the rename, never followed), but a parent component swapped after its check here needs a
+    /// gateway-side atomic resolve-and-act primitive to close, which the REST surface does not expose today.
     /// </summary>
     private async Task<DirectoryChainResult> EnsureDirectoryChainAsync(
         string sessionId,
