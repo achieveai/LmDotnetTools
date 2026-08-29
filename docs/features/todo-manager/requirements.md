@@ -240,3 +240,42 @@ rendering byte for byte.
 5. **Persistence**: WHEN a task tree or board snapshot is serialized THEN `artifacts` SHALL
    round-trip with it — including through `FromSnapshot` rehydration, unlike the in-memory
    lease fields — and a tree persisted before this field existed SHALL load with it empty
+### Requirement 10: Nudges — The Board Talks Back (#583 PR 6)
+
+- **User Story**: As an orchestrator, I want the board to notify an assignee when work is
+  dispatched to it, and to nudge an agent whose claimed work shows no board progress — with a
+  hard budget so the system can never become a perpetual motion machine of agents poking each
+  other.
+
+#### Acceptance Criteria:
+1. **Assignment Notice (N1)**: WHEN a task's assignee CHANGES to a new value outside a claim
+   THEN the new assignee's conversation SHALL receive a `todo-nudge` notification naming the
+   task. It SHALL NOT fire for a claim (the agent acted), for a new row born with an
+   assignee (sub-items inherit their creator's assignment), for an unrelated board change
+   while an assignment merely persists, or for assignments hydrated from a persisted
+   snapshot on recreate/restart (hydration is baseline, not a transition). N1 is on by
+   default and is NOT budgeted — it is keyed to an explicit `assign-task` call and cannot
+   loop on its own
+2. **Stalled-Agent Nudges (N2–N4)**: run-end (N2), idle-turns (N3), and breakdown (N4)
+   nudges SHALL each default OFF and SHALL share one budget: at most 2 nudges per agent per
+   idle period; the second nudge escalates (asks for a reason and says it is the last); at
+   the budget the agent is marked stalled (surfaced via `StalledAgents`) and nothing further
+   is delivered
+3. **Budget Reset Contract**: the budget SHALL reset ONLY on a REAL board change — a change
+   to what the board says (rows, statuses, titles, notes, assignees, blockedBy). Time
+   passing, a claim-refresh heartbeat (which touches only `claimedAt`), and the agent merely
+   replying SHALL NOT reset it
+4. **Never-Nudge Conditions**: no stall nudge SHALL fire when the tier is disabled, when the
+   run ended errored or cancelled, when everything the agent owns is terminal, or when
+   everything left is `Blocked` (a correct stop, not a stall)
+5. **Root-Conversation Opt-In**: a nudge whose target resolves to the ROOT conversation
+   SHALL be dropped unless `TodoNudges:NudgeRootConversation` is explicitly true
+6. **Tolerant Configuration**: a missing, empty, or malformed `TodoNudges` section SHALL
+   read as the defaults (feature-off for N2–N4) and SHALL never throw
+7. **Delivery Channel**: nudges SHALL be injected as `NotifyMessage`s of kind `todo-nudge`
+   through the target conversation's normal input channel, so the client renders them as
+   notification pills, never as fabricated user messages; the service's own board-change
+   bookkeeping SHALL never emit frames or messages by itself
+8. **Multicast Change Hook**: `TaskManager.OnChanged` SHALL be a real multicast event —
+   subscribing the nudge bookkeeping SHALL NOT displace the live-frame publisher or the
+   durable writer, and one subscriber throwing SHALL NOT starve the subscribers behind it

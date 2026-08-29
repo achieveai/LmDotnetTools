@@ -25,7 +25,7 @@ public class TodoBoardRecreateSurvivalTests
     private static TodoBoardPersistenceWriter WireWriter(IConversationStore store, TaskManager manager)
     {
         var writer = new TodoBoardPersistenceWriter(store, "conv-1", () => manager.GetTodoBoardSnapshot("conv-1"));
-        manager.OnChanged = writer.Schedule;
+        manager.OnChanged += writer.Schedule;
         return writer;
     }
 

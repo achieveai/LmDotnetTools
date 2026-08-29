@@ -31,6 +31,13 @@ public static class NotifyKinds
     ///     navigation to the originating descendant specifically on this kind.
     /// </summary>
     public const string DescendantQuestion = "descendant-question";
+
+    /// <summary>
+    ///     The todo board talking back (#583 PR 6): an assignment notice or a budgeted stalled-agent
+    ///     nudge injected into the owning agent's conversation. Tagged so the client renders it as a
+    ///     distinct nudge pill — a nudge that looks like a human message is a lie in the transcript.
+    /// </summary>
+    public const string TodoNudge = "todo-nudge";
 }
 
 /// <summary>

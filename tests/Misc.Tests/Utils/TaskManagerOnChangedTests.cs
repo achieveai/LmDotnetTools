@@ -18,7 +18,7 @@ public class TaskManagerOnChangedTests
 
     public TaskManagerOnChangedTests()
     {
-        _taskManager.OnChanged = () => _changes++;
+        _taskManager.OnChanged += () => _changes++;
     }
 
     [Fact]
@@ -83,11 +83,7 @@ public class TaskManagerOnChangedTests
         _changes = 0;
 
         var statusesSeen = new List<AchieveAi.LmDotnetTools.LmCore.Models.TodoTaskStatus>();
-        _taskManager.OnChanged = () =>
-        {
-            _changes++;
-            statusesSeen.Add(_taskManager.GetTodoBoardSnapshot("conv-1").Tasks[0].Status);
-        };
+        _taskManager.OnChanged += () => statusesSeen.Add(_taskManager.GetTodoBoardSnapshot("conv-1").Tasks[0].Status);
 
         var result = _taskManager.ClaimTask("1", "agent-a");
 
@@ -238,7 +234,7 @@ public class TaskManagerOnChangedTests
         // mutation is committed. Mutation that must go red: invoking the hook before the core mutation
         // runs.
         var titlesSeenAtCallback = new List<string>();
-        _taskManager.OnChanged = () =>
+        _taskManager.OnChanged += () =>
             titlesSeenAtCallback.Add(
                 string.Join("|", _taskManager.GetTodoBoardSnapshot("conv-1").Tasks.Select(t => t.Title))
             );
@@ -253,7 +249,7 @@ public class TaskManagerOnChangedTests
     {
         _ = _taskManager.AddTask("Task one");
         var statusesSeen = new List<AchieveAi.LmDotnetTools.LmCore.Models.TodoTaskStatus>();
-        _taskManager.OnChanged = () => statusesSeen.Add(_taskManager.GetTodoBoardSnapshot("conv-1").Tasks[0].Status);
+        _taskManager.OnChanged += () => statusesSeen.Add(_taskManager.GetTodoBoardSnapshot("conv-1").Tasks[0].Status);
 
         _ = _taskManager.UpdateTask("1", "in progress");
 
@@ -269,13 +265,48 @@ public class TaskManagerOnChangedTests
     {
         // The mutation succeeded; a broken UI push must not convert it into a tool error the model then
         // retries. Mutation that must go red: removing the catch around the OnChanged invocation.
-        _taskManager.OnChanged = () => throw new InvalidOperationException("subscriber exploded");
+        _taskManager.OnChanged += () => throw new InvalidOperationException("subscriber exploded");
 
         var result = _taskManager.AddTask("Survives the push failure");
 
         result.ErrorCode.Should().BeNull();
         result.Text.Should().StartWith("Added task 1:");
         _taskManager.GetTasks().Should().ContainSingle();
+    }
+
+    [Fact]
+    public void TwoSubscribers_BothFire_OnOneMutation()
+    {
+        // F-007 (#590 follow-up): OnChanged was a settable delegate slot, so the second subscriber
+        // (nudge accounting, #583 PR 6) silently clobbered the first (push + durable save). Mutation
+        // that must go red: reverting the event back to a last-writer-wins property.
+        var manager = new TaskManager();
+        var first = 0;
+        var second = 0;
+        manager.OnChanged += () => first++;
+        manager.OnChanged += () => second++;
+
+        _ = manager.AddTask("Both subscribers must see this");
+
+        first.Should().Be(1);
+        second.Should().Be(1);
+    }
+
+    [Fact]
+    public void ThrowingSubscriber_DoesNotStarveTheSubscribersBehindIt()
+    {
+        // Per-subscriber isolation: a plain multicast Invoke aborts the invocation list at the first
+        // throw, which would let a broken nudge hook take the durable write down with it. Mutation
+        // that must go red: replacing the per-subscriber loop with a single OnChanged?.Invoke().
+        var manager = new TaskManager();
+        var survivorFired = 0;
+        manager.OnChanged += () => throw new InvalidOperationException("first subscriber exploded");
+        manager.OnChanged += () => survivorFired++;
+
+        var result = manager.AddTask("Second subscriber still fires");
+
+        result.ErrorCode.Should().BeNull();
+        survivorFired.Should().Be(1);
     }
 
     [Fact]

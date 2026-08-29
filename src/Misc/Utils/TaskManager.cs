@@ -111,8 +111,15 @@ public class TaskManager : ITodoBoardSource
     ///         Failed calls (non-null error code) do not fire: the board did not change, and a frame for a
     ///         refusal would repaint the client with a state it already has. Read-only tools never fire.
     ///     </para>
+    ///     <para>
+    ///         A multicast EVENT, not a settable delegate slot (#583 PR 6, follow-up F-007 from #590): the
+    ///         push/persist wiring and the nudge accounting both subscribe, and a settable property let a
+    ///         second subscriber silently clobber the first. Subscribers are invoked in subscription order,
+    ///         each isolated in its own catch — one subscriber throwing must not starve the others (the
+    ///         durable write must survive a broken nudge hook, and vice versa).
+    ///     </para>
     /// </remarks>
-    public Action? OnChanged { get; set; }
+    public event Action? OnChanged;
 
     /// <summary>
     ///     Optional logger for the change hook's last-resort catch. Wired by the same host that wires
@@ -123,25 +130,30 @@ public class TaskManager : ITodoBoardSource
 
     /// <summary>
     ///     Fires <see cref="OnChanged" /> when <paramref name="result" /> reports success, passing the
-    ///     result through unchanged. A throwing subscriber is swallowed: the mutation already succeeded,
-    ///     and a failed UI push must not convert a successful tool call into a tool error. Swallowed is
-    ///     not silent — the subscriber going down takes the live push AND the durable write with it, so
-    ///     the escape is logged loudly when a logger is wired.
+    ///     result through unchanged. Each subscriber is invoked separately and a throwing subscriber is
+    ///     swallowed per subscriber: the mutation already succeeded, and a failed UI push must not convert
+    ///     a successful tool call into a tool error — nor may it starve the subscribers behind it (a plain
+    ///     multicast invoke would abort the rest of the invocation list on the first throw). Swallowed is
+    ///     not silent — a downed subscriber can take the live push or the durable write with it, so each
+    ///     escape is logged loudly when a logger is wired.
     /// </summary>
     private FunctionResult NotifyIfChanged(FunctionResult result)
     {
-        if (result.ErrorCode is null)
+        if (result.ErrorCode is null && OnChanged is { } subscribers)
         {
-            try
+            foreach (var subscriber in subscribers.GetInvocationList())
             {
-                OnChanged?.Invoke();
-            }
-            catch (Exception ex)
-            {
-                OnChangedLogger?.LogError(
-                    ex,
-                    "OnChanged subscriber threw; the live todo-board push and durable save were skipped for this mutation"
-                );
+                try
+                {
+                    ((Action)subscriber)();
+                }
+                catch (Exception ex)
+                {
+                    OnChangedLogger?.LogError(
+                        ex,
+                        "An OnChanged subscriber threw; that subscriber's work (live todo-board push, durable save, or nudge accounting) was skipped for this mutation"
+                    );
+                }
             }
         }
 
