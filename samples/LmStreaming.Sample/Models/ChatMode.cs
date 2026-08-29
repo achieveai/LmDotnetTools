@@ -32,10 +32,11 @@ public record ChatMode
 
     /// <summary>
     /// List of enabled server-side built-in tool names (e.g. <c>web_search</c>). Kept separate from
-    /// <see cref="EnabledTools"/> so a mode can curate its function tools elsewhere (e.g. Workspace
-    /// Agent sets <c>EnabledTools = []</c> and resolves function tools via the sandbox MCP gateway)
-    /// while still declaring which server-side built-ins it wants. When null, built-in selection
-    /// falls back to <see cref="EnabledTools"/> for backward compatibility.
+    /// <see cref="EnabledTools"/> so a mode can curate its function tools independently (e.g.
+    /// Workspace Agent resolves file/shell tools via the sandbox MCP gateway and lists only the
+    /// TaskManager todo-board family in <see cref="EnabledTools"/>) while still declaring which
+    /// server-side built-ins it wants. When null, built-in selection falls back to
+    /// <see cref="EnabledTools"/> for backward compatibility.
     /// </summary>
     public IReadOnlyList<string>? EnabledBuiltInTools { get; init; }
 

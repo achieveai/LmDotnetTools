@@ -175,13 +175,17 @@ public sealed class CopilotWebSearchRegistrationTests
     [Fact]
     public void WorkspaceAgentMode_RegistersRenamedWebSearchAndWebFetch_NeverLowercase()
     {
-        // Mirrors the real Workspace Agent mode shape from Prompts.yaml: EnabledTools = [],
-        // EnabledBuiltInTools = ["web_search"]. Verifies the composed registry exposes both
-        // "WebSearch" and "WebFetch" to the model, and never leaks the lowercase upstream name.
+        // Mirrors the real Workspace Agent mode shape by READING it from Prompts.yaml (EnabledTools
+        // carries the task family and no web names; EnabledBuiltInTools = ["web_search"]), so this
+        // test tracks the mode instead of hard-coding a stale copy. Verifies the composed registry
+        // exposes both "WebSearch" and "WebFetch" to the model, and never leaks the lowercase
+        // upstream name.
+        var workspaceMode = SystemChatModes.GetById(SystemChatModes.WorkspaceAgentModeId);
+        workspaceMode!.EnabledBuiltInTools.Should().Contain("web_search");
         var registry = new FunctionRegistry();
         var enabledTools = WebToolRegistrationPolicy.ResolveEnabledTools(
-            enabledTools: [],
-            enabledBuiltInTools: ["web_search"]
+            enabledTools: workspaceMode.EnabledTools,
+            enabledBuiltInTools: workspaceMode.EnabledBuiltInTools
         );
 
         var hosted = CopilotWebSearchRegistration.TryRegister(

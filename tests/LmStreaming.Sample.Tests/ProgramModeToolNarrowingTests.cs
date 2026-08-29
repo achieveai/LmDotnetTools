@@ -188,7 +188,10 @@ public sealed class ProgramModeToolNarrowingTests
     {
         var mode = SystemChatModes.GetById(SystemChatModes.WorkspaceAgentModeId);
 
-        mode!.EnabledTools.Should().Contain(TaskToolNames());
+        // Set equality, not Contain: this pins BOTH halves of the contract — every task tool is
+        // enabled, and nothing but task tools is (additive drift, e.g. a sample tool name slipping
+        // into the YAML list, goes red too).
+        mode!.EnabledTools.Should().BeEquivalentTo(TaskToolNames());
     }
 
     [Fact]

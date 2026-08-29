@@ -4006,11 +4006,22 @@ public partial class Program
     ///     <c>TaskManager</c> todo-board family) down to the tools a mode enables.
     /// </summary>
     /// <remarks>
-    ///     Null <paramref name="enabledTools" /> means "everything" (the Default mode's contract); an
-    ///     explicit list keeps exactly the named tools. This is the seam that starved Workspace Agent
-    ///     of the task family: its <c>enabledTools: []</c> filtered out the todo-board tools the
-    ///     multi-agent mode exists to drive, so Prompts.yaml now names them and
-    ///     <c>ProgramModeToolNarrowingTests</c> pins the list against the live TaskManager enumeration.
+    ///     <para>
+    ///         Null <paramref name="enabledTools" /> means "everything" (the Default mode's contract);
+    ///         an explicit list keeps exactly the named tools.
+    ///     </para>
+    ///     <para>
+    ///         History, because it names why the task family is enumerated in Prompts.yaml: Workspace
+    ///         Agent HAD the task tools from PR #102 (<c>6d438b60</c>, 2026-06-23) via an explicit
+    ///         <c>else if (isWorkspaceMode)</c> grant that deliberately bypassed the mode's empty
+    ///         allow-list. PR #450 (<c>c33d6535</c>, 2026-08-26) deleted that block when it replaced
+    ///         id-based branching with <c>ModeCapabilities.Resolve(...)</c> and put nothing back for
+    ///         TaskManager — a regression, not a stale config. The capability model has no wildcard
+    ///         for bare-id groups (<c>ToolGroups.Qualified</c> covers only sandbox/subagents/workflow),
+    ///         so the restored grant must enumerate the family by name in <c>enabledTools</c>, and
+    ///         <c>ProgramModeToolNarrowingTests</c> pins that list against the live TaskManager
+    ///         enumeration.
+    ///     </para>
     /// </remarks>
     internal static FunctionRegistry BuildModeFilteredRegistry(
         FunctionRegistry conversationRegistry,
