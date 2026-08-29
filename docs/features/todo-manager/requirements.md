@@ -262,7 +262,8 @@ rendering byte for byte.
    the budget the agent is marked stalled (surfaced via `StalledAgents`) and nothing further
    is delivered
 3. **Budget Reset Contract**: the budget SHALL reset ONLY on a REAL board change — a change
-   to what the board says (rows, statuses, titles, notes, assignees, blockedBy). Time
+   to what the board says (rows, statuses, titles, notes, assignees, blockedBy,
+   artifacts). Time
    passing, a claim-refresh heartbeat (which touches only `claimedAt`), and the agent merely
    replying SHALL NOT reset it
 4. **Never-Nudge Conditions**: no stall nudge SHALL fire when the tier is disabled, when the

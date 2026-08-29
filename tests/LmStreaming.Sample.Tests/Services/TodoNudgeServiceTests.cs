@@ -285,6 +285,30 @@ public class TodoNudgeServiceTests
     }
 
     [Fact]
+    public async Task AttachingAnArtifact_IsARealBoardChange_AndResetsTheBudget()
+    {
+        // Semantic-conflict pin against #596: artifacts became board content in PR 5, so an
+        // attach-artifact is visible progress — a fingerprint that ignores the field would
+        // misclassify it as a heartbeat and keep the agent marked stalled.
+        var harness = new Harness();
+        _ = harness.Manager.AddTask("Owned work");
+        _ = harness.Manager.ClaimTask("1", "agent-a");
+        _ = harness.Build(RunEndOnly);
+
+        await harness.Service.HandleRunEndedAsync("agent-a", endedWithError: false, cancelled: false);
+        await harness.Service.HandleRunEndedAsync("agent-a", endedWithError: false, cancelled: false);
+        await harness.Service.HandleRunEndedAsync("agent-a", endedWithError: false, cancelled: false);
+        harness.Delivered.Should().HaveCount(2, "the budget is spent");
+
+        _ = harness.Manager.AttachArtifact("1", "docs/output.md");
+        await harness.SyncAsync();
+
+        harness.Service.StalledAgents.Should().BeEmpty("attaching a file is visible progress");
+        await harness.Service.HandleRunEndedAsync("agent-a", endedWithError: false, cancelled: false);
+        harness.Delivered.Should().HaveCount(3, "the artifact attach re-armed the budget");
+    }
+
+    [Fact]
     public async Task ARefusedDelivery_DoesNotConsumeBudget()
     {
         var harness = new Harness();
@@ -528,6 +552,91 @@ public class TodoNudgeServiceTests
         _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
             harness.Service.HandleRunEndedAsync("agent-a", endedWithError: false, cancelled: false)
         );
+    }
+
+    [Fact]
+    public async Task ConcurrentBoardChangeHooks_CannotRewindTheBaselineToAStaleSnapshot()
+    {
+        // #599 review F-002. TaskManager fires OnChanged after releasing its own lock and
+        // sub-agents share one manager, so two hooks race here. The board read and the fingerprint
+        // must happen INSIDE _sync: read outside it, a losing thread commits a snapshot OLDER than
+        // the winner's — rewinding the baseline so the winner's assignment is re-detected as a
+        // transition (duplicate notice) on the next change.
+        //
+        // Deterministic seam, no sleep race: the LOSER's board read blocks on a gate. With the fix,
+        // that read happens under the lock, so the winner cannot commit while the loser is parked —
+        // the interleaving the defect needs is structurally impossible. With the read outside the
+        // lock (the mutation), the winner commits the newer board first, the loser then commits the
+        // stale one over it, and the final pass re-notifies agent-b: 2 notices instead of 1.
+        var v0 = new List<TaskManager.TaskItem> { FakeTask("1", null), FakeTask("2", null) };
+        var v1 = new List<TaskManager.TaskItem> { FakeTask("1", "agent-a"), FakeTask("2", null) };
+        var v2 = new List<TaskManager.TaskItem> { FakeTask("1", "agent-a"), FakeTask("2", "agent-b") };
+
+        var currentBoard = v0;
+        var readerCalls = 0;
+        using var loserIsReading = new ManualResetEventSlim(false);
+        using var loserMayReturn = new ManualResetEventSlim(false);
+        var deliveries = new System.Collections.Concurrent.ConcurrentQueue<string>();
+
+        var service = new TodoNudgeService(
+            new TodoNudgeOptions(),
+            () =>
+            {
+                var snapshot = Volatile.Read(ref currentBoard);
+                if (Interlocked.Increment(ref readerCalls) == 2)
+                {
+                    // The loser's read (call 1 is the constructor's baseline capture): park it so
+                    // the winner can be raced against it deterministically.
+                    loserIsReading.Set();
+                    _ = loserMayReturn.Wait(TimeSpan.FromSeconds(10));
+                }
+
+                return snapshot;
+            },
+            _ => TodoNudgeTargetKind.SubAgent,
+            (name, _, _) =>
+            {
+                deliveries.Enqueue(name);
+                return ValueTask.FromResult(true);
+            },
+            new FakeTimeProvider()
+        );
+
+        Volatile.Write(ref currentBoard, v1);
+        var loser = Task.Run(() => service.HandleBoardChangedAsync());
+        loserIsReading.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue("the loser must reach its board read");
+
+        Volatile.Write(ref currentBoard, v2);
+        var winner = Task.Run(() => service.HandleBoardChangedAsync());
+        // With the read outside the lock the winner finishes here; with the fix it is lock-blocked
+        // behind the parked loser, and this wait simply elapses — both outcomes are deterministic.
+        _ = await Task.WhenAny(winner, Task.Delay(TimeSpan.FromSeconds(1)));
+
+        loserMayReturn.Set();
+        await loser;
+        await winner;
+
+        // The settling pass every real burst ends with: one more hook fire over the final board.
+        await service.HandleBoardChangedAsync();
+
+        deliveries
+            .Count(name => name == "agent-b")
+            .Should()
+            .Be(1, "a stale commit rewinds the baseline and re-notifies");
+        deliveries.Count(name => name == "agent-a").Should().Be(1);
+    }
+
+    private static TaskManager.TaskItem FakeTask(string id, string? assignee)
+    {
+        return new TaskManager.TaskItem
+        {
+            Id = id,
+            Status = AchieveAi.LmDotnetTools.Misc.Utils.TaskManager.TaskStatus.NotStarted,
+            Title = $"Task {id}",
+            Notes = [],
+            SubTasks = [],
+            Assignee = assignee,
+        };
     }
 
     [Fact]

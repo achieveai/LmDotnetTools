@@ -27,7 +27,7 @@ public enum TodoNudgeTargetKind
 ///         <b>This must not become a perpetual motion machine.</b> The guardrails are the design:
 ///         stalled-agent nudges are budgeted at <see cref="MaxStallNudgesPerIdlePeriod" /> per agent
 ///         per idle period, and the budget resets ONLY on a REAL board change — a change to what the
-///         board says (statuses, rows, titles, notes, assignees, blockedBy), never on time passing, a
+///         board says (statuses, rows, titles, notes, assignees, blockedBy, artifacts), never on time passing, a
 ///         claim-refresh heartbeat, or the agent merely replying to the nudge. After the budget is
 ///         spent the agent is marked stalled and the system stops — silence becomes visible instead of
 ///         an infinite retry.
@@ -138,19 +138,27 @@ public sealed class TodoNudgeService
 
     /// <summary>
     ///     Board-change bookkeeping: on a REAL change (the board fingerprint — statuses, rows, titles,
-    ///     notes, assignees, blockedBy; lease timestamps excluded — actually differs) the stall-nudge
+    ///     notes, assignees, blockedBy, artifacts; lease timestamps excluded — actually differs) the stall-nudge
     ///     budgets, stalled markers, and idle-turn counters reset, and assignment transitions produce
     ///     N1 notices. A change hook firing without a real change (claim-refresh heartbeat) resets
     ///     nothing.
     /// </summary>
     public async Task HandleBoardChangedAsync(CancellationToken ct = default)
     {
-        var flat = Flatten(_boardReader());
-        var fingerprint = Fingerprint(flat);
         var notices = new List<(string Assignee, string TaskId, string Title)>();
 
         lock (_sync)
         {
+            // The board read and the fingerprint MUST happen inside the lock (#599 review F-002):
+            // TaskManager fires OnChanged after releasing its own lock and sub-agents share one
+            // manager, so two hooks can race here. Read outside the lock, a losing thread could
+            // commit a snapshot OLDER than the one already committed — rewinding the baseline
+            // (later duplicate assignment notice), resetting budgets on stale evidence, and
+            // noticing transitions that never happened. Inside the lock, reads and commits are
+            // serialized, so a stale snapshot can never overwrite a newer one.
+            var flat = Flatten(_boardReader());
+            var fingerprint = Fingerprint(flat);
+
             if (string.Equals(fingerprint, _fingerprint, StringComparison.Ordinal))
             {
                 // Not a real board change (e.g. a lease heartbeat): the budget does NOT reset —
@@ -534,7 +542,7 @@ public sealed class TodoNudgeService
 
     /// <summary>
     ///     Canonical projection of what the board SAYS: ids, statuses, titles, notes, assignees and
-    ///     blockedBy, in tree order. Lease/creation/completion timestamps are deliberately excluded —
+    ///     blockedBy and artifacts, in tree order. Lease/creation/completion timestamps are deliberately excluded —
     ///     a claim-refresh heartbeat touches only <c>ClaimedAt</c> and must not count as progress, and
     ///     "real board change, not time" is the budget's reset contract.
     /// </summary>
@@ -559,6 +567,10 @@ public sealed class TodoNudgeService
                 .Append(string.Join(listSeparator, task.BlockedBy))
                 .Append(fieldSeparator)
                 .Append(string.Join(listSeparator, task.Notes))
+                .Append(fieldSeparator)
+                // Artifacts are board content (#596): attaching a file is visible progress, so it
+                // must end an idle period exactly like a note or a status change would.
+                .Append(string.Join(listSeparator, task.Artifacts))
                 .Append(rowSeparator);
         }
 
