@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.TodoBoard;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
+using Moq;
 using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Tests.TodoBoard;
@@ -49,10 +50,31 @@ public class ConversationTodoProjectionTests
         };
     }
 
+    /// <summary>
+    ///     Creates the conversation's metadata row the way a pooled agent already does, stamped with a
+    ///     tenant so it is a row a real reader could actually see. <c>SaveAsync</c> deliberately never
+    ///     creates one, so every test that expects a write to LAND must seed the conversation first.
+    /// </summary>
+    private static Task SeedConversationAsync(IConversationStore store, string threadId = "conv-1")
+    {
+        return store.UpdateMetadataAsync(
+            threadId,
+            existing =>
+                existing
+                ?? new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    LastUpdated = 0,
+                    TenantId = "tenant-1",
+                }
+        );
+    }
+
     private static async Task AssertRoundTripsAsync(IConversationStore store)
     {
         var original = SampleBoard();
 
+        await SeedConversationAsync(store);
         await ConversationTodoProjection.SaveAsync(store, original);
         var loaded = await ConversationTodoProjection.LoadAsync(store, "conv-1");
 
@@ -102,6 +124,7 @@ public class ConversationTodoProjectionTests
     {
         // The board is a tree; a projection that flattened it would still round-trip the row COUNT.
         var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
 
         await ConversationTodoProjection.SaveAsync(store, SampleBoard());
         var loaded = await ConversationTodoProjection.LoadAsync(store, "conv-1");
@@ -184,6 +207,7 @@ public class ConversationTodoProjectionTests
         // Two writers observe the same board at different instants (a slow write racing a fresh one, or
         // a post-restart writer). The later capture is the board; the earlier one must not regress it.
         var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
         var fresh = SampleBoard(Noon.AddMinutes(10)) with
         {
             Tasks =
@@ -223,6 +247,7 @@ public class ConversationTodoProjectionTests
         // Equal capture times are the common case at coarse clock resolution; treating them as stale
         // would silently drop every write that lands inside one tick of the previous one.
         var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
         await ConversationTodoProjection.SaveAsync(store, SampleBoard());
 
         await ConversationTodoProjection.SaveAsync(
@@ -275,6 +300,7 @@ public class ConversationTodoProjectionTests
         // policy about WHEN an empty board may be written belongs at the call site, which knows whether
         // emptiness means "cleared" or merely "this process has not seen the board yet".
         var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
         await ConversationTodoProjection.SaveAsync(store, SampleBoard());
 
         await ConversationTodoProjection.SaveAsync(store, SampleBoard(Noon.AddMinutes(5)) with { Tasks = [] });
@@ -282,6 +308,58 @@ public class ConversationTodoProjectionTests
         var loaded = await ConversationTodoProjection.LoadAsync(store, "conv-1");
         loaded.Should().NotBeNull();
         loaded!.Tasks.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SaveAsync_DoesNotCreateAConversation_WhenNoMetadataRowExists()
+    {
+        // A row minted here would carry no TenantId / OwnerUserId / OwnerAppId / Visibility, and
+        // ConversationAuthorizer reads a null TenantId as conversation_not_found — the row would be
+        // unreadable by EVERYONE, including its rightful owner, and would shadow any later attempt to
+        // stamp it. The board is an attribute of a conversation that exists; it never creates one.
+        var store = new InMemoryConversationStore();
+
+        await ConversationTodoProjection.SaveAsync(store, SampleBoard());
+
+        (await store.LoadMetadataAsync("conv-1")).Should().BeNull();
+        (await ConversationTodoProjection.LoadAsync(store, "conv-1")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task SaveAsync_DoesNotResurrectARowDeletedAfterTheProbe()
+    {
+        // The delete-then-read resurrection race, forced deterministically: Delete evicts the pooled
+        // agent BEFORE removing the row, so a GET that captured the live board pre-eviction can reach
+        // the write callback post-delete carrying the very tasks the delete was meant to erase. The
+        // existence check therefore has to run again INSIDE the store's write serialization, which is
+        // where this callback lives — the pre-probe alone cannot close the window.
+        ThreadMetadata? written = null;
+        var store = new Mock<IConversationStore>();
+        store
+            .Setup(s => s.LoadMetadataAsync("conv-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ThreadMetadata { ThreadId = "conv-1", LastUpdated = 0 });
+        store
+            .Setup(s =>
+                s.UpdateMetadataAsync(
+                    "conv-1",
+                    It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                (string _, Func<ThreadMetadata?, ThreadMetadata> update, CancellationToken _) =>
+                {
+                    // Every IConversationStore implementation persists whatever this returns, so the
+                    // only way to decline the write is to not return at all.
+                    written = update(null);
+                    return Task.CompletedTask;
+                }
+            );
+
+        var save = async () => await ConversationTodoProjection.SaveAsync(store.Object, SampleBoard());
+
+        await save.Should().ThrowAsync<InvalidOperationException>();
+        written.Should().BeNull("a deleted conversation must not be rebuilt to hold a todo board");
     }
 
     private static Task SetRawPropertyAsync(IConversationStore store, string threadId, string rawJson)

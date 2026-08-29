@@ -48,22 +48,61 @@ public static class ConversationTodoProjection
     ///     "the agent cleared every row" is a real state. Whether a given empty snapshot means "cleared" or
     ///     merely "this process has not seen the board yet" is knowable only at the call site, so that
     ///     policy lives there rather than being guessed at here.
+    ///     <para>
+    ///         <b>Never creates a conversation.</b> A board is an attribute of a conversation that already
+    ///         exists; if no metadata row is present this is a no-op. See the guard below for why an
+    ///         auto-created row would be unreadable by everyone.
+    ///     </para>
     /// </summary>
-    public static Task SaveAsync(IConversationStore store, TodoBoardSnapshot snapshot, CancellationToken ct = default)
+    public static async Task SaveAsync(
+        IConversationStore store,
+        TodoBoardSnapshot snapshot,
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(snapshot);
 
+        // NEVER bring a conversation's metadata row into existence. A row minted here would carry no
+        // TenantId / OwnerUserId / OwnerAppId / Visibility, and ConversationAuthorizer reads a null
+        // TenantId as conversation_not_found — an unstamped row is one NOBODY can read, for anyone.
+        // The board's only writers are a read path (GET /todos) and, from PR 2, a change notification;
+        // neither is entitled to create a conversation. A pooled agent has already persisted its row
+        // via MultiTurnAgentPool.PersistThreadBindingsIfNeededAsync, so on the live-board path this
+        // costs one lookup and skips nothing real. Absent row => the board is simply not persisted.
+        if (await store.LoadMetadataAsync(snapshot.ThreadId, ct) is null)
+        {
+            return;
+        }
+
         var json = JsonSerializer.Serialize(snapshot);
 
-        return store.UpdateMetadataAsync(
+        await store.UpdateMetadataAsync(
             snapshot.ThreadId,
             existing =>
             {
+                // Re-checked INSIDE the store's write serialization, because the row can be deleted
+                // between the probe above and this callback — the delete-then-read resurrection race
+                // (Delete evicts the pool entry before removing the row, so a GET that captured the
+                // live board pre-eviction can arrive here post-delete carrying the very task titles the
+                // delete was meant to remove).
+                //
+                // Throwing is the only way to decline: every IConversationStore.UpdateMetadataAsync
+                // persists whatever this callback returns, so there is no "no-op" value to hand back.
+                // All three implementations invoke the callback BEFORE their write, so the throw
+                // guarantees nothing is written. Callers treat a failed board save as non-fatal.
+                if (existing is null)
+                {
+                    throw new InvalidOperationException(
+                        $"Conversation '{snapshot.ThreadId}' no longer exists; refusing to recreate its "
+                            + "metadata row to persist a todo board."
+                    );
+                }
+
                 // Forward-compatibility: refuse to overwrite a projection a newer build wrote.
                 if (PersistedSchemaVersion(existing) > CurrentSchemaVersion)
                 {
-                    return existing!;
+                    return existing;
                 }
 
                 // Monotonic in capture time. Equal instants are ACCEPTED, not rejected: at coarse clock
@@ -72,10 +111,10 @@ public static class ConversationTodoProjection
                 var persisted = FromMetadata(existing);
                 if (persisted is not null && persisted.CapturedAtUtc > snapshot.CapturedAtUtc)
                 {
-                    return existing!;
+                    return existing;
                 }
 
-                return WithProjection(existing, snapshot.ThreadId, json);
+                return WithProjection(existing, json);
             },
             ct
         );
@@ -157,24 +196,28 @@ public static class ConversationTodoProjection
         };
     }
 
-    private static ThreadMetadata WithProjection(ThreadMetadata? existing, string threadId, string boardJson)
+    /// <summary>
+    ///     Returns <paramref name="existing" /> with the board written into its property bag.
+    /// </summary>
+    /// <remarks>
+    ///     Takes a NON-NULL row by design — there is deliberately no create branch, so this method
+    ///     cannot mint an ownership-less conversation even if a future caller forgets the guard in
+    ///     <see cref="SaveAsync" />. <see cref="ThreadMetadata.LastUpdated" /> is deliberately NOT
+    ///     bumped: it drives the sidebar's default ordering, and a read that persisted the board would
+    ///     otherwise float the conversation to the top of the user's list. Matches
+    ///     <c>ConversationUsageProjection</c>, which leaves it alone for the same reason.
+    /// </remarks>
+    private static ThreadMetadata WithProjection(ThreadMetadata existing, string boardJson)
     {
         // SetItem, never a wholesale replace: this bag is shared with the usage projection, the mode
         // binding, and the workspace binding.
-        var properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
+        var properties = (existing.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
             PropertyKey,
             boardJson
         );
 
-        if (existing is not null)
+        return existing with
         {
-            return existing with { Properties = properties };
-        }
-
-        return new ThreadMetadata
-        {
-            ThreadId = threadId,
-            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Properties = properties,
         };
     }
