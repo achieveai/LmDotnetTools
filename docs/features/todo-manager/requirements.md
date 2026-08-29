@@ -310,8 +310,3 @@ rendering byte for byte.
 8. **Multicast Change Hook**: `TaskManager.OnChanged` SHALL be a real multicast event —
    subscribing the nudge bookkeeping SHALL NOT displace the live-frame publisher or the
    durable writer, and one subscriber throwing SHALL NOT starve the subscribers behind it
-=======
-   round-trip with it — including through `FromSnapshot` rehydration, a discipline the
-   coordination fields joined in Requirement 8.10 — and a tree persisted before this field
-   existed SHALL load with it empty
->>>>>>> ee24dc05 (fix(todo-board): round-trip assignee and lease timestamps so claims survive agent recreation (#595))
