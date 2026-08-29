@@ -15,8 +15,12 @@ import type { TodoBoardSnapshot } from '@/types/todo';
  *    chat view for what is, again, just an absent endpoint.
  *  - CLI-backed providers (codex/claude/copilot), which never register a `TaskManager`.
  *
- * Any OTHER non-ok status still throws: a 500 from a route that does exist is a real fault, and
- * silently blanking the board would hide it. The composable decides how loudly to react.
+ * Any OTHER non-ok status still throws, so a 500 from a route that does exist stays distinguishable
+ * from an absent one HERE, at the layer that can tell them apart. Note what the caller then does
+ * with that distinction: `useTodoBoard` catches the throw, blanks the board exactly as it would for
+ * a 404, and records the difference only in a log line. So the split survives in the logs, not in
+ * the UI — by design, since there is no useful thing a read-only accessory panel can show a reader
+ * about a 500 that it would not also show about an empty board.
  */
 export async function getConversationTodos(threadId: string): Promise<TodoBoardSnapshot | null> {
   const response = await apiFetch(`/api/conversations/${encodeURIComponent(threadId)}/todos`);

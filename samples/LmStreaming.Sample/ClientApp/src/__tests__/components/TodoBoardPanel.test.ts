@@ -14,8 +14,8 @@ function task(id: string, overrides: Partial<TodoTask> = {}): TodoTask {
   return { id, status: TodoStatus.NotStarted, title: `Task ${id}`, notes: [], subTasks: [], ...overrides };
 }
 
-function mountPanel(tasks: TodoTask[] = [], isLoading = false) {
-  return mount(TodoBoardPanel, { props: { tasks, isLoading }, attachTo: document.body });
+function mountPanel(tasks: TodoTask[] = []) {
+  return mount(TodoBoardPanel, { props: { tasks }, attachTo: document.body });
 }
 
 /** A board with one of each live status, plus a sub-task, plus a removed row. */
@@ -73,22 +73,20 @@ describe('TodoBoardPanel — summary tiles', () => {
 });
 
 describe('TodoBoardPanel — states', () => {
-  it('renders a loading line while the first board is in flight', () => {
-    const wrapper = mountPanel([], true);
-    expect(wrapper.find('[data-testid="todo-loading"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="todo-empty"]').exists()).toBe(false);
-  });
-
-  it('renders an empty line for a board that has no live rows', () => {
-    const wrapper = mountPanel([], false);
+  it('renders an empty line when every row on the board is Removed', () => {
+    // The reachable empty case: ChatLayout's mount gate counts ALL tasks, this list shows only the
+    // live ones, so a board of nothing but removed rows mounts and has no live row to show.
+    const wrapper = mountPanel([task('1', { status: TodoStatus.Removed })]);
     expect(wrapper.get('[data-testid="todo-empty"]').text()).toContain('No tasks yet.');
     expect(wrapper.find('[data-testid="todo-list"]').exists()).toBe(false);
   });
 
-  it('keeps showing the rows it already has while a refresh is in flight — no blank flash', () => {
-    const wrapper = mountPanel(sampleBoard(), true);
+  it('has no loading state at all — the panel is unmounted for every load it could report', () => {
+    // Guards the F-002 decision. ChatLayout mounts on `tasks.length > 0`, and the only load path
+    // resets tasks first, so a loading branch here could never render in the composed app. If one
+    // is ever reintroduced, wire the mount gate to match it or this reads as coverage that is not.
+    const wrapper = mountPanel(sampleBoard());
     expect(wrapper.find('[data-testid="todo-loading"]').exists()).toBe(false);
-    expect(wrapper.findAll('[data-testid="todo-row"]').length).toBeGreaterThan(0);
   });
 });
 

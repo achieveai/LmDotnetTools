@@ -74,15 +74,23 @@ export function useTodoBoard(
   /**
    * Applies one live push frame.
    *
-   * A frame that names a DIFFERENT thread is ignored. The frame ref handed in by `useChat` keeps
-   * holding the last frame after the user switches conversations; without this guard, re-entering a
-   * conversation could paint another one's board.
+   * BOTH thread ids must be present AND equal. An absent id on either side is not permission to
+   * paint, because both absences are reachable and both would silently disable the guard:
+   *
+   *  - `getThreadId()` is null mid-switch — `useChat.clearMessages` nulls its `threadId` at the
+   *    start of every conversation switch and deliberately does NOT clear `conversationTodo` — and
+   *    on a fresh New Chat. A frame landing in that window would mount another board.
+   *  - `ConversationTodoMessage.threadId` is optional on the wire, so a PR 2 that omits it would
+   *    turn this guard off for every frame at once rather than for one.
+   *
+   * The frame ref keeps holding the last frame across a switch, so "no active conversation" must
+   * mean "paint nothing", not "paint whatever was last seen".
    */
   function applyFrame(frame: ConversationTodoMessage): void {
     const threadId = getThreadId();
-    if (frame.threadId && threadId && frame.threadId !== threadId) {
-      log.debug('Ignoring a todo frame addressed to another conversation', {
-        frameThreadId: frame.threadId,
+    if (!frame.threadId || !threadId || frame.threadId !== threadId) {
+      log.debug('Dropping a todo frame that does not name the open conversation', {
+        frameThreadId: frame.threadId ?? null,
         threadId,
       });
       return;
@@ -112,8 +120,15 @@ export function useTodoBoard(
       // the board; this read still clears the loading flag it set, in the finally below.
     } catch (e) {
       if (seq !== hydrateSeq) return;
-      // Debug, not error: a build without PR 1's endpoint reaches here on every conversation, and
-      // an accessory panel must not fill the console for a backend that has not shipped yet.
+      // Only a genuine 5xx or a network error reaches here: `getConversationTodos` already maps a
+      // 404 and a non-JSON body to `null` without throwing, so the two expected "no board" cases
+      // never take this path. That makes this rare rather than routine.
+      //
+      // It is still `debug` rather than `error` because the panel is an accessory — a board that
+      // cannot load must degrade to absent, not to an error banner over the chat. This does not
+      // hide the fault: the app's logger runs at `minLevel: 'debug'` with `consoleOutput: true`, so
+      // the line reaches the console AND is batched to the server log endpoint. It is recorded
+      // quietly, not swallowed.
       log.debug('Could not load the todo board; rendering it as absent', { threadId, error: e });
       if (epochAtStart === writeEpoch) {
         tasks.value = [];

@@ -45,6 +45,9 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/** Lets a settled promise's continuations run, for assertions after a `deferred` is resolved. */
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getConversationTodos.mockResolvedValue(null);
@@ -238,13 +241,32 @@ describe('useTodoBoard — live frames', () => {
     expect(board.hasBoard.value).toBe(false);
   });
 
-  it('accepts a frame that omits threadId', () => {
+  it('drops a frame that omits threadId rather than trusting it', () => {
+    // `threadId` is optional on the wire. If a frame without one were accepted, a PR 2 that simply
+    // forgot to stamp it would disable this guard for EVERY frame at once, and no test would notice.
     const board = useTodoBoard(
       () => 't1',
       () => null
     );
+
     board.applyFrame(frame(undefined));
-    expect(board.hasBoard.value).toBe(true);
+
+    expect(board.hasBoard.value).toBe(false);
+  });
+
+  it('drops a frame that arrives while no conversation is open', () => {
+    // Reachable, not theoretical: useChat.clearMessages nulls its threadId at the start of every
+    // switch and deliberately does NOT clear the frame ref, so this is the mid-switch window.
+    const threadId = ref<string | null>(null);
+    const board = useTodoBoard(
+      () => threadId.value,
+      () => null
+    );
+
+    board.applyFrame(frame('t1'));
+
+    expect(board.hasBoard.value).toBe(false);
+    expect(board.tasks.value).toEqual([]);
   });
 
   it('degrades a malformed frame to an empty board instead of throwing', () => {
@@ -296,6 +318,31 @@ describe('useTodoBoard — supersession', () => {
     expect(board.hasBoard.value).toBe(true);
   });
 
+  it('does not let a superseded hydrate clear the loading flag its replacement still owns', async () => {
+    // Pins the `seq === hydrateSeq` guard in hydrate()'s finally. Mutating that to clear the flag
+    // unconditionally reds this and nothing else: the older read settles first, and if it were
+    // allowed to switch the flag off, `isLoading` would read false while a fetch is still running.
+    const first = deferred<{ tasks: unknown[] }>();
+    const second = deferred<{ tasks: unknown[] }>();
+    mocks.getConversationTodos.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    const a = board.hydrate();
+    const b = board.hydrate();
+    expect(board.isLoading.value).toBe(true);
+
+    first.resolve({ tasks: [] });
+    await a;
+    expect(board.isLoading.value).toBe(true);
+
+    second.resolve({ tasks: wireTasks() });
+    await b;
+    expect(board.isLoading.value).toBe(false);
+  });
+
   it('lets the newest hydrate win over an older one that resolves later', async () => {
     const first = deferred<{ tasks: unknown[] }>();
     const second = deferred<{ tasks: unknown[] }>();
@@ -319,7 +366,12 @@ describe('useTodoBoard — supersession', () => {
 });
 
 describe('useTodoBoard — conversation switch', () => {
-  it('drops the previous board and re-hydrates when the thread id changes', async () => {
+  it('clears the old board BEFORE the replacement fetch resolves', async () => {
+    // The assertion is placed INSIDE the window `reset()` exists to close, and that placement is the
+    // whole test. An earlier version asserted only after the replacement had settled, where the
+    // board lands empty whether or not it was cleared first — so deleting `reset()` from the thread
+    // watcher left it green, and the guard was unpinned. Holding the second fetch open makes
+    // `reset()` the only thing that can empty the board here.
     const threadId = ref<string | null>('t1');
     mocks.getConversationTodos.mockResolvedValue({ tasks: wireTasks() });
     const board = useTodoBoard(
@@ -329,14 +381,20 @@ describe('useTodoBoard — conversation switch', () => {
     await board.hydrate();
     expect(board.hasBoard.value).toBe(true);
 
-    mocks.getConversationTodos.mockResolvedValue(null);
+    const second = deferred<{ tasks: unknown[] }>();
+    mocks.getConversationTodos.mockReturnValue(second.promise);
     threadId.value = 't2';
     await nextTick();
 
     expect(mocks.getConversationTodos).toHaveBeenLastCalledWith('t2');
-    // The old board must not linger over the new conversation even for a frame.
-    await Promise.resolve();
+    // Without reset() this still holds t1's titles under t2 for the whole round trip — a
+    // cross-conversation content leak, and the one this repo's switch-bug family keeps producing.
     expect(board.hasBoard.value).toBe(false);
+    expect(board.tasks.value).toEqual([]);
+
+    second.resolve({ tasks: wireTasks() });
+    await flush();
+    expect(board.hasBoard.value).toBe(true);
   });
 
   it('reset clears the board immediately', async () => {

@@ -21,10 +21,15 @@ import {
  *
  * `ChatLayout` mounts this ONLY when a board exists, so an empty `tasks` here means a board that was
  * emptied while you watched, not a conversation that never had one.
+ *
+ * There is deliberately NO loading state. `ChatLayout`'s mount gate is `tasks.length > 0`, and the
+ * only way the board loads is through the thread watcher, which resets `tasks` first — so the panel
+ * is unmounted for the whole duration of every load it could report. A loading branch here could
+ * never render in the composed app, and a prop nothing can set is worse than none: it reads as
+ * coverage that does not exist. Render-nothing is the design (see doc §11).
  */
 const props = defineProps<{
   tasks: TodoTask[];
-  isLoading: boolean;
 }>();
 
 const expanded = ref(true);
@@ -139,10 +144,9 @@ watch(activeTaskId, () => {
         <span class="todo-progress-label">{{ counts.done }}/{{ counts.total }}</span>
       </div>
 
-      <div v-if="props.isLoading && liveRows.length === 0" class="todo-message" data-testid="todo-loading">
-        Loading the board...
-      </div>
-      <div v-else-if="liveRows.length === 0" class="todo-message" data-testid="todo-empty">
+      <!-- Reachable when every row on the board is Removed: the mount gate counts all tasks, this
+           list shows only the live ones. -->
+      <div v-if="liveRows.length === 0" class="todo-message" data-testid="todo-empty">
         No tasks yet.
       </div>
 

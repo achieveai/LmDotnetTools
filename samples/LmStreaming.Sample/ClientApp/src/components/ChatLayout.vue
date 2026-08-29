@@ -227,11 +227,7 @@ const {
 // owned by the layout, handed to a stateless panel. It reuses `subAgentParentThreadId` — despite the
 // name, that computed is simply "the thread id once the conversation has actually started", which is
 // exactly the gate the board wants too: a fresh, unsent New Chat has no board to fetch.
-const {
-  tasks: todoTasks,
-  hasBoard: hasTodoBoard,
-  isLoading: todoLoading,
-} = useTodoBoard(
+const { tasks: todoTasks, hasBoard: hasTodoBoard } = useTodoBoard(
   () => subAgentParentThreadId.value,
   () => conversationTodo.value
 );
@@ -966,7 +962,7 @@ onBeforeUnmount(() => {
          the task tools — every CLI-backed provider (codex/claude/copilot), and every ordinary chat —
          must render NOTHING here rather than an empty board eating the right edge. That is what keeps
          two right-hand panels affordable. -->
-    <TodoBoardPanel v-if="hasTodoBoard" :tasks="todoTasks" :is-loading="todoLoading" />
+    <TodoBoardPanel v-if="hasTodoBoard" :tasks="todoTasks" />
 
     <!-- Right-side launcher: shares ChatLayout's hoisted sub-agent state (the panel no longer owns a
          composable). Clicking a row activates that sub-agent's center-pane tab via selectTab. -->
