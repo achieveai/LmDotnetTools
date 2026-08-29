@@ -30,6 +30,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.TodoBoard;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -2027,9 +2028,28 @@ try
                     // carrying a subagent-* id would be silently dropped by the client. Coalescing is
                     // structural — one frame per tool call — so a bulk-initialize of 30 tasks is one
                     // frame, not 30, with no timer, matching the usage push's no-timer pattern.
+                    // Durability rides the same hook (#586 review F-005): the pool's read-path
+                    // write-through only fires when someone ASKS for the board, so a board mutated and
+                    // then evicted/swapped would be lost without a change-driven save. The writer
+                    // coalesces bursts (capture-at-write-time, no timer, same engine as the usage
+                    // ledger's writer) and, because it sits in ownedResources, the pool entry's
+                    // teardown — eviction, provider/mode swap, shutdown — flushes the last change
+                    // before the entry disappears. It never persists an empty board and never mints a
+                    // metadata row for a thread that has none.
+                    var todoBoardWriter = new TodoBoardPersistenceWriter(
+                        conversationStore,
+                        threadId,
+                        () => taskManager.GetTodoBoardSnapshot(threadId),
+                        loggerFactory.CreateLogger<TodoBoardPersistenceWriter>()
+                    );
+                    ownedResources.Add(todoBoardWriter);
+
                     var todoPublisher = agent;
                     taskManager.OnChanged = () =>
+                    {
                         todoPublisher.PublishTodoBoardFrame(taskManager.GetTodoBoardSnapshot(threadId));
+                        todoBoardWriter.Schedule();
+                    };
 
                     return new MultiTurnAgentPool.AgentCreationResult(
                         agent,
