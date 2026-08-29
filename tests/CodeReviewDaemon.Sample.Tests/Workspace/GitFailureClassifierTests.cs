@@ -59,4 +59,71 @@ public class GitFailureClassifierTests
     [Fact]
     public void Null_stderr_classifies_as_Unknown() =>
         GitFailureClassifier.Classify(null).Should().Be(GitFailureKind.Unknown);
+
+    // --- issue #582: the deinit carve-out must consult a filesystem oracle, not the message shape alone ---
+
+    [Theory]
+    [InlineData("fatal: not a git repository: sub/../.git/modules/sub")]
+    [InlineData(@"fatal: not a git repository: sub/../.git\modules\sub")]
+    public void A_confirmed_absent_nested_gitdir_still_takes_the_benign_carve_out(string stderr) =>
+        // nestedGitDirExists: false — a caller that probed and found nothing. The #279 deinit case: unchanged.
+        GitFailureClassifier.Classify(stderr, nestedGitDirExists: false).Should().NotBe(GitFailureKind.Corrupt);
+
+    [Theory]
+    [InlineData("fatal: not a git repository: sub/../.git/modules/sub")]
+    [InlineData(@"fatal: not a git repository: sub/../.git\modules\sub")]
+    public void An_unprobed_nested_gitdir_defaults_to_the_benign_carve_out(string stderr) =>
+        // nestedGitDirExists: null (the default) — every existing caller that never passes the oracle keeps
+        // today's behavior, so this fix cannot regress a caller it was not wired into.
+        GitFailureClassifier.Classify(stderr).Should().NotBe(GitFailureKind.Corrupt);
+
+    [Theory]
+    [InlineData("fatal: not a git repository: sub/../.git/modules/sub")]
+    [InlineData(@"fatal: not a git repository: sub/../.git\modules\sub")]
+    public void A_confirmed_present_nested_gitdir_classifies_as_Corrupt(string stderr) =>
+        // nestedGitDirExists: true — the mcqdb shape: the gitdir is genuinely there, so the byte-identical
+        // "not a git repository" message is corruption, not a deinit, and must condemn the slot.
+        GitFailureClassifier.Classify(stderr, nestedGitDirExists: true).Should().Be(GitFailureKind.Corrupt);
+
+    [Fact]
+    public void A_confirmed_present_nested_gitdir_does_not_suppress_an_unrelated_corrupt_marker() =>
+        // The oracle only ever removes the ONE subtraction the deinit carve-out makes; it must never widen what
+        // Classify considers benign beyond that single marker.
+        GitFailureClassifier
+            .Classify(
+                "fatal: Unable to create '/store/.git/modules/repos/X/index.lock': File exists.",
+                nestedGitDirExists: true
+            )
+            .Should()
+            .Be(GitFailureKind.Corrupt);
+
+    [Theory]
+    [InlineData("/store/sub/../.git/modules/sub", "/store/.git/modules/sub")]
+    [InlineData(@"/store/sub/../.git\modules\sub", "/store/.git/modules/sub")]
+    public void ResolveNestedGitDirPath_collapses_a_relative_message_against_the_working_directory(
+        string relativeTail,
+        string expected
+    ) =>
+        GitFailureClassifier
+            .ResolveNestedGitDirPath("/store", $"fatal: not a git repository: {relativeTail}")
+            .Should()
+            .Be(expected);
+
+    [Fact]
+    public void ResolveNestedGitDirPath_uses_an_absolute_message_as_is_without_reapplying_the_working_directory() =>
+        // Measured on git 2.53: an absolute `-C <target>` failure prints the FULLY resolved absolute path
+        // (uncollapsed `..` included), not a path relative to the working directory — combining it with the
+        // working directory again would double the submodule segment.
+        GitFailureClassifier
+            .ResolveNestedGitDirPath("/unrelated/cwd", "fatal: not a git repository: /store/sub/../.git/modules/sub")
+            .Should()
+            .Be("/store/.git/modules/sub");
+
+    [Fact]
+    public void ResolveNestedGitDirPath_returns_null_for_a_message_that_does_not_match_the_shape() =>
+        GitFailureClassifier.ResolveNestedGitDirPath("/store", "fatal: not a git repository").Should().BeNull();
+
+    [Fact]
+    public void ResolveNestedGitDirPath_returns_null_for_null_stderr() =>
+        GitFailureClassifier.ResolveNestedGitDirPath("/store", null).Should().BeNull();
 }
