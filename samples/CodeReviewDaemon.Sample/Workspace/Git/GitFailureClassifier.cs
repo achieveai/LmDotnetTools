@@ -178,7 +178,12 @@ internal static class GitFailureClassifier
         List<string> segments;
         if (tailIsAnchored)
         {
-            (anchor, segments) = SplitAnchor(normalizedTail);
+            // Only the ANCHOR is wanted here — the raw segments SplitAnchor would also return are the tail's
+            // own path taken literally, "." / ".." included, and the loop below re-adds every one of them
+            // (correctly collapsed this time) right after. Keeping SplitAnchor's segments as the starting point
+            // duplicated the tail: once verbatim, once collapsed.
+            (anchor, _) = SplitAnchor(normalizedTail);
+            segments = [];
         }
         else
         {

@@ -1223,6 +1223,86 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         await act.Should().ThrowExactlyAsync<InvalidOperationException>();
     }
 
+    // --- issue #582: the "not a git repository: .git/modules/<x>" shape must consult the filesystem, not just
+    // the message, before deciding whether it is a benign deinit or the mcqdb present-but-corrupt shape. ---
+
+    private const string NestedGitDirCheckoutStderr = "fatal: not a git repository: nested/../.git/modules/nested";
+
+    [Fact]
+    public async Task PrepareAsync_GenuinelyAbsentNestedGitDirOnCheckout_StillTakesTheBenignCarveOut()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"checkout --force {run.HeadSha}",
+            new SandboxCommandResult(128, string.Empty, NestedGitDirCheckoutStderr)
+        );
+        // No file seeded under the resolved nested-gitdir candidate — the fake's ListFilesAsync therefore
+        // answers "nothing there", exactly what a genuinely deinit'd submodule (#279's tolerated case) looks
+        // like on disk.
+        var fileSystem = SeedGitmodules(slot.StorePath);
+        var preparer = new ReviewSlotPreparer(new GitRunner(runner), fileSystem, "github", NullLoggerFactory.Instance);
+
+        var act = async () =>
+            await preparer.PrepareAsync(
+                slot,
+                run,
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            );
+
+        // Unchanged from pre-#582 behavior: a confirmed-absent gitdir stays on the benign path, so this is a
+        // plain retry-worthy failure, NOT a reclone trigger.
+        await act.Should()
+            .ThrowExactlyAsync<InvalidOperationException>(
+                "a genuinely absent nested gitdir is still the tolerated #279 deinit shape"
+            );
+    }
+
+    [Fact]
+    public async Task PrepareAsync_PresentButCorruptNestedGitDirOnCheckout_ThrowsSlotCorrupt()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"checkout --force {run.HeadSha}",
+            new SandboxCommandResult(128, string.Empty, NestedGitDirCheckoutStderr)
+        );
+        var fileSystem = SeedGitmodules(slot.StorePath);
+        var targetDir = $"{slot.StorePath.TrimEnd('/', '\\')}/{SubmoduleRelPath}";
+        var candidate = GitFailureClassifier.ResolveNestedGitDirPath(targetDir, NestedGitDirCheckoutStderr);
+        candidate.Should().NotBeNull("the stderr above must match the shape this fix resolves a path from");
+        // The mcqdb shape: `.git/modules/<name>` is genuinely THERE (a NUL-corrupted HEAD inside it, here
+        // simulated by any seeded entry under the directory) — present, just unable to answer for itself.
+        fileSystem.Seed($"{candidate}/HEAD", "\0\0\0\0");
+        var preparer = new ReviewSlotPreparer(new GitRunner(runner), fileSystem, "github", NullLoggerFactory.Instance);
+
+        var act = async () =>
+            await preparer.PrepareAsync(
+                slot,
+                run,
+                StoreUrl,
+                SubmoduleRelPath,
+                Branch,
+                DefaultBranch,
+                NotesRelPath,
+                BuildPolicy(),
+                CancellationToken.None
+            );
+
+        await act.Should()
+            .ThrowAsync<SlotCorruptException>(
+                "a confirmed-present nested gitdir is corruption, not a deinit, and must drive the reclone ladder"
+            );
+    }
+
     /// <summary>
     /// What the host git runner returns for a command its watchdog killed on the idle timeout, and the stderr
     /// it writes with it. Named because the whole point of the tests below is that this arrives through the
