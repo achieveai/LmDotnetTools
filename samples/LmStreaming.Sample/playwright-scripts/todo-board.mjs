@@ -121,23 +121,43 @@ async (page) => {
     const idle = await waitRunIdle(threadId, 60000);
     record('run drained (server run-state, not UI idle)', idle.done === true, idle);
 
-    // 3. Is the read path deployed at all? A 404 here is PRs 1-2 missing, not a product bug.
+    // 3. Did the task tools actually RUN?
+    //
+    // This check exists to stop the script misdiagnosing itself. `/todos` answers 404 for BOTH "the
+    // route is not deployed" and "the route is fine but this conversation has no board" — a fresh
+    // conversation is legitimately 404 until the first `add-task`. So if the instruction chain below
+    // ever drifts (a renamed tool, a changed arg), the board stays empty, `/todos` 404s, and without
+    // this the script would confidently blame a backend that is working.
+    const msgs = await api(`/api/conversations/${encodeURIComponent(threadId)}/messages`);
+    const toolsRan =
+      Array.isArray(msgs.json) &&
+      msgs.json.some((m) => typeof m.messageJson === 'string' && m.messageJson.includes('bulk-initialize'));
+    record('task tools ran (bulk-initialize is in the transcript)', toolsRan, {
+      messageCount: Array.isArray(msgs.json) ? msgs.json.length : null,
+      status: msgs.status,
+    });
+
+    // 4. Is the read path deployed? Read together with `toolsRan`, a 404 is now unambiguous.
     const todos = await api(`/api/conversations/${encodeURIComponent(threadId)}/todos`);
     if (todos.status === 404 || todos.json === null) {
-      record('GET /todos is deployed', false, { status: todos.status, body: todos.text });
+      record('GET /todos returned a board', false, { status: todos.status, body: todos.text });
       return {
         pass: false,
-        blocked: 'backend',
-        reason:
-          'GET /api/conversations/{id}/todos is absent (404 or non-JSON). PRs 1-2 of #583 are not ' +
-          'deployed on this host, so the panel correctly renders nothing. This is NOT a panel failure.',
-        failures: ['todo-board-backend-missing'],
+        blocked: toolsRan ? 'backend' : 'script',
+        reason: toolsRan
+          ? 'The task tools ran but GET /api/conversations/{id}/todos is absent (404 or non-JSON), so ' +
+            'PRs 1-2 of #583 are not deployed on this host and the panel correctly renders nothing. ' +
+            'This is NOT a panel failure.'
+          : 'The task tools did NOT run — `bulk-initialize` never reached the transcript — so the board ' +
+            'is empty for a reason that has nothing to do with the read path. Fix this script\'s ' +
+            'instruction chain (tool names / arg shapes) before drawing any conclusion about the backend.',
+        failures: ['todo-board-no-board'],
         steps,
       };
     }
-    record('GET /todos is deployed', true, { status: todos.status });
+    record('GET /todos returned a board', true, { status: todos.status });
 
-    // 4. The endpoint's payload must match what the client's types pin (camelCase, enum NAMES).
+    // 5. The endpoint's payload must match what the client's types pin (camelCase, enum NAMES).
     const wire = Array.isArray(todos.json && todos.json.tasks) ? todos.json.tasks : null;
     const first = wire && wire[0];
     record(
@@ -151,7 +171,7 @@ async (page) => {
       { first }
     );
 
-    // 5. The panel is mounted and shows the board.
+    // 6. The panel is mounted and shows the board.
     await tid('todo-panel').waitFor({ state: 'visible', timeout: 10000 });
     const board = await page.evaluate(() => {
       const text = (sel) => document.querySelector(sel)?.textContent?.trim() ?? null;
