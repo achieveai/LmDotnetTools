@@ -8,9 +8,9 @@ namespace LmStreaming.Sample.Tests;
 ///     <c>web_search</c>). Built-ins must follow the active mode's <c>enabledTools</c> exactly like
 ///     function tools — we never inject a built-in the mode didn't ask for. This guards the removal of
 ///     the old <c>isWorkspaceMode ? allBuiltInTools : Filter(...)</c> override in <c>Program.cs</c>,
-///     which force-kept <c>web_search</c> even when a mode (Workspace Agent) declared
-///     <c>enabledTools: []</c> — surfacing as a <c>web_search</c> tool prepended ahead of every real
-///     tool in the request.
+///     which force-kept <c>web_search</c> even when a mode's <c>enabledTools</c> named no web tool
+///     (Workspace Agent's list carries only the TaskManager family) — surfacing as a
+///     <c>web_search</c> tool prepended ahead of every real tool in the request.
 /// </summary>
 public sealed class ModeToolFilterTests
 {
@@ -29,9 +29,10 @@ public sealed class ModeToolFilterTests
     [Fact]
     public void EmptyEnabledTools_drops_all_builtins()
     {
-        // The Workspace-Agent case: enabledTools: [] means "no tools beyond what the mode curates
-        // (via the sandbox MCP gateway)". It MUST also yield no server-side built-ins — this is the
-        // exact behavior the removed override used to violate (it prepended web_search regardless).
+        // enabledTools: [] means "no tools at all" (the medical-knowledge shape; Workspace Agent
+        // has since moved to a task-family list). It MUST also yield no server-side built-ins —
+        // this is the exact behavior the removed override used to violate (it prepended web_search
+        // regardless).
         var result = ModeToolFilter.FilterBuiltInTools(WebSearchBuiltIns(), enabledTools: []);
 
         result.Should().BeNull();
@@ -70,13 +71,14 @@ public sealed class ModeToolFilterTests
         var workspace = SystemChatModes.GetById(SystemChatModes.WorkspaceAgentModeId);
 
         workspace.Should().NotBeNull();
-        // Function tools are curated via the sandbox MCP gateway, so the function allow-list is empty...
-        workspace!.EnabledTools.Should().BeEmpty();
-        // ...but web_search is declared on the dedicated built-in field, decoupled from enabledTools.
+        // Function tools are curated via the sandbox MCP gateway, so enabledTools carries only the
+        // shared todo-board family (no sample demo tools, and no web names either)...
+        workspace!.EnabledTools.Should().NotContain(["get_weather", "calculate", "web_search", "WebSearch"]);
+        // ...while web_search is declared on the dedicated built-in field, decoupled from enabledTools.
         workspace.EnabledBuiltInTools.Should().Contain("web_search");
 
         // Resolution mirrors Program.cs: EnabledBuiltInTools governs (falling back to EnabledTools only
-        // when null). So web_search survives even though enabledTools is empty.
+        // when null). So web_search survives even though enabledTools does not name it.
         var allowList = workspace.EnabledBuiltInTools ?? workspace.EnabledTools;
         var result = ModeToolFilter.FilterBuiltInTools(WebSearchBuiltIns(), allowList);
 
