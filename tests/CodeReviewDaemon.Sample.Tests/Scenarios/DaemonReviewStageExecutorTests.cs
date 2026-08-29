@@ -2639,13 +2639,19 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         // An ado run but only a 'github' publisher registered — a wiring defect, distinct from a fetch failure:
         // the listing is never even attempted because no reader exists for this provider at all.
-        using var fixture = Fixture.Ado(LoggerFactory, publishersOverride: [new FakeReviewCommentPublisher("github")]);
+        //
+        // The mismatched publisher is hoisted into a LOCAL and asserted on directly — fixture.GitHubPublisher
+        // is a separate, unused instance once publishersOverride is supplied (the ctor only defaults to it when
+        // no override is given), so asserting on the fixture property here would pass vacuously regardless of
+        // whether the listing ran.
+        var mismatchedPublisher = new FakeReviewCommentPublisher("github");
+        using var fixture = Fixture.Ado(LoggerFactory, publishersOverride: [mismatchedPublisher]);
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        fixture.GitHubPublisher.ListCallCount.Should().Be(0, "no publisher matched, so no listing was even attempted");
+        mismatchedPublisher.ListCallCount.Should().Be(0, "no publisher matched, so no listing was even attempted");
         PayloadOf<ReviewArtifactPayload>(fixture, run, DaemonReviewStageExecutor.ReviewArtifactKind)
             .CommentFetch.Should()
             .Be(CommentFetchOutcome.NoPublisher, "no comment reader is registered for this run's provider");
@@ -2660,7 +2666,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         const string preExistingFieldPayload =
             """{"ReviewText":"## Review\nLooks good.","RunId":"run-1","VariantId":"primary","ThreadId":null}""";
 
-        var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(preExistingFieldPayload);
+        var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(
+            preExistingFieldPayload,
+            DaemonReviewStageExecutor.PayloadOptions
+        );
 
         payload.Should().NotBeNull();
         payload!.CommentFetch.Should().BeNull("the field did not exist when this artifact was written");

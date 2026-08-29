@@ -3029,13 +3029,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// unchanged — this must never block a review.
     /// <para>
     /// The returned <see cref="CommentFetchOutcome"/> is what makes that "unchanged input" readable afterwards
-    /// (issue #576). All three degraded exits used to return <paramref name="reviewInput"/> untouched, so a run
-    /// with no comment block was four states at once — clean PR, empty success, failed fetch, unwired publisher
-    /// — and the caller's <c>existing-comments</c> signal collapsed them into one number that could not be read
-    /// back apart. Two of the four (<see cref="CommentFetchOutcome.Failed"/>,
-    /// <see cref="CommentFetchOutcome.NoPublisher"/>) are defects worth counting; the other two are health. The
-    /// dangerous-half behavior — <see cref="ReviewStore.MarkDedupContextLost"/> plus declining to post a blind
-    /// re-review on a fetch failure — is unchanged; this only adds visibility on top of it.
+    /// (issue #576). All three degraded exits used to return <paramref name="reviewInput"/> untouched and
+    /// nothing else, so a run with no comment block was four states at once — clean PR, empty success, failed
+    /// fetch, unwired publisher — with no signal anywhere to tell them apart. Two of the four
+    /// (<see cref="CommentFetchOutcome.Failed"/>, <see cref="CommentFetchOutcome.NoPublisher"/>) are defects
+    /// worth counting; the other two are health. The dangerous-half behavior —
+    /// <see cref="ReviewStore.MarkDedupContextLost"/> plus declining to post a blind re-review on a fetch
+    /// failure — is unchanged; this only adds visibility on top of it.
     /// </para>
     /// </summary>
     private async Task<(string ReviewInput, CommentFetchOutcome Outcome)> PrependExistingCommentsAsync(
@@ -5990,9 +5990,10 @@ internal sealed record ReviewArtifactPayload(
 /// <summary>
 /// How the existing-comment lookup ended for one run — the four exits
 /// <see cref="DaemonReviewStageExecutor.PrependExistingCommentsAsync"/> can return, kept apart because on main
-/// three of them used to collapse into the same brief and the same <c>existing-comments=0</c> signal: a
-/// genuinely clean PR, a provider fetch that threw, and a provider with no publisher wired all left
-/// <c>reviewInput</c> byte-identical and nothing downstream could tell them apart (issue #576).
+/// three of them used to collapse into the same brief: a genuinely clean PR, a provider fetch that threw, and
+/// a provider with no publisher wired all left <c>reviewInput</c> byte-identical, and the method returned only
+/// that string, so nothing downstream — not the brief, not a log, not a persisted field — could tell them
+/// apart (issue #576).
 /// <para>
 /// <see cref="Ok"/> and <see cref="Empty"/> are both healthy; <see cref="Failed"/> and <see cref="NoPublisher"/>
 /// are both defects, and different ones — the first points at the provider, the second at the daemon's own
