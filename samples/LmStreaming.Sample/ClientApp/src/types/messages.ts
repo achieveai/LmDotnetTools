@@ -480,8 +480,17 @@ export interface ConversationUsageMessage extends IMessage {
  */
 export interface ConversationTodoMessage extends IMessage {
   $type: typeof MessageType.ConversationTodo;
-  /** The conversation this board belongs to; lets a client drop a frame meant for another thread. */
-  threadId?: string;
+  /**
+   * The conversation this board belongs to; lets a client drop a frame meant for another thread.
+   *
+   * REQUIRED, matching the producer. `ConversationTodoMessage.ThreadId` is a `required string` in C#
+   * and `FromSnapshot` runs `ArgumentException.ThrowIfNullOrWhiteSpace` on it, so a frame with a
+   * blank thread id is never emitted — the publish is skipped and logged instead. Declaring this
+   * optional would be worse than inaccurate: `useTodoBoard` fails CLOSED on a missing id, so a
+   * consumer written against `threadId?` would be coding for a case that silently blanks the board
+   * and cannot actually occur. The runtime guard still checks it, because the wire is untrusted.
+   */
+  threadId: string;
   tasks: TodoTask[];
 }
 

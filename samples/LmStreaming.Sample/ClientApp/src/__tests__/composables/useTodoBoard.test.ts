@@ -30,6 +30,15 @@ function wireTasks() {
   ];
 }
 
+/**
+ * Builds a frame, deliberately OFF-CONTRACT where a test asks for it — hence the double cast.
+ *
+ * `ConversationTodoMessage.threadId` is now `string` (required), matching the C# producer, and
+ * `tasks` is `TodoTask[]`. The cast is not laziness about the type: these tests exist precisely to
+ * cover wire data that violates it, because the type describes what the producer promises and the
+ * guard exists for the case where something else is on the socket. Keep the cast narrow to this
+ * helper so production code never gains a way to build one of these.
+ */
 function frame(threadId: string | undefined, tasks: unknown = wireTasks()): ConversationTodoMessage {
   return { $type: 'conversation_todo', threadId, tasks } as unknown as ConversationTodoMessage;
 }
