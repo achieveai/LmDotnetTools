@@ -40,6 +40,7 @@ public class TaskManager : ITodoBoardSource
     {
         NotStarted,
         InProgress,
+        Blocked,
         Completed,
         Removed,
     }
@@ -55,17 +56,40 @@ public class TaskManager : ITodoBoardSource
     private const string InvalidStatusCode = "invalid_status";
     private const string NoteIndexOutOfRangeCode = "note_index_out_of_range";
     private const string InvalidActionCode = "invalid_action";
+    private const string TaskNotClaimableCode = "task_not_claimable";
+    private const string TaskBlockedCode = "task_blocked";
+    private const string TaskAlreadyClaimedCode = "task_already_claimed";
+    private const string TaskNotClaimedCode = "task_not_claimed";
+
+    /// <summary>
+    ///     A claim is a lease, not a hard lock (see the design doc's stale-row research): an
+    ///     agent that goes quiet without releasing its claim would otherwise wedge the task
+    ///     forever. Past this much time since <c>ClaimedAt</c>, a different agent's claim
+    ///     attempt is allowed to take the lease over rather than being refused. There is no
+    ///     background sweeper — staleness is derived on read, exactly when someone asks.
+    /// </summary>
+    private static readonly TimeSpan DefaultLeaseStaleAfter = TimeSpan.FromMinutes(15);
 
     private readonly ManagerState _state;
     private readonly object _sync = new();
+    private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _leaseStaleAfter;
 
     // Thread-safe collections
     public TaskManager()
-        : this(new ManagerState()) { }
+        : this(new ManagerState(), TimeProvider.System, DefaultLeaseStaleAfter) { }
 
-    private TaskManager(ManagerState state)
+    public TaskManager(TimeProvider timeProvider)
+        : this(new ManagerState(), timeProvider, DefaultLeaseStaleAfter) { }
+
+    public TaskManager(TimeProvider timeProvider, TimeSpan leaseStaleAfter)
+        : this(new ManagerState(), timeProvider, leaseStaleAfter) { }
+
+    private TaskManager(ManagerState state, TimeProvider timeProvider, TimeSpan leaseStaleAfter)
     {
         _state = state;
+        _timeProvider = timeProvider;
+        _leaseStaleAfter = leaseStaleAfter;
     }
 
     [Function(
@@ -78,6 +102,9 @@ Task breakdown philosophy:
 • Break down tasks when they're too complex to execute directly
 • Add tasks as you discover new requirements or dependencies
 • It's GOOD to modify the plan - it shows learning and adaptation
+• Been assigned a task that is more than one sitting? Break it into sub-items under it
+  with parentId — that is what sub-items are for, and it is how the board shows the
+  assignee is making progress rather than sitting on one opaque row.
 
 Hierarchy guidelines:
 • Level 1: Major phases or components
@@ -85,16 +112,25 @@ Hierarchy guidelines:
 • Level 3+: Specific implementation steps
 • Deeper nesting for complex subtasks that need isolation
 
+Assignment inheritance:
+• A sub-item added under an assigned task inherits that task's assignee automatically.
+• Pass assignee to override the inherited value for that sub-item alone.
+
 Examples:
 - Main phase: {""title"": ""Design API""}
 - Breakdown: {""title"": ""Define endpoints"", ""parentId"": ""1""}
 - Discovered task: {""title"": ""Add rate limiting"", ""parentId"": ""1""}  // Added after learning
-- Deep detail: {""title"": ""Validate JWT tokens"", ""parentId"": ""1.2.3""}"
+- Deep detail: {""title"": ""Validate JWT tokens"", ""parentId"": ""1.2.3""}
+- Override inherited assignee: {""title"": ""Review"", ""parentId"": ""1"", ""assignee"": ""rev-a""}"
     )]
     public FunctionResult AddTask(
         [Description("Task title/description")] string title,
         [Description("Parent task ID for nesting (e.g., '1', '1.2', '1.2.3'). Omit for main task")]
-            string? parentId = null
+            string? parentId = null,
+        [Description(
+            "Agent name to assign this task to. Omit on a subtask to inherit the parent task's assignee (if any); omit on a main task to leave it unassigned."
+        )]
+            string? assignee = null
     )
     {
         if (string.IsNullOrWhiteSpace(title))
@@ -116,6 +152,7 @@ Examples:
         lock (_sync)
         {
             PrivateTaskItem task;
+            var now = _timeProvider.GetUtcNow();
 
             // Adding a root task
             if (parentId == null)
@@ -127,6 +164,8 @@ Examples:
                     DisplayId = taskId.ToString(),
                     Title = title.Trim(),
                     Status = TaskStatus.NotStarted,
+                    Assignee = assignee,
+                    CreatedAt = now,
                 };
 
                 _state.RootTasks.Add(task);
@@ -140,7 +179,8 @@ Examples:
                 return error ?? FunctionResult.Error(TaskNotFoundCode, $"Error: Parent task '{parentId}' not found.");
             }
 
-            // Create subtask with hierarchical ID
+            // Create subtask with hierarchical ID. Assignee inherits from the parent unless
+            // explicitly overridden — the mechanism for "lead assigns, assignee breaks it down".
             var subtaskId = parentTask.NextSubTaskId++;
             task = new PrivateTaskItem
             {
@@ -149,6 +189,8 @@ Examples:
                 Title = title.Trim(),
                 Status = TaskStatus.NotStarted,
                 ParentId = parentTask.Id,
+                Assignee = assignee ?? parentTask.Assignee,
+                CreatedAt = now,
             };
 
             parentTask.SubTasks.Add(task);
@@ -208,6 +250,7 @@ Examples:
 
             var addedTasks = new List<string>();
             var errors = new List<string>();
+            var now = _timeProvider.GetUtcNow();
 
             foreach (var bulkItem in tasks)
             {
@@ -225,6 +268,7 @@ Examples:
                     DisplayId = mainTaskId.ToString(),
                     Title = bulkItem.Task.Trim(),
                     Status = TaskStatus.NotStarted,
+                    CreatedAt = now,
                 };
 
                 _state.RootTasks.Add(mainTask);
@@ -261,6 +305,8 @@ Examples:
                             Title = subTaskTitle.Trim(),
                             Status = TaskStatus.NotStarted,
                             ParentId = mainTask.Id,
+                            Assignee = mainTask.Assignee,
+                            CreatedAt = now,
                         };
 
                         mainTask.SubTasks.Add(subTask);
@@ -302,14 +348,21 @@ Examples:
         @"Mark progress to maintain momentum and focus on active work.
 
 Status progression philosophy:
-• 'not started' → 'in progress': Commitment to focus
-• 'in progress' → 'completed': Achievement and learning opportunity
+• 'not started' → 'in progress': Commitment to focus. Pass your agent name to claim it —
+  this is the same claim claim-task performs, just inline.
+• 'in progress' → 'completed': Achievement and learning opportunity. A task must be
+  claimed (in progress, with an assignee) before it can be completed — mark complete
+  the moment you finish, do not batch it up.
 • Any → 'removed': Conscious decision to pivot
 
-WIP (Work In Progress) Limits:
-• Keep only 1-3 tasks 'in progress' simultaneously
-• Complete or pause before starting new work
-• This prevents context switching and maintains quality
+Claim discipline:
+• One 'in progress' task per assignee. Claiming a second one — via claim-task or by
+  passing agent here — releases the first back to 'not started' and the tool result
+  says so; you are told, not silently corrected.
+• A claim is a lease, not a lock: an untouched claim goes stale after a while and
+  another agent's claim attempt can take it over.
+• To block or unblock a task, use block-task — this tool refuses a direct 'blocked'
+  status so blockedBy always stays in sync with the status.
 
 Before marking complete:
 • Add notes about what was learned
@@ -318,18 +371,22 @@ Before marking complete:
 
 Status meanings:
 • not started: Planned but not begun (the backlog)
-• in progress: Actively working (limit these!)
+• in progress: Actively working — claimed, one per assignee
 • completed: Done and learned from (celebrate!)
 • removed: No longer needed (adapted plan)
 
 Examples:
-- Start work: {""taskId"": ""1"", ""status"": ""in progress""}
+- Claim and start: {""taskId"": ""1"", ""status"": ""in progress"", ""agent"": ""rev-a""}
 - Finish task: {""taskId"": ""1.3"", ""status"": ""completed""}
 - Abandon approach: {""taskId"": ""2.1"", ""status"": ""removed""}"
     )]
     public FunctionResult UpdateTask(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
-        [Description("New status: not started|in progress|completed|removed")] string status = "not started"
+        [Description("New status: not started|in progress|completed|removed")] string status = "not started",
+        [Description(
+            "Your agent name. Passing it on an 'in progress' transition claims the task (see claim-task); leave it null to just flip status without touching the claim."
+        )]
+            string? agent = null
     )
     {
         lock (_sync)
@@ -350,20 +407,391 @@ Examples:
                 );
             }
 
+            if (newStatus == TaskStatus.Blocked)
+            {
+                return FunctionResult.Error(
+                    InvalidStatusCode,
+                    "Error: Use block-task to set or clear blockedBy. update-task cannot set 'blocked' directly."
+                );
+            }
+
+            var now = _timeProvider.GetUtcNow();
+
+            if (newStatus == TaskStatus.InProgress && agent != null)
+            {
+                var claimError = ApplyClaim(targetTask, agent, now, out var claimNote);
+                if (claimError != null)
+                {
+                    return claimError.Value;
+                }
+
+                return $"Updated task {targetTask.DisplayId} status to 'in progress'.{claimNote}";
+            }
+
+            if (newStatus == TaskStatus.Completed)
+            {
+                if (targetTask.Status != TaskStatus.InProgress || targetTask.Assignee == null)
+                {
+                    return FunctionResult.Error(
+                        TaskNotClaimedCode,
+                        $"Error: Task {targetTask.DisplayId} must be claimed and in progress before it can be completed. Use claim-task (or update-task with an agent) first."
+                    );
+                }
+
+                targetTask.Status = TaskStatus.Completed;
+                targetTask.CompletedAt = now;
+                var unblocked = AutoUnblockDependentsOf(targetTask.DisplayId);
+                var unblockedSuffix =
+                    unblocked.Count > 0 ? $" Unblocked: {string.Join(", ", unblocked)}." : string.Empty;
+
+                return $"Updated task {targetTask.DisplayId} status to 'completed'.{unblockedSuffix}";
+            }
+
+            // NotStarted or Removed via the plain path, and InProgress with no agent (legacy,
+            // status-only transition that leaves the claim fields untouched).
             targetTask.Status = newStatus;
+            if (newStatus != TaskStatus.InProgress)
+            {
+                // The lease is only meaningful while the task is actively in progress.
+                targetTask.ClaimedAt = null;
+            }
 
             return $"Updated task {targetTask.DisplayId} status to '{NormalizeStatusText(newStatus)}'.";
         }
     }
 
-    public FunctionResult UpdateTask(int taskId, string status = "not started")
+    public FunctionResult UpdateTask(int taskId, string status = "not started", string? agent = null)
     {
-        return UpdateTask(taskId.ToString(), status);
+        return UpdateTask(taskId.ToString(), status, agent);
     }
 
-    public FunctionResult UpdateTask(int taskId, int subtaskId, string status = "not started")
+    public FunctionResult UpdateTask(int taskId, int subtaskId, string status = "not started", string? agent = null)
     {
-        return UpdateTask($"{taskId}.{subtaskId}", status);
+        return UpdateTask($"{taskId}.{subtaskId}", status, agent);
+    }
+
+    [Function(
+        "claim-task",
+        @"Claim a task by name before you start working on it — the explicit
+NotStarted -> InProgress(by name) step the board uses to know who owns what right now.
+
+Why claim, not just update-task:
+• Records your identity as the active holder, and stamps when the claim began.
+• Enforced one-in-progress-per-assignee: claiming a second task releases your first
+  one back to 'not started' — you will see this in the result, it is not silent.
+• Refuses tasks with an unresolved blockedBy — resolve the blocker first.
+• A claim is a lease. If it goes stale (untouched too long) another agent's claim
+  attempt takes it over instead of being refused forever — the result says whose
+  stale lease was taken.
+
+Claiming your own already-claimed task just refreshes the lease (use this like a
+heartbeat on long work instead of letting it look abandoned).
+
+Examples:
+- First claim: {""taskId"": ""3"", ""agent"": ""rev-a""}
+- Re-claim / heartbeat: {""taskId"": ""3"", ""agent"": ""rev-a""}  // same agent, refreshes ClaimedAt"
+    )]
+    public FunctionResult ClaimTask(
+        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
+        [Description("Your agent name — recorded as the claim holder")] string agent
+    )
+    {
+        if (string.IsNullOrWhiteSpace(agent))
+        {
+            return FunctionResult.Error(InvalidArgumentsCode, "Error: agent cannot be empty.");
+        }
+
+        lock (_sync)
+        {
+            var (task, error) = FindTaskByStringId(taskId);
+            if (task == null)
+            {
+                return error!.Value;
+            }
+
+            var now = _timeProvider.GetUtcNow();
+            var trimmedAgent = agent.Trim();
+
+            if (
+                task.Status == TaskStatus.InProgress
+                && string.Equals(task.Assignee, trimmedAgent, StringComparison.Ordinal)
+            )
+            {
+                task.ClaimedAt = now;
+                return $"Task {task.DisplayId} claim refreshed by {trimmedAgent}.";
+            }
+
+            var claimError = ApplyClaim(task, trimmedAgent, now, out var note);
+            if (claimError != null)
+            {
+                return claimError.Value;
+            }
+
+            return $"Task {task.DisplayId} claimed by {trimmedAgent}.{note}";
+        }
+    }
+
+    [Function(
+        "assign-task",
+        @"Dispatch a task to another agent by name — the lead's half of assign-then-claim.
+
+Assignment is not a claim: it records whose work this is without touching status.
+The assignee should claim-task it when they start (claiming stamps the lease and
+enforces one-in-progress-per-assignee), and break it into sub-items with add-task
+if it is more than one sitting — sub-items created under an assigned task inherit
+the assignee automatically.
+
+Examples:
+- Dispatch: {""taskId"": ""3"", ""assignee"": ""rev-a""}
+- Reassign: {""taskId"": ""3"", ""assignee"": ""rev-b""}  // e.g. rev-a's lease went stale"
+    )]
+    public FunctionResult AssignTask(
+        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
+        [Description("Agent name to assign this task to")] string assignee
+    )
+    {
+        if (string.IsNullOrWhiteSpace(assignee))
+        {
+            return FunctionResult.Error(InvalidArgumentsCode, "Error: assignee cannot be empty.");
+        }
+
+        lock (_sync)
+        {
+            var (task, error) = FindTaskByStringId(taskId);
+            if (task == null)
+            {
+                return error!.Value;
+            }
+
+            if (task.Status is TaskStatus.Completed or TaskStatus.Removed)
+            {
+                return FunctionResult.Error(
+                    TaskNotClaimableCode,
+                    $"Error: Task {task.DisplayId} is {NormalizeStatusText(task.Status)} and cannot be (re)assigned."
+                );
+            }
+
+            task.Assignee = assignee.Trim();
+            return $"Assigned task {task.DisplayId} to {task.Assignee}. "
+                + "They should claim it before starting, and break it into sub-items if it is more than one sitting.";
+        }
+    }
+
+    [Function(
+        "block-task",
+        @"Set or clear the tasks blocking this one from proceeding — the flat blocked_by
+list the board renders as 'blocked by 1, 2'.
+
+• Passing one or more task IDs marks this task Blocked and records them as the reason.
+  A blocked task cannot be claimed until every listed blocker is completed.
+• Passing an empty list (or omitting blockedBy) clears the block and returns the task
+  to 'not started'.
+• Completing a blocking task automatically removes it from every dependent's
+  blockedBy, and unblocks the dependent (back to 'not started') once none remain —
+  you do not need to call this again just to clear a resolved blocker.
+
+Examples:
+- Block on a dependency: {""taskId"": ""3"", ""blockedBy"": [""1""]}
+- Block on several: {""taskId"": ""4"", ""blockedBy"": [""1"", ""2""]}
+- Clear the block: {""taskId"": ""3"", ""blockedBy"": []}"
+    )]
+    public FunctionResult BlockTask(
+        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
+        [Description("Task IDs this task is blocked on. Pass an empty list to clear the block.")]
+            List<string>? blockedBy = null
+    )
+    {
+        lock (_sync)
+        {
+            var (task, error) = FindTaskByStringId(taskId);
+            if (task == null)
+            {
+                return error!.Value;
+            }
+
+            if (task.Status is TaskStatus.Completed or TaskStatus.Removed)
+            {
+                return FunctionResult.Error(
+                    TaskNotClaimableCode,
+                    $"Error: Task {task.DisplayId} is {NormalizeStatusText(task.Status)}; blockedBy no longer applies."
+                );
+            }
+
+            var ids = (blockedBy ?? [])
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim())
+                .Distinct()
+                .ToList();
+
+            if (ids.Count == 0)
+            {
+                task.BlockedBy.Clear();
+                if (task.Status == TaskStatus.Blocked)
+                {
+                    task.Status = TaskStatus.NotStarted;
+                }
+
+                return $"Cleared blockedBy on task {task.DisplayId}.";
+            }
+
+            if (ids.Contains(task.DisplayId))
+            {
+                return FunctionResult.Error(
+                    InvalidArgumentsCode,
+                    $"Error: Task {task.DisplayId} cannot be listed as its own blocker."
+                );
+            }
+
+            foreach (var id in ids)
+            {
+                var (blocker, blockerError) = FindTaskByStringId(id);
+                if (blocker == null)
+                {
+                    return blockerError
+                        ?? FunctionResult.Error(TaskNotFoundCode, $"Error: Blocking task '{id}' not found.");
+                }
+            }
+
+            task.BlockedBy.Clear();
+            task.BlockedBy.AddRange(ids);
+            task.Status = TaskStatus.Blocked;
+            // Not being actively worked while blocked; a live lease no longer means anything.
+            task.ClaimedAt = null;
+
+            return $"Task {task.DisplayId} is now blocked by {string.Join(", ", ids)}.";
+        }
+    }
+
+    /// <summary>
+    ///     Shared claim logic for <see cref="ClaimTask" /> and <see cref="UpdateTask(string, string, string?)" />
+    ///     when it is asked to move a task to <see cref="TaskStatus.InProgress" /> on behalf of a
+    ///     named agent. Must be called while holding <see cref="_sync" />.
+    /// </summary>
+    private FunctionResult? ApplyClaim(PrivateTaskItem task, string agent, DateTimeOffset now, out string note)
+    {
+        note = string.Empty;
+
+        if (task.Status is TaskStatus.Completed or TaskStatus.Removed)
+        {
+            return FunctionResult.Error(
+                TaskNotClaimableCode,
+                $"Error: Task {task.DisplayId} is {NormalizeStatusText(task.Status)} and cannot be claimed."
+            );
+        }
+
+        if (GetUnresolvedBlockers(task) is { Count: > 0 } unresolved)
+        {
+            return FunctionResult.Error(
+                TaskBlockedCode,
+                $"Error: Task {task.DisplayId} is blocked by {string.Join(", ", unresolved)}. Resolve the blocker(s) first."
+            );
+        }
+
+        if (
+            task.Status == TaskStatus.InProgress
+            && task.Assignee != null
+            && !string.Equals(task.Assignee, agent, StringComparison.Ordinal)
+        )
+        {
+            var claimedAt = task.ClaimedAt ?? task.CreatedAt ?? now;
+            var elapsed = now - claimedAt;
+            if (elapsed < _leaseStaleAfter)
+            {
+                return FunctionResult.Error(
+                    TaskAlreadyClaimedCode,
+                    $"Error: Task {task.DisplayId} is already claimed by {task.Assignee} ({FormatElapsed(elapsed)} ago); its lease is not yet stale."
+                );
+            }
+
+            note += $" Took over a stale lease from {task.Assignee} (idle {FormatElapsed(elapsed)}).";
+        }
+
+        // One InProgress task per assignee: claiming a second releases the first, and the
+        // released task keeps its assignee — it is still that agent's task, just not the
+        // active one right now.
+        var previous = FindOtherInProgressTaskFor(agent, task);
+        if (previous != null)
+        {
+            previous.Status = TaskStatus.NotStarted;
+            previous.ClaimedAt = null;
+            note +=
+                $" Released task {previous.DisplayId} back to 'not started' ({agent} can only have one active task).";
+        }
+
+        task.Status = TaskStatus.InProgress;
+        task.Assignee = agent;
+        task.ClaimedAt = now;
+        task.CreatedAt ??= now;
+        return null;
+    }
+
+    private PrivateTaskItem? FindOtherInProgressTaskFor(string agent, PrivateTaskItem excluding)
+    {
+        return GetAllTasksFlat(_state.RootTasks)
+            .FirstOrDefault(t =>
+                t != excluding
+                && t.Status == TaskStatus.InProgress
+                && string.Equals(t.Assignee, agent, StringComparison.Ordinal)
+            );
+    }
+
+    /// <summary>
+    ///     A blocker that no longer exists (deleted after the blockedBy reference was recorded)
+    ///     is treated as resolved rather than an unliftable, permanent block.
+    /// </summary>
+    private List<string> GetUnresolvedBlockers(PrivateTaskItem task)
+    {
+        var unresolved = new List<string>();
+        foreach (var id in task.BlockedBy)
+        {
+            var (blocker, _) = FindTaskByStringId(id);
+            if (blocker != null && blocker.Status != TaskStatus.Completed)
+            {
+                unresolved.Add(id);
+            }
+        }
+
+        return unresolved;
+    }
+
+    private List<string> AutoUnblockDependentsOf(string completedTaskId)
+    {
+        var unblocked = new List<string>();
+        foreach (var candidate in GetAllTasksFlat(_state.RootTasks))
+        {
+            if (!candidate.BlockedBy.Remove(completedTaskId))
+            {
+                continue;
+            }
+
+            if (candidate.BlockedBy.Count == 0 && candidate.Status == TaskStatus.Blocked)
+            {
+                candidate.Status = TaskStatus.NotStarted;
+                unblocked.Add(candidate.DisplayId);
+            }
+        }
+
+        return unblocked;
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed)
+    {
+        if (elapsed < TimeSpan.Zero)
+        {
+            elapsed = TimeSpan.Zero;
+        }
+
+        if (elapsed.TotalMinutes < 1)
+        {
+            return $"{(int)elapsed.TotalSeconds}s";
+        }
+
+        if (elapsed.TotalHours < 1)
+        {
+            return $"{(int)elapsed.TotalMinutes}m";
+        }
+
+        return $"{(int)elapsed.TotalHours}h {elapsed.Minutes}m";
     }
 
     [Function(
@@ -721,10 +1149,13 @@ Use regularly to:
 • Spot imbalances (too many tasks at one level)
 • Choose the next task based on dependencies and priority
 • Celebrate completed work and learn from it
+• See who owns what: an assignee renders as [@name], a blocked task shows what it is
+  waiting on, and an in-progress task shows how long it has been claimed
 
 Filtering strategies:
 • status='in progress' - Focus on current work (WIP limit)
 • status='not started' - Plan next moves
+• status='blocked' - See what is stuck and on whom it is waiting
 • mainOnly=true - See the big picture without details
 • No filter - Full context for major decisions
 
@@ -733,14 +1164,17 @@ Healthy patterns:
 • Regular completed tasks (momentum)
 • Evolving 'not started' list (adaptation)
 • Notes on completed tasks (learning capture)
+• No task claimed and idle for long — a stale-looking elapsed time is worth a
+  claim-task heartbeat or a hand-off
 
 Examples:
 - Next action: {""status"": ""not started"", ""mainOnly"": false}
 - WIP check: {""status"": ""in progress""}
+- What's stuck: {""status"": ""blocked""}
 - Overview: {""mainOnly"": true}"
     )]
     public FunctionResult ListTasks(
-        [Description("Filter by status: not started|in progress|completed|removed")] string? status = null,
+        [Description("Filter by status: not started|in progress|blocked|completed|removed")] string? status = null,
         [Description("Show only main tasks (exclude subtasks)")] bool mainOnly = false
     )
     {
@@ -751,7 +1185,7 @@ Examples:
             {
                 return FunctionResult.Error(
                     InvalidStatusCode,
-                    "Error: Invalid status filter. Use: not started, in progress, completed, removed."
+                    "Error: Invalid status filter. Use: not started, in progress, blocked, completed, removed."
                 );
             }
 
@@ -764,13 +1198,15 @@ Examples:
         lock (_sync)
         {
             var sb = new StringBuilder();
+            var now = _timeProvider.GetUtcNow();
 
             // Count tasks by status for summary
             var allTasks = GetAllTasksFlat(_state.RootTasks);
             var notStartedCount = allTasks.Count(t => t.Status == TaskStatus.NotStarted);
             var inProgressCount = allTasks.Count(t => t.Status == TaskStatus.InProgress);
+            var blockedCount = allTasks.Count(t => t.Status == TaskStatus.Blocked);
             var completedCount = allTasks.Count(t => t.Status == TaskStatus.Completed);
-            var totalActive = notStartedCount + inProgressCount;
+            var totalActive = notStartedCount + inProgressCount + blockedCount;
 
             // Beautiful header with task summary
             AppendLine(sb, "# 📋 Task List");
@@ -779,7 +1215,7 @@ Examples:
                 AppendLine(sb);
                 AppendLine(
                     sb,
-                    $"**Status**: {inProgressCount} in progress | {notStartedCount} pending | {completedCount} completed"
+                    $"**Status**: {inProgressCount} in progress | {notStartedCount} pending | {blockedCount} blocked | {completedCount} completed"
                 );
                 AppendLine(sb, $"**Total**: {totalActive} active tasks");
             }
@@ -791,7 +1227,7 @@ Examples:
             var body = new StringBuilder();
             foreach (var task in _state.RootTasks)
             {
-                AppendTaskMarkdown(body, task, 0, filterStatus, mainOnly);
+                AppendTaskMarkdown(body, task, 0, now, filterStatus, mainOnly);
             }
 
             // An empty list still gets the header — a bare "No tasks found." gives the model no
@@ -1148,6 +1584,7 @@ Examples:
         StringBuilder sb,
         PrivateTaskItem task,
         int level,
+        DateTimeOffset now,
         TaskStatus? filterStatus = null,
         bool mainOnly = false
     )
@@ -1162,9 +1599,18 @@ Examples:
 
         // Use hierarchical numbering with proper formatting
         var taskNumber = string.IsNullOrEmpty(task.DisplayId) ? task.Id.ToString() : task.DisplayId;
+        var removedSuffix = task.Status == TaskStatus.Removed ? " (removed)" : string.Empty;
+        var assigneeSuffix = task.Assignee != null ? $" [@{task.Assignee}]" : string.Empty;
+        var statusExtra = task.Status switch
+        {
+            TaskStatus.Blocked when task.BlockedBy.Count > 0 => $" (blocked by {string.Join(", ", task.BlockedBy)})",
+            TaskStatus.InProgress when task.ClaimedAt.HasValue => $" ({FormatElapsed(now - task.ClaimedAt.Value)})",
+            _ => string.Empty,
+        };
+
         AppendLine(
             sb,
-            $"{indent}{statusSymbol} {taskNumber}. {task.Title}{(task.Status == TaskStatus.Removed ? " (removed)" : string.Empty)}"
+            $"{indent}{statusSymbol} {taskNumber}. {task.Title}{removedSuffix}{assigneeSuffix}{statusExtra}"
         );
 
         List<string> notesCopy;
@@ -1192,7 +1638,7 @@ Examples:
 
             foreach (var sub in subtasksCopy)
             {
-                AppendTaskMarkdown(sb, sub, level + 1, filterStatus, mainOnly);
+                AppendTaskMarkdown(sb, sub, level + 1, now, filterStatus, mainOnly);
             }
         }
     }
@@ -1247,14 +1693,33 @@ Examples:
 
     public static TaskManager DeserializeTasks(JsonElement json)
     {
+        return DeserializeTasks(json, TimeProvider.System);
+    }
+
+    /// <summary>
+    ///     Overload that accepts a <see cref="TimeProvider" /> so callers — chiefly tests —
+    ///     can round-trip a persisted board and then control the clock the rehydrated instance
+    ///     uses for lease-staleness and elapsed rendering.
+    /// </summary>
+    public static TaskManager DeserializeTasks(JsonElement json, TimeProvider timeProvider)
+    {
         var state = json.Deserialize<ManagerState>();
-        return state == null ? new TaskManager() : new TaskManager(state);
+        return state == null
+            ? new TaskManager(timeProvider)
+            : new TaskManager(state, timeProvider, DefaultLeaseStaleAfter);
     }
 
     public static TaskManager DeserializeTasks(string json)
     {
+        return DeserializeTasks(json, TimeProvider.System);
+    }
+
+    public static TaskManager DeserializeTasks(string json, TimeProvider timeProvider)
+    {
         var tasks = JsonSerializer.Deserialize<ManagerState>(json);
-        return tasks == null ? new TaskManager() : new TaskManager(tasks);
+        return tasks == null
+            ? new TaskManager(timeProvider)
+            : new TaskManager(tasks, timeProvider, DefaultLeaseStaleAfter);
     }
 
     private string GetTaskCounts(string countType)
@@ -1291,6 +1756,7 @@ Examples:
         {
             TaskStatus.NotStarted => "[ ]",
             TaskStatus.InProgress => "[-]",
+            TaskStatus.Blocked => "[!]",
             TaskStatus.Completed => "[x]",
             TaskStatus.Removed => "[~]",
             _ => "[ ]",
@@ -1320,6 +1786,10 @@ Examples:
             case "doing":
                 status = TaskStatus.InProgress;
                 return true;
+            case "blocked":
+            case "block":
+                status = TaskStatus.Blocked;
+                return true;
             case "completed":
             case "done":
             case "complete":
@@ -1343,6 +1813,7 @@ Examples:
         {
             TaskStatus.NotStarted => "not started",
             TaskStatus.InProgress => "in progress",
+            TaskStatus.Blocked => "blocked",
             TaskStatus.Completed => "completed",
             TaskStatus.Removed => "removed",
             _ => "not started",
@@ -1354,6 +1825,23 @@ Examples:
         public string Task { get; set; } = string.Empty;
         public List<string> SubTasks { get; set; } = [];
         public List<string> Notes { get; set; } = [];
+    }
+
+    /// <summary>
+    ///     When a task was created, when it was last claimed, and when it was completed. All
+    ///     three are optional so a task created before this type existed — or one whose lease
+    ///     was never touched — deserializes with the fields it never had simply absent.
+    /// </summary>
+    public sealed record TaskTimestamps
+    {
+        [JsonPropertyName("createdAt")]
+        public DateTimeOffset? CreatedAt { get; init; }
+
+        [JsonPropertyName("claimedAt")]
+        public DateTimeOffset? ClaimedAt { get; init; }
+
+        [JsonPropertyName("completedAt")]
+        public DateTimeOffset? CompletedAt { get; init; }
     }
 
     public record TaskItem
@@ -1372,6 +1860,17 @@ Examples:
 
         [JsonPropertyName("notes")]
         public required IList<string> Notes { get; init; } = ImmutableList<string>.Empty;
+
+        // Everything below is additive and optional: a list persisted before this field existed
+        // deserializes with it simply absent, and round-trips unchanged.
+        [JsonPropertyName("assignee")]
+        public string? Assignee { get; init; }
+
+        [JsonPropertyName("blockedBy")]
+        public IList<string> BlockedBy { get; init; } = ImmutableList<string>.Empty;
+
+        [JsonPropertyName("times")]
+        public TaskTimestamps? Times { get; init; }
     }
 
     private sealed record PrivateTaskItem
@@ -1400,8 +1899,36 @@ Examples:
         [JsonPropertyName("nextSubTaskId")]
         public int NextSubTaskId { get; set; } = 1;
 
+        // Additive, optional fields — missing on any pre-existing serialized task, and default
+        // to null/empty rather than requiring a value, so old-shape JSON keeps loading.
+        [JsonPropertyName("assignee")]
+        public string? Assignee { get; set; }
+
+        [JsonPropertyName("blockedBy")]
+        public List<string> BlockedBy { get; set; } = [];
+
+        [JsonPropertyName("createdAt")]
+        public DateTimeOffset? CreatedAt { get; set; }
+
+        [JsonPropertyName("claimedAt")]
+        public DateTimeOffset? ClaimedAt { get; set; }
+
+        [JsonPropertyName("completedAt")]
+        public DateTimeOffset? CompletedAt { get; set; }
+
         public TaskItem ToPublic()
         {
+            TaskTimestamps? times = null;
+            if (CreatedAt is not null || ClaimedAt is not null || CompletedAt is not null)
+            {
+                times = new TaskTimestamps
+                {
+                    CreatedAt = CreatedAt,
+                    ClaimedAt = ClaimedAt,
+                    CompletedAt = CompletedAt,
+                };
+            }
+
             return new TaskItem
             {
                 Id = string.IsNullOrEmpty(DisplayId) ? Id.ToString() : DisplayId, // Use DisplayId for hierarchical IDs
@@ -1409,6 +1936,9 @@ Examples:
                 Status = Status,
                 Notes = [.. Notes],
                 SubTasks = [.. SubTasks.Select(st => st.ToPublic())],
+                Assignee = Assignee,
+                BlockedBy = [.. BlockedBy],
+                Times = times,
             };
         }
     }

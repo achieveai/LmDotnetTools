@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using FluentAssertions;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -216,8 +217,9 @@ public class TaskManagerTests
         var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
 
-        // Act
-        var result1 = _taskManager.UpdateTask(taskId, status: "in progress").Text;
+        // Act - claiming (passing agent) is now how 'in progress' records who is doing the
+        // work; completing then requires that claim (PR4's claim discipline).
+        var result1 = _taskManager.UpdateTask(taskId, status: "in progress", agent: "tester").Text;
         var result2 = _taskManager.UpdateTask(taskId, status: "completed").Text;
 
         // Assert
@@ -236,6 +238,7 @@ public class TaskManagerTests
         var parentId = ExtractTaskId(parentResult);
         var subtaskResult = _taskManager.AddTask("Subtask", parentId).Text;
         var subtaskId = ExtractTaskId(subtaskResult);
+        _taskManager.ClaimTask($"{parentId}.{subtaskId}", "tester");
 
         // Act
         var result = _taskManager.UpdateTask(parentId, subtaskId, "completed").Text;
@@ -283,6 +286,12 @@ public class TaskManagerTests
         {
             var addResult = _taskManager.AddTask($"Task for {input}").Text;
             var taskId = ExtractTaskId(addResult);
+
+            // A 'completed' target now requires the task be claimed first.
+            if (expected == "completed")
+            {
+                _taskManager.ClaimTask(taskId, "tester");
+            }
 
             // Act
             var result = _taskManager.UpdateTask(taskId, status: input).Text;
@@ -526,6 +535,7 @@ public class TaskManagerTests
         var task3Id = ExtractTaskId(task3Result);
 
         _taskManager.UpdateTask(task1Id, status: "in progress");
+        _taskManager.ClaimTask(task2Id, "tester");
         _taskManager.UpdateTask(task2Id, status: "completed");
 
         // Act
@@ -600,6 +610,7 @@ public class TaskManagerTests
         var task2Id = ExtractTaskId(task2Result);
         _taskManager.AddTask("Subtask", task1Id);
 
+        _taskManager.ClaimTask(task1Id, "tester");
         _taskManager.UpdateTask(task1Id, status: "completed");
         _taskManager.UpdateTask(task2Id, status: "removed");
 
@@ -704,9 +715,13 @@ public class TaskManagerTests
     [Fact]
     public async Task UpdateTask_Concurrent_ShouldBeThreadSafe()
     {
-        // Arrange
+        // Arrange - claimed up front so a concurrent 'completed' racing a concurrent
+        // 'not started' has a real chance to succeed rather than always hitting the new
+        // claim-required-to-complete rule; that rule tripping on some interleavings is
+        // expected (see below) and not itself a thread-safety failure.
         var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
+        _taskManager.ClaimTask(taskId, "tester");
         var updateCount = 50;
         var tasks = new List<Task<string>>();
 
@@ -724,9 +739,12 @@ public class TaskManagerTests
 
         var results = await Task.WhenAll(tasks);
 
-        // Assert
+        // Assert - every call returns cleanly (no exception, no corrupted/blank text). A
+        // 'completed' call that lands while a concurrent writer has the task at 'not started'
+        // legitimately reports the claim-required error instead of a silent, wrong success —
+        // that is the invariant under test here, not a flake.
         results.Should().HaveCount(updateCount);
-        results.Should().OnlyContain(r => r.Contains("Updated task"));
+        results.Should().OnlyContain(r => r.Contains("Updated task") || r.Contains("must be claimed"));
 
         // Final state should be one of the valid statuses
         var finalTask = _taskManager.GetTask(taskId).Text;
@@ -935,11 +953,16 @@ public class TaskManagerTests
         var result = _taskManager.ListTasks().Text;
 
         // Assert - LF throughout, so this doubles as the guard against
-        // Environment.NewLine leaking CRLF into tool output on Windows.
+        // Environment.NewLine leaking CRLF into tool output on Windows. The status line now
+        // names blocked tasks explicitly (0 here) rather than folding them silently into
+        // "pending" — PR4's coordination fields (Blocked, assignee, blockedBy, elapsed) change
+        // this rendering even when a tree, like this one, never touches them. This byte-exact
+        // string and docs/features/todo-manager/requirements.md's "Worked Example" must be kept
+        // in sync — see the CRITICAL sync note there.
         var expected =
             "# 📋 Task List\n"
             + "\n"
-            + "**Status**: 1 in progress | 2 pending | 1 completed\n"
+            + "**Status**: 1 in progress | 2 pending | 0 blocked | 1 completed\n"
             + "**Total**: 3 active tasks\n"
             + "\n"
             + "[-] 1. Design API\n"
@@ -950,6 +973,36 @@ public class TaskManagerTests
             + "    [ ] 1.1.1. Validate JWT\n"
             + "  [~] 1.2. Draft schema (removed)\n"
             + "[ ] 2. Ship it";
+
+        result.Should().Be(expected);
+    }
+
+    [Fact]
+    public void ListTasks_RendersAssigneeBlockedByAndElapsed_ForTheNewCoordinationFields()
+    {
+        // Arrange - a fixed clock so the elapsed suffix is deterministic. One tree exercising
+        // every new rendering path: an assignee tag, a claimed-and-elapsed in-progress row, and
+        // a blocked row naming its blocker.
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var manager = new TaskManager(clock);
+        manager.AddTask("Wire the SSE endpoint");
+        manager.AddTask("Publish the frame");
+        manager.ClaimTask("1", "rev-a");
+        clock.Advance(TimeSpan.FromMinutes(4));
+        manager.BlockTask("2", ["1"]);
+
+        // Act
+        var result = manager.ListTasks().Text;
+
+        // Assert
+        var expected =
+            "# 📋 Task List\n"
+            + "\n"
+            + "**Status**: 1 in progress | 0 pending | 1 blocked | 0 completed\n"
+            + "**Total**: 2 active tasks\n"
+            + "\n"
+            + "[-] 1. Wire the SSE endpoint [@rev-a] (4m)\n"
+            + "[!] 2. Publish the frame (blocked by 1)";
 
         result.Should().Be(expected);
     }
@@ -1348,6 +1401,9 @@ public class TaskManagerTests
     [InlineData("list-notes", "task_not_found")]
     [InlineData("list-tasks", "invalid_status")]
     [InlineData("search-tasks", "invalid_args")]
+    [InlineData("assign-task", "invalid_args")]
+    [InlineData("claim-task", "invalid_args")]
+    [InlineData("block-task", "task_not_found")]
     public void EveryTool_ReportsItsDomainFailureWithACode(string tool, string expectedErrorCode)
     {
         var manager = SeededManager();
@@ -1376,6 +1432,9 @@ public class TaskManagerTests
     [InlineData("list-notes")]
     [InlineData("list-tasks")]
     [InlineData("search-tasks")]
+    [InlineData("assign-task")]
+    [InlineData("claim-task")]
+    [InlineData("block-task")]
     public void EveryTool_LeavesItsSuccessUnmarked(string tool)
     {
         var manager = SeededManager();
@@ -1439,7 +1498,9 @@ public class TaskManagerTests
     {
         var functions = new TypeFunctionProvider(new TaskManager()).GetFunctions().ToList();
 
-        functions.Should().HaveCount(11);
+        // The original eleven, plus assign-task, claim-task and block-task from PR4's
+        // coordination fields.
+        functions.Should().HaveCount(14);
         functions.Should().OnlyContain(f => f.Contract.ReturnType == typeof(string));
     }
 
@@ -1466,6 +1527,9 @@ public class TaskManagerTests
             "list-notes" => manager.ListNotes("999"),
             "list-tasks" => manager.ListTasks("sideways"),
             "search-tasks" => manager.SearchTasks(),
+            "assign-task" => manager.AssignTask("1", string.Empty),
+            "claim-task" => manager.ClaimTask("1", string.Empty),
+            "block-task" => manager.BlockTask("1", ["999"]),
             _ => throw new ArgumentOutOfRangeException(nameof(tool), tool, "unknown tool"),
         };
     }
@@ -1476,7 +1540,7 @@ public class TaskManagerTests
         {
             "add-task" => manager.AddTask("Another task"),
             "bulk-initialize" => manager.BulkInitialize([new TaskManager.BulkTaskItem { Task = "Bulk task" }]),
-            "update-task" => manager.UpdateTask("1", "completed"),
+            "update-task" => ClaimThenComplete(manager),
             "delete-task" => manager.DeleteTask("1"),
             "get-task" => manager.GetTask("1"),
             "add-note" => manager.AddNote("1", noteText: "text"),
@@ -1485,8 +1549,27 @@ public class TaskManagerTests
             "list-notes" => manager.ListNotes("1"),
             "list-tasks" => manager.ListTasks(),
             "search-tasks" => manager.SearchTasks("Seed"),
+            "assign-task" => manager.AssignTask("1", "rev-a"),
+            "claim-task" => manager.ClaimTask("1", "rev-a"),
+            "block-task" => BlockOnASecondTask(manager),
             _ => throw new ArgumentOutOfRangeException(nameof(tool), tool, "unknown tool"),
         };
+    }
+
+    /// <summary>
+    ///     update-task can no longer complete a task that was never claimed (PR4's claim
+    ///     discipline), so its success path here has to claim first.
+    /// </summary>
+    private static FunctionResult ClaimThenComplete(TaskManager manager)
+    {
+        _ = manager.ClaimTask("1", "tester");
+        return manager.UpdateTask("1", "completed");
+    }
+
+    private static FunctionResult BlockOnASecondTask(TaskManager manager)
+    {
+        _ = manager.AddTask("Blocker");
+        return manager.BlockTask("1", ["2"]);
     }
 
     #endregion
