@@ -1,0 +1,429 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ref, nextTick } from 'vue';
+import { useTodoBoard } from '@/composables/useTodoBoard';
+import type { ConversationTodoMessage } from '@/types/messages';
+import boardSource from '@/composables/useTodoBoard.ts?raw';
+
+const mocks = vi.hoisted(() => ({
+  getConversationTodos: vi.fn(),
+}));
+
+vi.mock('@/api/todosApi', () => ({
+  getConversationTodos: mocks.getConversationTodos,
+}));
+
+/**
+ * The board's wire payload, exactly as the design doc specifies it for both `GET /todos` and the
+ * `conversation_todo` push frame. Every test below goes through this shape, so a contract change in
+ * PR 1/PR 2 surfaces here rather than in production.
+ */
+function wireTasks() {
+  return [
+    {
+      id: '1',
+      status: 'InProgress',
+      title: 'Wire the SSE endpoint',
+      notes: ['waiting on schema'],
+      subTasks: [{ id: '1.1', status: 'Completed', title: 'Add the map', notes: [], subTasks: [] }],
+    },
+    { id: '2', status: 'NotStarted', title: 'Renderer registry', notes: [], subTasks: [] },
+  ];
+}
+
+/**
+ * Builds a frame, deliberately OFF-CONTRACT where a test asks for it — hence the double cast.
+ *
+ * `ConversationTodoMessage.threadId` is now `string` (required), matching the C# producer, and
+ * `tasks` is `TodoTask[]`. The cast is not laziness about the type: these tests exist precisely to
+ * cover wire data that violates it, because the type describes what the producer promises and the
+ * guard exists for the case where something else is on the socket. Keep the cast narrow to this
+ * helper so production code never gains a way to build one of these.
+ */
+function frame(threadId: string | undefined, tasks: unknown = wireTasks()): ConversationTodoMessage {
+  return { $type: 'conversation_todo', threadId, tasks } as unknown as ConversationTodoMessage;
+}
+
+/** Defers a mock resolution so a test can interleave a frame with an in-flight REST read. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Lets a settled promise's continuations run, for assertions after a `deferred` is resolved. */
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.getConversationTodos.mockResolvedValue(null);
+});
+
+describe('useTodoBoard — architecture', () => {
+  it('never imports useChat: the board must be testable without the chat machinery', () => {
+    expect(boardSource).not.toContain("from './useChat'");
+    expect(boardSource).not.toContain("from '@/composables/useChat'");
+  });
+});
+
+describe('useTodoBoard — the absent board (PRs 1-2 not merged)', () => {
+  it('starts empty with no board, and reports nothing to mount', () => {
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+    expect(board.tasks.value).toEqual([]);
+    expect(board.hasBoard.value).toBe(false);
+    expect(board.counts.value.total).toBe(0);
+  });
+
+  it('renders an empty board when the endpoint answers 404 (api maps that to null)', async () => {
+    mocks.getConversationTodos.mockResolvedValue(null);
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    await board.hydrate();
+
+    expect(board.tasks.value).toEqual([]);
+    expect(board.hasBoard.value).toBe(false);
+    expect(board.isLoading.value).toBe(false);
+  });
+
+  it('swallows a thrown fetch into an empty board rather than surfacing an error', async () => {
+    // A build without PR 1's route reaches here on every conversation. The panel is an accessory:
+    // it must degrade to absent, never to an error banner over the chat.
+    mocks.getConversationTodos.mockRejectedValue(new Error('Failed to fetch todos: 500'));
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    await expect(board.hydrate()).resolves.toBeUndefined();
+    expect(board.tasks.value).toEqual([]);
+    expect(board.isLoading.value).toBe(false);
+  });
+
+  it('does not call the endpoint at all with no thread id', async () => {
+    const board = useTodoBoard(
+      () => null,
+      () => null
+    );
+    await board.hydrate();
+    expect(mocks.getConversationTodos).not.toHaveBeenCalled();
+  });
+});
+
+describe('useTodoBoard — REST hydrate', () => {
+  it('loads the documented snapshot shape and derives counts, rows and the active row', async () => {
+    mocks.getConversationTodos.mockResolvedValue({ threadId: 't1', tasks: wireTasks() });
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    await board.hydrate();
+
+    expect(mocks.getConversationTodos).toHaveBeenCalledWith('t1');
+    expect(board.hasBoard.value).toBe(true);
+    expect(board.rows.value.map((r) => [r.id, r.depth])).toEqual([
+      ['1', 0],
+      ['1.1', 1],
+      ['2', 0],
+    ]);
+    expect(board.counts.value).toEqual({
+      done: 1,
+      inProgress: 1,
+      pending: 1,
+      removed: 0,
+      total: 3,
+    });
+    expect(board.activeTaskId.value).toBe('1');
+  });
+
+  it('parses the real PR-1 body, envelope fields and all', async () => {
+    // Verbatim from src/LmCore/Models/TodoBoardSnapshot.cs: the snapshot sits at the TOP LEVEL (no
+    // board/items/snapshot wrapper) and carries schemaVersion + capturedAtUtc alongside tasks.
+    mocks.getConversationTodos.mockResolvedValue({
+      threadId: 't1',
+      schemaVersion: 1,
+      capturedAtUtc: '2026-08-28T12:00:00+00:00',
+      tasks: wireTasks(),
+    });
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    await board.hydrate();
+
+    expect(board.rows.value.map((r) => r.id)).toEqual(['1', '1.1', '2']);
+  });
+
+  it('ignores an unrecognized schemaVersion rather than blanking the board', async () => {
+    // Rejecting a whole board on a version bump would blank a panel that could still render most of
+    // it. The tolerant per-task parser is the guard, not a version gate.
+    //
+    // NOTE this pins a contract; it does NOT cover a reachable path today. PR 1's projection read
+    // filters a newer-schema blob to null, so an old server sitting on a new blob answers 404, not a
+    // version-99 body, and the live path always stamps the version the build knows. The only way
+    // this payload arrives is from a NEWER server — which is the case the tolerance is for. Do not
+    // count this as coverage of code that runs.
+    mocks.getConversationTodos.mockResolvedValue({
+      threadId: 't1',
+      schemaVersion: 99,
+      tasks: wireTasks(),
+    });
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    await board.hydrate();
+
+    expect(board.hasBoard.value).toBe(true);
+  });
+
+  it('holds the loading flag only while in flight', async () => {
+    const gate = deferred<{ tasks: unknown[] }>();
+    mocks.getConversationTodos.mockReturnValue(gate.promise);
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    const inFlight = board.hydrate();
+    expect(board.isLoading.value).toBe(true);
+
+    gate.resolve({ tasks: wireTasks() });
+    await inFlight;
+    expect(board.isLoading.value).toBe(false);
+  });
+});
+
+describe('useTodoBoard — live frames', () => {
+  it('SETS the board from a frame rather than accumulating into it', async () => {
+    mocks.getConversationTodos.mockResolvedValue({ tasks: wireTasks() });
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+    await board.hydrate();
+    expect(board.rows.value).toHaveLength(3);
+
+    board.applyFrame(frame('t1', [{ id: '9', status: 'Completed', title: 'only me', notes: [], subTasks: [] }]));
+
+    // Three rows replaced by one, not appended to. The server sends the whole board every time.
+    expect(board.rows.value.map((r) => r.id)).toEqual(['9']);
+    expect(board.counts.value.done).toBe(1);
+  });
+
+  it('applies a frame automatically when the watched frame ref changes', async () => {
+    const latest = ref<ConversationTodoMessage | null>(null);
+    const board = useTodoBoard(
+      () => 't1',
+      () => latest.value
+    );
+
+    latest.value = frame('t1');
+    await nextTick();
+
+    expect(board.hasBoard.value).toBe(true);
+    expect(board.activeTaskId.value).toBe('1');
+  });
+
+  it('ignores a frame addressed to a DIFFERENT conversation', () => {
+    // The frame ref keeps holding the last frame after a conversation switch; without this guard,
+    // re-entering a conversation could paint another one's board.
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    board.applyFrame(frame('some-other-thread'));
+
+    expect(board.tasks.value).toEqual([]);
+    expect(board.hasBoard.value).toBe(false);
+  });
+
+  it('drops a frame that omits threadId rather than trusting it', () => {
+    // `threadId` is optional on the wire. If a frame without one were accepted, a PR 2 that simply
+    // forgot to stamp it would disable this guard for EVERY frame at once, and no test would notice.
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    board.applyFrame(frame(undefined));
+
+    expect(board.hasBoard.value).toBe(false);
+  });
+
+  it('drops a frame that arrives while no conversation is open', () => {
+    // Reachable, not theoretical: useChat.clearMessages nulls its threadId at the start of every
+    // switch and deliberately does NOT clear the frame ref, so this is the mid-switch window.
+    //
+    // What these three frame-guard tests pin, precisely: mutation showed the guard's conjuncts are
+    // mutually redundant, so deleting any ONE of them keeps all 21 green — `frame.threadId !==
+    // threadId` alone already drops both absence cases (`undefined !== 't1'`, `'t1' !== null`).
+    // The pin is therefore on the guard as a whole, not clause by clause: reverting it to the inert
+    // pre-fix form `frame.threadId && threadId && frame.threadId !== threadId` reds this test and
+    // the omits-threadId one above. Do not read a green single-clause mutation as a coverage gap.
+    const threadId = ref<string | null>(null);
+    const board = useTodoBoard(
+      () => threadId.value,
+      () => null
+    );
+
+    board.applyFrame(frame('t1'));
+
+    expect(board.hasBoard.value).toBe(false);
+    expect(board.tasks.value).toEqual([]);
+  });
+
+  it('degrades a malformed frame to an empty board instead of throwing', () => {
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+    expect(() => board.applyFrame(frame('t1', 'not-an-array'))).not.toThrow();
+    expect(board.tasks.value).toEqual([]);
+  });
+});
+
+describe('useTodoBoard — supersession', () => {
+  it('does NOT let an in-flight REST read clobber a newer live frame', async () => {
+    // The ordering bug this exists for: hydrate starts, a push frame lands, hydrate resolves last
+    // and paints its older snapshot over the newer one.
+    const gate = deferred<{ tasks: unknown[] }>();
+    mocks.getConversationTodos.mockReturnValue(gate.promise);
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    const inFlight = board.hydrate();
+    board.applyFrame(frame('t1', [{ id: '9', status: 'InProgress', title: 'newer', notes: [], subTasks: [] }]));
+
+    gate.resolve({ tasks: wireTasks() });
+    await inFlight;
+
+    expect(board.rows.value.map((r) => r.id)).toEqual(['9']);
+    // The superseded read still owns the flag it set, so the panel does not spin forever.
+    expect(board.isLoading.value).toBe(false);
+  });
+
+  it('does not let a failing older read blank a board a newer frame just set', async () => {
+    const gate = deferred<never>();
+    mocks.getConversationTodos.mockReturnValue(gate.promise);
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    const inFlight = board.hydrate();
+    board.applyFrame(frame('t1'));
+
+    gate.reject(new Error('boom'));
+    await inFlight;
+
+    expect(board.hasBoard.value).toBe(true);
+  });
+
+  it('does not let a superseded hydrate clear the loading flag its replacement still owns', async () => {
+    // Pins the `seq === hydrateSeq` guard in hydrate()'s finally. Mutating that to clear the flag
+    // unconditionally reds this and nothing else: the older read settles first, and if it were
+    // allowed to switch the flag off, `isLoading` would read false while a fetch is still running.
+    const first = deferred<{ tasks: unknown[] }>();
+    const second = deferred<{ tasks: unknown[] }>();
+    mocks.getConversationTodos.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    const a = board.hydrate();
+    const b = board.hydrate();
+    expect(board.isLoading.value).toBe(true);
+
+    first.resolve({ tasks: [] });
+    await a;
+    expect(board.isLoading.value).toBe(true);
+
+    second.resolve({ tasks: wireTasks() });
+    await b;
+    expect(board.isLoading.value).toBe(false);
+  });
+
+  it('lets the newest hydrate win over an older one that resolves later', async () => {
+    const first = deferred<{ tasks: unknown[] }>();
+    const second = deferred<{ tasks: unknown[] }>();
+    mocks.getConversationTodos.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+
+    const a = board.hydrate();
+    const b = board.hydrate();
+
+    second.resolve({ tasks: [{ id: 'new', status: 'NotStarted', title: 'second', notes: [], subTasks: [] }] });
+    await b;
+    first.resolve({ tasks: [{ id: 'old', status: 'NotStarted', title: 'first', notes: [], subTasks: [] }] });
+    await a;
+
+    expect(board.rows.value.map((r) => r.id)).toEqual(['new']);
+    expect(board.isLoading.value).toBe(false);
+  });
+});
+
+describe('useTodoBoard — conversation switch', () => {
+  it('clears the old board BEFORE the replacement fetch resolves', async () => {
+    // The assertion is placed INSIDE the window `reset()` exists to close, and that placement is the
+    // whole test. An earlier version asserted only after the replacement had settled, where the
+    // board lands empty whether or not it was cleared first — so deleting `reset()` from the thread
+    // watcher left it green, and the guard was unpinned. Holding the second fetch open makes
+    // `reset()` the only thing that can empty the board here.
+    const threadId = ref<string | null>('t1');
+    mocks.getConversationTodos.mockResolvedValue({ tasks: wireTasks() });
+    const board = useTodoBoard(
+      () => threadId.value,
+      () => null
+    );
+    await board.hydrate();
+    expect(board.hasBoard.value).toBe(true);
+
+    const second = deferred<{ tasks: unknown[] }>();
+    mocks.getConversationTodos.mockReturnValue(second.promise);
+    threadId.value = 't2';
+    await nextTick();
+
+    expect(mocks.getConversationTodos).toHaveBeenLastCalledWith('t2');
+    // Without reset() this still holds t1's titles under t2 for the whole round trip — a
+    // cross-conversation content leak, and the one this repo's switch-bug family keeps producing.
+    expect(board.hasBoard.value).toBe(false);
+    expect(board.tasks.value).toEqual([]);
+
+    second.resolve({ tasks: wireTasks() });
+    await flush();
+    expect(board.hasBoard.value).toBe(true);
+  });
+
+  it('reset clears the board immediately', async () => {
+    mocks.getConversationTodos.mockResolvedValue({ tasks: wireTasks() });
+    const board = useTodoBoard(
+      () => 't1',
+      () => null
+    );
+    await board.hydrate();
+
+    board.reset();
+
+    expect(board.tasks.value).toEqual([]);
+    expect(board.isLoading.value).toBe(false);
+  });
+});

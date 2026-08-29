@@ -16,9 +16,11 @@ import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 import PendingQuestionDock from './PendingQuestionDock.vue';
 import SubAgentListPanel from './SubAgentListPanel.vue';
+import TodoBoardPanel from './TodoBoardPanel.vue';
 import ConversationTabs from './ConversationTabs.vue';
 import SubAgentTranscript from './SubAgentTranscript.vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
+import { useTodoBoard } from '@/composables/useTodoBoard';
 import { useConversationTabs, GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
 import {
   GET_AGENT_COLOR,
@@ -102,6 +104,7 @@ const {
   error,
   cumulativeUsage,
   cumulativeCost,
+  conversationTodo,
   pendingMessages,
   pendingAuthRequests,
   dismissAuthRequest,
@@ -219,6 +222,15 @@ const {
   submitToFocusedChild,
   getResultForToolCall: getSubAgentResultForToolCall,
 } = useSubAgentPanel(() => subAgentParentThreadId.value);
+
+// ToDo board state (#583), hoisted here for the same reason the sub-agent panel is: ONE instance,
+// owned by the layout, handed to a stateless panel. It reuses `subAgentParentThreadId` — despite the
+// name, that computed is simply "the thread id once the conversation has actually started", which is
+// exactly the gate the board wants too: a fresh, unsent New Chat has no board to fetch.
+const { tasks: todoTasks, hasBoard: hasTodoBoard } = useTodoBoard(
+  () => subAgentParentThreadId.value,
+  () => conversationTodo.value
+);
 
 const { activeTabId, tabs, selectTab, getAgentColor } = useConversationTabs({
   children: subAgentChildren,
@@ -940,6 +952,17 @@ onBeforeUnmount(() => {
         />
       </div>
     </main>
+
+    <!-- Right-side WORK BOARD (#583). A SIBLING of the sub-agent panel, not nested with it: both stay
+         direct flex children of .chat-layout, so each keeps full column height and independent
+         collapse, and SubAgentListPanel needs no change at all. The board sits inboard of the
+         sub-agent panel so the sub-agent rail stays where it has always been, at the true right edge.
+
+         `v-if="hasTodoBoard"` is load-bearing, not an optimization: a conversation that never touched
+         the task tools — every CLI-backed provider (codex/claude/copilot), and every ordinary chat —
+         must render NOTHING here rather than an empty board eating the right edge. That is what keeps
+         two right-hand panels affordable. -->
+    <TodoBoardPanel v-if="hasTodoBoard" :tasks="todoTasks" />
 
     <!-- Right-side launcher: shares ChatLayout's hoisted sub-agent state (the panel no longer owns a
          composable). Clicking a row activates that sub-agent's center-pane tab via selectTab. -->
