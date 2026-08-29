@@ -13,6 +13,13 @@
 > rest do not resolve in `achieveai/LmDotnetTools` — several collide with unrelated issues here.
 > They are preserved verbatim as historical references. Work items are tracked as fresh issues
 > under #526.
+>
+> **Status pass, 2026-08-28.** The stack resumed and ran to 30 merged PRs across five review rounds.
+> **20 of the 21 work items in the DO table below are merged to `main`** (items 1–20; see each row
+> for its PR and commit). Only **item 21** — `#567`, the host-git watchdog + orphaned-pack sweeper
+> fd guard, split out of item 16 on 2026-08-28 — remains open. The MONITOR defects M4–M8 are now
+> **fixed on `main`**; only M1–M3 (PR #451's own mergeability) are unchanged, since the reconciliation
+> deliberately never merges #451 itself.
 
 # PR #451 Reconciliation — Board
 
@@ -35,9 +42,11 @@ Last updated: 2026-08-27 UTC · Branch `daemon/review-reliability-and-pr-coverag
 > `CONFLICTING` / `DIRTY` against `origin/main` across **49 files**. It does not track daemon
 > operations; the parent board owns that.
 
-> **CURRENT DECISION: STOPPED (2026-08-27).** The audit is complete and the owner elected to take no
-> further branch or PR action. Nothing here is in flight. This file is the record so the work can be
-> resumed without re-deriving it.
+> **CURRENT DECISION: STOPPED (2026-08-27), THEN RESUMED.** The audit is complete; the owner elected
+> to take no further branch or PR action on 2026-08-27, then resumed the effort as a stack of small
+> PRs off `main`. As of 2026-08-28, 20 of the 21 DO items have merged (30 PRs across five review
+> rounds); only item 21 (`#567`) is still open. See the status pass note above and the DO table for
+> per-item evidence.
 
 ---
 
@@ -50,11 +59,11 @@ Each row is a number we can re-measure on demand. "Healthy" is what it should re
 |M1|PR #451 mergeability|`CONFLICTING` / `mergeStateStatus: DIRTY`|`MERGEABLE`|**BLOCKED**|`gh pr view 451 --json mergeable,mergeStateStatus`. Do not trust GitHub's cached verdict alone — confirm with `git merge-tree --write-tree HEAD origin/main` and count `CONFLICT (content)` lines.|
 |M2|Conflicting file count|**49** (all modify/modify; no add/add, no delete conflicts)|0|**BLOCKED**|`git merge-tree --write-tree HEAD origin/main \| grep -c 'CONFLICT'`. Re-derive rather than reusing this number — `origin/main` moves.|
 |M3|Branch ↔ main divergence|branch **+29–32** commits from base; main **+68**|converged|**DIVERGED**|`git rev-list --count 3a25297b..HEAD` and `git rev-list --count 3a25297b..origin/main`|
-|M4|#49 — `SystemPromptAppendix` reachable in production on `origin/main`|**NO** — appendix is written, never read outside tests|reader exists on a production path|**DEFECT LIVE ON MAIN**|`git grep -n 'AppendCallerInstructions' origin/main`. Every hit outside `tests/` should be a real caller. Today the only callers are `SystemPromptAugmenterTests.cs`. Consequence: every S2S review runs on the bare mode prompt; the daemon's methodology never reaches the model.|
-|M5|#118 — `SubAgentModelId` has a reader on `origin/main`|**NO** — declared and set in two live profiles, read by nothing|reader exists|**DEFECT LIVE ON MAIN**|`git grep -n 'SubAgentModelId' origin/main`. Declaration is `CodeReviewDaemonOptions.cs:131`; `appsettings.achieveai.json` and `appsettings.mcqdb.json` both set `gpt-5.6-sol`. Consequence: every review sub-agent runs the orchestrator's model.|
-|M6|#128 — collect-only is structural on `origin/main`|**NO** — advisory only; outbound HTTP is write-capable on a collect-only run|write ops denied at the egress boundary|**DEFECT LIVE ON MAIN**|`git grep -n 'BuildForRun' origin/main`. `PolicyEnforcedHttpClientFactory.cs:42` calls it without `allowWriteOperations`, which defaults `true` (`DaemonOperationPolicy.cs:71`).|
-|M7|PR-polling coverage on `origin/main`|~**101 of 711** active PRs enumerated (Nova); `MaxPagesPerPoll` has **zero readers**|all active PRs enumerated|**DEGRADED ON MAIN**|`git grep -n 'MaxPagesPerPoll' origin/main` — declared at `CodeReviewDaemonOptions.cs:260`, no reader; both providers use a private `const int MaxPages = 10`.|
-|M8|`prompt_template_hash` populated in production on `origin/main`|**always NULL** — column, reader and eval consumer exist; no producer|non-null on new runs|**DEGRADED ON MAIN**|`git grep -n 'PromptTemplateHash =' origin/main` — the only assignments are in two test files.|
+|M4|#49 — `SystemPromptAppendix` reachable in production on `origin/main`|**YES (fixed 2026-08-28)** — `SystemPromptAugmenter.cs` has a production caller|reader exists on a production path|**FIXED — item 1, PR #533, `a794b41a`**|`git grep -n 'AppendCallerInstructions' origin/main` now hits `samples/LmStreaming.Sample/Services/SystemPromptAugmenter.cs` outside tests, not just `SystemPromptAugmenterTests.cs`.|
+|M5|#118 — `SubAgentModelId` has a reader on `origin/main`|**YES (fixed 2026-08-28)** — read through `S2SReviewAgentLoopFactory.cs:177` into the provisioned conversation|reader exists|**FIXED — item 2, PR #534, `1864cb0c`**|`git grep -n 'SubAgentModelId' origin/main` now shows `subAgentModelId: _options.SubAgentModelId` consumed at `S2SReviewAgentLoopFactory.cs:177`, not just the declaration.|
+|M6|#128 — collect-only is structural on `origin/main`|**YES (fixed 2026-08-28)** — `BuildForRun` is called with an explicit `allowWriteOperations` and defaults to `false`|write ops denied at the egress boundary|**FIXED — item 3, PR #555, `952d9a2a`**|`git grep -n 'allowWriteOperations' origin/main` shows the three `DaemonReviewStageExecutor.cs` call sites passing `allowWriteOperations: false`, and `DaemonOperationPolicy.BuildForRun`'s parameter now defaults `false`.|
+|M7|PR-polling coverage on `origin/main`|`MaxPagesPerPoll` now has a real reader (`AdoPrProvider.cs`, `DefaultMaxPagesPerPoll = 10`, configurable)|all active PRs enumerated|**FIXED — item 10, PR #554, `12426648`**|`git grep -n 'MaxPagesPerPoll' origin/main` — `CodeReviewDaemonOptions.cs:302` is read by `AdoPrProvider.cs`; no longer a private unread constant.|
+|M8|`prompt_template_hash` populated in production on `origin/main`|**non-NULL on new runs** — `DaemonReviewStageExecutor.cs:3592` calls `_store.RecordRunProvenance(run.Id, DaemonAgentFactory.ReviewPromptTemplateHash)`|non-null on new runs|**FIXED — item 11, PR #556, `204482a4`**|`git grep -n 'RecordRunProvenance' origin/main` shows the producer call; `ReviewStore.cs:325` persists it.|
 
 ---
 
@@ -64,31 +73,33 @@ Each row is a number we can re-measure on demand. "Healthy" is what it should re
 
 ### Blocking the PR
 
-Ranked as in the audit. Nothing below is started — the owner stopped the effort on 2026-08-27.
-Sizes are LOC from the audit, not hours.
+Ranked as in the audit. The owner stopped the effort on 2026-08-27, then resumed it as a stack of
+small PRs; **20 of the 21 items below are merged** as of 2026-08-28 — see the State column for each
+item's PR and commit. Sizes are LOC from the audit, not hours.
 
 |#|Item|Owner|Blocking|State|
 |-|-|-|-|-|
-|1|**#49/#53 — `SystemPromptAppendix` reader.** Commits `0ee6688b` + `57ff1fbe` + `4f112fec`, ~613 LOC. Touches `SystemPromptAugmenter.cs`, `LmStreaming.Sample/Program.cs`, `LmStreamingS2SClient.cs`. Propose the three as one PR.|—|yes|**NOT STARTED — highest severity.** Fixes M4.|
-|2|**#118 — `SubAgentModelId` reader.** Commit `3ae949de`, ~507 LOC, 15 files. Carries a `SubAgentManager.cs` precedence change that must be rebased onto main's post-`a8c79af6` manager.|—|yes|**NOT STARTED.** Fixes M5.|
-|3|**#128 — collect-only made structural.** Commit `0c6bad30`, ~600 prod LOC + 407 test. Adds migrations v6/v7 and a `policy_refusal` ledger; egress method-denial + spawn-time audit refusal.|—|yes|**NOT STARTED.** Fixes M6.|
-|4|**#114 — finding-disposition reconciler.** Commit `101f76c9`, ~1240 prod LOC + 616 test. `ReviewNotesArtifactBuilder.cs` is **byte-identical on `origin/main` to the merge-base**, so this ports with **zero conflict** — best effort/conflict ratio in the set.|—|yes|**NOT STARTED.**|
-|5|**#113 — `InfraNarrationFilter`.** Commit `3a0c5e38`, ~1047 LOC — one new file (382 lines) plus one call site. Main has no structural filter; it only asks the model not to narrate via prompt text.|—|yes|**NOT STARTED.**|
-|6|**#120 — work-item context into the review brief.** Commit `407002aa`, ~870 prod LOC. `AdoWorkItemContextReader.cs` (579 lines) absent from main; largest new capability, cleanest to port.|—|yes|**NOT STARTED.**|
-|7|**#82 — first-review sentinel guard + standing rate check.** Commits `51ac92a4` + `20b8c272`, ~702 LOC. Main has the detection primitive `IsNoNewFindingsSentinel` but no control.|—|yes|**NOT STARTED.**|
-|8|**#115 — findings persistence.** Commits `b9a5bc75` + `f64530ab`, ~629 LOC.|—|yes|**BLOCKED on item 4** — depends on `ReviewFindingReconciler`, which is also not on main. Propose as a stack.|
-|9|**#116 — prose-aware knowledge ranking.** Commits `d18cc96c` / `309319b6`, ~457 LOC. Removes a dead heavy scoring term (`ScopeBonus = 3`, `KnowledgeDigest.cs:29`) still live on main.|—|yes|**NOT STARTED.**|
-|10|**PR-polling `$top`/`$skip` pagination.** Extractable from checkpoint `d7e64e3e`. Small, high impact.|—|yes|**NOT STARTED.** Fixes M7.|
-|11|**#122 — prompt-template provenance producer.** Commit `b782237e`. Small; makes a column main already has, reads, and ships to its eval corpus stop being NULL.|—|yes|**NOT STARTED.** Fixes M8.|
-|12|**#112 — unrelated-histories vs indeterminate.** Commit `db27fb30`, ~228 prod LOC + 381 test. `"unrelated histor"` has 0 hits on main. Stops the daemon reporting its own watchdog timeout to an author as "your branch descends from nothing".|—|yes|**NOT STARTED.** Lands in `ReviewSlotPreparer.cs` — see R6.|
-|13|**#123/#119 — model forwarding + empty-tier guard.** Commit `763f028a`, ~90 prod LOC. Main's `S2SReviewAgentLoopFactory.cs:131-134` discards the requested model id, so the escalation ladder re-runs the same model. **Keep the spend-neutrality pin** (`KnowledgeModelId` held at luna).|—|yes|**NOT STARTED.**|
-|14|**#47 — DeveloperLearnings phases 1+2.** Commits `ee1c8600` + `5662b06b`, ~3688 LOC. Entirely new subtree; no main collisions except the ADR numbers (see R11).|—|yes|**NOT STARTED.**|
-|15|**#107 — lock-atomicity regression test.** From `49c74a17`. Test-only, ~120 lines, trivially portable. Main's `_replayLock` production code is already correct.|—|no|**NOT STARTED.**|
-|16|**eol/blob-identity cleanliness gate (`4cb2421c`), #124 fd guard, #87 `-b` status probe.** All live in `ReviewSlotPreparer.cs`.|—|yes|**DEFERRED — port only after R6 is decided.**|
-|17|**Hygiene from `bbf8eff1`: csharpier gate + root PNG removal.** Trivial.|—|no|**NOT STARTED — proposable immediately.** Main still runs `dotnet format whitespace` and still carries `workspace-agent-test-tool-schema.png` at repo root.|
-|18|**#127/#121 salvage.** Commit `d9fd3c83`, ~679 LOC total. Rebase onto main's shared-budget design, do **not** port the branch's budget structure. Still net-new: the 120→400 cap raise (main is at 120 against an observed ceiling of 201 comments), the `MaxExistingCommentsListed` → `MaxExistingCommentsRendered` rename, NEW-section-claims-first ordering, and all of #121 (`CommentFetchOutcome`).|—|no|**NOT STARTED** — see R4 for what main already won.|
-|19|**Per-sub-agent model recorded and published in the brief.** Commit `e73646b2`, ~576 LOC. Main's `SubAgentProvenance.cs` has no `ModelKey`/`ModelIntelligenceKey`/`ModelSelectionSourceKey`, so the value carried on `SubAgentSummary.EffectiveModelId` is dropped mid-chain; main renders one run-level `\| Model \|` row only.|—|no|**NOT STARTED.**|
-|20|**ADRs 0012–0015 — the four review-daemon decisions.** Commit `fc9be7d0`, ~377 LOC, docs only. Ships with the #47 subtree (item 14).|—|no|**NOT STARTED — blocked on the numbering decision.** See R11 and the ADR row in *Owner decisions*.|
+|1|**#49/#53 — `SystemPromptAppendix` reader.** Commits `0ee6688b` + `57ff1fbe` + `4f112fec`, ~613 LOC. Touches `SystemPromptAugmenter.cs`, `LmStreaming.Sample/Program.cs`, `LmStreamingS2SClient.cs`. Propose the three as one PR.|—|yes|**MERGED — PR #533 (#528), `a794b41a`.** Fixes M4.|
+|2|**#118 — `SubAgentModelId` reader.** Commit `3ae949de`, ~507 LOC, 15 files. Carries a `SubAgentManager.cs` precedence change that must be rebased onto main's post-`a8c79af6` manager.|—|yes|**MERGED — PR #534 (#529), `1864cb0c`.** Fixes M5.|
+|3|**#128 — collect-only made structural.** Commit `0c6bad30`, ~600 prod LOC + 407 test. Adds migrations v6/v7 and a `policy_refusal` ledger; egress method-denial + spawn-time audit refusal.|—|yes|**MERGED — PR #555 (#536), `952d9a2a`.** Fixes M6.|
+|4|**#114 — finding-disposition reconciler.** Commit `101f76c9`, ~1240 prod LOC + 616 test. `ReviewNotesArtifactBuilder.cs` is **byte-identical on `origin/main` to the merge-base**, so this ports with **zero conflict** — best effort/conflict ratio in the set.|—|yes|**MERGED — PR #560 (#539), `448dfaa0`.**|
+|5|**#113 — `InfraNarrationFilter`.** Commit `3a0c5e38`, ~1047 LOC — one new file (382 lines) plus one call site. Main has no structural filter; it only asks the model not to narrate via prompt text.|—|yes|**MERGED — PR #561 (#540), `17831eeb`.**|
+|6|**#120 — work-item context into the review brief.** Commit `407002aa`, ~870 prod LOC. `AdoWorkItemContextReader.cs` (579 lines) absent from main; largest new capability, cleanest to port.|—|yes|**MERGED — PR #562 (#541), `52cc71c2`.**|
+|7|**#82 — first-review sentinel guard + standing rate check.** Commits `51ac92a4` + `20b8c272`, ~702 LOC. Main has the detection primitive `IsNoNewFindingsSentinel` but no control.|—|yes|**MERGED — PR #564 (#542), `4b82ecaf`.**|
+|8|**#115 — findings persistence.** Commits `b9a5bc75` + `f64530ab`, ~629 LOC.|—|yes|**MERGED — PR #563 (#543), `4656b0af`.** Landed after item 4 (`ReviewFindingReconciler`), as planned.|
+|9|**#116 — prose-aware knowledge ranking.** Commits `d18cc96c` / `309319b6`, ~457 LOC. Removes a dead heavy scoring term (`ScopeBonus = 3`, `KnowledgeDigest.cs:29`) still live on main.|—|yes|**MERGED — PR #566 (#544), `a4d6f02d`.**|
+|10|**PR-polling `$top`/`$skip` pagination.** Extractable from checkpoint `d7e64e3e`. Small, high impact.|—|yes|**MERGED — PR #554 (#537), `12426648`** (landed as a `MaxPagesPerPoll` reader, not literal `$top`/`$skip`). Fixes M7.|
+|11|**#122 — prompt-template provenance producer.** Commit `b782237e`. Small; makes a column main already has, reads, and ships to its eval corpus stop being NULL.|—|yes|**MERGED — PR #556 (#538), `204482a4`.** Fixes M8.|
+|12|**#112 — unrelated-histories vs indeterminate.** Commit `db27fb30`, ~228 prod LOC + 381 test. `"unrelated histor"` has 0 hits on main. Stops the daemon reporting its own watchdog timeout to an author as "your branch descends from nothing".|—|yes|**MERGED — PR #569 (#545), `30b32486`.**|
+|13|**#123/#119 — model forwarding + empty-tier guard.** Commit `763f028a`, ~90 prod LOC. Main's `S2SReviewAgentLoopFactory.cs:131-134` discards the requested model id, so the escalation ladder re-runs the same model. **Keep the spend-neutrality pin** (`KnowledgeModelId` held at luna).|—|yes|**MERGED — PR #565 (#546), `926bedb6`.**|
+|14|**#547 — DeveloperLearnings phases 1+2.** Commits `ee1c8600` + `5662b06b`, ~3688 LOC. Entirely new subtree; no main collisions except the ADR numbers (see R11).|—|yes|**MERGED — PR #572 (#547), `a4970cde`.**|
+|15|**#107 — lock-atomicity regression test.** From `49c74a17`. Test-only, ~120 lines, trivially portable. Main's `_replayLock` production code is already correct.|—|no|**MERGED — PR #571 (#548), `a55691bf`.**|
+|16|**eol/blob-identity cleanliness gate (`4cb2421c`) + #87 `-b` status probe.** Landed mainly in `SlotHygiene.cs` (+ new `WorktreeStatusProbe.cs`), with a small `ReviewSlotPreparer.cs` touch — not "all live in `ReviewSlotPreparer.cs`" as originally scoped. **The `#124` fd guard was carved back out** (it does not live in `ReviewSlotPreparer.cs` either — it belongs in `HostGitCommandRunner.cs` / `Workspace/Sandbox/OrphanedPackSweeper.cs`) and is now tracked separately as **item 21 (`#567`)**.|—|yes|**MERGED (minus fd guard) — PR #568 (#549), `5e7bcc1b`.**|
+|17|**Hygiene from `bbf8eff1`: csharpier gate + root PNG removal.** Trivial.|—|no|**MERGED — PR #573 (#550), `03b035c3`.** CSharpier (`dotnet csharpier check .`) is now the formatting authority in CI and pre-commit; `dotnet format whitespace` was removed from `scripts/ci-test.ps1`, and the root PNG is gone.|
+|18|**#127/#121 salvage.** Commit `d9fd3c83`, ~679 LOC total. Rebase onto main's shared-budget design, do **not** port the branch's budget structure. Still net-new: the 120→400 cap raise (main is at 120 against an observed ceiling of 201 comments), the `MaxExistingCommentsListed` → `MaxExistingCommentsRendered` rename, NEW-section-claims-first ordering, and all of #121 (`CommentFetchOutcome`).|—|no|**MERGED — PR #574 (#551), `f246e7f0`** — see R4 for what main already won.|
+|19|**Per-sub-agent model recorded and published in the brief.** Commit `e73646b2`, ~576 LOC. Main's `SubAgentProvenance.cs` has no `ModelKey`/`ModelIntelligenceKey`/`ModelSelectionSourceKey`, so the value carried on `SubAgentSummary.EffectiveModelId` is dropped mid-chain; main renders one run-level `\| Model \|` row only.|—|no|**MERGED — PR #575 (#552), `89632748`.**|
+|20|**ADRs 0012–0015 — the four review-daemon decisions.** Commit `fc9be7d0`, ~377 LOC, docs only. Ships with the #547 subtree (item 14).|—|no|**MERGED — PR #570 (#553), `eda25131`**, as ADRs **0015–0018** (renumbered per R11 — main already held 0012–0014 under different slugs).|
+|21|**`#567` — host-git watchdog + orphaned-pack sweeper fd guard.** Split out of item 16 on 2026-08-28 by owner decision, because porting it inside item 16 would have 6x'd that item with unaudited checkpoint content (`d7e64e3e`). Sweeper refinement is legacy `#124`/`#87` (commit `49c74a17`); the watchdog host and sweeper themselves come from checkpoint `d7e64e3e`. Lands in `HostGitCommandRunner.cs` (83 → ~714 lines) and a new `Workspace/Sandbox/OrphanedPackSweeper.cs` (~451 lines) — **not** `ReviewSlotPreparer.cs`. fd-guard tests self-skip off Linux, so CI-on-Linux is the only proving surface.|—|yes|**OPEN — issue `#567`, not yet started.** The only unmerged item.|
 
 ### Done and committed
 
@@ -111,7 +122,7 @@ Per the parent board's rule: nothing moves here on a claim alone.
 |**NEW**|**`bbf8eff1` must be split before any re-proposal — six independent features in 14k lines.** Separable, in rough value order: (a) draft-PR gating / `PrStatus` — a **breaking `IPrProvider` change**, needs its own PR; (b) `SchemaCompatibility` + `ReleaseIdentity` + `DaemonAdmissionCoordinator`; (c) `ops/codereview-release` systemd path; (d) `SynthesisModelId` + `EffectiveModelId` resolution; (e) per-turn model override in `UserInput`/`MultiTurnAgentLoop`; (f) hygiene. Your call on the split boundaries.|
 |**NEW**|**`bbf8eff1` changes the `ReviewModelId` default from `claude-sonnet-5` to `gpt-5.6-terra`.** A deliberate behaviour and spend change, not a merge artifact. Needs explicit sign-off before it ships anywhere.|
 |**NEW**|**Linux systemd vs Windows PowerShell for the release story.** The branch adds `ops/codereview-release/` (release.py, 5 systemd units, verification-policy.json) with capabilities main has none of: release-identity hashing, schema-compat gate, admission drain. Main solves the same problem with `scripts/publish-daemon.ps1`, `ensure-services.ps1`, `restart-review-host.ps1` (main PR #334). Main has no `ops/` directory. Pick one story before porting (c).|
-|**NEW**|**ADR numbering collision.** The branch claims 0012–0015. Main already has `0012-wall-clock-discriminating-test-inventory`, `0013-background-transcript-flush-has-no-caller`, `0014-host-directory-wipe-accepted-residuals` under different slugs. Renumber to 0015–0018, or accept the slug-identity collision per main's own ADR 0010. Either way `docs/adrs/README.md` conflicts.|
+|RESOLVED|**ADR numbering collision.** The branch claims 0012–0015. Main already has `0012-wall-clock-discriminating-test-inventory`, `0013-background-transcript-flush-has-no-caller`, `0014-host-directory-wipe-accepted-residuals` under different slugs. **Resolved by PR #570 (`eda25131`): renumbered to 0015–0018.** See item 20.|
 |**NEW**|**Two uncommitted plan docs and one superseded tracking file.** `docs/plans/2026-08-26-review-slot-cap-and-hygiene-{design,implementation}.md` should not be merged as-is — the design doc lists phases 1, 2 and 4 as still pending, and the implementation doc describes a task sequence that was not followed. `docs/pr-451-reconciliation-tracking.md` is an earlier draft of *this* board written before `REVIEW-BOARD.md` was located; keep it as an appendix or delete it, but two trackers for one effort is the drift the board rules exist to prevent.|
 
 ---
