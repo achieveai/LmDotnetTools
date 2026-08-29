@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { TodoStatus, type TodoTask } from '@/types/todo';
 import {
+  artifactFileName,
   countTodoTasks,
   findActiveTaskId,
   flattenTodoTasks,
+  isMarkdownArtifact,
   latestNote,
   normalizeTodoTasks,
 } from '@/utils/todoBoard';
@@ -15,7 +17,15 @@ import {
  */
 
 function task(id: string, overrides: Partial<TodoTask> = {}): TodoTask {
-  return { id, status: TodoStatus.NotStarted, title: `Task ${id}`, notes: [], subTasks: [], ...overrides };
+  return {
+    id,
+    status: TodoStatus.NotStarted,
+    title: `Task ${id}`,
+    notes: [],
+    artifacts: [],
+    subTasks: [],
+    ...overrides,
+  };
 }
 
 describe('normalizeTodoTasks — the wire contract', () => {
@@ -40,7 +50,17 @@ describe('normalizeTodoTasks — the wire contract', () => {
         status: 'InProgress',
         title: 'Wire the SSE endpoint',
         notes: ['waiting on schema'],
-        subTasks: [{ id: '1.1', status: 'Completed', title: 'Add the map', notes: [], subTasks: [] }],
+        artifacts: [],
+        subTasks: [
+          {
+            id: '1.1',
+            status: 'Completed',
+            title: 'Add the map',
+            notes: [],
+            artifacts: [],
+            subTasks: [],
+          },
+        ],
       },
     ]);
   });
@@ -101,6 +121,31 @@ describe('normalizeTodoTasks — the wire contract', () => {
     ]);
     expect(rows[0].notes).toEqual(['ok']);
     expect(rows[0].subTasks).toEqual([]);
+  });
+
+  it('carries artifacts through intact, and an absent key becomes an empty array (PR 5)', () => {
+    // A pre-PR-5 server simply omits the key — the second row proves that lands as [], not
+    // undefined, so the panel can always read `row.artifacts.length` without guarding.
+    const rows = normalizeTodoTasks([
+      {
+        id: '1',
+        status: 'InProgress',
+        title: 'a',
+        artifacts: ['docs/spec.md', 'out/report.md'],
+      },
+      { id: '2', status: 'NotStarted', title: 'b' },
+    ]);
+    expect(rows[0].artifacts).toEqual(['docs/spec.md', 'out/report.md']);
+    expect(rows[1].artifacts).toEqual([]);
+  });
+
+  it('drops non-string and empty artifact entries rather than rendering blank chips', () => {
+    const rows = normalizeTodoTasks([
+      { id: '1', status: 'NotStarted', title: 'a', artifacts: ['docs/spec.md', 7, null, ''] },
+      { id: '2', status: 'NotStarted', title: 'b', artifacts: 'nope' },
+    ]);
+    expect(rows[0].artifacts).toEqual(['docs/spec.md']);
+    expect(rows[1].artifacts).toEqual([]);
   });
 
   it('truncates rather than recursing forever on a cyclic payload', () => {
@@ -184,6 +229,31 @@ describe('findActiveTaskId', () => {
   it('is null when nothing is active', () => {
     expect(findActiveTaskId([task('1', { status: TodoStatus.Completed })])).toBeNull();
     expect(findActiveTaskId([])).toBeNull();
+  });
+});
+
+describe('artifactFileName — the chip label (PR 5)', () => {
+  it('is the last path segment; the full path stays on the tooltip', () => {
+    expect(artifactFileName('docs/todo-board/spec.md')).toBe('spec.md');
+    expect(artifactFileName('report.md')).toBe('report.md');
+  });
+
+  it('falls back to the raw path when there is no usable segment', () => {
+    expect(artifactFileName('')).toBe('');
+  });
+});
+
+describe('isMarkdownArtifact — which chips open the rendered preview (PR 5)', () => {
+  it('matches .md and .markdown, case-insensitively', () => {
+    expect(isMarkdownArtifact('docs/spec.md')).toBe(true);
+    expect(isMarkdownArtifact('notes.MARKDOWN')).toBe(true);
+    expect(isMarkdownArtifact('README.MD')).toBe(true);
+  });
+
+  it('rejects everything else, including md-as-substring traps', () => {
+    expect(isMarkdownArtifact('src/index.ts')).toBe(false);
+    expect(isMarkdownArtifact('spec.md.bak')).toBe(false);
+    expect(isMarkdownArtifact('md')).toBe(false);
   });
 });
 

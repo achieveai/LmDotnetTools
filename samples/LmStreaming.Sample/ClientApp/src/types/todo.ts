@@ -1,10 +1,11 @@
 /**
  * Client mirror of the server's ToDo board — PR 3 of the ToDo-board design (#583).
  *
- * These are the CURRENT `TaskManager.TaskItem` fields (shipped in #312) and nothing else:
- * Id / Status / SubTasks / Title / Notes. `Assignee`, `BlockedBy`, `Artifacts` and `Times` arrive
- * with PRs 4-5 and are deliberately absent here — a column the panel cannot populate yet renders as
- * a permanently empty one, which reads as a bug rather than as a feature that has not shipped.
+ * These are the `TaskManager.TaskItem` fields the wire carries today: Id / Status / SubTasks /
+ * Title / Notes (shipped in #312) plus `artifacts` (PR 5). `Assignee`, `BlockedBy` and `Times`
+ * exist on the server model (PR 4) but are deliberately absent from the wire node and from here —
+ * a column the panel cannot populate yet renders as a permanently empty one, which reads as a bug
+ * rather than as a feature that has not shipped.
  *
  * The board is read-only in v1. There is no POST; the shapes below are the wire contract for
  * `GET /api/conversations/{threadId}/todos` (PR 1) and the `conversation_todo` push frame (PR 2).
@@ -29,6 +30,13 @@ export interface TodoTask {
   status: TodoStatusValue;
   title: string;
   notes: string[];
+  /**
+   * Workspace-relative file paths attached via the `attach-artifact` tool (#583, PR 5) — never
+   * host paths; the server validates that at the tool boundary. Rendered as chips on the row; a
+   * `.md` chip opens the preview modal. Always present after `normalizeTodoTasks` (empty when the
+   * wire omits the field — every pre-PR-5 payload does).
+   */
+  artifacts: string[];
   subTasks: TodoTask[];
 }
 

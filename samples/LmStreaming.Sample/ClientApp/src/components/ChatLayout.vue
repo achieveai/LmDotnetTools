@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, nextTick, onMounted, onBeforeUnmount, provide } from 'vue';
+import { computed, ref, nextTick, onMounted, onBeforeUnmount, provide, watch } from 'vue';
 import { useConversations } from '@/composables/useConversations';
 import { useChat, getDisplayText } from '@/composables/useChat';
 import { useChatModes } from '@/composables/useChatModes';
@@ -17,6 +17,7 @@ import ChatInput from './ChatInput.vue';
 import PendingQuestionDock from './PendingQuestionDock.vue';
 import SubAgentListPanel from './SubAgentListPanel.vue';
 import TodoBoardPanel from './TodoBoardPanel.vue';
+import ArtifactPreviewModal from './ArtifactPreviewModal.vue';
 import ConversationTabs from './ConversationTabs.vue';
 import SubAgentTranscript from './SubAgentTranscript.vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
@@ -231,6 +232,22 @@ const { tasks: todoTasks, hasBoard: hasTodoBoard } = useTodoBoard(
   () => subAgentParentThreadId.value,
   () => conversationTodo.value
 );
+
+// Artifact preview (#583, PR 5): the board panel bubbles a chip's workspace-relative path up here,
+// because the modal needs the thread id and the panel deliberately never learns it. The path is the
+// whole modal state — null means closed. Keyed to the BOARD's thread (subAgentParentThreadId), the
+// same conversation whose task carries the chip.
+const artifactPreviewPath = ref<string | null>(null);
+
+function openArtifactPreview(path: string): void {
+  artifactPreviewPath.value = path;
+}
+
+// A conversation switch unmounts the modal rather than leaving it previewing the OLD thread's file
+// against the NEW thread's workspace.
+watch(subAgentParentThreadId, () => {
+  artifactPreviewPath.value = null;
+});
 
 const { activeTabId, tabs, selectTab, getAgentColor } = useConversationTabs({
   children: subAgentChildren,
@@ -962,7 +979,16 @@ onBeforeUnmount(() => {
          the task tools — every CLI-backed provider (codex/claude/copilot), and every ordinary chat —
          must render NOTHING here rather than an empty board eating the right edge. That is what keeps
          two right-hand panels affordable. -->
-    <TodoBoardPanel v-if="hasTodoBoard" :tasks="todoTasks" />
+    <TodoBoardPanel v-if="hasTodoBoard" :tasks="todoTasks" @open-artifact="openArtifactPreview" />
+
+    <!-- Mounted beside the board rather than inside it so the panel stays stateless. Gated on the
+         board's thread id: with no started conversation there is no workspace to preview against. -->
+    <ArtifactPreviewModal
+      v-if="artifactPreviewPath && subAgentParentThreadId"
+      :thread-id="subAgentParentThreadId"
+      :path="artifactPreviewPath"
+      @close="artifactPreviewPath = null"
+    />
 
     <!-- Right-side launcher: shares ChatLayout's hoisted sub-agent state (the panel no longer owns a
          composable). Clicking a row activates that sub-agent's center-pane tab via selectTab. -->

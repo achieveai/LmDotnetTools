@@ -475,8 +475,8 @@ export interface ConversationUsageMessage extends IMessage {
  * is the whole truth. Transient: never persisted — the board survives reload via
  * `GET /conversations/{id}/todos`.
  *
- * `tasks` carries only the CURRENT `TaskItem` fields (#312). PRs 4-5 add assignee, blockedBy,
- * artifacts and timestamps; a client running ahead of its server simply does not see them.
+ * `tasks` carries the `TaskItem` fields from #312 plus `artifacts` (#583, PR 5). PR 4 adds
+ * assignee, blockedBy and timestamps; a client running ahead of its server simply does not see them.
  */
 export interface ConversationTodoMessage extends IMessage {
   $type: typeof MessageType.ConversationTodo;

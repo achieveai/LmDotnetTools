@@ -54,6 +54,26 @@ function coerceNotes(raw: unknown): string[] {
 }
 
 /**
+ * Same tolerance as notes: string entries only, empties dropped. A payload from a pre-PR-5 server
+ * simply has no `artifacts` key, which lands here as `undefined` and comes back `[]`.
+ */
+function coerceArtifacts(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((a): a is string => typeof a === 'string' && a.length > 0);
+}
+
+/** The chip label: the path's last segment. The full path stays on the chip's tooltip. */
+export function artifactFileName(path: string): string {
+  const segments = path.split('/').filter(Boolean);
+  return segments.length > 0 ? segments[segments.length - 1] : path;
+}
+
+/** Whether a chip opens the markdown preview modal (vs. the plain-text branch inside it). */
+export function isMarkdownArtifact(path: string): boolean {
+  return /\.(md|markdown)$/i.test(path);
+}
+
+/**
  * Tolerantly parses whatever the endpoint or the push frame handed us into `TodoTask[]`.
  *
  * The board is a read-only accessory to the chat: a payload this cannot understand must degrade to
@@ -77,6 +97,7 @@ export function normalizeTodoTasks(raw: unknown, depth = 0): TodoTask[] {
       title,
       status: coerceStatus(record.status),
       notes: coerceNotes(record.notes),
+      artifacts: coerceArtifacts(record.artifacts),
       subTasks: normalizeTodoTasks(record.subTasks, depth + 1),
     });
   }

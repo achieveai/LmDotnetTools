@@ -11,7 +11,15 @@ import { TodoStatus, type TodoTask } from '@/types/todo';
  */
 
 function task(id: string, overrides: Partial<TodoTask> = {}): TodoTask {
-  return { id, status: TodoStatus.NotStarted, title: `Task ${id}`, notes: [], subTasks: [], ...overrides };
+  return {
+    id,
+    status: TodoStatus.NotStarted,
+    title: `Task ${id}`,
+    notes: [],
+    artifacts: [],
+    subTasks: [],
+    ...overrides,
+  };
 }
 
 function mountPanel(tasks: TodoTask[] = []) {
@@ -151,6 +159,44 @@ describe('TodoBoardPanel — the note sub-line', () => {
   it('renders no note sub-line when the active task has none', () => {
     const wrapper = mountPanel([task('1', { status: TodoStatus.InProgress })]);
     expect(wrapper.find('[data-testid="todo-row-note"]').exists()).toBe(false);
+  });
+});
+
+describe('TodoBoardPanel — artifact chips (PR 5)', () => {
+  it('renders one chip per artifact, labelled by file name with the full path on the tooltip', () => {
+    const wrapper = mountPanel([
+      task('1', {
+        status: TodoStatus.InProgress,
+        artifacts: ['docs/todo-board/spec.md', 'out/report.md'],
+      }),
+      task('2'),
+    ]);
+
+    const chips = wrapper.findAll('[data-testid="todo-artifact-chip"]');
+    expect(
+      chips.map((c) => c.get('[data-testid="todo-artifact-name"]').text())
+    ).toEqual(['spec.md', 'report.md']);
+    expect(chips.map((c) => c.attributes('data-artifact-path'))).toEqual([
+      'docs/todo-board/spec.md',
+      'out/report.md',
+    ]);
+    expect(chips[0].attributes('title')).toBe('docs/todo-board/spec.md');
+  });
+
+  it('emits openArtifact with the FULL workspace-relative path, not the chip label', async () => {
+    // The modal fetches by path; the shortened label would 404 for anything in a sub-directory.
+    const wrapper = mountPanel([
+      task('1', { status: TodoStatus.InProgress, artifacts: ['docs/todo-board/spec.md'] }),
+    ]);
+
+    await wrapper.get('[data-testid="todo-artifact-chip"]').trigger('click');
+
+    expect(wrapper.emitted('openArtifact')).toEqual([['docs/todo-board/spec.md']]);
+  });
+
+  it('renders no chip strip at all for a task without artifacts', () => {
+    const wrapper = mountPanel(sampleBoard());
+    expect(wrapper.find('[data-testid="todo-artifact-chip"]').exists()).toBe(false);
   });
 });
 
