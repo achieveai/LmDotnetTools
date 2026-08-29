@@ -119,7 +119,7 @@ summary block appears only for an unfiltered, non-`mainOnly` listing.
   Notes:
   1. Rate limit is 100/min
   2. Auth via JWT
-  [x] 1.1. Define endpoints
+  [x] 1.1. Define endpoints [@tester]
     [ ] 1.1.1. Validate JWT
   [~] 1.2. Draft schema (removed)
 [ ] 2. Ship it
@@ -127,10 +127,12 @@ summary block appears only for an unfiltered, non-`mainOnly` listing.
 
 Note that the counts describe *active* work: a `[~]` removed task is excluded from
 "**Total**: N active tasks" and from the pending count. The blocked count is now named
-explicitly rather than folded silently into "pending" — see Requirement 8 for the
-coordination fields (`Blocked`, `assignee`, `blockedBy`, elapsed-time) that this document
-was amended to cover, and the row-suffix rendering (`[@assignee]`, `(Nm)`, `(blocked by ...)`)
-they add.
+explicitly rather than folded silently into "pending", and task 1.1 carries a `[@tester]`
+tag because completing it required claiming it first (Requirement 8.8) and `assignee` is
+durable ownership that survives the `Completed` transition rather than being cleared — see
+Requirement 8 for the coordination fields (`Blocked`, `assignee`, `blockedBy`, elapsed-time)
+that this document was amended to cover, and the row-suffix rendering (`[@assignee]`,
+`(Nm)`, `(blocked by ...)`) they add.
 
 ### Requirement 6: Markdown Generation Method
 - **User Story**: As a developer, I need a method to generate markdown representation so that I can get formatted output programmatically.

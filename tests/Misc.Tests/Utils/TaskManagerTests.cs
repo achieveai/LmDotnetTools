@@ -290,7 +290,7 @@ public class TaskManagerTests
             // A 'completed' target now requires the task be claimed first.
             if (expected == "completed")
             {
-                _taskManager.ClaimTask(taskId, "tester");
+                _taskManager.ClaimTask(taskId.ToString(), "tester");
             }
 
             // Act
@@ -535,7 +535,7 @@ public class TaskManagerTests
         var task3Id = ExtractTaskId(task3Result);
 
         _taskManager.UpdateTask(task1Id, status: "in progress");
-        _taskManager.ClaimTask(task2Id, "tester");
+        _taskManager.ClaimTask(task2Id.ToString(), "tester");
         _taskManager.UpdateTask(task2Id, status: "completed");
 
         // Act
@@ -610,7 +610,7 @@ public class TaskManagerTests
         var task2Id = ExtractTaskId(task2Result);
         _taskManager.AddTask("Subtask", task1Id);
 
-        _taskManager.ClaimTask(task1Id, "tester");
+        _taskManager.ClaimTask(task1Id.ToString(), "tester");
         _taskManager.UpdateTask(task1Id, status: "completed");
         _taskManager.UpdateTask(task2Id, status: "removed");
 
@@ -721,7 +721,7 @@ public class TaskManagerTests
         // expected (see below) and not itself a thread-safety failure.
         var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
-        _taskManager.ClaimTask(taskId, "tester");
+        _taskManager.ClaimTask(taskId.ToString(), "tester");
         var updateCount = 50;
         var tasks = new List<Task<string>>();
 
@@ -946,6 +946,7 @@ public class TaskManagerTests
         _taskManager.AddNote("1", noteText: "Rate limit is 100/min");
         _taskManager.AddNote("1", noteText: "Auth via JWT");
         _taskManager.UpdateTask("1", "in progress");
+        _taskManager.ClaimTask("1.1", "tester");
         _taskManager.UpdateTask("1.1", "completed");
         _taskManager.UpdateTask("1.2", "removed");
 
@@ -956,9 +957,12 @@ public class TaskManagerTests
         // Environment.NewLine leaking CRLF into tool output on Windows. The status line now
         // names blocked tasks explicitly (0 here) rather than folding them silently into
         // "pending" — PR4's coordination fields (Blocked, assignee, blockedBy, elapsed) change
-        // this rendering even when a tree, like this one, never touches them. This byte-exact
-        // string and docs/features/todo-manager/requirements.md's "Worked Example" must be kept
-        // in sync — see the CRITICAL sync note there.
+        // this rendering even when a tree, like this one, never touches them. Completing 1.1
+        // now requires it to have been claimed first (see Requirement 8.8), and Assignee is
+        // durable ownership that survives the Completed transition, so its row carries a
+        // "[@tester]" tag. This byte-exact string and
+        // docs/features/todo-manager/requirements.md's "Worked Example" must be kept in sync —
+        // see the CRITICAL sync note there.
         var expected =
             "# 📋 Task List\n"
             + "\n"
@@ -969,7 +973,7 @@ public class TaskManagerTests
             + "  Notes:\n"
             + "  1. Rate limit is 100/min\n"
             + "  2. Auth via JWT\n"
-            + "  [x] 1.1. Define endpoints\n"
+            + "  [x] 1.1. Define endpoints [@tester]\n"
             + "    [ ] 1.1.1. Validate JWT\n"
             + "  [~] 1.2. Draft schema (removed)\n"
             + "[ ] 2. Ship it";
@@ -1006,6 +1010,323 @@ public class TaskManagerTests
 
         result.Should().Be(expected);
     }
+
+    #endregion
+
+    #region Coordination Fields Tests (claim/lease, assignee, blocked)
+
+    [Fact]
+    public void ClaimTask_OnAnUnclaimedTask_ShouldMoveToInProgressByName()
+    {
+        // Arrange
+        var addResult = _taskManager.AddTask("Write the design doc").Text;
+        var taskId = ExtractTaskId(addResult).ToString();
+
+        // Act
+        var result = _taskManager.ClaimTask(taskId, "rev-a");
+
+        // Assert
+        result.IsError.Should().BeFalse();
+        result.Text.Should().Contain("claimed by rev-a");
+
+        var task = _taskManager.GetTasks().Single(t => t.Id == taskId);
+        task.Status.Should().Be(TaskManager.TaskStatus.InProgress);
+        task.Assignee.Should().Be("rev-a");
+        task.Times.Should().NotBeNull();
+        task.Times!.ClaimedAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void ClaimTask_ByADifferentAgentWhileFresh_IsRefused()
+    {
+        // Arrange
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var manager = new TaskManager(clock);
+        manager.AddTask("Ship the release");
+        manager.ClaimTask("1", "rev-a");
+        clock.Advance(TimeSpan.FromMinutes(5)); // well under the 15-minute default lease
+
+        // Act
+        var result = manager.ClaimTask("1", "rev-b");
+
+        // Assert - a fresh lease is a real lock, not a takeover target
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_already_claimed");
+        var task = manager.GetTasks().Single();
+        task.Assignee.Should().Be("rev-a");
+    }
+
+    [Fact]
+    public void ClaimTask_ByADifferentAgentAfterTheLeaseGoesStale_TakesItOver()
+    {
+        // Arrange - this is the "claim is a lease, not a hard lock" invariant: the design
+        // explicitly rejects a permanent lock so a crashed/abandoned agent cannot wedge a task
+        // forever. Default staleness is 15 minutes (TaskManager.DefaultLeaseStaleAfter).
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var manager = new TaskManager(clock);
+        manager.AddTask("Ship the release");
+        manager.ClaimTask("1", "rev-a");
+        clock.Advance(TimeSpan.FromMinutes(16)); // past the default 15-minute lease
+
+        // Act
+        var result = manager.ClaimTask("1", "rev-b");
+
+        // Assert
+        result.IsError.Should().BeFalse();
+        result.Text.Should().Contain("Took over a stale lease from rev-a");
+        var task = manager.GetTasks().Single();
+        task.Assignee.Should().Be("rev-b");
+        task.Status.Should().Be(TaskManager.TaskStatus.InProgress);
+    }
+
+    [Fact]
+    public void ClaimTask_ASecondTaskForTheSameAgent_ReleasesTheFirstBackToNotStarted()
+    {
+        // Arrange - the one-in-progress-per-assignee invariant: an agent claiming a second
+        // task is not allowed to have two active leases at once.
+        _taskManager.AddTask("First task");
+        _taskManager.AddTask("Second task");
+        _taskManager.ClaimTask("1", "rev-a");
+
+        // Act
+        var result = _taskManager.ClaimTask("2", "rev-a");
+
+        // Assert
+        result.IsError.Should().BeFalse();
+        result.Text.Should().Contain("Released task 1 back to 'not started'");
+
+        var tasks = _taskManager.GetTasks();
+        var first = tasks.Single(t => t.Id == "1");
+        var second = tasks.Single(t => t.Id == "2");
+
+        first.Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+        first.Assignee.Should().Be("rev-a"); // ownership persists even though it is no longer active
+        second.Status.Should().Be(TaskManager.TaskStatus.InProgress);
+        second.Assignee.Should().Be("rev-a");
+    }
+
+    [Fact]
+    public void BlockTask_SetsStatusAndBlockedBy_AndRefusesAClaimUntilResolved()
+    {
+        // Arrange
+        _taskManager.AddTask("The blocker");
+        _taskManager.AddTask("The dependent");
+
+        // Act
+        var blockResult = _taskManager.BlockTask("2", ["1"]);
+        var claimAttempt = _taskManager.ClaimTask("2", "rev-a");
+
+        // Assert
+        blockResult.IsError.Should().BeFalse();
+        var dependent = _taskManager.GetTasks().Single(t => t.Id == "2");
+        dependent.Status.Should().Be(TaskManager.TaskStatus.Blocked);
+        dependent.BlockedBy.Should().ContainSingle().Which.Should().Be("1");
+
+        claimAttempt.IsError.Should().BeTrue();
+        claimAttempt.ErrorCode.Should().Be("task_blocked");
+    }
+
+    [Fact]
+    public void CompletingABlocker_AutoUnblocksItsDependents()
+    {
+        // Arrange
+        _taskManager.AddTask("The blocker");
+        _taskManager.AddTask("The dependent");
+        _taskManager.BlockTask("2", ["1"]);
+        _taskManager.ClaimTask("1", "rev-a");
+
+        // Act
+        var completeResult = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        completeResult.IsError.Should().BeFalse();
+        completeResult.Text.Should().Contain("Unblocked: 2");
+
+        var dependent = _taskManager.GetTasks().Single(t => t.Id == "2");
+        dependent.Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+        dependent.BlockedBy.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void UpdateTask_ToBlockedDirectly_IsRefusedAndPointsAtBlockTask()
+    {
+        // Arrange
+        _taskManager.AddTask("Some task");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "blocked");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.Text.Should().Contain("block-task");
+
+        var task = _taskManager.GetTasks().Single();
+        task.Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void UpdateTask_ToCompletedWithoutAnActiveClaim_IsRefused()
+    {
+        // Arrange
+        _taskManager.AddTask("Never claimed");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_not_claimed");
+    }
+
+    [Fact]
+    public void AddTask_TimestampsCreatedAtFromTheInjectedClock()
+    {
+        // Arrange
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-03-01T12:00:00Z"));
+        var manager = new TaskManager(clock);
+
+        // Act
+        manager.AddTask("Timestamped task");
+
+        // Assert
+        var task = manager.GetTasks().Single();
+        task.Times.Should().NotBeNull();
+        task.Times!.CreatedAt.Should().Be(DateTimeOffset.Parse("2026-03-01T12:00:00Z"));
+        task.Times.ClaimedAt.Should().BeNull();
+        task.Times.CompletedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public void FullLifecycle_StampsCreatedClaimedAndCompletedFromTheInjectedClock()
+    {
+        // Arrange
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-03-01T12:00:00Z"));
+        var manager = new TaskManager(clock);
+        manager.AddTask("Lifecycle task");
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+        manager.ClaimTask("1", "rev-a");
+
+        clock.Advance(TimeSpan.FromMinutes(3));
+        manager.UpdateTask("1", "completed");
+
+        // Act
+        var task = manager.GetTasks().Single();
+
+        // Assert
+        task.Times.Should().NotBeNull();
+        task.Times!.CreatedAt.Should().Be(DateTimeOffset.Parse("2026-03-01T12:00:00Z"));
+        task.Times.ClaimedAt.Should().Be(DateTimeOffset.Parse("2026-03-01T12:02:00Z"));
+        task.Times.CompletedAt.Should().Be(DateTimeOffset.Parse("2026-03-01T12:05:00Z"));
+    }
+
+    [Fact]
+    public void AddTask_UnderAnAssignedParent_InheritsTheAssigneeUnlessOverridden()
+    {
+        // Arrange
+        _taskManager.AddTask("Parent task", parentId: null, assignee: "rev-a");
+
+        // Act
+        _taskManager.AddTask("Inherits", "1");
+        _taskManager.AddTask("Overrides", "1", assignee: "rev-b");
+
+        // Assert
+        var tasks = _taskManager.GetTasks();
+        var parent = tasks.Single(t => t.Id == "1");
+        var inherited = parent.SubTasks.Single(t => t.Id == "1.1");
+        var overridden = parent.SubTasks.Single(t => t.Id == "1.2");
+
+        parent.Assignee.Should().Be("rev-a");
+        inherited.Assignee.Should().Be("rev-a");
+        overridden.Assignee.Should().Be("rev-b");
+    }
+
+    [Fact]
+    public void AssignTask_SetsAssigneeWithoutTouchingStatus()
+    {
+        // Arrange
+        _taskManager.AddTask("Dispatch me");
+
+        // Act
+        var result = _taskManager.AssignTask("1", "rev-a");
+
+        // Assert
+        result.IsError.Should().BeFalse();
+        var task = _taskManager.GetTasks().Single();
+        task.Assignee.Should().Be("rev-a");
+        task.Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void DeserializeTasks_LoadsOldShapeJsonMissingCoordinationFields()
+    {
+        // Arrange - this is the exact shape TaskManager persisted before assignee/blockedBy/
+        // times existed: no such properties at all, not even null placeholders.
+        const string oldShapeJson = """
+            {
+              "rootTasks": [
+                {
+                  "id": 1,
+                  "displayId": "1",
+                  "title": "Pre-existing task",
+                  "status": "NotStarted",
+                  "notes": [],
+                  "subTasks": [],
+                  "nextSubTaskId": 1
+                }
+              ],
+              "nextId": 2
+            }
+            """;
+
+        // Act
+        var manager = TaskManager.DeserializeTasks(oldShapeJson);
+
+        // Assert
+        var task = manager.GetTasks().Single();
+        task.Title.Should().Be("Pre-existing task");
+        task.Assignee.Should().BeNull();
+        task.BlockedBy.Should().BeEmpty();
+        task.Times.Should().BeNull();
+
+        // And it keeps working going forward under the new rules.
+        var claim = manager.ClaimTask("1", "rev-a");
+        claim.IsError.Should().BeFalse();
+    }
+
+    [Fact]
+    public void RoundTrip_SerializeThenDeserialize_PreservesCoordinationFields()
+    {
+        // Arrange
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var manager = new TaskManager(clock);
+        manager.AddTask("Blocker");
+        manager.AddTask("Dependent");
+        manager.ClaimTask("1", "rev-a");
+        manager.BlockTask("2", ["1"]);
+
+        // Act
+        var json = manager.JsonSerializeTasks();
+        var roundTripped = TaskManager.DeserializeTasks(json, clock);
+
+        // Assert
+        var tasks = roundTripped.GetTasks();
+        var blocker = tasks.Single(t => t.Id == "1");
+        var dependent = tasks.Single(t => t.Id == "2");
+
+        blocker.Assignee.Should().Be("rev-a");
+        blocker.Status.Should().Be(TaskManager.TaskStatus.InProgress);
+        blocker.Times.Should().NotBeNull();
+        blocker.Times!.CreatedAt.Should().NotBeNull();
+        blocker.Times.ClaimedAt.Should().NotBeNull();
+
+        dependent.Status.Should().Be(TaskManager.TaskStatus.Blocked);
+        dependent.BlockedBy.Should().ContainSingle().Which.Should().Be("1");
+    }
+
+    #endregion
+
+    #region GetMarkdown Tests
 
     [Fact]
     public void GetMarkdown_ShouldReturnSameAsListTasks()
