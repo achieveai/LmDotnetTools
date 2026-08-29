@@ -62,6 +62,7 @@ public class TaskManager : ITodoBoardSource
     private const string TaskAlreadyClaimedCode = "task_already_claimed";
     private const string TaskNotClaimedCode = "task_not_claimed";
     private const string InvalidArtifactPathCode = "invalid_artifact_path";
+    private const string BlockCycleCode = "block_cycle";
 
     /// <summary>
     ///     A claim is a lease, not a hard lock (see the design doc's stale-row research): an
@@ -587,9 +588,9 @@ Examples:
         [Description("Your agent name — recorded as the claim holder")] string agent
     )
     {
-        // The claim-refresh path mutates only the lease timestamp, which is not board-visible
-        // today — but it will be the moment PR 4 surfaces staleness, so the hook fires there too
-        // rather than being discovered missing later.
+        // The claim-refresh path mutates only the lease timestamp — board-visible since #595 put
+        // claimedAt on TodoTaskNode, so the hook firing here keeps the persisted lease age (and
+        // any staleness rendering built on it) current rather than frozen at the original claim.
         return NotifyIfChanged(ClaimTaskCore(taskId, agent));
     }
 
@@ -661,8 +662,9 @@ Examples:
         [Description("Agent name to assign this task to")] string assignee
     )
     {
-        // Assignee is not on TodoTaskNode yet, so this fires a frame whose board looks unchanged —
-        // wrapped anyway so PR 4 surfacing the assignee does not have to rediscover the hook.
+        // Assignee is on TodoTaskNode since #595, so this fires a frame the board can actually
+        // render differently — and the durable write behind the same hook is what lets the
+        // assignment survive an agent recreation.
         return NotifyIfChanged(AssignTaskCore(taskId, assignee));
     }
 
@@ -736,11 +738,20 @@ list the board renders as 'blocked by 1, 2'.
 • Completing a blocking task automatically removes it from every dependent's
   blockedBy, and unblocks the dependent (back to 'not started') once none remain —
   you do not need to call this again just to clear a resolved blocker.
+• Auto-unblock is one-way: re-opening a completed blocker does NOT re-block its former
+  dependents. Call block-task again to re-block them.
+• A completed or removed task is refused as a blocker — it can never complete (again)
+  to lift the block. Re-open it first (update-task <id> 'not started') if it should
+  block again.
+• An edge that would close a dependency cycle (a blocks b while b blocks a, directly
+  or through intermediates) is refused — no task in the cycle could ever complete to
+  unblock the others.
 
 Examples:
 - Block on a dependency: {""taskId"": ""3"", ""blockedBy"": [""1""]}
 - Block on several: {""taskId"": ""4"", ""blockedBy"": [""1"", ""2""]}
-- Clear the block: {""taskId"": ""3"", ""blockedBy"": []}"
+- Clear the block: {""taskId"": ""3"", ""blockedBy"": []}
+- Re-block after a premature completion: re-open the blocker, then {""taskId"": ""3"", ""blockedBy"": [""1""]}"
     )]
     public FunctionResult BlockTask(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
@@ -786,14 +797,12 @@ Examples:
                 return $"Cleared blockedBy on task {task.DisplayId}.";
             }
 
-            if (ids.Contains(task.DisplayId))
-            {
-                return FunctionResult.Error(
-                    InvalidArgumentsCode,
-                    $"Error: Task {task.DisplayId} cannot be listed as its own blocker."
-                );
-            }
-
+            // Store canonical DisplayIds, never the raw input strings: FindTaskByStringId
+            // resolves "01", "+1", and " 1" all to task 1, but the self-block guard, the cycle
+            // DFS, and AutoUnblockDependentsOf all compare ordinal strings — a raw non-canonical
+            // id would slip every one of them (self-deadlock accepted, cycle accepted,
+            // auto-unblock missed).
+            var resolvedIds = new List<string>();
             foreach (var id in ids)
             {
                 var (blocker, blockerError) = FindTaskByStringId(id);
@@ -802,15 +811,54 @@ Examples:
                     return blockerError
                         ?? FunctionResult.Error(TaskNotFoundCode, $"Error: Blocking task '{id}' not found.");
                 }
+
+                // A completed or removed task can never complete (again) to lift the block, so
+                // listing it would mint a Blocked row whose every claim guard passes —
+                // GetUnresolvedBlockers already treats a completed blocker as resolved. This is
+                // also the re-block seam (#595, review 587/FU-3): after auto-unblock, re-block on
+                // a still-completed blocker is refused with the recipe (re-open it first) instead
+                // of silently recording a block with no force.
+                if (blocker.Status is TaskStatus.Completed or TaskStatus.Removed)
+                {
+                    return FunctionResult.Error(
+                        InvalidArgumentsCode,
+                        $"Error: Task '{id}' is {NormalizeStatusText(blocker.Status)} and cannot block task {task.DisplayId} — a resolved task never completes again to lift the block. Re-open it first (update-task {id} \"not started\") if it should block again."
+                    );
+                }
+
+                if (!resolvedIds.Contains(blocker.DisplayId))
+                {
+                    resolvedIds.Add(blocker.DisplayId);
+                }
+            }
+
+            if (resolvedIds.Contains(task.DisplayId))
+            {
+                return FunctionResult.Error(
+                    InvalidArgumentsCode,
+                    $"Error: Task {task.DisplayId} cannot be listed as its own blocker."
+                );
+            }
+
+            // Reject an edge that closes a cycle (#595, review 587/FU-4): every member of a
+            // blockedBy cycle waits on another member, auto-unblock only fires on completion, and
+            // completion requires a claim the block refuses — so the deadlock would be silent and
+            // permanent, escapable only by someone noticing and clearing an edge by hand.
+            if (FindBlockCyclePath(task, resolvedIds) is { } cyclePath)
+            {
+                return FunctionResult.Error(
+                    BlockCycleCode,
+                    $"Error: Blocking task {task.DisplayId} on {cyclePath[1]} would create a cycle: {string.Join(" -> ", cyclePath)} (each task waiting on the next). No task in the cycle could ever complete to unblock the others; remove one of the existing blocks instead."
+                );
             }
 
             task.BlockedBy.Clear();
-            task.BlockedBy.AddRange(ids);
+            task.BlockedBy.AddRange(resolvedIds);
             task.Status = TaskStatus.Blocked;
             // Not being actively worked while blocked; a live lease no longer means anything.
             task.ClaimedAt = null;
 
-            return $"Task {task.DisplayId} is now blocked by {string.Join(", ", ids)}.";
+            return $"Task {task.DisplayId} is now blocked by {string.Join(", ", resolvedIds)}.";
         }
     }
 
@@ -1063,6 +1111,60 @@ Examples:
         var claimedAt = task.ClaimedAt ?? task.CreatedAt ?? now;
         elapsed = now - claimedAt;
         return elapsed > _leaseStaleAfter;
+    }
+
+    /// <summary>
+    ///     Looks for a path through the existing blockedBy graph from any of the proposed blockers
+    ///     back to <paramref name="task" /> — the path that would turn the proposed edges into a
+    ///     cycle (#595, review 587/FU-4). Returns the full cycle as dotted ids, starting and ending
+    ///     with <paramref name="task" />'s own id (<c>["2", "1", "2"]</c> reads "2 blocked by 1,
+    ///     1 blocked by 2"), or null when no proposed edge closes one. The walk is bounded by a
+    ///     visited set shared across the whole call, so a diamond-shaped graph is walked once and a
+    ///     pre-existing cycle that does not pass through <paramref name="task" /> cannot loop it.
+    ///     Must be called while holding <see cref="_sync" />.
+    /// </summary>
+    private List<string>? FindBlockCyclePath(PrivateTaskItem task, List<string> proposedBlockerIds)
+    {
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var path = new List<string> { task.DisplayId };
+        foreach (var blockerId in proposedBlockerIds)
+        {
+            if (TryFindPathBackTo(task.DisplayId, blockerId, visited, path))
+            {
+                return path;
+            }
+        }
+
+        return null;
+    }
+
+    private bool TryFindPathBackTo(string targetId, string currentId, HashSet<string> visited, List<string> path)
+    {
+        path.Add(currentId);
+        if (string.Equals(currentId, targetId, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (visited.Add(currentId))
+        {
+            // A dangling id (blocker deleted after the edge was recorded) simply has no outgoing
+            // edges here — consistent with GetUnresolvedBlockers treating it as resolved.
+            var (current, _) = FindTaskByStringId(currentId);
+            if (current != null)
+            {
+                foreach (var nextId in current.BlockedBy)
+                {
+                    if (TryFindPathBackTo(targetId, nextId, visited, path))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        path.RemoveAt(path.Count - 1);
+        return false;
     }
 
     private List<string> AutoUnblockDependentsOf(string completedTaskId)
@@ -1637,6 +1739,11 @@ Examples:
             Title = task.Title,
             Notes = [.. task.Notes],
             Artifacts = [.. task.Artifacts],
+            BlockedBy = [.. task.BlockedBy],
+            Assignee = task.Assignee,
+            CreatedAt = task.Times?.CreatedAt,
+            ClaimedAt = task.Times?.ClaimedAt,
+            CompletedAt = task.Times?.CompletedAt,
             SubTasks = [.. task.SubTasks.Select(ToBoardNode)],
         };
     }
@@ -2112,13 +2219,22 @@ Examples:
     ///         which would renumber from 1, flatten nesting to one level, and reset every status.
     ///     </para>
     ///     <para>
-    ///         Only what the board snapshot carries comes back: id, status, title, notes, artifacts,
-    ///         subtree. The
-    ///         claim/lease fields (<c>assignee</c>, <c>claimedAt</c>) and <c>blockedBy</c> are not part
-    ///         of the persisted projection — leases are in-memory by design, so every rehydrated task
-    ///         arrives lease-less, and a <see cref="TaskStatus.Blocked" /> row arrives with an empty
-    ///         <c>blockedBy</c> (clear it with <c>block-task</c>, or re-block with real ids; automatic
-    ///         unblock cannot fire for it because there is no recorded blocker to complete).
+    ///         Everything the board snapshot carries comes back: id, status, title, notes, artifacts,
+    ///         <c>blockedBy</c>, <c>assignee</c>, the timestamps, and the subtree. The coordination
+    ///         fields all round-trip as of #595: <c>blockedBy</c> (review 590/D-1) so a
+    ///         <see cref="TaskStatus.Blocked" /> row keeps its recorded blockers and its enforcement
+    ///         across the restart, and <c>assignee</c>/<c>claimedAt</c> (D2) so the agent that
+    ///         claimed a row before the recreate can still complete it and a live lease still
+    ///         refuses foreign claims until it actually goes stale.
+    ///     </para>
+    ///     <para>
+    ///         Rows from snapshots persisted before those fields existed are normalized to states
+    ///         the guards can honestly enforce: a Blocked row with no restorable blockers becomes
+    ///         <see cref="TaskStatus.NotStarted" /> rather than rendering a block nothing enforces
+    ///         (re-block it with <c>block-task</c> if the dependency still holds); an InProgress row
+    ///         with an assignee but no restorable <c>claimedAt</c> has its lease aged from the
+    ///         snapshot's capture instant so it can still go stale; and an InProgress row with no
+    ///         assignee at all self-heals on the next claim, which adopts it cleanly.
     ///     </para>
     /// </remarks>
     public static TaskManager FromSnapshot(TodoBoardSnapshot snapshot, TimeProvider timeProvider)
@@ -2130,7 +2246,7 @@ Examples:
         var maxRootId = 0;
         foreach (var (node, index) in snapshot.Tasks.Select(static (node, index) => (node, index)))
         {
-            var item = FromBoardNode(node, parentId: null, position: index + 1);
+            var item = FromBoardNode(node, parentId: null, position: index + 1, snapshot.CapturedAtUtc);
             state.RootTasks.Add(item);
             maxRootId = Math.Max(maxRootId, item.Id);
         }
@@ -2139,7 +2255,12 @@ Examples:
         return new TaskManager(state, timeProvider, DefaultLeaseStaleAfter);
     }
 
-    private static PrivateTaskItem FromBoardNode(TodoTaskNode node, int? parentId, int position)
+    private static PrivateTaskItem FromBoardNode(
+        TodoTaskNode node,
+        int? parentId,
+        int position,
+        DateTimeOffset capturedAtUtc
+    )
     {
         // The per-level numeric id is the dotted path's last segment ("1.2.3" -> 3). A segment that
         // does not parse (malformed persisted data) falls back to the row's 1-based position, which
@@ -2154,16 +2275,49 @@ Examples:
             Title = node.Title,
             Status = FromBoardStatus(node.Status),
             ParentId = parentId,
+            // The claim is part of the persisted board too (#595, D2): without it, the very agent
+            // that claimed a row before the recreate could no longer complete it (task_not_claimed),
+            // and a foreign agent could claim over a lease that was still live. Restoring these
+            // fields is hydration, not a transition — no OnChanged can fire here, because the
+            // manager is still being constructed and the hook is only wired by the host afterwards.
+            Assignee = node.Assignee,
+            CreatedAt = node.CreatedAt,
+            ClaimedAt = node.ClaimedAt,
+            CompletedAt = node.CompletedAt,
         };
         item.Notes.AddRange(node.Notes);
         // Artifacts are part of the persisted board (unlike leases): workspace-relative by the tool
         // boundary's guarantee, so they stay meaningful across the very restart hydration serves.
         item.Artifacts.AddRange(node.Artifacts);
+        // blockedBy round-trips too (#595, review 590/D-1): dotted ids stay stable across
+        // hydration (DisplayIds are restored exactly), so the references keep pointing at the
+        // same rows and RefuseIfBlocked keeps its force after a restart.
+        item.BlockedBy.AddRange(node.BlockedBy);
+
+        if (item.Status == TaskStatus.Blocked && item.BlockedBy.Count == 0)
+        {
+            // A row persisted Blocked by a build that did not round-trip blockedBy (pre-#595)
+            // arrives with no restorable blockers: every claim guard would pass while the panel
+            // still showed Blocked — exactly the Status/BlockedBy disagreement Requirement 8.5
+            // exists to prevent. Downgrade so the hydrated state is honest about what it can
+            // enforce; a real block can be re-established with block-task.
+            item.Status = TaskStatus.NotStarted;
+        }
+
+        if (item.Status == TaskStatus.InProgress && item.Assignee != null && item.ClaimedAt == null)
+        {
+            // A claimed row from a snapshot persisted before claimedAt round-tripped (or with the
+            // field stripped) must not read as freshly claimed forever: IsLeaseStale falls back to
+            // "now" when both timestamps are absent, so the lease could never go stale and the row
+            // would wedge if its agent is gone. Ageing it from the capture instant is the honest
+            // floor — the claim is at least that old.
+            item.ClaimedAt = capturedAtUtc;
+        }
 
         var maxSubId = 0;
         foreach (var (subNode, index) in node.SubTasks.Select(static (subNode, index) => (subNode, index)))
         {
-            var subItem = FromBoardNode(subNode, parentId: id, position: index + 1);
+            var subItem = FromBoardNode(subNode, parentId: id, position: index + 1, capturedAtUtc);
             item.SubTasks.Add(subItem);
             maxSubId = Math.Max(maxSubId, subItem.Id);
         }

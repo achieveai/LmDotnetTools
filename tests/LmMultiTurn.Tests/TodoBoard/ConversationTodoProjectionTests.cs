@@ -189,6 +189,35 @@ public class ConversationTodoProjectionTests
     }
 
     [Fact]
+    public async Task LoadAsync_ReadsRowsPersistedBeforeAndAfterTheCoordinationFields()
+    {
+        // #595 (review 590/D-1 and D2) literal-payload compat, same discipline as the artifacts
+        // test above: one row in the exact camelCase shape PRs 2-5 persisted — no `blockedBy`,
+        // `assignee`, or timestamp keys at all — and one carrying the new fields. Both must read in
+        // one pass: the old row's come back empty/null, the new row's come back intact so the block
+        // and the claim keep their force after rehydration. A same-build round-trip cannot prove
+        // the missing-key half.
+        var store = new InMemoryConversationStore();
+        const string mixedGenerationBlob = """
+            {"ThreadId":"conv-1","SchemaVersion":1,"CapturedAtUtc":"2026-08-29T12:00:00+00:00","Tasks":[{"id":"1","status":"InProgress","title":"The blocker","notes":[],"subTasks":[]},{"id":"2","status":"Blocked","title":"The dependent","notes":[],"blockedBy":["1"],"assignee":"rev-a","createdAt":"2026-08-29T11:00:00+00:00","claimedAt":"2026-08-29T11:30:00+00:00","subTasks":[]}]}
+            """;
+        await SetRawPropertyAsync(store, "conv-1", mixedGenerationBlob);
+
+        var loaded = await ConversationTodoProjection.LoadAsync(store, "conv-1");
+
+        loaded.Should().NotBeNull();
+        loaded!.Tasks.Should().HaveCount(2);
+        loaded.Tasks[0].BlockedBy.Should().BeEmpty();
+        loaded.Tasks[0].Assignee.Should().BeNull();
+        loaded.Tasks[0].ClaimedAt.Should().BeNull();
+        loaded.Tasks[1].Status.Should().Be(TodoTaskStatus.Blocked);
+        loaded.Tasks[1].BlockedBy.Should().ContainSingle().Which.Should().Be("1");
+        loaded.Tasks[1].Assignee.Should().Be("rev-a");
+        loaded.Tasks[1].CreatedAt.Should().Be(DateTimeOffset.Parse("2026-08-29T11:00:00+00:00"));
+        loaded.Tasks[1].ClaimedAt.Should().Be(DateTimeOffset.Parse("2026-08-29T11:30:00+00:00"));
+    }
+
+    [Fact]
     public void FromMetadata_ReturnsNull_WhenNoProjectionPresent()
     {
         ConversationTodoProjection.FromMetadata(null).Should().BeNull();

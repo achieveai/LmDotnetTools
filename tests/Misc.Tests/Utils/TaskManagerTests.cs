@@ -1246,6 +1246,205 @@ public class TaskManagerTests
     }
 
     [Fact]
+    public void BlockTask_OnItself_IsRefused()
+    {
+        _taskManager.AddTask("Task A");
+
+        var result = _taskManager.BlockTask("1", ["1"]);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("invalid_args");
+        result.Text.Should().Contain("its own blocker");
+        _taskManager.GetTasks().Single().Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void BlockTask_OnItselfViaNonCanonicalId_IsRefusedAsSelfBlock()
+    {
+        // "01" resolves to task 1 (FindTaskByStringId int-parses), but the self-block guard
+        // compares ordinal strings — storing the raw "01" would slip it and mint a permanent
+        // self-deadlock. Blocker ids must be canonicalized to the resolved DisplayId before
+        // the guard runs. Mutation that must go red: storing the raw id instead of
+        // blocker.DisplayId in BlockTaskCore.
+        _taskManager.AddTask("Task A");
+
+        var result = _taskManager.BlockTask("1", ["01"]);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("invalid_args");
+        result.Text.Should().Contain("its own blocker");
+        _taskManager.GetTasks().Single().Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void BlockTask_ClosingACycleViaNonCanonicalId_IsRefused()
+    {
+        // 1 blocked by 2, then block 2 on "01" — "01" resolves to task 1, so the edge closes
+        // the cycle 2 -> 1 -> 2 and must be refused exactly like the canonical form.
+        _taskManager.AddTask("Task A");
+        _taskManager.AddTask("Task B");
+        _taskManager.BlockTask("1", ["2"]).IsError.Should().BeFalse();
+
+        var result = _taskManager.BlockTask("2", ["01"]);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("block_cycle");
+        _taskManager.GetTasks().Single(t => t.Id == "2").Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void BlockTask_ExistingEdgeStoredViaNonCanonicalId_StillClosesTheCycleAndIsRefused()
+    {
+        // The cycle DFS compares ordinal strings when walking stored edges, so an edge recorded
+        // as the raw "02" would hide task 2 from the walk and let 2 -> 1 -> 2 through. Storing
+        // the canonical DisplayId keeps the DFS sound. Mutation that must go red: storing the
+        // raw id instead of blocker.DisplayId in BlockTaskCore.
+        _taskManager.AddTask("Task A");
+        _taskManager.AddTask("Task B");
+        _taskManager.BlockTask("1", ["02"]).IsError.Should().BeFalse();
+        _taskManager.GetTasks().Single(t => t.Id == "1").BlockedBy.Should().Equal("2");
+
+        var result = _taskManager.BlockTask("2", ["1"]);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("block_cycle");
+        _taskManager.GetTasks().Single(t => t.Id == "2").Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void CompletingABlocker_AutoUnblocksADependentBlockedViaNonCanonicalId()
+    {
+        // AutoUnblockDependentsOf does Remove(completedTask.DisplayId) — a stored raw "01" would
+        // never match "1", leaving the dependent Blocked forever with a satisfied blocker
+        // (Req 8.5). The stored edge must be the canonical DisplayId.
+        _taskManager.AddTask("The blocker");
+        _taskManager.AddTask("The dependent");
+        _taskManager.BlockTask("2", ["01"]).IsError.Should().BeFalse();
+        _taskManager.GetTasks().Single(t => t.Id == "2").BlockedBy.Should().Equal("1");
+        _taskManager.ClaimTask("1", "rev-a");
+
+        var completeResult = _taskManager.UpdateTask("1", "completed");
+
+        completeResult.IsError.Should().BeFalse();
+        completeResult.Text.Should().Contain("Unblocked: 2");
+
+        var dependent = _taskManager.GetTasks().Single(t => t.Id == "2");
+        dependent.Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+        dependent.BlockedBy.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void BlockTask_ThatWouldCloseADirectCycle_IsRefusedAndNamesTheCycle()
+    {
+        // #595 (review 587/FU-4): 1 <-> 2 used to be accepted, leaving both tasks permanently
+        // unclaimable — auto-unblock only fires on completion, and completion requires the claim
+        // the block refuses. Mutation that must go red: removing the FindBlockCyclePath check.
+        _taskManager.AddTask("Task A");
+        _taskManager.AddTask("Task B");
+        _taskManager.BlockTask("2", ["1"]).IsError.Should().BeFalse();
+
+        var result = _taskManager.BlockTask("1", ["2"]);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("block_cycle");
+        result.Text.Should().Contain("1 -> 2 -> 1");
+
+        // The refused call must not have mutated anything: task 1 is untouched, task 2's block stands.
+        var tasks = _taskManager.GetTasks();
+        tasks.Single(t => t.Id == "1").Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+        tasks.Single(t => t.Id == "1").BlockedBy.Should().BeEmpty();
+        tasks.Single(t => t.Id == "2").Status.Should().Be(TaskManager.TaskStatus.Blocked);
+    }
+
+    [Fact]
+    public void BlockTask_ThatWouldCloseATransitiveCycle_IsRefused()
+    {
+        // 1 -> 3 -> 2 -> 1 through an intermediate: the walk must follow existing blockedBy edges
+        // transitively, not just check the immediate pair.
+        _taskManager.AddTask("Task A");
+        _taskManager.AddTask("Task B");
+        _taskManager.AddTask("Task C");
+        _taskManager.BlockTask("2", ["1"]).IsError.Should().BeFalse();
+        _taskManager.BlockTask("3", ["2"]).IsError.Should().BeFalse();
+
+        var result = _taskManager.BlockTask("1", ["3"]);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("block_cycle");
+        result.Text.Should().Contain("1 -> 3 -> 2 -> 1");
+        _taskManager.GetTasks().Single(t => t.Id == "1").Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void BlockTask_OnACompletedBlocker_IsRefusedWithTheReOpenRecipe()
+    {
+        // #595 (review 587/FU-3): a completed task can never complete *again*, so listing it would
+        // mint a Blocked row every claim guard passes (GetUnresolvedBlockers already counts a
+        // completed blocker as resolved) — Blocked on the panel, no force behind it. Mutation that
+        // must go red: removing the Completed/Removed blocker refusal in BlockTaskCore.
+        _taskManager.AddTask("The blocker");
+        _taskManager.AddTask("The dependent");
+        _taskManager.ClaimTask("1", "rev-a");
+        _taskManager.UpdateTask("1", "completed").IsError.Should().BeFalse();
+
+        var result = _taskManager.BlockTask("2", ["1"]);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("invalid_args");
+        result.Text.Should().Contain("Re-open it first");
+
+        var dependent = _taskManager.GetTasks().Single(t => t.Id == "2");
+        dependent.Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+        dependent.BlockedBy.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void BlockTask_WithOneResolvedBlockerInTheList_RefusesTheWholeCall()
+    {
+        // The refusal is atomic, like the not-found refusal above it: a partial write would leave
+        // the dependent blocked on a subset the caller never asked for.
+        _taskManager.AddTask("Completed blocker");
+        _taskManager.AddTask("Live blocker");
+        _taskManager.AddTask("The dependent");
+        _taskManager.ClaimTask("1", "rev-a");
+        _taskManager.UpdateTask("1", "completed").IsError.Should().BeFalse();
+
+        var result = _taskManager.BlockTask("3", ["1", "2"]);
+
+        result.IsError.Should().BeTrue();
+        var dependent = _taskManager.GetTasks().Single(t => t.Id == "3");
+        dependent.Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+        dependent.BlockedBy.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void BlockTask_AfterAutoUnblockAndAReOpenedBlocker_ReBlocksWithFullForce()
+    {
+        // #595 (review 587/FU-3), the re-block path end to end: auto-unblock is one-way, so when a
+        // premature completion is rolled back the dependency is re-established by calling block-task
+        // again — and the re-established block must refuse claims exactly like the original.
+        _taskManager.AddTask("The blocker");
+        _taskManager.AddTask("The dependent");
+        _taskManager.BlockTask("2", ["1"]).IsError.Should().BeFalse();
+        _taskManager.ClaimTask("1", "rev-a");
+        _taskManager.UpdateTask("1", "completed").Text.Should().Contain("Unblocked: 2");
+
+        // The completion turns out to be premature: re-open the blocker.
+        _taskManager.UpdateTask("1", "not started").IsError.Should().BeFalse();
+
+        var reBlock = _taskManager.BlockTask("2", ["1"]);
+        reBlock.IsError.Should().BeFalse();
+
+        var dependent = _taskManager.GetTasks().Single(t => t.Id == "2");
+        dependent.Status.Should().Be(TaskManager.TaskStatus.Blocked);
+        dependent.BlockedBy.Should().ContainSingle().Which.Should().Be("1");
+
+        var claim = _taskManager.ClaimTask("2", "rev-b");
+        claim.IsError.Should().BeTrue();
+        claim.ErrorCode.Should().Be("task_blocked");
+    }
+
+    [Fact]
     public void UpdateTask_ToBlockedDirectly_IsRefusedAndPointsAtBlockTask()
     {
         // Arrange
