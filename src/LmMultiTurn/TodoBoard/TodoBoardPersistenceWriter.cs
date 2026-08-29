@@ -21,21 +21,17 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.TodoBoard;
 ///         pending so the next schedule or flush retries it.
 ///     </para>
 ///     <para>
-///         Two policy guards live here, at the call site, exactly where
-///         <see cref="ConversationTodoProjection.SaveAsync" /> says they belong:
+///         One policy guard lives here, at the call site, exactly where
+///         <see cref="ConversationTodoProjection.SaveAsync" /> says it belongs: an <b>empty</b> capture is
+///         never persisted. From this writer's seat "empty" is indistinguishable from "this process has
+///         not seen the board yet", and persisting it would clear a non-empty board another process wrote.
 ///     </para>
-///     <list type="bullet">
-///         <item>
-///             An <b>empty</b> capture is never persisted. From this writer's seat "empty" is
-///             indistinguishable from "this process has not seen the board yet", and persisting it would
-///             clear a non-empty board another process wrote.
-///         </item>
-///         <item>
-///             A thread with <b>no metadata row</b> is skipped rather than minted: metadata rows are
-///             created by the conversation lifecycle with their ownership stamp, and a projection writer
-///             must never be the thing that brings an unstamped row into existence.
-///         </item>
-///     </list>
+///     <para>
+///         The no-mint policy for a thread with <b>no metadata row</b> is inherited from
+///         <see cref="ConversationTodoProjection.SaveAsync" /> (#586): it skips silently when the row is
+///         absent, and declines by <b>throwing</b> when the conversation vanishes mid-write. The writer
+///         treats that decline as final — swallowed and logged — never as a transient failure to retry.
+///     </para>
 ///     <para>
 ///         The snapshot is re-stamped with the writer's own thread id before saving — the same hazard the
 ///         push frame guards against: a sub-agent mutating the shared board yields captures stamped with
@@ -137,28 +133,18 @@ public sealed class TodoBoardPersistenceWriter : IAsyncDisposable
             return;
         }
 
-        // Never mint a metadata row: rows are created (and ownership-stamped) by the conversation
-        // lifecycle. A thread that has no row yet gets its board persisted by a later change, after
-        // the row exists. The read-then-write gap here is closed by SaveAsync's transform running
-        // under the store's write serialization once #586's no-mint guard lands there.
-        var metadata = await _store.LoadMetadataAsync(_threadId, ct);
-        if (metadata is null)
-        {
-            _logger?.LogDebug(
-                "Skipping todo-board persistence for thread {ThreadId}: no metadata row exists yet",
-                _threadId
-            );
-            return;
-        }
-
+        // The no-mint policy lives in SaveAsync, not here: it probes for the metadata row and skips
+        // silently when none exists (rows are created, ownership-stamped, by the conversation
+        // lifecycle — a projection writer is not entitled to create one). Duplicating that probe here
+        // would be a redundant conjunct whose removal no test could catch.
         try
         {
             await ConversationTodoProjection.SaveAsync(_store, snapshot, ct);
         }
         catch (InvalidOperationException ex)
         {
-            // The store's update callback DECLINED the write — the conversation was deleted between the
-            // probe above and the write. There is no no-op return value a callback can hand back (every
+            // SaveAsync's update callback DECLINED the write — the conversation was deleted between
+            // its probe and the write. There is no no-op return value a callback can hand back (every
             // IConversationStore persists whatever it returns), so the projection declines by throwing.
             // A decline is final, not a transient fault: rethrowing would keep the write pending and
             // retry a deleted conversation forever, and would surface on the background drain rather

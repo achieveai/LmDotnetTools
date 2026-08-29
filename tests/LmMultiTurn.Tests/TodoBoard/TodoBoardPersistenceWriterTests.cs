@@ -173,8 +173,9 @@ public class TodoBoardPersistenceWriterTests
     {
         // Metadata rows are created (and ownership-stamped) by the conversation lifecycle; a projection
         // writer minting one would bring an unstamped row into existence (#586's ownership-stamp
-        // hazard). Mutation that must go red: removing the LoadMetadataAsync null-check, which lets
-        // SaveAsync's WithProjection mint the row.
+        // hazard). The guard MECHANISM lives in SaveAsync (silent pre-probe skip, decline-by-throw in
+        // the callback — pinned by the projection's own tests); this test pins the INVARIANT end-to-end
+        // through the writer path: schedule against a rowless thread, clean boundary, no row after.
         var inner = new InMemoryConversationStore();
         await using var writer = new TodoBoardPersistenceWriter(inner, "conv-1", () => Board("orphan"));
 
