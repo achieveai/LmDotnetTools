@@ -24,10 +24,17 @@ public static class SampleTriggerRegistrations
     /// so, and the wait's TTL expiry reads as "nothing matched" rather than "nothing could be
     /// observed" (#161).
     /// </param>
+    /// <param name="processExitObserver">
+    /// Optional real Bash-tool exit bridge for the <c>process</c> kind (issue #142) — in production the
+    /// sandbox-session-scoped <see cref="SandboxProcessExitObserver"/>. Null keeps the
+    /// <see cref="NoopProcessExitObserver"/> placeholder, whose arm-time rejection tells the model the
+    /// kind is not wired rather than parking a wait until TTL.
+    /// </param>
     public static TriggerOptions Build(
         bool sandboxEnabled,
         Func<SubAgentManager?>? subAgentManagerAccessor = null,
-        ILoggerFactory? loggerFactory = null
+        ILoggerFactory? loggerFactory = null,
+        IProcessExitObserver? processExitObserver = null
     )
     {
         var registrations = new List<TriggerSourceRegistration>();
@@ -82,19 +89,33 @@ public static class SampleTriggerRegistrations
             );
         }
 
-        // (#142) process registration appended here, guarded by `if (sandboxEnabled)`, in Task 9.
+        // (#142) process: sandbox-gated. With a real observer supplied the kind actually fires; the
+        // Noop fallback keeps the arm-time "not wired in this host" rejection.
         if (sandboxEnabled)
         {
             registrations.Add(
                 new TriggerSourceRegistration
                 {
                     Kind = ProcessTriggerSource.KindName,
-                    Description = "Fire when a sandbox process exits with a matching exit code / stdout.",
+                    // The observer always reads .lm-waits/... relative to the WORKSPACE ROOT, while
+                    // the taught mkdir is relative to the Bash tool's current directory — the two
+                    // coincide only at the tool's starting directory (workingDirectoryOverride pins
+                    // it to the workspace root). The description says so explicitly, because a
+                    // relative mkdir run after a cd into a subdirectory drops the files somewhere
+                    // the observer never looks and the wait silently parks to TTL (#598 review
+                    // F-005). No `~` anchor: the local backend has no '/workspace' mount and the
+                    // tool's home is not the workspace root there.
+                    Description =
+                        "Fire when a backgrounded sandbox Bash process exits with a matching exit code / stdout. "
+                        + "Start the work yourself via the Bash tool using the wait-file convention. The .lm-waits "
+                        + "directory MUST be directly under the workspace root — the Bash tool's starting directory; "
+                        + "if you have changed directory, anchor these paths with the workspace's absolute path, or a "
+                        + "relative .lm-waits will land where the wait never looks. Then arm with the handle you chose: "
+                        + "mkdir -p .lm-waits/<handle> && { cmd > .lm-waits/<handle>/out 2>&1; echo $? > .lm-waits/<handle>/exit; } & "
+                        + "(handle: letters/digits/._- only, max 64, no leading dot).",
                     ArgsSchema = ProcessTriggerSource.ArgsSchemaText,
                     Capabilities = ProcessTriggerSource.Capabilities,
-                    // Placeholder observer: wire a real IProcessExitObserver over the Bash-tool process
-                    // registry to make this kind actually fire in production (documented follow-up).
-                    Source = new ProcessTriggerSource(NoopProcessExitObserver.Instance),
+                    Source = new ProcessTriggerSource(processExitObserver ?? NoopProcessExitObserver.Instance),
                 }
             );
         }
