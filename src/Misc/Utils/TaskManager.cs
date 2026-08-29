@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.Misc.Utils;
 
@@ -32,7 +33,7 @@ namespace AchieveAi.LmDotnetTools.Misc.Utils;
 ///     - Task deletions (adaptation)
 ///     - Balanced tree (4-7 siblings per level)
 /// </summary>
-public class TaskManager
+public class TaskManager : ITodoBoardSource
 {
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public enum TaskStatus
@@ -812,6 +813,49 @@ Examples:
         {
             return [.. _state.RootTasks.Select(t => t.ToPublic())];
         }
+    }
+
+    /// <summary>
+    ///     Captures the board for the conversation read path (<c>GET /todos</c>). Built on
+    ///     <see cref="GetTasks" />, so it inherits that method's lock coverage and its display-id rule
+    ///     rather than re-deriving either.
+    /// </summary>
+    public TodoBoardSnapshot GetTodoBoardSnapshot(string threadId)
+    {
+        return new TodoBoardSnapshot
+        {
+            ThreadId = threadId,
+            CapturedAtUtc = DateTimeOffset.UtcNow,
+            Tasks = [.. GetTasks().Select(ToBoardNode)],
+        };
+    }
+
+    /// <summary>
+    ///     Projects one task and its subtree onto the transport-facing board shape.
+    /// </summary>
+    /// <remarks>
+    ///     The status mapping is written out member by member rather than cast across the two enums. They
+    ///     are structurally identical today and a cast would work; it would also stop working silently the
+    ///     day a member is INSERTED into one of them, re-labelling every persisted and in-flight row by
+    ///     one position. Spelling it out makes that day a compile error instead.
+    /// </remarks>
+    private static TodoTaskNode ToBoardNode(TaskItem task)
+    {
+        return new TodoTaskNode
+        {
+            Id = task.Id,
+            Status = task.Status switch
+            {
+                TaskStatus.NotStarted => TodoTaskStatus.NotStarted,
+                TaskStatus.InProgress => TodoTaskStatus.InProgress,
+                TaskStatus.Completed => TodoTaskStatus.Completed,
+                TaskStatus.Removed => TodoTaskStatus.Removed,
+                _ => TodoTaskStatus.NotStarted,
+            },
+            Title = task.Title,
+            Notes = [.. task.Notes],
+            SubTasks = [.. task.SubTasks.Select(ToBoardNode)],
+        };
     }
 
     [Function(

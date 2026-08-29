@@ -1280,7 +1280,12 @@ try
                         _ = conversationRegistry.AddFunction(sharedContract, sharedHandler, "SampleTools");
                     }
                 }
-                _ = conversationRegistry.AddFunctionsFromObject(new TaskManager(), providerName: "TaskManager");
+                // Held in a local, not constructed inline as an argument: the instance the tools close
+                // over IS the conversation's board, and handed back on the AgentCreationResult below it
+                // becomes the pool's read path (GET /todos). Constructed inline it was unreachable, and
+                // the only way to see the board was to ask the agent to run list-tasks.
+                var taskManager = new TaskManager();
+                _ = conversationRegistry.AddFunctionsFromObject(taskManager, providerName: "TaskManager");
 
                 // Clone the per-conversation registry per-agent to avoid mutation, filtering by mode
                 var (allContracts, allHandlers) = conversationRegistry.Build();
@@ -2018,6 +2023,10 @@ try
                     )
                     {
                         StagedBinding = stagedBinding,
+                        // The same instance the per-conversation registry's task tools close over, and
+                        // the same one every sub-agent inherits through the parent handler map — one
+                        // board per conversation, attributed later (PR 4) rather than split per agent.
+                        TodoBoard = taskManager,
                     };
                 }
                 catch
