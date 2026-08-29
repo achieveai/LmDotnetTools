@@ -157,7 +157,7 @@ internal static class SlotHygiene
 
         var status = await SuperprojectStatusAsync(git, storePath, ct).ConfigureAwait(false);
 
-        if (ShouldForceResetAgain(pass, status))
+        if (await ShouldForceResetAgainAsync(pass, status, fileSystem, storePath, ct, logger).ConfigureAwait(false))
         {
             logger?.LogWarning(
                 "Slot hygiene at {StorePath}: first pass left the store unsettled (reset: {ResetErr}; clean: "
@@ -199,7 +199,15 @@ internal static class SlotHygiene
 
         if (!pass.Restore.Succeeded)
         {
-            if (GitFailureClassifier.Classify(pass.Restore.Stderr) == GitFailureKind.Corrupt)
+            var restoreNestedGitDirExists = await ProbeNestedGitDirExistsAsync(
+                    fileSystem,
+                    storePath,
+                    pass.Restore.Stderr,
+                    ct,
+                    logger
+                )
+                .ConfigureAwait(false);
+            if (GitFailureClassifier.Classify(pass.Restore.Stderr, restoreNestedGitDirExists) == GitFailureKind.Corrupt)
             {
                 logger?.LogWarning(
                     "Slot hygiene at {StorePath}: submodule restore failed with CORRUPTION; re-cloning: {Stderr}",
@@ -241,7 +249,15 @@ internal static class SlotHygiene
         // durability guarantee for whatever unrepairable content comes next.)
         if (!pass.Foreach.Succeeded)
         {
-            if (GitFailureClassifier.Classify(pass.Foreach.Stderr) == GitFailureKind.Corrupt)
+            var foreachNestedGitDirExists = await ProbeNestedGitDirExistsAsync(
+                    fileSystem,
+                    storePath,
+                    pass.Foreach.Stderr,
+                    ct,
+                    logger
+                )
+                .ConfigureAwait(false);
+            if (GitFailureClassifier.Classify(pass.Foreach.Stderr, foreachNestedGitDirExists) == GitFailureKind.Corrupt)
             {
                 logger?.LogWarning(
                     "Slot hygiene at {StorePath}: `git submodule foreach` cleanup failed with CORRUPTION that "
@@ -262,7 +278,7 @@ internal static class SlotHygiene
             // leftovers therefore survived the lease and crossed into the next review. Sweep the whole list
             // again over an enumeration nothing in the submodule tree can interrupt, and condemn the slot only
             // for what is still there afterwards.
-            var residue = await SubmoduleResidueAsync(git, storePath, ct, logger).ConfigureAwait(false);
+            var residue = await SubmoduleResidueAsync(git, storePath, ct, logger, fileSystem).ConfigureAwait(false);
             if (residue is { } left)
             {
                 logger?.LogWarning(
@@ -490,12 +506,24 @@ internal static class SlotHygiene
     /// output, so a store accumulating residue behind a broken gitlink is visible in the daemon log rather than
     /// inferred from this paragraph.
     /// </para>
+    /// <para>
+    /// The skip gate itself narrowed further under issue #582: <c>--show-toplevel</c> answers "not a git
+    /// repository" for BOTH shapes it was written to tolerate as one — a submodule genuinely deinit'd (gitdir
+    /// gone, the #279 case this skip exists for) and a submodule whose <c>.git/modules/&lt;name&gt;</c> is still
+    /// there but internally corrupt (a NUL-filled <c>HEAD</c>, the mcqdb incident). Skipping the second silently
+    /// is the same defect this function's own opening paragraph names — a check whose clean answer is produced
+    /// by its own failure is not a check — so the failed probe's stderr is now run through the same
+    /// <paramref name="fileSystem"/> oracle <see cref="GitFailureClassifier"/> uses at the other two call sites:
+    /// a CONFIRMED-present gitdir condemns the slot (residue, below) instead of being logged and passed over;
+    /// confirmed-absent or unanswerable keeps the #279 skip exactly as decided.
+    /// </para>
     /// </summary>
     private static async Task<string?> SubmoduleResidueAsync(
         GitRunner git,
         string storePath,
         CancellationToken ct,
-        ILogger? logger
+        ILogger? logger,
+        ISandboxFileSystem? fileSystem
     )
     {
         var pending = new Queue<string>();
@@ -542,6 +570,35 @@ internal static class SlotHygiene
                         .Equals(submodule, StringComparison.OrdinalIgnoreCase)
                 )
                 {
+                    // Issue #582: before tolerating this the #279 way, ask the filesystem whether the gitdir the
+                    // probe couldn't read is actually THERE. Present-but-unreadable is the mcqdb shape — a gitdir
+                    // that exists but cannot answer for itself must not pass silently — and gets condemned below
+                    // instead of skipped. Absent (the genuine #279 deinit case) or unanswerable falls through to
+                    // the original skip+log, unchanged.
+                    var submoduleGitDirExists = toplevel.Succeeded
+                        ? null
+                        : await ProbeNestedGitDirExistsAsync(fileSystem, submodule, toplevel.Stderr, ct, logger)
+                            .ConfigureAwait(false);
+                    if (submoduleGitDirExists == true)
+                    {
+                        residue ??=
+                            $"the indexed submodule at {submodule} has a gitdir that exists but cannot answer "
+                            + $"for itself (`rev-parse --show-toplevel` exit {toplevel.ExitCode}, stderr "
+                            + $"{toplevel.Stderr})";
+                        logger?.LogWarning(
+                            "Slot hygiene at {StorePath}: the indexed submodule path {SubmodulePath} has a gitdir "
+                                + "that EXISTS but did not answer `rev-parse --show-toplevel` — present-but-corrupt, "
+                                + "not deinitialized, so this sweep is condemning the slot rather than tolerating it "
+                                + "(exit {ExitCode}, stdout {Stdout}, stderr {Stderr}).",
+                            storePath,
+                            submodule,
+                            toplevel.ExitCode,
+                            toplevel.Stdout,
+                            toplevel.Stderr
+                        );
+                        continue;
+                    }
+
                     // Skipping is the deliberate choice (see the doc); being SILENT about it is not. This path is
                     // neither cleaned nor reported, so without this line the only trace of a store accumulating
                     // residue behind a broken gitlink would be a doc paragraph — and a doc is not an observable.
@@ -617,6 +674,59 @@ internal static class SlotHygiene
     private static string NormalizePath(string path) => path.Trim().Replace('\\', '/').TrimEnd('/');
 
     /// <summary>
+    /// Answers <see cref="GitFailureClassifier.Classify"/>'s filesystem oracle for every corruption check in
+    /// this class AND <see cref="ReviewSlotPreparer"/> (issue #582): resolves the candidate gitdir
+    /// <see cref="GitFailureClassifier.ResolveNestedGitDirPath"/> extracts from a "not a git repository" fatal
+    /// and asks <paramref name="fileSystem"/> whether anything is there — a non-empty listing means the gitdir
+    /// is present (and therefore corrupt, not deinit'd). <see cref="ReviewSlotPreparer"/> used to keep its own
+    /// copy of this exact resolve-then-list probe; PR #589 review (F-005) found the copies had already
+    /// diverged in their error handling (F-003), so this is now the one implementation both call.
+    /// <para>
+    /// Returns null — "unknown", which <see cref="GitFailureClassifier.Classify"/> treats the same as the
+    /// pre-#582 default — when there is no <paramref name="fileSystem"/> to probe with (the "container
+    /// behaviour" default some callers still pass), the message does not name a nested gitdir at all, or the
+    /// probe itself could not answer (logged as a warning, unless it was cancellation — that is the caller's
+    /// own shutdown, not a probe failure worth reporting). An ambiguous probe must not be read as proof of
+    /// either absence or corruption.
+    /// </para>
+    /// </summary>
+    internal static async Task<bool?> ProbeNestedGitDirExistsAsync(
+        ISandboxFileSystem? fileSystem,
+        string workingDirectory,
+        string? stderr,
+        CancellationToken ct,
+        ILogger? logger = null
+    )
+    {
+        if (fileSystem is null)
+        {
+            return null;
+        }
+
+        var candidate = GitFailureClassifier.ResolveNestedGitDirPath(workingDirectory, stderr);
+        if (candidate is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var entries = await fileSystem.ListFilesAsync(candidate, ct).ConfigureAwait(false);
+            return entries.Count > 0;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning(
+                ex,
+                "Slot hygiene: could not probe whether the nested gitdir '{Candidate}' exists to classify a "
+                    + "'not a git repository' failure; falling back to the pre-#582 deinit-carve-out default.",
+                candidate
+            );
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Is a second force-reset pass worth its cost? Only when the failure is one a repeated sweep-and-reset can
     /// plausibly clear: a superproject that would not reset/clean, a superproject still dirty afterwards, or a
     /// submodule step that failed with CORRUPTION (typically a lock that outlived the first sweep). A
@@ -630,14 +740,70 @@ internal static class SlotHygiene
     /// the same rule as the one two paragraphs up: an eol/filter disagreement is precisely a deterministic
     /// condition no repeated reset can settle, so retrying it burns a second pass on every single lease.
     /// </para>
+    /// <para>
+    /// The two <see cref="GitFailureClassifier.Classify"/> calls below thread the same
+    /// <see cref="ProbeNestedGitDirExistsAsync"/> oracle the DEFINITIVE checks further down this file use
+    /// (review finding F-004): a present-but-corrupt gitdir must classify as corrupt here too, not just at the
+    /// checks that decide the final verdict. Currently this changes no OBSERVABLE outcome — a confirmed-present
+    /// gitdir already reaches <see cref="HygieneVerdict.NeedsReclone"/> via those later checks regardless of
+    /// whether a second force-reset pass ran first, and a second reset cannot repair a NUL <c>HEAD</c> either
+    /// way — but leaving it unprobed was the exact unwired-oracle pattern this PR exists to remove, and is what
+    /// a future reader copies from next.
+    /// </para>
     /// </summary>
-    private static bool ShouldForceResetAgain(ResetPass pass, SuperprojectStatus status) =>
-        !pass.Reset.Succeeded
-        || !pass.Clean.Succeeded
-        || status.Classification is not { } classified
-        || classified.Leftovers.Count > 0
-        || (!pass.Restore.Succeeded && GitFailureClassifier.Classify(pass.Restore.Stderr) == GitFailureKind.Corrupt)
-        || (!pass.Foreach.Succeeded && GitFailureClassifier.Classify(pass.Foreach.Stderr) == GitFailureKind.Corrupt);
+    private static async Task<bool> ShouldForceResetAgainAsync(
+        ResetPass pass,
+        SuperprojectStatus status,
+        ISandboxFileSystem? fileSystem,
+        string storePath,
+        CancellationToken ct,
+        ILogger? logger
+    )
+    {
+        if (!pass.Reset.Succeeded || !pass.Clean.Succeeded || status.Classification is not { } classified)
+        {
+            return true;
+        }
+
+        if (classified.Leftovers.Count > 0)
+        {
+            return true;
+        }
+
+        if (!pass.Restore.Succeeded)
+        {
+            var restoreNestedGitDirExists = await ProbeNestedGitDirExistsAsync(
+                    fileSystem,
+                    storePath,
+                    pass.Restore.Stderr,
+                    ct,
+                    logger
+                )
+                .ConfigureAwait(false);
+            if (GitFailureClassifier.Classify(pass.Restore.Stderr, restoreNestedGitDirExists) == GitFailureKind.Corrupt)
+            {
+                return true;
+            }
+        }
+
+        if (!pass.Foreach.Succeeded)
+        {
+            var foreachNestedGitDirExists = await ProbeNestedGitDirExistsAsync(
+                    fileSystem,
+                    storePath,
+                    pass.Foreach.Stderr,
+                    ct,
+                    logger
+                )
+                .ConfigureAwait(false);
+            if (GitFailureClassifier.Classify(pass.Foreach.Stderr, foreachNestedGitDirExists) == GitFailureKind.Corrupt)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>The git steps of one force-reset pass, kept together so the verdict can classify each one.
     /// <paramref name="Blocked"/> is the entry that stopped the stale-state sweep before it ran (see

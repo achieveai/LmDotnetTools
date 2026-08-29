@@ -221,6 +221,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly ConcurrentDictionary<long, LeasedReview> _leasedReviews = new();
 
     /// <summary>
+    /// The issue #582 backstop for <see cref="PrepareWithRecoveryAsync"/>'s type-filtered reclone catch: a
+    /// classifier gap that keeps producing the SAME unmodelled failure for the SAME slot across runs must not
+    /// loop forever just because no <c>catch</c> clause names its type. Instance-scoped (this executor is a DI
+    /// singleton), so the streak is tracked for the daemon's lifetime — a restart clears it, matching
+    /// <see cref="RetryGovernor"/>'s own "restart = retry" behaviour rather than introducing a new persistence
+    /// story for one narrow backstop.
+    /// </summary>
+    private readonly SlotPrepareFailureEscalator _slotPrepareFailureEscalator = new();
+
+    /// <summary>
     /// The S2S review-workspace preparer, non-null ONLY when <see cref="CodeReviewDaemonOptions.UseS2SReviewAgent"/>
     /// is on (registered in Program.cs and auto-injected via <c>ActivatorUtilities.CreateInstance</c>). On the
     /// in-process path it stays null and every code path below skips preparation, so nothing changes. When set,
@@ -1250,6 +1260,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// wrong answer to it: the wipe it starts with walks into the entry the refusal declined to cross. Widening
     /// this catch — or adding a bare <c>catch</c> beside it — turns the recovery step into the redirected write.
     /// </para>
+    /// <para>
+    /// A SECOND, narrower catch below is the issue #582 backstop: a message shape the classifier has not been
+    /// taught to recognize surfaces as something OTHER than the two types above (typically a plain
+    /// <see cref="InvalidOperationException"/>) and would otherwise never re-clone at all, no matter how many
+    /// runs fail against the same wedged slot. <see cref="_slotPrepareFailureEscalator"/> counts identical
+    /// failures for this <paramref name="storeRoot"/> across calls and, once the streak reaches
+    /// <see cref="SlotPrepareFailureEscalator.MaxConsecutiveFailures"/>, forces the SAME re-clone-and-retry-once
+    /// recovery regardless of classification — so a gap in classifier coverage self-heals instead of looping for
+    /// the run's entire retry budget on every future run against the same slot. It excludes
+    /// <see cref="SlotAddressUnusableException"/> and <see cref="SlotProbeUnansweredException"/> for the same
+    /// reason the first catch does: re-cloning is the deliberately WRONG answer to either, no matter how many
+    /// times it repeats.
+    /// </para>
     /// </summary>
     private async Task<PreparedCheckout> PrepareWithRecoveryAsync(
         IReviewSlotPreparer preparer,
@@ -1264,22 +1287,33 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         CancellationToken cancellationToken
     )
     {
+        Task<PreparedCheckout> PrepareOnceAsync() =>
+            preparer.PrepareAsync(
+                run,
+                storeRoot,
+                scratchRoot,
+                storeUrl,
+                submoduleRelPath,
+                branch,
+                ReviewBotDefaultBranch,
+                notesRelPath,
+                policy,
+                cancellationToken
+            );
+
+        async Task<PreparedCheckout> RecloneAndRetryOnceAsync()
+        {
+            await preparer.RecloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
+            var retried = await PrepareOnceAsync().ConfigureAwait(false);
+            _slotPrepareFailureEscalator.RecordSuccess(storeRoot);
+            return retried;
+        }
+
         try
         {
-            return await preparer
-                .PrepareAsync(
-                    run,
-                    storeRoot,
-                    scratchRoot,
-                    storeUrl,
-                    submoduleRelPath,
-                    branch,
-                    ReviewBotDefaultBranch,
-                    notesRelPath,
-                    policy,
-                    cancellationToken
-                )
-                .ConfigureAwait(false);
+            var prepared = await PrepareOnceAsync().ConfigureAwait(false);
+            _slotPrepareFailureEscalator.RecordSuccess(storeRoot);
+            return prepared;
         }
         catch (Exception ex) when (ex is SlotNeedsRecloneException or SlotCorruptException)
         {
@@ -1289,21 +1323,28 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 run.Id,
                 storeRoot
             );
-            await preparer.RecloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
-            return await preparer
-                .PrepareAsync(
-                    run,
-                    storeRoot,
-                    scratchRoot,
-                    storeUrl,
-                    submoduleRelPath,
-                    branch,
-                    ReviewBotDefaultBranch,
-                    notesRelPath,
-                    policy,
-                    cancellationToken
-                )
-                .ConfigureAwait(false);
+            return await RecloneAndRetryOnceAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+            when (ex is not (SlotAddressUnusableException or SlotProbeUnansweredException or OperationCanceledException)
+            )
+        {
+            if (!_slotPrepareFailureEscalator.RecordFailureAndShouldEscalate(storeRoot, ex.Message))
+            {
+                throw;
+            }
+
+            _logger.LogWarning(
+                ex,
+                "Run {RunId}: pooled store {StoreRoot} failed prepare identically {Count} times in a row with a "
+                    + "failure the classifier does not recognize as corruption; escalating to a re-clone "
+                    + "REGARDLESS of classification so an unmodelled git failure shape cannot wedge the slot "
+                    + "forever (issue #582).",
+                run.Id,
+                storeRoot,
+                SlotPrepareFailureEscalator.MaxConsecutiveFailures
+            );
+            return await RecloneAndRetryOnceAsync().ConfigureAwait(false);
         }
     }
 

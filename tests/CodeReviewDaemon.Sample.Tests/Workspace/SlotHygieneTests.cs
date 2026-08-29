@@ -737,6 +737,43 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureClean_condemns_a_residue_probe_skip_when_the_gitdir_is_confirmed_present()
+    {
+        // Issue #582: the skip gate above tolerates BOTH shapes `rev-parse --show-toplevel` cannot answer for —
+        // a genuinely deinit'd submodule (gitdir gone, #279's tolerated case) AND a submodule whose gitdir is
+        // still there but internally corrupt (a NUL-filled HEAD, the mcqdb incident) — because both fail with
+        // the byte-identical "not a git repository" message. Given a filesystem oracle that confirms the gitdir
+        // IS there, this must condemn instead of silently skipping.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        const string presentButCorrupt = "fatal: not a git repository: repos/First/../.git/modules/repos/First";
+        runner.OnArgvContains(
+            "submodule foreach --recursive",
+            new SandboxCommandResult(1, string.Empty, presentButCorrupt)
+        );
+        runner.OnArgvContains(
+            "rev-parse --show-toplevel",
+            new SandboxCommandResult(128, string.Empty, presentButCorrupt)
+        );
+        ScriptOneSubmodule(runner, store, new SandboxCommandResult(0, string.Empty, string.Empty));
+
+        var candidate = GitFailureClassifier.ResolveNestedGitDirPath(OnlySubmodulePath(store), presentButCorrupt);
+        candidate.Should().NotBeNull("the stderr above must match the shape this fix resolves a path from");
+        var fileSystem = new FakeSandboxFileSystem();
+        fileSystem.Seed($"{candidate}/HEAD", "\0\0\0\0"); // the gitdir is genuinely THERE, just unreadable
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(
+            new GitRunner(runner),
+            store,
+            CancellationToken.None,
+            logger: null,
+            fileSystem: fileSystem
+        );
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone, "a confirmed-present gitdir must not pass silently");
+    }
+
+    [Fact]
     public async Task EnsureClean_condemns_when_the_submodule_listing_itself_fails()
     {
         // The enumeration is now the thing the whole re-sweep stands on, so its failure is the new way this check

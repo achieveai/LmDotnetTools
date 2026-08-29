@@ -337,7 +337,18 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             var reason = outcome
                 .Denied.FirstOrDefault(d => string.Equals(d.Path, submoduleRelPath, StringComparison.Ordinal))
                 ?.Reason;
-            if (GitFailureClassifier.Classify(reason) != GitFailureKind.Corrupt)
+            // storeRoot is the closest available approximation of the working directory the denied
+            // `git submodule update --init` actually ran with (exact for a depth-0 submodule; SubmoduleInitializer
+            // does not thread the true per-level directory back through SubmoduleDenied.Reason for a nested one).
+            // NOTE (PR #589 review F-002): this probe is inert for THIS failure shape — `submodule update --init`'s
+            // denial message never names a nested gitdir path, so it never matches and always resolves to null/
+            // benign here. The present-but-corrupt case this PR fixes is actually caught by SlotHygiene's foreach
+            // path (SlotHygiene.cs), which runs ahead of this branch during hygiene. Left wired rather than
+            // removed: it costs nothing, and it is what every other Classify call site in this file already does.
+            var nestedGitDirExists = await SlotHygiene
+                .ProbeNestedGitDirExistsAsync(_fileSystem, storeRoot, reason, cancellationToken, _logger)
+                .ConfigureAwait(false);
+            if (GitFailureClassifier.Classify(reason, nestedGitDirExists) != GitFailureKind.Corrupt)
             {
                 throw new InvalidOperationException(
                     $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize (transient/unknown): {reason}"
@@ -404,11 +415,18 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         if (!result.Succeeded)
         {
             var message = $"Run {run.Id}: {action} failed (exit {result.ExitCode}): {result.Stderr}";
-            throw GitFailureClassifier.Classify(result.Stderr) == GitFailureKind.Corrupt
+            var nestedGitDirExists = await SlotHygiene
+                .ProbeNestedGitDirExistsAsync(_fileSystem, workingDirectory, result.Stderr, cancellationToken, _logger)
+                .ConfigureAwait(false);
+            throw GitFailureClassifier.Classify(result.Stderr, nestedGitDirExists) == GitFailureKind.Corrupt
                 ? new SlotCorruptException(message)
                 : new InvalidOperationException(message);
         }
     }
+
+    // The nested-gitdir existence probe used to classify a "not a git repository" failure lives at
+    // SlotHygiene.ProbeNestedGitDirExistsAsync — shared with SlotHygiene's own call sites since PR #589 review
+    // finding F-005 (the two copies had already diverged: F-003 was exactly that divergence).
 
     private static void ClearHostScratch(string scratchRoot)
     {
