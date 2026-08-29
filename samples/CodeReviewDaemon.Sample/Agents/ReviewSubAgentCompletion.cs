@@ -58,6 +58,24 @@ internal sealed record ReviewSubAgentNode
     /// <c>ReviewSubAgentCompletionBarrier</c>) — absence must not be read as inactivity.
     /// </summary>
     public DateTimeOffset? LastActivityUtc { get; init; }
+
+    /// <summary>
+    /// The concrete model this sub-agent's provider was built with, or null when the host did not report
+    /// one — either because it predates the field or because the child was never routed. Null is a fact and
+    /// must be rendered as such; it is NOT an invitation to substitute the run-level model, which would
+    /// present a guess and a measurement identically.
+    /// </summary>
+    public string? EffectiveModelId { get; init; }
+
+    /// <summary>The intelligence tier that selected <see cref="EffectiveModelId"/>, when tier-based.</summary>
+    public int? EffectiveModelIntelligence { get; init; }
+
+    /// <summary>
+    /// Which routing input won — <c>spawn-model</c>, <c>spawn-tier</c>, <c>conversation-default</c>
+    /// (the operator's configured sub-agent model, #529), <c>template-model</c>, <c>template-tier</c>,
+    /// <c>parent</c>, or <c>pending</c>.
+    /// </summary>
+    public string? ModelSelectionSource { get; init; }
 }
 
 /// <summary>

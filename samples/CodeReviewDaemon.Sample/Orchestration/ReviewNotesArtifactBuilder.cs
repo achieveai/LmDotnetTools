@@ -470,6 +470,45 @@ internal sealed class ReviewNotesArtifactBuilder
     /// lead is not a roster node, so it has none; naming that explicitly beats an empty column.</summary>
     private const string LeadTemplate = "(primary review)";
 
+    /// <summary>
+    /// What a sub-agent's model column says when the host reported none — the same word
+    /// <c>Terminal at (UTC)</c> uses for the same reason.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT the run-level <c>context.ModelId</c>. Falling back to it would render a guess in the
+    /// same cell, the same font, and the same table as a measurement, which destroys the only thing these
+    /// columns were added to establish: whether the fan-out actually ran on the model the run did. An empty
+    /// column is a question; a wrong one is an answer.
+    /// </remarks>
+    private const string UnrecordedModel = "(unrecorded)";
+
+    /// <summary>The model a roster node's provider was built with, or <see cref="UnrecordedModel"/>.</summary>
+    private static string RenderModel(ReviewSubAgentNode node) =>
+        string.IsNullOrWhiteSpace(node.EffectiveModelId)
+            ? UnrecordedModel
+            : UntrustedTranscriptText.Inline(node.EffectiveModelId, maxChars: 60);
+
+    /// <summary>
+    /// The intelligence tier that chose the model, or <see cref="UnrecordedModel"/>. Absent for an explicit
+    /// model override, for the operator's conversation-wide default, and for plain parent inheritance, where
+    /// no tier was consulted at all — so a blank here beside a populated Model cell is informative rather
+    /// than missing data.
+    /// </summary>
+    private static string RenderModelTier(ReviewSubAgentNode node) =>
+        node.EffectiveModelIntelligence?.ToString(CultureInfo.InvariantCulture) ?? UnrecordedModel;
+
+    /// <summary>
+    /// Which routing input won. This is what makes the ladder legible: <c>parent</c> against every node says
+    /// the fan-out inherited the run's model and no per-agent routing ran, which the model id alone cannot
+    /// distinguish from a tier that happened to resolve to the same model — nor from
+    /// <c>conversation-default</c>, the label that says the operator's configured sub-agent model (#529)
+    /// is what the children actually got.
+    /// </summary>
+    private static string RenderModelSource(ReviewSubAgentNode node) =>
+        string.IsNullOrWhiteSpace(node.ModelSelectionSource)
+            ? UnrecordedModel
+            : UntrustedTranscriptText.Inline(node.ModelSelectionSource, maxChars: 40);
+
     private async Task<IReadOnlyList<FindingsArtifact>> BuildFindingsAsync(
         ReviewRun run,
         string round,
@@ -525,6 +564,9 @@ internal sealed class ReviewNotesArtifactBuilder
             .AppendLine()
             .AppendLine("| Field | Value |")
             .AppendLine("| --- | --- |")
+            .Append("| Model | ").Append(RenderModel(node)).AppendLine(" |")
+            .Append("| Model tier | ").Append(RenderModelTier(node)).AppendLine(" |")
+            .Append("| Model source | ").Append(RenderModelSource(node)).AppendLine(" |")
             .Append("| Template | ").Append(UntrustedTranscriptText.Inline(node.Template)).AppendLine(" |")
             .Append("| Status | ").Append(node.Status).AppendLine(" |")
             .Append("| Depth | ").Append(node.Depth.ToString(CultureInfo.InvariantCulture)).AppendLine(" |")
@@ -866,8 +908,8 @@ internal sealed class ReviewNotesArtifactBuilder
         else
         {
             builder
-                .AppendLine("| # | Agent | Template | Status | Findings file |")
-                .AppendLine("| --- | --- | --- | --- | --- |");
+                .AppendLine("| # | Agent | Model | Template | Status | Findings file |")
+                .AppendLine("| --- | --- | --- | --- | --- | --- |");
             var nodes = context.Roster.Nodes
                 .OrderBy(n => n.Depth)
                 .ThenBy(n => n.Name ?? n.Template, StringComparer.Ordinal)
@@ -878,6 +920,7 @@ internal sealed class ReviewNotesArtifactBuilder
                 builder
                     .Append("| ").Append((i + 1).ToString(CultureInfo.InvariantCulture))
                     .Append(" | ").Append(findings[i].Label)
+                    .Append(" | ").Append(RenderModel(nodes[i]))
                     .Append(" | ").Append(UntrustedTranscriptText.Inline(nodes[i].Template))
                     .Append(" | ").Append(nodes[i].Status)
                     .Append(" | `").Append(findings[i].FileName).AppendLine("` |");
