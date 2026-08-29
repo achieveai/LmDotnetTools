@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using FluentAssertions;
@@ -115,5 +116,68 @@ public class TaskManagerFromSnapshotTests
         var act = () => TaskManager.FromSnapshot(null!);
 
         act.Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
+    public void FromSnapshot_RoundTripsBlockedBy_SoTheBlockStillRefusesClaimsAfterARestart()
+    {
+        // #595 (review 590/D-1): a row persisted Blocked used to rehydrate with an empty BlockedBy,
+        // so RefuseIfBlocked passed and the block had no force while the panel still showed Blocked.
+        // The full restart path is exercised — snapshot serialized to JSON and read back, exactly
+        // what the projection persists — so the wire must actually carry the field. Mutations that
+        // must go red: dropping BlockedBy from ToBoardNode, dropping the AddRange in FromBoardNode
+        // (the legacy normalization then downgrades the row and the claim sails through), or
+        // gutting RefuseIfBlocked.
+        var manager = BuildPopulatedManager(); // task 3 is Blocked by task 1 (still InProgress)
+        var json = JsonSerializer.Serialize(manager.GetTodoBoardSnapshot("conv-1"));
+        var persisted = JsonSerializer.Deserialize<TodoBoardSnapshot>(json)!;
+
+        var rehydrated = TaskManager.FromSnapshot(persisted);
+
+        var blockedRow = rehydrated.GetTasks().Single(t => t.Id == "3");
+        blockedRow.Status.Should().Be(TaskManager.TaskStatus.Blocked);
+        blockedRow.BlockedBy.Should().ContainSingle().Which.Should().Be("1");
+
+        var claim = rehydrated.ClaimTask("3", "agent-c");
+        claim.IsError.Should().BeTrue();
+        claim.ErrorCode.Should().Be("task_blocked");
+
+        var agentlessStart = rehydrated.UpdateTask("3", "in progress");
+        agentlessStart.IsError.Should().BeTrue();
+        agentlessStart.ErrorCode.Should().Be("task_blocked");
+
+        // And the recorded blocker still lifts the block: completing task 1 auto-unblocks task 3,
+        // which only works because the blocker id itself survived the restart.
+        _ = rehydrated.ClaimTask("1", "agent-a");
+        var complete = rehydrated.UpdateTask("1", "completed");
+        complete.IsError.Should().BeFalse();
+        rehydrated.GetTasks().Single(t => t.Id == "3").Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void FromSnapshot_LegacyBlockedRowWithoutBlockedBy_LoadsAndHydratesAsNotStarted()
+    {
+        // Literal-payload compat (#595): the exact camelCase shape pre-#595 builds persisted carries
+        // no `blockedBy` key at all. Such a board must still load, and its Blocked row — whose
+        // blockers are unrecoverable — must come back NotStarted rather than rendering a block
+        // nothing enforces. Mutation that must go red: removing the Blocked-with-empty-BlockedBy
+        // normalization in FromBoardNode.
+        const string legacyJson = """
+            {"ThreadId":"conv-1","SchemaVersion":1,"CapturedAtUtc":"2026-08-29T12:00:00+00:00","Tasks":[{"id":"1","status":"InProgress","title":"The blocker","notes":[],"subTasks":[]},{"id":"2","status":"Blocked","title":"The dependent","notes":["waiting on 1"],"subTasks":[]}]}
+            """;
+        var persisted = JsonSerializer.Deserialize<TodoBoardSnapshot>(legacyJson)!;
+
+        var rehydrated = TaskManager.FromSnapshot(persisted);
+
+        var tasks = rehydrated.GetTasks();
+        tasks.Should().HaveCount(2);
+        var formerlyBlocked = tasks.Single(t => t.Id == "2");
+        formerlyBlocked.Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+        formerlyBlocked.BlockedBy.Should().BeEmpty();
+        formerlyBlocked.Notes.Should().ContainSingle().Which.Should().Be("waiting on 1");
+
+        // The normalized row is honest: it is claimable, matching what the guards would enforce.
+        var claim = rehydrated.ClaimTask("2", "agent-c");
+        claim.IsError.Should().BeFalse();
     }
 }

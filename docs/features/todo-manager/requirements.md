@@ -159,7 +159,7 @@ rendering byte for byte.
    - *Amended.* The original eleven operations are unchanged; `claim-task`, `assign-task`, and `block-task` were added for the coordination fields in Requirement 8, and `attach-artifact` for the file artifacts in Requirement 9.
 3. **Parameter Mapping**: WHEN functions are called THEN arguments SHALL bind even when the model's JSON types differ from the declared ones — a quoted number onto a numeric parameter, an unquoted number onto a string parameter — and a parameter the model omitted SHALL take its declared C# default rather than the type's zero value
 4. **Error Handling**: WHEN operations fail THEN it SHALL return descriptive error messages instead of throwing exceptions, and SHOULD mark the tool result as an error so the model and the host can tell a failure from a successful answer whose text happens to start with "Error"
-   - *Amended.* Both halves are shipped. Every failure returns a message rather than throwing, and all fifteen tools return `FunctionResult`, so a domain failure reaches the model with `IsError = true` and a lower_snake_case error code (`task_not_found`, `invalid_args`, `invalid_task_id`, `invalid_status`, `note_index_out_of_range`, `task_not_claimable`, `task_blocked`, `task_already_claimed`, `task_not_claimed`, `invalid_artifact_path`) while a success carries no code. The text on the wire is unchanged — only `Text` is serialized — so the contract still advertises `string`.
+   - *Amended.* Both halves are shipped. Every failure returns a message rather than throwing, and all fifteen tools return `FunctionResult`, so a domain failure reaches the model with `IsError = true` and a lower_snake_case error code (`task_not_found`, `invalid_args`, `invalid_task_id`, `invalid_status`, `note_index_out_of_range`, `task_not_claimable`, `task_blocked`, `task_already_claimed`, `task_not_claimed`, `invalid_artifact_path`, `block_cycle`) while a success carries no code. The text on the wire is unchanged — only `Text` is serialized — so the contract still advertises `string`.
 5. **Statefulness**: WHEN a provider is built around a live instance THEN its descriptors SHALL be marked `IsStateful`, so hosts that only accept stateless tools exclude it rather than sharing one conversation's list with another
 
 ### Requirement 8: Coordination Fields (Assignee, Claim/Lease, Blocked)
@@ -173,6 +173,15 @@ rendering byte for byte.
    `Blocked` and record the blocking task IDs in `blockedBy`; "update-task" SHALL refuse a
    direct `blocked` status target and point the caller at `block-task` instead, so `Status`
    and `BlockedBy` never disagree
+   - *Amended (#595).* "block-task" SHALL refuse, atomically (no partial write), an edge
+     that would close a dependency cycle — direct (`a<->b`), transitive
+     (`a->b->c->a`), or a self-block — returning `block_cycle` (self-block:
+     `invalid_args`) with the cycle path named, because every member of a `blockedBy`
+     cycle waits on another member and auto-unblock only fires on completion, so the
+     deadlock would be silent and permanent. It SHALL also refuse a `Completed` or
+     `Removed` task as a blocker (`invalid_args`): a resolved task never completes
+     (again) to lift the block, so accepting it would mint a `Blocked` row that every
+     claim guard passes — the caller is pointed at re-opening the blocker first.
 2. **Assignee**: WHEN a task is created, assigned via "assign-task", or claimed via
    "claim-task" THEN it SHALL carry an `assignee` (agent name); a sub-task created under an
    assigned parent SHALL inherit the parent's assignee unless the caller overrides it
@@ -204,6 +213,11 @@ rendering byte for byte.
 6. **Auto-Unblock On Completion**: WHEN a task completes THEN every other task that named it
    in `blockedBy` SHALL have that ID removed, and SHALL return to `NotStarted` once its
    `blockedBy` list is empty
+   - *Amended (#595).* Auto-unblock is one-way: re-opening a completed blocker does NOT
+     re-block its former dependents. The re-block path is explicit — re-open the blocker
+     (`update-task <id> "not started"`), then call "block-task" again — and the
+     re-established block carries the same enforcement as the original. "block-task"'s
+     description documents both halves.
 7. **Timestamps**: WHEN a task is created, claimed, or completed THEN `createdAt`,
    `claimedAt`, and `completedAt` SHALL be stamped from an injectable clock
    (`TimeProvider`), so tests can assert on them deterministically
@@ -213,6 +227,12 @@ rendering byte for byte.
 9. **Backward Compatibility**: WHEN loading a persisted task tree written before these
    fields existed THEN `assignee`, `blockedBy`, and the timestamp fields SHALL default to
    absent/empty rather than failing to deserialize
+10. **Blocked Survives Restart** *(added by #595, review 590/D-1)*: WHEN a board snapshot is
+    serialized THEN `blockedBy` SHALL round-trip with it — including through `FromSnapshot`
+    rehydration, like `artifacts` (Requirement 9.5) and unlike the in-memory lease fields —
+    so a `Blocked` row keeps refusing claims after a restart. A `Blocked` row hydrated from
+    a snapshot persisted before `blockedBy` round-tripped has no restorable blockers and
+    SHALL be normalized to `NotStarted` rather than left rendering a block nothing enforces
 
 ### Requirement 9: File Artifacts (attach-artifact)
 

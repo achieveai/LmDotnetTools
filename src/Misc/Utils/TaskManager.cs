@@ -62,6 +62,7 @@ public class TaskManager : ITodoBoardSource
     private const string TaskAlreadyClaimedCode = "task_already_claimed";
     private const string TaskNotClaimedCode = "task_not_claimed";
     private const string InvalidArtifactPathCode = "invalid_artifact_path";
+    private const string BlockCycleCode = "block_cycle";
 
     /// <summary>
     ///     A claim is a lease, not a hard lock (see the design doc's stale-row research): an
@@ -736,11 +737,20 @@ list the board renders as 'blocked by 1, 2'.
 • Completing a blocking task automatically removes it from every dependent's
   blockedBy, and unblocks the dependent (back to 'not started') once none remain —
   you do not need to call this again just to clear a resolved blocker.
+• Auto-unblock is one-way: re-opening a completed blocker does NOT re-block its former
+  dependents. Call block-task again to re-block them.
+• A completed or removed task is refused as a blocker — it can never complete (again)
+  to lift the block. Re-open it first (update-task <id> 'not started') if it should
+  block again.
+• An edge that would close a dependency cycle (a blocks b while b blocks a, directly
+  or through intermediates) is refused — no task in the cycle could ever complete to
+  unblock the others.
 
 Examples:
 - Block on a dependency: {""taskId"": ""3"", ""blockedBy"": [""1""]}
 - Block on several: {""taskId"": ""4"", ""blockedBy"": [""1"", ""2""]}
-- Clear the block: {""taskId"": ""3"", ""blockedBy"": []}"
+- Clear the block: {""taskId"": ""3"", ""blockedBy"": []}
+- Re-block after a premature completion: re-open the blocker, then {""taskId"": ""3"", ""blockedBy"": [""1""]}"
     )]
     public FunctionResult BlockTask(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
@@ -802,6 +812,32 @@ Examples:
                     return blockerError
                         ?? FunctionResult.Error(TaskNotFoundCode, $"Error: Blocking task '{id}' not found.");
                 }
+
+                // A completed or removed task can never complete (again) to lift the block, so
+                // listing it would mint a Blocked row whose every claim guard passes —
+                // GetUnresolvedBlockers already treats a completed blocker as resolved. This is
+                // also the re-block seam (#595, review 587/FU-3): after auto-unblock, re-block on
+                // a still-completed blocker is refused with the recipe (re-open it first) instead
+                // of silently recording a block with no force.
+                if (blocker.Status is TaskStatus.Completed or TaskStatus.Removed)
+                {
+                    return FunctionResult.Error(
+                        InvalidArgumentsCode,
+                        $"Error: Task '{id}' is {NormalizeStatusText(blocker.Status)} and cannot block task {task.DisplayId} — a resolved task never completes again to lift the block. Re-open it first (update-task {id} \"not started\") if it should block again."
+                    );
+                }
+            }
+
+            // Reject an edge that closes a cycle (#595, review 587/FU-4): every member of a
+            // blockedBy cycle waits on another member, auto-unblock only fires on completion, and
+            // completion requires a claim the block refuses — so the deadlock would be silent and
+            // permanent, escapable only by someone noticing and clearing an edge by hand.
+            if (FindBlockCyclePath(task, ids) is { } cyclePath)
+            {
+                return FunctionResult.Error(
+                    BlockCycleCode,
+                    $"Error: Blocking task {task.DisplayId} on {cyclePath[1]} would create a cycle: {string.Join(" -> ", cyclePath)} (each task waiting on the next). No task in the cycle could ever complete to unblock the others; remove one of the existing blocks instead."
+                );
             }
 
             task.BlockedBy.Clear();
@@ -1063,6 +1099,60 @@ Examples:
         var claimedAt = task.ClaimedAt ?? task.CreatedAt ?? now;
         elapsed = now - claimedAt;
         return elapsed > _leaseStaleAfter;
+    }
+
+    /// <summary>
+    ///     Looks for a path through the existing blockedBy graph from any of the proposed blockers
+    ///     back to <paramref name="task" /> — the path that would turn the proposed edges into a
+    ///     cycle (#595, review 587/FU-4). Returns the full cycle as dotted ids, starting and ending
+    ///     with <paramref name="task" />'s own id (<c>["2", "1", "2"]</c> reads "2 blocked by 1,
+    ///     1 blocked by 2"), or null when no proposed edge closes one. The walk is bounded by a
+    ///     visited set shared across the whole call, so a diamond-shaped graph is walked once and a
+    ///     pre-existing cycle that does not pass through <paramref name="task" /> cannot loop it.
+    ///     Must be called while holding <see cref="_sync" />.
+    /// </summary>
+    private List<string>? FindBlockCyclePath(PrivateTaskItem task, List<string> proposedBlockerIds)
+    {
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var path = new List<string> { task.DisplayId };
+        foreach (var blockerId in proposedBlockerIds)
+        {
+            if (TryFindPathBackTo(task.DisplayId, blockerId, visited, path))
+            {
+                return path;
+            }
+        }
+
+        return null;
+    }
+
+    private bool TryFindPathBackTo(string targetId, string currentId, HashSet<string> visited, List<string> path)
+    {
+        path.Add(currentId);
+        if (string.Equals(currentId, targetId, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (visited.Add(currentId))
+        {
+            // A dangling id (blocker deleted after the edge was recorded) simply has no outgoing
+            // edges here — consistent with GetUnresolvedBlockers treating it as resolved.
+            var (current, _) = FindTaskByStringId(currentId);
+            if (current != null)
+            {
+                foreach (var nextId in current.BlockedBy)
+                {
+                    if (TryFindPathBackTo(targetId, nextId, visited, path))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        path.RemoveAt(path.Count - 1);
+        return false;
     }
 
     private List<string> AutoUnblockDependentsOf(string completedTaskId)
@@ -1637,6 +1727,7 @@ Examples:
             Title = task.Title,
             Notes = [.. task.Notes],
             Artifacts = [.. task.Artifacts],
+            BlockedBy = [.. task.BlockedBy],
             SubTasks = [.. task.SubTasks.Select(ToBoardNode)],
         };
     }
@@ -2113,12 +2204,14 @@ Examples:
     ///     </para>
     ///     <para>
     ///         Only what the board snapshot carries comes back: id, status, title, notes, artifacts,
-    ///         subtree. The
-    ///         claim/lease fields (<c>assignee</c>, <c>claimedAt</c>) and <c>blockedBy</c> are not part
-    ///         of the persisted projection — leases are in-memory by design, so every rehydrated task
-    ///         arrives lease-less, and a <see cref="TaskStatus.Blocked" /> row arrives with an empty
-    ///         <c>blockedBy</c> (clear it with <c>block-task</c>, or re-block with real ids; automatic
-    ///         unblock cannot fire for it because there is no recorded blocker to complete).
+    ///         <c>blockedBy</c>, subtree. The claim/lease fields (<c>assignee</c>, <c>claimedAt</c>)
+    ///         are not part of the persisted projection — leases are in-memory by design, so every
+    ///         rehydrated task arrives lease-less. <c>blockedBy</c> DOES round-trip (#595, review
+    ///         590/D-1), so a <see cref="TaskStatus.Blocked" /> row keeps its recorded blockers and
+    ///         its enforcement across the restart; a Blocked row from a snapshot persisted before
+    ///         <c>blockedBy</c> existed arrives with no restorable blockers and is normalized to
+    ///         <see cref="TaskStatus.NotStarted" /> rather than left rendering a block nothing
+    ///         enforces (re-block it with <c>block-task</c> if the dependency still holds).
     ///     </para>
     /// </remarks>
     public static TaskManager FromSnapshot(TodoBoardSnapshot snapshot, TimeProvider timeProvider)
@@ -2159,6 +2252,20 @@ Examples:
         // Artifacts are part of the persisted board (unlike leases): workspace-relative by the tool
         // boundary's guarantee, so they stay meaningful across the very restart hydration serves.
         item.Artifacts.AddRange(node.Artifacts);
+        // blockedBy round-trips too (#595, review 590/D-1): dotted ids stay stable across
+        // hydration (DisplayIds are restored exactly), so the references keep pointing at the
+        // same rows and RefuseIfBlocked keeps its force after a restart.
+        item.BlockedBy.AddRange(node.BlockedBy);
+
+        if (item.Status == TaskStatus.Blocked && item.BlockedBy.Count == 0)
+        {
+            // A row persisted Blocked by a build that did not round-trip blockedBy (pre-#595)
+            // arrives with no restorable blockers: every claim guard would pass while the panel
+            // still showed Blocked — exactly the Status/BlockedBy disagreement Requirement 8.5
+            // exists to prevent. Downgrade so the hydrated state is honest about what it can
+            // enforce; a real block can be re-established with block-task.
+            item.Status = TaskStatus.NotStarted;
+        }
 
         var maxSubId = 0;
         foreach (var (subNode, index) in node.SubTasks.Select(static (subNode, index) => (subNode, index)))

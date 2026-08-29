@@ -2,10 +2,12 @@
  * Client mirror of the server's ToDo board — PR 3 of the ToDo-board design (#583).
  *
  * These are the `TaskManager.TaskItem` fields the wire carries today: Id / Status / SubTasks /
- * Title / Notes (shipped in #312) plus `artifacts` (PR 5). `Assignee`, `BlockedBy` and `Times`
- * exist on the server model (PR 4) but are deliberately absent from the wire node and from here —
- * a column the panel cannot populate yet renders as a permanently empty one, which reads as a bug
- * rather than as a feature that has not shipped.
+ * Title / Notes (shipped in #312) plus `artifacts` (PR 5). `Assignee` and `Times` exist on the
+ * server model (PR 4) but are deliberately absent from the wire node and from here — a column the
+ * panel cannot populate yet renders as a permanently empty one, which reads as a bug rather than
+ * as a feature that has not shipped. `blockedBy` IS on the wire since #595 (it must persist so a
+ * Blocked row keeps its force across a server restart), but the panel does not render it yet, so
+ * it stays off this mirror; the tolerant parser drops it like any unknown field.
  *
  * The board is read-only in v1. There is no POST; the shapes below are the wire contract for
  * `GET /api/conversations/{threadId}/todos` (PR 1) and the `conversation_todo` push frame (PR 2).

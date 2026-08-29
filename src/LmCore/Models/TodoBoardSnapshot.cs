@@ -80,6 +80,18 @@ public sealed record TodoTaskNode
     [JsonPropertyName("artifacts")]
     public IReadOnlyList<string> Artifacts { get; init; } = [];
 
+    /// <summary>
+    ///     Dotted-path ids of the tasks blocking this row, exactly as <c>block-task</c> recorded
+    ///     them (#595). Persisted so a <c>Blocked</c> row keeps its force across a restart: without
+    ///     the list, rehydration produced a row that rendered as Blocked while every claim guard
+    ///     passed. Meaningful only alongside <see cref="TodoTaskStatus.Blocked" />; empty otherwise.
+    ///     Never null. Additive to schema version 1, following <see cref="Artifacts" />'s precedent —
+    ///     a snapshot persisted before this field existed reads back with it simply empty, and the
+    ///     client tolerates unknown fields, so the version is deliberately not bumped.
+    /// </summary>
+    [JsonPropertyName("blockedBy")]
+    public IReadOnlyList<string> BlockedBy { get; init; } = [];
+
     /// <summary>Nested rows. Never null; empty when the row is a leaf.</summary>
     [JsonPropertyName("subTasks")]
     public IReadOnlyList<TodoTaskNode> SubTasks { get; init; } = [];
