@@ -428,6 +428,14 @@ Examples:
                 return $"Updated task {targetTask.DisplayId} status to 'in progress'.{claimNote}";
             }
 
+            if (newStatus == TaskStatus.InProgress && RefuseIfBlocked(targetTask) is { } inProgressBlockedError)
+            {
+                // Legacy status-only transition (agent == null, no lease created) must not
+                // bypass the same blockedBy guard ApplyClaim enforces below, or Status and
+                // BlockedBy end up disagreeing (Requirement 8.5).
+                return inProgressBlockedError;
+            }
+
             if (newStatus == TaskStatus.Completed)
             {
                 if (targetTask.Status != TaskStatus.InProgress || targetTask.Assignee == null)
@@ -517,6 +525,11 @@ Examples:
                 && string.Equals(task.Assignee, trimmedAgent, StringComparison.Ordinal)
             )
             {
+                if (RefuseIfBlocked(task) is { } refreshBlockedError)
+                {
+                    return refreshBlockedError;
+                }
+
                 task.ClaimedAt = now;
                 return $"Task {task.DisplayId} claim refreshed by {trimmedAgent}.";
             }
@@ -535,15 +548,22 @@ Examples:
         "assign-task",
         @"Dispatch a task to another agent by name — the lead's half of assign-then-claim.
 
-Assignment is not a claim: it records whose work this is without touching status.
-The assignee should claim-task it when they start (claiming stamps the lease and
-enforces one-in-progress-per-assignee), and break it into sub-items with add-task
-if it is more than one sitting — sub-items created under an assigned task inherit
-the assignee automatically.
+Assignment records whose work this is; it does not create a live claim on its own:
+• On a task that is not InProgress, this only sets the assignee. The assignee should
+  claim-task it when they start (claiming stamps the lease and enforces
+  one-in-progress-per-assignee), and break it into sub-items with add-task if it is
+  more than one sitting — sub-items created under an assigned task inherit the
+  assignee automatically.
+• On a task InProgress under someone else, a live (non-stale) lease is refused —
+  assignment can queue work, but an active lease belongs to claim-task. Wait for it
+  to finish, or for the lease to go stale.
+• If that lease has gone stale, the task is handed back to 'not started' for the new
+  assignee to claim explicitly — assignment never advances a task into InProgress, so
+  it can never leave an assignee holding two active tasks.
 
 Examples:
 - Dispatch: {""taskId"": ""3"", ""assignee"": ""rev-a""}
-- Reassign: {""taskId"": ""3"", ""assignee"": ""rev-b""}  // e.g. rev-a's lease went stale"
+- Reassign after a stale lease: {""taskId"": ""3"", ""assignee"": ""rev-b""}"
     )]
     public FunctionResult AssignTask(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
@@ -571,7 +591,36 @@ Examples:
                 );
             }
 
-            task.Assignee = assignee.Trim();
+            var trimmedAssignee = assignee.Trim();
+
+            // Assignment is for queued work; an active lease belongs to claim-task (Requirement
+            // 8.3). A task InProgress under someone else stays theirs to finish unless their
+            // lease has actually gone stale — otherwise assign-task would be a silent way to
+            // steal a live claim, or to hand the new assignee a task they can complete without
+            // ever claiming it (Requirement 8.8). See F-002.
+            if (
+                task.Status == TaskStatus.InProgress
+                && task.Assignee != null
+                && !string.Equals(task.Assignee, trimmedAssignee, StringComparison.Ordinal)
+            )
+            {
+                var now = _timeProvider.GetUtcNow();
+                if (!IsLeaseStale(task, now, out var elapsed))
+                {
+                    return FunctionResult.Error(
+                        TaskAlreadyClaimedCode,
+                        $"Error: Task {task.DisplayId} is already claimed by {task.Assignee} ({FormatElapsed(elapsed)} ago); its lease is not yet stale. Use claim-task once it goes stale, or wait for {task.Assignee} to finish."
+                    );
+                }
+
+                // The lease is stale: assignment never advances a task into InProgress
+                // (Requirement 8.4 — that would risk the new assignee ending up with two active
+                // tasks), so hand it back to 'not started' for them to claim explicitly.
+                task.Status = TaskStatus.NotStarted;
+                task.ClaimedAt = null;
+            }
+
+            task.Assignee = trimmedAssignee;
             return $"Assigned task {task.DisplayId} to {task.Assignee}. "
                 + "They should claim it before starting, and break it into sub-items if it is more than one sitting.";
         }
@@ -679,12 +728,9 @@ Examples:
             );
         }
 
-        if (GetUnresolvedBlockers(task) is { Count: > 0 } unresolved)
+        if (RefuseIfBlocked(task) is { } blockedError)
         {
-            return FunctionResult.Error(
-                TaskBlockedCode,
-                $"Error: Task {task.DisplayId} is blocked by {string.Join(", ", unresolved)}. Resolve the blocker(s) first."
-            );
+            return blockedError;
         }
 
         if (
@@ -693,9 +739,7 @@ Examples:
             && !string.Equals(task.Assignee, agent, StringComparison.Ordinal)
         )
         {
-            var claimedAt = task.ClaimedAt ?? task.CreatedAt ?? now;
-            var elapsed = now - claimedAt;
-            if (elapsed < _leaseStaleAfter)
+            if (!IsLeaseStale(task, now, out var elapsed))
             {
                 return FunctionResult.Error(
                     TaskAlreadyClaimedCode,
@@ -752,6 +796,41 @@ Examples:
         }
 
         return unresolved;
+    }
+
+    /// <summary>
+    ///     Shared blockedBy guard for every route that can move a task into
+    ///     <see cref="TaskStatus.InProgress" /> — <see cref="ApplyClaim" />, the legacy agentless
+    ///     branch of <see cref="UpdateTask(string, string, string?)" />, and <see cref="ClaimTask" />'s
+    ///     same-holder refresh — so <c>Status</c> and <c>BlockedBy</c> can never disagree
+    ///     (Requirement 8.1/8.5). Must be called while holding <see cref="_sync" />.
+    /// </summary>
+    private FunctionResult? RefuseIfBlocked(PrivateTaskItem task)
+    {
+        if (GetUnresolvedBlockers(task) is { Count: > 0 } unresolved)
+        {
+            return FunctionResult.Error(
+                TaskBlockedCode,
+                $"Error: Task {task.DisplayId} is blocked by {string.Join(", ", unresolved)}. Resolve the blocker(s) first."
+            );
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     Whether <paramref name="task" />'s current lease is old enough for someone other than
+    ///     its current assignee to take over — Requirement 8.3's "older than the staleness
+    ///     threshold": a claim exactly <see cref="_leaseStaleAfter" /> old is still live, only one
+    ///     that is strictly older counts as stale. Shared by <see cref="ApplyClaim" /> and
+    ///     <see cref="AssignTask" /> so both routes into a live claim's territory agree on the
+    ///     same boundary.
+    /// </summary>
+    private bool IsLeaseStale(PrivateTaskItem task, DateTimeOffset now, out TimeSpan elapsed)
+    {
+        var claimedAt = task.ClaimedAt ?? task.CreatedAt ?? now;
+        elapsed = now - claimedAt;
+        return elapsed > _leaseStaleAfter;
     }
 
     private List<string> AutoUnblockDependentsOf(string completedTaskId)

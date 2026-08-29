@@ -1080,6 +1080,36 @@ public class TaskManagerTests
     }
 
     [Fact]
+    public void ClaimTask_AtExactlyTheStaleThreshold_IsStillLive_AndOneTickLaterIsStale()
+    {
+        // Arrange - Requirement 8.3 says a lease is stale once it is "older than" the default
+        // 15-minute threshold, so a claim exactly 15 minutes old is still live and only a claim
+        // past 15 minutes may be taken over. The 5m/16m tests above don't sit on this boundary;
+        // this one pins the exact distinguishing case (14.999... vs. 15.000...+epsilon minutes).
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var manager = new TaskManager(clock);
+        manager.AddTask("Ship the release");
+        manager.ClaimTask("1", "rev-a");
+
+        // Act - exactly at the threshold
+        clock.Advance(TimeSpan.FromMinutes(15));
+        var atThreshold = manager.ClaimTask("1", "rev-b");
+
+        // Assert - still live
+        atThreshold.IsError.Should().BeTrue();
+        atThreshold.ErrorCode.Should().Be("task_already_claimed");
+        manager.GetTasks().Single().Assignee.Should().Be("rev-a");
+
+        // Act - one tick past the threshold
+        clock.Advance(TimeSpan.FromTicks(1));
+        var pastThreshold = manager.ClaimTask("1", "rev-b");
+
+        // Assert - now stale
+        pastThreshold.IsError.Should().BeFalse();
+        manager.GetTasks().Single().Assignee.Should().Be("rev-b");
+    }
+
+    [Fact]
     public void ClaimTask_ASecondTaskForTheSameAgent_ReleasesTheFirstBackToNotStarted()
     {
         // Arrange - the one-in-progress-per-assignee invariant: an agent claiming a second
@@ -1127,6 +1157,57 @@ public class TaskManagerTests
     }
 
     [Fact]
+    public void UpdateTask_ToInProgressWithNoAgent_CannotBypassAnUnresolvedBlock()
+    {
+        // Arrange - F-001: the agentless 'in progress' transition (agent == null) does not go
+        // through ApplyClaim, so before this fix it inherited none of ApplyClaim's guards. This
+        // reproduces the reported back door: block -> assign -> "in progress" (no agent) ->
+        // "completed" must not be able to reach Completed while blockedBy is unresolved.
+        _taskManager.AddTask("The blocker");
+        _taskManager.AddTask("The dependent");
+        _taskManager.BlockTask("2", ["1"]);
+        _taskManager.AssignTask("2", "rev-a");
+
+        // Act
+        var inProgressResult = _taskManager.UpdateTask("2", "in progress");
+
+        // Assert - refused, not silently accepted
+        inProgressResult.IsError.Should().BeTrue();
+        inProgressResult.ErrorCode.Should().Be("task_blocked");
+
+        var dependent = _taskManager.GetTasks().Single(t => t.Id == "2");
+        dependent.Status.Should().Be(TaskManager.TaskStatus.Blocked);
+
+        // And completion is still unreachable, since Status never left Blocked.
+        var completeResult = _taskManager.UpdateTask("2", "completed");
+        completeResult.IsError.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ClaimTask_RefreshOnABlockedTask_IsRefused()
+    {
+        // Arrange - a holder cannot refresh their own claim once the task has been blocked out
+        // from under them; the block review flagged that ClaimTask's same-holder refresh fast
+        // path checked only Status == InProgress and the agent name, skipping the blockedBy
+        // guard ApplyClaim otherwise enforces. block-task always flips Status to Blocked in the
+        // same call it records blockedBy, so this scenario currently reaches the ApplyClaim path
+        // rather than the fast path — the fast path's own RefuseIfBlocked call added alongside
+        // this fix is defense-in-depth against that invariant changing later, not something a
+        // reachable input can currently exercise directly.
+        _taskManager.AddTask("The blocker");
+        _taskManager.AddTask("The dependent");
+        _taskManager.ClaimTask("2", "rev-a");
+        _taskManager.BlockTask("2", ["1"]);
+
+        // Act - same agent, same task, but it is now Blocked
+        var result = _taskManager.ClaimTask("2", "rev-a");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_blocked");
+    }
+
+    [Fact]
     public void CompletingABlocker_AutoUnblocksItsDependents()
     {
         // Arrange
@@ -1167,8 +1248,50 @@ public class TaskManagerTests
     [Fact]
     public void UpdateTask_ToCompletedWithoutAnActiveClaim_IsRefused()
     {
-        // Arrange
+        // Arrange - a task that is both NotStarted and unassigned; either half of the
+        // completion gate (Requirement 8.8) alone would already refuse this, which is exactly
+        // why it does not distinguish the two conjuncts the review flagged (F-003) — the two
+        // tests below each isolate one conjunct so a mutation dropping just that half turns red.
         _taskManager.AddTask("Never claimed");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_not_claimed");
+    }
+
+    [Fact]
+    public void UpdateTask_ToCompletedWhileInProgressButUnassigned_IsRefused()
+    {
+        // Arrange - F-003 (M2): isolates the "Assignee == null" conjunct. The agentless
+        // "in progress" transition never sets Assignee, so InProgress-but-unassigned is
+        // reachable through the public API without any lease ever having existed. A mutation
+        // that drops the Assignee-null check from the completion gate stays green against
+        // UpdateTask_ToCompletedWithoutAnActiveClaim_IsRefused above (that task is also
+        // NotStarted) but must turn red here, since Status alone is already InProgress.
+        _taskManager.AddTask("Never assigned");
+        _taskManager.UpdateTask("1", "in progress");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_not_claimed");
+    }
+
+    [Fact]
+    public void UpdateTask_ToCompletedWhileAssignedButNotInProgress_IsRefused()
+    {
+        // Arrange - F-003 (M3): isolates the "Status != InProgress" conjunct. assign-task sets
+        // Assignee without touching Status, so NotStarted-but-assigned is reachable through the
+        // public API. A mutation that drops the Status check from the completion gate stays
+        // green against UpdateTask_ToCompletedWithoutAnActiveClaim_IsRefused above (that task is
+        // also unassigned) but must turn red here, since Assignee alone is already non-null.
+        _taskManager.AddTask("Assigned but never claimed");
+        _taskManager.AssignTask("1", "rev-a");
 
         // Act
         var result = _taskManager.UpdateTask("1", "completed");
@@ -1255,6 +1378,84 @@ public class TaskManagerTests
         var task = _taskManager.GetTasks().Single();
         task.Assignee.Should().Be("rev-a");
         task.Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+    }
+
+    [Fact]
+    public void AssignTask_OverALiveForeignClaim_IsRefusedRatherThanSilentlyTransferred()
+    {
+        // Arrange - F-002 instance A: assign-task sat outside every claim invariant, so
+        // reassigning an InProgress task silently transferred the lease even while it was still
+        // fresh — the new assignee could then complete it having never claimed anything, at the
+        // exact moment claim-task would correctly refuse (task_already_claimed).
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var manager = new TaskManager(clock);
+        manager.AddTask("Ship the release");
+        manager.ClaimTask("1", "rev-a");
+        clock.Advance(TimeSpan.FromMinutes(1)); // well under the 15-minute default lease
+
+        // Act
+        var result = manager.AssignTask("1", "rev-b");
+
+        // Assert - refused, and the live claim is untouched
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_already_claimed");
+
+        var task = manager.GetTasks().Single();
+        task.Assignee.Should().Be("rev-a");
+        task.Status.Should().Be(TaskManager.TaskStatus.InProgress);
+    }
+
+    [Fact]
+    public void AssignTask_OverAStaleForeignClaim_ReleasesToNotStartedRatherThanStayingInProgress()
+    {
+        // Arrange - once the lease is actually stale, assign-task may hand the task to a new
+        // assignee, but it must not do so by leaving Status == InProgress under a name that
+        // never claimed it (that would recreate the exact "complete without ever claiming" hole
+        // F-002 closed for the live case, just past the staleness line). Assignment never
+        // advances a task into InProgress; the new assignee must still claim-task it.
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var manager = new TaskManager(clock);
+        manager.AddTask("Ship the release");
+        manager.ClaimTask("1", "rev-a");
+        clock.Advance(TimeSpan.FromMinutes(16)); // past the default 15-minute lease
+
+        // Act
+        var result = manager.AssignTask("1", "rev-b");
+
+        // Assert
+        result.IsError.Should().BeFalse();
+        var task = manager.GetTasks().Single();
+        task.Assignee.Should().Be("rev-b");
+        task.Status.Should().Be(TaskManager.TaskStatus.NotStarted);
+
+        // And rev-b cannot complete it without an explicit claim.
+        var completeAttempt = manager.UpdateTask("1", "completed");
+        completeAttempt.IsError.Should().BeTrue();
+        completeAttempt.ErrorCode.Should().Be("task_not_claimed");
+    }
+
+    [Fact]
+    public void AssignTask_NeverLeavesOneAssigneeHoldingTwoInProgressTasks()
+    {
+        // Arrange - F-002 instance B: rev-a and rev-b each hold their own live InProgress task;
+        // reassigning rev-b's task to rev-a must not silently give rev-a two active tasks at
+        // once (Requirement 8.4), the way it did before assign-task respected the lease.
+        _taskManager.AddTask("First task");
+        _taskManager.AddTask("Second task");
+        _taskManager.ClaimTask("1", "rev-a");
+        _taskManager.ClaimTask("2", "rev-b");
+
+        // Act
+        var result = _taskManager.AssignTask("2", "rev-a");
+
+        // Assert - refused outright (rev-b's lease on task 2 is fresh)
+        result.IsError.Should().BeTrue();
+
+        var tasks = _taskManager.GetTasks();
+        var inProgressForRevA = tasks.Count(t =>
+            t.Status == TaskManager.TaskStatus.InProgress && t.Assignee == "rev-a"
+        );
+        inProgressForRevA.Should().Be(1);
     }
 
     [Fact]

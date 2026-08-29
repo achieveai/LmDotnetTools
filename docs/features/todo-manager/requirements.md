@@ -144,6 +144,19 @@ that this document was amended to cover, and the row-suffix rendering (`[@assign
 4. **Header Inclusion**: WHEN generating markdown THEN it SHALL include the `# 📋 Task List` header
    - *Amended.* The header is `# 📋 Task List`, not `# TODO`.
 
+### Requirement 7: Function Provider Integration
+- **User Story**: As a developer, I need the TodoManager to integrate with the function call system so that LLMs can use it.
+
+#### Acceptance Criteria:
+1. **Provider Implementation**: WHEN creating TaskManager THEN it SHALL be a plain class whose `[Function]`-annotated methods are surfaced by `TypeFunctionProvider`; it SHALL NOT implement `IFunctionProvider` itself
+   - *Amended.* Hand-rolling `IFunctionProvider` would duplicate the reflection the framework already does.
+2. **Function Registration**: WHEN getting functions THEN `TypeFunctionProvider` SHALL return FunctionDescriptor objects for all fourteen operations: add-task, bulk-initialize, update-task, delete-task, get-task, add-note, edit-note, delete-note, list-notes, list-tasks, search-tasks, claim-task, assign-task, block-task
+   - *Amended.* The original eleven operations are unchanged; `claim-task`, `assign-task`, and `block-task` were added for the coordination fields in Requirement 8.
+3. **Parameter Mapping**: WHEN functions are called THEN arguments SHALL bind even when the model's JSON types differ from the declared ones — a quoted number onto a numeric parameter, an unquoted number onto a string parameter — and a parameter the model omitted SHALL take its declared C# default rather than the type's zero value
+4. **Error Handling**: WHEN operations fail THEN it SHALL return descriptive error messages instead of throwing exceptions, and SHOULD mark the tool result as an error so the model and the host can tell a failure from a successful answer whose text happens to start with "Error"
+   - *Amended.* Both halves are shipped. Every failure returns a message rather than throwing, and all fourteen tools return `FunctionResult`, so a domain failure reaches the model with `IsError = true` and a lower_snake_case error code (`task_not_found`, `invalid_args`, `invalid_task_id`, `invalid_status`, `note_index_out_of_range`, `task_not_claimable`, `task_blocked`, `task_already_claimed`, `task_not_claimed`) while a success carries no code. The text on the wire is unchanged — only `Text` is serialized — so the contract still advertises `string`.
+5. **Statefulness**: WHEN a provider is built around a live instance THEN its descriptors SHALL be marked `IsStateful`, so hosts that only accept stateless tools exclude it rather than sharing one conversation's list with another
+
 ### Requirement 8: Coordination Fields (Assignee, Claim/Lease, Blocked)
 
 - **User Story**: As an orchestrator handing work to other agents, I need to assign tasks,
@@ -158,6 +171,13 @@ that this document was amended to cover, and the row-suffix rendering (`[@assign
 2. **Assignee**: WHEN a task is created, assigned via "assign-task", or claimed via
    "claim-task" THEN it SHALL carry an `assignee` (agent name); a sub-task created under an
    assigned parent SHALL inherit the parent's assignee unless the caller overrides it
+   - *Amended.* "assign-task" refuses to reassign a task whose current `InProgress` claim is
+     still live (not stale by Requirement 8.3's threshold), returning `task_already_claimed`
+     — the same rule "claim-task" enforces, so assignment can never silently steal a live
+     lease. Reassigning over a *stale* claim succeeds but resets the task to `NotStarted`
+     (clearing `claimedAt`) rather than leaving it `InProgress` under the new name, so
+     assignment alone can never violate Requirement 8.4's one-in-progress-per-assignee
+     invariant and the new assignee must claim the task explicitly before completing it.
 3. **Claim Is A Lease, Not A Lock**: WHEN "claim-task" is called with an agent name THEN it
    SHALL move `NotStarted -> InProgress` and stamp `claimedAt`; a second agent's claim
    attempt SHALL be refused *unless* the existing claim is older than the staleness
@@ -167,8 +187,15 @@ that this document was amended to cover, and the row-suffix rendering (`[@assign
    task already `InProgress` under that same assignee SHALL be released back to
    `NotStarted` (its assignee kept, `claimedAt` cleared) rather than left running in
    parallel
-5. **Blocked Tasks Are Not Claimable**: WHEN a task is `Blocked` THEN "claim-task" SHALL
-   refuse it until every ID in `blockedBy` is resolved
+5. **Blocked Tasks Are Not Claimable**: WHEN a task is `Blocked` THEN every route that can
+   move it to `InProgress` — "claim-task", "update-task" (with or without an `agent`), and
+   "claim-task"'s same-holder lease refresh — SHALL refuse it until every ID in `blockedBy`
+   is resolved
+   - *Amended.* The original wording scoped this guard to "claim-task" alone; a plain
+     `update-task <id> "in progress"` with no `agent` moved the status without going through
+     "claim-task" at all, so it could bypass the block. The guard is now a single shared
+     check (`RefuseIfBlocked`) applied by every route, so `Status` and `BlockedBy` can never
+     disagree.
 6. **Auto-Unblock On Completion**: WHEN a task completes THEN every other task that named it
    in `blockedBy` SHALL have that ID removed, and SHALL return to `NotStarted` once its
    `blockedBy` list is empty
@@ -181,16 +208,3 @@ that this document was amended to cover, and the row-suffix rendering (`[@assign
 9. **Backward Compatibility**: WHEN loading a persisted task tree written before these
    fields existed THEN `assignee`, `blockedBy`, and the timestamp fields SHALL default to
    absent/empty rather than failing to deserialize
-
-### Requirement 7: Function Provider Integration
-- **User Story**: As a developer, I need the TodoManager to integrate with the function call system so that LLMs can use it.
-
-#### Acceptance Criteria:
-1. **Provider Implementation**: WHEN creating TaskManager THEN it SHALL be a plain class whose `[Function]`-annotated methods are surfaced by `TypeFunctionProvider`; it SHALL NOT implement `IFunctionProvider` itself
-   - *Amended.* Hand-rolling `IFunctionProvider` would duplicate the reflection the framework already does.
-2. **Function Registration**: WHEN getting functions THEN `TypeFunctionProvider` SHALL return FunctionDescriptor objects for all fourteen operations: add-task, bulk-initialize, update-task, delete-task, get-task, add-note, edit-note, delete-note, list-notes, list-tasks, search-tasks, claim-task, assign-task, block-task
-   - *Amended.* The original eleven operations are unchanged; `claim-task`, `assign-task`, and `block-task` were added for the coordination fields in Requirement 8.
-3. **Parameter Mapping**: WHEN functions are called THEN arguments SHALL bind even when the model's JSON types differ from the declared ones — a quoted number onto a numeric parameter, an unquoted number onto a string parameter — and a parameter the model omitted SHALL take its declared C# default rather than the type's zero value
-4. **Error Handling**: WHEN operations fail THEN it SHALL return descriptive error messages instead of throwing exceptions, and SHOULD mark the tool result as an error so the model and the host can tell a failure from a successful answer whose text happens to start with "Error"
-   - *Amended.* Both halves are shipped. Every failure returns a message rather than throwing, and all eleven tools return `FunctionResult`, so a domain failure reaches the model with `IsError = true` and a lower_snake_case error code (`task_not_found`, `invalid_args`, `invalid_task_id`, `invalid_status`, `note_index_out_of_range`) while a success carries no code. The text on the wire is unchanged — only `Text` is serialized — so the contract still advertises `string`.
-5. **Statefulness**: WHEN a provider is built around a live instance THEN its descriptors SHALL be marked `IsStateful`, so hosts that only accept stateless tools exclude it rather than sharing one conversation's list with another
