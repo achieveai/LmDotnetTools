@@ -22,11 +22,24 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// "Identical" is judged on the failure's message text so a streak actually proves a STUCK condition: a slot
 /// that fails for two DIFFERENT reasons in a row (a transient network blip, then something unrelated) has not
 /// demonstrated anything a destructive re-clone should be spent on, so a differing message resets the streak
-/// rather than accumulating toward it.
+/// rather than accumulating toward it. The comparison strips each message's leading <c>"Run &lt;id&gt;: "</c>
+/// first (every prepare-failure message in <see cref="Workspace.ReviewSlotPreparer"/> carries one) — without
+/// that, two DIFFERENT runs hitting the identical underlying failure on the identical wedged store root
+/// produce textually different messages purely because the run id differs, the streak resets to one on every
+/// single call, and it can never reach <see cref="MaxConsecutiveFailures"/> across runs. That would make this
+/// class no better than a run-scoped tracker despite being keyed by store root — the cross-run repeat is the
+/// one thing being keyed by store root (rather than run id) exists to catch.
 /// </para>
 /// </summary>
 internal sealed class SlotPrepareFailureEscalator
 {
+    /// <summary>Matches the leading <c>"Run 123: "</c> every prepare-failure message is stamped with, so the
+    /// streak compares the failure's own text rather than the run id it happened to occur under.</summary>
+    private static readonly System.Text.RegularExpressions.Regex RunIdPrefix = new(
+        @"^Run \d+: ",
+        System.Text.RegularExpressions.RegexOptions.Compiled
+    );
+
     /// <summary>
     /// Small on purpose: this is a BACKSTOP for a gap in classifier coverage, not the primary recovery path —
     /// that remains <see cref="DaemonReviewStageExecutor.PrepareWithRecoveryAsync"/>'s type-filtered catch,
@@ -49,17 +62,18 @@ internal sealed class SlotPrepareFailureEscalator
     /// <summary>
     /// Records a prepare failure for <paramref name="storeRoot"/> and returns whether the caller should now
     /// escalate to a re-clone regardless of classification. A message that differs from the slot's last
-    /// recorded failure restarts the streak at one — a changing symptom has not shown the stuck condition this
-    /// backstop targets.
+    /// recorded failure (once each has had its own run's <c>"Run &lt;id&gt;: "</c> prefix stripped) restarts
+    /// the streak at one — a changing symptom has not shown the stuck condition this backstop targets.
     /// </summary>
     public bool RecordFailureAndShouldEscalate(string storeRoot, string message)
     {
+        var normalized = RunIdPrefix.Replace(message, string.Empty);
         var state = _states.GetOrAdd(storeRoot, static _ => new State());
         lock (state)
         {
-            if (!string.Equals(state.LastMessage, message, StringComparison.Ordinal))
+            if (!string.Equals(state.LastMessage, normalized, StringComparison.Ordinal))
             {
-                state.LastMessage = message;
+                state.LastMessage = normalized;
                 state.ConsecutiveCount = 0;
             }
 

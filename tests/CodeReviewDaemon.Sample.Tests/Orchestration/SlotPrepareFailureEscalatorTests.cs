@@ -87,6 +87,38 @@ public class SlotPrepareFailureEscalatorTests
     }
 
     [Fact]
+    public void Two_identical_failures_under_different_run_ids_still_count_as_one_streak_of_two()
+    {
+        // Review finding F-001 (issue #582 PR #589): every real prepare-failure message is stamped
+        // "Run <id>: ...", and the mcqdb incident was SIX DIFFERENT runs hitting the identical wedged store
+        // over two days. Without stripping the run id first, each call's message differs from the last purely
+        // because the run id differs, the streak resets to one every time, and this backstop can never
+        // accumulate the cross-run repeat its own type doc says it exists to catch.
+        var escalator = new SlotPrepareFailureEscalator();
+        const string sameUnderlyingFailure =
+            "checking out branch 'x' from 'main' failed (exit 128): fatal: not a git repository: sub/../.git/modules/sub";
+
+        escalator.RecordFailureAndShouldEscalate(StoreRoot, $"Run 101: {sameUnderlyingFailure}").Should().BeFalse();
+        escalator
+            .RecordFailureAndShouldEscalate(StoreRoot, $"Run 202: {sameUnderlyingFailure}")
+            .Should()
+            .BeFalse(
+                "two identical underlying failures across different runs must still count as ONE streak of "
+                    + "two, not two independent streaks of one each stuck below the threshold forever"
+            );
+
+        // The THIRD occurrence — under yet another run id — is what proves accumulation rather than reset:
+        // if the run id were not stripped first, this would look like a fresh, different message and the
+        // streak would restart at one instead of reaching MaxConsecutiveFailures.
+        escalator
+            .RecordFailureAndShouldEscalate(StoreRoot, $"Run 303: {sameUnderlyingFailure}")
+            .Should()
+            .BeTrue(
+                "a third run hitting the identical failure on the identical store root is the cross-run streak this backstop exists to close"
+            );
+    }
+
+    [Fact]
     public void Streaks_are_tracked_independently_per_store_root()
     {
         var escalator = new SlotPrepareFailureEscalator();
