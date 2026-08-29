@@ -790,15 +790,16 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
     // ── the already-posted block's shared size budget (#225 items 3+4) ──
     //
-    // The block used to apply its "max 120 comments" cap to EACH rendered section, so the number a reader takes
-    // as the bound was quietly worth double, and a comment count was never a size bound anyway: bodies are
-    // written by anyone who can comment on the PR. These pin one budget — characters AND comments — drawn down
-    // across both sections, with a reserved floor for the "new since your last review" section, which is the one
-    // the guidance tells the reviewer to look hardest at because it carries questions it is REQUIRED to answer.
+    // The block used to apply its comment cap to EACH rendered section, so the number a reader takes as the bound
+    // was quietly worth double, and a comment count was never a size bound anyway: bodies are written by anyone
+    // who can comment on the PR. These pin one budget — characters AND comments — drawn down across both
+    // sections, with the "new since your last review" section CLAIMING IT FIRST, because that is the one the
+    // guidance tells the reviewer to look hardest at: it carries questions it is REQUIRED to answer.
     //
-    // The numbers below mirror the executor's private constants: 40,000 chars / 120 comments for the block, half
-    // of each reserved for the new section.
+    // The numbers below mirror the executor's private constants: 40,000 chars / 400 comments for the block, half
+    // of each being the share the past-reviews section may never take.
     private const int BlockCharBudget = 40_000;
+    private const int BlockCommentBudget = 400;
     private const int NewSectionReservation = BlockCharBudget / 2;
 
     /// <summary>Splits the rendered dedup block into its two sections so a test can size them independently.</summary>
@@ -1131,13 +1132,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Reviewed_lets_the_new_comments_section_spend_what_the_past_section_left_unused()
+    public async Task Reviewed_lets_the_new_comments_section_spend_the_whole_block_when_it_needs_it()
     {
         using var fixture = Fixture.Create();
         var run = fixture.SeedRun();
 
-        // The reservation is a floor, not a cap. On the common PR — short history, busy recent discussion — the new
-        // section should be free to use the whole block rather than being held to its half.
+        // The new section claims the block first, so the reservation is never its ceiling. On the common PR —
+        // short history, busy recent discussion — it should use the whole block rather than be held to half.
         SeedBotCutoff(fixture);
         SeedBulkComments(fixture, "PAST", count: 1, bodyChars: 100, isNew: false);
         SeedBulkComments(fixture, "NEW", count: 40, bodyChars: 900, isNew: true);
@@ -1151,8 +1152,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         fresh.Length.Should().BeGreaterThan(
             NewSectionReservation + 5_000,
-            "with the past section nearly empty, the new section inherits the unspent remainder — held to its "
-                + "reservation alone it would stop around 20,000 characters");
+            "the new section draws on the whole block, not on a reserved share of it — held to that share it "
+                + "would stop around 20,000 characters");
         fresh.Length.Should().BeLessThan(
             BlockCharBudget + 3_000, "…but never more than the whole block, which is the point of one budget");
     }
@@ -1164,11 +1165,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var run = fixture.SeedRun();
 
         // Small bodies, so the character budget is nowhere near binding and the COMMENT cap is what is measured.
-        // 200 seeded across the two sections: applied per-section the block renders 200, applied once it renders
-        // the documented 120.
+        // 500 seeded across the two sections: applied per-section the block renders 500, applied once it renders
+        // the documented 400.
         SeedBotCutoff(fixture);
-        SeedBulkComments(fixture, "PAST", count: 100, bodyChars: 20, isNew: false);
-        SeedBulkComments(fixture, "NEW", count: 100, bodyChars: 20, isNew: true);
+        SeedBulkComments(fixture, "PAST", count: 250, bodyChars: 5, isNew: false);
+        SeedBulkComments(fixture, "NEW", count: 250, bodyChars: 5, isNew: true);
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -1178,11 +1179,117 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var (past, fresh) = DedupSections(text);
 
         RenderedCommentCount(past + fresh).Should().Be(
-            120, "the comment cap bounds the whole block, not each section separately");
+            BlockCommentBudget, "the comment cap bounds the whole block, not each section separately");
 
-        // Both sections are represented, so the 120 is not one section rendering the entire cap.
+        // Both sections are represented, so the 400 is not one section rendering the entire cap.
         RenderedCommentCount(past).Should().BeGreaterThan(0);
         RenderedCommentCount(fresh).Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task Reviewed_renders_the_whole_conversation_of_the_busiest_observed_pr()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // 201 comments is the measured ceiling across a 300-PR survey — the busiest real conversation this daemon
+        // has been pointed at. The old cap of 120 cut it, and cut 5 of the 9 busiest PRs with it, which is the
+        // whole reason for the raise. Bodies are tiny so the CHARACTER budget cannot be what lets this through:
+        // if the comment cap were still 120 this renders 120 no matter how small the bodies are.
+        SeedBotCutoff(fixture);
+        SeedBulkComments(fixture, "PAST", count: 149, bodyChars: 5, isNew: false);
+        SeedBulkComments(fixture, "NEW", count: 51, bodyChars: 5, isNew: true);
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        var (past, fresh) = DedupSections(text);
+
+        RenderedCommentCount(past + fresh).Should().Be(
+            201,
+            "the busiest PR the daemon has measured must fit inside the block, not be truncated by it (149 past "
+                + "+ the bot's own cutoff comment + 51 new)");
+
+        // Non-vacuity: the last comment of each section is present, so the count is not 201 lines of omission
+        // notes, and the past section — the one that renders against what the new section left — is complete too.
+        past.Should().Contain("PAST-148");
+        fresh.Should().Contain("NEW-050");
+        (past + fresh).Should().NotContain(
+            "more comment(s)", "nothing was cut, so neither section should have written an omission note");
+    }
+
+    [Fact]
+    public async Task Reviewed_lets_the_new_section_claim_the_block_before_the_past_history_does()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The case where claim order is the ONLY thing that decides the outcome. Both sections want more than
+        // half the block: history wants ~38,000 chars and the new discussion wants ~28,500 of a 40,000 block.
+        //
+        //   past-first: history spends the unreserved 20,000, leaves nothing, and the new section is held to its
+        //               20,000 reservation — so it stops around comment 21 and NEW-029 is never rendered.
+        //   NEW-first:  the new discussion takes the ~28,500 it needs from the whole block and renders complete;
+        //               history takes the ~11,500 remainder and is the section that gets cut.
+        //
+        // Both orders spend one shared budget and both announce what they dropped, so only the identity of the
+        // truncated section separates them.
+        SeedBotCutoff(fixture);
+        SeedBulkComments(fixture, "PAST", count: 40, bodyChars: 900, isNew: false);
+        SeedBulkComments(fixture, "NEW", count: 30, bodyChars: 900, isNew: true);
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        var (past, fresh) = DedupSections(text);
+
+        fresh.Should().Contain(
+            "NEW-029",
+            "the new section claims the block first, so it renders its whole conversation even though the "
+                + "history that precedes it wanted more than the block had left");
+
+        // The distinguishing half: the block really was oversubscribed, so "NEW-029 rendered" is a statement
+        // about claim order rather than about a PR that happened to fit.
+        past.Should().Contain(
+            "more comment(s)", "the history is the section that absorbs the truncation under this order");
+        past.Should().Contain("PAST-000", "non-vacuity: the past section did render up to its cut");
+    }
+
+    [Fact]
+    public async Task Reviewed_states_the_listing_caps_in_the_rendered_block()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // A listing the model reads as exhaustive is one it reasons from as exhaustive. The block must say what
+        // its ceiling is, in the numbers actually enforced, so a section that stops just under the bound is not
+        // read as a PR that had nothing more to say.
+        SeedBotCutoff(fixture);
+        SeedBulkComments(fixture, "PAST", count: 2, bodyChars: 20, isNew: false);
+        SeedBulkComments(fixture, "NEW", count: 2, bodyChars: 20, isNew: true);
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+        text.Should().Contain(
+            "at most 400 comment(s)", "the comment ceiling the renderer enforces is the one the block states");
+        text.Should().Contain(
+            "40,000 characters", "…and so is the character ceiling, which is the one that usually binds first");
+        text.Should().Contain(
+            "claims that allowance first",
+            "the model is told WHICH section the allowance is spent on first, so it can read a short past "
+                + "section as a budget decision rather than as a quiet PR");
+        text.Should().Contain(
+            "INCOMPLETE",
+            "and it is told what an omission note means for its own conclusions — the reason for saying any of "
+                + "this");
     }
 
     [Fact]
