@@ -276,6 +276,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return "conversation_usage";
         }
 
+        if (type == typeof(ConversationTodoMessage))
+        {
+            return "conversation_todo";
+        }
+
         if (type == typeof(AgentMessage))
         {
             return "agent";
@@ -438,6 +443,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "notify" => typeof(NotifyMessage),
             "agent" => typeof(AgentMessage),
             "conversation_usage" => typeof(ConversationUsageMessage),
+            "conversation_todo" => typeof(ConversationTodoMessage),
             _ => null,
         };
     }

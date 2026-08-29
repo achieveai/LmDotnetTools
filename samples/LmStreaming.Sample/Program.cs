@@ -2017,6 +2017,20 @@ try
                         collaboration: rootCollaboration
                     );
 
+                    // PR 2 of the todo-board plan (#583): every successful task-tool mutation pushes a
+                    // live conversation_todo frame to this conversation's subscribers, exactly as the
+                    // usage ledger's aggregate-changed callback feeds the usage banner. Wired HERE, after
+                    // the loop exists, because the TaskManager was registered on the conversation
+                    // registry long before the loop it publishes through could be constructed. The
+                    // snapshot is stamped with the ROOT conversation's threadId (and the loop re-stamps
+                    // its own regardless): sub-agents mutate this same shared instance, and a frame
+                    // carrying a subagent-* id would be silently dropped by the client. Coalescing is
+                    // structural — one frame per tool call — so a bulk-initialize of 30 tasks is one
+                    // frame, not 30, with no timer, matching the usage push's no-timer pattern.
+                    var todoPublisher = agent;
+                    taskManager.OnChanged = () =>
+                        todoPublisher.PublishTodoBoardFrame(taskManager.GetTodoBoardSnapshot(threadId));
+
                     return new MultiTurnAgentPool.AgentCreationResult(
                         agent,
                         ownedResources.Count == 0 ? null : ownedResources

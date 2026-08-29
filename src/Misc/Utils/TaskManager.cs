@@ -92,6 +92,47 @@ public class TaskManager : ITodoBoardSource
         _leaseStaleAfter = leaseStaleAfter;
     }
 
+    /// <summary>
+    ///     Best-effort change hook (#583, PR 2): invoked once per SUCCESSFUL mutating tool call — add,
+    ///     bulk-initialize, status update, delete, and every note mutation — after the internal lock is
+    ///     released. The owning host wires it to publish the live <c>conversation_todo</c> frame, exactly
+    ///     as the usage ledger's aggregate-changed callback feeds the usage banner.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         One invocation per tool CALL, not per row it touched: a <c>bulk-initialize</c> of 30 tasks is
+    ///         one call and therefore one invocation — which is the whole coalescing story, with no timer,
+    ///         matching how the usage frame publishes per aggregate change rather than per token.
+    ///     </para>
+    ///     <para>
+    ///         Failed calls (non-null error code) do not fire: the board did not change, and a frame for a
+    ///         refusal would repaint the client with a state it already has. Read-only tools never fire.
+    ///     </para>
+    /// </remarks>
+    public Action? OnChanged { get; set; }
+
+    /// <summary>
+    ///     Fires <see cref="OnChanged" /> when <paramref name="result" /> reports success, passing the
+    ///     result through unchanged. A throwing subscriber is swallowed: the mutation already succeeded,
+    ///     and a failed UI push must not convert a successful tool call into a tool error.
+    /// </summary>
+    private FunctionResult NotifyIfChanged(FunctionResult result)
+    {
+        if (result.ErrorCode is null)
+        {
+            try
+            {
+                OnChanged?.Invoke();
+            }
+            catch
+            {
+                // Best-effort by contract; the publish side owns its own logging.
+            }
+        }
+
+        return result;
+    }
+
     [Function(
         "add-task",
         @"Add tasks dynamically as understanding evolves - adapt your plan based on learnings.
@@ -132,6 +173,11 @@ Examples:
         )]
             string? assignee = null
     )
+    {
+        return NotifyIfChanged(AddTaskCore(title, parentId));
+    }
+
+    private FunctionResult AddTaskCore(string title, string? parentId)
     {
         if (string.IsNullOrWhiteSpace(title))
         {
@@ -233,6 +279,11 @@ Examples:
         [Description("List of tasks with their subtasks and notes")] List<BulkTaskItem> tasks,
         [Description("Clear all existing tasks before adding new ones")] bool clearExisting = false
     )
+    {
+        return NotifyIfChanged(BulkInitializeCore(tasks, clearExisting));
+    }
+
+    private FunctionResult BulkInitializeCore(List<BulkTaskItem> tasks, bool clearExisting)
     {
         if (tasks == null || tasks.Count == 0)
         {
@@ -388,6 +439,11 @@ Examples:
         )]
             string? agent = null
     )
+    {
+        return NotifyIfChanged(UpdateTaskCore(taskId, status));
+    }
+
+    private FunctionResult UpdateTaskCore(string taskId, string status)
     {
         lock (_sync)
         {
@@ -905,6 +961,11 @@ Examples:
         [Description("Subtask ID to delete specific subtask")] int? subtaskId = null
     )
     {
+        return NotifyIfChanged(DeleteTaskCore(taskId, subtaskId));
+    }
+
+    private FunctionResult DeleteTaskCore(string taskId, int? subtaskId)
+    {
         lock (_sync)
         {
             var (task, _) = FindTaskByStringId(taskId);
@@ -1005,6 +1066,11 @@ Examples:
         [Description("Note text to add")] string noteText = ""
     )
     {
+        return NotifyIfChanged(AddNoteCore(taskId, subtaskId, noteText));
+    }
+
+    private FunctionResult AddNoteCore(string taskId, int? subtaskId, string noteText)
+    {
         if (string.IsNullOrWhiteSpace(noteText))
         {
             return FunctionResult.Error(InvalidArgumentsCode, "Error: Note text cannot be empty.");
@@ -1047,6 +1113,11 @@ Examples:
         [Description("Note index to edit (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1,
         [Description("New text to replace the existing note")] string noteText = ""
     )
+    {
+        return NotifyIfChanged(EditNoteCore(taskId, subtaskId, noteIndex, noteText));
+    }
+
+    private FunctionResult EditNoteCore(string taskId, int? subtaskId, int noteIndex, string noteText)
     {
         if (string.IsNullOrWhiteSpace(noteText))
         {
@@ -1097,6 +1168,11 @@ Examples:
         [Description("Subtask ID if deleting subtask note (optional)")] int? subtaskId = null,
         [Description("Note index to delete (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1
     )
+    {
+        return NotifyIfChanged(DeleteNoteCore(taskId, subtaskId, noteIndex));
+    }
+
+    private FunctionResult DeleteNoteCore(string taskId, int? subtaskId, int noteIndex)
     {
         lock (_sync)
         {

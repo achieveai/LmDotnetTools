@@ -41,21 +41,36 @@ public enum TodoTaskStatus
 ///     One row of the board, including its sub-rows. Ordering is the tree's own order and is never
 ///     re-sorted: the board must not shuffle under a reader who is watching it.
 /// </summary>
+/// <remarks>
+///     Property names are fixed camelCase via <see cref="JsonPropertyNameAttribute" /> because these rows
+///     travel two channels with different serializer settings: the REST endpoint (camelCase naming policy)
+///     and, from PR 2, the pushed <c>conversation_todo</c> frame, whose WebSocket serializer applies no
+///     naming policy at all. Without the pins the same row would go out camelCase on one channel and
+///     PascalCase on the other, and the client's parser is written against exactly one shape. The snapshot
+///     ROOT is deliberately left unpinned: it never crosses the WebSocket (the frame flattens its fields),
+///     and the projection's forward-compat probe reads the root's <c>SchemaVersion</c> key by its unpinned
+///     name.
+/// </remarks>
 public sealed record TodoTaskNode
 {
     /// <summary>Dotted-path identifier — <c>"1"</c>, <c>"1.2"</c>, <c>"1.2.3"</c>.</summary>
+    [JsonPropertyName("id")]
     public required string Id { get; init; }
 
     /// <summary>The row's status.</summary>
+    [JsonPropertyName("status")]
     public required TodoTaskStatus Status { get; init; }
 
     /// <summary>The row's title.</summary>
+    [JsonPropertyName("title")]
     public required string Title { get; init; }
 
     /// <summary>Short shared status lines attached to the row. Never null; empty when there are none.</summary>
+    [JsonPropertyName("notes")]
     public IReadOnlyList<string> Notes { get; init; } = [];
 
     /// <summary>Nested rows. Never null; empty when the row is a leaf.</summary>
+    [JsonPropertyName("subTasks")]
     public IReadOnlyList<TodoTaskNode> SubTasks { get; init; } = [];
 }
 
