@@ -257,6 +257,13 @@ describe('useTodoBoard — live frames', () => {
   it('drops a frame that arrives while no conversation is open', () => {
     // Reachable, not theoretical: useChat.clearMessages nulls its threadId at the start of every
     // switch and deliberately does NOT clear the frame ref, so this is the mid-switch window.
+    //
+    // What these three frame-guard tests pin, precisely: mutation showed the guard's conjuncts are
+    // mutually redundant, so deleting any ONE of them keeps all 21 green — `frame.threadId !==
+    // threadId` alone already drops both absence cases (`undefined !== 't1'`, `'t1' !== null`).
+    // The pin is therefore on the guard as a whole, not clause by clause: reverting it to the inert
+    // pre-fix form `frame.threadId && threadId && frame.threadId !== threadId` reds this test and
+    // the omits-threadId one above. Do not read a green single-clause mutation as a coverage gap.
     const threadId = ref<string | null>(null);
     const board = useTodoBoard(
       () => threadId.value,
