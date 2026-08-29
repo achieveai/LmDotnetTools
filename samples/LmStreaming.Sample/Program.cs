@@ -1303,19 +1303,7 @@ try
                 _ = conversationRegistry.AddFunctionsFromObject(taskManager, providerName: "TaskManager");
 
                 // Clone the per-conversation registry per-agent to avoid mutation, filtering by mode
-                var (allContracts, allHandlers) = conversationRegistry.Build();
-                var enabledToolSet = mode.EnabledTools?.ToHashSet();
-                var filteredRegistry = new FunctionRegistry();
-                foreach (var contract in allContracts)
-                {
-                    if (
-                        allHandlers.TryGetValue(contract.Name, out var handler)
-                        && (enabledToolSet == null || enabledToolSet.Contains(contract.Name))
-                    )
-                    {
-                        _ = filteredRegistry.AddFunction(contract, handler, "SampleTools");
-                    }
-                }
+                var filteredRegistry = BuildModeFilteredRegistry(conversationRegistry, mode.EnabledTools);
 
                 // Add LlmQuery book search MCP tools — only for medical knowledge mode
                 // Track MCP clients for proper disposal alongside the agent
@@ -1918,19 +1906,10 @@ try
 
                         // Keep the launch tools (and, for Workflow Author mode, the direct authoring/state
                         // tools too) out of sub-agent inheritance so a spawned sub-agent can't launch a
-                        // nested workflow or mutate the parent's runtime out from under it. Union with any
-                        // exclusions the host already set rather than replacing them.
+                        // nested workflow or mutate the parent's runtime out from under it.
                         if (subAgentOptions is not null)
                         {
-                            subAgentOptions = subAgentOptions with
-                            {
-                                NonInheritedToolNames =
-                                [
-                                    .. subAgentOptions.NonInheritedToolNames ?? [],
-                                    .. StartWorkflowToolProvider.ToolNames,
-                                    .. WorkflowToolProvider.AllToolNames,
-                                ],
-                            };
+                            subAgentOptions = AddWorkflowNonInheritedTools(subAgentOptions);
                         }
                     }
 
@@ -2512,10 +2491,16 @@ try
     _ = app.MapControllers();
 
     // Fallback for SPA routing.
-    // In Development, route through Vite dev server (proxied at /dist/*).
+    // In Development, route through Vite dev server (proxied at /dist/*). The redirect must carry
+    // the query string: a deep link like /?threadId=X otherwise lands on /dist/index.html with no
+    // query, and the app silently opens the most recent thread instead of the linked one.
     if (app.Environment.IsDevelopment())
     {
-        _ = app.MapGet("/", () => Results.Redirect("/dist/index.html", permanent: false));
+        _ = app.MapGet(
+            "/",
+            (HttpContext context) =>
+                Results.Redirect(BuildSpaRedirectTarget(context.Request.QueryString), permanent: false)
+        );
     }
     else
     {
@@ -4015,6 +4000,67 @@ public partial class Program
     /// </remarks>
     internal static IFunctionProvider ScopeWorkflowProvider(IFunctionProvider provider, ModeCapabilities caps) =>
         AllowListedFunctionProvider.Wrap(provider, caps.WorkflowToolAllowList);
+
+    /// <summary>
+    ///     Filters the per-conversation function registry (sample demo tools + the shared
+    ///     <c>TaskManager</c> todo-board family) down to the tools a mode enables.
+    /// </summary>
+    /// <remarks>
+    ///     Null <paramref name="enabledTools" /> means "everything" (the Default mode's contract); an
+    ///     explicit list keeps exactly the named tools. This is the seam that starved Workspace Agent
+    ///     of the task family: its <c>enabledTools: []</c> filtered out the todo-board tools the
+    ///     multi-agent mode exists to drive, so Prompts.yaml now names them and
+    ///     <c>ProgramModeToolNarrowingTests</c> pins the list against the live TaskManager enumeration.
+    /// </remarks>
+    internal static FunctionRegistry BuildModeFilteredRegistry(
+        FunctionRegistry conversationRegistry,
+        IReadOnlyList<string>? enabledTools
+    )
+    {
+        var (allContracts, allHandlers) = conversationRegistry.Build();
+        var enabledToolSet = enabledTools?.ToHashSet(StringComparer.Ordinal);
+        var filteredRegistry = new FunctionRegistry();
+        foreach (var contract in allContracts)
+        {
+            if (
+                allHandlers.TryGetValue(contract.Name, out var handler)
+                && (enabledToolSet == null || enabledToolSet.Contains(contract.Name))
+            )
+            {
+                _ = filteredRegistry.AddFunction(contract, handler, "SampleTools");
+            }
+        }
+
+        return filteredRegistry;
+    }
+
+    /// <summary>
+    ///     Excludes the workflow launch + authoring tool families from sub-agent inheritance, so a
+    ///     spawned sub-agent can't launch a nested workflow or mutate the parent's runtime out from
+    ///     under it. Unions with any exclusions the host already set rather than replacing them.
+    /// </summary>
+    /// <remarks>
+    ///     ONLY the workflow families belong here. The TaskManager todo-board tools must stay
+    ///     inheritable: every child's task tools close over the parent conversation's one
+    ///     <c>TaskManager</c>, which is how sub-agents and the parent coordinate on the shared board.
+    /// </remarks>
+    internal static SubAgentOptions AddWorkflowNonInheritedTools(SubAgentOptions options) =>
+        options with
+        {
+            NonInheritedToolNames =
+            [
+                .. options.NonInheritedToolNames ?? [],
+                .. StartWorkflowToolProvider.ToolNames,
+                .. WorkflowToolProvider.AllToolNames,
+            ],
+        };
+
+    /// <summary>
+    ///     Builds the SPA target for the Development-only root redirect, carrying the request's query
+    ///     string through so a deep link like <c>/?threadId=X</c> still selects its thread after the
+    ///     hop to <c>/dist/index.html</c>.
+    /// </summary>
+    internal static string BuildSpaRedirectTarget(QueryString query) => $"/dist/index.html{query}";
 
     /// <summary>
     ///     Narrows a conversation's delegation surface to the sub-agent tools its mode selected.

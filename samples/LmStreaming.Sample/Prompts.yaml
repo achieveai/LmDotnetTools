@@ -81,10 +81,31 @@ chatModes:
       and never replace real local evidence with the provider error object. Work step-by-step:
       explore the workspace before editing, always read before editing, verify the result, and
       summarize what you changed when done.
-    # Function tools are curated via the sandbox MCP gateway (so enabledTools is empty), but the
-    # workspace agent still benefits from server-side web search. Declared here (NOT in enabledTools)
-    # so built-in selection stays decoupled from the function-tool allow-list.
-    enabledTools: []
+    # Function tools are curated via the sandbox MCP gateway, so the sample demo tools
+    # (get_weather, calculate, ...) stay OFF. The TaskManager family is the one exception: the todo
+    # board (#583) is the coordination surface for exactly this multi-agent mode, and sub-agents
+    # inherit these tools (all closing over the conversation's one TaskManager), so parent and
+    # children drive the same shared board. Enumerated by name because enabledTools has no group
+    # wildcard; ProgramModeToolNarrowingTests pins this list against the live TaskManager
+    # enumeration, so adding a task tool without listing it here fails the build.
+    enabledTools:
+      - add-task
+      - bulk-initialize
+      - update-task
+      - claim-task
+      - assign-task
+      - block-task
+      - attach-artifact
+      - delete-task
+      - get-task
+      - add-note
+      - edit-note
+      - delete-note
+      - list-notes
+      - list-tasks
+      - search-tasks
+    # The workspace agent also benefits from server-side web search. Declared here (NOT in
+    # enabledTools) so built-in selection stays decoupled from the function-tool allow-list.
     enabledBuiltInTools:
       - web_search
     # The families the host wires at agent-construction time. These used to be granted by an

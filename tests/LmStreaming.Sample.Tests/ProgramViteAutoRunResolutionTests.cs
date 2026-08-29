@@ -77,3 +77,43 @@ public class ProgramViteAutoRunResolutionTests
         return (bool)method!.Invoke(null, null)!;
     }
 }
+
+/// <summary>
+///     Covers <c>Program.BuildSpaRedirectTarget()</c> — the rewrite rule behind the
+///     Development-only <c>GET /</c> → <c>/dist/index.html</c> redirect that fronts the Vite dev
+///     server. It must carry the query string through the hop: a deep link like
+///     <c>/?threadId=X</c> that lands on <c>/dist/index.html</c> with no query makes the app
+///     silently open the most recent thread instead of the linked one.
+/// </summary>
+public class ProgramSpaRedirectTargetTests
+{
+    [Fact]
+    public void BuildSpaRedirectTarget_PreservesTheQueryString()
+    {
+        global::Program
+            .BuildSpaRedirectTarget(
+                Microsoft.AspNetCore.Http.QueryString.FromUriComponent("?threadId=thread-123&tab=board")
+            )
+            .Should()
+            .Be("/dist/index.html?threadId=thread-123&tab=board");
+    }
+
+    [Fact]
+    public void BuildSpaRedirectTarget_KeepsQueryValuesEscaped()
+    {
+        // QueryString round-trips the already-escaped URI component; the redirect must not decode it.
+        global::Program
+            .BuildSpaRedirectTarget(Microsoft.AspNetCore.Http.QueryString.FromUriComponent("?q=a%20b%26c"))
+            .Should()
+            .Be("/dist/index.html?q=a%20b%26c");
+    }
+
+    [Fact]
+    public void BuildSpaRedirectTarget_WithNoQuery_IsTheBareSpaPath()
+    {
+        global::Program
+            .BuildSpaRedirectTarget(Microsoft.AspNetCore.Http.QueryString.Empty)
+            .Should()
+            .Be("/dist/index.html");
+    }
+}
