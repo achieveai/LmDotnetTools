@@ -30,6 +30,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.TodoBoard;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -1284,7 +1285,21 @@ try
                 // over IS the conversation's board, and handed back on the AgentCreationResult below it
                 // becomes the pool's read path (GET /todos). Constructed inline it was unreachable, and
                 // the only way to see the board was to ask the agent to run list-tasks.
-                var taskManager = new TaskManager();
+                //
+                // Hydrated from the persisted projection when one exists (#590 review F-002): a pool
+                // entry recreated after eviction, a provider/mode swap, or a restart must start from
+                // the durable board, because a fresh empty manager's FIRST mutation would otherwise
+                // persist a one-row board over it — the writer's empty-board guard no longer applies
+                // once one row exists, and the projection's monotonic guard accepts it because the
+                // fresh capture genuinely is newer. Sync-over-async matches the sandbox and books
+                // wiring in this same factory.
+                var persistedBoard = ConversationTodoProjection
+                    .LoadAsync(conversationStore, threadId)
+                    .GetAwaiter()
+                    .GetResult();
+                var taskManager = persistedBoard is { IsEmpty: false }
+                    ? TaskManager.FromSnapshot(persistedBoard)
+                    : new TaskManager();
                 _ = conversationRegistry.AddFunctionsFromObject(taskManager, providerName: "TaskManager");
 
                 // Clone the per-conversation registry per-agent to avoid mutation, filtering by mode
@@ -2016,6 +2031,46 @@ try
                         // ledger. Null keeps the legacy tool schemas and per-manager limits.
                         collaboration: rootCollaboration
                     );
+
+                    // PR 2 of the todo-board plan (#583): every successful task-tool mutation pushes a
+                    // live conversation_todo frame to this conversation's subscribers, exactly as the
+                    // usage ledger's aggregate-changed callback feeds the usage banner. Wired HERE, after
+                    // the loop exists, because the TaskManager was registered on the conversation
+                    // registry long before the loop it publishes through could be constructed. The
+                    // snapshot is stamped with the ROOT conversation's threadId (and the loop re-stamps
+                    // its own regardless): sub-agents mutate this same shared instance, and a frame
+                    // carrying a subagent-* id would be silently dropped by the client. Coalescing is
+                    // structural — one frame per tool call — so a bulk-initialize of 30 tasks is one
+                    // frame, not 30, with no timer, matching the usage push's no-timer pattern.
+                    // Durability rides the same hook (#586 review F-005): the pool's read-path
+                    // write-through only fires when someone ASKS for the board, so a board mutated and
+                    // then evicted/swapped would be lost without a change-driven save. The writer
+                    // coalesces bursts (capture-at-write-time, no timer, same engine as the usage
+                    // ledger's writer) and, because it sits in ownedResources, the pool entry's
+                    // teardown — eviction, provider/mode swap, shutdown — flushes the last change
+                    // before the entry disappears. It never persists an empty board and never mints a
+                    // metadata row for a thread that has none.
+                    var todoBoardWriter = new TodoBoardPersistenceWriter(
+                        conversationStore,
+                        threadId,
+                        () => taskManager.GetTodoBoardSnapshot(threadId),
+                        loggerFactory.CreateLogger<TodoBoardPersistenceWriter>()
+                    );
+                    ownedResources.Add(todoBoardWriter);
+
+                    var todoPublisher = agent;
+                    // The capture is passed as a DELEGATE and runs inside PublishTodoBoardFrame's
+                    // guard: #587 made GetTodoBoardSnapshot deliberately partial (an unmapped status
+                    // member throws), and a capture evaluated here would blow past the publish guard
+                    // into the task tool's last-resort catch, taking Schedule() down with it — exactly
+                    // the silent failure #587 changed the code to prevent. The logger gives that
+                    // last-resort catch a voice for whatever else a subscriber might throw.
+                    taskManager.OnChangedLogger = loggerFactory.CreateLogger<TaskManager>();
+                    taskManager.OnChanged = () =>
+                    {
+                        todoPublisher.PublishTodoBoardFrame(() => taskManager.GetTodoBoardSnapshot(threadId));
+                        todoBoardWriter.Schedule();
+                    };
 
                     return new MultiTurnAgentPool.AgentCreationResult(
                         agent,

@@ -594,6 +594,57 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     }
 
     /// <summary>
+    /// Broadcasts a live <c>conversation_todo</c> frame to the current subscribers whenever the
+    /// conversation's task tool reports a board change (#583, PR 2), so the client panel updates mid-run
+    /// instead of only on reload. The frame is transient (<see cref="ITransientMessage"/>): never
+    /// buffered, added to history, or persisted — a reconnecting client restores the authoritative board
+    /// from <c>GET /conversations/{id}/todos</c>. Best-effort and non-blocking; a publish fault must
+    /// never fault the tool call that mutated the board. Mirrors
+    /// <see cref="PublishUsageAggregateFrame"/> in every one of those choices.
+    /// </summary>
+    /// <remarks>
+    /// PUBLIC where its usage sibling is protected, because the wiring direction differs: the usage
+    /// ledger is constructed BY the loop, so the loop hands the callback inward, while the task tool is
+    /// constructed by the HOST (it lives in a leaf assembly this one cannot reference) and registered on
+    /// the conversation's function registry before the loop exists. The host therefore wires the tool's
+    /// change hook to this method from outside, after construction. The thread id on the frame is THIS
+    /// loop's <see cref="MultiTurnAgentBase.ThreadId"/>, never the snapshot's own stamp: sub-agents share
+    /// the parent conversation's board (their registries close over the parent's tool instance), and a
+    /// frame stamped with an acting sub-agent's thread would be silently dropped by the client, which
+    /// only accepts frames for the open conversation.
+    /// </remarks>
+    /// <param name="capture">
+    ///     Produces the board to publish; a null result is ignored. Taken as a delegate — not a
+    ///     ready-made snapshot — so the CAPTURE runs inside this method's guard: #587 made
+    ///     <c>GetTodoBoardSnapshot</c> deliberately partial (an unmapped status member throws), and a
+    ///     capture evaluated at the call site would throw before ever reaching this try, landing in the
+    ///     task tool's last-resort catch and silently taking the durable save's <c>Schedule()</c> down
+    ///     with it.
+    /// </param>
+    public void PublishTodoBoardFrame(Func<TodoBoardSnapshot?> capture)
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+
+        try
+        {
+            var snapshot = capture();
+            if (snapshot is null)
+            {
+                return;
+            }
+
+            var frame = ConversationTodoMessage.FromSnapshot(snapshot, ThreadId);
+            _ = PublishToAllAsync(frame, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            // Warning, not Debug: a capture fault here is the loud runtime failure #587 bought on
+            // purpose (an unmapped status member), not best-effort publish noise.
+            Logger.LogWarning(ex, "Failed to capture or publish live todo-board frame for thread {ThreadId}", ThreadId);
+        }
+    }
+
+    /// <summary>
     /// Awaits any pending/in-flight usage write so the latest snapshot is durable before run completion or
     /// disposal proceeds. Best-effort: a persistence fault must not fault the caller's lifecycle (#196).
     /// </summary>

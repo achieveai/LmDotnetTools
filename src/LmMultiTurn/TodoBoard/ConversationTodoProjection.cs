@@ -91,9 +91,11 @@ public static class ConversationTodoProjection
                 // persists whatever this callback returns, so there is no "no-op" value to hand back.
                 // All three implementations invoke the callback BEFORE their write, so the throw
                 // guarantees nothing is written. Callers treat a failed board save as non-fatal.
+                // The dedicated type lets a caller distinguish this deliberate, final decline from a
+                // store-infrastructure fault that happens to be an InvalidOperationException subtype.
                 if (existing is null)
                 {
-                    throw new InvalidOperationException(
+                    throw new TodoBoardDeclinedException(
                         $"Conversation '{snapshot.ThreadId}' no longer exists; refusing to recreate its "
                             + "metadata row to persist a todo board."
                     );
@@ -133,6 +135,18 @@ public static class ConversationTodoProjection
     }
 
     /// <summary>
+    ///     Reads bind property names case-insensitively (#590 review F-001): PR 2 pinned
+    ///     <see cref="TodoTaskNode" />'s rows to camelCase for its transport channels, which also changed
+    ///     the AT-REST shape — but blobs persisted by #586 carry PascalCase row keys (<c>"Id"</c>,
+    ///     <c>"Status"</c>, …), and those properties are <c>required</c>, so a case-SENSITIVE read throws
+    ///     and the tolerant catch below turns every pre-PR-2 board into "absent". Case-insensitive
+    ///     binding reads both generations; new writes are camelCase-rowed from here on.
+    ///     <see cref="PersistedSchemaVersion" /> is unaffected: it probes the raw document by exact key,
+    ///     and the snapshot ROOT was never pinned.
+    /// </summary>
+    private static readonly JsonSerializerOptions ReadOptions = new() { PropertyNameCaseInsensitive = true };
+
+    /// <summary>
     ///     Extracts the board from already-loaded metadata. Store-agnostic: accepts the value whether it is
     ///     a native JSON string (in-memory) or a re-hydrated <see cref="JsonElement" /> (file / SQLite).
     /// </summary>
@@ -146,7 +160,7 @@ public static class ConversationTodoProjection
 
         try
         {
-            var snapshot = JsonSerializer.Deserialize<TodoBoardSnapshot>(json);
+            var snapshot = JsonSerializer.Deserialize<TodoBoardSnapshot>(json, ReadOptions);
             return snapshot is { SchemaVersion: <= CurrentSchemaVersion } ? snapshot : null;
         }
         catch (JsonException)
