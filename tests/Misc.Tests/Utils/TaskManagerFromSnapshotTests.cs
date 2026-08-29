@@ -30,6 +30,7 @@ public class TaskManagerFromSnapshotTests
         _ = manager.ClaimTask("2", "agent-b");
         _ = manager.UpdateTask("2", "completed", "agent-b");
         _ = manager.BlockTask("3", ["1"]);
+        _ = manager.AttachArtifact("2", "out/report.md");
         return manager;
     }
 
@@ -56,6 +57,16 @@ public class TaskManagerFromSnapshotTests
 
         rehydrated.Tasks.Single(t => t.Id == "2").Status.Should().Be(TodoTaskStatus.Completed);
         rehydrated.Tasks.Single(t => t.Id == "3").Status.Should().Be(TodoTaskStatus.Blocked);
+
+        // Artifacts are part of the persisted board (PR 5) — unlike leases, they must survive the
+        // restart hydration exists for, or every chip vanishes on the first post-restart mutation.
+        // Mutation that must go red: FromBoardNode dropping node.Artifacts.
+        rehydrated
+            .Tasks.Single(t => t.Id == "2")
+            .Artifacts.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be("out/report.md");
     }
 
     [Fact]

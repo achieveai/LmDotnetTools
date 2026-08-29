@@ -61,6 +61,7 @@ public class TaskManager : ITodoBoardSource
     private const string TaskBlockedCode = "task_blocked";
     private const string TaskAlreadyClaimedCode = "task_already_claimed";
     private const string TaskNotClaimedCode = "task_not_claimed";
+    private const string InvalidArtifactPathCode = "invalid_artifact_path";
 
     /// <summary>
     ///     A claim is a lease, not a hard lock (see the design doc's stale-row research): an
@@ -801,6 +802,135 @@ Examples:
         }
     }
 
+    [Function(
+        "attach-artifact",
+        @"Attach a file to a task — the shared detail channel other agents read instead of asking.
+
+Attach the file that carries the working detail for this task: the spec you were handed,
+the notes you built up, the thing you produced. A task's title is a label; notes are
+one-liners; the artifact is where the substance lives. Any agent picking up or reviewing
+this task can open it from the board.
+
+Paths are WORKSPACE-RELATIVE, forward-slash only:
+• Good: ""docs/spec.md"", ""src/api/registry.ts""
+• Refused: absolute paths (""/etc/x"", ""C:/x""), backslashes, and any "".."" segment.
+  A host path would silently break after a restart — the workspace mount point moves,
+  the file does not.
+
+Attach the SAME path again and nothing changes — the call is idempotent, not an error.
+
+Examples:
+- The produced file: {""taskId"": ""2"", ""path"": ""src/renderers/registry.ts""}
+- The working spec: {""taskId"": ""3"", ""path"": ""docs/todo-board/spec.md""}"
+    )]
+    public FunctionResult AttachArtifact(
+        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
+        [Description("Workspace-relative file path, forward slashes only (e.g. 'docs/spec.md')")] string path
+    )
+    {
+        return NotifyIfChanged(AttachArtifactCore(taskId, path));
+    }
+
+    private FunctionResult AttachArtifactCore(string taskId, string path)
+    {
+        if (!TryNormalizeWorkspaceRelativePath(path, out var normalized, out var reason))
+        {
+            return FunctionResult.Error(InvalidArtifactPathCode, $"Error: {reason}");
+        }
+
+        lock (_sync)
+        {
+            var (task, error) = FindTaskByStringId(taskId);
+            if (task == null)
+            {
+                return error!.Value;
+            }
+
+            if (task.Artifacts.Contains(normalized, StringComparer.Ordinal))
+            {
+                return $"Artifact already attached to task {task.DisplayId}: {normalized}";
+            }
+
+            task.Artifacts.Add(normalized);
+            return $"Attached artifact to task {task.DisplayId}: {normalized}";
+        }
+    }
+
+    /// <summary>
+    ///     Lexically validates and normalizes an artifact path as WORKSPACE-RELATIVE, mirroring the
+    ///     sandbox SDK's <c>WorkspaceRelativePath</c> rules (that type is internal to the Sandbox
+    ///     assembly, which this project deliberately does not reference). The rules are purely lexical
+    ///     and host-independent: reject a NUL byte, any backslash (covers Windows drive/UNC/device
+    ///     roots and mixed-separator traversal), a POSIX-absolute path, a drive-letter prefix, and any
+    ///     <c>..</c> segment; drop empty and <c>.</c> segments. The board must never carry a host
+    ///     path — <c>HostPath</c> is re-derived per session and silently breaks across a restart,
+    ///     while a workspace-relative path is exactly what the file-browser preview endpoint accepts.
+    /// </summary>
+    private static bool TryNormalizeWorkspaceRelativePath(string? path, out string normalized, out string reason)
+    {
+        normalized = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            reason = "Artifact path cannot be empty.";
+            return false;
+        }
+
+        if (path.Contains('\0', StringComparison.Ordinal))
+        {
+            reason = "Artifact path contains a NUL byte.";
+            return false;
+        }
+
+        if (path.Contains('\\', StringComparison.Ordinal))
+        {
+            reason =
+                "Artifact path must be workspace-relative with forward slashes only "
+                + "(no backslashes, Windows drive/UNC roots, or host paths).";
+            return false;
+        }
+
+        var trimmed = path.Trim();
+        if (trimmed.StartsWith('/'))
+        {
+            reason = "Artifact path must be workspace-relative, not an absolute path.";
+            return false;
+        }
+
+        if (trimmed.Length >= 2 && trimmed[1] == ':' && char.IsAsciiLetter(trimmed[0]))
+        {
+            reason = "Artifact path must be workspace-relative, not a Windows drive path.";
+            return false;
+        }
+
+        var kept = new List<string>();
+        foreach (var segment in trimmed.Split('/'))
+        {
+            if (segment.Length == 0 || string.Equals(segment, ".", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (string.Equals(segment, "..", StringComparison.Ordinal))
+            {
+                reason = "Artifact path contains a '..' segment that escapes the workspace root.";
+                return false;
+            }
+
+            kept.Add(segment);
+        }
+
+        if (kept.Count == 0)
+        {
+            reason = "Artifact path names the workspace root, not a file.";
+            return false;
+        }
+
+        normalized = string.Join('/', kept);
+        reason = string.Empty;
+        return true;
+    }
+
     /// <summary>
     ///     Shared claim logic for <see cref="ClaimTask" /> and <see cref="UpdateTask(string, string, string?)" />
     ///     when it is asked to move a task to <see cref="TaskStatus.InProgress" /> on behalf of a
@@ -1494,6 +1624,7 @@ Examples:
             },
             Title = task.Title,
             Notes = [.. task.Notes],
+            Artifacts = [.. task.Artifacts],
             SubTasks = [.. task.SubTasks.Select(ToBoardNode)],
         };
     }
@@ -1765,6 +1896,16 @@ Examples:
             }
         }
 
+        List<string> artifactsCopy = [.. task.Artifacts];
+        if (artifactsCopy.Count > 0)
+        {
+            AppendLine(sb, $"Artifacts ({artifactsCopy.Count}):");
+            foreach (var artifact in artifactsCopy)
+            {
+                AppendLine(sb, $"- {artifact}");
+            }
+        }
+
         List<PrivateTaskItem> subtasksCopy;
         lock (task.SubTasks)
         {
@@ -1829,6 +1970,18 @@ Examples:
             for (var i = 0; i < notesCopy.Count; i++)
             {
                 AppendLine(sb, $"{indent}  {i + 1}. {notesCopy[i]}");
+            }
+        }
+
+        // Unlike notes, artifacts render as plain bullets: no tool addresses one by index, so
+        // numbering them would imply an edit handle that does not exist.
+        List<string> artifactsCopy = [.. task.Artifacts];
+        if (artifactsCopy.Count > 0)
+        {
+            AppendLine(sb, $"{indent}  Artifacts:");
+            foreach (var artifact in artifactsCopy)
+            {
+                AppendLine(sb, $"{indent}  - {artifact}");
             }
         }
 
@@ -1947,7 +2100,8 @@ Examples:
     ///         which would renumber from 1, flatten nesting to one level, and reset every status.
     ///     </para>
     ///     <para>
-    ///         Only what the board snapshot carries comes back: id, status, title, notes, subtree. The
+    ///         Only what the board snapshot carries comes back: id, status, title, notes, artifacts,
+    ///         subtree. The
     ///         claim/lease fields (<c>assignee</c>, <c>claimedAt</c>) and <c>blockedBy</c> are not part
     ///         of the persisted projection — leases are in-memory by design, so every rehydrated task
     ///         arrives lease-less, and a <see cref="TaskStatus.Blocked" /> row arrives with an empty
@@ -1990,6 +2144,9 @@ Examples:
             ParentId = parentId,
         };
         item.Notes.AddRange(node.Notes);
+        // Artifacts are part of the persisted board (unlike leases): workspace-relative by the tool
+        // boundary's guarantee, so they stay meaningful across the very restart hydration serves.
+        item.Artifacts.AddRange(node.Artifacts);
 
         var maxSubId = 0;
         foreach (var (subNode, index) in node.SubTasks.Select(static (subNode, index) => (subNode, index)))
@@ -2172,6 +2329,13 @@ Examples:
         [JsonPropertyName("blockedBy")]
         public IList<string> BlockedBy { get; init; } = ImmutableList<string>.Empty;
 
+        /// <summary>
+        ///     Workspace-relative file paths attached via <c>attach-artifact</c>. Never host paths —
+        ///     validated and normalized at the tool boundary. Never null; empty when none.
+        /// </summary>
+        [JsonPropertyName("artifacts")]
+        public IList<string> Artifacts { get; init; } = ImmutableList<string>.Empty;
+
         [JsonPropertyName("times")]
         public TaskTimestamps? Times { get; init; }
     }
@@ -2210,6 +2374,9 @@ Examples:
         [JsonPropertyName("blockedBy")]
         public List<string> BlockedBy { get; set; } = [];
 
+        [JsonPropertyName("artifacts")]
+        public List<string> Artifacts { get; set; } = [];
+
         [JsonPropertyName("createdAt")]
         public DateTimeOffset? CreatedAt { get; set; }
 
@@ -2241,6 +2408,7 @@ Examples:
                 SubTasks = [.. SubTasks.Select(st => st.ToPublic())],
                 Assignee = Assignee,
                 BlockedBy = [.. BlockedBy],
+                Artifacts = [.. Artifacts],
                 Times = times,
             };
         }

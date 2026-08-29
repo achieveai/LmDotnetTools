@@ -162,6 +162,30 @@ public class ConversationTodoProjectionTests
         loaded.Tasks[0].SubTasks.Should().ContainSingle().Which.Id.Should().Be("1.1");
         loaded.Tasks[0].SubTasks[0].Status.Should().Be(TodoTaskStatus.Completed);
         loaded.Tasks[1].Status.Should().Be(TodoTaskStatus.NotStarted);
+        // PR 5's additive field: a blob persisted before `artifacts` existed reads back with it
+        // simply empty — never null, never a deserialization failure that blanks the whole board.
+        loaded.Tasks[0].Artifacts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task LoadAsync_ReadsRowsPersistedBeforeAndAfterTheArtifactsField()
+    {
+        // PR 5 literal-payload compat (the same discipline as the PascalCase test above): one row in
+        // the exact camelCase shape PRs 2-4 persisted — no `artifacts` key at all — and one carrying
+        // the new field. Both must read in one pass: the old row's artifacts come back empty, the new
+        // row's come back intact. A same-build round-trip cannot prove the missing-key half.
+        var store = new InMemoryConversationStore();
+        const string mixedGenerationBlob = """
+            {"ThreadId":"conv-1","SchemaVersion":1,"CapturedAtUtc":"2026-08-29T12:00:00+00:00","Tasks":[{"id":"1","status":"Completed","title":"Renderer registry","notes":[],"subTasks":[]},{"id":"2","status":"InProgress","title":"Ship the chips","notes":[],"artifacts":["src/renderers/registry.ts","docs/spec.md"],"subTasks":[]}]}
+            """;
+        await SetRawPropertyAsync(store, "conv-1", mixedGenerationBlob);
+
+        var loaded = await ConversationTodoProjection.LoadAsync(store, "conv-1");
+
+        loaded.Should().NotBeNull();
+        loaded!.Tasks.Should().HaveCount(2);
+        loaded.Tasks[0].Artifacts.Should().BeEmpty();
+        loaded.Tasks[1].Artifacts.Should().Equal("src/renderers/registry.ts", "docs/spec.md");
     }
 
     [Fact]
