@@ -100,6 +100,9 @@ public class ProcessTriggerSourceTests
                     _ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
                 )
                 .Task;
+
+        /// <summary>Accepts every handle — these tests exercise predicate/lifecycle logic, not validation.</summary>
+        public void ValidateHandle(string handle) { }
     }
 
     /// <summary>

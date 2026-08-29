@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
 using AchieveAi.LmDotnetTools.Sandbox;
 using Microsoft.Extensions.Logging;
@@ -291,6 +292,60 @@ public class SandboxProcessExitObserverTests
         exit.ExitCode.Should().Be(3);
         exit.Stdout.Should().BeEmpty();
         logger.Entries.Should().Contain(e => e.Level == LogLevel.Warning);
+    }
+
+    // ---- composed arm-time rejection (#598 review F-001) ----------------------------------------
+
+    private sealed class NoopTriggerSink : ITriggerEventSink
+    {
+        public ValueTask FireAsync(TriggerFireEvent fire, CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+    }
+
+    private static TriggerArmRequest ProcessArmRequest(string handle) =>
+        new()
+        {
+            WaitId = "w-" + Guid.NewGuid().ToString("N"),
+            Kind = ProcessTriggerSource.KindName,
+            ArgsJson = JsonSerializer.Serialize(new { handle }),
+            ArmedAt = DateTimeOffset.UtcNow,
+            Deadline = DateTimeOffset.UtcNow.AddMinutes(5),
+        };
+
+    /// <summary>
+    /// The F-001 pin, at the COMPOSED path where the defect lived: a real
+    /// <see cref="ProcessTriggerSource"/> over a real <see cref="SandboxProcessExitObserver"/> must
+    /// reject an invalid handle synchronously FROM ArmAsync. An observer-only unit test proves
+    /// nothing here — the source's ObserveExit converts a WaitForExitAsync throw into a faulted,
+    /// never-awaited watch, which arms "successfully" and parks to TTL.
+    /// </summary>
+    [Theory]
+    [InlineData("bad/handle")]
+    [InlineData("../escape")]
+    [InlineData(".hidden")]
+    [InlineData("a b")]
+    public void ComposedArm_InvalidHandle_ThrowsSynchronouslyFromArm(string handle)
+    {
+        var reader = new FakeWaitFileReader();
+        var source = new ProcessTriggerSource(Observer(reader, new FakeTimeProvider()));
+
+        Action act = () =>
+            _ = source.ArmAsync(ProcessArmRequest(handle), new NoopTriggerSink(), CancellationToken.None);
+
+        act.Should().Throw<ArgumentException>();
+        reader.Reads.Should().Be(0, "a rejected arm must never have started observing");
+    }
+
+    [Fact]
+    public async Task ComposedArm_ValidHandle_ArmsAndDisposes()
+    {
+        var reader = new FakeWaitFileReader();
+        var source = new ProcessTriggerSource(Observer(reader, new FakeTimeProvider()));
+
+        var armed = await source.ArmAsync(ProcessArmRequest("job-ok"), new NoopTriggerSink(), CancellationToken.None);
+
+        armed.Should().NotBeNull();
+        await armed.DisposeAsync();
     }
 
     // ---- adapter --------------------------------------------------------------------------------

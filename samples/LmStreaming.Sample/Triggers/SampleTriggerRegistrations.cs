@@ -97,9 +97,20 @@ public static class SampleTriggerRegistrations
                 new TriggerSourceRegistration
                 {
                     Kind = ProcessTriggerSource.KindName,
+                    // The observer always reads .lm-waits/... relative to the WORKSPACE ROOT, while
+                    // the taught mkdir is relative to the Bash tool's current directory — the two
+                    // coincide only at the tool's starting directory (workingDirectoryOverride pins
+                    // it to the workspace root). The description says so explicitly, because a
+                    // relative mkdir run after a cd into a subdirectory drops the files somewhere
+                    // the observer never looks and the wait silently parks to TTL (#598 review
+                    // F-005). No `~` anchor: the local backend has no '/workspace' mount and the
+                    // tool's home is not the workspace root there.
                     Description =
                         "Fire when a backgrounded sandbox Bash process exits with a matching exit code / stdout. "
-                        + "Start the work yourself via the Bash tool using the wait-file convention, then arm with the handle you chose: "
+                        + "Start the work yourself via the Bash tool using the wait-file convention. The .lm-waits "
+                        + "directory MUST be directly under the workspace root — the Bash tool's starting directory; "
+                        + "if you have changed directory, anchor these paths with the workspace's absolute path, or a "
+                        + "relative .lm-waits will land where the wait never looks. Then arm with the handle you chose: "
                         + "mkdir -p .lm-waits/<handle> && { cmd > .lm-waits/<handle>/out 2>&1; echo $? > .lm-waits/<handle>/exit; } & "
                         + "(handle: letters/digits/._- only, max 64, no leading dot).",
                     ArgsSchema = ProcessTriggerSource.ArgsSchemaText,

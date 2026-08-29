@@ -12,6 +12,19 @@ public interface IProcessExitObserver
 {
     /// <summary>Completes when the process identified by <paramref name="handle"/> exits.</summary>
     Task<ProcessExit> WaitForExitAsync(string handle, CancellationToken ct);
+
+    /// <summary>
+    /// Validates <paramref name="handle"/> SYNCHRONOUSLY, throwing <see cref="ArgumentException"/>
+    /// for one this observer can never resolve. <see cref="ProcessTriggerSource.ArmAsync"/> calls
+    /// this BEFORE any watch task exists, so the throw rejects the arm (the runtime maps it to its
+    /// <c>invalid_args</c> rejection). This is a separate seam by necessity, not style: a
+    /// synchronous throw from <see cref="WaitForExitAsync"/> cannot reject the arm — the armed
+    /// trigger's <c>ObserveExit</c> routes every such throw into the watch task by design, the
+    /// watch's own catch handles only cancellation, and a faulted watch is never awaited — so
+    /// validation living only inside <see cref="WaitForExitAsync"/> produces a wait that arms,
+    /// never fires, never logs, and parks until TTL.
+    /// </summary>
+    void ValidateHandle(string handle);
 }
 
 /// <summary>The observed outcome of a Bash-tool-managed process's exit.</summary>
@@ -68,6 +81,15 @@ public sealed class ProcessTriggerSource : ITriggerSource
         }
 
         var (handle, expectCode, stdoutPattern) = ParseArgs(request.ArgsJson);
+
+        // Arm-time handle validation THROUGH THE OBSERVER's own rule, while ArmAsync can still
+        // throw (mapping to the runtime's invalid_args rejection). This must happen here and not
+        // inside WaitForExitAsync: ObserveExit below deliberately converts every synchronous
+        // observer throw into a faulted watch task, and a faulted watch never fires, is never
+        // awaited, and logs nothing — an invalid handle validated only there would arm
+        // successfully and park silently until the wait's TTL (#598 review F-001).
+        _observer.ValidateHandle(handle);
+
         Regex? regex = null;
         if (!string.IsNullOrEmpty(stdoutPattern))
         {
@@ -296,4 +318,12 @@ public sealed class NoopProcessExitObserver : IProcessExitObserver
         ct.Register(() => tcs.TrySetCanceled(ct));
         return tcs.Task;
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Accepts everything. Unreachable through <see cref="ProcessTriggerSource.ArmAsync"/>, which
+    /// rejects a Noop-backed source before parsing args — kept a no-op so that rejection stays the
+    /// single, clearer "not wired in this host" failure.
+    /// </remarks>
+    public void ValidateHandle(string handle) { }
 }

@@ -33,6 +33,8 @@ public class SampleTriggerRegistrationsTests
     {
         public Task<ProcessExit> WaitForExitAsync(string handle, CancellationToken ct) =>
             new TaskCompletionSource<ProcessExit>().Task;
+
+        public void ValidateHandle(string handle) { }
     }
 
     private sealed class NoopSink : AchieveAi.LmDotnetTools.LmMultiTurn.Triggers.ITriggerEventSink
@@ -43,12 +45,14 @@ public class SampleTriggerRegistrationsTests
         ) => ValueTask.CompletedTask;
     }
 
-    private static AchieveAi.LmDotnetTools.LmMultiTurn.Triggers.TriggerArmRequest ProcessArmRequest() =>
+    private static AchieveAi.LmDotnetTools.LmMultiTurn.Triggers.TriggerArmRequest ProcessArmRequest(
+        string handle = "job1"
+    ) =>
         new()
         {
             WaitId = "w1",
             Kind = ProcessTriggerSource.KindName,
-            ArgsJson = """{ "handle": "job1" }""",
+            ArgsJson = JsonSerializer.Serialize(new { handle }),
             ArmedAt = DateTimeOffset.UtcNow,
             Deadline = DateTimeOffset.UtcNow.AddMinutes(5),
         };
@@ -78,6 +82,31 @@ public class SampleTriggerRegistrationsTests
             .Awaiting(async () => await source.ArmAsync(ProcessArmRequest(), new NoopSink(), CancellationToken.None))
             .Should()
             .ThrowAsync<ArgumentException>();
+    }
+
+    /// <summary>Never resolves — arming must be decided before any read happens.</summary>
+    private sealed class PendingReader : ISandboxWaitFileReader
+    {
+        public Task<byte[]> ReadAsync(string relativePath, long? maxBytes, CancellationToken ct) =>
+            new TaskCompletionSource<byte[]>().Task;
+    }
+
+    /// <summary>
+    /// F-001 pin at the REGISTRATION route — the only path the runtime actually arms through: the
+    /// sandbox-gated process registration backed by a real <see cref="SandboxProcessExitObserver"/>
+    /// must reject an invalid handle synchronously from ArmAsync, not accept it into a silent
+    /// park-to-TTL wait.
+    /// </summary>
+    [Fact]
+    public void Build_ProcessKind_WithRealObserver_RejectsAnInvalidHandleAtArmTime()
+    {
+        var observer = new SandboxProcessExitObserver(new PendingReader(), TimeProvider.System);
+        var options = SampleTriggerRegistrations.Build(sandboxEnabled: true, processExitObserver: observer);
+        var source = options.AdditionalRegistrations.Single(r => r.Kind == ProcessTriggerSource.KindName).Source;
+
+        Action act = () => _ = source.ArmAsync(ProcessArmRequest("bad/handle"), new NoopSink(), CancellationToken.None);
+
+        act.Should().Throw<ArgumentException>();
     }
 
     [Fact]

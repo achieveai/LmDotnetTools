@@ -131,11 +131,22 @@ public sealed class SandboxProcessExitObserver : IProcessExitObserver
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// This is the call that actually rejects an invalid handle AT ARM TIME:
+    /// <see cref="ProcessTriggerSource.ArmAsync"/> invokes it before constructing the armed
+    /// trigger, so the throw propagates to the runtime's <c>invalid_args</c> rejection. A throw
+    /// from <see cref="WaitForExitAsync"/> cannot do that — the source's watch machinery converts
+    /// it into a faulted, never-awaited task by design (#598 review F-001).
+    /// </remarks>
+    public void ValidateHandle(string handle) => ValidateHandleCore(handle);
+
+    /// <inheritdoc />
     public Task<ProcessExit> WaitForExitAsync(string handle, CancellationToken ct)
     {
-        // Validate synchronously so a bad handle surfaces at arm time (the source maps it to the
-        // runtime's invalid_args rejection) rather than as a faulted background watch.
-        ValidateHandle(handle);
+        // Defense-in-depth for DIRECT callers of this method only. The arm-time rejection lives in
+        // ValidateHandle above — a throw here does NOT reject an arm (ObserveExit swallows it into
+        // the watch task); it merely keeps an unvalidated handle from ever composing a path.
+        ValidateHandleCore(handle);
         return PollForExitAsync(handle, ct);
     }
 
@@ -144,7 +155,7 @@ public sealed class SandboxProcessExitObserver : IProcessExitObserver
     /// no leading dot). The allowlist — not an escape step — is the guarantee: nothing resembling a path
     /// separator, a traversal, or a hidden-file prefix ever reaches the composed workspace path.
     /// </summary>
-    private static void ValidateHandle(string handle)
+    private static void ValidateHandleCore(string handle)
     {
         if (string.IsNullOrWhiteSpace(handle))
         {
