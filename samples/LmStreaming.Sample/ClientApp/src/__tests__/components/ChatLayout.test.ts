@@ -1,6 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import { defineComponent, inject, h, type Ref } from 'vue';
+import fs from 'fs';
+import path from 'path';
 import ChatLayout from '@/components/ChatLayout.vue';
 import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
@@ -107,6 +109,12 @@ const sharedMocks = vi.hoisted(() => ({
   // When true, the useWorkspaces mock below delegates to the REAL composable instead of the stub,
   // so a test can drive the genuine loadWorkspaces/isLoading/409 chain with only `fetch` faked.
   useRealWorkspaces: false,
+  // The live thread-id ref inside the useChat mock, published so a test can CHANGE conversations
+  // after mount (the artifact-modal suite switches threads to fire ChatLayout's close watch).
+  chatThreadIdRef: null as Ref<string | null> | null,
+  // The latest conversation_todo frame ref inside the useChat mock. The REAL useTodoBoard watches
+  // it, so pushing a frame here is how a test conjures a board (and with it the TodoBoardPanel).
+  conversationTodoRef: null as Ref<unknown> | null,
 }));
 
 vi.mock('@/composables/useConversations', async () => {
@@ -198,6 +206,11 @@ vi.mock('@/composables/useChat', async () => {
       // first send of a session — the send path, unlike the "New chat" button, is reachable before
       // ChatLayout's mount-time catalog loads have finished.
       sharedMocks.chatOptions = options;
+      const threadId = ref<string | null>(sharedMocks.currentThreadId);
+      const conversationTodo = ref<unknown>(null);
+      // Published (like providerSelectionRef) so a test can mutate them after mount.
+      sharedMocks.chatThreadIdRef = threadId;
+      sharedMocks.conversationTodoRef = conversationTodo;
       return {
         displayItems: computed(() => []),
         isLoading: ref(sharedMocks.chatLoading),
@@ -214,7 +227,7 @@ vi.mock('@/composables/useChat', async () => {
         }),
         // Hoisted useTodoBoard(...) watches this eagerly to establish its dependency, so unlike the
         // lazily-read fields above it must actually be present here (#583).
-        conversationTodo: ref(null),
+        conversationTodo,
         pendingMessages: ref([]),
         pendingAuthRequests: computed(() => []),
         dismissAuthRequest: vi.fn(),
@@ -223,7 +236,7 @@ vi.mock('@/composables/useChat', async () => {
         cancelStream: vi.fn(async () => {}),
         disconnectWebSocket: sharedMocks.disconnectWebSocket,
         // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
-        threadId: ref(sharedMocks.currentThreadId),
+        threadId,
         setThreadId: sharedMocks.setThreadId,
         loadMessagesFromBackend: vi.fn(async () => {}),
         resumeStreamIfActive: sharedMocks.resumeStreamIfActive,
@@ -1927,5 +1940,189 @@ describe('ChatLayout keeps the workspace picker usable on a gateway-less host (#
     } finally {
       sharedMocks.isSending = false;
     }
+  });
+});
+
+/**
+ * 596/F-001 + #594 D6: the artifact preview modal is OWNED by ChatLayout (the panel only emits a
+ * path), and this level was the one part of the feature with no test — deleting the
+ * `watch(subAgentParentThreadId, ...)` that closes it on a conversation switch left the whole suite
+ * green. These tests mount ChatLayout with the REAL useTodoBoard and drive the board through the
+ * same `conversation_todo` frame ref the app uses, so the modal's open/close state is exercised
+ * where it lives.
+ */
+describe('ChatLayout artifact preview modal lifecycle (596/F-001, #594 D6)', () => {
+  /** Matches the `conversation_todo` push frame `useChat` hands to `useTodoBoard` (#583, PR 2). */
+  const boardFrame = (threadId: string) => ({
+    $type: 'conversation_todo',
+    threadId,
+    tasks: [
+      {
+        id: '1',
+        status: 'InProgress',
+        title: 'Write the spec',
+        notes: [],
+        artifacts: ['docs/spec.md'],
+        subTasks: [],
+      },
+    ],
+  });
+
+  // A real chip click bubbles `openArtifact` up from TodoBoardPanel; the stub keeps that emit and
+  // nothing else, so the test drives ChatLayout's handler through the same event the panel uses.
+  const TodoBoardPanelStub = defineComponent({
+    emits: ['open-artifact'],
+    template:
+      '<button data-test="board-chip" @click="$emit(\'open-artifact\', \'docs/spec.md\')">chip</button>',
+  });
+
+  // A stub with a body: `ArtifactPreviewModal: true` would render none of the real component's
+  // template, so there would be no `data-test-id="artifact-preview-modal"` element to assert on.
+  // This one carries the marker and a close control wired to the same `close` emit the real modal
+  // raises (through BaseModal), and skips the preview fetch the real one fires on mount.
+  const ArtifactPreviewModalStub = defineComponent({
+    // Declared so the D6 test below can assert the prop ChatLayout drives, not a fallthrough attr.
+    props: { besideSidebar: { type: Boolean, default: false } },
+    emits: ['close'],
+    template:
+      '<div data-test-id="artifact-preview-modal">'
+      + '<button data-test="modal-close" @click="$emit(\'close\')">close</button>'
+      + '</div>',
+  });
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          TodoBoardPanel: TodoBoardPanelStub,
+          // The SUBJECT here is ChatLayout's mount gate, not the modal's internals
+          // (ArtifactPreviewModal.test.ts owns those).
+          ArtifactPreviewModal: ArtifactPreviewModalStub,
+        },
+      },
+    });
+
+  /** Mounts, conjures a board via a push frame, clicks the chip: the modal is open on return. */
+  const mountWithOpenModal = async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+    sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+    await flushPromises();
+    await wrapper.get('[data-test="board-chip"]').trigger('click');
+    expect(wrapper.find('[data-test-id="artifact-preview-modal"]').exists()).toBe(true);
+    return wrapper;
+  };
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    // BOTH threads are started (present in the sidebar): after the switch below,
+    // subAgentParentThreadId is non-null again, so the modal's v-if stays satisfied on its own and
+    // ONLY the close watch can unmount it — the mutation "delete the watch" goes red here.
+    sharedMocks.conversations = [
+      makeConversation({ threadId: 'thread-1' }),
+      makeConversation({ threadId: 'thread-2' }),
+    ];
+    // The REAL useTodoBoard hydrates over REST when the thread changes; answer 404 ("no board") so
+    // the switch path exercises the same tolerant handling the app ships.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 404, statusText: 'Not Found', json: async () => ({}) }))
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('closes the modal when the conversation switches (the F-001 watch)', async () => {
+    const wrapper = await mountWithOpenModal();
+
+    sharedMocks.chatThreadIdRef!.value = 'thread-2';
+    await flushPromises();
+
+    // Without the watch the modal would still be here: thread-2 satisfies the v-if's thread gate.
+    expect(wrapper.find('[data-test-id="artifact-preview-modal"]').exists()).toBe(false);
+  });
+
+  it('leaves the modal open while the conversation does NOT change', async () => {
+    // Non-vacuity guard for the case above: the closing is caused by the switch, not by any
+    // re-render that happens to follow the chip click.
+    const wrapper = await mountWithOpenModal();
+
+    sharedMocks.conversationTodoRef!.value = boardFrame('thread-1');
+    await flushPromises();
+
+    expect(wrapper.find('[data-test-id="artifact-preview-modal"]').exists()).toBe(true);
+  });
+
+  it('tells the modal an expanded sidebar column is beside it, and stops when it collapses (#594 D6)', async () => {
+    // The prop is the testable seam of the reworked D6 fix (#603 F-001): jsdom computes no layout,
+    // so the backdrop geometry itself is pinned by the source-text guards below; THIS pins that
+    // ChatLayout only claims the column while the sidebar is actually expanded — collapsed, the
+    // 280px offset would expose an unclickable dead strip instead of a sidebar.
+    const wrapper = await mountWithOpenModal();
+    expect(wrapper.getComponent(ArtifactPreviewModalStub).props('besideSidebar')).toBe(true);
+
+    wrapper.findComponent({ name: 'ConversationSidebar' }).vm.$emit('toggle-collapse');
+    await flushPromises();
+    expect(wrapper.getComponent(ArtifactPreviewModalStub).props('besideSidebar')).toBe(false);
+  });
+});
+
+/**
+ * Source-text guards for the D6 sidebar-beside-preview GEOMETRY (#594 D6, reworked for #603
+ * F-001), following the `AppShellLayout.test.ts` precedent: jsdom lays nothing out, so "the
+ * sidebar is clickable and nothing occludes the open dialog" reduces to these declarations
+ * existing and agreeing across the files that must move together.
+ */
+describe('ChatLayout artifact-preview / sidebar geometry (#594 D6 / #603 F-001, source text)', () => {
+  const readSrc = (rel: string) =>
+    fs.readFileSync(path.resolve(__dirname, rel), 'utf-8') as string;
+
+  it('never lifts layout chrome into the modal layer: every z-index in ChatLayout and ConversationSidebar stays below BaseModal\'s 1000 backdrop', () => {
+    // The layer this invariant is measured against.
+    const baseModal = readSrc('../../components/BaseModal.vue');
+    expect(baseModal).toMatch(/\.modal-backdrop\s*\{[^}]*z-index:\s*1000/);
+    // The #603 F-001 defect: a `z-index: 1001` lift on the sidebar made the opaque 280px column
+    // paint OVER the centred dialog's left third (and steal its clicks, delete buttons included)
+    // at every viewport below 1200px — and pierced every OTHER modal's z-1000 backdrop too, since
+    // a stacking lift cannot pick which backdrop it climbs. D6 is solved by backdrop geometry
+    // instead (see the guards below), so no rule in these files may reach the modal layer at all.
+    for (const rel of ['../../components/ChatLayout.vue', '../../components/ConversationSidebar.vue']) {
+      const layers = [...readSrc(rel).matchAll(/z-index:\s*(\d+)/g)].map((m) => Number(m[1]));
+      expect(
+        layers.every((z) => z < 1000),
+        `${rel} declares z-index >= 1000 (found: ${layers.join(', ')}) — layout chrome must stay under the modal layer`
+      ).toBe(true);
+    }
+  });
+
+  it('stops the preview backdrop exactly at the sidebar column it exposes — the pair that must move together', () => {
+    const modal = readSrc('../../components/ArtifactPreviewModal.vue');
+    // Repeating `.modal-backdrop` in the compound selector is load-bearing: 0,3,0 out-specifies
+    // BaseModal's `inset: 0` at 0,2,0, so bundle source order never decides the cascade.
+    expect(modal).toMatch(
+      /\.modal-backdrop\.artifact-preview-beside-sidebar\s*\{[^}]*left:\s*280px/
+    );
+    const sidebar = readSrc('../../components/ConversationSidebar.vue');
+    expect(sidebar).toMatch(/\.conversation-sidebar\s*\{[^}]*width:\s*280px/);
+  });
+
+  it('returns the backdrop to full viewport at the sidebar\'s own mobile breakpoint', () => {
+    // At <=768px ConversationSidebar becomes a self-overlaying drawer, not a reserved column; a
+    // 280px offset there would squeeze the dialog into the sliver of a phone screen.
+    const modal = readSrc('../../components/ArtifactPreviewModal.vue');
+    expect(modal).toMatch(
+      /@media\s*\(max-width:\s*768px\)\s*\{\s*\.modal-backdrop\.artifact-preview-beside-sidebar\s*\{[^}]*left:\s*0/
+    );
+    const sidebar = readSrc('../../components/ConversationSidebar.vue');
+    expect(sidebar).toMatch(/@media\s*\(max-width:\s*768px\)/);
   });
 });

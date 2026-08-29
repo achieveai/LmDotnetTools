@@ -244,7 +244,10 @@ function openArtifactPreview(path: string): void {
 }
 
 // A conversation switch unmounts the modal rather than leaving it previewing the OLD thread's file
-// against the NEW thread's workspace.
+// against the NEW thread's workspace. This is also the second half of the #594 D6 fix: with the
+// preview's backdrop stopping at the sidebar's edge (`.artifact-preview-beside-sidebar`,
+// ArtifactPreviewModal.vue), clicking another conversation actually reaches the sidebar, and THIS
+// watch is what closes the modal for it.
 watch(subAgentParentThreadId, () => {
   artifactPreviewPath.value = null;
 });
@@ -982,11 +985,20 @@ onBeforeUnmount(() => {
     <TodoBoardPanel v-if="hasTodoBoard" :tasks="todoTasks" @open-artifact="openArtifactPreview" />
 
     <!-- Mounted beside the board rather than inside it so the panel stays stateless. Gated on the
-         board's thread id: with no started conversation there is no workspace to preview against. -->
+         board's thread id: with no started conversation there is no workspace to preview against.
+         `beside-sidebar` (#594 D6, reworked for #603 F-001): while the EXPANDED sidebar column is
+         on screen, the modal pulls its own backdrop off it so switching conversations stays a
+         single pointer click — nothing is z-lifted, so no element can paint over the dialog and no
+         other modal's backdrop is pierced. `:key` forces a REMOUNT when a different chip is clicked
+         while the modal is open — chips sit under the backdrop today so that path is unreachable,
+         but a reused instance would keep the first file's body under the second file's title
+         (`onMounted` fetches once), so the guard is kept for whatever opens a preview next. -->
     <ArtifactPreviewModal
       v-if="artifactPreviewPath && subAgentParentThreadId"
+      :key="artifactPreviewPath"
       :thread-id="subAgentParentThreadId"
       :path="artifactPreviewPath"
+      :beside-sidebar="!sidebarCollapsed && !focusMode"
       @close="artifactPreviewPath = null"
     />
 

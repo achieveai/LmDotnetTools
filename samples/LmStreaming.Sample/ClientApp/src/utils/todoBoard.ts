@@ -24,6 +24,8 @@ export const TODO_STATUS_GLYPH: Record<TodoStatusValue, string> = {
   [TodoStatus.InProgress]: '▶',
   [TodoStatus.Completed]: '✓',
   [TodoStatus.Removed]: '~',
+  // Mirrors the "[!]" marker the server's own text rendering uses for a blocked row.
+  [TodoStatus.Blocked]: '!',
 };
 
 /** Short pill label per status. Kept to one word: the panel is scanned, not read. */
@@ -32,6 +34,7 @@ export const TODO_STATUS_LABEL: Record<TodoStatusValue, string> = {
   [TodoStatus.InProgress]: 'active',
   [TodoStatus.Completed]: 'done',
   [TodoStatus.Removed]: 'removed',
+  [TodoStatus.Blocked]: 'blocked',
 };
 
 /**
@@ -39,9 +42,10 @@ export const TODO_STATUS_LABEL: Record<TodoStatusValue, string> = {
  *
  * An UNRECOGNIZED status resolves to `NotStarted`, never to `Completed`. That direction is
  * deliberate: the failure mode of a mis-parse is then a board that under-reports progress, which
- * looks like work outstanding, rather than one that claims work is finished when it is not. When
- * PR 4 adds `Blocked`, a client running ahead of its server sees those rows as `todo` — visible and
- * honest — instead of dropping them.
+ * looks like work outstanding, rather than one that claims work is finished when it is not. This
+ * fallback is a tested FORWARD-compat contract, kept as new statuses ship (`Blocked` joined the
+ * union in the #594 D4 fix): whatever the server appends next reaches this client as `todo` —
+ * visible and honest — instead of being dropped.
  */
 function coerceStatus(raw: unknown): TodoStatusValue {
   if (typeof raw !== 'string') return TodoStatus.NotStarted;
@@ -54,12 +58,25 @@ function coerceNotes(raw: unknown): string[] {
 }
 
 /**
+ * Defensive ceiling on chips per task (596/F-005). The server has no cap of its own yet, and the
+ * chip strip renders one button per entry — a hand-edited or malicious payload must not be able to
+ * flood the row. Generous next to real usage (a handful per task) so a legitimate board never hits it.
+ */
+const MAX_ARTIFACTS_PER_TASK = 20;
+
+/**
  * Same tolerance as notes: string entries only, empties dropped. A payload from a pre-PR-5 server
  * simply has no `artifacts` key, which lands here as `undefined` and comes back `[]`.
+ *
+ * Additionally DEDUPED and CAPPED (596/F-005). The server dedupes per task at the tool boundary,
+ * but the chip `v-for`'s `:key="artifact"` needs uniqueness as a CLIENT invariant — a legacy or
+ * hand-edited payload with a repeated path must not hand Vue duplicate keys. First occurrence wins
+ * (Set preserves insertion order), then the cap truncates rather than rendering an unbounded strip.
  */
 function coerceArtifacts(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
-  return raw.filter((a): a is string => typeof a === 'string' && a.length > 0);
+  const strings = raw.filter((a): a is string => typeof a === 'string' && a.length > 0);
+  return [...new Set(strings)].slice(0, MAX_ARTIFACTS_PER_TASK);
 }
 
 /** The chip label: the path's last segment. The full path stays on the chip's tooltip. */
@@ -133,7 +150,11 @@ export interface TodoCounts {
   total: number;
 }
 
-/** Counts every task in the tree, sub-tasks included: a parent is not a summary of its children. */
+/**
+ * Counts every task in the tree, sub-tasks included: a parent is not a summary of its children.
+ * `Blocked` counts as pending (the "todo" tile): it is live work still outstanding — a blocked row
+ * must keep the progress bar honest exactly the way a not-started one does.
+ */
 export function countTodoTasks(tasks: TodoTask[]): TodoCounts {
   const counts: TodoCounts = { done: 0, inProgress: 0, pending: 0, removed: 0, total: 0 };
   for (const row of flattenTodoTasks(tasks)) {

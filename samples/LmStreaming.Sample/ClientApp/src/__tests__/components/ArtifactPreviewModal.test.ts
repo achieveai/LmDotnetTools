@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import ArtifactPreviewModal from '@/components/ArtifactPreviewModal.vue';
 import { jsonResponse, textPreview, binaryPreview } from '../fixtures/fileBrowser';
+import { ComponentLogger } from '@/utils/logger';
 
 /**
  * The artifact preview popup (#583, PR 5). It rides the EXISTING file-browser preview endpoint, so
@@ -84,6 +85,83 @@ describe('ArtifactPreviewModal — rendering states', () => {
 
     expect(wrapper.get('[data-testid="artifact-preview-error"]').text()).toContain(
       'Could not load the preview'
+    );
+  });
+});
+
+describe('ArtifactPreviewModal — in-flight fetch cancellation (596/F-005)', () => {
+  it('hands the preview fetch an AbortSignal and aborts it on unmount', async () => {
+    // A preview in flight when the conversation switches used to run to completion — up to a
+    // 256 KiB read — only to be discarded because the component was already unmounted.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => new Promise<Response>(() => {})); // never resolves
+
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', path: 'docs/spec.md' },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    const init = fetchSpy.mock.calls[0][1] as RequestInit | undefined;
+    const signal = init?.signal;
+    // The signal must actually reach fetch — an AbortController nothing listens to cancels nothing.
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal!.aborted).toBe(false);
+
+    wrapper.unmount();
+    expect(signal!.aborted).toBe(true);
+  });
+
+  it('does NOT log a preview failure when the rejection is our own unmount abort', async () => {
+    // The abort guard's observable effect is the log line it SKIPS: without
+    // `if (abort.signal.aborted) return;` every conversation switch with a preview in flight
+    // writes a spurious "Artifact preview failed" at debug (the refs the guard also skips are
+    // dead after unmount and prove nothing). Deleting the guard turns this red.
+    const debugSpy = vi.spyOn(ComponentLogger.prototype, 'debug').mockImplementation(() => {});
+    // Faithful fake: real fetch rejects an aborted call with DOMException 'AbortError'.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError'))
+          );
+        })
+    );
+
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 't1', path: 'docs/spec.md' },
+      attachTo: document.body,
+    });
+    await flushPromises();
+    expect(debugSpy).not.toHaveBeenCalled();
+
+    wrapper.unmount();
+    await flushPromises();
+    expect(debugSpy.mock.calls.map((c) => c[0])).not.toContain('Artifact preview failed');
+  });
+});
+
+describe('ArtifactPreviewModal — backdrop beside the sidebar (#594 D6 / #603 F-001)', () => {
+  // jsdom applies no CSS, so the geometry itself (`left: 280px` off the backdrop) is pinned by the
+  // source guards in ChatLayout.test.ts; THIS pins the plumbing they assume — the prop must land
+  // the class on BaseModal's actual backdrop element, through two component roots.
+  it('marks the real .modal-backdrop element when the layout reports a sidebar column', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse(textPreview));
+    const wrapper = mount(ArtifactPreviewModal, {
+      props: { threadId: 'thread-1', path: 'docs/spec.md', besideSidebar: true },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(wrapper.get('.modal-backdrop').classes()).toContain('artifact-preview-beside-sidebar');
+  });
+
+  it('leaves the backdrop untouched when no sidebar column is reserved (collapsed, focus mode)', async () => {
+    const { wrapper } = await mountModal(jsonResponse(textPreview));
+
+    expect(wrapper.get('.modal-backdrop').classes()).not.toContain(
+      'artifact-preview-beside-sidebar'
     );
   });
 });

@@ -66,26 +66,33 @@ describe('normalizeTodoTasks — the wire contract', () => {
   });
 
   it('accepts every documented status name', () => {
-    const wire = ['NotStarted', 'InProgress', 'Completed', 'Removed'].map((status, i) => ({
-      id: String(i),
-      status,
-      title: 't',
-      notes: [],
-      subTasks: [],
-    }));
+    // `Blocked` is in this list since the #594 D4 fix: the server ships it (PR 4), and a client
+    // union without it silently rendered every blocked row as "todo".
+    const wire = ['NotStarted', 'InProgress', 'Completed', 'Removed', 'Blocked'].map(
+      (status, i) => ({
+        id: String(i),
+        status,
+        title: 't',
+        notes: [],
+        subTasks: [],
+      })
+    );
     expect(normalizeTodoTasks(wire).map((t) => t.status)).toEqual([
       'NotStarted',
       'InProgress',
       'Completed',
       'Removed',
+      'Blocked',
     ]);
   });
 
   it('resolves an UNKNOWN status to NotStarted, never to Completed', () => {
     // The failure direction is the point: a mis-parsed board may under-report progress, but it must
-    // never claim work is finished that is not. PR 4's `Blocked` reaches an older client this way.
+    // never claim work is finished that is not. This forward-compat fallback is a kept contract:
+    // `Blocked` reached older clients this way before D4, and the NEXT appended status ('Paused'
+    // here stands in for it) reaches this client the same way.
     const rows = normalizeTodoTasks([
-      { id: '1', status: 'Blocked', title: 'a', notes: [], subTasks: [] },
+      { id: '1', status: 'Paused', title: 'a', notes: [], subTasks: [] },
       { id: '2', status: 42, title: 'b', notes: [], subTasks: [] },
       { id: '3', title: 'c', notes: [], subTasks: [] },
     ]);
@@ -146,6 +153,38 @@ describe('normalizeTodoTasks — the wire contract', () => {
     ]);
     expect(rows[0].artifacts).toEqual(['docs/spec.md']);
     expect(rows[1].artifacts).toEqual([]);
+  });
+
+  it('dedupes repeated artifact paths, first occurrence winning (596/F-005)', () => {
+    // The chip v-for keys on the path itself. The server dedupes per task, but the CLIENT must not
+    // lean on that invariant: a legacy or hand-edited payload with a repeat would hand Vue
+    // duplicate keys on the same list.
+    const rows = normalizeTodoTasks([
+      {
+        id: '1',
+        status: 'NotStarted',
+        title: 'a',
+        artifacts: ['docs/spec.md', 'out/report.md', 'docs/spec.md'],
+      },
+    ]);
+    expect(rows[0].artifacts).toEqual(['docs/spec.md', 'out/report.md']);
+  });
+
+  it('caps artifacts per task so a flooded payload cannot render an unbounded chip strip (596/F-005)', () => {
+    const artifacts = Array.from({ length: 25 }, (_, i) => `docs/file-${i}.md`);
+    const rows = normalizeTodoTasks([{ id: '1', status: 'NotStarted', title: 'a', artifacts }]);
+    expect(rows[0].artifacts).toHaveLength(20);
+    // Truncated from the tail, keeping the earliest attachments — the deterministic choice.
+    expect(rows[0].artifacts[0]).toBe('docs/file-0.md');
+    expect(rows[0].artifacts[19]).toBe('docs/file-19.md');
+  });
+
+  it('dedupes BEFORE capping, so repeats cannot crowd distinct paths out of the cap', () => {
+    // 19 copies of one path followed by 3 distinct ones: capping first would keep 19 dupes + 1;
+    // deduping first keeps all 4 distinct paths.
+    const artifacts = [...Array.from({ length: 19 }, () => 'docs/dupe.md'), 'a.md', 'b.md', 'c.md'];
+    const rows = normalizeTodoTasks([{ id: '1', status: 'NotStarted', title: 'a', artifacts }]);
+    expect(rows[0].artifacts).toEqual(['docs/dupe.md', 'a.md', 'b.md', 'c.md']);
   });
 
   it('truncates rather than recursing forever on a cyclic payload', () => {
@@ -213,6 +252,16 @@ describe('countTodoTasks', () => {
 
   it('reports an all-zero board for an empty list', () => {
     expect(countTodoTasks([])).toEqual({ done: 0, inProgress: 0, pending: 0, removed: 0, total: 0 });
+  });
+
+  it('counts a Blocked task as pending, live work outstanding (#594 D4)', () => {
+    // Blocked must depress the progress bar the way NotStarted does — it is neither done nor
+    // removed, and hiding it would let a blocked board read as finished.
+    const counts = countTodoTasks([
+      task('1', { status: TodoStatus.Blocked }),
+      task('2', { status: TodoStatus.Completed }),
+    ]);
+    expect(counts).toEqual({ done: 1, inProgress: 0, pending: 1, removed: 0, total: 2 });
   });
 });
 

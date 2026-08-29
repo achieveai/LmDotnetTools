@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
+import fs from 'fs';
+import path from 'path';
 import TodoBoardPanel from '@/components/TodoBoardPanel.vue';
 import { TodoStatus, type TodoTask } from '@/types/todo';
 
@@ -81,12 +83,15 @@ describe('TodoBoardPanel — summary tiles', () => {
 });
 
 describe('TodoBoardPanel — states', () => {
-  it('renders an empty line when every row on the board is Removed', () => {
-    // The reachable empty case: ChatLayout's mount gate counts ALL tasks, this list shows only the
-    // live ones, so a board of nothing but removed rows mounts and has no live row to show.
+  it('says "No active tasks." when every row on the board is Removed — tasks DO exist (584)', () => {
+    // The ONLY reachable empty case: ChatLayout's mount gate counts ALL tasks, this list shows only
+    // the live ones, so a board of nothing but removed rows mounts and has no live row to show.
+    // "No tasks yet." was a lie here — the removed accordion sits right below this line.
     const wrapper = mountPanel([task('1', { status: TodoStatus.Removed })]);
-    expect(wrapper.get('[data-testid="todo-empty"]').text()).toContain('No tasks yet.');
+    expect(wrapper.get('[data-testid="todo-empty"]').text()).toContain('No active tasks.');
     expect(wrapper.find('[data-testid="todo-list"]').exists()).toBe(false);
+    // The struck-out work stays reachable next to the message that implies it exists.
+    expect(wrapper.get('[data-testid="todo-removed-accordion"]').text()).toContain('1 removed');
   });
 
   it('has no loading state at all — the panel is unmounted for every load it could report', () => {
@@ -140,6 +145,18 @@ describe('TodoBoardPanel — rows', () => {
     const rows = wrapper.findAll('[data-testid="todo-row"]');
     expect(rows[0].classes()).toContain('active');
     expect(rows[2].classes()).not.toContain('active');
+  });
+
+  it('renders a Blocked row as "blocked", not as the "todo" fallback (#594 D4)', () => {
+    // Before the union carried Blocked, coerceStatus mapped the wire's "Blocked" to NotStarted and
+    // the row silently read as ordinary todo work. The wire carries the status name only — no
+    // blockedBy list crosses it — so the pill is the whole render.
+    const wrapper = mountPanel([task('1', { status: TodoStatus.Blocked, title: 'Waits on 2' })]);
+    const row = wrapper.get('[data-testid="todo-row"]');
+    expect(row.attributes('data-status')).toBe('Blocked');
+    expect(row.get('[data-testid="todo-row-pill"]').text()).toBe('blocked');
+    // Blocked is live work: it renders in the main list, never behind the removed accordion.
+    expect(wrapper.find('[data-testid="todo-removed-accordion"]').exists()).toBe(false);
   });
 });
 
@@ -219,6 +236,35 @@ describe('TodoBoardPanel — removed accordion', () => {
   it('shows no accordion when nothing was removed', () => {
     const wrapper = mountPanel([task('1')]);
     expect(wrapper.find('[data-testid="todo-removed-accordion"]').exists()).toBe(false);
+  });
+});
+
+/**
+ * Structural (source-text) guards for CSS jsdom cannot lay out, following the
+ * `AppShellLayout.test.ts` precedent: jsdom computes no real layout, so whether an ellipsis engages
+ * or a colour distinguishes a pill can only be pinned by asserting the declarations exist.
+ */
+describe('TodoBoardPanel — style guards (source text)', () => {
+  const sfc = fs.readFileSync(
+    path.resolve(__dirname, '../../components/TodoBoardPanel.vue'),
+    'utf-8'
+  ) as string;
+
+  it('puts the ellipsis rules on .todo-artifact-name, where text-overflow can actually apply (596/F-007)', () => {
+    // `text-overflow` applies to a block container's own inline content, never to a flex
+    // container's items — on the inline-flex chip it silently never rendered and long file names
+    // just clipped. The name span must carry the trio itself, plus min-width: 0 to be allowed to
+    // shrink below its content.
+    expect(sfc).toMatch(/\.todo-artifact-name\s*\{[^}]*text-overflow:\s*ellipsis/);
+    expect(sfc).toMatch(/\.todo-artifact-name\s*\{[^}]*overflow:\s*hidden/);
+    expect(sfc).toMatch(/\.todo-artifact-name\s*\{[^}]*white-space:\s*nowrap/);
+    expect(sfc).toMatch(/\.todo-artifact-name\s*\{[^}]*min-width:\s*0/);
+    // And the broken form must not come back: ellipsis on the inline-flex chip itself is inert.
+    expect(sfc).not.toMatch(/\.todo-artifact-chip\s*\{[^}]*text-overflow/);
+  });
+
+  it('gives the Blocked pill its own colour, distinct from the default gray (#594 D4)', () => {
+    expect(sfc).toMatch(/\.status-Blocked\s+\.todo-pill\s*\{[^}]*background/);
   });
 });
 

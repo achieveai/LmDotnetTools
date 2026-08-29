@@ -15,13 +15,18 @@
 
 /**
  * Status values are the verbatim C# `TaskStatus` enum NAMES, as serialized by
- * `JsonStringEnumConverter`. PR 4 adds `Blocked`; until then a board can only carry these four.
+ * `JsonStringEnumConverter`. `Blocked` shipped server-side in PR 4 (#594 D4 was this union lagging
+ * behind it, so Blocked rows rendered as "todo"). The wire carries the status name only — a Blocked
+ * row's `blockedBy` list exists on the server model but is deliberately absent from the wire node
+ * (see `TodoTaskNode` in `src/LmCore/Models/TodoBoardSnapshot.cs`), so the pill is all the client
+ * can honestly render for it today.
  */
 export const TodoStatus = {
   NotStarted: 'NotStarted',
   InProgress: 'InProgress',
   Completed: 'Completed',
   Removed: 'Removed',
+  Blocked: 'Blocked',
 } as const;
 
 export type TodoStatusValue = (typeof TodoStatus)[keyof typeof TodoStatus];
