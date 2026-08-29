@@ -155,6 +155,12 @@ describe('useTodoBoard — REST hydrate', () => {
   it('ignores an unrecognized schemaVersion rather than blanking the board', async () => {
     // Rejecting a whole board on a version bump would blank a panel that could still render most of
     // it. The tolerant per-task parser is the guard, not a version gate.
+    //
+    // NOTE this pins a contract; it does NOT cover a reachable path today. PR 1's projection read
+    // filters a newer-schema blob to null, so an old server sitting on a new blob answers 404, not a
+    // version-99 body, and the live path always stamps the version the build knows. The only way
+    // this payload arrives is from a NEWER server — which is the case the tolerance is for. Do not
+    // count this as coverage of code that runs.
     mocks.getConversationTodos.mockResolvedValue({
       threadId: 't1',
       schemaVersion: 99,
