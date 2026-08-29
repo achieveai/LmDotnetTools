@@ -610,6 +610,26 @@ public class FileBrowserControllerTests
     }
 
     [Fact]
+    public async Task Delete_HostileName_TravelsAsOneVerbatimArgvElement()
+    {
+        var (controller, browser) = Build();
+        // Everything a shell would love to interpret: leading dash, double quote, command substitution,
+        // backtick, single quote, embedded newline, spaces. The argv vector is the injection boundary —
+        // the name must arrive as ONE element, byte-identical to the listed name, with the script text a
+        // SEPARATE element. Pinned at the recording seam (FakeFileBrowser stores SandboxCommand verbatim),
+        // which is the layer the no-shell-join claim is actually about.
+        const string hostile = "-rf a\"; rm -rf $(id) `id` '\nend";
+        browser.Listings[""] = [File(hostile)];
+        var result = await controller.Delete(ThreadId, hostile, CancellationToken.None);
+        result.Should().BeOfType<NoContentResult>();
+        browser.Commands.Should().ContainSingle();
+        browser
+            .Commands[0]
+            .Arguments.Should()
+            .Equal("sh", "-c", FileBrowserController.DeleteScript, "sh", "f", hostile);
+    }
+
+    [Fact]
     public async Task Delete_EntryChangedExit_Returns409EntryChanged()
     {
         var (controller, browser) = Build();

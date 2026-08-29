@@ -103,7 +103,11 @@ public sealed class FileBrowserController(
     /// under the resolved path) are likewise out of V1 scope: closing them needs an atomic
     /// resolve-and-act primitive (entry handle / conditional op) from the sandbox gateway, which its REST
     /// surface does not expose today. Both residues stay within the workspace the caller already fully
-    /// controls — the gateway independently enforces escape-containment on every operation.
+    /// controls — the gateway independently enforces escape-containment on every operation. Read
+    /// (download/preview) substitution is likewise deferred as fail-safe, and for the record the mechanism
+    /// is CLIENT-side: the gateway read request carries no size bound at all — the byte cap is the SDK's
+    /// streaming direct-read cap (header-checked, then counted as bytes arrive), and the 413/non-previewable
+    /// answer is minted by this controller from that SDK refusal, not relayed from the gateway.
     /// </para>
     /// <para>
     /// The <c>*</c> arm is unreachable by construction (the kind letter comes from an exhaustive enum

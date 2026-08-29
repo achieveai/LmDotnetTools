@@ -205,6 +205,48 @@ public sealed class FileBrowserDeleteRaceTests
     }
 
     [SkippableFact]
+    public async Task Delete_FileResolved_ButSymlinkSubstituted_RefusesBeforeClassifyingByTarget()
+    {
+        var shell = RequireShell();
+        var (controller, browser, root) = Build(shell);
+        try
+        {
+            // The f arm's own symlink qualifier, pinned separately from the d arm's: `[ -f link-to-file ]`
+            // is TRUE (test follows links), so a bare -f check would bless a substituted link and the rm
+            // would act on it. `[ ! -L ]` must run first on THIS arm too — a link is a change of kind,
+            // never classified by its target.
+            var victim = Path.Combine(root, "victim.txt");
+            await File.WriteAllTextAsync(victim, "kept");
+
+            var link = Path.Combine(root, "sub");
+            try
+            {
+                _ = File.CreateSymbolicLink(link, victim);
+            }
+            catch (IOException)
+            {
+                Skip.If(true, "This machine cannot create file symlinks (no privilege).");
+            }
+            catch (UnauthorizedAccessException)
+            {
+                Skip.If(true, "This machine cannot create file symlinks (no privilege).");
+            }
+
+            browser.Listings[""] = [new SandboxDirectoryEntry("sub", SandboxEntryType.File, 4, false)];
+
+            var result = await controller.Delete(ThreadId, "sub", CancellationToken.None);
+
+            AssertEntryChanged(result);
+            File.Exists(link).Should().BeTrue("the substituted link must be left alone");
+            (await File.ReadAllTextAsync(victim)).Should().Be("kept");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [SkippableFact]
     public async Task Delete_DirectoryResolved_ButSymlinkSubstituted_RefusesBeforeClassifyingByTarget()
     {
         var shell = RequireShell();
