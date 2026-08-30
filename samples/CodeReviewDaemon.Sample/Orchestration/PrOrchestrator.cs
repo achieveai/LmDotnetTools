@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Text.Json;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence;
@@ -16,7 +17,8 @@ internal sealed class PrOrchestrator
 {
     /// <summary>
     /// The park phrase for a governed failure with no more specific entry in <see cref="DescribeGovernedFailure"/>
-    /// — and the one used when an older build's row carries no <c>park_reason</c> at all.
+    /// — and the one a replayed notice falls back to when the row's <c>park_reason</c> is absent or is not a
+    /// value this build's vocabulary could have written (see <see cref="TrustedParkReasonForReplay"/>).
     /// </summary>
     private const string UnclassifiedParkPhrase = "the review could not be completed";
 
@@ -317,27 +319,105 @@ internal sealed class PrOrchestrator
     /// type, chosen by TYPE and never derived from the exception's text.
     /// </summary>
     /// <remarks>
-    /// The phrases carry no paths, hosts, credentials or command output, because everything this returns is
-    /// persisted in <c>review_run.park_reason</c> and posted verbatim to a pull request anyone with read access
-    /// can see. The types it maps are the ones <see cref="IsGovernedFailure"/> admits; the default exists
-    /// because that set is expected to grow and an unmapped type must degrade to a vague phrase rather than
-    /// fall back to a raw message.
+    /// The phrases carry no paths, hosts, credentials or command output, because everything here is persisted
+    /// in <c>review_run.park_reason</c> and posted verbatim to a pull request anyone with read access can see.
+    /// The types it maps are the ones <see cref="IsGovernedFailure"/> admits.
+    /// <para>
+    /// This table is the SINGLE source of truth for that vocabulary: <see cref="DescribeGovernedFailure"/>
+    /// reads it to choose a phrase and <see cref="KnownParkPhrases"/> is derived from it, so a phrase added
+    /// here for a new governed type cannot silently fall out of the replay allow-list below.
+    /// </para>
+    /// <para>
+    /// Keyed on the EXACT runtime type, which is equivalent to the type patterns this replaces because every
+    /// mapped exception is <c>sealed</c>. Should one be unsealed later, a derived type simply misses the table
+    /// and degrades to <see cref="UnclassifiedParkPhrase"/> — vaguer, never leakier.
+    /// </para>
     /// </remarks>
+    private static readonly FrozenDictionary<Type, string> GovernedFailurePhrases = new Dictionary<Type, string>
+    {
+        [typeof(ReviewBarrierDeadlineException)] = "the review did not finish within its time budget",
+        [typeof(ReviewCheckpointCorruptException)] = "the review checkpoint could not be read",
+        [typeof(ReviewHostContractException)] = "the review host rejected the request",
+        [typeof(SentinelUnauthorizedException)] = "the review host refused the daemon's credentials",
+        // The four workspace conditions are distinguished because the operator response differs: a
+        // re-clone, a cleanup, a path that must be un-redirected, and a probe that has to answer.
+        [typeof(SlotNeedsRecloneException)] = "the review workspace could not be prepared and has to be re-created",
+        [typeof(SlotCorruptException)] = "the review workspace could not be cleaned for use",
+        [typeof(SlotAddressUnusableException)] = "the review workspace path could not be used safely",
+        [typeof(SlotProbeUnansweredException)] = "the state of the review workspace could not be established",
+    }.ToFrozenDictionary();
+
+    /// <summary>
+    /// Every phrase this build's <see cref="DescribeGovernedFailure"/> can produce — the mapped vocabulary plus
+    /// the unclassified default — DERIVED from the one table rather than restated, so the allow-list cannot
+    /// drift away from what parking actually writes.
+    /// </summary>
+    private static readonly FrozenSet<string> KnownParkPhrases = GovernedFailurePhrases
+        .Values.Append(UnclassifiedParkPhrase)
+        .ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>The other half of a park reason's shape: the stage, which is the daemon's own enum vocabulary
+    /// and never external text.</summary>
+    private static readonly FrozenSet<string> KnownStageNames = Enum.GetNames<ReviewStage>()
+        .ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Chooses the park phrase for a governed failure. See <see cref="GovernedFailurePhrases"/>; the fallback
+    /// exists because that set is expected to grow and an unmapped type must degrade to a vague phrase rather
+    /// than fall back to a raw message.
+    /// </summary>
     private static string DescribeGovernedFailure(Exception ex) =>
-        ex switch
+        GovernedFailurePhrases.TryGetValue(ex.GetType(), out var phrase) ? phrase : UnclassifiedParkPhrase;
+
+    /// <summary>
+    /// The park reason a REPLAYED notice is allowed to publish: the persisted value if this build's own
+    /// vocabulary could have produced it, and <see cref="UnclassifiedParkPhrase"/> otherwise.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is an ALLOW-LIST, not a scrub. <see cref="DescribeGovernedFailure"/> sanitizes at the moment of
+    /// PARKING, but the replay boundary re-publishes a column it did not write — written by some other build,
+    /// possibly one whose parking path predates that sanitizer — into a public pull-request comment. The
+    /// governed exception types carry raw external output in their messages (<see
+    /// cref="ReviewHostContractException"/> embeds the review host's HTTP response body, <see
+    /// cref="SlotCorruptException"/> embeds git's stderr), so what such a row holds is unknown historical text.
+    /// A denylist over unknown text cannot be shown correct — there is no enumeration of what a raw message may
+    /// contain — whereas an allow-list can: a value is republished only if it is one this build could have
+    /// emitted. Anything else (legacy raw text, a truncated message, a phrase from a future build, blank)
+    /// degrades to the neutral fallback.
+    /// </para>
+    /// <para>
+    /// The exposure window is genuinely narrow: <c>park_reason</c> is introduced by migration v8 in this same
+    /// change, so no shipped build ever wrote a raw value into it. That argument is about deployment history,
+    /// though, and it stops holding the moment anyone writes the column from somewhere else — a repair script,
+    /// an import, a future park path. A public-disclosure boundary should not rest on it.
+    /// </para>
+    /// <para>
+    /// Cheap on purpose: this runs on every poll of every parked pull request, and it is two frozen-set hits
+    /// over one index-of split.
+    /// </para>
+    /// </remarks>
+    private static string TrustedParkReasonForReplay(string? persisted)
+    {
+        // The shape parking writes: "{stage}: {phrase}". Anything not of that shape was not written by it.
+        const string StageSeparator = ": ";
+        if (persisted is null)
         {
-            ReviewBarrierDeadlineException => "the review did not finish within its time budget",
-            ReviewCheckpointCorruptException => "the review checkpoint could not be read",
-            ReviewHostContractException => "the review host rejected the request",
-            SentinelUnauthorizedException => "the review host refused the daemon's credentials",
-            // The four workspace conditions are distinguished because the operator response differs: a
-            // re-clone, a cleanup, a path that must be un-redirected, and a probe that has to answer.
-            SlotNeedsRecloneException => "the review workspace could not be prepared and has to be re-created",
-            SlotCorruptException => "the review workspace could not be cleaned for use",
-            SlotAddressUnusableException => "the review workspace path could not be used safely",
-            SlotProbeUnansweredException => "the state of the review workspace could not be established",
-            _ => UnclassifiedParkPhrase,
-        };
+            return UnclassifiedParkPhrase;
+        }
+
+        var separator = persisted.IndexOf(StageSeparator, StringComparison.Ordinal);
+        if (separator < 0)
+        {
+            return UnclassifiedParkPhrase;
+        }
+
+        return
+            KnownStageNames.Contains(persisted[..separator])
+            && KnownParkPhrases.Contains(persisted[(separator + StageSeparator.Length)..])
+            ? persisted
+            : UnclassifiedParkPhrase;
+    }
 
     /// <summary>
     /// Re-attempts a park notice that never reached the pull request, from the one place a parked run is still
@@ -378,11 +458,13 @@ internal sealed class PrOrchestrator
 
         try
         {
-            // A row parked by a build that predates the reason column has none; a public comment that says
-            // nothing at all is still better than a crash inside the poll guard.
+            // NOT run.ParkReason: this boundary publishes a column it did not write, so it re-validates the
+            // value against the vocabulary this build could have produced. See TrustedParkReasonForReplay for
+            // why that is an allow-list. A row parked by a build that predates the reason column has none, and
+            // a public comment that says something vague is still better than one that says something raw.
             await _parkNotifier.NotifyParkedAsync(
                 run,
-                string.IsNullOrWhiteSpace(run.ParkReason) ? UnclassifiedParkPhrase : run.ParkReason,
+                TrustedParkReasonForReplay(run.ParkReason),
                 CancellationToken.None
             );
         }

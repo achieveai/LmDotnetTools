@@ -5,6 +5,7 @@ using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -633,6 +634,126 @@ public sealed class PrOrchestratorRetryTests : IDisposable
             .ContainSingle()
             .Which.Should()
             .NotContain(Sentinel, "the notice is a public comment on the pull request");
+    }
+
+    [Fact]
+    public async Task A_replayed_park_notice_refuses_a_park_reason_the_current_vocabulary_could_not_have_written()
+    {
+        // The park path sanitizes; the REPLAY path re-publishes a column it did not write. A row written by any
+        // build whose parking path predates that sanitizer holds raw exception text — the review host's HTTP
+        // response body, git's stderr — and forwarding it here puts it in a public pull-request comment. The
+        // boundary therefore validates against the vocabulary THIS build can produce, so anything else degrades
+        // to the neutral phrase.
+        const string Sentinel = "SENTINEL-LEGACY-xyz789";
+        var publisher = new FakeReviewCommentPublisher { PostFailure = new InvalidOperationException("provider 503") };
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
+        var orchestrator = Orchestrator(executor, durableBudget: 1, notifier: Notifier(publisher));
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        publisher.PostCount.Should().Be(0, "the first delivery attempt threw inside the publisher, so it is owed");
+
+        // Raw SQL, not TryMarkReviewRunParked: the store's park write is fed by the sanitizer, so a value put
+        // there through it would be laundered into something the allow-list accepts and prove nothing. This is
+        // the legacy row as it would actually be found on disk.
+        StampParkReason(_db, run.Id, $"Reviewed: host replied 401 with body {Sentinel}");
+
+        publisher.PostFailure = null;
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+
+        var body = publisher.PostedBodies.Should().ContainSingle().Subject;
+        body.Should().NotContain(Sentinel, "a replayed notice must not republish text the daemon never wrote");
+        body.Should()
+            .Contain(
+                "the review could not be completed",
+                "an unrecognised reason degrades to the neutral phrase rather than being dropped or forwarded"
+            );
+    }
+
+    [Fact]
+    public async Task A_replayed_park_notice_still_carries_the_specific_phrase_a_real_park_wrote()
+    {
+        // The non-vacuity half of the pair above. An allow-list that always returned the neutral phrase would
+        // satisfy that test perfectly while destroying the only thing the notice is for — telling the author
+        // WHICH governed failure parked their review. The reason has to survive the round-trip through the
+        // column and out to the comment.
+        var publisher = new FakeReviewCommentPublisher { PostFailure = new InvalidOperationException("provider 503") };
+        var executor = new FailsAtStageExecutor(
+            ReviewStage.Reviewed,
+            () => new SentinelUnauthorizedException("the sentinel returned 401 for https://host/internal")
+        );
+        var orchestrator = Orchestrator(executor, durableBudget: 1, notifier: Notifier(publisher));
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<SentinelUnauthorizedException>();
+        publisher.PostCount.Should().Be(0, "the first delivery attempt threw inside the publisher, so it is owed");
+
+        publisher.PostFailure = null;
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+
+        var body = publisher.PostedBodies.Should().ContainSingle().Subject;
+        body.Should()
+            .Contain(
+                "the review host refused the daemon's credentials",
+                "a reason the current vocabulary DID write is trustworthy and must reach the pull request intact"
+            );
+        body.Should().Contain(nameof(ReviewStage.Reviewed), "the stage half of the reason survives too");
+        body.Should()
+            .NotContain(
+                "the review could not be completed",
+                "degrading a recognised reason would make the notice useless and the allow-list unfalsifiable"
+            );
+    }
+
+    [Fact]
+    public async Task A_replayed_park_notice_refuses_a_recognised_phrase_under_a_stage_that_does_not_exist()
+    {
+        // The stage half of the allow-list, pinned separately. The two tests above turn only on the PHRASE:
+        // the legacy row they use carries a real stage ("Reviewed: {raw message}"), because that is the shape
+        // the old park path wrote — so neutralising the stage check leaves both of them green and the conjunct
+        // unfalsified. A reason has to fail this boundary on EITHER half independently, so the case that
+        // distinguishes them is a phrase the vocabulary does emit under a stage no ReviewStage spells.
+        var publisher = new FakeReviewCommentPublisher { PostFailure = new InvalidOperationException("provider 503") };
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
+        var orchestrator = Orchestrator(executor, durableBudget: 1, notifier: Notifier(publisher));
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        publisher.PostCount.Should().Be(0, "the first delivery attempt threw inside the publisher, so it is owed");
+
+        StampParkReason(_db, run.Id, "Sharpened: the review host rejected the request");
+
+        publisher.PostFailure = null;
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+
+        var body = publisher.PostedBodies.Should().ContainSingle().Subject;
+        body.Should()
+            .NotContain(
+                "Sharpened",
+                "a stage this build does not spell means the reason was not written by its park path, whatever "
+                    + "the phrase after it looks like"
+            );
+        body.Should().Contain("the review could not be completed", "so it degrades to the neutral phrase");
+    }
+
+    /// <summary>
+    /// Overwrites <c>park_reason</c> with a value the sanitizer would never emit. Written directly rather than
+    /// through <see cref="ReviewStore.TryMarkReviewRunParked"/> because that path runs the value through
+    /// <c>DescribeGovernedFailure</c> — anything seeded through it is by construction inside the allow-list,
+    /// which is exactly what the test needs to be outside.
+    /// </summary>
+    private static void StampParkReason(TempSqliteDatabase db, long runId, string reason)
+    {
+        using var connection = new SqliteConnection(db.ConnectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE review_run SET park_reason = $reason WHERE id = $id;";
+        _ = command.Parameters.AddWithValue("$reason", reason);
+        _ = command.Parameters.AddWithValue("$id", runId);
+        _ = command.ExecuteNonQuery();
     }
 
     /// <summary>Counts entries into the real notifier without changing what it does. The count is the only way
