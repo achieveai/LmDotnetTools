@@ -2086,7 +2086,13 @@ try
                     // into the task tool's last-resort catch, taking Schedule() down with it — exactly
                     // the silent failure #587 changed the code to prevent. The logger gives that
                     // last-resort catch a voice for whatever else a subscriber might throw.
-                    taskManager.OnChangedLogger = loggerFactory.CreateLogger<TaskManager>();
+                    taskManager.Logger = loggerFactory.CreateLogger<TaskManager>();
+
+                    // Stamps the board with the conversation it belongs to, so the TodoBoardIdVanished
+                    // warning (#621 Part B) names the thread that lost a row. The tool methods are the
+                    // model-facing surface and cannot carry a host argument, so the id lives on the
+                    // instance rather than travelling per call the way GetTodoBoardSnapshot's does.
+                    taskManager.ThreadId = threadId;
                     taskManager.OnChanged += () =>
                     {
                         todoPublisher.PublishTodoBoardFrame(() => taskManager.GetTodoBoardSnapshot(threadId));
