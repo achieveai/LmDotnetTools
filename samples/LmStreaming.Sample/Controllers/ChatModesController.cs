@@ -55,6 +55,11 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] ChatModeCreateUpdate createData, CancellationToken ct = default)
     {
+        if (InvalidPlacement(createData) is { } invalid)
+        {
+            return invalid;
+        }
+
         var mode = await modeStore.CreateModeAsync(createData, ct);
         return Created($"/api/chat-modes/{mode.Id}", mode);
     }
@@ -66,6 +71,11 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
         CancellationToken ct = default
     )
     {
+        if (InvalidPlacement(updateData) is { } invalid)
+        {
+            return invalid;
+        }
+
         try
         {
             var mode = await modeStore.UpdateModeAsync(modeId, updateData, ct);
@@ -94,6 +104,23 @@ public class ChatModesController(IChatModeStore modeStore) : ControllerBase
             return BadRequest(new { error = ex.Message });
         }
     }
+
+    /// <summary>
+    /// The CRUD-boundary guard for the per-mode sub-agent prompt fragment (#610): an invalid
+    /// <c>subAgentPromptPlacement</c> is refused with 400 here so it can never be persisted —
+    /// the fold point downstream never re-validates. System modes get the same rule at yaml load
+    /// (<see cref="Persistence.SystemChatModes"/>).
+    /// </summary>
+    private static BadRequestObjectResult? InvalidPlacement(ChatModeCreateUpdate data) =>
+        Services.ModeSubAgentPrompt.IsValidPlacement(data?.SubAgentPromptPlacement)
+            ? null
+            : new BadRequestObjectResult(
+                new
+                {
+                    error = $"Invalid subAgentPromptPlacement '{data!.SubAgentPromptPlacement}'. "
+                        + $"Valid values: {Services.ModeSubAgentPrompt.Prepend}, {Services.ModeSubAgentPrompt.Append}.",
+                }
+            );
 
     [HttpPost("{modeId}/copies")]
     public async Task<IActionResult> Copy(

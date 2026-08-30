@@ -40,4 +40,24 @@ public sealed record AgentProfile(
     IReadOnlyList<string>? EnabledTools = null,
     IReadOnlyList<string>? EnabledBuiltInTools = null,
     IReadOnlyList<string>? EnabledCapabilityTools = null
-);
+)
+{
+    /// <summary>
+    /// Optional prompt fragment the host folds into the system prompt of every sub-agent spawned
+    /// under a conversation running this profile, so the mode can set expectations for all
+    /// sub-agents rather than only the primary agent. <c>null</c> (or whitespace) means the
+    /// profile declares no fragment and sub-agent prompts are left exactly as they are today.
+    /// Deliberately an init-only property rather than a positional parameter so every existing
+    /// constructor call keeps compiling unchanged — this record is shared library surface.
+    /// </summary>
+    public string? SubAgentPrompt { get; init; }
+
+    /// <summary>
+    /// Where <see cref="SubAgentPrompt"/> is folded relative to each sub-agent's own prompt:
+    /// <c>"prepend"</c> or <c>"append"</c>. <c>null</c> defaults to append when a fragment is
+    /// present. This record only carries the value; hosts validate it at their own boundaries
+    /// (e.g. refusing an invalid value at yaml load or with a 400 at a CRUD API) before it ever
+    /// gets here.
+    /// </summary>
+    public string? SubAgentPromptPlacement { get; init; }
+}

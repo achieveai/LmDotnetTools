@@ -20,6 +20,16 @@ export interface ChatMode {
    * an empty array is an explicit "none".
    */
   enabledCapabilityTools?: string[];
+  /**
+   * Optional prompt fragment folded into the system prompt of every sub-agent spawned under a
+   * conversation in this mode. Absent means sub-agent prompts are unchanged.
+   */
+  subAgentPrompt?: string;
+  /**
+   * Where the fragment lands relative to each sub-agent's own prompt. Absent defaults to
+   * 'append' when a fragment is present.
+   */
+  subAgentPromptPlacement?: 'prepend' | 'append';
   isSystemDefined: boolean;
   createdAt: number;
   updatedAt: number;
@@ -35,6 +45,10 @@ export interface ChatModeCreateUpdate {
   enabledTools?: string[];
   enabledBuiltInTools?: string[];
   enabledCapabilityTools?: string[];
+  /** Sub-agent prompt fragment; see {@link ChatMode.subAgentPrompt}. */
+  subAgentPrompt?: string;
+  /** 'prepend' | 'append'; the server refuses anything else with 400. */
+  subAgentPromptPlacement?: 'prepend' | 'append';
 }
 
 /**

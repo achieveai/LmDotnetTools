@@ -165,6 +165,68 @@ public class SandboxSessionRegistrySubAgentIsolationTests
     }
 
     /// <summary>
+    /// PR #613 F-001, registry level: the reconcile must treat the seed as the conversation's own
+    /// trusted, freshly built catalog and OVERWRITE seed-keyed entries. Template content became
+    /// mode-dependent (the per-mode sub-agent prompt fragment is folded in at catalog build), so an
+    /// agent rebuild — mode switch or fragment edit — must refresh seed template content, not just
+    /// factories.
+    /// </summary>
+    [Fact]
+    public async Task AddOrUpdateSubAgentBinding_ReseedOverwritesSeedKeyedTemplateContent()
+    {
+        await using var registry = CreateRegistry();
+        var seedA = new Dictionary<string, SubAgentTemplate>
+        {
+            ["researcher"] = Template("Researcher", "Researches topics.") with
+            {
+                SystemPrompt = "You are Researcher.\n\nMode A fragment.",
+            },
+        };
+        var seedB = new Dictionary<string, SubAgentTemplate>
+        {
+            ["researcher"] = Template("Researcher", "Researches topics.") with
+            {
+                SystemPrompt = "You are Researcher.\n\nMode B fragment.",
+            },
+        };
+
+        _ = registry.AddOrUpdateSubAgentBinding(SessionId, "conversation", seedA, AgentFactory, null);
+        var rebound = registry.AddOrUpdateSubAgentBinding(SessionId, "conversation", seedB, AgentFactory, null);
+
+        var prompt = rebound.Source.Templates["researcher"].SystemPrompt;
+        prompt.Should().Contain("Mode B fragment.");
+        prompt.Should().NotContain("Mode A fragment.", "the previous build's folded content must not survive a reseed");
+    }
+
+    /// <summary>
+    /// The counterpart pin: first-wins stays in force for WEBHOOK-registered templates — keys the
+    /// reseed does not carry. A rebind must leave their content untouched.
+    /// </summary>
+    [Fact]
+    public async Task AddOrUpdateSubAgentBinding_Reseed_LeavesWebhookRegisteredTemplatesUntouched()
+    {
+        await using var registry = CreateRegistry();
+        var seed = new Dictionary<string, SubAgentTemplate>
+        {
+            ["researcher"] = Template("Researcher", "Researches topics."),
+        };
+
+        _ = registry.AddOrUpdateSubAgentBinding(SessionId, "conversation", seed, AgentFactory, null);
+        registry.TryGetSubAgentBinding(SessionId, "conversation", out var forWebhook).Should().BeTrue();
+        forWebhook!
+            .Source.TryRegister("alpha_discovered", Template("AlphaDiscovered", "Discovered mid-session."))
+            .Should()
+            .BeTrue();
+
+        var rebound = registry.AddOrUpdateSubAgentBinding(SessionId, "conversation", seed, AgentFactory, null);
+
+        var retained = rebound.Source.Templates["alpha_discovered"];
+        retained.Name.Should().Be("AlphaDiscovered");
+        retained.Description.Should().Be("Discovered mid-session.");
+        retained.SystemPrompt.Should().Be("You are AlphaDiscovered.");
+    }
+
+    /// <summary>
     /// A conversation's per-conversation sub-agent binding must be released when its thread is torn
     /// down (the pool raises ThreadRemoved → UnregisterThreadFromAllSessions). Per-conversation
     /// bindings are created on every new chat, so without cleanup they accumulate unbounded for the

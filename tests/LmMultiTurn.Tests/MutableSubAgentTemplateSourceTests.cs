@@ -127,6 +127,70 @@ public class MutableSubAgentTemplateSourceTests
     }
 
     [Fact]
+    public void Upsert_ExistingName_ReplacesTheEntry()
+    {
+        // The trusted-reseed counterpart of first-wins: a host refreshing the catalog it built
+        // itself (agent rebuild with a different per-mode sub-agent prompt fragment) must be able
+        // to replace its own entries — TryRegister would pin the stale content forever.
+        var seed = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal) { ["echo"] = Template("echo") };
+        var source = new MutableSubAgentTemplateSource(seed);
+        var replacement = Template("echo") with { SystemPrompt = "You are echo, refreshed." };
+
+        source.Upsert("echo", replacement);
+
+        source.Templates["echo"].SystemPrompt.Should().Be("You are echo, refreshed.");
+    }
+
+    [Fact]
+    public void Upsert_NewName_AddsTheEntry()
+    {
+        var source = new MutableSubAgentTemplateSource();
+
+        source.Upsert("echo", Template("echo"));
+
+        source.Templates.Should().ContainKey("echo");
+    }
+
+    [Fact]
+    public void Upsert_AfterRebind_UsesCurrentFactories()
+    {
+        var routedAgent = new Mock<IStreamingAgent>().Object;
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactory = _ => new SubAgentProviderAgent(
+            routedAgent,
+            System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty
+        );
+        var source = new MutableSubAgentTemplateSource(
+            new Dictionary<string, SubAgentTemplate> { ["echo"] = Template("echo") }
+        );
+        source.RebindFactories(StubFactory, characteristicsFactory);
+
+        source.Upsert("echo", Template("echo") with { SystemPrompt = "refreshed" });
+
+        var upserted = source.Templates["echo"];
+        upserted.SystemPrompt.Should().Be("refreshed");
+        upserted
+            .CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics("explicit", null) { IsModelExplicitlySelected = true }
+            )
+            .Agent.Should()
+            .BeSameAs(routedAgent);
+    }
+
+    [Fact]
+    public void Upsert_NullOrBlankNameOrNullTemplate_Throws()
+    {
+        var source = new MutableSubAgentTemplateSource();
+
+        var blankCall = () => source.Upsert("   ", Template("x"));
+        var nullNameCall = () => source.Upsert(null!, Template("x"));
+        var nullTemplateCall = () => source.Upsert("echo", null!);
+
+        blankCall.Should().Throw<ArgumentException>();
+        nullNameCall.Should().Throw<ArgumentException>();
+        nullTemplateCall.Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
     public void TryRegister_NullOrBlankName_Throws()
     {
         var source = new MutableSubAgentTemplateSource();

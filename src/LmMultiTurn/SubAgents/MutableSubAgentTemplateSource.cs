@@ -10,10 +10,14 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Collision policy is <b>first-wins</b>: <see cref="TryRegister"/> only adds new entries
-/// and returns false on conflict. This matches the trust-boundary semantics established
-/// by <c>WorkspaceSubAgentLoader.MergeBuiltInWins</c> — built-in (trusted) seeds enter
-/// the source first, and discovered (untrusted) entries cannot shadow them.
+/// Collision policy is <b>first-wins</b> for registrations: <see cref="TryRegister"/> only adds
+/// new entries and returns false on conflict. This matches the trust-boundary semantics
+/// established by <c>WorkspaceSubAgentLoader.MergeBuiltInWins</c> — built-in (trusted) seeds
+/// enter the source first, and discovered (untrusted) entries cannot shadow them.
+/// <see cref="Upsert"/> is the deliberate exception for the OTHER direction of that boundary: a
+/// host re-seeding the catalog it built itself (e.g. after an agent rebuild whose mode folds a
+/// different sub-agent prompt fragment into every template) replaces its own entries, because
+/// template content is no longer build-invariant.
 /// </para>
 /// <para>
 /// <see cref="Templates"/> returns the immutable snapshot current at the time of the read.
@@ -70,6 +74,25 @@ public sealed class MutableSubAgentTemplateSource
 
             Volatile.Write(ref _templates, current.Add(name, RebindTemplate(template)));
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Atomically sets <paramref name="name"/> to <paramref name="template"/>, replacing any
+    /// existing entry. For a TRUSTED caller refreshing content it owns — the per-conversation
+    /// seed reconcile after an agent rebuild — where <see cref="TryRegister"/>'s first-wins
+    /// policy would pin the first build's (now stale) template content forever. Like
+    /// registration, the published entry is rebound to the latest provider factories.
+    /// </summary>
+    public void Upsert(string name, SubAgentTemplate template)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(template);
+
+        lock (_updateGate)
+        {
+            var current = Volatile.Read(ref _templates);
+            Volatile.Write(ref _templates, current.SetItem(name, RebindTemplate(template)));
         }
     }
 
