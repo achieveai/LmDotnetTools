@@ -62,6 +62,21 @@ public record ChatMode
     public IReadOnlyList<string>? EnabledCapabilityTools { get; init; }
 
     /// <summary>
+    /// Optional prompt fragment folded into the system prompt of EVERY sub-agent spawned under a
+    /// conversation in this mode (#610), so the mode sets expectations for all sub-agents, not
+    /// just the primary agent. Null means no fragment and today's sub-agent prompts unchanged.
+    /// </summary>
+    public string? SubAgentPrompt { get; init; }
+
+    /// <summary>
+    /// Where <see cref="SubAgentPrompt"/> lands relative to each sub-agent template's own prompt:
+    /// <c>"prepend"</c> or <c>"append"</c> (see <see cref="Services.ModeSubAgentPrompt"/>). Null
+    /// defaults to append when a fragment is present. Validated at the boundaries that write it —
+    /// yaml load for system modes, the chat-modes CRUD API for user modes.
+    /// </summary>
+    public string? SubAgentPromptPlacement { get; init; }
+
+    /// <summary>
     /// Whether this mode is system-defined (read-only) or user-created.
     /// </summary>
     public bool IsSystemDefined { get; init; }
@@ -82,7 +97,11 @@ public record ChatMode
     /// sample-only metadata (description, system-defined flag, timestamps) stays behind.
     /// </summary>
     public AchieveAi.LmDotnetTools.LmAgentInfra.AgentProfile ToAgentProfile() =>
-        new(Id, Name, SystemPrompt, EnabledTools, EnabledBuiltInTools, EnabledCapabilityTools);
+        new(Id, Name, SystemPrompt, EnabledTools, EnabledBuiltInTools, EnabledCapabilityTools)
+        {
+            SubAgentPrompt = SubAgentPrompt,
+            SubAgentPromptPlacement = SubAgentPromptPlacement,
+        };
 
     /// <summary>
     /// Implicit projection so existing call sites that hand a <see cref="ChatMode"/> to the pool
@@ -137,6 +156,18 @@ public record ChatModeCreateUpdate
     /// <see cref="ChatMode.EnabledCapabilityTools"/>.
     /// </summary>
     public IReadOnlyList<string>? EnabledCapabilityTools { get; init; }
+
+    /// <summary>
+    /// Per-mode sub-agent prompt fragment. See <see cref="ChatMode.SubAgentPrompt"/>.
+    /// </summary>
+    public string? SubAgentPrompt { get; init; }
+
+    /// <summary>
+    /// Fragment placement, <c>"prepend"</c> or <c>"append"</c> (null = append). See
+    /// <see cref="ChatMode.SubAgentPromptPlacement"/>. An invalid value is refused with 400 at the
+    /// CRUD boundary so it can never be persisted.
+    /// </summary>
+    public string? SubAgentPromptPlacement { get; init; }
 }
 
 /// <summary>

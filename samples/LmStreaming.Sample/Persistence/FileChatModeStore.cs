@@ -80,6 +80,8 @@ public sealed class FileChatModeStore : IChatModeStore
                 // record a sandbox/sub-agent/workflow selection at all.
                 EnabledBuiltInTools = mode.EnabledBuiltInTools,
                 EnabledCapabilityTools = mode.EnabledCapabilityTools,
+                SubAgentPrompt = mode.SubAgentPrompt,
+                SubAgentPromptPlacement = mode.SubAgentPromptPlacement,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -133,6 +135,8 @@ public sealed class FileChatModeStore : IChatModeStore
                 EnabledTools = mode.EnabledTools,
                 EnabledBuiltInTools = mode.EnabledBuiltInTools,
                 EnabledCapabilityTools = mode.EnabledCapabilityTools,
+                SubAgentPrompt = mode.SubAgentPrompt,
+                SubAgentPromptPlacement = mode.SubAgentPromptPlacement,
                 UpdatedAt = now,
             };
 
@@ -196,6 +200,8 @@ public sealed class FileChatModeStore : IChatModeStore
                 // Carrying this across is what makes a copy of Workspace Agent behave like Workspace
                 // Agent: capability is derived from the selection, not from the mode's id.
                 EnabledCapabilityTools = sourceMode.EnabledCapabilityTools,
+                SubAgentPrompt = sourceMode.SubAgentPrompt,
+                SubAgentPromptPlacement = sourceMode.SubAgentPromptPlacement,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,

@@ -20,6 +20,13 @@ const name = ref('');
 const description = ref('');
 const systemPrompt = ref('');
 /**
+ * Per-mode sub-agent prompt fragment (#610): folded into every sub-agent's system prompt for
+ * conversations in this mode. Empty means "no fragment" and both fields are omitted from the
+ * save payload so an untouched mode keeps today's behavior exactly.
+ */
+const subAgentPrompt = ref('');
+const subAgentPromptPlacement = ref<'prepend' | 'append'>('append');
+/**
  * The flat set of selected tool ids across every catalog group. A mode stores this across three
  * fields with three different null rules, so the editor holds the flat form and converts at the
  * boundary (see utils/modeToolSelection).
@@ -41,6 +48,8 @@ watch(
       name.value = newMode.name;
       description.value = newMode.description || '';
       systemPrompt.value = newMode.systemPrompt;
+      subAgentPrompt.value = newMode.subAgentPrompt || '';
+      subAgentPromptPlacement.value = newMode.subAgentPromptPlacement || 'append';
       selectedToolIds.value = selectionFromMode(newMode, props.tools);
     } else {
       resetForm();
@@ -62,6 +71,8 @@ function resetForm(): void {
   name.value = '';
   description.value = '';
   systemPrompt.value = '';
+  subAgentPrompt.value = '';
+  subAgentPromptPlacement.value = 'append';
   selectedToolIds.value = selectionFromMode(null, props.tools);
   nameError.value = '';
   systemPromptError.value = '';
@@ -90,10 +101,15 @@ function validate(): boolean {
 function handleSave(): void {
   if (!validate()) return;
 
+  const trimmedSubAgentPrompt = subAgentPrompt.value.trim();
   const data: ChatModeCreateUpdate = {
     name: name.value.trim(),
     description: description.value.trim() || undefined,
     systemPrompt: systemPrompt.value.trim(),
+    // Both omitted when the fragment is empty — an untouched mode must save exactly what it
+    // saved before these fields existed.
+    subAgentPrompt: trimmedSubAgentPrompt || undefined,
+    subAgentPromptPlacement: trimmedSubAgentPrompt ? subAgentPromptPlacement.value : undefined,
     // props.mode is passed so a group the catalog could not show is preserved, not zeroed.
     ...selectionToModeFields(selectedToolIds.value, props.tools, props.mode),
   };
@@ -154,6 +170,32 @@ function handleCancel(): void {
           :disabled="isLoading"
         ></textarea>
         <span v-if="systemPromptError" class="error-message">{{ systemPromptError }}</span>
+      </div>
+
+      <div class="form-group">
+        <label for="mode-subagent-prompt" class="form-label">Sub-agent Prompt</label>
+        <textarea
+          id="mode-subagent-prompt"
+          v-model="subAgentPrompt"
+          data-testid="mode-editor-subagent-prompt"
+          class="form-textarea system-prompt"
+          placeholder="Optional fragment added to every sub-agent's system prompt in this mode..."
+          rows="3"
+          :disabled="isLoading"
+        ></textarea>
+        <div class="placement-row">
+          <label for="mode-subagent-placement" class="form-label">Placement</label>
+          <select
+            id="mode-subagent-placement"
+            v-model="subAgentPromptPlacement"
+            data-testid="mode-editor-subagent-placement"
+            class="form-input placement-select"
+            :disabled="isLoading || !subAgentPrompt.trim()"
+          >
+            <option value="append">Append (after the sub-agent's own prompt)</option>
+            <option value="prepend">Prepend (before the sub-agent's own prompt)</option>
+          </select>
+        </div>
       </div>
 
       <div class="form-group">
@@ -262,6 +304,17 @@ function handleCancel(): void {
 .error-message {
   font-size: 12px;
   color: #dc3545;
+}
+
+.placement-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.placement-select {
+  flex: 1;
 }
 
 .form-actions {

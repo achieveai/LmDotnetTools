@@ -1574,7 +1574,12 @@ try
                                 sp.GetRequiredService<WorkspaceSubAgentLoader>(),
                                 sp.GetRequiredService<MarketplaceSubAgentLoader>(),
                                 sp.GetRequiredService<IWorkspaceStore>(),
-                                loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog")
+                                loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"),
+                                // The profile carries the mode's sub-agent prompt fragment (#610);
+                                // `mode` and `effectiveMode` hold identical fragment fields (the
+                                // `with` clauses above only rewrite SystemPrompt), so pass the
+                                // unaugmented profile.
+                                mode
                             )
                             .GetAwaiter()
                             .GetResult();
@@ -3386,7 +3391,7 @@ public partial class Program
         );
     }
 
-    private static async Task<SubAgentOptions?> BuildSubAgentOptionsAsync(
+    internal static async Task<SubAgentOptions?> BuildSubAgentOptionsAsync(
         bool isTestMode,
         ITestAgentBuilder testAgentBuilder,
         ILoggerFactory loggerFactory,
@@ -3396,7 +3401,8 @@ public partial class Program
         WorkspaceSubAgentLoader workspaceLoader,
         MarketplaceSubAgentLoader marketplaceLoader,
         IWorkspaceStore workspaceStore,
-        Microsoft.Extensions.Logging.ILogger logger
+        Microsoft.Extensions.Logging.ILogger logger,
+        AgentProfile mode
     )
     {
         // Base catalog: mock providers go through the ITestAgentBuilder seam (built-ins by default,
@@ -3418,7 +3424,10 @@ public partial class Program
 
         if (sandboxSession is null)
         {
-            return ApplyCharacteristicsAgentFactory(baseOptions, characteristicsAgentFactory);
+            return ApplyCharacteristicsAgentFactory(
+                ApplyModeSubAgentPrompt(baseOptions, mode),
+                characteristicsAgentFactory
+            );
         }
 
         var templates = new Dictionary<string, SubAgentTemplate>(baseOptions.Templates, StringComparer.Ordinal);
@@ -3434,13 +3443,47 @@ public partial class Program
             )
             .ConfigureAwait(false);
 
+        // Folded AFTER enrichment so the fragment lands on every tier uniformly — built-in,
+        // workspace-discovered, and marketplace templates alike.
         return ApplyCharacteristicsAgentFactory(
-            baseOptions with
-            {
-                Templates = templates,
-            },
+            ApplyModeSubAgentPrompt(baseOptions with { Templates = templates }, mode),
             characteristicsAgentFactory
         );
+    }
+
+    /// <summary>
+    /// Folds the mode's sub-agent prompt fragment (#610) into EVERY template's
+    /// <see cref="SubAgentTemplate.SystemPrompt"/> at catalog build time. This is the fold point
+    /// on purpose: the child prompt is read from the template in exactly one place
+    /// (<c>SubAgentManager</c>'s spawn path), and a template-level fold survives the
+    /// workflow-controller hop (<see cref="BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(IReadOnlyDictionary{string, SubAgentTemplate}, Func{IStreamingAgent})"/>
+    /// preserves SystemPrompt) — unlike anything carried via <c>CharacteristicsAgentFactory</c>,
+    /// which is model-only and deliberately dropped on that hop. A mode with no fragment returns
+    /// the options INSTANCE unchanged, keeping today's behavior byte-for-byte.
+    /// </summary>
+    internal static SubAgentOptions ApplyModeSubAgentPrompt(SubAgentOptions options, AgentProfile mode)
+    {
+        if (string.IsNullOrWhiteSpace(mode.SubAgentPrompt))
+        {
+            return options;
+        }
+
+        return options with
+        {
+            Templates = options.Templates.ToDictionary(
+                entry => entry.Key,
+                entry =>
+                    entry.Value with
+                    {
+                        SystemPrompt = ModeSubAgentPrompt.Fold(
+                            entry.Value.SystemPrompt,
+                            mode.SubAgentPrompt,
+                            mode.SubAgentPromptPlacement
+                        ),
+                    },
+                StringComparer.Ordinal
+            ),
+        };
     }
 
     /// <summary>

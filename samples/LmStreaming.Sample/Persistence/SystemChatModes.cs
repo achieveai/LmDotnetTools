@@ -59,7 +59,23 @@ public static class SystemChatModes
     private static IReadOnlyList<ChatMode> LoadModes()
     {
         var filePath = ResolvePromptsPath();
-        var yaml = File.ReadAllText(filePath);
+        var modes = ParseModes(File.ReadAllText(filePath));
+
+        ValidateRequiredMode(modes, DefaultModeId);
+        ValidateRequiredMode(modes, MedicalKnowledgeModeId);
+        ValidateRequiredMode(modes, WorkspaceAgentModeId);
+
+        return modes;
+    }
+
+    /// <summary>
+    /// Binds a Prompts.yaml document to <see cref="ChatMode"/>s, enforcing the per-mode
+    /// invariants (required fields, valid <c>subAgentPromptPlacement</c>, unique ids). Split from
+    /// <see cref="LoadModes"/> — which adds the file-level required-mode checks — so tests can
+    /// pin the binding against frozen literal yaml instead of round-tripping the shipped file.
+    /// </summary>
+    internal static IReadOnlyList<ChatMode> ParseModes(string yaml)
+    {
         var deserializer = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
 
         var document =
@@ -82,15 +98,13 @@ public static class SystemChatModes
                 EnabledTools = m.EnabledTools,
                 EnabledBuiltInTools = m.EnabledBuiltInTools,
                 EnabledCapabilityTools = m.EnabledCapabilityTools,
+                SubAgentPrompt = m.SubAgentPrompt,
+                SubAgentPromptPlacement = RequireValidPlacement(m.SubAgentPromptPlacement),
                 IsSystemDefined = true,
                 CreatedAt = now,
                 UpdatedAt = now,
             })
             .ToList();
-
-        ValidateRequiredMode(modes, DefaultModeId);
-        ValidateRequiredMode(modes, MedicalKnowledgeModeId);
-        ValidateRequiredMode(modes, WorkspaceAgentModeId);
 
         var duplicateIds = modes
             .GroupBy(m => m.Id, StringComparer.Ordinal)
@@ -153,6 +167,16 @@ public static class SystemChatModes
             : value;
     }
 
+    private static string? RequireValidPlacement(string? placement)
+    {
+        return Services.ModeSubAgentPrompt.IsValidPlacement(placement)
+            ? placement
+            : throw new InvalidOperationException(
+                $"{PromptsFileName} contains a chat mode with an invalid subAgentPromptPlacement "
+                    + $"'{placement}'. Valid values: {Services.ModeSubAgentPrompt.Prepend}, {Services.ModeSubAgentPrompt.Append}."
+            );
+    }
+
     private static void ValidateRequiredMode(IReadOnlyCollection<ChatMode> modes, string modeId)
     {
         if (!modes.Any(m => string.Equals(m.Id, modeId, StringComparison.Ordinal)))
@@ -181,5 +205,9 @@ public static class SystemChatModes
         public List<string>? EnabledBuiltInTools { get; init; }
 
         public List<string>? EnabledCapabilityTools { get; init; }
+
+        public string? SubAgentPrompt { get; init; }
+
+        public string? SubAgentPromptPlacement { get; init; }
     }
 }
