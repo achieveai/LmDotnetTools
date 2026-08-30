@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace TodoEval.Runner.Sweep;
 
 /// <summary>
@@ -100,7 +102,11 @@ internal sealed class SweepRunner(
         {
             throw;
         }
-        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException)
+        // F-008: JsonException/KeyNotFoundException from parsing a malformed 200 body must become
+        // THIS run's HarnessError row — escaping here would fault Task.WhenAll and skip the archive
+        // and extraction of every run that DID finish.
+        catch (Exception ex)
+            when (ex is HttpRequestException or InvalidOperationException or JsonException or KeyNotFoundException)
         {
             return Failed(RunOutcomes.HarnessError, ex.Message);
         }

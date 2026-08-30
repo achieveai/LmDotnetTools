@@ -117,10 +117,21 @@ public class ConversationStoreReaderTests
     [Fact]
     public void ToollessSubAgent_WithComplianceClaimText_IsFlagged()
     {
-        var orphan = Load("subagent-orphan");
+        var child = Load("subagent-child2");
 
-        orphan.TaskToolCallCount.Should().Be(0);
-        orphan.FabricatedComplianceSuspect.Should().BeTrue();
+        child.TaskToolCallCount.Should().Be(0);
+        child.FabricatedComplianceSuspect.Should().BeTrue();
+    }
+
+    [Fact]
+    public void OrphanSubAgent_WithoutMetadata_HasNoParentAndBecomesItsOwnRoot()
+    {
+        // subagent-orphan has NO metadata.json at all — the true hard-timeout shape (F-003).
+        var orphan = Load("subagent-orphan");
+        orphan.ParentThreadId.Should().BeNull();
+        orphan.IsSubAgentThread.Should().BeTrue();
+        orphan.TaskToolCallCount.Should().Be(1);
+        orphan.PerTaskTool["claim-task"].Should().Be(new ToolStats { Calls = 1, Errors = 1 });
     }
 
     [Fact]
@@ -135,9 +146,13 @@ public class ConversationStoreReaderTests
         var threads = ConversationStoreReader.LoadAllThreads(ConversationsDir);
         var groups = ConversationStoreReader.GroupByRootThread(threads);
 
-        groups.Should().HaveCount(2);
+        groups.Should().HaveCount(3);
         groups["thread-storm"].Select(t => t.ThreadId).Should().BeEquivalentTo("thread-storm", "subagent-child1");
-        groups["thread-errors"].Select(t => t.ThreadId).Should().BeEquivalentTo("thread-errors", "subagent-orphan");
+        groups["thread-errors"].Select(t => t.ThreadId).Should().BeEquivalentTo("thread-errors", "subagent-child2");
+
+        // The link-less orphan degrades to its own root — reachable only if the extractor
+        // surfaces unclaimed groups (F-003), which is exactly what the extractor tests pin.
+        groups["subagent-orphan"].Select(t => t.ThreadId).Should().BeEquivalentTo("subagent-orphan");
     }
 
     [Fact]

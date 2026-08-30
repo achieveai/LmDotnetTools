@@ -114,6 +114,29 @@ internal sealed record RunMetrics
 }
 
 /// <summary>
+/// A conversation thread unreachable from every manifest run via the <c>sample.subAgentOf</c> chain
+/// (the link is missing or points at a thread the store does not contain). Likeliest on hard-timeout
+/// kills, where the host's debounced metadata write dies with the run — exactly the failure the
+/// metrics exist to measure, so these threads are surfaced with their activity, never dropped.
+/// </summary>
+internal sealed record UnattributedThread
+{
+    public required string ThreadId { get; init; }
+    public required bool IsSubAgentThread { get; init; }
+    public required int TotalToolCalls { get; init; }
+    public required int TaskToolCalls { get; init; }
+    public required int TaskToolErrors { get; init; }
+    public required bool FabricatedComplianceSuspect { get; init; }
+}
+
+/// <summary>The whole extraction: one row per manifest run, plus every thread no run can claim.</summary>
+internal sealed record SweepMetrics
+{
+    public required IReadOnlyList<RunMetrics> Runs { get; init; }
+    public required IReadOnlyList<UnattributedThread> UnattributedThreads { get; init; }
+}
+
+/// <summary>
 /// The C# production twin of the eval's reference oracle (score.ps1): reads the isolated host's
 /// conversation store (or an archived copy) and turns each sweep run into a <see cref="RunMetrics"/>
 /// row. Everything here is offline — a committed baseline sweep re-extracts bit-identically. The
@@ -122,7 +145,7 @@ internal sealed record RunMetrics
 /// </summary>
 internal static class MetricsExtractor
 {
-    public static IReadOnlyList<RunMetrics> Extract(
+    public static SweepMetrics Extract(
         string conversationsDir,
         IReadOnlyList<RunManifestEntry> manifest,
         BoardShapeExpectation? expectedBoard
@@ -131,7 +154,33 @@ internal static class MetricsExtractor
         var threads = ConversationStoreReader.LoadAllThreads(conversationsDir);
         var groups = ConversationStoreReader.GroupByRootThread(threads);
 
-        return [.. manifest.Select(entry => ExtractRun(entry, groups, expectedBoard))];
+        // F-003: a thread whose sample.subAgentOf link is missing/unresolvable becomes its own
+        // group root, which no manifest entry names — before this diff it silently vanished from
+        // every metric and validity check. Every group no run claims is surfaced instead.
+        var claimedRoots = new HashSet<string>(
+            manifest.Where(e => e.ThreadId is not null).Select(e => e.ThreadId!),
+            StringComparer.Ordinal
+        );
+        var unattributed = groups
+            .Where(kvp => !claimedRoots.Contains(kvp.Key))
+            .SelectMany(kvp => kvp.Value)
+            .OrderBy(t => t.ThreadId, StringComparer.Ordinal)
+            .Select(t => new UnattributedThread
+            {
+                ThreadId = t.ThreadId,
+                IsSubAgentThread = t.IsSubAgentThread,
+                TotalToolCalls = t.TotalToolCalls,
+                TaskToolCalls = t.TaskToolCallCount,
+                TaskToolErrors = t.PerTaskTool.Values.Sum(s => s.Errors),
+                FabricatedComplianceSuspect = t.FabricatedComplianceSuspect,
+            })
+            .ToList();
+
+        return new SweepMetrics
+        {
+            Runs = [.. manifest.Select(entry => ExtractRun(entry, groups, expectedBoard))],
+            UnattributedThreads = unattributed,
+        };
     }
 
     private static RunMetrics ExtractRun(

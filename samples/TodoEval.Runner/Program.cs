@@ -50,7 +50,11 @@ internal static class EvalProgram
             log.WriteLine("[warn] expected-board.json not found; completion will be reported as n/a for this sweep.");
         }
 
-        var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+        // F-007: a GUID suffix keeps same-second invocations from sharing one sweep/instance dir.
+        var timestamp =
+            DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture)
+            + "-"
+            + Guid.NewGuid().ToString("N")[..8];
         var resultsRoot = ResolvePath(
             config.ResultsDir is null ? Path.Combine(evalDir, "results") : config.ResultsDir,
             repoRoot
@@ -95,7 +99,23 @@ internal static class EvalProgram
         TryDeleteTree(instanceDir, log);
 
         Extract(sweepDir, archivedConversations, manifest, config, log);
-        return manifest.All(e => e.Status != RunOutcomes.HarnessError) ? 0 : 1;
+        return ComputeExitCode(manifest);
+    }
+
+    /// <summary>
+    /// Exit code for a finished sweep (documented in <see cref="CliOptions.HelpText"/>): the
+    /// archived baseline gates a merge through this value, so "nothing completed" must be loud.
+    /// </summary>
+    internal static int ComputeExitCode(IReadOnlyList<RunManifestEntry> manifest)
+    {
+        if (manifest.Any(e => e.Status == RunOutcomes.HarnessError))
+        {
+            return 1;
+        }
+
+        // F-004: a sweep in which every run timed out / errored / was interrupted used to exit 0 —
+        // a wrapper gating on the exit code would archive a fully failed sweep as a "baseline".
+        return manifest.Any(e => e.Status == RunOutcomes.Completed) ? 0 : 3;
     }
 
     public static int ExtractOnly(string sweepDir, EvalRunnerConfig config, TextWriter log)
@@ -132,10 +152,19 @@ internal static class EvalProgram
         var metrics = MetricsExtractor.Extract(conversationsDir, manifest, expectedBoard);
         var runsPath = Path.Combine(sweepDir, "runs.jsonl");
         var summaryPath = Path.Combine(sweepDir, "summary.md");
-        ResultsWriter.WriteRunsJsonl(runsPath, metrics);
-        ResultsWriter.WriteSummaryMarkdown(summaryPath, metrics);
+        ResultsWriter.WriteRunsJsonl(runsPath, metrics.Runs);
+        ResultsWriter.WriteSummaryMarkdown(summaryPath, metrics.Runs, metrics.UnattributedThreads);
         log.WriteLine($"[sweep] wrote {runsPath}");
         log.WriteLine($"[sweep] wrote {summaryPath}");
+        if (metrics.UnattributedThreads.Count > 0)
+        {
+            log.WriteLine(
+                $"[warn] {metrics.UnattributedThreads.Count} conversation thread(s) are unreachable from any run "
+                    + "(missing/unresolvable sample.subAgentOf link — likeliest a hard-timeout kill before the "
+                    + "debounced metadata write); their activity is in summary.md's 'Unattributed threads' section, "
+                    + $"NOT in the per-run rows: {string.Join(", ", metrics.UnattributedThreads.Select(t => t.ThreadId))}"
+            );
+        }
     }
 
     private static async Task<IReadOnlyList<string>> CheckModelsAsync(

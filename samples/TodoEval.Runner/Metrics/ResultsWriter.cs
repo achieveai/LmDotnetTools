@@ -23,12 +23,23 @@ internal static class ResultsWriter
         File.WriteAllLines(path, lines);
     }
 
-    public static void WriteSummaryMarkdown(string path, IReadOnlyList<RunMetrics> runs)
+    public static void WriteSummaryMarkdown(
+        string path,
+        IReadOnlyList<RunMetrics> runs,
+        IReadOnlyList<UnattributedThread> unattributedThreads
+    )
     {
-        File.WriteAllText(path, BuildSummaryMarkdown(runs), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        File.WriteAllText(
+            path,
+            BuildSummaryMarkdown(runs, unattributedThreads),
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
+        );
     }
 
-    internal static string BuildSummaryMarkdown(IReadOnlyList<RunMetrics> runs)
+    internal static string BuildSummaryMarkdown(
+        IReadOnlyList<RunMetrics> runs,
+        IReadOnlyList<UnattributedThread> unattributedThreads
+    )
     {
         var sb = new StringBuilder();
         sb.AppendLine("# todo-eval sweep summary");
@@ -137,6 +148,37 @@ internal static class ResultsWriter
                     $"| {run.RunKey} | {run.Validity.SubAgentThreads} "
                         + $"| {string.Join(", ", run.Validity.SubAgentsWithoutTaskToolCalls)} "
                         + $"| {string.Join(", ", run.Validity.FabricatedComplianceSuspects)} |"
+                );
+            }
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("## Unattributed threads");
+        sb.AppendLine();
+        if (unattributedThreads.Count == 0)
+        {
+            sb.AppendLine("None: every conversation thread is reachable from a run via its sample.subAgentOf chain.");
+        }
+        else
+        {
+            sb.AppendLine(
+                $"WARNING: {unattributedThreads.Count} thread(s) are unreachable from every run's sample.subAgentOf "
+                    + "chain (likeliest: the link was lost to a hard-timeout kill before the host's debounced "
+                    + "metadata write). Their activity is counted here and EXCLUDED from the per-run rows above; "
+                    + "treat any affected run's metrics as a lower bound."
+            );
+            sb.AppendLine();
+            sb.AppendLine(
+                "| Thread | Sub-agent | Tool calls | Task-tool calls | Task-tool errors "
+                    + "| Fabricated-compliance suspect |"
+            );
+            sb.AppendLine("|---|---|---:|---:|---:|---|");
+            foreach (var thread in unattributedThreads)
+            {
+                sb.AppendLine(
+                    $"| {thread.ThreadId} | {(thread.IsSubAgentThread ? "yes" : "no")} | {thread.TotalToolCalls} "
+                        + $"| {thread.TaskToolCalls} | {thread.TaskToolErrors} "
+                        + $"| {(thread.FabricatedComplianceSuspect ? "yes" : "no")} |"
                 );
             }
         }

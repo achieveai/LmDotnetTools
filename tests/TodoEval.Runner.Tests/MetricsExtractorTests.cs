@@ -37,7 +37,7 @@ public class MetricsExtractorTests
             ExpectedBoard()
         );
 
-        var run = metrics.Should().ContainSingle().Subject;
+        var run = metrics.Runs.Should().ContainSingle().Subject;
 
         // Conversation totals: thread-storm plus its subagent-child1 descendant.
         run.Threads.Should().Be(2);
@@ -123,7 +123,7 @@ public class MetricsExtractorTests
             ExpectedBoard()
         );
 
-        var run = metrics.Should().ContainSingle().Subject;
+        var run = metrics.Runs.Should().ContainSingle().Subject;
 
         run.Threads.Should().Be(2);
         run.TotalToolCalls.Should().Be(8, "web-search is counted in the total");
@@ -172,16 +172,16 @@ public class MetricsExtractorTests
         run.Turns.Should().Be(3);
         run.PrimaryTurns.Should().Be(2);
 
-        // Validity: subagent-orphan made zero task-tool calls AND claims board work in text.
+        // Validity: subagent-child2 made zero task-tool calls AND claims board work in text.
         run.Validity.Valid.Should().BeFalse();
         run.Validity.Reasons.Should()
             .ContainSingle()
             .Which.Should()
-            .Be("sub-agent thread(s) with zero task-tool calls: subagent-orphan");
+            .Be("sub-agent thread(s) with zero task-tool calls: subagent-child2");
         run.Validity.SubAgentThreads.Should().Be(1);
         run.SubAgentCount.Should().Be(1);
-        run.Validity.SubAgentsWithoutTaskToolCalls.Should().Equal("subagent-orphan");
-        run.Validity.FabricatedComplianceSuspects.Should().Equal("subagent-orphan");
+        run.Validity.SubAgentsWithoutTaskToolCalls.Should().Equal("subagent-child2");
+        run.Validity.FabricatedComplianceSuspects.Should().Equal("subagent-child2");
     }
 
     [Fact]
@@ -193,7 +193,7 @@ public class MetricsExtractorTests
             ExpectedBoard()
         );
 
-        var run = metrics.Should().ContainSingle().Subject;
+        var run = metrics.Runs.Should().ContainSingle().Subject;
         run.Completion.Should().BeFalse();
         run.CompletionFailures.Should().ContainSingle().Which.Should().Contain("thread-vanished");
         run.Threads.Should().Be(0);
@@ -213,6 +213,50 @@ public class MetricsExtractorTests
             expectedBoard: null
         );
 
-        metrics.Should().ContainSingle().Which.Completion.Should().BeNull();
+        metrics.Runs.Should().ContainSingle().Which.Completion.Should().BeNull();
+    }
+
+    [Fact]
+    public void Extract_OrphanThread_IsSurfacedAsUnattributed_NotDropped()
+    {
+        // subagent-orphan has NO metadata.json (the debounced write died with a hard-timeout kill),
+        // so no sample.subAgentOf chain reaches it from either run. F-003: it must surface with its
+        // task-tool activity, never silently vanish from the extraction.
+        var metrics = MetricsExtractor.Extract(
+            ConversationsDir,
+            [Entry("m1/seed0", "m1", 0, "thread-storm"), Entry("m1/seed1", "m1", 1, "thread-errors")],
+            ExpectedBoard()
+        );
+
+        var orphan = metrics.UnattributedThreads.Should().ContainSingle().Subject;
+        orphan.ThreadId.Should().Be("subagent-orphan");
+        orphan.IsSubAgentThread.Should().BeTrue();
+        orphan.TotalToolCalls.Should().Be(1);
+        orphan.TaskToolCalls.Should().Be(1, "an orphan WITH task-tool calls must count, not drop");
+        orphan.TaskToolErrors.Should().Be(1);
+        orphan.FabricatedComplianceSuspect.Should().BeFalse();
+
+        // The orphan is surfaced separately, never misattributed into a run's rows.
+        metrics.Runs.Should().HaveCount(2);
+        metrics.Runs.Single(r => r.RunKey == "m1/seed0").Threads.Should().Be(2);
+        metrics.Runs.Single(r => r.RunKey == "m1/seed1").Threads.Should().Be(2);
+    }
+
+    [Fact]
+    public void Extract_ClaimedRootsAndTheirLinkedDescendants_AreNeverUnattributed()
+    {
+        var metrics = MetricsExtractor.Extract(
+            ConversationsDir,
+            [Entry("m1/seed0", "m1", 0, "thread-storm"), Entry("m1/seed1", "m1", 1, "thread-errors")],
+            ExpectedBoard()
+        );
+
+        metrics
+            .UnattributedThreads.Select(t => t.ThreadId)
+            .Should()
+            .OnlyContain(
+                id => id == "subagent-orphan",
+                "roots named by the manifest and their sample.subAgentOf descendants are all claimed"
+            );
     }
 }

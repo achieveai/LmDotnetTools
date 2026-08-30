@@ -56,11 +56,14 @@ public class ResultsWriterTests
     [Fact]
     public void Summary_RollsUpPerModel()
     {
-        var summary = ResultsWriter.BuildSummaryMarkdown([
-            Run("model-a", 0, true, 10, 2, 1),
-            Run("model-a", 1, false, 8, 4, 0, valid: false),
-            Run("model-b", 0, true, 6, 0, 0),
-        ]);
+        var summary = ResultsWriter.BuildSummaryMarkdown(
+            [
+                Run("model-a", 0, true, 10, 2, 1),
+                Run("model-a", 1, false, 8, 4, 0, valid: false),
+                Run("model-b", 0, true, 6, 0, 0),
+            ],
+            []
+        );
 
         summary.Should().Contain("| model-a | 2 | 1/2 | 1/2 |");
         summary.Should().Contain("| model-b | 1 | 1/1 | 1/1 |");
@@ -72,7 +75,7 @@ public class ResultsWriterTests
     [Fact]
     public void Summary_ReportsCompletionAsNotApplicable_WhenNoExpectedBoardExisted()
     {
-        var summary = ResultsWriter.BuildSummaryMarkdown([Run("model-a", 0, completion: null, 5, 0, 0)]);
+        var summary = ResultsWriter.BuildSummaryMarkdown([Run("model-a", 0, completion: null, 5, 0, 0)], []);
 
         summary.Should().Contain("| model-a | 1 | 1/1 | n/a |");
     }
@@ -80,10 +83,42 @@ public class ResultsWriterTests
     [Fact]
     public void Summary_OmitsZeroCallToolsFromThePerToolTable()
     {
-        var summary = ResultsWriter.BuildSummaryMarkdown([Run("model-a", 0, true, 5, 1, 0)]);
+        var summary = ResultsWriter.BuildSummaryMarkdown([Run("model-a", 0, true, 5, 1, 0)], []);
 
         summary.Should().Contain("| model-a | add-note | 5 | 1 |");
         summary.Should().NotContain("| model-a | delete-task |");
+    }
+
+    [Fact]
+    public void Summary_ListsUnattributedThreads_WithTheirActivity()
+    {
+        var summary = ResultsWriter.BuildSummaryMarkdown(
+            [Run("model-a", 0, true, 5, 1, 0)],
+            [
+                new UnattributedThread
+                {
+                    ThreadId = "subagent-lost",
+                    IsSubAgentThread = true,
+                    TotalToolCalls = 3,
+                    TaskToolCalls = 2,
+                    TaskToolErrors = 1,
+                    FabricatedComplianceSuspect = false,
+                },
+            ]
+        );
+
+        summary.Should().Contain("## Unattributed threads");
+        summary.Should().Contain("WARNING: 1 thread(s) are unreachable");
+        summary.Should().Contain("| subagent-lost | yes | 3 | 2 | 1 | no |");
+    }
+
+    [Fact]
+    public void Summary_ReportsNoUnattributedThreads_WhenEveryThreadIsClaimed()
+    {
+        var summary = ResultsWriter.BuildSummaryMarkdown([Run("model-a", 0, true, 5, 1, 0)], []);
+
+        summary.Should().Contain("## Unattributed threads");
+        summary.Should().Contain("None: every conversation thread is reachable");
     }
 
     [Fact]

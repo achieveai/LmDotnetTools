@@ -39,6 +39,14 @@ internal sealed record CliOptions
           --allow-missing-models     Skip models the host does not offer instead of failing the sweep
           --extract-only <sweepDir>  Re-run metrics extraction over an archived sweep (no host, no runs)
           --help                     This text
+
+        Exit codes:
+          0  the sweep produced at least one Completed run and no run hit a harness error
+             (extract-only: extraction succeeded)
+          1  a run failed with a harness error, or the sweep itself failed to run
+          2  invalid command line
+          3  no run completed - every run timed out, errored, or was interrupted; the archive
+             is written but must not gate anything as a successful baseline
         """;
 
     public static CliOptions Parse(string[] args)

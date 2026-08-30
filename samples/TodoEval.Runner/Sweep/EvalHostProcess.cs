@@ -61,6 +61,11 @@ internal sealed class EvalHostProcess : IAsyncDisposable
         }
 
         var port = config.Port > 0 ? config.Port : GetFreeTcpPort();
+        // F-001: the readiness probe answers whatever listens on 127.0.0.1:{port}. If something is
+        // ALREADY listening there (a live deployment, typically), our child dies on the bind while
+        // the probe 200s against the foreigner — and the sweep would provision modes/conversations
+        // into the live store. Occupied port = hard failure, before anything is launched.
+        EnsurePortIsFree(port);
         var process = Launch(config, instanceDir, logDir, port, log);
         var host = new EvalHostProcess(process, config, instanceDir, port);
         try
@@ -129,6 +134,22 @@ internal sealed class EvalHostProcess : IAsyncDisposable
             );
         }
 
+        var startInfo = BuildStartInfo(config, instanceDir, hostDll, port);
+
+        var process =
+            Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start the eval host process.");
+
+        // Drain stdout/stderr to files; an un-drained redirected pipe would eventually block the host.
+        _ = PumpAsync(process.StandardOutput, Path.Combine(logDir, "host-stdout.log"));
+        _ = PumpAsync(process.StandardError, Path.Combine(logDir, "host-stderr.log"));
+
+        log.WriteLine($"[host] started pid {process.Id} on port {port} (instance: {instanceDir})");
+        return process;
+    }
+
+    /// <summary>The child's full launch shape; separated from <see cref="Launch"/> so the environment the child actually receives is testable.</summary>
+    internal static ProcessStartInfo BuildStartInfo(HostConfig config, string instanceDir, string hostDll, int port)
+    {
         var startInfo = new ProcessStartInfo
         {
             FileName = "dotnet",
@@ -158,6 +179,14 @@ internal sealed class EvalHostProcess : IAsyncDisposable
         {
             startInfo.Environment["LMSTREAMING_ENV_FILE"] = Path.GetFullPath(envFile);
         }
+        else
+        {
+            // F-002: ProcessStartInfo.Environment starts as a COPY of the parent's environment, so
+            // a shell that points LMSTREAMING_ENV_FILE at a live deployment's .env (the
+            // publish-launch.ps1 pattern) would silently hand that file to the "isolated" host.
+            // No configured env file must mean NO env file.
+            startInfo.Environment.Remove("LMSTREAMING_ENV_FILE");
+        }
 
         startInfo.Environment["VITE_AUTO_RUN"] = "false";
         foreach (var (key, value) in config.ExtraEnv)
@@ -165,15 +194,7 @@ internal sealed class EvalHostProcess : IAsyncDisposable
             startInfo.Environment[key] = value;
         }
 
-        var process =
-            Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start the eval host process.");
-
-        // Drain stdout/stderr to files; an un-drained redirected pipe would eventually block the host.
-        _ = PumpAsync(process.StandardOutput, Path.Combine(logDir, "host-stdout.log"));
-        _ = PumpAsync(process.StandardError, Path.Combine(logDir, "host-stderr.log"));
-
-        log.WriteLine($"[host] started pid {process.Id} on port {port} (instance: {instanceDir})");
-        return process;
+        return startInfo;
     }
 
     private static async Task PumpAsync(StreamReader reader, string path)
@@ -215,6 +236,18 @@ internal sealed class EvalHostProcess : IAsyncDisposable
                 using var response = await http.GetAsync("api/providers", ct);
                 if (response.IsSuccessStatusCode)
                 {
+                    // F-001: a 200 alone only proves SOMETHING answers on this port. If our child
+                    // is dead, the answer came from a foreign process (the child lost a port race
+                    // and exited) — readiness must mean "MY child answers", so fail instead.
+                    if (_process.HasExited)
+                    {
+                        throw new InvalidOperationException(
+                            $"The eval host exited with code {_process.ExitCode}, yet something answered the "
+                                + $"readiness probe on port {Port} — a foreign process is listening there and "
+                                + $"must never be treated as the eval host; see host-stderr.log in {logDir}."
+                        );
+                    }
+
                     return;
                 }
             }
@@ -262,6 +295,35 @@ internal sealed class EvalHostProcess : IAsyncDisposable
         }
 
         _process.Dispose();
+    }
+
+    /// <summary>
+    /// Refuses a port anything else is already listening on (see the F-001 comment at the call
+    /// site). A bind is the check itself, so there is no foreign-process heuristic to get wrong;
+    /// the residual TOCTOU window (someone grabbing the port between this bind and the child's) is
+    /// closed by the child-alive check after every successful readiness probe.
+    /// </summary>
+    internal static void EnsurePortIsFree(int port)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, port);
+        try
+        {
+            listener.Start();
+        }
+        catch (SocketException ex)
+        {
+            throw new InvalidOperationException(
+                $"Port {port} on 127.0.0.1 is already in use — refusing to launch the eval host: the readiness "
+                    + "probe would bless whatever is already listening there (a live deployment, most likely) "
+                    + "while our own child dies on the bind, and the sweep would then run against the WRONG "
+                    + "host's store. Configure host.port to a free port, or 0 for an ephemeral one.",
+                ex
+            );
+        }
+        finally
+        {
+            listener.Stop();
+        }
     }
 
     private static int GetFreeTcpPort()
