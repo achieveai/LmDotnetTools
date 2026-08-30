@@ -43,4 +43,25 @@ internal sealed record RepoIdentity
 
     /// <summary>Human-facing identity with original casing preserved (never used as a durable key).</summary>
     public string DisplayName => Project is null ? $"{OrgOrOwner}/{RepoName}" : $"{OrgOrOwner}/{Project}/{RepoName}";
+
+    /// <summary>The one spelling of Azure DevOps in the STORAGE namespace, as written by the poll-target
+    /// builder and read back verbatim by <c>ReviewStore.GetRepo</c>.</summary>
+    private const string AzureDevOpsStorageProvider = "azure-devops";
+
+    /// <summary>
+    /// Converts a <see cref="Provider"/> value from the STORAGE namespace to the PUBLISHER/POLL-TARGET one.
+    /// <para>
+    /// <see cref="Provider"/> is the storage namespace — <c>github</c> / <c>azure-devops</c> — because that
+    /// is what the poll-target builder persists and what <c>NormalizedKey</c> is built from. Every registry
+    /// keyed by provider is in a DIFFERENT namespace: <c>IReviewCommentPublisher.Provider</c> and
+    /// <c>IPrProvider.Provider</c> spell Azure DevOps <c>ado</c>. Look a publisher up with the stored
+    /// spelling and it resolves to nothing on every ADO repo, silently.
+    /// </para>
+    /// <para>
+    /// Everything else passes through unchanged — <c>github</c> is the same word in both namespaces, and an
+    /// unknown provider is better forwarded verbatim than mapped to a guess.
+    /// </para>
+    /// </summary>
+    public static string ToPublisherNamespace(string storageProvider) =>
+        string.Equals(storageProvider, AzureDevOpsStorageProvider, StringComparison.Ordinal) ? "ado" : storageProvider;
 }

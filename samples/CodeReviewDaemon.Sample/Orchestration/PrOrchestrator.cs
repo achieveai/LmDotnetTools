@@ -14,8 +14,11 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// </summary>
 internal sealed class PrOrchestrator
 {
-    /// <summary>Cap on the persisted/posted park reason — a barrier deadline lists every unsettled node.</summary>
-    private const int MaxParkReasonLength = 500;
+    /// <summary>
+    /// The park phrase for a governed failure with no more specific entry in <see cref="DescribeGovernedFailure"/>
+    /// — and the one used when an older build's row carries no <c>park_reason</c> at all.
+    /// </summary>
+    private const string UnclassifiedParkPhrase = "the review could not be completed";
 
     private readonly ReviewStore _store;
     private readonly IReviewStageExecutor _executor;
@@ -105,6 +108,10 @@ internal sealed class PrOrchestrator
                 run.ParkedAt,
                 run.ParkReason
             );
+
+            // The one retry cadence a lost park notice has. It cannot resurrect the run — the guard returns
+            // immediately below and no stage is reached — and it is a no-op once the notice is delivered.
+            await RetryOutstandingParkNoticeAsync(run);
             return run;
         }
 
@@ -251,10 +258,12 @@ internal sealed class PrOrchestrator
             return;
         }
 
-        // Truncated because it lands both in a persisted column and in a pull-request comment, and a barrier
-        // deadline's message enumerates every unsettled node in the tree.
-        var message = ex.Message.Length > MaxParkReasonLength ? ex.Message[..MaxParkReasonLength] : ex.Message;
-        var reason = $"{stage}: {message}";
+        // A FIXED phrase, never ex.Message. This value lands in a persisted column and, through the notifier,
+        // in a public pull-request comment — and the governed types carry raw external output in their
+        // messages: ReviewHostContractException embeds the review host's HTTP response body, SlotCorruptException
+        // embeds git's stderr. Interpolating either publishes host names, paths and command output to whoever
+        // can read the PR. The stage stays: it is the daemon's own vocabulary, not external input.
+        var reason = $"{stage}: {DescribeGovernedFailure(ex)}";
 
         // False means somebody already parked this row. The notice hangs off this boolean, so a second park
         // attempt cannot produce a second comment.
@@ -263,7 +272,11 @@ internal sealed class PrOrchestrator
             return;
         }
 
+        // The RAW exception, deliberately, and it is the only place it survives. This is a protected operator
+        // log; the sanitized phrase above is what the pull request gets, and diagnosing why a review parked
+        // needs the host body / git stderr the phrase deliberately drops.
         _logger.LogError(
+            ex,
             "review_run PARKED-PERMANENT run {RunId} pr {PrId} head {HeadSha} after {Attempts} durable "
                 + "attempts at stage {Stage}: {Error}",
             run.Id,
@@ -271,7 +284,7 @@ internal sealed class PrOrchestrator
             run.HeadSha,
             attempts,
             stage,
-            reason
+            ex.Message
         );
 
         if (_parkNotifier is null)
@@ -298,6 +311,100 @@ internal sealed class PrOrchestrator
             );
         }
     }
+
+    /// <summary>
+    /// The public vocabulary for a park: one short, stable, operator-meaningful phrase per governed exception
+    /// type, chosen by TYPE and never derived from the exception's text.
+    /// </summary>
+    /// <remarks>
+    /// The phrases carry no paths, hosts, credentials or command output, because everything this returns is
+    /// persisted in <c>review_run.park_reason</c> and posted verbatim to a pull request anyone with read access
+    /// can see. The types it maps are the ones <see cref="IsGovernedFailure"/> admits; the default exists
+    /// because that set is expected to grow and an unmapped type must degrade to a vague phrase rather than
+    /// fall back to a raw message.
+    /// </remarks>
+    private static string DescribeGovernedFailure(Exception ex) =>
+        ex switch
+        {
+            ReviewBarrierDeadlineException => "the review did not finish within its time budget",
+            ReviewCheckpointCorruptException => "the review checkpoint could not be read",
+            ReviewHostContractException => "the review host rejected the request",
+            SentinelUnauthorizedException => "the review host refused the daemon's credentials",
+            // The four workspace conditions are distinguished because the operator response differs: a
+            // re-clone, a cleanup, a path that must be un-redirected, and a probe that has to answer.
+            SlotNeedsRecloneException => "the review workspace could not be prepared and has to be re-created",
+            SlotCorruptException => "the review workspace could not be cleaned for use",
+            SlotAddressUnusableException => "the review workspace path could not be used safely",
+            SlotProbeUnansweredException => "the state of the review workspace could not be established",
+            _ => UnclassifiedParkPhrase,
+        };
+
+    /// <summary>
+    /// Re-attempts a park notice that never reached the pull request, from the one place a parked run is still
+    /// reached: the poll's park guard.
+    /// </summary>
+    /// <remarks>
+    /// The park is committed BEFORE the notice is sent and <see cref="ReviewStore.TryMarkReviewRunParked"/>
+    /// refuses a second park, so a crash or a publisher blip between the two used to lose the notice forever
+    /// while the park itself persisted — a silently abandoned pull request. There is no outbox drain to lean
+    /// on, but there is already a cadence: the poller still calls <see cref="RunAsync(ReviewRun,
+    /// CancellationToken)"/> for an open PR every cycle and it lands here. The run is NOT resurrected — this
+    /// runs inside the guard, before the stage loop, and returns the row untouched.
+    /// <para>
+    /// Exactly-once DELIVERY is already <see cref="ReviewPoster"/>'s: it treats a
+    /// <see cref="OutboxStatus.Posted"/> row as a terminal replay no-op and never reaches the publisher, so
+    /// nothing here has to count. <see cref="IsParkNoticeOutstanding"/> reads the same row one step earlier
+    /// for a different reason — a parked pull request can stay open for weeks, and re-entering the notifier on
+    /// every poll would spend an enqueue and an Information-level replay line each time to reach a decision the
+    /// row already answered. It is the same row a crashed publish leaves in
+    /// <see cref="OutboxStatus.Sending"/>, which is precisely the state that must still be retried.
+    /// </para>
+    /// <para>
+    /// Everything here logs at Debug and swallows: at poll cadence a Warning would be an outage's worth of
+    /// noise, and a failed courtesy comment must never fail the poll or unpark the run.
+    /// </para>
+    /// </remarks>
+    private async Task RetryOutstandingParkNoticeAsync(ReviewRun run)
+    {
+        if (_parkNotifier is null || !IsParkNoticeOutstanding(run.Id))
+        {
+            return;
+        }
+
+        _logger.LogDebug(
+            "Review run {RunId} is parked with no delivered park notice; re-attempting it on this poll.",
+            run.Id
+        );
+
+        try
+        {
+            // A row parked by a build that predates the reason column has none; a public comment that says
+            // nothing at all is still better than a crash inside the poll guard.
+            await _parkNotifier.NotifyParkedAsync(
+                run,
+                string.IsNullOrWhiteSpace(run.ParkReason) ? UnclassifiedParkPhrase : run.ParkReason,
+                CancellationToken.None
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Review run {RunId}: the park notice retry did not deliver either.", run.Id);
+        }
+    }
+
+    /// <summary>
+    /// Whether this run's park notice still owes a delivery attempt — no outbox row for it, or one that never
+    /// reached a terminal disposition. <see cref="OutboxStatus.Posted"/> means the comment is on the PR and
+    /// <see cref="OutboxStatus.Collected"/> means the daemon deliberately recorded it without posting; every
+    /// other state (including the <see cref="OutboxStatus.Sending"/> a crashed publish strands) is unfinished.
+    /// </summary>
+    private bool IsParkNoticeOutstanding(long runId) =>
+        !_store
+            .GetOutboxForRun(runId)
+            .Any(entry =>
+                string.Equals(entry.Operation, ReviewParkNotifier.PostParkNoticeOperation, StringComparison.Ordinal)
+                && entry.Status is OutboxStatus.Posted or OutboxStatus.Collected
+            );
 
     /// <summary>
     /// Whether a stage CLEARS the run's accumulated retry state when it succeeds. Every executed stage does,

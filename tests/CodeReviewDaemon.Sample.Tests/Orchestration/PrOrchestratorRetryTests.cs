@@ -1,4 +1,5 @@
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -494,7 +495,7 @@ public sealed class PrOrchestratorRetryTests : IDisposable
     public async Task Parking_is_once_only_and_notifies_once()
     {
         var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
-        var notifier = new RecordingParkNotifier();
+        var notifier = new RecordingParkNotifier(_store);
         var orchestrator = Orchestrator(executor, durableBudget: 1, notifier: notifier);
         var run = SeedRun();
 
@@ -516,6 +517,149 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         notifier.Notified.Should().ContainSingle("a later poll of a parked run announces nothing new");
     }
 
+    // ── the park NOTICE: who it reaches, and what it is allowed to say ────────────────────────────
+
+    [Fact]
+    public async Task An_azure_devops_park_notice_reaches_the_publisher_that_serves_it()
+    {
+        // RepoIdentity.Provider is the STORAGE namespace, so an ADO repo row reads "azure-devops", while
+        // AdoReviewCommentPublisher.Provider answers to "ado". Compared raw, the lookup resolved to nothing on
+        // every Azure DevOps pull request: the park was durable, the daemon logged a warning nobody reads, and
+        // the PR was silently abandoned. The github case cannot catch this — it is the same word in both.
+        var publisher = new FakeReviewCommentPublisher("ado");
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
+        var orchestrator = Orchestrator(executor, durableBudget: 1, notifier: Notifier(publisher));
+        var run = SeedRun(provider: "azure-devops");
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+
+        publisher.PostCount.Should().Be(1, "the ADO publisher is the one registered for this repo's provider");
+        _store
+            .GetOutboxForRun(run.Id)
+            .Should()
+            .ContainSingle(entry =>
+                string.Equals(entry.Operation, ReviewParkNotifier.PostParkNoticeOperation, StringComparison.Ordinal)
+            )
+            .Which.Provider.Should()
+            .Be(
+                "ado",
+                "the review's own key is built from DaemonReviewStageExecutor.ResolveRepo's MAPPED provider, so "
+                    + "a notice keyed on the stored spelling would sit in a namespace nothing else for this PR uses"
+            );
+    }
+
+    [Fact]
+    public async Task A_park_notice_that_failed_to_deliver_is_retried_on_a_later_poll()
+    {
+        // The park is committed BEFORE the notice is sent and TryMarkReviewRunParked refuses a second park, so
+        // a publisher blip in between used to lose the notice permanently while the park persisted. The poller
+        // still calls RunAsync for an open PR every cycle and lands in the park guard — that is the only retry
+        // cadence available, and it must not resurrect the run to use it.
+        var publisher = new FakeReviewCommentPublisher { PostFailure = new InvalidOperationException("provider 503") };
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
+        var orchestrator = Orchestrator(executor, durableBudget: 1, notifier: Notifier(publisher));
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        publisher.PostCount.Should().Be(0, "the first delivery attempt threw inside the publisher");
+        _store.GetReviewRun(run.Id)!.ParkedAt.Should().NotBeNull("the park is durable regardless of the notice");
+
+        publisher.PostFailure = null;
+        var after = await orchestrator.RunAsync(run, CancellationToken.None);
+
+        publisher.PostCount.Should().Be(1, "the park guard re-attempts a notice that never reached the PR");
+        after.ParkedAt.Should().NotBeNull("delivering the notice must not unpark the run");
+        executor.FailStageCalls.Should().Be(1, "no stage may execute on the poll that retries the notice");
+    }
+
+    [Fact]
+    public async Task A_delivered_park_notice_is_never_sent_a_second_time()
+    {
+        // Exactly-once across arbitrarily many polls, pinned at both layers it is owned by. ReviewPoster is
+        // what makes a REPEATED delivery harmless — a Posted outbox row is a terminal replay no-op that never
+        // reaches the publisher — and the park guard is what stops the poll re-entering the notifier at all,
+        // which a PR parked for weeks needs so the retry does not cost an enqueue and a log line every cycle.
+        var publisher = new FakeReviewCommentPublisher();
+        var notifier = new CountingParkNotifier(Notifier(publisher));
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
+        var orchestrator = Orchestrator(executor, durableBudget: 1, notifier: notifier);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        publisher.PostCount.Should().Be(1);
+        publisher.FindCallCount.Should().Be(1, "the delivering attempt ran the backstop scan once");
+        notifier.Calls.Should().Be(1);
+
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+
+        publisher.PostCount.Should().Be(1, "the notice is on the PR; a second one would be spam");
+        publisher
+            .FindCallCount.Should()
+            .Be(1, "ReviewPoster's terminal replay short-circuits before the provider-side backstop scan");
+        notifier
+            .Calls.Should()
+            .Be(1, "the outbox already says the notice landed, so the park guard must not re-enter the notifier");
+    }
+
+    [Fact]
+    public async Task A_park_reason_carries_a_fixed_phrase_and_never_the_exception_text()
+    {
+        // park_reason is persisted AND posted to a public pull request, and the governed exception types carry
+        // raw external output in their messages — ReviewHostContractException embeds the review host's HTTP
+        // response body, SlotCorruptException embeds git's stderr. The vocabulary is chosen by TYPE so nothing
+        // the outside world wrote can be republished.
+        const string Sentinel = "SENTINEL-SECRET-abc123";
+        var publisher = new FakeReviewCommentPublisher();
+        var executor = new FailsAtStageExecutor(
+            ReviewStage.Reviewed,
+            () => new ReviewHostContractException($"host replied 401 with body {Sentinel}")
+        );
+        var orchestrator = Orchestrator(executor, durableBudget: 1, notifier: Notifier(publisher));
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewHostContractException>();
+
+        var parked = _store.GetReviewRun(run.Id)!;
+        parked.ParkReason.Should().NotContain(Sentinel, "the exception's own text must never be persisted here");
+        parked.ParkReason.Should().Contain("the review host rejected the request", "the phrase is chosen by type");
+        parked.ParkReason.Should().Contain(nameof(ReviewStage.Reviewed), "the stage is the daemon's own vocabulary");
+        publisher
+            .PostedBodies.Should()
+            .ContainSingle()
+            .Which.Should()
+            .NotContain(Sentinel, "the notice is a public comment on the pull request");
+    }
+
+    /// <summary>Counts entries into the real notifier without changing what it does. The count is the only way
+    /// to see the park guard's own short-circuit: past it, <see cref="ReviewPoster"/>'s terminal replay makes a
+    /// redundant call invisible at the publisher, so asserting on the publisher alone would pass either way.
+    /// </summary>
+    private sealed class CountingParkNotifier(IReviewParkNotifier inner) : IReviewParkNotifier
+    {
+        public int Calls { get; private set; }
+
+        public Task NotifyParkedAsync(ReviewRun run, string reason, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return inner.NotifyParkedAsync(run, reason, cancellationToken);
+        }
+    }
+
+    /// <summary>The real notifier over a fake publisher: the park path's delivery evidence has to be the real
+    /// outbox row, because that row is what the orchestrator's retry guard reads.</summary>
+    private ReviewParkNotifier Notifier(FakeReviewCommentPublisher publisher) =>
+        new(
+            _store,
+            [publisher],
+            new CodeReviewDaemonOptions { EnableCommentPosting = true },
+            NullLoggerFactory.Instance
+        );
+
     /// <summary>Builds an orchestrator over the real store with an explicit durable budget and fake clock.</summary>
     private PrOrchestrator Orchestrator(
         IReviewStageExecutor executor,
@@ -533,13 +677,30 @@ public sealed class PrOrchestratorRetryTests : IDisposable
             parkNotifier: notifier
         );
 
-    private sealed class RecordingParkNotifier : IReviewParkNotifier
+    /// <summary>
+    /// Records the call and leaves delivery evidence where the real notifier leaves it — a terminal
+    /// <c>post-park-notice</c> outbox row. The evidence is not decoration: the orchestrator's park guard reads
+    /// exactly that row to decide whether a notice is still owed, so a fake that delivered without recording
+    /// would be a fake that failed, and the guard would rightly keep re-attempting it.
+    /// </summary>
+    private sealed class RecordingParkNotifier(ReviewStore store) : IReviewParkNotifier
     {
         public List<long> Notified { get; } = [];
 
         public Task NotifyParkedAsync(ReviewRun run, string reason, CancellationToken cancellationToken)
         {
             Notified.Add(run.Id);
+            _ = store.EnqueueOutbox(
+                new OutboxEntry
+                {
+                    IdempotencyKey = $"park-notice-{run.Id}",
+                    Provider = "github",
+                    ReviewRunId = run.Id,
+                    Operation = ReviewParkNotifier.PostParkNoticeOperation,
+                    ArtifactKind = ReviewParkNotifier.PostParkNoticeOperation,
+                    Status = OutboxStatus.Posted,
+                }
+            );
             return Task.CompletedTask;
         }
     }
@@ -553,12 +714,14 @@ public sealed class PrOrchestratorRetryTests : IDisposable
             NullLogger<RetryGovernor>.Instance
         );
 
-    private ReviewRun SeedRun()
+    /// <summary><paramref name="provider"/> is the STORAGE spelling, which is the whole point for the ADO
+    /// case: the row says <c>azure-devops</c> and the publisher registry says <c>ado</c>.</summary>
+    private ReviewRun SeedRun(string provider = "github")
     {
         var repoId = _store.EnsureRepo(
             new RepoIdentity
             {
-                Provider = "github",
+                Provider = provider,
                 OrgOrOwner = "achieveai",
                 RepoName = "LmDotnetTools",
                 RepoStableId = "repo-1",

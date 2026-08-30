@@ -9,6 +9,7 @@ using CodeReviewDaemon.Sample.Eval;
 using CodeReviewDaemon.Sample.Hosting;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
+using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.ReviewBot;
@@ -1147,7 +1148,7 @@ if (daemonOptions.StrandedRunGraceHours > 0)
                 PrLifecycleSweepSeam.ResolveLifecycleAsync(
                     providers,
                     row.Repo,
-                    PrLifecycleSweepSeam.MapProviderNamespace(row.Repo.Provider),
+                    RepoIdentity.ToPublisherNamespace(row.Repo.Provider),
                     row.Run.PrId,
                     ct
                 ),

@@ -33,11 +33,26 @@ internal sealed class FakeReviewCommentPublisher : IReviewCommentPublisher
     public void SeedExistingComment(string idempotencyKey, string providerResponseId) =>
         _byKey[idempotencyKey] = new PostedComment(providerResponseId);
 
+    /// <summary>
+    /// When set, <see cref="PostReviewCommentAsync"/> throws it instead of posting — the transient publisher
+    /// failure that strands an outbox row in <see cref="Persistence.Models.OutboxStatus.Sending"/>. Clear it
+    /// to let a later attempt through, which is how a retry path is driven from a test.
+    /// </summary>
+    public Exception? PostFailure { get; set; }
+
+    /// <summary>How many times the backstop scan was run. It is a real provider round-trip, so a caller that
+    /// reaches the publisher at all shows up here even when it ends up posting nothing.</summary>
+    public int FindCallCount { get; private set; }
+
     public Task<PostedComment?> FindPostedCommentAsync(
         ReviewCommentTarget target,
         string idempotencyKey,
         CancellationToken cancellationToken
-    ) => Task.FromResult(_byKey.TryGetValue(idempotencyKey, out var comment) ? comment : null);
+    )
+    {
+        FindCallCount++;
+        return Task.FromResult(_byKey.TryGetValue(idempotencyKey, out var comment) ? comment : null);
+    }
 
     public Task<PostedComment> PostReviewCommentAsync(
         ReviewCommentTarget target,
@@ -46,6 +61,11 @@ internal sealed class FakeReviewCommentPublisher : IReviewCommentPublisher
         CancellationToken cancellationToken
     )
     {
+        if (PostFailure is { } failure)
+        {
+            return Task.FromException<PostedComment>(failure);
+        }
+
         PostedKeys.Add(idempotencyKey);
         PostedBodies.Add(body);
         var comment = new PostedComment($"resp-{PostCount}");

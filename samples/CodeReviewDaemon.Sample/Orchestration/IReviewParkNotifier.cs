@@ -16,9 +16,11 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 internal interface IReviewParkNotifier
 {
     /// <summary>
-    /// Announces the park of <paramref name="run"/>. Called at most once per run — the caller invokes it only
-    /// when <see cref="ReviewStore.TryMarkReviewRunParked"/> reports that THIS attempt is the one that parked
-    /// the row.
+    /// Announces the park of <paramref name="run"/>. Called once when
+    /// <see cref="ReviewStore.TryMarkReviewRunParked"/> reports that THIS attempt is the one that parked the
+    /// row, and again on a later poll for as long as the notice has no terminal outbox row — the delivery
+    /// having failed or crashed is the only way a second call happens, and the outbox is what stops a third
+    /// once it lands.
     /// </summary>
     Task NotifyParkedAsync(ReviewRun run, string reason, CancellationToken cancellationToken);
 }
@@ -40,9 +42,12 @@ internal interface IReviewParkNotifier
 /// phrases with, so routing it through the filter later would still not swallow it.
 /// </para>
 /// <para>
-/// Once-only is not this class's guarantee to make and it does not try to make one: the caller only reaches
-/// here when the once-only <c>UPDATE ... WHERE parked_at IS NULL</c> reported that it did the parking. The
-/// outbox key below is the second line of defence, covering a crash between the park write and the post.
+/// Once-only is not this class's guarantee to make and it does not try to make one. The first call arrives
+/// because the once-only <c>UPDATE ... WHERE parked_at IS NULL</c> reported that it did the parking; any
+/// later call arrives because <c>PrOrchestrator</c>'s park guard found no terminal outbox row for the notice
+/// and is retrying a delivery that failed. The outbox key below is what makes that retry safe — a
+/// <c>Posted</c> row is a replay no-op inside <see cref="ReviewPoster"/> — and it also covers a crash between
+/// the park write and the post.
 /// </para>
 /// </remarks>
 internal sealed class ReviewParkNotifier : IReviewParkNotifier
@@ -90,16 +95,18 @@ internal sealed class ReviewParkNotifier : IReviewParkNotifier
             return;
         }
 
-        var publisher = _publishers.FirstOrDefault(p =>
-            string.Equals(p.Provider, repo.Provider, StringComparison.Ordinal)
-        );
+        // The stored provider is in the STORAGE namespace and publishers are keyed by the publisher one, so
+        // the lookup has to cross the two — an ADO repo persists "azure-devops" and its publisher answers to
+        // "ado", which matched nothing and posted nothing on every Azure DevOps pull request.
+        var provider = RepoIdentity.ToPublisherNamespace(repo.Provider);
+        var publisher = _publishers.FirstOrDefault(p => string.Equals(p.Provider, provider, StringComparison.Ordinal));
         if (publisher is null)
         {
             _logger.LogWarning(
                 "Run {RunId} parked, but no review-comment publisher is registered for provider {Provider}; "
                     + "no notice posted.",
                 run.Id,
-                repo.Provider
+                provider
             );
             return;
         }
@@ -110,7 +117,11 @@ internal sealed class ReviewParkNotifier : IReviewParkNotifier
                 new PostReviewRequest(
                     run.Id,
                     new IdempotencyKeyComponents(
-                        Provider: repo.Provider,
+                        // The MAPPED namespace, matching what the review's own key carries: the review path
+                        // builds its key from DaemonReviewStageExecutor.ResolveRepo's already-mapped provider,
+                        // so a park notice keyed on the raw stored spelling would sit in a namespace no other
+                        // key for this pull request uses.
+                        Provider: provider,
                         OrgOrOwner: repo.OrgOrOwner,
                         Project: repo.Project,
                         RepoStableId: string.IsNullOrWhiteSpace(repo.RepoStableId)
