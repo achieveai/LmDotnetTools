@@ -2333,6 +2333,16 @@ public class TaskManagerTests
 
         subtaskParams.Should().NotBeEmpty();
         subtaskParams
+            .Select(x => x.Tool)
+            .Should()
+            .BeEquivalentTo(
+                ["delete-task", "get-task", "add-note", "edit-note", "delete-note", "list-notes"],
+                "the per-tool assertions below are only meaningful if this is the full subtaskId roster"
+            );
+
+        // Verbatim guidance sentences, not loose substrings — Contains("omit") was satisfied by
+        // "treated as omitted" alone, which made the omit-instruction check vacuous (#631).
+        subtaskParams
             .Should()
             .OnlyContain(
                 x => x.Param.Description != null && x.Param.Description.Contains("one level BELOW taskId"),
@@ -2341,17 +2351,33 @@ public class TaskManagerTests
         subtaskParams
             .Should()
             .OnlyContain(
-                x =>
-                    x.Param.Description != null
-                    && x.Param.Description.Contains("omit", StringComparison.OrdinalIgnoreCase),
-                "every subtaskId parameter must tell the model to omit it unless addressing a child (#620)"
+                x => x.Param.Description != null && x.Param.Description.Contains("Omit it unless"),
+                "every subtaskId parameter must carry the verbatim omit instruction (#620/#631)"
             );
         subtaskParams
             .Should()
             .OnlyContain(
-                x => x.Param.Description != null && x.Param.Description.Contains("treated as omitted"),
-                "every subtaskId parameter must state the non-positive sentinel tolerance (#620)"
+                x => x.Param.Description != null && x.Param.Description.Contains("Never pass 0"),
+                "every subtaskId parameter must carry the verbatim never-pass-0 warning (#620/#631)"
             );
+
+        // The tolerance statement is per-tool: the five read/annotate tools state that <= 0 is
+        // treated as omitted; delete-task — destructive, carved out of the tolerance (#631) —
+        // must instead say it refuses, and must NOT claim the tolerance.
+        var tolerant = subtaskParams.Where(x => x.Tool != "delete-task").ToList();
+        tolerant.Should().HaveCount(5);
+        tolerant
+            .Should()
+            .OnlyContain(
+                x => x.Param.Description != null && x.Param.Description.Contains("treated as omitted"),
+                "every tolerant subtaskId parameter must state the non-positive sentinel tolerance (#620)"
+            );
+
+        var deleteTask = subtaskParams.Single(x => x.Tool == "delete-task").Param;
+        deleteTask.Description.Should().Contain("refuses", "delete-task must state its sentinel refusal (#631)");
+        deleteTask
+            .Description.Should()
+            .NotContain("treated as omitted", "delete-task must not claim a tolerance it does not have (#631)");
     }
 
     #endregion
@@ -2388,7 +2414,6 @@ public class TaskManagerTests
             "edit-note" => manager.EditNote("1", subtaskId, noteIndex: 1, noteText: "edited note"),
             "delete-note" => manager.DeleteNote("1", subtaskId, noteIndex: 1),
             "list-notes" => manager.ListNotes("1", subtaskId),
-            "delete-task" => manager.DeleteTask("1", subtaskId),
             _ => throw new ArgumentOutOfRangeException(nameof(tool), tool, "unknown subtaskId tool"),
         };
     }
@@ -2397,7 +2422,9 @@ public class TaskManagerTests
     ///     #620 F1: a non-positive subtaskId can never be a valid 1-based ordinal, and models use
     ///     0 (and -1) as "none" sentinels — 65% of failing add-note calls in the #617 corpus. The
     ///     sentinel call must behave EXACTLY as the omitted call: same result text, same success
-    ///     flag, same resulting board. One case per tool that takes the parameter, per sentinel.
+    ///     flag, same resulting board. One case per tool that carries the tolerance, per sentinel.
+    ///     delete-task is deliberately ABSENT: the destructive tool refuses the sentinel instead
+    ///     (#631 review), pinned by <see cref="DeleteTask_SentinelSubtaskId_RefusesAndLeavesTheBoardUnchanged" />.
     /// </summary>
     [Theory]
     [InlineData("get-task", 0)]
@@ -2410,8 +2437,6 @@ public class TaskManagerTests
     [InlineData("delete-note", -1)]
     [InlineData("list-notes", 0)]
     [InlineData("list-notes", -1)]
-    [InlineData("delete-task", 0)]
-    [InlineData("delete-task", -1)]
     public void SubtaskIdSentinel_BehavesExactlyAsOmitted(string tool, int sentinel)
     {
         var withSentinel = DeepBoard();
@@ -2424,6 +2449,53 @@ public class TaskManagerTests
         sentinelResult.Text.Should().Be(omittedResult.Text);
         sentinelResult.ErrorCode.Should().Be(omittedResult.ErrorCode);
         withSentinel.GetMarkdown().Should().Be(withOmitted.GetMarkdown(), "the board must end up identical");
+    }
+
+    /// <summary>
+    ///     #631 blocker 1: delete-task is carved OUT of the sentinel tolerance. On the one
+    ///     destructive tool, treating a &lt;= 0 subtaskId as omitted would convert a 0-based
+    ///     confusion mistake into silent subtree destruction — and the baseline shows the
+    ///     sentinel family is entirely read/annotate-side (delete-task: 2 calls, 0 errors). So
+    ///     the sentinel refuses with the teaching text and the board stays byte-identical.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void DeleteTask_SentinelSubtaskId_RefusesAndLeavesTheBoardUnchanged(int sentinel)
+    {
+        var manager = DeepBoard();
+        var before = manager.GetMarkdown();
+
+        var result = manager.DeleteTask("1", sentinel);
+
+        result.IsError.Should().BeTrue("delete-task gets no sentinel tolerance (#631)");
+        result.ErrorCode.Should().Be("task_not_found");
+        result.Text.Should().StartWith("Error: ");
+        result.Text.Should().Contain($"Task '1' has no subtask {sentinel}");
+        result.Text.Should().Contain("one level BELOW taskId");
+        result.Text.Should().Contain("If you meant task '1' itself, omit subtaskId");
+
+        // Non-vacuity: the parent and its subtree survive, byte for byte.
+        manager.GetMarkdown().Should().Be(before, "a refused delete must not change the board");
+        manager.GetTask("1").IsError.Should().BeFalse("the parent task must survive");
+        manager.GetTask("1.1").IsError.Should().BeFalse("the subtree must survive");
+    }
+
+    /// <summary>
+    ///     #631 blocker 1, happy path unchanged: omitting subtaskId still deletes the top-level
+    ///     task itself (that is the documented way to delete it; only the explicit sentinel is
+    ///     refused).
+    /// </summary>
+    [Fact]
+    public void DeleteTask_OmittedSubtaskId_StillDeletesTheTopLevelTask()
+    {
+        var manager = DeepBoard();
+
+        var result = manager.DeleteTask("2");
+
+        result.IsError.Should().BeFalse();
+        result.Text.Should().Contain("Deleted task 2");
+        manager.GetTask("2").IsError.Should().BeTrue("task 2 must be gone");
     }
 
     /// <summary>

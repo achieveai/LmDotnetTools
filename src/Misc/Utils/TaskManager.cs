@@ -1271,8 +1271,9 @@ Examples:
             string taskId,
         [Description(
             "Subtask ordinal to delete, one level BELOW taskId (1-based: taskId '1.2' + subtaskId 1 deletes '1.2.1'). "
-                + "Omit it unless deleting such a child — a dotted taskId already reaches subtasks. "
-                + "Never pass 0; a value <= 0 is treated as omitted."
+                + "Omit it unless deleting such a child — omitting deletes the taskId task itself with its whole "
+                + "subtree, and a dotted taskId already reaches subtasks. Never pass 0 or negative: delete-task is "
+                + "destructive, so it refuses a <= 0 subtaskId with an error instead of falling back to the parent."
         )]
             int? subtaskId = null
     )
@@ -1282,7 +1283,10 @@ Examples:
 
     private FunctionResult DeleteTaskCore(string taskId, int? subtaskId)
     {
-        subtaskId = NormalizeSubtaskId(subtaskId);
+        // No NormalizeSubtaskId here, on purpose (#631): delete-task is destructive, so a <= 0
+        // sentinel must NOT fall back to deleting the parent's whole subtree. It flows into the
+        // ordinary child lookup below, finds nothing (ordinals are 1-based), and returns the
+        // teaching error with the board untouched — the safe pre-#620 behavior plus education.
         lock (_sync)
         {
             var (task, _) = FindTaskByStringId(taskId);
@@ -1928,7 +1932,10 @@ Examples:
     ///     Treats a non-positive subtaskId as omitted. Ordinals are 1-based, so 0 or a negative
     ///     value can never address a real subtask — models pass them as "none" sentinels (65% of
     ///     the failing add-note calls in the #617 corpus), and refusing the sentinel only
-    ///     produces retry storms. (#620)
+    ///     produces retry storms. (#620) Applied only at the read/annotate seam
+    ///     (<see cref="FindTaskWithReference" />): delete-task is deliberately carved out,
+    ///     because there the same tolerance would turn a 0-based-confusion mistake into silent
+    ///     subtree destruction. (#631)
     /// </summary>
     private static int? NormalizeSubtaskId(int? subtaskId)
     {
