@@ -11,6 +11,10 @@ Coverage:
   suspect (the production failure shape).
 - Mutation checks: break one field -> the verdict flips. Proves each assertion is wired
   to the input it claims to test, not vacuously green.
+- B1: a block-task call that OMITS blockedBy (the documented clear form) scores as a
+  clear, never as a recorded block; the []-form clear stays covered by complete-run.
+- B2: an empty conversations dir is invalid with a distinct misconfiguration reason.
+- F4: is_error:true alone marks a result as an error (union with the "Error:" prefix).
 #>
 [CmdletBinding()]
 param()
@@ -66,7 +70,9 @@ Assert ($c.perTool.'search-tasks'.calls -eq 0) 'complete-run: zero-call tool sti
 Assert ($c.turns -eq 8) 'complete-run: 8 turns (5 primary + 3 subagent generations)'
 Assert ($c.primaryTurns -eq 5) 'complete-run: 5 primary turns'
 Assert ($c.validity.valid -eq $true) 'complete-run: run is valid'
+Assert ($c.validity.reasons.Count -eq 0) 'complete-run: no validity reasons'
 Assert ($c.validity.subAgentThreads -eq 1) 'complete-run: 1 subagent thread'
+Assert ($c.subAgentCount -eq 1) 'complete-run: subAgentCount surfaced in summary'
 
 # ---- retry-storm -----------------------------------------------------------------------
 
@@ -153,6 +159,64 @@ try {
     $m5 = Invoke-Score -ConversationsDir (Join-Path $fixtures 'complete-run\conversations') -BoardSnapshot $m5Board
     Assert ($m5.blockCleared -eq $false) 'M5: a Blocked task on the final board flips blockCleared'
     Assert ($m5.completion -eq $false) 'M5: a Blocked task flips completion'
+
+    # B1: omitted blockedBy is the documented CLEAR form. Rewrite BOTH block-task calls in
+    # the complete-run primary thread to {"taskId":"2.3"} (no blockedBy key at all): the
+    # run's only block-task calls are now clears, so blockRecorded must be false and
+    # blockExplicitlyCleared true. Pins the null-check before @() wrapping — @($null).Count
+    # is 1, which scored an omitted-blockedBy clear as a recorded block.
+    $b1Dir = Join-Path $tmp 'b1-conversations\thread-fixture-complete'
+    New-Item -ItemType Directory -Path $b1Dir -Force | Out-Null
+    $messages = Get-Content (Join-Path $fixtures 'complete-run\conversations\thread-fixture-complete\messages.json') -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 64
+    foreach ($m in $messages) {
+        if ($m['messageType'] -eq 'ToolCallMessage') {
+            $inner = ConvertFrom-Json -InputObject $m['messageJson'] -AsHashtable -Depth 64
+            if ($inner['function_name'] -eq 'block-task') {
+                $inner['function_args'] = '{"taskId":"2.3"}'
+                $m['messageJson'] = ($inner | ConvertTo-Json -Depth 20 -Compress)
+            }
+        }
+    }
+    ConvertTo-Json -InputObject @($messages) -Depth 30 | Set-Content (Join-Path $b1Dir 'messages.json')
+    $b1 = Invoke-Score -ConversationsDir (Join-Path $tmp 'b1-conversations') `
+                       -BoardSnapshot (Join-Path $fixtures 'complete-run\board.json')
+    Assert ($b1.blockRecorded -eq $false) 'B1: omitted blockedBy does NOT count as a recorded block'
+    Assert ($b1.blockExplicitlyCleared -eq $true) 'B1: omitted blockedBy counts as an explicit clear'
+    Assert ($b1.completionFailures -contains 'requireBlockRecorded: no successful block-task call with a non-empty blockedBy was found') `
+        'B1: requireBlockRecorded gate is not satisfied by a clear call'
+    Assert ($b1.subAgentCount -eq 0) 'B1: zero-subagent run reports subAgentCount 0'
+    Assert ($b1.validity.valid -eq $true) 'B1: zero-subagent run stays VALID'
+
+    # B2: an empty conversations dir is a harness misconfiguration, never a scored run.
+    $emptyDir = Join-Path $tmp 'b2-empty-conversations'
+    New-Item -ItemType Directory -Path $emptyDir -Force | Out-Null
+    $b2 = Invoke-Score -ConversationsDir $emptyDir `
+                       -BoardSnapshot (Join-Path $fixtures 'complete-run\board.json')
+    Assert ($b2.threads -eq 0) 'B2: empty dir scores zero threads'
+    Assert ($b2.validity.valid -eq $false) 'B2: zero threads is INVALID'
+    Assert (@($b2.validity.reasons) -contains 'no conversation threads found - harness misconfiguration') `
+        'B2: zero-thread invalidity carries the distinct misconfiguration reason'
+
+    # F4: is_error:true on a result whose text is NOT an "Error:" string still counts as an
+    # error (defensive union with the text prefix).
+    $f4Dir = Join-Path $tmp 'f4-conversations\thread-fixture-complete'
+    New-Item -ItemType Directory -Path $f4Dir -Force | Out-Null
+    $messages = Get-Content (Join-Path $fixtures 'complete-run\conversations\thread-fixture-complete\messages.json') -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 64
+    foreach ($m in $messages) {
+        if ($m['messageType'] -eq 'ToolCallResultMessage') {
+            $inner = ConvertFrom-Json -InputObject $m['messageJson'] -AsHashtable -Depth 64
+            if ($inner['tool_call_id'] -eq 'call_fx_0006') {
+                $inner['is_error'] = $true   # text stays a success string
+                $m['messageJson'] = ($inner | ConvertTo-Json -Depth 20 -Compress)
+            }
+        }
+    }
+    ConvertTo-Json -InputObject @($messages) -Depth 30 | Set-Content (Join-Path $f4Dir 'messages.json')
+    $f4 = Invoke-Score -ConversationsDir (Join-Path $tmp 'f4-conversations') `
+                       -BoardSnapshot (Join-Path $fixtures 'complete-run\board.json')
+    Assert ($f4.perTool.'block-task'.errors -eq 1) 'F4: is_error:true alone marks the call as an error'
 }
 finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

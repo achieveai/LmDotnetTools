@@ -110,9 +110,13 @@ function Get-CanonicalArgs {
 }
 
 function Test-ErrorResult {
-    # Error result per spec: result text, leading whitespace removed, starts with "Error:"
-    # (ordinal, case-sensitive). Non-string results are serialized to compact JSON first.
-    param($Result)
+    # Error result per spec (defensive union): is_error == true on the result message, OR
+    # result text, leading whitespace removed, starts with "Error:" (ordinal,
+    # case-sensitive). Non-string results are serialized to compact JSON first. Production
+    # data records is_error: false on textual errors, so the text prefix is the primary
+    # signal; is_error is honoured in case the store ever starts setting it.
+    param($Result, $IsErrorFlag)
+    if ($IsErrorFlag -eq $true) { return $true }
     if ($null -eq $Result) { return $false }
     $text = if ($Result -is [string]) { $Result } else { ConvertTo-CanonicalJson $Result }
     return $text.TrimStart().StartsWith('Error:', [System.StringComparison]::Ordinal)
@@ -198,7 +202,10 @@ foreach ($dir in $threadDirs) {
         $inner = ConvertFrom-Json -InputObject ([string](Get-Prop $env 'messageJson')) -AsHashtable -Depth 64
         $callId = [string](Get-Prop $inner 'tool_call_id')
         if (-not [string]::IsNullOrEmpty($callId) -and -not $resultsById.ContainsKey($callId)) {
-            $resultsById[$callId] = Get-Prop $inner 'result'
+            $resultsById[$callId] = @{
+                Result  = Get-Prop $inner 'result'
+                IsError = Get-Prop $inner 'is_error'
+            }
         }
     }
 
@@ -237,7 +244,7 @@ foreach ($dir in $threadDirs) {
 
         $hasResult = -not [string]::IsNullOrEmpty($callId) -and $resultsById.ContainsKey($callId)
         if (-not $hasResult) { $unpairedToolCalls++ }
-        $isError = $hasResult -and (Test-ErrorResult $resultsById[$callId])
+        $isError = $hasResult -and (Test-ErrorResult -Result $resultsById[$callId].Result -IsErrorFlag $resultsById[$callId].IsError)
 
         if ($TaskTools -cnotcontains $tool) { continue }
 
@@ -264,8 +271,12 @@ foreach ($dir in $threadDirs) {
             if ($tool -eq 'block-task') {
                 $parsedArgs = $null
                 try { $parsedArgs = ConvertFrom-Json -InputObject ([string](Get-Prop $inner 'function_args')) -AsHashtable -Depth 64 } catch {}
-                $blockedBy = @(Get-Prop $parsedArgs 'blockedBy')
-                if ($blockedBy.Count -gt 0) { $blockRecorded = $true } else { $blockExplicitlyCleared = $true }
+                # An OMITTED blockedBy is the documented CLEAR form (BlockTaskCore treats
+                # null like []). Null-check before wrapping: @($null).Count is 1, which
+                # would score a clear call as a recorded block.
+                $blockedByRaw = Get-Prop $parsedArgs 'blockedBy'
+                $blockedByCount = if ($null -eq $blockedByRaw) { 0 } else { @($blockedByRaw).Count }
+                if ($blockedByCount -gt 0) { $blockRecorded = $true } else { $blockExplicitlyCleared = $true }
             }
         }
     }
@@ -356,6 +367,20 @@ if ($null -ne $maxBlocked -and $blockedCount -gt [int]$maxBlocked) {
     $completionFailures.Add("maxBlockedTasks: expected <= $maxBlocked, found $blockedCount")
 }
 
+# --- validity ---------------------------------------------------------------------------
+
+$validityReasons = [System.Collections.Generic.List[string]]::new()
+if ($threadDirs.Count -eq 0) {
+    # A mis-pointed ConversationsDir must never enter a sweep as a valid failed run.
+    $validityReasons.Add('no conversation threads found - harness misconfiguration')
+}
+if ($subAgentsWithoutTaskToolCalls.Count -gt 0) {
+    $validityReasons.Add("sub-agent thread(s) with zero task-tool calls: $($subAgentsWithoutTaskToolCalls -join ', ')")
+}
+# NOTE (spec): subAgentThreads == 0 is VALID - spawning no sub-agents is model behavior
+# under test, not harness breakage. It is surfaced as subAgentCount in the summary so
+# sweep tables can segment such runs.
+
 $blockCleared = $blockRecorded -and ($blockedCount -eq 0)
 if ((Get-Prop $fixtureConversation 'requireBlockRecorded') -eq $true -and -not $blockRecorded) {
     $completionFailures.Add('requireBlockRecorded: no successful block-task call with a non-empty blockedBy was found')
@@ -382,6 +407,7 @@ $score = [ordered]@{
     schema             = 'todo-eval/score@1'
     conversationsDir   = (Resolve-Path -LiteralPath $ConversationsDir).Path
     threads            = $threadDirs.Count
+    subAgentCount      = $subAgentThreads
     totalToolCalls     = $totalToolCalls
     taskToolCalls      = $taskToolCalls
     taskToolErrors     = $taskToolErrors
@@ -397,7 +423,8 @@ $score = [ordered]@{
     turns              = $turns
     primaryTurns       = $primaryTurns
     validity           = [ordered]@{
-        valid                          = ($subAgentsWithoutTaskToolCalls.Count -eq 0)
+        valid                          = ($validityReasons.Count -eq 0)
+        reasons                        = @($validityReasons)
         subAgentThreads                = $subAgentThreads
         subAgentsWithoutTaskToolCalls  = @($subAgentsWithoutTaskToolCalls)
         fabricatedComplianceSuspects   = @($fabricatedComplianceSuspects)

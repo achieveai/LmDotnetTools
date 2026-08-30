@@ -23,7 +23,9 @@ disagree, this document is the contract.
 Verified against a live conversation store (deployed LmStreaming.Sample, Aug 2026):
 
 - `messages.json` is a JSON array of envelopes. Envelope fields used: `messageType`,
-  `generationId`, `messageJson` (a **string** holding the inner message JSON). Array order
+  `generationId`, `role` (used to select assistant `TextMessage`s for the
+  fabricated-compliance heuristic; present on every envelope in the production store),
+  and `messageJson` (a **string** holding the inner message JSON). Array order
   is the thread's message order; `messageOrderIdx` is per-generation and is NOT used for
   cross-message ordering.
 - `messageType == "ToolCallMessage"` → inner fields used: `function_name`,
@@ -33,15 +35,19 @@ Verified against a live conversation store (deployed LmStreaming.Sample, Aug 202
 - A call is paired to its result by `tool_call_id` **within the same thread**. A call with
   no result in the same thread counts as a call, never as an error; the count of such
   unpaired calls is reported as `unpairedToolCalls`.
-- **`is_error` is deliberately ignored**: the store records `is_error: false` on results
-  whose text is an error (observed in production data). The error signal is the text.
+- **`is_error` alone is not trusted**: the store records `is_error: false` on results
+  whose text is an error (observed in production data), so the text prefix is the primary
+  signal. Error detection is the defensive union: `is_error == true` OR the `Error:` text
+  prefix. Today the flag adds nothing (production data shows it always false); it is
+  honoured so the oracle stays correct if the store ever starts setting it.
 
 ## Definitions
 
 ### Error result
-A tool result whose `result` text, with leading whitespace removed, starts with `Error:`
-(ordinal comparison, case-sensitive). A non-string `result` is serialized to compact JSON
-first and then tested the same way.
+A tool result whose result message has `is_error == true`, **or** whose `result` text,
+with leading whitespace removed, starts with `Error:` (ordinal comparison,
+case-sensitive). A non-string `result` is serialized to compact JSON first and then
+tested the same way.
 
 ### Task tools
 Exactly the 15 TaskManager tools, matched by `function_name` (ordinal, case-sensitive):
@@ -110,6 +116,18 @@ null = inherit all parent tools, a list = only those), so they never emitted a t
 and one fabricated compliance in prose. Such a run measures the template plumbing, not the
 TaskManager API, so it is **invalid**, never a low score.
 
+**Zero threads is always invalid.** A conversations directory with no scoreable thread
+(no immediate subdirectory containing a `messages.json`) means the harness was pointed at
+the wrong place — there is nothing the run could have measured. `validity.valid` is false
+with the reason `no conversation threads found - harness misconfiguration` in
+`validity.reasons`; such a run must never enter a sweep as a valid failed run.
+
+**Zero sub-agent threads is VALID.** Spawning no sub-agents is model behavior under test,
+not harness breakage, so `subAgentThreads == 0` does not invalidate the run. It is
+surfaced prominently as top-level `subAgentCount` in the score summary (duplicating
+`validity.subAgentThreads`) so sweep tables can segment no-sub-agent runs without digging
+into the validity block.
+
 Three gates:
 
 1. **Mode-level** — the mode's enabled tools must include all 15 task tools (`mode.json` in
@@ -132,7 +150,9 @@ Three gates:
 `validity.fabricatedComplianceSuspects`. Deterministic heuristic: any assistant text in
 that thread matching regex `(?i)(claim|complet|marked)` AND `(?i)(task|todo|board)`. The
 flag is only ever raised on tool-less threads, so a truthful report of real board work can
-never be flagged.
+never be flagged. The regex CAN flag honest denials on a tool-less thread — e.g. "I could
+not complete any task on the board" matches both patterns — so a listed thread is a
+**triage pointer** into the transcript, not a verdict of fabrication.
 
 ### Total tool calls
 Count of ToolCallMessages across all threads — **all** tools, not only task tools.
@@ -154,6 +174,7 @@ with `subagent-`.
   "schema": "todo-eval/score@1",
   "conversationsDir": "...",
   "threads": 4,
+  "subAgentCount": 3,
   "totalToolCalls": 63,
   "taskToolCalls": 58,
   "taskToolErrors": 3,
@@ -170,6 +191,7 @@ with `subagent-`.
   "primaryTurns": 12,
   "validity": {
     "valid": true,
+    "reasons": [],
     "subAgentThreads": 3,
     "subAgentsWithoutTaskToolCalls": [],
     "fabricatedComplianceSuspects": []
