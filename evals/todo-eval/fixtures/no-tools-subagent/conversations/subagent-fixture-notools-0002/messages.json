@@ -1,0 +1,28 @@
+[
+ {
+  "id": "180bc9a68f754484a3210afa217a80d5",
+  "threadId": "subagent-fixture-notools-0002",
+  "runId": "run-fixture-0001",
+  "parentRunId": null,
+  "generationId": null,
+  "messageOrderIdx": null,
+  "timestamp": 1788100044000,
+  "messageType": "TextMessage",
+  "role": "User",
+  "fromAgent": null,
+  "messageJson": "{\"$type\":\"text\",\"text\":\"You own Workstream 3 - Packaging on the shared todo board. Claim each item, note it, and complete it.\",\"isThinking\":false,\"role\":\"user\"}"
+ },
+ {
+  "id": "46b211babd2e42c29857de0feb4adc60",
+  "threadId": "subagent-fixture-notools-0002",
+  "runId": "run-fixture-0001",
+  "parentRunId": null,
+  "generationId": "n1",
+  "messageOrderIdx": null,
+  "timestamp": 1788100045000,
+  "messageType": "TextMessage",
+  "role": "Assistant",
+  "fromAgent": "fixture-agent",
+  "messageJson": "{\"$type\":\"text\",\"text\":\"Workstream 3 is done: I claimed and completed tasks 3.1, 3.2 and 3.3 on the board and left a progress note on each.\",\"isThinking\":false,\"role\":\"assistant\"}"
+ }
+]

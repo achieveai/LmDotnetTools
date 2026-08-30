@@ -1,0 +1,19 @@
+{
+  "schema": "todo-eval/expected-board@1",
+  "description": "Shape-based final-state fixture for the todo-eval scripted task (#618). Checks counts, statuses, notes and blocks — never literal titles, because seeds vary the topic word and models word titles freely. score.ps1 (and the #619 runner's C# reimplementation) evaluate the final board snapshot against exactly these fields.",
+  "board": {
+    "topLevelTaskCount": 3,
+    "subtaskCountsSorted": [3, 3, 4],
+    "level3": {
+      "minParents": 1,
+      "minChildrenPerParent": 2
+    },
+    "allTasksCompleted": true,
+    "minNotesPerSubtask": 1,
+    "maxBlockedTasks": 0
+  },
+  "conversation": {
+    "requireBlockRecorded": true,
+    "requireBlockCleared": true
+  }
+}
