@@ -38,6 +38,14 @@ public static class NotifyKinds
     ///     distinct nudge pill — a nudge that looks like a human message is a lie in the transcript.
     /// </summary>
     public const string TodoNudge = "todo-nudge";
+
+    /// <summary>
+    ///     A debounced digest of todo-board changes (#609): the primary conversation hears every
+    ///     change, an assigned agent hears changes inside its own subtree. Informational, unbudgeted,
+    ///     and distinct from <see cref="TodoNudge" /> — a digest states what happened; a nudge asks
+    ///     for work.
+    /// </summary>
+    public const string TodoDigest = "todo-digest";
 }
 
 /// <summary>

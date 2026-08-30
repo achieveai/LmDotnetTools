@@ -2125,6 +2125,44 @@ try
                         }
                     }
 
+                    // #609 (part of #606 item 3): subtree-scoped change digests. A separate service
+                    // from the nudges ON PURPOSE — digests are informational fan-out with no budget,
+                    // and the NudgeRootConversation gate must NOT apply (the root always hears; that
+                    // is the feature). It rides the same OnChanged multicast and reuses the nudge
+                    // wiring's target-resolution and delivery idioms, but shares none of its state.
+                    // Constructed AFTER hydration for the same reason the nudge service is: whatever
+                    // FromSnapshot restored is baseline, so a recreate/restart digests nothing.
+                    var todoDigestOptions = TodoDigestOptions.FromConfiguration(builder.Configuration);
+                    if (todoDigestOptions.AnyDigestEnabled)
+                    {
+                        var digestAgent = agent;
+                        var digestService = new TodoDigestService(
+                            todoDigestOptions,
+                            taskManager.GetTasks,
+                            name =>
+                                digestAgent.SubAgentManager is { } manager && manager.TryGetAgent(name, out _)
+                                    ? TodoNudgeTargetKind.SubAgent
+                                    : TodoNudgeTargetKind.RootConversation,
+                            async (name, message, ct) =>
+                            {
+                                // A null name is the primary digest's address: the root conversation.
+                                var target =
+                                    name is not null
+                                    && digestAgent.SubAgentManager is { } manager
+                                    && manager.TryGetAgent(name, out var subAgent)
+                                    && subAgent is not null
+                                        ? subAgent
+                                        : digestAgent;
+                                return await target.TrySendAsync([message], ct: ct) is not null;
+                            },
+                            TimeProvider.System,
+                            loggerFactory.CreateLogger<TodoDigestService>()
+                        );
+                        taskManager.OnChanged += digestService.OnBoardChangedHook;
+                        // Owned so teardown disposes the debounce timer with the conversation.
+                        ownedResources.Add(digestService);
+                    }
+
                     return new MultiTurnAgentPool.AgentCreationResult(
                         agent,
                         ownedResources.Count == 0 ? null : ownedResources
