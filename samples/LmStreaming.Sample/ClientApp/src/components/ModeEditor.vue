@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
+import { BUILT_IN_TOOL_GROUP, SANDBOX_TOOL_GROUP } from '@/types/chatMode';
 import type { ChatMode, ChatModeCreateUpdate, ToolDefinition } from '@/types/chatMode';
-import { selectionFromMode, selectionToModeFields } from '@/utils/modeToolSelection';
+import { selectionFromMode, selectionToModeFields, toolGroup, toolId } from '@/utils/modeToolSelection';
 import ToolCheckboxList from './ToolCheckboxList.vue';
 
 const props = defineProps<{
@@ -32,6 +33,45 @@ const subAgentPromptPlacement = ref<'prepend' | 'append'>('append');
  * boundary (see utils/modeToolSelection).
  */
 const selectedToolIds = ref<string[]>([]);
+/**
+ * Required sub-agent tools (#623): guaranteed to every sub-agent spawned in this mode, even when
+ * an agent template restricts its own tool list. Empty means "not enforced" and the field is
+ * omitted from the save payload — the same unset convention the server treats as today's
+ * behavior byte-for-byte.
+ */
+const requiredToolIds = ref<string[]>([]);
+/**
+ * Stored required-tool ids the catalog has no row for (e.g. a `tasks:*` pattern in a mode copied
+ * from a system mode). The picker cannot render them, and a choice the user was never shown is
+ * not a choice the user revoked — so they ride along untouched and are re-appended on save.
+ */
+const preservedRequiredToolIds = ref<string[]>([]);
+
+/**
+ * Two groups are left out of this picker because a pick there could not do what it says:
+ * - Provider built-ins (e.g. `web_search`) execute inside the provider, not as registered tool
+ *   contracts, so they can never be granted to a sub-agent.
+ * - Sandbox tools come from a live gateway with no static roster, so the server resolves a
+ *   `sandbox:*` requirement to nothing — offering the row here would recreate the exact #623
+ *   silent-failure shape this picker exists to eliminate. (Excluding the group also keeps the
+ *   picker's "starts its own sandbox session" note honest: required picks never feed
+ *   `enabledCapabilityTools`, so they never open a sandbox session.)
+ * A `sandbox:*`/`sandbox:tool` id stored in the mode anyway (hand-edited YAML) still round-trips
+ * via the preserved-ids path below; the server logs the `sandbox:*` wildcard as unresolved.
+ */
+const requiredToolsCatalog = computed(() =>
+  props.tools.filter((tool) => {
+    const group = toolGroup(tool);
+    return group !== BUILT_IN_TOOL_GROUP && group !== SANDBOX_TOOL_GROUP;
+  })
+);
+
+function loadRequiredTools(mode: ChatMode | null | undefined): void {
+  const stored = mode?.subAgentRequiredTools ?? [];
+  const catalogIds = new Set(requiredToolsCatalog.value.map(toolId));
+  requiredToolIds.value = stored.filter((id) => catalogIds.has(id));
+  preservedRequiredToolIds.value = stored.filter((id) => !catalogIds.has(id));
+}
 
 // Validation
 const nameError = ref('');
@@ -51,6 +91,7 @@ watch(
       subAgentPrompt.value = newMode.subAgentPrompt || '';
       subAgentPromptPlacement.value = newMode.subAgentPromptPlacement || 'append';
       selectedToolIds.value = selectionFromMode(newMode, props.tools);
+      loadRequiredTools(newMode);
     } else {
       resetForm();
     }
@@ -64,6 +105,7 @@ watch(
   () => props.tools,
   (tools) => {
     selectedToolIds.value = selectionFromMode(props.mode ?? null, tools);
+    loadRequiredTools(props.mode);
   }
 );
 
@@ -74,6 +116,8 @@ function resetForm(): void {
   subAgentPrompt.value = '';
   subAgentPromptPlacement.value = 'append';
   selectedToolIds.value = selectionFromMode(null, props.tools);
+  requiredToolIds.value = [];
+  preservedRequiredToolIds.value = [];
   nameError.value = '';
   systemPromptError.value = '';
 }
@@ -113,6 +157,14 @@ function handleSave(): void {
     // props.mode is passed so a group the catalog could not show is preserved, not zeroed.
     ...selectionToModeFields(selectedToolIds.value, props.tools, props.mode),
   };
+
+  // Empty saves as "not enforced": the field is omitted so an untouched mode round-trips exactly.
+  // Preserved (unrenderable) ids are appended after the picked ones — the catalog has no position
+  // for them, so their stored order is the only stable one available.
+  const requiredTools = [...requiredToolIds.value, ...preservedRequiredToolIds.value];
+  if (requiredTools.length > 0) {
+    data.subAgentRequiredTools = requiredTools;
+  }
 
   emit('save', data);
 }
@@ -203,6 +255,19 @@ function handleCancel(): void {
         <ToolCheckboxList
           v-model="selectedToolIds"
           :tools="tools"
+          :disabled="isLoading"
+        />
+      </div>
+
+      <div class="form-group" data-testid="mode-editor-required-tools">
+        <label class="form-label">Required Sub-agent Tools</label>
+        <p class="field-hint" data-testid="mode-editor-required-tools-hint">
+          These tools are guaranteed to every sub-agent in this mode, even if an agent template
+          restricts its tools.
+        </p>
+        <ToolCheckboxList
+          v-model="requiredToolIds"
+          :tools="requiredToolsCatalog"
           :disabled="isLoading"
         />
       </div>
@@ -304,6 +369,13 @@ function handleCancel(): void {
 .error-message {
   font-size: 12px;
   color: #dc3545;
+}
+
+.field-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #666;
 }
 
 .placement-row {

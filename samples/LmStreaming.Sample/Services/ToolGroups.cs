@@ -65,6 +65,25 @@ public static class ToolGroups
     /// </summary>
     public static readonly IReadOnlyList<string> Qualified = [Sandbox, SubAgents, Workflow];
 
+    /// <summary>
+    ///     Every catalog group, bare-id and qualified alike. This is the group vocabulary of the
+    ///     mode's <c>SubAgentRequiredTools</c> pattern language (#623), where <c>tasks:*</c> is a
+    ///     meaningful pattern even though the <c>tasks</c> group stores bare ids in
+    ///     <c>EnabledTools</c> — unlike <see cref="Qualified"/>, which governs only the
+    ///     <c>EnabledCapabilityTools</c> selection ids.
+    /// </summary>
+    public static readonly IReadOnlyList<string> All =
+    [
+        BuiltIn,
+        Sample,
+        Tasks,
+        Web,
+        Knowledge,
+        Sandbox,
+        SubAgents,
+        Workflow,
+    ];
+
     /// <summary>The token that selects every tool in a qualified group, now and in future.</summary>
     public const string WildcardTool = "*";
 
@@ -97,7 +116,20 @@ public static class ToolGroups
     ///     a bare id (no <c>:</c>) or an unknown group, so a caller can never mistake a bare
     ///     <c>web_search</c> for a qualified one.
     /// </summary>
-    public static bool TrySplit(string id, out string group, out string toolName)
+    public static bool TrySplit(string id, out string group, out string toolName) =>
+        TrySplitCore(id, IsQualified, out group, out toolName);
+
+    /// <summary>
+    ///     Like <see cref="TrySplit"/>, but recognizes EVERY catalog group (<see cref="All"/>) rather
+    ///     than only the qualified ones — the split for the <c>SubAgentRequiredTools</c> pattern
+    ///     language (#623). Still returns <c>false</c> for a bare id or an unknown prefix, so a bare
+    ///     tool name whose value happens to contain a colon is passed through as a name, never
+    ///     misread as a group.
+    /// </summary>
+    public static bool TrySplitAnyKnown(string id, out string group, out string toolName) =>
+        TrySplitCore(id, g => All.Contains(g, StringComparer.Ordinal), out group, out toolName);
+
+    private static bool TrySplitCore(string id, Func<string, bool> isKnownGroup, out string group, out string toolName)
     {
         group = string.Empty;
         toolName = string.Empty;
@@ -113,7 +145,7 @@ public static class ToolGroups
         }
 
         var candidateGroup = id[..separator];
-        if (!IsQualified(candidateGroup))
+        if (!isKnownGroup(candidateGroup))
         {
             return false;
         }

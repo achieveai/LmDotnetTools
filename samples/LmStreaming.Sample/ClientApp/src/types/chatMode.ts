@@ -30,6 +30,13 @@ export interface ChatMode {
    * 'append' when a fragment is present.
    */
   subAgentPromptPlacement?: 'prepend' | 'append';
+  /**
+   * Tool ids guaranteed to every sub-agent spawned in this mode, even when an agent template
+   * restricts its own tool list (#623). Uses the mode's tool-id language: bare names, qualified
+   * `group:tool` ids, or `group:*` wildcards. Absent or empty means "not enforced" — spawns keep
+   * today's behavior exactly.
+   */
+  subAgentRequiredTools?: string[];
   isSystemDefined: boolean;
   createdAt: number;
   updatedAt: number;
@@ -49,6 +56,8 @@ export interface ChatModeCreateUpdate {
   subAgentPrompt?: string;
   /** 'prepend' | 'append'; the server refuses anything else with 400. */
   subAgentPromptPlacement?: 'prepend' | 'append';
+  /** Guaranteed sub-agent tools; see {@link ChatMode.subAgentRequiredTools}. Omit for "not enforced". */
+  subAgentRequiredTools?: string[];
 }
 
 /**
@@ -67,6 +76,9 @@ export const QUALIFIED_TOOL_GROUPS = ['sandbox', 'subagents', 'workflow'] as con
 
 /** The group whose tools are selected through `enabledBuiltInTools`. */
 export const BUILT_IN_TOOL_GROUP = 'builtin';
+
+/** The qualified group whose tools come from a live sandbox gateway rather than a static roster. */
+export const SANDBOX_TOOL_GROUP = 'sandbox';
 
 /** The token that selects every tool in a qualified group, now and in future. */
 export const WILDCARD_TOOL = '*';

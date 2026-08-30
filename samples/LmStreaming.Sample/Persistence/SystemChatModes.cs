@@ -100,6 +100,7 @@ public static class SystemChatModes
                 EnabledCapabilityTools = m.EnabledCapabilityTools,
                 SubAgentPrompt = m.SubAgentPrompt,
                 SubAgentPromptPlacement = RequireValidPlacement(m.SubAgentPromptPlacement),
+                SubAgentRequiredTools = m.SubAgentRequiredTools,
                 IsSystemDefined = true,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -209,5 +210,7 @@ public static class SystemChatModes
         public string? SubAgentPrompt { get; init; }
 
         public string? SubAgentPromptPlacement { get; init; }
+
+        public List<string>? SubAgentRequiredTools { get; init; }
     }
 }

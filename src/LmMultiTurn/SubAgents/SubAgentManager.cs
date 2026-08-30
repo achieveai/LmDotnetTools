@@ -708,7 +708,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                 addTools,
                 removeTools,
                 modelIntelligence,
-                lineage
+                lineage,
+                task,
+                effectiveName
             );
 
             state = new SubAgentState
@@ -1591,7 +1593,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                         // The rebuilt agent is the same sub-agent, so it keeps the lineage captured
                         // when it was first spawned rather than acquiring a new one from whatever run
                         // happens to be in flight now.
-                        state.Lineage
+                        state.Lineage,
+                        state.Task,
+                        state.Name
                     );
 
                 // Presentation-only: the replacement is now built and we are about to dispose the previous
@@ -2737,7 +2741,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         string[]? addTools,
         string[]? removeTools,
         int? modelIntelligence,
-        AgentLineage lineage
+        AgentLineage lineage,
+        string? task = null,
+        string? spawnName = null
     )
     {
         // Guard the free-form `model` override before anything downstream consumes it. The Agent tool
@@ -2955,9 +2961,17 @@ public sealed class SubAgentManager : IAsyncDisposable
                 .InheritAsync(store, lineage.ParentThreadId, SubAgentThreadId(agentId), CancellationToken.None)
                 .ConfigureAwait(false);
 
-            // Build a fresh FunctionRegistry with filtered parent tools
+            // Build a fresh FunctionRegistry with filtered parent tools. The mode-level required
+            // tools (#623) are unioned into the set AFTER the template filter and the per-spawn
+            // overrides; the parent-contract intersection below is what stops the union from
+            // granting a tool the mode itself does not expose.
             var registry = new FunctionRegistry();
-            var enabledSet = BuildEnabledToolSet(template.EnabledTools, addTools, removeTools);
+            var enabledSet = BuildEnabledToolSet(
+                template.EnabledTools,
+                addTools,
+                removeTools,
+                _options.RequiredToolNames
+            );
             var inheritedToolNames = new List<string>();
 
             foreach (var contract in _parentContracts)
@@ -2997,6 +3011,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 inheritedToolNames.Count,
                 inheritedToolNames
             );
+
+            // The #623 warning floor, at the same boundary as the inherited-toolset line above so
+            // "ordered to work the board" and "received no board tools" are correlated in one place.
+            WarnIfBoardDispatchLacksTaskTools(agentId, template, spawnName, task, inheritedToolNames);
 
             // Under collaboration the child ALWAYS gets its own manager, because messaging is not
             // delegation. SubAgentToolProvider already withholds the spawn tools when the child has no
@@ -3175,10 +3193,20 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Builds the effective set of enabled tool names from template filter + overrides.
     /// Returns null when all tools should be available (no filtering).
     /// </summary>
+    /// <remarks>
+    /// <paramref name="requiredTools"/> (the mode-level enforcement of #623) is unioned LAST — after
+    /// the template filter AND the per-spawn add/remove overrides — so neither a template's
+    /// restricted <c>tools:</c> list nor a spawn-time <c>removeTools</c> can strip a tool the mode
+    /// requires every sub-agent to carry. When no filtering is in play (null result) the union is a
+    /// no-op by construction: every tool is already available. Names that the parent does not expose
+    /// are unioned here but never materialize, because the caller intersects the set with the
+    /// parent's inheritable contracts — which is what keeps a mode from granting what it lacks.
+    /// </remarks>
     internal static HashSet<string>? BuildEnabledToolSet(
         IReadOnlyList<string>? templateEnabledTools,
         string[]? addTools,
-        string[]? removeTools
+        string[]? removeTools,
+        IReadOnlyCollection<string>? requiredTools = null
     )
     {
         if (templateEnabledTools == null && addTools == null && removeTools == null)
@@ -3220,7 +3248,95 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
         }
 
+        if (requiredTools is { Count: > 0 } && result is not null)
+        {
+            foreach (var tool in requiredTools)
+            {
+                _ = result.Add(tool);
+            }
+        }
+
         return result;
+    }
+
+    /// <summary>
+    /// Case-insensitive markers whose presence in a spawn's dispatch prompt is read as "this agent
+    /// was ordered to work the todo board" for the #623 warning floor. Deliberately a simple,
+    /// documented substring heuristic (per the WI): the distinctive task-tool names a dispatch
+    /// order typically cites, plus the common phrasings for the board itself. False negatives cost
+    /// only a missing warning; false positives cost only a spurious one-line warning.
+    /// </summary>
+    internal static readonly string[] TodoBoardPromptMarkers =
+    [
+        "claim-task",
+        "assign-task",
+        "update-task",
+        "list-tasks",
+        "bulk-initialize",
+        // Spaced variants: the #623 incident's literal dispatch line was "Claim Todo 2.1 under
+        // name correctness-reviewer" — no hyphenated tool name, no board phrase — so the marker
+        // heuristic must catch the plain-English imperative too, not only tool-name citations.
+        "claim task",
+        "claim todo",
+        "todo board",
+        "task board",
+        "todo list",
+        "task id",
+    ];
+
+    /// <summary>
+    /// Whether <paramref name="task"/> (a spawn's dispatch prompt) references the todo board per
+    /// <see cref="TodoBoardPromptMarkers"/>.
+    /// </summary>
+    internal static bool ReferencesTodoBoard(string? task) =>
+        !string.IsNullOrEmpty(task)
+        && TodoBoardPromptMarkers.Any(marker => task.Contains(marker, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The #623 warning floor: a spawn whose dispatch prompt orders board work (or whose name has a
+    /// board task assigned to it, per the host's <see cref="SubAgentOptions.TaskAssignmentProbe"/>)
+    /// but whose RESOLVED toolset carries none of the host-declared task tools gets a Warning naming
+    /// the template — the silent failure of #623, where 4 of 8 reviewers were ordered to claim tasks
+    /// their restricted templates had stripped the tools for (and one fabricated compliance). Logged
+    /// regardless of whether the mode opted into <see cref="SubAgentOptions.RequiredToolNames"/>;
+    /// inert unless the host supplies <see cref="SubAgentOptions.TaskToolNames"/>.
+    /// </summary>
+    private void WarnIfBoardDispatchLacksTaskTools(
+        string agentId,
+        SubAgentTemplate template,
+        string? spawnName,
+        string? task,
+        List<string> inheritedToolNames
+    )
+    {
+        if (_options.TaskToolNames is not { Count: > 0 } taskTools)
+        {
+            return;
+        }
+
+        if (inheritedToolNames.Any(name => taskTools.Contains(name)))
+        {
+            return;
+        }
+
+        var referencesBoard =
+            ReferencesTodoBoard(task)
+            || (spawnName is not null && (_options.TaskAssignmentProbe?.Invoke(spawnName) ?? false));
+        if (!referencesBoard)
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "Sub-agent {AgentId} (template {Template}, name {SpawnName}) was dispatched with todo-board "
+                + "work but its resolved toolset contains NONE of the task tools ({TaskToolNames}); the "
+                + "template's restricted tool list strips them, so it cannot claim or update any task it "
+                + "was ordered to work. Set the mode's sub-agent required tools to guarantee them.",
+            agentId,
+            template.Name,
+            spawnName,
+            taskTools
+        );
     }
 
     /// <summary>
