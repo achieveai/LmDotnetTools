@@ -22,24 +22,9 @@ namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 public class McpImageBlockExtractionTests
 {
     /// <summary>PNG magic number followed by bytes that are not valid UTF-8 on their own.</summary>
-    private static readonly byte[] PngBytes =
-    [
-        0x89,
-        0x50,
-        0x4E,
-        0x47,
-        0x0D,
-        0x0A,
-        0x1A,
-        0x0A,
-        0x00,
-        0xFF,
-        0x10,
-        0x42,
-    ];
+    private static readonly byte[] PngBytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF, 0x10, 0x42];
 
-    private static readonly ILogger<McpClientFunctionProvider> Logger =
-        NullLogger<McpClientFunctionProvider>.Instance;
+    private static readonly ILogger<McpClientFunctionProvider> Logger = NullLogger<McpClientFunctionProvider>.Instance;
 
     [Fact]
     public void FromBytes_SerializesAsBase64_WithoutLossyReplacement()
@@ -49,11 +34,7 @@ public class McpImageBlockExtractionTests
 
         // Act
         var json = JsonSerializer.Serialize(result, McpJsonUtilities.DefaultOptions);
-        var data = JsonDocument
-            .Parse(json)
-            .RootElement.GetProperty("content")[0]
-            .GetProperty("data")
-            .GetString();
+        var data = JsonDocument.Parse(json).RootElement.GetProperty("content")[0].GetProperty("data").GetString();
 
         // Assert - the wire form is base64 text, not raw bytes mangled into U+FFFD
         Assert.NotNull(data);
@@ -65,9 +46,7 @@ public class McpImageBlockExtractionTests
     public void ExtractImageBlocks_AfterJsonRoundTrip_ProducesExactlyOneBase64Encoding()
     {
         // Arrange - a result that has crossed the wire, as it would from a real MCP server
-        var result = RoundTrip(
-            new CallToolResult { Content = [ImageContentBlock.FromBytes(PngBytes, "image/png")] }
-        );
+        var result = RoundTrip(new CallToolResult { Content = [ImageContentBlock.FromBytes(PngBytes, "image/png")] });
 
         // Act
         var blocks = McpClientFunctionProvider.ExtractImageBlocks(result, "TestTool", Logger);

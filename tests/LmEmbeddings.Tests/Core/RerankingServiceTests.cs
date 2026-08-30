@@ -479,7 +479,10 @@ public class RerankingServiceTests
     private static int ParseMarker(string document)
     {
         var match = Regex.Match(document, "^MARKER_(\\d+)");
-        Assert.True(match.Success, $"Document did not contain a MARKER tag: {document[..Math.Min(20, document.Length)]}");
+        Assert.True(
+            match.Success,
+            $"Document did not contain a MARKER tag: {document[..Math.Min(20, document.Length)]}"
+        );
         return int.Parse(match.Groups[1].Value);
     }
 

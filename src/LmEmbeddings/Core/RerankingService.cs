@@ -210,14 +210,12 @@ public class RerankingService : IRerankService, IDisposable
             var batchResults = await RerankBatchAsync(query, batchDocs, cancellationToken);
 
             allResults.AddRange(
-                batchResults.Select(
-                    r => new RankedDocument
-                    {
-                        Index = batch[r.Index],
-                        Score = r.Score,
-                        Document = r.Document,
-                    }
-                )
+                batchResults.Select(r => new RankedDocument
+                {
+                    Index = batch[r.Index],
+                    Score = r.Score,
+                    Document = r.Document,
+                })
             );
         }
 
