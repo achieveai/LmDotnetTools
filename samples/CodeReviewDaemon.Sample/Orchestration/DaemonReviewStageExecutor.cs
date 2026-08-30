@@ -5689,15 +5689,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>
     /// Resolves the run's repo and the publisher/artifact provider string. <c>RepoIdentity.Provider</c>
     /// is the storage namespace (<c>github</c> / <c>azure-devops</c>); the publisher/poll-target
-    /// namespace is <c>github</c> / <c>ado</c>, so Azure DevOps is mapped here once.
+    /// namespace is <c>github</c> / <c>ado</c>, and
+    /// <see cref="RepoIdentity.ToPublisherNamespace(string)"/> is the one place that conversion lives.
     /// </summary>
     private (RepoIdentity Repo, string Provider) ResolveRepo(ReviewRun run)
     {
         var repo =
             _store.GetRepo(run.RepoId)
             ?? throw new InvalidOperationException($"Repo {run.RepoId} not found for run {run.Id}.");
-        var provider = string.Equals(repo.Provider, "azure-devops", StringComparison.Ordinal) ? "ado" : repo.Provider;
-        return (repo, provider);
+        return (repo, RepoIdentity.ToPublisherNamespace(repo.Provider));
     }
 
     private ContextArtifactPayload ReadContext(long reviewRunId) =>

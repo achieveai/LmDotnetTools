@@ -30,7 +30,7 @@ internal static class PrLifecycleSweepSeam
             return null;
         }
 
-        var provider = MapProviderNamespace(row.Provider);
+        var provider = RepoIdentity.ToPublisherNamespace(row.Provider);
         return new ReviewedPr(
             row.Repo,
             provider,
@@ -39,13 +39,6 @@ internal static class PrLifecycleSweepSeam
             row.Author
         );
     }
-
-    /// <summary>
-    /// Maps a storage provider name to the branch/poll namespace the <see cref="IPrProvider"/> registry is
-    /// keyed by (<c>azure-devops</c> → <c>ado</c>; everything else passes through unchanged).
-    /// </summary>
-    public static string MapProviderNamespace(string provider) =>
-        string.Equals(provider, "azure-devops", StringComparison.Ordinal) ? "ado" : provider;
 
     /// <summary>
     /// Routes a sweep unit's lifecycle lookup to the <see cref="IPrProvider"/> whose namespace matches the
@@ -64,7 +57,7 @@ internal static class PrLifecycleSweepSeam
     /// <summary>
     /// The same lookup addressed by identity rather than by sweep unit, for callers (the stranded-run
     /// reconciler) that hold a repo and PR id but no notes branch. <paramref name="provider"/> must already be
-    /// in the registry's namespace — see <see cref="MapProviderNamespace"/>.
+    /// in the registry's namespace — see <see cref="RepoIdentity.ToPublisherNamespace(string)"/>.
     /// </summary>
     public static Task<PrLifecycle> ResolveLifecycleAsync(
         IReadOnlyList<IPrProvider> providers,

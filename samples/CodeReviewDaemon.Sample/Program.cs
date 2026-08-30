@@ -9,6 +9,7 @@ using CodeReviewDaemon.Sample.Eval;
 using CodeReviewDaemon.Sample.Hosting;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
+using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.ReviewBot;
@@ -1093,7 +1094,31 @@ builder.Services.AddSingleton(sp => new RetryGovernor(
     () => DateTimeOffset.UtcNow,
     sp.GetRequiredService<ILogger<RetryGovernor>>()
 ));
-builder.Services.AddSingleton<PrOrchestrator>();
+
+// Announces a PERMANENT park on the pull request itself, so an author whose review went quiet learns why
+// from the PR rather than from the daemon's log. Gated internally by EnableCommentPosting, like every other
+// post.
+builder.Services.AddSingleton<IReviewParkNotifier>(sp => new ReviewParkNotifier(
+    sp.GetRequiredService<ReviewStore>(),
+    sp.GetServices<IReviewCommentPublisher>(),
+    daemonOptions,
+    sp.GetRequiredService<ILoggerFactory>()
+));
+
+// Registered by factory rather than by type because the durable retry budget is an int the container cannot
+// resolve. The outer, DURABLE bound the governor above cannot supply: the governor's state is in memory and
+// StrandedRunReconciler resets it on every resume, so it never reached its own bound (19 parks on 2026-08-28,
+// zero from 08-29 onward, the transition exactly at the reconciler's first resume).
+builder.Services.AddSingleton(sp => new PrOrchestrator(
+    sp.GetRequiredService<ReviewStore>(),
+    sp.GetRequiredService<IReviewStageExecutor>(),
+    sp.GetRequiredService<ILogger<PrOrchestrator>>(),
+    sp.GetRequiredService<ReviewProgressReporter>(),
+    sp.GetRequiredService<RetryGovernor>(),
+    daemonOptions.MaxDurableRetryAttempts,
+    () => DateTimeOffset.UtcNow,
+    sp.GetRequiredService<IReviewParkNotifier>()
+));
 
 // The route back for a run the poll can no longer reach. The poll only ever enumerates OPEN PRs inside its
 // recency window, so a run left non-terminal when its PR merges, closes, or goes quiet is never retried by
@@ -1123,7 +1148,7 @@ if (daemonOptions.StrandedRunGraceHours > 0)
                 PrLifecycleSweepSeam.ResolveLifecycleAsync(
                     providers,
                     row.Repo,
-                    PrLifecycleSweepSeam.MapProviderNamespace(row.Repo.Provider),
+                    RepoIdentity.ToPublisherNamespace(row.Repo.Provider),
                     row.Run.PrId,
                     ct
                 ),

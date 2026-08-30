@@ -356,6 +356,94 @@ internal sealed class ReviewStore : IDisposable
     }
 
     /// <summary>
+    /// Charges one STUCK failure (<c>PrOrchestrator.IsGovernedFailure</c>) against the run's durable retry
+    /// budget and returns the new total.
+    /// </summary>
+    /// <remarks>
+    /// The budget is durable because the in-memory one could not be: the stranded-run reconciler resumes a
+    /// stuck run every ~45 minutes through <see cref="Orchestration.PrOrchestrator.ReconcileAsync"/>, which
+    /// resets <see cref="Orchestration.RetryGovernor"/> for that run, so its count never reached the bound.
+    /// Nothing on the resume path may touch this column — only
+    /// <see cref="ClearGovernedFailureCount"/>, and only on a governed stage actually succeeding.
+    /// <para>
+    /// It deliberately does NOT stamp <c>updated_at</c>. That column is the liveness signal the stranded-run
+    /// listings read as "somebody is working on this", and it is owned by
+    /// <see cref="UpdateReviewRunState"/>, which the orchestrator's stage catch has already called by the
+    /// time this runs. Advancing it a second time here would say nothing new and would couple the budget to
+    /// the staleness windows.
+    /// </para>
+    /// <para>
+    /// The read-back rides on the UPDATE's own <c>RETURNING</c> clause, so the increment and the value it
+    /// produced are one statement — a separate SELECT could observe a different total if a concurrent
+    /// review charged the same run between the two.
+    /// </para>
+    /// </remarks>
+    public int IncrementGovernedFailureCount(long runId)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run SET governed_failure_count = governed_failure_count + 1
+            WHERE id = $id
+            RETURNING governed_failure_count;
+            """;
+        _ = command.Parameters.AddWithValue("$id", runId);
+        var value = command.ExecuteScalar();
+        return value is null ? 0 : Convert.ToInt32(value, CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Un-charges the run's durable budget after a governed stage succeeded.
+    /// </summary>
+    /// <remarks>
+    /// The mirror of <see cref="IncrementGovernedFailureCount"/>, and it has to exist for the same reason
+    /// the in-memory governor clears on success: a run that failed persistently and then RECOVERED would
+    /// otherwise carry those failures toward a park it no longer deserves — one bad afternoon followed by a
+    /// healthy week would still end in a permanent park.
+    /// </remarks>
+    public void ClearGovernedFailureCount(long runId)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "UPDATE review_run SET governed_failure_count = 0 WHERE id = $id;";
+        _ = command.Parameters.AddWithValue("$id", runId);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Parks <paramref name="runId"/> permanently: nothing will attempt it again until a new commit opens a
+    /// new run. Returns whether THIS call is the one that parked it.
+    /// </summary>
+    /// <remarks>
+    /// <c>WHERE ... AND parked_at IS NULL</c> makes parking once-only, and the return value is how a caller
+    /// tells "I parked it" from "it was already parked". That distinction is load bearing: the park notice
+    /// posted to the pull request hangs off it, so a second park attempt cannot post a second comment.
+    /// <para>
+    /// This is the first and only writer of <see cref="WorkflowStatus.Failed"/> in the daemon. The status is
+    /// for operators reading the row; the RE-PICK exclusion is <c>parked_at</c> alone, because
+    /// <see cref="ListStrandedRuns"/> selects <c>workflow_status &lt;&gt; 'Completed'</c> and a
+    /// <c>Failed</c> row still satisfies that.
+    /// </para>
+    /// </remarks>
+    public bool TryMarkReviewRunParked(long runId, DateTimeOffset parkedAt, string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run
+            SET parked_at = $at, park_reason = $reason, workflow_status = $status
+            WHERE id = $id AND parked_at IS NULL;
+            """;
+        _ = command.Parameters.AddWithValue("$at", Utc(parkedAt));
+        _ = command.Parameters.AddWithValue("$reason", reason);
+        _ = command.Parameters.AddWithValue("$status", WorkflowStatus.Failed.ToString());
+        _ = command.Parameters.AddWithValue("$id", runId);
+        return command.ExecuteNonQuery() == 1;
+    }
+
+    /// <summary>
     /// Records that <paramref name="runId"/>'s review is proven to be on the PR, at
     /// <paramref name="postedAtUtc"/>. This is the durable half of the delta-review cutoff (#225 item 1).
     /// </summary>
@@ -758,6 +846,14 @@ internal sealed class ReviewStore : IDisposable
     /// reaches the SQL. Shared rather than copied because the half that would matter if the two drifted is the
     /// <c>superseded</c> subquery: a listing that lost it would resume — and on a posting daemon publish — a
     /// review of a commit pair that a later run has already replaced.
+    /// <para>
+    /// <c>parked_at IS NULL</c> is the one authoritative exclusion for a run that spent its durable retry
+    /// budget, and it lives here so both listings inherit it. It is deliberately NOT paired with a
+    /// <c>workflow_status &lt;&gt; 'Failed'</c> conjunct saying the same thing twice: this listing is a
+    /// parked run's last route back, and two independently-sufficient predicates would let either one be
+    /// deleted without any test noticing. It is also not redundant with the status test above it — the
+    /// abandonment listing selects <c>&lt;&gt; 'Completed'</c>, which a parked (<c>Failed</c>) row satisfies.
+    /// </para>
     /// </summary>
     private IReadOnlyList<StrandedRunRow> ListStrandedRunsWhere(
         string statusOperator,
@@ -780,6 +876,7 @@ internal sealed class ReviewStore : IDisposable
             FROM review_run rr
             JOIN repo r ON r.id = rr.repo_id
             WHERE rr.workflow_status {statusOperator} $status AND rr.updated_at < $staleBefore
+              AND rr.parked_at IS NULL
             ORDER BY rr.id
             LIMIT $limit;
             """;
@@ -1297,6 +1394,9 @@ internal sealed class ReviewStore : IDisposable
             PrAuthor = GetNullableString(reader, "pr_author"),
             PrTitle = GetNullableString(reader, "pr_title"),
             PrDescription = GetNullableString(reader, "pr_description"),
+            GovernedFailureCount = reader.GetInt32(reader.GetOrdinal("governed_failure_count")),
+            ParkedAt = GetNullableTimestamp(reader, "parked_at"),
+            ParkReason = GetNullableString(reader, "park_reason"),
         };
 
     private static OutboxEntry MapOutbox(SqliteDataReader reader) =>
@@ -1318,6 +1418,16 @@ internal sealed class ReviewStore : IDisposable
         var ordinal = reader.GetOrdinal(column);
         return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
     }
+
+    /// <summary>
+    /// Reads a nullable timestamp column written by <see cref="Utc"/> — round-trip ("O") UTC text, parsed
+    /// with <see cref="DateTimeStyles.RoundtripKind"/> so the offset survives rather than being reinterpreted
+    /// as local time.
+    /// </summary>
+    private static DateTimeOffset? GetNullableTimestamp(SqliteDataReader reader, string column) =>
+        GetNullableString(reader, column) is { Length: > 0 } text
+            ? DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
+            : null;
 
     /// <summary>
     /// Disposes the connection under the gate, so it is never torn down while an in-flight operation is

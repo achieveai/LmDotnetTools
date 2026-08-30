@@ -447,6 +447,20 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>Ceiling for the exponential retry backoff. Default 900s (15m).</summary>
     public int RetryBackoffCapSeconds { get; init; } = 900;
 
+    /// <summary>
+    /// Governed failures a single run may accumulate DURABLY before it is parked permanently — recorded on
+    /// the row, so neither a restart nor <c>PrOrchestrator.ReconcileAsync</c>'s governor reset can erase it.
+    /// A new commit is a new run and starts with a full budget. Default 10.
+    /// </summary>
+    /// <remarks>
+    /// This is the outer bound; <see cref="MaxContextRetries"/> (5) is the inner, erasable one, and the two
+    /// are not alternatives. Set below <see cref="MaxContextRetries"/> the durable bound would fire first and
+    /// the in-memory park — plus the stranded-run reconciler's deliberate out-of-band retry of it — would
+    /// never be exercised at all. Ten is a little over five hours of worst-case burn at the 30-minute stage
+    /// deadline, against the unbounded loop it replaces: three pull requests re-reviewed for 33 hours.
+    /// </remarks>
+    public int MaxDurableRetryAttempts { get; init; } = 10;
+
     /// <summary>When true, the reviewer gets scoped Write/Edit/Bash to take PR notes + do
     /// file-level diffs (code stays read-only; writes scoped to the PR notes dir + scratch).</summary>
     public bool EnableReviewerWrites { get; init; }
