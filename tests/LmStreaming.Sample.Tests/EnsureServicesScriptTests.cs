@@ -89,11 +89,18 @@ public class EnsureServicesScriptTests
         // box west or east of UTC, this returned "the pid was reused"; the fixed expression must
         // return no reason at all. (On a UTC box this passes either way - the source-text test
         // above is the guard that works there.)
+        // The dot-source passes -RunDir explicitly. The script's load-time preamble evaluates
+        // `Join-Path $RunDir 'ensure-services.log'` (line ~104) even under the dot-source guard,
+        // and Join-Path resolves its -Path DRIVE through the provider - so on a machine without a
+        // B: drive (the GitHub-hosted runner) the parameter's deploy-box default of
+        // 'B:\sources\LmDotnetTools\.run' dies with "Cannot find drive 'B'" before a single
+        // function is defined. Supplying the test's own RunDir keeps the probe hermetic instead
+        // of depending on the dev box's drive layout.
         var command = $$"""
-            . '{{PublishLaunchScriptHost.QuoteSingle(ScriptPath)}}'
             try {
                 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ensure-services-test-" + [guid]::NewGuid().ToString('N'))
                 New-Item -ItemType Directory -Path $tmp | Out-Null
+                . '{{PublishLaunchScriptHost.QuoteSingle(ScriptPath)}}' -RunDir $tmp
                 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
                 $listener.Start()
                 try {
