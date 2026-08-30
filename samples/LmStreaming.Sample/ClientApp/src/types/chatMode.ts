@@ -30,6 +30,13 @@ export interface ChatMode {
    * 'append' when a fragment is present.
    */
   subAgentPromptPlacement?: 'prepend' | 'append';
+  /**
+   * Tool ids guaranteed to every sub-agent spawned in this mode, even when an agent template
+   * restricts its own tool list (#623). Uses the mode's tool-id language: bare names, qualified
+   * `group:tool` ids, or `group:*` wildcards. Absent or empty means "not enforced" — spawns keep
+   * today's behavior exactly.
+   */
+  subAgentRequiredTools?: string[];
   isSystemDefined: boolean;
   createdAt: number;
   updatedAt: number;
@@ -49,6 +56,8 @@ export interface ChatModeCreateUpdate {
   subAgentPrompt?: string;
   /** 'prepend' | 'append'; the server refuses anything else with 400. */
   subAgentPromptPlacement?: 'prepend' | 'append';
+  /** Guaranteed sub-agent tools; see {@link ChatMode.subAgentRequiredTools}. Omit for "not enforced". */
+  subAgentRequiredTools?: string[];
 }
 
 /**

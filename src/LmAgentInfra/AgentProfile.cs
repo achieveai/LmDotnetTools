@@ -60,4 +60,17 @@ public sealed record AgentProfile(
     /// gets here.
     /// </summary>
     public string? SubAgentPromptPlacement { get; init; }
+
+    /// <summary>
+    /// Tool names / group patterns (the same id language as the mode's tool selection, e.g.
+    /// <c>tasks:*</c>, <c>subagents:*</c>, or exact bare tool names) that every sub-agent spawned
+    /// under a conversation running this profile must carry, unioned into each spawn's resolved
+    /// toolset AFTER the sub-agent template's own <c>tools:</c> restriction is applied (#623). The
+    /// host resolves the patterns to concrete names and intersects with what the mode itself
+    /// exposes — a mode can never grant a sub-agent a tool it does not have. Null/empty means no
+    /// enforcement: restricted templates keep stripping exactly as before. Init-only property (not a
+    /// positional parameter) for the same shared-surface compatibility reason as
+    /// <see cref="SubAgentPrompt"/>.
+    /// </summary>
+    public IReadOnlyList<string>? SubAgentRequiredTools { get; init; }
 }

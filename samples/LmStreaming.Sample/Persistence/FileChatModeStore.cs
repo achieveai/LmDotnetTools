@@ -82,6 +82,7 @@ public sealed class FileChatModeStore : IChatModeStore
                 EnabledCapabilityTools = mode.EnabledCapabilityTools,
                 SubAgentPrompt = mode.SubAgentPrompt,
                 SubAgentPromptPlacement = mode.SubAgentPromptPlacement,
+                SubAgentRequiredTools = mode.SubAgentRequiredTools,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -137,6 +138,7 @@ public sealed class FileChatModeStore : IChatModeStore
                 EnabledCapabilityTools = mode.EnabledCapabilityTools,
                 SubAgentPrompt = mode.SubAgentPrompt,
                 SubAgentPromptPlacement = mode.SubAgentPromptPlacement,
+                SubAgentRequiredTools = mode.SubAgentRequiredTools,
                 UpdatedAt = now,
             };
 
@@ -202,6 +204,9 @@ public sealed class FileChatModeStore : IChatModeStore
                 EnabledCapabilityTools = sourceMode.EnabledCapabilityTools,
                 SubAgentPrompt = sourceMode.SubAgentPrompt,
                 SubAgentPromptPlacement = sourceMode.SubAgentPromptPlacement,
+                // Carried across for the same reason as the capability selection above: a copy of a
+                // board-centric mode must keep guaranteeing the board tools to its sub-agents.
+                SubAgentRequiredTools = sourceMode.SubAgentRequiredTools,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,

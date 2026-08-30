@@ -110,6 +110,43 @@ public record SubAgentOptions
     public InheritableToolSnapshot? ExternalInheritableTools { get; init; }
 
     /// <summary>
+    /// Tool names UNIONED into every spawned sub-agent's resolved toolset AFTER its template's
+    /// <see cref="SubAgentTemplate.EnabledTools"/> filter (and any per-spawn add/remove overrides)
+    /// are applied — the mode-level enforcement seam of #623: a restricted template keeps its
+    /// restriction except for what the host's mode requires every sub-agent to carry (e.g. the
+    /// todo-board tools, so a dispatch ordering "claim task 2.1" is never handed to an agent whose
+    /// template stripped the claim tool). Names here are CONCRETE bare tool names — the host resolves
+    /// any group patterns (e.g. <c>tasks:*</c>) before setting this. The union can only surface tools
+    /// the parent actually exposes: a name absent from the parent's inheritable contracts is skipped,
+    /// so a mode can never grant a sub-agent a tool the mode itself does not have. Inherited verbatim
+    /// through <see cref="ForChildLoop"/>, so enforcement applies at every spawn depth (the #623
+    /// incident was observed one level down). Null/empty (default) = no enforcement, byte-for-byte
+    /// today's behavior.
+    /// </summary>
+    public IReadOnlyCollection<string>? RequiredToolNames { get; init; }
+
+    /// <summary>
+    /// The todo-board (task) tool family's names, used ONLY for the #623 warning floor: when a spawn's
+    /// dispatch prompt references the todo board (or <see cref="TaskAssignmentProbe"/> says a board
+    /// task is assigned to the spawn's name) and the resolved toolset contains NONE of these names, the
+    /// manager logs a Warning naming the template — turning a silent "ordered to work a board it cannot
+    /// touch" mismatch into a diagnosable line. Deliberately host-supplied: the library does not know
+    /// which registered tools constitute the board family. Null/empty (default) disables the warning.
+    /// Inherited verbatim through <see cref="ForChildLoop"/>.
+    /// </summary>
+    public IReadOnlyCollection<string>? TaskToolNames { get; init; }
+
+    /// <summary>
+    /// Host-supplied predicate for the #623 warning floor's second trigger: given a spawn's effective
+    /// name, returns <c>true</c> when a live board task is currently assigned to that name (the host
+    /// closes this over its per-conversation task board). Consulted only when
+    /// <see cref="TaskToolNames"/> is set and the dispatch prompt itself did not already reference the
+    /// board. Null (default) = only the prompt heuristic applies. Safe to inherit through
+    /// <see cref="ForChildLoop"/> because the board is conversation-wide, not per-level.
+    /// </summary>
+    public Func<string, bool>? TaskAssignmentProbe { get; init; }
+
+    /// <summary>
     /// Reasoning-effort floor a spawned sub-agent inherits from the parent conversation when its template
     /// pins no <see cref="SubAgentTemplate.Effort"/> and it makes no model choice of its own (parent-model
     /// reuse). The host sets this to the parent's effort (e.g. <c>High</c>) so an ordinary sub-agent thinks

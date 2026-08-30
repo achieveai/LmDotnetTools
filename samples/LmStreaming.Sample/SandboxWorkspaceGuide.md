@@ -291,6 +291,14 @@ Invalid or out-of-range `modelintelligence` values and unrecognized `effort` val
 the sub-agent. The shared parser ignores only the invalid field and emits a diagnostic, which the
 host logs as a warning.
 
+Discovered sub-agents may also declare a **`tools:`** frontmatter list. Absent means the sub-agent
+inherits every parent tool; a list restricts it to exactly those names (an empty list denies all).
+**A restricted `tools:` list strips todo-board access too** — a sub-agent dispatched to claim or
+update board tasks silently cannot, unless the mode sets **Required Sub-agent Tools**
+(`subAgentRequiredTools`), which unions the named tools back into every spawn's toolset after the
+template's restriction (bounded by what the mode itself exposes). The host also logs a warning when
+a board-flavored dispatch lands on a template whose resolved toolset has no task tools.
+
 `CodeReviewDaemon.Sample` deliberately has **no model/effort resolution in this change**. It uses
 the shared parser and logs its diagnostics, but does not install the characteristics-aware factory:
 `modelintelligence` never selects a daemon model and `effort` never adds reasoning request metadata.

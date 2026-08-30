@@ -77,6 +77,17 @@ public record ChatMode
     public string? SubAgentPromptPlacement { get; init; }
 
     /// <summary>
+    /// Tool ids / group patterns every sub-agent spawned in this mode is GUARANTEED to carry, even
+    /// when its agent template declares a restricted <c>tools:</c> list (#623). Uses the same id
+    /// language as the mode's own tool selection — bare tool names (<c>claim-task</c>), qualified
+    /// ids (<c>subagents:SendMessage</c>), and <c>group:*</c> wildcards (<c>tasks:*</c>). Resolved
+    /// names are unioned into each spawn's toolset AFTER the template filter, then intersected with
+    /// what the mode itself exposes, at every spawn depth. Null/empty = no enforcement — restricted
+    /// templates keep stripping exactly as before (opt-in).
+    /// </summary>
+    public IReadOnlyList<string>? SubAgentRequiredTools { get; init; }
+
+    /// <summary>
     /// Whether this mode is system-defined (read-only) or user-created.
     /// </summary>
     public bool IsSystemDefined { get; init; }
@@ -101,6 +112,7 @@ public record ChatMode
         {
             SubAgentPrompt = SubAgentPrompt,
             SubAgentPromptPlacement = SubAgentPromptPlacement,
+            SubAgentRequiredTools = SubAgentRequiredTools,
         };
 
     /// <summary>
@@ -168,6 +180,12 @@ public record ChatModeCreateUpdate
     /// CRUD boundary so it can never be persisted.
     /// </summary>
     public string? SubAgentPromptPlacement { get; init; }
+
+    /// <summary>
+    /// Tools guaranteed to every sub-agent in this mode. See
+    /// <see cref="ChatMode.SubAgentRequiredTools"/>. Null/empty = not enforced.
+    /// </summary>
+    public IReadOnlyList<string>? SubAgentRequiredTools { get; init; }
 }
 
 /// <summary>
