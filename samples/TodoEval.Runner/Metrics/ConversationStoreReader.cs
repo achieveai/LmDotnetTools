@@ -67,6 +67,12 @@ internal static class ConversationStoreReader
         /// <summary>True when this is a tool-less sub-agent thread whose assistant text still claims board work.</summary>
         public required bool FabricatedComplianceSuspect { get; init; }
 
+        /// <summary>
+        ///     Board rows this thread minted, never deleted, and later got a not-found for (#621 Part B).
+        ///     A LOWER bound on real losses — see <see cref="BoardIdLedger" /> for the three gaps.
+        /// </summary>
+        public required IReadOnlyList<BoardIdVanish> BoardIdVanishes { get; init; }
+
         public bool IsSubAgentThread => ThreadId.StartsWith(SubAgentDirPrefix, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -176,6 +182,8 @@ internal static class ConversationStoreReader
         var blockRecorded = false;
         var blockExplicitlyCleared = false;
         var assistantTexts = new List<string>();
+        var ledger = new BoardIdLedger();
+        var vanishes = new List<BoardIdVanish>();
 
         foreach (var envelope in doc.RootElement.EnumerateArray())
         {
@@ -255,6 +263,31 @@ internal static class ConversationStoreReader
                 var canonical = JsonCanonicalizer.CanonicalizeArgs(rawArgs ?? "");
                 walk.Add(new StormWalkItem(RetryStormDetector.MakeIdentity(tool, canonical), isError, hasResult));
 
+                // Board-loss watch (#621 Part B). Same discrimination line as the server detector: a
+                // not-found naming an id THIS thread minted and never deleted is a lost row; anything
+                // else is a model typo and stays unreported.
+                if (hasResult)
+                {
+                    if (isError)
+                    {
+                        if (BoardIdLedger.NotFoundTaskId(result.Text) is { } vanishedId && ledger.Owns(vanishedId))
+                        {
+                            vanishes.Add(
+                                new BoardIdVanish
+                                {
+                                    ThreadId = threadId,
+                                    TaskId = vanishedId,
+                                    Tool = tool,
+                                }
+                            );
+                        }
+                    }
+                    else
+                    {
+                        ledger.RecordSuccess(tool, result.Text);
+                    }
+                }
+
                 if (!isError && hasResult && tool == "block-task")
                 {
                     if (HasNonEmptyBlockedBy(rawArgs))
@@ -296,6 +329,7 @@ internal static class ConversationStoreReader
             BlockExplicitlyCleared = blockExplicitlyCleared,
             TaskToolCallCount = taskToolCalls,
             FabricatedComplianceSuspect = fabricated,
+            BoardIdVanishes = vanishes,
         };
     }
 

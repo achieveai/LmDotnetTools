@@ -147,6 +147,32 @@ public sealed record TodoBoardSnapshot
     /// <summary>Top-level rows, in tree order. Never null.</summary>
     public IReadOnlyList<TodoTaskNode> Tasks { get; init; } = [];
 
+    /// <summary>
+    ///     Dotted ids this board is known to have held that were <b>absent</b> when the snapshot was
+    ///     taken, each mapped to the instant it was last known present (#621 Part B). Empty on a healthy
+    ///     board — an entry here is a recorded row loss, not a deleted row: an id deliberately removed by
+    ///     <c>delete-task</c> leaves the board's id ledger entirely and never appears.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This is the only part of the id ledger worth persisting. For every id that IS on the board,
+    ///         "last known present" is exactly <see cref="CapturedAtUtc" />, so the ledger rebuilds from
+    ///         <see cref="Tasks" /> on rehydration; the ids the board no longer holds are the ones that
+    ///         would otherwise be forgotten across a restart, taking with them the only evidence that
+    ///         separates a vanished row from an id the agent invented.
+    ///     </para>
+    ///     <para>
+    ///         Additive to schema version 1, following <see cref="TodoTaskNode.Artifacts" />'s precedent:
+    ///         a snapshot persisted before this field existed reads back with it simply empty, so the
+    ///         version is deliberately not bumped. It never crosses the WebSocket —
+    ///         <c>ConversationTodoMessage.FromSnapshot</c> flattens the frame to id/version/captured-at/tasks
+    ///         — but it DOES ride the <c>GET /todos</c> response body, where the client's parser ignores it
+    ///         as it ignores any unknown field.
+    ///     </para>
+    /// </remarks>
+    public IReadOnlyDictionary<string, DateTimeOffset> MissingTaskIds { get; init; } =
+        new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+
     /// <summary>True when the board carries no rows at all — nothing worth showing or persisting.</summary>
     [JsonIgnore]
     public bool IsEmpty => Tasks.Count == 0;

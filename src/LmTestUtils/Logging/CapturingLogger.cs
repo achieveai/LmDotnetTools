@@ -4,7 +4,7 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 
 public sealed class CapturingLogger<T> : ILogger<T>
 {
-    private readonly List<(LogLevel Level, string Text, Exception? Error)> _entries = [];
+    private readonly List<(LogLevel Level, EventId EventId, string Text, Exception? Error)> _entries = [];
 
     public IDisposable? BeginScope<TState>(TState state)
         where TState : notnull => null;
@@ -19,8 +19,20 @@ public sealed class CapturingLogger<T> : ILogger<T>
         Func<TState, Exception?, string> formatter
     )
     {
-        _entries.Add((logLevel, formatter(state, exception), exception));
+        _entries.Add((logLevel, eventId, formatter(state, exception), exception));
     }
+
+    /// <summary>
+    ///     <see cref="EventId" /> names captured at <paramref name="level" />, in log order. Entries logged
+    ///     without an event id contribute an empty string.
+    /// </summary>
+    /// <remarks>
+    ///     The default MEL formatter renders the message template alone and drops the event id, so
+    ///     <see cref="CountAtLevel" /> cannot see it — a call site that stops passing one still renders a
+    ///     byte-identical string while every log query keyed on the event name goes quiet.
+    /// </remarks>
+    public IReadOnlyList<string> EventNamesAtLevel(LogLevel level) =>
+        [.. _entries.Where(e => e.Level == level).Select(e => e.EventId.Name ?? string.Empty)];
 
     public int WarningCount(string substring) =>
         _entries.Count(e => e.Level == LogLevel.Warning && e.Text.Contains(substring, StringComparison.Ordinal));

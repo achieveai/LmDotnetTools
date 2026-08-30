@@ -79,6 +79,57 @@ Every **maximal** run of length >= 3 is one storm, reported with its thread, too
 canonical args, and length. `retryStormCount` is the number of storms. Storms are counted
 over task tools only.
 
+### Board id vanished (#621 Part B)
+
+A `task_not_found` whose id **this thread minted and never deleted** is a lost board row, not a
+model typo. The transcript-side mirror of the server's `TodoBoardIdVanished` detector:
+
+Per thread, in message order, maintain a **ledger** of canonical dotted ids:
+
+- **Canonical id** — every dotted segment parsed as an integer and re-emitted (`" 01"` → `1`,
+  `"+1.02"` → `1.2`), because `FindTaskByStringId` resolves all those spellings to the same row.
+  An id with a non-integer segment has no canonical form and is skipped: that is an
+  invalid-id error, not a not-found.
+- **Add** on a successful `add-task` result matching `^Added task (<id>):`.
+- **Add** on each `^\s*-\s*Task (<id>):` line of a successful `bulk-initialize` result; the same
+  result clears the whole ledger first when it contains `Cleared existing tasks.`, because
+  `clearExisting` is a requested reset that also renumbers from 1.
+- **Remove**, together with every dotted descendant, on a successful `delete-task` result
+  matching `^Deleted task (<id>) and all subtasks:` or
+  `^Deleted subtask (<n>) from task (<id>):` (the latter removes `<id>.<n>`).
+
+A task-tool call whose paired result is an Error result naming a **ledger id** is one vanish
+event, reported with its thread, canonical task id, and tool. The id is read from the first
+matching not-found wording — quoted forms tested before the bare ones, since the bare pattern
+would otherwise capture the quotes and lose the event:
+
+| Error text | Id |
+| --- | --- |
+| `Error: Task '<id>' has no subtask <n>.` | `<id>.<n>` |
+| `Error: Task '<id>' not found.` | `<id>` |
+| `Error: Parent task '<id>' not found.` | `<id>` |
+| `Error: Blocking task '<id>' not found.` | `<id>` |
+| `Error: Task <id> not found.` | `<id>` |
+| `Error: Parent task <id> not found.` | `<id>` |
+
+`boardIdVanished.count` is the number of events across all threads.
+
+**This count is a lower bound, and both implementations say so in the emitted `note`.** The
+authoritative signal is the server-side Warning; the eval mirrors it because the eval scores
+archived transcripts (the #617 baseline corpus predates the detector and has no logs at all)
+and because neither this oracle nor the C# harness reads structured logs. Three known gaps,
+all one-directional — they undercount, never overcount:
+
+1. A row minted by `bulk-initialize` as a **subtask** is never named in that tool's result text
+   (only main tasks are listed), so it never enters the ledger.
+2. A row minted in a process whose transcript is not in this conversations directory.
+3. A thread that starts from a rehydrated board — every id predating the transcript is unknown
+   to the ledger. The server detector has no such gap: its ledger's unresolved entries ride the
+   persisted snapshot as `TodoBoardSnapshot.MissingTaskIds`.
+
+So a run reporting `boardIdVanished.count == 0` has **not** shown the board is intact; grep the
+host's structured logs for the event name `TodoBoardIdVanished` as well.
+
 ### Block recorded / cleared
 - `blockRecorded` — at least one **successful** (non-error) `block-task` call anywhere in
   the run whose canonical args contain a non-empty `blockedBy` array.
@@ -182,6 +233,11 @@ with `subagent-`.
   "perTool": { "add-note": { "calls": 14, "errors": 1, "errorRate": 0.0714 }, "...": {} },
   "retryStormCount": 0,
   "retryStorms": [ { "threadId": "...", "tool": "add-note", "count": 4, "args": "{...}" } ],
+  "boardIdVanished": {
+    "count": 0,
+    "events": [ { "threadId": "...", "taskId": "1.2", "tool": "get-task" } ],
+    "note": "Transcript-derived LOWER BOUND ... also grep the host structured logs for TodoBoardIdVanished"
+  },
   "blockRecorded": true,
   "blockExplicitlyCleared": true,
   "blockCleared": true,
