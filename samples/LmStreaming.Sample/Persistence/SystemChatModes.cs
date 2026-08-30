@@ -32,9 +32,49 @@ public static class SystemChatModes
     public const string WorkflowAuthorModeId = "workflow-author";
 
     /// <summary>
+    /// The code-review daemon's review conversation mode ID (#628). The daemon's
+    /// <c>CodeReviewDaemon:LmStreamingModeId</c> defaults to this literal, so the mode is REQUIRED:
+    /// <see cref="EnsureLoadedAtStartup"/> runs at host startup, and a Prompts.yaml missing this
+    /// mode kills the boot with a message naming the mode and the file — instead of booting a
+    /// "healthy" host that fails every mode-touching request.
+    /// </summary>
+    public const string CodeReviewDaemonModeId = "code-review-daemon";
+
+    /// <summary>
+    /// Lazily loads the modes on first touch. Deliberately a <see cref="Lazy{T}"/> FIELD rather
+    /// than an initialized property: a property initializer would run inside the type initializer,
+    /// so a bad Prompts.yaml would surface as a <see cref="TypeInitializationException"/> burying
+    /// the real validation message. The field initializer only allocates the Lazy (cannot throw);
+    /// the load runs on first <see cref="All"/> access and its <see cref="InvalidOperationException"/>
+    /// escapes un-wrapped.
+    /// </summary>
+    private static readonly Lazy<IReadOnlyList<ChatMode>> LazyAll = new(LoadModes);
+
+    /// <summary>
     /// Gets all system-defined chat modes.
     /// </summary>
-    public static IReadOnlyList<ChatMode> All { get; } = LoadModes();
+    public static IReadOnlyList<ChatMode> All => LazyAll.Value;
+
+    /// <summary>
+    /// True once <see cref="EnsureLoadedAtStartup"/> has completed. Only that method — called from
+    /// Program.cs host startup — sets this, so a test that boots the host and reads the flag pins
+    /// the eager call site itself, not merely the validation logic it triggers.
+    /// </summary>
+    internal static bool StartupLoadCompleted { get; private set; }
+
+    /// <summary>
+    /// Eagerly loads and validates the system modes. Program.cs calls this at startup, BEFORE the
+    /// host starts listening, so a deployed Prompts.yaml that is broken or missing a required mode
+    /// (e.g. an operator edit or a partial deploy pairing new binaries with a stale yaml) fails the
+    /// boot with the clear required-mode message — rather than booting a host that looks healthy to
+    /// the watchdog and 500s every mode-touching request, a failure shape the daemon retries
+    /// unbounded (host 5xx is deliberately outside its retry budget).
+    /// </summary>
+    public static void EnsureLoadedAtStartup()
+    {
+        _ = LazyAll.Value;
+        StartupLoadCompleted = true;
+    }
 
     /// <summary>
     /// Gets a system mode by ID.
@@ -58,12 +98,23 @@ public static class SystemChatModes
 
     private static IReadOnlyList<ChatMode> LoadModes()
     {
-        var filePath = ResolvePromptsPath();
+        return LoadModesFromFile(ResolvePromptsPath());
+    }
+
+    /// <summary>
+    /// Loads and validates the system modes from one concrete yaml file. Split from
+    /// <see cref="LoadModes"/> (which resolves the shipped Prompts.yaml) so tests can pin the
+    /// required-mode boot failure — including its message naming the mode id and the file path —
+    /// against a doctored file, without touching the process-wide <see cref="All"/> cache.
+    /// </summary>
+    internal static IReadOnlyList<ChatMode> LoadModesFromFile(string filePath)
+    {
         var modes = ParseModes(File.ReadAllText(filePath));
 
-        ValidateRequiredMode(modes, DefaultModeId);
-        ValidateRequiredMode(modes, MedicalKnowledgeModeId);
-        ValidateRequiredMode(modes, WorkspaceAgentModeId);
+        ValidateRequiredMode(modes, DefaultModeId, filePath);
+        ValidateRequiredMode(modes, MedicalKnowledgeModeId, filePath);
+        ValidateRequiredMode(modes, WorkspaceAgentModeId, filePath);
+        ValidateRequiredMode(modes, CodeReviewDaemonModeId, filePath);
 
         return modes;
     }
@@ -178,11 +229,13 @@ public static class SystemChatModes
             );
     }
 
-    private static void ValidateRequiredMode(IReadOnlyCollection<ChatMode> modes, string modeId)
+    private static void ValidateRequiredMode(IReadOnlyCollection<ChatMode> modes, string modeId, string filePath)
     {
         if (!modes.Any(m => string.Equals(m.Id, modeId, StringComparison.Ordinal)))
         {
-            throw new InvalidOperationException($"{PromptsFileName} must define the required system mode '{modeId}'.");
+            throw new InvalidOperationException(
+                $"The {PromptsFileName} at '{filePath}' must define the required system mode '{modeId}'."
+            );
         }
     }
 

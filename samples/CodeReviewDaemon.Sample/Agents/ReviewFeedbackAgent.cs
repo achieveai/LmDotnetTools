@@ -58,10 +58,11 @@ internal sealed class ReviewFeedbackAgent
 
     /// <summary>
     /// The output contract, restated at the <b>end of the user turn</b> — the last thing the model reads.
-    /// On the S2S path the extraction profile's system prompt is only an <i>appendix</i> to the host's
-    /// <c>workspace-agent</c> mode prompt, which mandates tool use and an action summary and otherwise
-    /// wins; that is what made every August 2026 knowledge run write nothing. Restating the contract here
-    /// puts it where the mode prompt cannot outrank it.
+    /// On the S2S path the extraction profile's system prompt is only an <i>appendix</i> to the mode
+    /// prompt of the host mode <c>LmStreamingModeId</c> names (default <c>code-review-daemon</c>;
+    /// <c>workspace-agent</c> at the time of the incident), which mandates tool use and an action summary
+    /// and otherwise wins; that is what made every August 2026 knowledge run write nothing. Restating the
+    /// contract here puts it where the mode prompt cannot outrank it.
     /// </summary>
     private const string OutputContract = """
 

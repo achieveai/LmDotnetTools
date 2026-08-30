@@ -497,19 +497,35 @@ internal sealed class CodeReviewDaemonOptions
     /// The LmStreaming provider id to provision the review conversation with. Provision carries <b>no model
     /// field</b> — the model is whatever this provider resolves server-side — so this must name a provider on
     /// the review host that yields the intended review model (an OpenAI/Anthropic/Copilot middleware provider,
-    /// since <see cref="LmStreamingModeId"/>'s workspace-agent mode rejects CLI-only/mock providers). Required
-    /// when <see cref="UseS2SReviewAgent"/> is on.
+    /// since the workspace-backed mode <see cref="LmStreamingModeId"/> names — default
+    /// <c>code-review-daemon</c> — rejects CLI-only/mock providers). Required when
+    /// <see cref="UseS2SReviewAgent"/> is on.
     /// </summary>
     public string LmStreamingProviderId { get; init; } = "";
 
     /// <summary>
-    /// The LmStreaming conversation mode the review is provisioned in. Defaults to <c>workspace-agent</c>,
-    /// which binds a sandbox session and surfaces the <c>code-reviewer:*</c> sub-agent tree from the
-    /// workspace's marketplaces — the whole point of the deep-link. A non-workspace mode would open a real
-    /// conversation but an empty/generic sub-agent panel, so this should stay <c>workspace-agent</c> for the
-    /// faithful-link review.
+    /// The LmStreaming conversation mode the review is provisioned in. Defaults to
+    /// <c>code-review-daemon</c> (#628) — the review host's dedicated system mode: Revobot identity,
+    /// sandbox tool discipline, the manager/todo-board delegation protocol, and
+    /// <c>subAgentRequiredTools</c> guaranteeing the board + Agent tools to every restricted
+    /// <c>code-reviewer:*</c> template (#623). Like <c>workspace-agent</c> it binds a sandbox session and
+    /// surfaces the workspace's sub-agent tree — the whole point of the deep-link; a non-workspace mode
+    /// would open a real conversation but an empty/generic sub-agent panel.
+    /// <para>
+    /// The JUDGE and KNOWLEDGE arms provision with this same field, which is why the mode carries only
+    /// identity + discipline: everything review-specific stays in the daemon's appended profile prompt
+    /// (<c>Prompts/daemon-prompts.yaml</c>), delivered per conversation as the provision appendix.
+    /// </para>
+    /// <para>
+    /// Changing the prompts needs no rebuild. Two supported paths: (1) edit <c>Prompts.yaml</c> beside the
+    /// deployed review host's binaries and restart the host — the system mode reloads from that file; or
+    /// (2) copy <c>code-review-daemon</c> in the host's Mode editor (the copy preserves
+    /// <c>subAgentRequiredTools</c>), edit the copy's prompts in the UI, and point this option at the new
+    /// mode id via config — the system mode stays the source-controlled fallback. A configured id the host
+    /// cannot resolve fails the review's provision with an error naming the mode id and the host.
+    /// </para>
     /// </summary>
-    public string LmStreamingModeId { get; init; } = "workspace-agent";
+    public string LmStreamingModeId { get; init; } = "code-review-daemon";
 
     /// <summary>
     /// The code-reviewer marketplace alias attached to the provisioned LmStreaming workspace so the gateway

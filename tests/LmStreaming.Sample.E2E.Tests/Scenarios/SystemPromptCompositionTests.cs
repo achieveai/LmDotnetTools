@@ -153,4 +153,95 @@ public sealed class SystemPromptCompositionTests
                 "the appendix must follow every host-built section, not precede them"
             );
     }
+
+    /// <summary>
+    /// The #628 composition pin, full fidelity: a review conversation provisioned in the
+    /// <c>code-review-daemon</c> mode reaches the model as
+    /// <c>date + mode prompt + workspace enrichment + daemon appendix</c>, in that order. Extends
+    /// the pin above to the daemon's actual mode, whose sandbox capability adds the workspace
+    /// suffix between the mode prompt and the appendix — a section the default-mode test cannot
+    /// observe. Gated on a real sandbox gateway (same prerequisite as
+    /// <see cref="SandboxWorkspaceGatewayE2ETests"/>), because the workspace enrichment only
+    /// exists when a session is actually established; without a gateway the test skips.
+    /// </summary>
+    [SkippableFact]
+    public async Task CodeReviewDaemonMode_ComposesDateThenModeThenWorkspaceThenAppendix_InOrder()
+    {
+        var prereq = SandboxGatewayPrerequisites.Detect();
+        Skip.IfNot(prereq.Available, prereq.SkipReason);
+        using var config = prereq.CreateConfigScope();
+
+        string? promptTheModelReceived = null;
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole(
+                "review-parent",
+                ctx =>
+                {
+                    promptTheModelReceived ??= ctx.SystemPrompt;
+                    return true;
+                }
+            )
+            .Turn(t => t.Text("ack"))
+            .Build();
+
+        // test-anthropic: the provider mode the Workspace-Agent-style sandbox guard accepts, same
+        // as SandboxWorkspaceGatewayE2ETests.
+        using var factory = new E2EWebAppFactory("test-anthropic", new ScriptedBuilder(responder.AsAnthropicHandler()));
+
+        var threadId = $"crd-mode-{Guid.NewGuid():N}";
+
+        // Seed the daemon's appendix the way provision does (same key production reads).
+        var store = factory.Services.GetRequiredService<IConversationStore>();
+        await store.UpdateMetadataAsync(
+            threadId,
+            existing =>
+            {
+                var properties =
+                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
+                properties[SystemPromptAugmenter.AppendixPropertyKey] = AppendixMarker;
+
+                return new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    CurrentRunId = existing?.CurrentRunId,
+                    LatestRunId = existing?.LatestRunId,
+                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    SessionMappings = existing?.SessionMappings,
+                    Properties = properties.ToImmutable(),
+                };
+            }
+        );
+
+        var socket = await factory.ConnectWebSocketAsync(
+            threadId,
+            LmStreaming.Sample.Persistence.SystemChatModes.CodeReviewDaemonModeId
+        );
+        await using var client = new WebSocketTestClient(socket);
+        await client.SendUserMessageAsync("begin the review");
+        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(120));
+
+        frames.ConcatText().Should().Contain("ack");
+        promptTheModelReceived
+            .Should()
+            .NotBeNull("the scripted provider must have received a request to capture a prompt from");
+
+        var prompt = promptTheModelReceived!;
+
+        // The four sections, each present...
+        prompt.Should().StartWith("The current date is", "the date line is prepended at the mode entry point");
+        prompt.Should().Contain("Revobot", "the code-review-daemon mode prompt must reach the model");
+        prompt
+            .Should()
+            .Contain("Your workspace directory is:", "the sandbox workspace enrichment must reach the model");
+        prompt.TrimEnd().Should().EndWith(AppendixMarker, "the daemon's appendix is composed last");
+
+        // ...and in exactly the pinned order: date + mode prompt + workspace enrichment + appendix.
+        var modeIndex = prompt.IndexOf("Revobot", StringComparison.Ordinal);
+        var workspaceIndex = prompt.IndexOf("Your workspace directory is:", StringComparison.Ordinal);
+        var appendixIndex = prompt.IndexOf(AppendixMarker, StringComparison.Ordinal);
+        modeIndex.Should().BePositive("the date line precedes the mode prompt");
+        workspaceIndex.Should().BeGreaterThan(modeIndex, "the workspace enrichment follows the mode prompt");
+        appendixIndex.Should().BeGreaterThan(workspaceIndex, "the appendix follows the workspace enrichment");
+    }
 }

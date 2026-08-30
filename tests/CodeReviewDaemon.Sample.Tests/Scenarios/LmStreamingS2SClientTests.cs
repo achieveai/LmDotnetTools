@@ -111,6 +111,43 @@ public sealed class LmStreamingS2SClientTests
         recorded.Body.Should().Contain("\"subAgentModelId\":null");
     }
 
+    /// <summary>
+    /// #628: an unresolvable mode id used to surface as a bare <c>HttpRequestException</c> ("404")
+    /// naming neither the mode nor the host. It is a configuration/contract failure (bounded
+    /// retries), and the message must name both so the operator can fix
+    /// <c>CodeReviewDaemon:LmStreamingModeId</c> or the host's Prompts.yaml without spelunking.
+    /// </summary>
+    [Fact]
+    public async Task ProvisionAsync_turns_a_404_into_a_contract_error_naming_the_mode_id_and_the_host()
+    {
+        var handler = new FakeHttpMessageHandler().On(
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri!.ToString().Contains("api/conversations", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("{\"error\":\"Mode 'code-review-daemon' not found.\"}"),
+            }
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
+
+        var act = () =>
+            client.ProvisionAsync(
+                "ws-1",
+                "openai",
+                "code-review-daemon",
+                systemPromptAppendix: null,
+                subAgentModelId: null,
+                CancellationToken.None
+            );
+
+        var thrown = await act.Should().ThrowAsync<ReviewHostContractException>();
+        thrown.Which.Message.Should().Contain("code-review-daemon", "the message must name the configured mode id");
+        thrown.Which.Message.Should().Contain("http://localhost:5051", "the message must name the review host");
+        thrown.Which.Message.Should().Contain("LmStreamingModeId", "the message must point at the config key to fix");
+    }
+
     [Fact]
     public async Task ProvisionAsync_sends_a_blank_sub_agent_model_as_null_rather_than_an_empty_string()
     {

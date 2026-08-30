@@ -34,6 +34,53 @@ public class CodeReviewDaemonOptionsTests
             );
     }
 
+    /// <summary>
+    /// #628: reviews provision in the dedicated system mode by default — not the generic
+    /// <c>workspace-agent</c>. The judge and knowledge arms share this field, which is why the mode
+    /// carries only identity + discipline (arm-agnostic) and methodology stays in the per-arm
+    /// appendix. Config override retained.
+    /// </summary>
+    [Fact]
+    public void LmStreamingModeId_DefaultsToTheDedicatedCodeReviewDaemonMode()
+    {
+        new CodeReviewDaemonOptions().LmStreamingModeId.Should().Be("code-review-daemon");
+    }
+
+    /// <summary>
+    /// The cross-project half of the #628 provision pin: the mode id the daemon defaults to must
+    /// exist in the review host's shipped Prompts.yaml, or every S2S provision 404s at runtime.
+    /// The daemon test project deliberately does not reference the host project, so this reads the
+    /// host's source-of-truth file from the repository — the same file
+    /// <c>LmStreaming.Sample.Tests.SystemChatModesTests</c> parses through the production binding.
+    /// </summary>
+    [Fact]
+    public void The_default_mode_id_is_defined_by_the_review_hosts_shipped_PromptsYaml()
+    {
+        var promptsPath = FindRepoFile(Path.Combine("samples", "LmStreaming.Sample", "Prompts.yaml"));
+        promptsPath.Should().NotBeNull("the repository must contain the review host's Prompts.yaml");
+
+        var yaml = File.ReadAllText(promptsPath!);
+        yaml.Should()
+            .Contain(
+                $"- id: {new CodeReviewDaemonOptions().LmStreamingModeId}",
+                "the daemon's default mode must resolve on a host that loads the shipped Prompts.yaml"
+            );
+    }
+
+    private static string? FindRepoFile(string relativePath)
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, relativePath);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
     [Fact]
     public void Pool_and_scoped_tool_defaults_are_conservative()
     {
