@@ -24,6 +24,18 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
     private readonly IDictionary<string, string?>? _settings;
     private readonly Action<IServiceCollection>? _configureServices;
 
+    /// <summary>
+    /// Cancelled as the FIRST step of <see cref="Dispose(bool)"/>, before the server is torn down.
+    /// Every connect helper checks it and links its own token to it, so a connect can never observe
+    /// a half-disposed <c>Server</c> (issue #559: <c>ObjectDisposedException</c> out of
+    /// <c>ConnectWebSocketAsync</c> when a teardown raced an in-flight connect under CI load) —
+    /// it either completes before disposal starts, or fails with a message naming the race.
+    /// </summary>
+    private readonly CancellationTokenSource _lifetime = new();
+
+    private int _inFlightConnects;
+    private int _disposed;
+
     public E2EWebAppFactory(
         string providerMode,
         ITestAgentBuilder builder,
@@ -88,14 +100,42 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
     /// </summary>
     protected override void Dispose(bool disposing)
     {
+        var firstDisposal = Interlocked.Exchange(ref _disposed, 1) == 0;
         try
         {
+            if (disposing && firstDisposal)
+            {
+                // Teardown must not yank Server out from under an in-flight connect: cancel the
+                // lifetime first (which cancels every linked connect token), then wait - bounded,
+                // and loud on breach - for those connects to unwind before the base disposes the
+                // server. A silent proceed here would recreate the exact ObjectDisposedException
+                // race this gate exists to remove.
+                _lifetime.Cancel();
+                var deadline = Environment.TickCount64 + 10_000;
+                while (Volatile.Read(ref _inFlightConnects) > 0)
+                {
+                    if (Environment.TickCount64 >= deadline)
+                    {
+                        throw new InvalidOperationException(
+                            $"E2EWebAppFactory.Dispose timed out after 10s with "
+                                + $"{Volatile.Read(ref _inFlightConnects)} WebSocket connect(s) still in flight "
+                                + "despite their tokens being cancelled - a connect is wedged, and disposing the "
+                                + "server underneath it would only convert that into an unattributable "
+                                + "ObjectDisposedException on some later test."
+                        );
+                    }
+
+                    Thread.Sleep(10);
+                }
+            }
+
             base.Dispose(disposing);
         }
         finally
         {
-            if (disposing)
+            if (disposing && firstDisposal)
             {
+                _lifetime.Dispose();
                 Environment.SetEnvironmentVariable("LM_PROVIDER_MODE", null);
             }
         }
@@ -105,30 +145,20 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
     /// Creates a WebSocket client bound to the in-memory test server and returns a connected
     /// <see cref="System.Net.WebSockets.WebSocket"/> attached to <c>/ws</c>.
     /// </summary>
-    public async Task<System.Net.WebSockets.WebSocket> ConnectWebSocketAsync(
+    public Task<System.Net.WebSockets.WebSocket> ConnectWebSocketAsync(
         string threadId,
         string? modeId = null,
         CancellationToken ct = default,
         IEnumerable<string>? subProtocols = null
     )
     {
-        var wsClient = Server.CreateWebSocketClient();
-        AddSubProtocols(wsClient, subProtocols);
-
         var query = $"threadId={Uri.EscapeDataString(threadId)}";
         if (!string.IsNullOrEmpty(modeId))
         {
             query += $"&modeId={Uri.EscapeDataString(modeId)}";
         }
 
-        var uri = new UriBuilder(Server.BaseAddress)
-        {
-            Scheme = "ws",
-            Path = "/ws",
-            Query = query,
-        }.Uri;
-
-        return await wsClient.ConnectAsync(uri, ct).ConfigureAwait(false);
+        return ConnectCoreAsync("/ws", query, ct, subProtocols);
     }
 
     /// <summary>
@@ -138,26 +168,80 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
     /// <c>parentThreadId</c> and <c>agentId</c> query params the route requires (both mandatory —
     /// the route answers 400 when either is missing).
     /// </summary>
-    public async Task<System.Net.WebSockets.WebSocket> ConnectSubAgentWebSocketAsync(
+    public Task<System.Net.WebSockets.WebSocket> ConnectSubAgentWebSocketAsync(
         string parentThreadId,
         string agentId,
         CancellationToken ct = default,
         IEnumerable<string>? subProtocols = null
     )
     {
-        var wsClient = Server.CreateWebSocketClient();
-        AddSubProtocols(wsClient, subProtocols);
-
         var query = $"parentThreadId={Uri.EscapeDataString(parentThreadId)}&agentId={Uri.EscapeDataString(agentId)}";
 
-        var uri = new UriBuilder(Server.BaseAddress)
-        {
-            Scheme = "ws",
-            Path = "/ws/subagent",
-            Query = query,
-        }.Uri;
+        return ConnectCoreAsync("/ws/subagent", query, ct, subProtocols);
+    }
 
-        return await wsClient.ConnectAsync(uri, ct).ConfigureAwait(false);
+    /// <summary>
+    /// The one connect path, gated on the factory's lifetime. Registers the connect as in-flight
+    /// BEFORE touching <see cref="WebApplicationFactory{TEntryPoint}.Server"/> (whose lazy boot is
+    /// exactly where a racing teardown used to surface as a bare <see cref="ObjectDisposedException"/>),
+    /// re-checks the lifetime after registering so no disposal can slip between check and register,
+    /// and links the caller's token to the lifetime so teardown cancels the connect instead of
+    /// disposing the server underneath it.
+    /// </summary>
+    private async Task<System.Net.WebSockets.WebSocket> ConnectCoreAsync(
+        string path,
+        string query,
+        CancellationToken ct,
+        IEnumerable<string>? subProtocols
+    )
+    {
+        Interlocked.Increment(ref _inFlightConnects);
+        try
+        {
+            ThrowIfTornDown();
+
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+            try
+            {
+                var wsClient = Server.CreateWebSocketClient();
+                AddSubProtocols(wsClient, subProtocols);
+
+                var uri = new UriBuilder(Server.BaseAddress)
+                {
+                    Scheme = "ws",
+                    Path = path,
+                    Query = query,
+                }.Uri;
+
+                return await wsClient.ConnectAsync(uri, linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                // Deliberately unreachable in a healthy test (Dispose drains in-flight connects
+                // before proceeding, so only a connect STARTED before Dispose and cancelled BY it
+                // lands here). Rethrown with the race named so a future regression reads as what it
+                // is, not as a mystery ObjectDisposedException.
+                ThrowIfTornDown();
+                throw;
+            }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _inFlightConnects);
+        }
+    }
+
+    /// <summary>Names the teardown/connect race loudly instead of letting a disposed server speak.</summary>
+    private void ThrowIfTornDown()
+    {
+        if (_lifetime.IsCancellationRequested)
+        {
+            throw new InvalidOperationException(
+                $"WebSocket connect to the {nameof(E2EWebAppFactory)} was attempted during or after its "
+                    + "disposal - the test (or a task it leaked) is connecting while teardown is running. "
+                    + "Keep every connect awaited before the factory's using-scope ends."
+            );
+        }
     }
 
     /// <summary>
