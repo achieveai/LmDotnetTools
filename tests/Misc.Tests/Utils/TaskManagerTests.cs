@@ -2316,6 +2316,368 @@ public class TaskManagerTests
         getTask.Description.Should().Contain("1-based");
     }
 
+    /// <summary>
+    ///     #620 (extends the #607/#611 contract family): every subtaskId parameter must carry the
+    ///     omit-guidance — say it addresses one level BELOW taskId, tell the model to omit it
+    ///     otherwise, and state that a non-positive value is treated as omitted. Reflective over
+    ///     the same contracts the model schema is built from, so a new tool that adds a subtaskId
+    ///     parameter inherits the requirement.
+    /// </summary>
+    [Fact]
+    public void EverySubtaskOrdinalParameter_CarriesTheOmitGuidance()
+    {
+        var subtaskParams = TaskToolContracts()
+            .SelectMany(c => (c.Parameters ?? []).Select(p => (Tool: c.Name, Param: p)))
+            .Where(x => x.Param.Name == "subtaskId")
+            .ToList();
+
+        subtaskParams.Should().NotBeEmpty();
+        subtaskParams
+            .Select(x => x.Tool)
+            .Should()
+            .BeEquivalentTo(
+                ["delete-task", "get-task", "add-note", "edit-note", "delete-note", "list-notes"],
+                "the per-tool assertions below are only meaningful if this is the full subtaskId roster"
+            );
+
+        // Verbatim guidance sentences, not loose substrings — Contains("omit") was satisfied by
+        // "treated as omitted" alone, which made the omit-instruction check vacuous (#631).
+        subtaskParams
+            .Should()
+            .OnlyContain(
+                x => x.Param.Description != null && x.Param.Description.Contains("one level BELOW taskId"),
+                "every subtaskId parameter must state it addresses one level below taskId (#620)"
+            );
+        subtaskParams
+            .Should()
+            .OnlyContain(
+                x => x.Param.Description != null && x.Param.Description.Contains("Omit it unless"),
+                "every subtaskId parameter must carry the verbatim omit instruction (#620/#631)"
+            );
+        subtaskParams
+            .Should()
+            .OnlyContain(
+                x => x.Param.Description != null && x.Param.Description.Contains("Never pass 0"),
+                "every subtaskId parameter must carry the verbatim never-pass-0 warning (#620/#631)"
+            );
+
+        // The tolerance statement is per-tool: the five read/annotate tools state that <= 0 is
+        // treated as omitted; delete-task — destructive, carved out of the tolerance (#631) —
+        // must instead say it refuses, and must NOT claim the tolerance.
+        var tolerant = subtaskParams.Where(x => x.Tool != "delete-task").ToList();
+        tolerant.Should().HaveCount(5);
+        tolerant
+            .Should()
+            .OnlyContain(
+                x => x.Param.Description != null && x.Param.Description.Contains("treated as omitted"),
+                "every tolerant subtaskId parameter must state the non-positive sentinel tolerance (#620)"
+            );
+
+        var deleteTask = subtaskParams.Single(x => x.Tool == "delete-task").Param;
+        deleteTask.Description.Should().Contain("refuses", "delete-task must state its sentinel refusal (#631)");
+        deleteTask
+            .Description.Should()
+            .NotContain("treated as omitted", "delete-task must not claim a tolerance it does not have (#631)");
+    }
+
+    #endregion
+
+    #region Tolerance And Teaching Error Tests (#620)
+
+    /// <summary>
+    ///     Board shape the tolerance tests share: three root tasks, task 3 with subtask 3.1,
+    ///     and 3.1 with its own subtask 3.1.1 — so "3.1" both exists and has subtasks, the
+    ///     exact shape the luna baseline storms hammered. Task 1 gets subtasks 1.1 and 1.2
+    ///     (1.1 with child 1.1.1) plus a note for the note tools.
+    /// </summary>
+    private static TaskManager DeepBoard()
+    {
+        var manager = new TaskManager();
+        _ = manager.AddTask("Task one");
+        _ = manager.AddTask("Task two");
+        _ = manager.AddTask("Task three");
+        _ = manager.AddTask("Sub 1.1", 1);
+        _ = manager.AddTask("Sub 1.2", 1);
+        _ = manager.AddTask("Sub 1.1.1", "1.1");
+        _ = manager.AddTask("Sub 3.1", 3);
+        _ = manager.AddTask("Sub 3.1.1", "3.1");
+        _ = manager.AddNote("1", noteText: "seed note on task 1");
+        return manager;
+    }
+
+    private static FunctionResult InvokeWithSubtaskId(TaskManager manager, string tool, int? subtaskId)
+    {
+        return tool switch
+        {
+            "get-task" => manager.GetTask("1", subtaskId),
+            "add-note" => manager.AddNote("1", subtaskId, "tolerance note"),
+            "edit-note" => manager.EditNote("1", subtaskId, noteIndex: 1, noteText: "edited note"),
+            "delete-note" => manager.DeleteNote("1", subtaskId, noteIndex: 1),
+            "list-notes" => manager.ListNotes("1", subtaskId),
+            _ => throw new ArgumentOutOfRangeException(nameof(tool), tool, "unknown subtaskId tool"),
+        };
+    }
+
+    /// <summary>
+    ///     #620 F1: a non-positive subtaskId can never be a valid 1-based ordinal, and models use
+    ///     0 (and -1) as "none" sentinels — 65% of failing add-note calls in the #617 corpus. The
+    ///     sentinel call must behave EXACTLY as the omitted call: same result text, same success
+    ///     flag, same resulting board. One case per tool that carries the tolerance, per sentinel.
+    ///     delete-task is deliberately ABSENT: the destructive tool refuses the sentinel instead
+    ///     (#631 review), pinned by <see cref="DeleteTask_SentinelSubtaskId_RefusesAndLeavesTheBoardUnchanged" />.
+    /// </summary>
+    [Theory]
+    [InlineData("get-task", 0)]
+    [InlineData("get-task", -1)]
+    [InlineData("add-note", 0)]
+    [InlineData("add-note", -1)]
+    [InlineData("edit-note", 0)]
+    [InlineData("edit-note", -1)]
+    [InlineData("delete-note", 0)]
+    [InlineData("delete-note", -1)]
+    [InlineData("list-notes", 0)]
+    [InlineData("list-notes", -1)]
+    public void SubtaskIdSentinel_BehavesExactlyAsOmitted(string tool, int sentinel)
+    {
+        var withSentinel = DeepBoard();
+        var withOmitted = DeepBoard();
+
+        var sentinelResult = InvokeWithSubtaskId(withSentinel, tool, sentinel);
+        var omittedResult = InvokeWithSubtaskId(withOmitted, tool, null);
+
+        sentinelResult.IsError.Should().BeFalse("a <= 0 subtaskId is a 'none' sentinel, not an error (#620)");
+        sentinelResult.Text.Should().Be(omittedResult.Text);
+        sentinelResult.ErrorCode.Should().Be(omittedResult.ErrorCode);
+        withSentinel.GetMarkdown().Should().Be(withOmitted.GetMarkdown(), "the board must end up identical");
+    }
+
+    /// <summary>
+    ///     #631 blocker 1: delete-task is carved OUT of the sentinel tolerance. On the one
+    ///     destructive tool, treating a &lt;= 0 subtaskId as omitted would convert a 0-based
+    ///     confusion mistake into silent subtree destruction — and the baseline shows the
+    ///     sentinel family is entirely read/annotate-side (delete-task: 2 calls, 0 errors). So
+    ///     the sentinel refuses with the teaching text and the board stays byte-identical.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void DeleteTask_SentinelSubtaskId_RefusesAndLeavesTheBoardUnchanged(int sentinel)
+    {
+        var manager = DeepBoard();
+        var before = manager.GetMarkdown();
+
+        var result = manager.DeleteTask("1", sentinel);
+
+        result.IsError.Should().BeTrue("delete-task gets no sentinel tolerance (#631)");
+        result.ErrorCode.Should().Be("task_not_found");
+        result.Text.Should().StartWith("Error: ");
+        result.Text.Should().Contain($"Task '1' has no subtask {sentinel}");
+        result.Text.Should().Contain("one level BELOW taskId");
+        result.Text.Should().Contain("If you meant task '1' itself, omit subtaskId");
+
+        // Non-vacuity: the parent and its subtree survive, byte for byte.
+        manager.GetMarkdown().Should().Be(before, "a refused delete must not change the board");
+        manager.GetTask("1").IsError.Should().BeFalse("the parent task must survive");
+        manager.GetTask("1.1").IsError.Should().BeFalse("the subtree must survive");
+    }
+
+    /// <summary>
+    ///     #631 blocker 1, happy path unchanged: omitting subtaskId still deletes the top-level
+    ///     task itself (that is the documented way to delete it; only the explicit sentinel is
+    ///     refused).
+    /// </summary>
+    [Fact]
+    public void DeleteTask_OmittedSubtaskId_StillDeletesTheTopLevelTask()
+    {
+        var manager = DeepBoard();
+
+        var result = manager.DeleteTask("2");
+
+        result.IsError.Should().BeFalse();
+        result.Text.Should().Contain("Deleted task 2");
+        manager.GetTask("2").IsError.Should().BeTrue("task 2 must be gone");
+    }
+
+    /// <summary>
+    ///     #620 regression pin: the gpt-5.6-luna baseline's exact storm shape (75.7% add-note
+    ///     error rate, 14 retry storms, max 72 consecutive) — add-note with a dotted taskId, a
+    ///     subtaskId:0 sentinel, on a board where the dotted task exists and itself has subtasks.
+    ///     Driven through the reflective tool handler with the storm's own argument shape. The
+    ///     note must land on the dotted task itself, with no error.
+    /// </summary>
+    [Fact]
+    public async Task AddNoteHandler_LunaStormShape_LandsTheNoteOnTheDottedTask()
+    {
+        var manager = DeepBoard();
+        var addNote = new TypeFunctionProvider(manager).GetFunctions().First(f => f.Contract.Name == "add-note");
+
+        var result = await addNote.Handler(
+            """{"noteText":"storm evidence","subtaskId":0,"taskId":"3.1"}""",
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        resolved.Payload.IsError.Should().BeFalse("the sentinel pattern must be legal (#620)");
+        resolved.Payload.ErrorCode.Should().BeNull();
+
+        manager.ListNotes("3.1").Text.Should().Contain("storm evidence", "the note lands on task 3.1 itself");
+        manager.ListNotes("3.1.1").Text.Should().Be("task 3.1.1 has no notes.", "no child task takes the note");
+    }
+
+    /// <summary>
+    ///     #620 F1: a genuinely wrong POSITIVE ordinal still fails, but the error now teaches the
+    ///     addressing model: name the missing ordinal, say subtaskId goes one level below taskId,
+    ///     spell out which id the call actually named, and tell the model to omit the parameter
+    ///     if it meant the taskId itself. Both lookup routes — the shared FindTaskWithReference
+    ///     seam (get-task and the note tools) and delete-task's own subtask lookup — must say it.
+    /// </summary>
+    [Theory]
+    [InlineData("get-task")]
+    [InlineData("add-note")]
+    [InlineData("delete-task")]
+    public void WrongPositiveOrdinal_TeachesTheOneLevelBelowRule(string tool)
+    {
+        var manager = DeepBoard();
+
+        var result = tool switch
+        {
+            "get-task" => manager.GetTask("1.1", 7),
+            "add-note" => manager.AddNote("1.1", 7, "text"),
+            "delete-task" => manager.DeleteTask("1.1", 7),
+            _ => throw new ArgumentOutOfRangeException(nameof(tool), tool, "unknown tool"),
+        };
+
+        result.IsError.Should().BeTrue("refusal semantics for a real wrong ordinal are unchanged");
+        result.ErrorCode.Should().Be("task_not_found");
+        result.Text.Should().StartWith("Error: ");
+        result.Text.Should().Contain("Task '1.1' has no subtask 7");
+        result.Text.Should().Contain("one level BELOW taskId");
+        result.Text.Should().Contain("'1.1.7'", "the error spells out the id the call actually named");
+        result.Text.Should().Contain("If you meant task '1.1' itself, omit subtaskId");
+        result.Text.Should().Contain("1-based");
+    }
+
+    /// <summary>
+    ///     #620 F3: the claim-gate refusal keeps its semantics (same trigger, same code) but the
+    ///     message now names the exact sequence the model must run: claim-task with your agent
+    ///     name, then update-task to in progress, then completed.
+    /// </summary>
+    [Fact]
+    public void CompleteWithoutClaim_NamesTheExactClaimSequence()
+    {
+        var manager = new TaskManager();
+        _ = manager.AddTask("Unclaimed task");
+
+        var result = manager.UpdateTask("1", "completed");
+
+        result.IsError.Should().BeTrue("refusal semantics are unchanged (#620 F3)");
+        result.ErrorCode.Should().Be("task_not_claimed");
+        result.Text.Should().Contain("claim-task with your agent name");
+        result.Text.Should().Contain("then update-task to 'in progress'");
+        result.Text.Should().Contain("then 'completed'");
+    }
+
+    /// <summary>
+    ///     Non-vacuity control for the gate: the sequence the error prescribes actually works,
+    ///     and a claimed in-progress task still completes.
+    /// </summary>
+    [Fact]
+    public void CompleteAfterPrescribedSequence_StillSucceeds()
+    {
+        var manager = new TaskManager();
+        _ = manager.AddTask("Claimed task");
+
+        manager.ClaimTask("1", "rev-a").IsError.Should().BeFalse();
+        manager.UpdateTask("1", "in progress", "rev-a").IsError.Should().BeFalse();
+
+        var result = manager.UpdateTask("1", "completed");
+
+        result.IsError.Should().BeFalse();
+        result.Text.Should().Contain("Updated task 1 status to 'completed'");
+    }
+
+    /// <summary>
+    ///     #620 F4: status:"all" is accepted as no-filter. The default already lists everything,
+    ///     so "all" must return the byte-identical unfiltered list rather than an invalid-status
+    ///     error. Case-insensitive, because the sentinel arrives in whatever case the model picks.
+    /// </summary>
+    [Theory]
+    [InlineData("all")]
+    [InlineData("All")]
+    [InlineData("ALL")]
+    public void ListTasks_StatusAll_ReturnsTheUnfilteredList(string all)
+    {
+        var manager = DeepBoard();
+        _ = manager.ClaimTask("2", "rev-a");
+        _ = manager.UpdateTask("2", "completed");
+
+        var unfiltered = manager.ListTasks();
+        var result = manager.ListTasks(all);
+
+        result.IsError.Should().BeFalse("status:'all' is a no-filter sentinel, not an error (#620 F4)");
+        result.Text.Should().Be(unfiltered.Text);
+
+        // Non-vacuity: a real filter still filters, so "all" matching the default is meaningful.
+        manager.ListTasks("completed").Text.Should().NotBe(unfiltered.Text);
+    }
+
+    /// <summary>
+    ///     #620 "no behavior change for valid calls": one happy-path pin per touched tool, and
+    ///     the legitimate compositional case — taskId "1.1" + subtaskId 1 addresses "1.1.1" —
+    ///     which the tolerance must not break (it claims only &lt;= 0).
+    /// </summary>
+    [Fact]
+    public void ValidSubtaskCalls_KeepTheirCompositionalMeaning()
+    {
+        var manager = DeepBoard();
+
+        // add-note: taskId "1.1" + subtaskId 1 = note on "1.1.1", one level below.
+        var addNote = manager.AddNote("1.1", 1, "compositional note");
+        addNote.IsError.Should().BeFalse();
+        addNote.Text.Should().Be("Added note to subtask 1 of task 1.1.");
+        manager.ListNotes("1.1.1").Text.Should().Contain("compositional note");
+
+        // get-task: same addressing.
+        var getTask = manager.GetTask("1.1", 1);
+        getTask.IsError.Should().BeFalse();
+        getTask.Text.Should().Contain("Subtask 1 of task 1.1");
+
+        // list-notes: reads the same note back through the pair form.
+        var listNotes = manager.ListNotes("1.1", 1);
+        listNotes.IsError.Should().BeFalse();
+        listNotes.Text.Should().Contain("compositional note");
+
+        // edit-note: rewrites it in place.
+        var editNote = manager.EditNote("1.1", 1, noteIndex: 1, noteText: "edited compositional note");
+        editNote.IsError.Should().BeFalse();
+        manager.ListNotes("1.1.1").Text.Should().Contain("edited compositional note");
+
+        // delete-note: removes it.
+        var deleteNote = manager.DeleteNote("1.1", 1, noteIndex: 1);
+        deleteNote.IsError.Should().BeFalse();
+        manager.ListNotes("1.1.1").Text.Should().Be("task 1.1.1 has no notes.");
+
+        // delete-task: removes only the addressed child, not the parent.
+        var deleteTask = manager.DeleteTask("1.1", 1);
+        deleteTask.IsError.Should().BeFalse();
+        deleteTask.Text.Should().Contain("Deleted subtask 1 from task 1.1");
+        manager.GetTask("1.1").IsError.Should().BeFalse("the parent must survive");
+    }
+
+    /// <summary>
+    ///     #620 F4 guard: a real status filter is untouched — only the literal "all" sentinel is
+    ///     re-routed, so a typo still gets the invalid-status error.
+    /// </summary>
+    [Fact]
+    public void ListTasks_InvalidStatus_StillFails()
+    {
+        var result = DeepBoard().ListTasks("sideways");
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("invalid_status");
+    }
+
     #endregion
 
     #region Error Signalling Tests
