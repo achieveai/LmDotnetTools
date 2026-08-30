@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import { BUILT_IN_TOOL_GROUP } from '@/types/chatMode';
+import { BUILT_IN_TOOL_GROUP, SANDBOX_TOOL_GROUP } from '@/types/chatMode';
 import type { ChatMode, ChatModeCreateUpdate, ToolDefinition } from '@/types/chatMode';
 import { selectionFromMode, selectionToModeFields, toolGroup, toolId } from '@/utils/modeToolSelection';
 import ToolCheckboxList from './ToolCheckboxList.vue';
@@ -48,11 +48,22 @@ const requiredToolIds = ref<string[]>([]);
 const preservedRequiredToolIds = ref<string[]>([]);
 
 /**
- * Provider built-ins (e.g. `web_search`) execute inside the provider, not as registered tool
- * contracts, so they can never be granted to a sub-agent — the picker leaves that group out.
+ * Two groups are left out of this picker because a pick there could not do what it says:
+ * - Provider built-ins (e.g. `web_search`) execute inside the provider, not as registered tool
+ *   contracts, so they can never be granted to a sub-agent.
+ * - Sandbox tools come from a live gateway with no static roster, so the server resolves a
+ *   `sandbox:*` requirement to nothing — offering the row here would recreate the exact #623
+ *   silent-failure shape this picker exists to eliminate. (Excluding the group also keeps the
+ *   picker's "starts its own sandbox session" note honest: required picks never feed
+ *   `enabledCapabilityTools`, so they never open a sandbox session.)
+ * A `sandbox:*`/`sandbox:tool` id stored in the mode anyway (hand-edited YAML) still round-trips
+ * via the preserved-ids path below; the server logs the `sandbox:*` wildcard as unresolved.
  */
 const requiredToolsCatalog = computed(() =>
-  props.tools.filter((tool) => toolGroup(tool) !== BUILT_IN_TOOL_GROUP)
+  props.tools.filter((tool) => {
+    const group = toolGroup(tool);
+    return group !== BUILT_IN_TOOL_GROUP && group !== SANDBOX_TOOL_GROUP;
+  })
 );
 
 function loadRequiredTools(mode: ChatMode | null | undefined): void {

@@ -77,6 +77,9 @@ export const QUALIFIED_TOOL_GROUPS = ['sandbox', 'subagents', 'workflow'] as con
 /** The group whose tools are selected through `enabledBuiltInTools`. */
 export const BUILT_IN_TOOL_GROUP = 'builtin';
 
+/** The qualified group whose tools come from a live sandbox gateway rather than a static roster. */
+export const SANDBOX_TOOL_GROUP = 'sandbox';
+
 /** The token that selects every tool in a qualified group, now and in future. */
 export const WILDCARD_TOOL = '*';
 

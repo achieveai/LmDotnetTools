@@ -65,4 +65,35 @@ public sealed class ModeSubAgentRequiredToolsTests
         ModeSubAgentRequiredTools.Resolve([]).Should().BeNull();
         ModeSubAgentRequiredTools.Resolve(["", "   "]).Should().BeNull();
     }
+
+    /// <summary>
+    /// PR #626 review F-004: patterns that expand to nothing usable must be reported, not
+    /// swallowed — a dynamic-group wildcard (<c>sandbox:*</c> has no static roster) and a typo'd
+    /// group (<c>taks:*</c> does not split, so it passes through as an inert name).
+    /// </summary>
+    [Fact]
+    public void UnresolvablePatterns_AreReported_AndValidOnesAreNot()
+    {
+        var reported = new List<string>();
+
+        var resolved = ModeSubAgentRequiredTools.Resolve(
+            ["tasks:*", "claim-task", "sandbox:*", "taks:*", "subagents:SendMessage"],
+            reported.Add
+        );
+
+        reported.Should().Equal("sandbox:*", "taks:*");
+        // Reporting does not change resolution behavior: the typo'd entry still passes through as
+        // an inert name, and everything valid still resolves.
+        resolved.Should().Contain(["claim-task", "SendMessage", "taks:*"]);
+    }
+
+    [Fact]
+    public void BareNamesWithoutPatternSyntax_AreNeverReportedAsUnresolved()
+    {
+        var reported = new List<string>();
+
+        _ = ModeSubAgentRequiredTools.Resolve(["claim-task", "get_weather"], reported.Add);
+
+        reported.Should().BeEmpty("a plain bare name may legitimately match a runtime contract");
+    }
 }

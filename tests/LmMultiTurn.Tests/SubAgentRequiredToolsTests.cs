@@ -250,11 +250,35 @@ public sealed class SubAgentRequiredToolsTests : IAsyncLifetime
         logger.CountAtLevel(LogLevel.Warning, WarningMarker).Should().Be(1);
     }
 
+    /// <summary>
+    /// PR #626 review F-003: the #623 incident's VERBATIM dispatch line cites no hyphenated tool
+    /// name and no board phrase, so it must trigger the warning on the marker heuristic alone —
+    /// no <see cref="SubAgentOptions.TaskAssignmentProbe"/> is wired here, pinning the ordering
+    /// where the primary dispatches before assigning any board task.
+    /// </summary>
+    [Fact]
+    public async Task VerbatimIncidentDispatchLine_LogsTheWarning_WithoutTheAssignmentProbe()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(
+            RestrictedTemplate(),
+            options => options with { TaskToolNames = [TaskTool, SecondTaskTool] },
+            logger: logger
+        );
+
+        _ = await SpawnChildAsync(manager, task: "Claim Todo 2.1 under name correctness-reviewer");
+
+        logger.CountAtLevel(LogLevel.Warning, WarningMarker).Should().Be(1);
+    }
+
     [Fact]
     public void ReferencesTodoBoard_MatchesTheDocumentedMarkers_CaseInsensitively()
     {
         SubAgentManager.ReferencesTodoBoard("Claim Todo 2.1 via CLAIM-TASK.").Should().BeTrue();
         SubAgentManager.ReferencesTodoBoard("Work the todo board top to bottom.").Should().BeTrue();
+        // The incident's literal phrasing (F-003): spaced imperatives, no tool-name citation.
+        SubAgentManager.ReferencesTodoBoard("Claim Todo 2.1 under name correctness-reviewer").Should().BeTrue();
+        SubAgentManager.ReferencesTodoBoard("Please claim task 3 and start.").Should().BeTrue();
         SubAgentManager.ReferencesTodoBoard("Summarize the design doc.").Should().BeFalse();
         SubAgentManager.ReferencesTodoBoard(null).Should().BeFalse();
     }

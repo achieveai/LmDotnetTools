@@ -62,8 +62,10 @@ public sealed record AgentProfile(
     public string? SubAgentPromptPlacement { get; init; }
 
     /// <summary>
-    /// Tool names / group patterns (the same id language as the mode's tool selection, e.g.
-    /// <c>tasks:*</c>, <c>subagents:*</c>, or exact bare tool names) that every sub-agent spawned
+    /// Tool names / group patterns (a SUPERSET of the mode's tool-selection id language, e.g.
+    /// <c>tasks:*</c>, <c>subagents:*</c>, or exact bare tool names — the <c>group:*</c> expansion
+    /// over unqualified groups is specific to this field; the mode's enabled-tools list matches
+    /// exact names only) that every sub-agent spawned
     /// under a conversation running this profile must carry, unioned into each spawn's resolved
     /// toolset AFTER the sub-agent template's own <c>tools:</c> restriction is applied (#623). The
     /// host resolves the patterns to concrete names and intersects with what the mode itself

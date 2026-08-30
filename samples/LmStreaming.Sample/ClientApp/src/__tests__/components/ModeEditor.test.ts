@@ -100,6 +100,15 @@ describe('ModeEditor required sub-agent tools', () => {
     { name: 'list-tasks', group: 'tasks', groupLabel: 'Task Management' },
     { name: 'get_weather', group: 'sample', groupLabel: 'Sample Tools' },
     { name: 'web_search', group: 'builtin', groupLabel: 'Provider Built-ins' },
+    {
+      name: 'All workspace tools',
+      id: 'sandbox:*',
+      group: 'sandbox',
+      groupLabel: 'Workspace',
+      isWildcard: true,
+      requiresSandbox: true,
+    },
+    { name: 'Read', id: 'sandbox:Read', group: 'sandbox', groupLabel: 'Workspace', requiresSandbox: true },
   ];
 
   const requiredSection = (wrapper: ReturnType<typeof mount>) =>
@@ -119,6 +128,39 @@ describe('ModeEditor required sub-agent tools', () => {
     );
     expect(section.find('[data-testid="tool-claim-task"]').exists()).toBe(true);
     expect(section.find('[data-testid="tool-web_search"]').exists()).toBe(false);
+  });
+
+  // PR #626 review F-001: the server resolves a `sandbox:*` requirement to nothing (the sandbox
+  // roster is live-gateway-only), so offering the row here would let the picker create a silently
+  // inert requirement — the exact #623 failure shape this picker exists to eliminate.
+  it('excludes the sandbox group, whose requirements the server cannot resolve', () => {
+    const wrapper = mount(ModeEditor, { props: { mode: null, tools: catalog } });
+
+    const section = requiredSection(wrapper);
+    expect(section.find('[data-testid="tool-sandbox:*"]').exists()).toBe(false);
+    expect(section.find('[data-testid="tool-sandbox:Read"]').exists()).toBe(false);
+    expect(section.find('[data-testid="tool-group-sandbox"]').exists()).toBe(false);
+
+    // The same rows stay available where they belong: the Enabled Tools picker.
+    expect(wrapper.find('[data-testid="tool-sandbox:*"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="tool-sandbox:Read"]').exists()).toBe(true);
+  });
+
+  it('preserves a stored sandbox requirement it cannot render instead of dropping it', async () => {
+    const wrapper = mount(ModeEditor, {
+      props: {
+        mode: { ...baseMode, subAgentRequiredTools: ['sandbox:*', 'claim-task'] },
+        tools: catalog,
+      },
+    });
+
+    await requiredSection(wrapper).get('[data-testid="tool-list-tasks"]').setValue(true);
+    await wrapper.get('form').trigger('submit');
+
+    const saved = lastSave(wrapper).subAgentRequiredTools;
+    expect(saved).toContain('sandbox:*');
+    expect(saved).toContain('claim-task');
+    expect(saved).toContain('list-tasks');
   });
 
   it('loads an existing mode\'s required tools as ticked, independent of Enabled Tools', () => {

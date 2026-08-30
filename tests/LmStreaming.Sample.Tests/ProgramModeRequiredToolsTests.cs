@@ -1,7 +1,9 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using LmStreaming.Sample.Services;
+using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests;
 
@@ -116,5 +118,49 @@ public sealed class ProgramModeRequiredToolsTests
             .Should()
             .BeFalse("a completed task is not an open assignment");
         global::Program.HasOpenTaskAssignedTo(taskManager, "stranger").Should().BeFalse();
+    }
+
+    /// <summary>
+    /// PR #626 review F-003: both sides of the compare are human-typed (assign-task's assignee,
+    /// the spawn's name), so a casing mismatch must not silence the warning floor's probe.
+    /// </summary>
+    [Fact]
+    public void HasOpenTaskAssignedTo_MatchesTheAssignee_CaseInsensitively()
+    {
+        var taskManager = new TaskManager();
+        _ = taskManager.BulkInitialize([new TaskManager.BulkTaskItem { Task = "Board task" }]);
+        _ = taskManager.AssignTask(taskManager.GetTasks()[0].Id, "boardworker");
+
+        global::Program.HasOpenTaskAssignedTo(taskManager, "BoardWorker").Should().BeTrue();
+    }
+
+    /// <summary>
+    /// PR #626 review F-004: the composition root turns an unresolvable required-tool pattern into
+    /// a Warning naming the mode and the pattern — the only signal an operator hand-editing
+    /// Prompts.yaml gets that a mode is typo'd rather than enforced.
+    /// </summary>
+    [Fact]
+    public void ApplyModeRequiredTools_LogsAWarning_ForAnUnresolvablePattern()
+    {
+        var logger = new CapturingLogger<object>();
+        var options = new SubAgentOptions { Templates = new Dictionary<string, SubAgentTemplate>() };
+
+        var applied = global::Program.ApplyModeRequiredTools(options, Profile(["sandbox:*", "claim-task"]), logger);
+
+        logger.CountAtLevel(LogLevel.Warning, "sandbox:*").Should().Be(1);
+        logger.MessagesAtLevel(LogLevel.Warning)[0].Should().Contain("mode-1", "the line must name the mode");
+        // The warning does not block what DID resolve.
+        applied.RequiredToolNames.Should().Equal("claim-task");
+    }
+
+    [Fact]
+    public void ApplyModeRequiredTools_LogsNothing_WhenEveryPatternResolves()
+    {
+        var logger = new CapturingLogger<object>();
+        var options = new SubAgentOptions { Templates = new Dictionary<string, SubAgentTemplate>() };
+
+        _ = global::Program.ApplyModeRequiredTools(options, Profile(["tasks:*", "claim-task"]), logger);
+
+        logger.MessagesAtLevel(LogLevel.Warning).Should().BeEmpty();
     }
 }

@@ -3273,6 +3273,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         "update-task",
         "list-tasks",
         "bulk-initialize",
+        // Spaced variants: the #623 incident's literal dispatch line was "Claim Todo 2.1 under
+        // name correctness-reviewer" — no hyphenated tool name, no board phrase — so the marker
+        // heuristic must catch the plain-English imperative too, not only tool-name citations.
+        "claim task",
+        "claim todo",
         "todo board",
         "task board",
         "todo list",

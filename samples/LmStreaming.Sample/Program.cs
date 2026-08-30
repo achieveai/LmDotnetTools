@@ -3483,7 +3483,7 @@ public partial class Program
         if (sandboxSession is null)
         {
             return ApplyCharacteristicsAgentFactory(
-                ApplyModeRequiredTools(ApplyModeSubAgentPrompt(baseOptions, mode), mode),
+                ApplyModeRequiredTools(ApplyModeSubAgentPrompt(baseOptions, mode), mode, logger),
                 characteristicsAgentFactory
             );
         }
@@ -3504,7 +3504,11 @@ public partial class Program
         // Folded AFTER enrichment so the fragment lands on every tier uniformly — built-in,
         // workspace-discovered, and marketplace templates alike.
         return ApplyCharacteristicsAgentFactory(
-            ApplyModeRequiredTools(ApplyModeSubAgentPrompt(baseOptions with { Templates = templates }, mode), mode),
+            ApplyModeRequiredTools(
+                ApplyModeSubAgentPrompt(baseOptions with { Templates = templates }, mode),
+                mode,
+                logger
+            ),
             characteristicsAgentFactory
         );
     }
@@ -3515,11 +3519,26 @@ public partial class Program
     /// AFTER its template's <c>tools:</c> restriction, at every spawn depth (the options travel to
     /// child managers verbatim). A mode without the property returns the options INSTANCE unchanged,
     /// keeping today's behavior byte-for-byte; the mode-exposure intersection happens at spawn time,
-    /// where the union is bounded by the parent's actual contracts.
+    /// where the union is bounded by the parent's actual contracts. A pattern that expands to
+    /// nothing usable (a dynamic-group wildcard like <c>sandbox:*</c>, or a typo'd group) is logged
+    /// as a Warning naming the mode and the pattern — an operator hand-editing Prompts.yaml must be
+    /// able to tell an enforced mode from a typo'd one (#623 review F-004).
     /// </summary>
-    internal static SubAgentOptions ApplyModeRequiredTools(SubAgentOptions options, AgentProfile mode)
+    internal static SubAgentOptions ApplyModeRequiredTools(
+        SubAgentOptions options,
+        AgentProfile mode,
+        Microsoft.Extensions.Logging.ILogger? logger = null
+    )
     {
-        var resolved = ModeSubAgentRequiredTools.Resolve(mode.SubAgentRequiredTools);
+        var resolved = ModeSubAgentRequiredTools.Resolve(
+            mode.SubAgentRequiredTools,
+            onUnresolved: pattern =>
+                logger?.LogWarning(
+                    "Mode {ModeId} SubAgentRequiredTools pattern {Pattern} did not resolve to any tool and will not be enforced",
+                    mode.Id,
+                    pattern
+                )
+        );
         return resolved is null ? options : options with { RequiredToolNames = resolved };
     }
 
@@ -3542,7 +3561,10 @@ public partial class Program
         static bool HasOpenAssignment(TaskManager.TaskItem task, string agentName) =>
             (
                 task.Status is not TaskManager.TaskStatus.Completed and not TaskManager.TaskStatus.Removed
-                && string.Equals(task.Assignee, agentName, StringComparison.Ordinal)
+                // Case-insensitive: agent names are human-typed on both sides (assign-task's
+                // assignee and the spawn's name), and a casing mismatch silencing the warning is
+                // exactly the #623 failure shape.
+                && string.Equals(task.Assignee, agentName, StringComparison.OrdinalIgnoreCase)
             ) || task.SubTasks.Any(sub => HasOpenAssignment(sub, agentName));
     }
 

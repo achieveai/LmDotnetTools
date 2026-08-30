@@ -78,9 +78,11 @@ public record ChatMode
 
     /// <summary>
     /// Tool ids / group patterns every sub-agent spawned in this mode is GUARANTEED to carry, even
-    /// when its agent template declares a restricted <c>tools:</c> list (#623). Uses the same id
-    /// language as the mode's own tool selection — bare tool names (<c>claim-task</c>), qualified
-    /// ids (<c>subagents:SendMessage</c>), and <c>group:*</c> wildcards (<c>tasks:*</c>). Resolved
+    /// when its agent template declares a restricted <c>tools:</c> list (#623). Uses a SUPERSET of
+    /// the mode's tool-selection id language — bare tool names (<c>claim-task</c>), qualified
+    /// ids (<c>subagents:SendMessage</c>), and <c>group:*</c> wildcards (<c>tasks:*</c>); the
+    /// wildcard expansion over unqualified groups is specific to this field and does NOT work in
+    /// <see cref="EnabledTools"/>, which matches exact names only. Resolved
     /// names are unioned into each spawn's toolset AFTER the template filter, then intersected with
     /// what the mode itself exposes, at every spawn depth. Null/empty = no enforcement — restricted
     /// templates keep stripping exactly as before (opt-in).
