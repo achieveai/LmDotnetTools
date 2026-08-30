@@ -123,7 +123,7 @@ internal sealed class LmStreamingS2SClient
         CancellationToken ct
     )
     {
-        var body = await SendReadAsync(
+        using var response = await ExecuteAsync(
             HttpMethod.Post,
             "api/conversations",
             new
@@ -136,6 +136,26 @@ internal sealed class LmStreamingS2SClient
             },
             ct
         );
+
+        // The host's provision route answers 404 for an unresolvable mode (and for an unknown
+        // workspace) — before this branch existed that surfaced as a bare HttpRequestException
+        // ("response status code does not indicate success: 404"), naming neither the mode nor the
+        // host, on every review. Named here and thrown as a CONTRACT failure (bounded retries):
+        // a mode id the host cannot resolve stays unresolvable until an operator fixes the
+        // configuration or the host's Prompts.yaml, so retrying is pure amplification.
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            var detail = await response.Content.ReadAsStringAsync(ct);
+            throw new ReviewHostContractException(
+                $"The LmStreaming review host at {_baseUrl} refused to provision the review conversation "
+                    + $"(POST api/conversations returned 404). The configured mode id '{modeId}' "
+                    + $"(CodeReviewDaemon:LmStreamingModeId) most likely does not resolve on that host - "
+                    + $"check the host's Prompts.yaml / user modes. Host response: {detail}"
+            );
+        }
+
+        _ = response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync(ct);
         return ReadStringProperty(body, "threadId");
     }
 

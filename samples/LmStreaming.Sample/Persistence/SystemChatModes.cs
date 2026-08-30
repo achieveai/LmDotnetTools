@@ -32,6 +32,14 @@ public static class SystemChatModes
     public const string WorkflowAuthorModeId = "workflow-author";
 
     /// <summary>
+    /// The code-review daemon's review conversation mode ID (#628). The daemon's
+    /// <c>CodeReviewDaemon:LmStreamingModeId</c> defaults to this literal, so the mode is REQUIRED
+    /// at load: a review host that boots without it would 404 every provision instead of failing
+    /// here, at the moment the operator can still read the message.
+    /// </summary>
+    public const string CodeReviewDaemonModeId = "code-review-daemon";
+
+    /// <summary>
     /// Gets all system-defined chat modes.
     /// </summary>
     public static IReadOnlyList<ChatMode> All { get; } = LoadModes();
@@ -64,6 +72,7 @@ public static class SystemChatModes
         ValidateRequiredMode(modes, DefaultModeId);
         ValidateRequiredMode(modes, MedicalKnowledgeModeId);
         ValidateRequiredMode(modes, WorkspaceAgentModeId);
+        ValidateRequiredMode(modes, CodeReviewDaemonModeId);
 
         return modes;
     }

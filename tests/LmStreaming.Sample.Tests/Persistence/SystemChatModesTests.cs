@@ -12,6 +12,7 @@ public class SystemChatModesTests
         modes.Should().Contain(m => m.Id == SystemChatModes.DefaultModeId);
         modes.Should().Contain(m => m.Id == SystemChatModes.MedicalKnowledgeModeId);
         modes.Should().Contain(m => m.Id == SystemChatModes.WorkspaceAgentModeId);
+        modes.Should().Contain(m => m.Id == SystemChatModes.CodeReviewDaemonModeId);
         modes.Should().OnlyContain(m => m.IsSystemDefined);
     }
 
@@ -75,11 +76,13 @@ public class SystemChatModesTests
     [Fact]
     public void OrdinaryModes_RecordNoCapabilitySelectionAndKeepLegacyDefaults()
     {
-        // Every mode that is not one of the two capability modes must still resolve to the legacy
+        // Every mode that is not one of the capability modes must still resolve to the legacy
         // defaults, or this change would quietly strip sub-agents from them.
         var ordinary = SystemChatModes
             .All.Where(m =>
-                m.Id != SystemChatModes.WorkspaceAgentModeId && m.Id != SystemChatModes.WorkflowAuthorModeId
+                m.Id != SystemChatModes.WorkspaceAgentModeId
+                && m.Id != SystemChatModes.WorkflowAuthorModeId
+                && m.Id != SystemChatModes.CodeReviewDaemonModeId
             )
             .ToList();
 
@@ -196,7 +199,95 @@ public class SystemChatModesTests
     [Fact]
     public void All_SystemModes_CarryNoFragmentToday()
     {
-        // Shipping Prompts.yaml declares no fragment, so today's spawn behavior is untouched.
-        SystemChatModes.All.Should().OnlyContain(m => m.SubAgentPrompt == null && m.SubAgentPromptPlacement == null);
+        // Shipping Prompts.yaml declares a fragment only for the code-review-daemon mode (#628 —
+        // pinned separately below); every other mode's spawn behavior stays untouched.
+        SystemChatModes
+            .All.Where(m => m.Id != SystemChatModes.CodeReviewDaemonModeId)
+            .Should()
+            .OnlyContain(m => m.SubAgentPrompt == null && m.SubAgentPromptPlacement == null);
+    }
+
+    // --- The code-review-daemon mode (#628): shipped-yaml parse pins --------------------------
+
+    /// <summary>
+    /// The #628 parse pin: the shipped Prompts.yaml loads the daemon's mode with every field —
+    /// including <c>subAgentRequiredTools</c> and the capability wildcards — through the same
+    /// binding production uses. Removing the mode from the yaml (or any field from the mode)
+    /// turns this red; removing the mode entirely also trips the required-mode load validation.
+    /// </summary>
+    [Fact]
+    public void CodeReviewDaemonMode_LoadsWithAllFields_IncludingRequiredToolsAndCapabilityWildcards()
+    {
+        var mode = SystemChatModes.GetById(SystemChatModes.CodeReviewDaemonModeId);
+
+        mode.Should().NotBeNull();
+        mode!.Name.Should().Be("Code Review Daemon");
+        mode.IsSystemDefined.Should().BeTrue();
+        mode.SystemPrompt.Should().Contain("Revobot");
+        mode.SystemPrompt.Should().Contain("You MUST use the sandbox tools");
+        mode.SystemPrompt.Should().Contain("<manager_mode>");
+        mode.SystemPrompt.Should().Contain("<todo_list_management>");
+        mode.SystemPrompt.Should().Contain("<subagent_delegation>");
+
+        mode.EnabledBuiltInTools.Should().BeEquivalentTo(["web_search"]);
+        mode.EnabledCapabilityTools.Should()
+            .BeEquivalentTo([ToolGroups.Wildcard(ToolGroups.Sandbox), ToolGroups.Wildcard(ToolGroups.SubAgents)]);
+        mode.SubAgentRequiredTools.Should()
+            .BeEquivalentTo([ToolGroups.Wildcard(ToolGroups.Tasks), ToolGroups.Wildcard(ToolGroups.SubAgents)]);
+
+        mode.SubAgentPrompt.Should().Contain("claim the task", "the todo-claim fragment reaches every sub-agent");
+        mode.SubAgentPromptPlacement.Should().Be(ModeSubAgentPrompt.Prepend);
+    }
+
+    /// <summary>
+    /// Set equality against the LIVE TaskManager enumeration (the same rule the workspace-agent
+    /// pin uses): every task tool is enabled plus exactly the web fallback pair — nothing else.
+    /// </summary>
+    [Fact]
+    public void CodeReviewDaemonMode_EnablesEveryTaskManagerTool_PlusTheWebFallbackPair()
+    {
+        var mode = SystemChatModes.GetById(SystemChatModes.CodeReviewDaemonModeId);
+
+        mode!
+            .EnabledTools.Should()
+            .BeEquivalentTo([.. ModeSubAgentRequiredTools.TaskToolNames, "WebSearch", "WebFetch"]);
+    }
+
+    /// <summary>
+    /// The content-split pin (#628): the mode carries only what is immutable per review. The
+    /// reference user mode's posting instruction, accessibility block and model-routing doctrine
+    /// are DROPPED, and the review methodology stays in the daemon's appended profile prompt.
+    /// </summary>
+    [Fact]
+    public void CodeReviewDaemonMode_CarriesNoPostingModelRoutingAccessibilityOrMethodologyContent()
+    {
+        var mode = SystemChatModes.GetById(SystemChatModes.CodeReviewDaemonModeId);
+        var prompt = mode!.SystemPrompt + mode.SubAgentPrompt;
+
+        // Posting is the daemon's commit-gated outbox's job, never the mode's.
+        prompt.Should().NotContain("post-pr-comments").And.NotContain("post-pr-review");
+        // Review methodology (the pr-review skill, COLLECT/SYNTHESIS) lives in the daemon appendix.
+        prompt.Should().NotContain("code-reviewer:pr-review");
+        // Model routing belongs to SubAgentModelId, not prompt doctrine.
+        prompt.Should().NotContain("claude-opus-5").And.NotContain("gpt-5.6").And.NotContain("<cost_priority>");
+        // The audience is a bot conversation; the user-accessibility block does not travel.
+        prompt.Should().NotContain("dyslexic").And.NotContain("ADHD");
+        // Ported prompts must be clean text, not mojibake arrows from the reference mode.
+        prompt.Should().NotContainAny("Γ", "Ç", "î");
+    }
+
+    [Fact]
+    public void CodeReviewDaemonMode_ResolvesSandboxAndSubAgentCapabilities_ButNoWorkflowTools()
+    {
+        var mode = SystemChatModes.GetById(SystemChatModes.CodeReviewDaemonModeId);
+        var caps = ModeCapabilities.Resolve(mode!);
+
+        caps.NeedsSandbox.Should().BeTrue();
+        caps.SandboxToolAllowList.Should().BeNull("the mode declares sandbox:* rather than a list");
+        caps.SubAgents.Should().BeTrue();
+        caps.Collaboration.Should().BeTrue();
+        // Verified for #628: no daemon review path invokes the workflow tools, so the mode omits them.
+        caps.StartWorkflowTools.Should().BeFalse();
+        caps.WorkflowAuthoringTools.Should().BeFalse();
     }
 }
