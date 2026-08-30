@@ -272,7 +272,22 @@ function Get-ReviewHostUncertifiedReason {
         }
         $certPid = [int]$cert.hostPid
         $certPath = [string]$cert.hostPath
-        $certStarted = ([datetime]::Parse($cert.hostStartedAtUtc)).ToUniversalTime()
+        # ConvertFrom-Json (pwsh 7) has ALREADY parsed an ISO-8601 value into a [datetime]
+        # (Kind=Utc for a trailing 'Z'). Feeding that DateTime to [datetime]::Parse coerces it
+        # through ToString(), which drops both the sub-second digits and the Kind, so the
+        # re-parse came back Unspecified and ToUniversalTime() re-applied the local offset -
+        # a certified host read as started +7h in the future, failed the 2s tolerance below,
+        # and every tick reported "the pid was reused". The watchdog then restarted a healthy
+        # host on every backoff expiry (observed every ~30 min, 2026-08-24 through -29),
+        # killing its in-flight sub-agent children. Handle the already-parsed case directly,
+        # and parse a genuine string with RoundtripKind so 'Z' survives as Utc.
+        $certStarted = if ($cert.hostStartedAtUtc -is [datetime]) {
+            $cert.hostStartedAtUtc.ToUniversalTime()
+        }
+        else {
+            [datetime]::Parse([string]$cert.hostStartedAtUtc, [cultureinfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+        }
     }
     catch {
         return "certification marker '$marker' is unusable ($($_.Exception.Message)) - treating the host as uncertified"
