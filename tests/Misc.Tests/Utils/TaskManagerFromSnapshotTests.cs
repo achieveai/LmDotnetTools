@@ -310,4 +310,61 @@ public class TaskManagerFromSnapshotTests
         node.Title.Should().Be($"Level {depth}");
         node.SubTasks.Should().BeEmpty();
     }
+
+    /// <summary>Builds a single-chain board nested exactly <paramref name="depth" /> task levels.</summary>
+    private static TaskManager BuildChainOfDepth(int depth)
+    {
+        var manager = new TaskManager();
+        _ = manager.AddTask("Level 1");
+        var parentId = "1";
+        for (var level = 2; level <= depth; level++)
+        {
+            _ = manager.AddTask($"Level {level}", parentId);
+            parentId = $"{parentId}.1";
+        }
+        return manager;
+    }
+
+    /// <summary>
+    ///     #608 (611/F-002): the practical persistence bound is 31 task levels, NOT the "~60" one
+    ///     might derive from System.Text.Json's default MaxDepth of 64. The snapshot alternates
+    ///     task object and SubTasks array, so task level N sits at JSON depth 1 + 2N — two depth
+    ///     units per level — and 1 + 2N &lt;= 64 gives N = 31. This is the same default-options
+    ///     Serialize call ConversationTodoProjection.SaveAsync performs, so the number the comment
+    ///     there and requirements.md Req 1.3 state cannot silently drift from measured behaviour.
+    /// </summary>
+    [Fact]
+    public void Serialize_ThirtyOneLevelBoard_RoundTripsAtTheDocumentedBound()
+    {
+        const int depth = 31;
+        var json = JsonSerializer.Serialize(BuildChainOfDepth(depth).GetTodoBoardSnapshot("conv-1"));
+
+        var persisted = JsonSerializer.Deserialize<TodoBoardSnapshot>(
+            json,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+        );
+
+        var node = persisted!.Tasks.Single();
+        for (var level = 2; level <= depth; level++)
+        {
+            node = node.SubTasks.Single();
+        }
+        node.Title.Should().Be($"Level {depth}");
+    }
+
+    /// <summary>
+    ///     The other side of the 611/F-002 pin: one level past the bound throws. The exception's
+    ///     message reads "A possible object cycle was detected" — a DEPTH symptom, not an actual
+    ///     cycle, so a log reader must not chase a cycle bug — and at the persistence writer it
+    ///     surfaces as a permanently retrying background write, not a hard failure.
+    /// </summary>
+    [Fact]
+    public void Serialize_ThirtyTwoLevelBoard_ThrowsJsonException_OneLevelPastTheBound()
+    {
+        var snapshot = BuildChainOfDepth(32).GetTodoBoardSnapshot("conv-1");
+
+        var act = () => JsonSerializer.Serialize(snapshot);
+
+        act.Should().Throw<JsonException>().WithMessage("*possible object cycle*");
+    }
 }

@@ -133,22 +133,30 @@ export function normalizeTodoTasks(raw: unknown, depth = 0): TodoTask[] {
 
 /**
  * Counts the task-like entries (usable `id` + `title`, same keep-rule as `normalizeTodoTasks`) in
- * a raw subtree the depth guard dropped. Cycle-safe via an object `seen` set rather than a depth
- * cap — this walk exists precisely because the depth budget is exhausted, and the guard's reason
- * for existing is exactly the cyclic payload this must survive.
+ * a raw subtree the depth guard dropped. Bounded against MALFORMED AND cyclic input, not cycles
+ * alone: the walk is an iterative work-list (no recursion, so an arbitrarily deep acyclic chain
+ * cannot blow the call stack — V8's JSON.parse is iterative and happily delivers one), and the
+ * object `seen` set stops cycle edges from being followed. This walk exists precisely because the
+ * depth budget is already exhausted, so its inputs are exactly the anomalous payloads the
+ * `MAX_DEPTH` guard exists to survive (611/F-001).
  */
-function countDroppedTasks(raw: unknown, seen = new Set<object>()): number {
-  if (!Array.isArray(raw) || seen.has(raw)) return 0;
-  seen.add(raw);
-
+function countDroppedTasks(raw: unknown): number {
+  const seen = new Set<object>();
+  const stack: unknown[] = [raw];
   let count = 0;
-  for (const entry of raw) {
-    if (entry == null || typeof entry !== 'object' || seen.has(entry)) continue;
-    seen.add(entry);
-    const record = entry as Record<string, unknown>;
-    if (typeof record.id !== 'string' || record.id.length === 0) continue;
-    if (typeof record.title !== 'string') continue;
-    count += 1 + countDroppedTasks(record.subTasks, seen);
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!Array.isArray(node) || seen.has(node)) continue;
+    seen.add(node);
+    for (const entry of node) {
+      if (entry == null || typeof entry !== 'object' || seen.has(entry)) continue;
+      seen.add(entry);
+      const record = entry as Record<string, unknown>;
+      if (typeof record.id !== 'string' || record.id.length === 0) continue;
+      if (typeof record.title !== 'string') continue;
+      count += 1;
+      stack.push(record.subTasks);
+    }
   }
   return count;
 }

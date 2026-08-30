@@ -778,7 +778,9 @@ Examples:
             "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
         )]
             string taskId,
-        [Description("Task IDs this task is blocked on. Pass an empty list to clear the block.")]
+        [Description(
+            "Task IDs this task is blocked on (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'. Pass an empty list to clear the block."
+        )]
             List<string>? blockedBy = null
     )
     {

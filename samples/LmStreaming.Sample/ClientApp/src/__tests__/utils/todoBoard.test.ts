@@ -277,6 +277,17 @@ describe('depth guard is VISIBLE truncation, not silent (#608)', () => {
 
     expect(countTruncatedTasks(normalizeTodoTasks(payload))).toBe(1);
   });
+
+  it('counts an arbitrarily deep ACYCLIC dropped subtree without blowing the stack (611/F-001)', () => {
+    // The guard's own comment names "malformed or cyclic" payloads, and V8's JSON.parse is
+    // iterative — it happily hands this code a 10000-level document. The counter runs precisely
+    // when the depth budget is already exhausted, so it must be bounded by a work-list, not the
+    // call stack: a payload the normalizer survived at base must never become a thrown RangeError
+    // that takes out the chat view (applyFrame calls normalizeTodoTasks with no try/catch).
+    const depth = 10_000;
+    const tasks = normalizeTodoTasks(deepWirePayload(depth));
+    expect(countTruncatedTasks(tasks)).toBe(depth - MAX_DEPTH);
+  });
 });
 
 describe('flattenTodoTasks', () => {

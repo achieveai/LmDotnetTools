@@ -2258,7 +2258,7 @@ public class TaskManagerTests
     {
         var idParams = TaskToolContracts()
             .SelectMany(c => (c.Parameters ?? []).Select(p => (Tool: c.Name, Param: p)))
-            .Where(x => x.Param.Name is "taskId" or "parentId")
+            .Where(x => x.Param.Name is "taskId" or "parentId" or "blockedBy")
             .ToList();
 
         idParams.Should().NotBeEmpty();
