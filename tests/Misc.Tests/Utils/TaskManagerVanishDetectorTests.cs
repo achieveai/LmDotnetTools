@@ -140,20 +140,45 @@ public class TaskManagerVanishDetectorTests
     }
 
     /// <summary>
-    ///     Deleting a row must take its whole subtree out of the ledger, not just the row: the children go
-    ///     with it, and each would otherwise be reported as lost the first time anyone looked for it.
+    ///     Deleting a row must take its whole subtree out of the ledger, not just the row: a retained
+    ///     child entry would be published, and then persisted, as a row the board still owes.
     /// </summary>
     [Fact]
-    public void GetTask_ForChildOfADeletedTask_IsSilent_WhileAVanishedIdOnTheSameBoardStillWarns()
+    public void DeletingARow_TakesItsWholeSubtreeOutOfTheLedger()
     {
         var (manager, log) = Rehydrated();
 
         _ = manager.DeleteTask("1");
-        _ = manager.GetTask("1.1");
-        Vanishes(log).Should().BeEmpty("1.1 was deleted along with its parent");
+
+        // Asserted through the CAPTURE, not through a lookup. A lookup of "1.1" stops at the missing
+        // parent and reports "1" (already forgotten), so the child's ledger entry is unreachable that
+        // way — and a test written against the lookup stays green with the subtree walk removed.
+        // The capture is where a retained child entry really shows: it would be published, and then
+        // persisted, as a row the board still owes. (Found by mutation.)
+        manager
+            .GetTodoBoardSnapshot(ThreadId)
+            .MissingTaskIds.Keys.Should()
+            .BeEquivalentTo(["2", "1.2"], "only the ids that vanished are owed; nothing deleted is");
 
         _ = manager.GetTask("2");
         Vanishes(log).Should().ContainSingle();
+    }
+
+    /// <summary>
+    ///     A DOTTED id resolves through a different not-found exit than a subtaskId ordinal does — the
+    ///     path walk inside <c>FindTaskByStringId</c>, not the shared subtask lookup — so it needs its
+    ///     own pin. (Found by mutation: removing the probe at that exit left every other test green.)
+    /// </summary>
+    [Fact]
+    public void DottedLookup_OfAVanishedNestedId_Warns_WhileANeverMintedDottedIdIsSilent()
+    {
+        var (manager, log) = Rehydrated();
+
+        _ = manager.GetTask("1.9");
+        Vanishes(log).Should().BeEmpty("1.9 was never minted under task 1");
+
+        _ = manager.GetTask("1.2");
+        Vanishes(log).Should().ContainSingle().Which.Should().Contain("task 1.2");
     }
 
     /// <summary>
