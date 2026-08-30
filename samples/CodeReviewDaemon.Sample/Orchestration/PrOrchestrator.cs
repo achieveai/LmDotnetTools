@@ -14,25 +14,50 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// </summary>
 internal sealed class PrOrchestrator
 {
+    /// <summary>Cap on the persisted/posted park reason — a barrier deadline lists every unsettled node.</summary>
+    private const int MaxParkReasonLength = 500;
+
     private readonly ReviewStore _store;
     private readonly IReviewStageExecutor _executor;
     private readonly ILogger<PrOrchestrator> _logger;
     private readonly ReviewProgressReporter? _progress;
     private readonly RetryGovernor? _retryGovernor;
+    private readonly int _maxDurableRetryAttempts;
+    private readonly Func<DateTimeOffset> _clock;
+    private readonly IReviewParkNotifier? _parkNotifier;
 
+    /// <summary>
+    /// <c>maxDurableRetryAttempts</c> is the governed failures a run may accumulate DURABLY before it is
+    /// parked permanently; see <see cref="Configuration.CodeReviewDaemonOptions.MaxDurableRetryAttempts"/>
+    /// for why it must sit above <see cref="Configuration.CodeReviewDaemonOptions.MaxContextRetries"/>. It is
+    /// refused below 1 for the reason <see cref="RetryGovernor"/> refuses its own bound there: a non-positive
+    /// budget has no defined meaning, and zero would park every run on its first governed failure.
+    /// <para>
+    /// <c>parkNotifier</c> announces a permanent park on the pull request and is optional — null leaves the
+    /// park silent outside the log, which is what every test and any daemon with no publisher wired does.
+    /// </para>
+    /// </summary>
     public PrOrchestrator(
         ReviewStore store,
         IReviewStageExecutor executor,
         ILogger<PrOrchestrator> logger,
         ReviewProgressReporter? progress = null,
-        RetryGovernor? retryGovernor = null
+        RetryGovernor? retryGovernor = null,
+        int maxDurableRetryAttempts = 10,
+        Func<DateTimeOffset>? clock = null,
+        IReviewParkNotifier? parkNotifier = null
     )
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxDurableRetryAttempts, 1);
+
         _store = store;
         _executor = executor;
         _logger = logger;
         _progress = progress;
         _retryGovernor = retryGovernor;
+        _maxDurableRetryAttempts = maxDurableRetryAttempts;
+        _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        _parkNotifier = parkNotifier;
     }
 
     /// <summary>
@@ -63,6 +88,25 @@ internal sealed class PrOrchestrator
         ArgumentNullException.ThrowIfNull(seed);
 
         var run = _store.CreateOrGetReviewRun(seed);
+
+        // A PERMANENT park ends every path, including this one. It is checked before the reset below rather
+        // than after it precisely because the reset is what made the in-memory park erasable: the reconciler
+        // resumes a stuck run roughly every 45 minutes, cleared the accumulated failures each time, and so the
+        // bound was never reached — three pull requests re-reviewed for 33 hours at 30 minutes of model work
+        // apiece. Deciding to spend another attempt (ReconcileAsync) is still the caller's for a BACKING-OFF
+        // run; it is not on offer for one whose durable budget is gone. The way back is a new commit, which is
+        // a new identity tuple and therefore a new row with a full budget.
+        if (run.ParkedAt is not null)
+        {
+            _logger.LogDebug(
+                "Review run {RunId} (pr {PrId}) is permanently parked since {ParkedAt}; skipping. Reason: {Reason}",
+                run.Id,
+                run.PrId,
+                run.ParkedAt,
+                run.ParkReason
+            );
+            return run;
+        }
 
         // Against the RESOLVED id, not the seed's: creation is idempotent on the §6 identity tuple, so the row
         // that actually gets worked — and therefore the id the governor is holding a park against — can be an
@@ -139,6 +183,7 @@ internal sealed class PrOrchestrator
                     if (IsGovernedFailure(stage, ex))
                     {
                         _retryGovernor?.RecordFailure(run.Id, ex.Message);
+                        await ChargeDurableBudgetAsync(run, stage, ex);
                     }
                     _logger.LogError(ex, "Review run {RunId} failed at stage {Stage}.", run.Id, stage);
                     _progress?.Finished(
@@ -157,6 +202,9 @@ internal sealed class PrOrchestrator
                 if (IsGovernedStage(stage))
                 {
                     _retryGovernor?.RecordSuccess(run.Id);
+                    // The durable half of the same contract. Without it a run that failed persistently and then
+                    // RECOVERED still carries those failures toward a permanent park it no longer deserves.
+                    _store.ClearGovernedFailureCount(run.Id);
                 }
 
                 var workflowStatus = StageMachine.IsComplete(stage) ? WorkflowStatus.Completed : WorkflowStatus.Running;
@@ -178,6 +226,76 @@ internal sealed class PrOrchestrator
             // short-circuit, and the failure→RetryPending rethrow — so a run that never reaches Posted can
             // never leak pool capacity. Uses CancellationToken.None so a cancelled run still returns its slot.
             await _executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Charges one governed failure against the run's DURABLE budget and, once the budget is gone, parks the
+    /// run permanently and announces it.
+    /// </summary>
+    /// <remarks>
+    /// The in-memory <see cref="RetryGovernor"/> already counts, backs off and parks — but its state is a
+    /// dictionary, and <see cref="ReconcileAsync"/> resets it for the run it is handed, which the stranded-run
+    /// reconciler does roughly every 45 minutes. The count therefore never reached the bound and the park
+    /// never fired. This is the same policy written where a resume cannot reach it.
+    /// <para>
+    /// Order matters against the caller: the stage catch has already written <c>RetryPending</c> for this run,
+    /// so the park's <c>Failed</c> must be written AFTER it or the retry status would win.
+    /// </para>
+    /// </remarks>
+    private async Task ChargeDurableBudgetAsync(ReviewRun run, ReviewStage stage, Exception ex)
+    {
+        var attempts = _store.IncrementGovernedFailureCount(run.Id);
+        if (attempts < _maxDurableRetryAttempts)
+        {
+            return;
+        }
+
+        // Truncated because it lands both in a persisted column and in a pull-request comment, and a barrier
+        // deadline's message enumerates every unsettled node in the tree.
+        var message = ex.Message.Length > MaxParkReasonLength ? ex.Message[..MaxParkReasonLength] : ex.Message;
+        var reason = $"{stage}: {message}";
+
+        // False means somebody already parked this row. The notice hangs off this boolean, so a second park
+        // attempt cannot produce a second comment.
+        if (!_store.TryMarkReviewRunParked(run.Id, _clock(), reason))
+        {
+            return;
+        }
+
+        _logger.LogError(
+            "review_run PARKED-PERMANENT run {RunId} pr {PrId} head {HeadSha} after {Attempts} durable "
+                + "attempts at stage {Stage}: {Error}",
+            run.Id,
+            run.PrId,
+            run.HeadSha,
+            attempts,
+            stage,
+            reason
+        );
+
+        if (_parkNotifier is null)
+        {
+            return;
+        }
+
+        try
+        {
+            // CancellationToken.None: the park is already committed, and a shutdown racing the notice would
+            // otherwise leave a permanently parked run with nothing on the PR to explain the silence.
+            await _parkNotifier.NotifyParkedAsync(run, reason, CancellationToken.None);
+        }
+        catch (Exception notifyFailure)
+        {
+            // Swallowed HERE rather than at the notifier, because the justification is the caller's: this runs
+            // inside a catch block that is about to rethrow the stage's own exception, and letting a failed
+            // courtesy comment replace it would hide the actual review failure from every log and every
+            // caller. The park itself is already durable in the store, so nothing is lost but the notice.
+            _logger.LogWarning(
+                notifyFailure,
+                "Review run {RunId} was parked, but the park notice could not be delivered.",
+                run.Id
+            );
         }
     }
 

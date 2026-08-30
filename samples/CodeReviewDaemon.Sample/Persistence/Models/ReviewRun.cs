@@ -91,4 +91,38 @@ internal sealed record ReviewRun
     /// </para>
     /// </summary>
     public string? PrDescription { get; init; }
+
+    // ── Durable retry budget and permanent park (migration v8) ───────────────────────────────────
+    /// <summary>
+    /// How many times a failure this daemon judges STUCK rather than transient
+    /// (<c>PrOrchestrator.IsGovernedFailure</c>) has been charged against this run. Cleared by a governed
+    /// stage succeeding, so a run that recovers does not carry old failures toward a park it no longer
+    /// deserves.
+    /// <para>
+    /// Durable precisely because the in-memory equivalent is not: <see cref="Orchestration.RetryGovernor"/>
+    /// keeps the same count in a dictionary that <c>PrOrchestrator.ReconcileAsync</c> resets every time the
+    /// stranded-run reconciler resumes the run, which is roughly every 45 minutes — so the in-memory bound
+    /// was never reached and a stuck run retried forever. Nothing on the resume path may clear this one.
+    /// </para>
+    /// </summary>
+    public int GovernedFailureCount { get; init; }
+
+    /// <summary>
+    /// When this run was PERMANENTLY parked — it spent its durable budget and nothing will attempt it
+    /// again. Null (the ordinary case) means the run is live work.
+    /// <para>
+    /// This is the authoritative re-pick exclusion, and it is a column rather than a
+    /// <see cref="WorkflowStatus"/> value because status cannot carry it: <c>ListStrandedRuns</c> selects
+    /// <c>workflow_status &lt;&gt; 'Completed'</c>, so a run marked <see cref="WorkflowStatus.Failed"/>
+    /// still matches it. A park is per run, and a run's identity includes <see cref="HeadSha"/>, so a new
+    /// commit opens a new row with a full budget — the escape hatch needs no operator action.
+    /// </para>
+    /// </summary>
+    public DateTimeOffset? ParkedAt { get; init; }
+
+    /// <summary>
+    /// Why this run was parked — the stage and the last error, for the operator reading the row long after
+    /// the log line scrolled past. Null exactly when <see cref="ParkedAt"/> is.
+    /// </summary>
+    public string? ParkReason { get; init; }
 }

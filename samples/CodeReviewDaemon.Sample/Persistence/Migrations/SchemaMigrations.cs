@@ -21,6 +21,7 @@ internal static class SchemaMigrations
         new Migration(5, V5Sql),
         new Migration(6, V6Sql),
         new Migration(7, V7Sql),
+        new Migration(8, V8Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -252,5 +253,37 @@ internal static class SchemaMigrations
     private const string V7Sql = """
         ALTER TABLE review_run ADD COLUMN pr_title       TEXT NULL;
         ALTER TABLE review_run ADD COLUMN pr_description TEXT NULL;
+        """;
+
+    // ── v8: the DURABLE retry budget and the permanent park ──────────────────────────────────────
+    // The daemon already bounded retries — RetryGovernor counts attempts, backs off, and parks after K.
+    // It held that count in a dictionary, and StrandedRunReconciler resumes a stuck run every ~45 minutes
+    // through PrOrchestrator.ReconcileAsync, which resets the governor for the run it is handed. So the
+    // count never survived long enough to reach K. Measured on the mcqdb daemon: 19 parks on 2026-08-28,
+    // then zero from 08-29 onward, the transition landing exactly on the reconciler's first resume — three
+    // pull requests re-reviewed on a loop for 33 hours, 30 minutes of model work discarded each round.
+    //
+    // governed_failure_count is that count made durable. It counts only the failures
+    // PrOrchestrator.IsGovernedFailure already judged to be stuck rather than transient, and it is cleared
+    // by a governed stage SUCCEEDING — never by a resume, which is the whole difference from the in-memory
+    // one. NOT NULL DEFAULT 0 because a row written before this column genuinely has spent none of the
+    // budget, and 0 is what every reader already means by that.
+    //
+    // parked_at is the terminal state, and it is a COLUMN rather than a workflow_status value because
+    // status alone cannot carry it: ListStrandedRuns selects `workflow_status <> 'Completed'`, so a run
+    // marked Failed still matches and would be resumed on the next pass exactly as before. `parked_at IS
+    // NULL` is the one predicate that drops a parked run out of the listings, and the same instant is what
+    // makes parking once-only (`WHERE ... AND parked_at IS NULL`), which is what stops a re-park posting a
+    // second notice. Both NULL-able with no default, for v4's reason: not-parked is genuinely the absence
+    // of a park instant, not a fabricated one.
+    //
+    // A park is per RUN, and a run's identity includes head_sha, so a new commit opens a new row and starts
+    // with a full budget. That is the intended escape hatch and it needs no operator action.
+    //
+    // "O" round-trip UTC text like every other timestamp here, so lexicographic order is chronological.
+    private const string V8Sql = """
+        ALTER TABLE review_run ADD COLUMN governed_failure_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE review_run ADD COLUMN parked_at              TEXT NULL;
+        ALTER TABLE review_run ADD COLUMN park_reason            TEXT NULL;
         """;
 }

@@ -360,6 +360,190 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         executor.FailStageCalls.Should().Be(2, "a transient posting failure must not be parked");
     }
 
+    // ── the durable budget and the permanent park ─────────────────────────────────────────────────
+    //
+    // The in-memory budget above is real but erasable: StrandedRunReconciler resumes a stuck run roughly
+    // every 45 minutes through ReconcileAsync, which resets the governor for that run. Measured on the mcqdb
+    // daemon — 19 parks on 2026-08-28, then zero from 08-29 onward, the transition landing exactly on the
+    // reconciler's first resume, and three pull requests re-reviewed for 33 hours at 30 minutes of model
+    // work each. These pin the bound that the reset cannot reach.
+
+    [Fact]
+    public async Task A_run_parks_permanently_after_the_durable_attempt_budget_is_spent()
+    {
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
+        var orchestrator = Orchestrator(executor, durableBudget: 2);
+        var run = SeedRun();
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+
+        await attempt.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        _store.GetReviewRun(run.Id)!.ParkedAt.Should().BeNull("one failure has not spent a budget of two");
+
+        await attempt.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+
+        var parked = _store.GetReviewRun(run.Id)!;
+        parked.ParkedAt.Should().Be(_now, "the second failure is the one that spends the budget");
+        parked
+            .WorkflowStatus.Should()
+            .Be(
+                WorkflowStatus.Failed,
+                "Failed is the ops-visible half of a park — the row must not still read as work owed a retry"
+            );
+        parked.ParkReason.Should().Contain(nameof(ReviewStage.Reviewed));
+        executor.FailStageCalls.Should().Be(2, "the budget bought exactly two attempts");
+    }
+
+    [Fact]
+    public async Task A_reconcile_entry_cannot_revive_a_permanently_parked_run()
+    {
+        // THE REGRESSION. ReconcileAsync resets the RetryGovernor for the run it is handed — by design, so an
+        // operator or the reconciler can spend another attempt — and that reset is what erased the only bound
+        // there was. A permanent park has to survive it, or the fix is the old one wearing a new column.
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
+        var orchestrator = Orchestrator(executor, durableBudget: 1);
+        var run = SeedRun();
+
+        var poll = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await poll.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        _store.GetReviewRun(run.Id)!.ParkedAt.Should().NotBeNull();
+
+        _ = await orchestrator.ReconcileAsync(run, CancellationToken.None);
+
+        executor
+            .FailStageCalls.Should()
+            .Be(
+                1,
+                "the reconciler's resume must not run a stage on a parked run — asserting only that the row is "
+                    + "still parked would pass even if the whole 30-minute review had just re-run"
+            );
+    }
+
+    [Fact]
+    public async Task The_governor_reset_does_not_clear_the_durable_failure_count()
+    {
+        // The bug itself, stated as a property. Every attempt below arrives through ReconcileAsync, which
+        // resets the in-memory governor each time, so the in-memory count is 1 forever. The durable one has to
+        // keep climbing anyway — that is the entire difference between the two.
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
+        var orchestrator = Orchestrator(executor, durableBudget: 3, governor: Governor(maxAttempts: 5));
+        var run = SeedRun();
+        var reconcile = async () => await orchestrator.ReconcileAsync(run, CancellationToken.None);
+
+        await reconcile.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        _store.GetReviewRun(run.Id)!.GovernedFailureCount.Should().Be(1);
+
+        await reconcile.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        _store
+            .GetReviewRun(run.Id)!
+            .GovernedFailureCount.Should()
+            .Be(2, "a resume grants an attempt; it does not forgive the ones already spent");
+
+        await reconcile.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+
+        _store.GetReviewRun(run.Id)!.GovernedFailureCount.Should().Be(3);
+        _store
+            .GetReviewRun(run.Id)!
+            .ParkedAt.Should()
+            .NotBeNull("three resumes reached the budget, which the erasable count never could");
+    }
+
+    [Fact]
+    public async Task A_governed_stage_success_clears_the_durable_failure_count()
+    {
+        // The un-charge path. Without it a run that failed persistently and then RECOVERED still carries those
+        // failures toward a park it no longer deserves — one bad afternoon followed by a healthy week would
+        // still end permanently parked. Mirrors the in-memory contract (RecordSuccess) exactly.
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
+        var orchestrator = Orchestrator(executor, durableBudget: 5);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        _store.GetReviewRun(run.Id)!.GovernedFailureCount.Should().Be(1, "the budget was genuinely charged");
+
+        executor.Enabled = false;
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+
+        _store
+            .GetReviewRun(run.Id)!
+            .GovernedFailureCount.Should()
+            .Be(0, "the stage that was failing has now succeeded, so nothing is owed against the budget");
+    }
+
+    [Fact]
+    public async Task Only_a_governed_failure_charges_the_durable_budget()
+    {
+        // The blast radius. A provider blip, a host 5xx or a blank synthesis is not a stuck review, and
+        // charging it would permanently park recoverable work on a bad minute. The budget is 1, so anything
+        // that charged at all would park on the first failure.
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new InvalidOperationException("host 503"));
+        var orchestrator = Orchestrator(executor, durableBudget: 1);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<InvalidOperationException>();
+        await attempt.Should().ThrowAsync<InvalidOperationException>();
+
+        var after = _store.GetReviewRun(run.Id)!;
+        after.GovernedFailureCount.Should().Be(0, "an ungoverned failure spends none of the budget");
+        after.ParkedAt.Should().BeNull();
+        executor.FailStageCalls.Should().Be(2, "a transient review failure keeps retrying on the poll interval");
+    }
+
+    [Fact]
+    public async Task Parking_is_once_only_and_notifies_once()
+    {
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
+        var notifier = new RecordingParkNotifier();
+        var orchestrator = Orchestrator(executor, durableBudget: 1, notifier: notifier);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+
+        notifier.Notified.Should().ContainSingle().Which.Should().Be(run.Id);
+
+        // The store is where once-only actually lives, and it is what a second park attempt would meet — a
+        // crash between the park write and the notice, or a future caller reaching the park path twice. The
+        // notice hangs off this boolean, so a park that reported success twice would post twice.
+        _store
+            .TryMarkReviewRunParked(run.Id, _now.AddHours(1), "a second park attempt")
+            .Should()
+            .BeFalse("the row is already parked, and the first park's instant and reason are the true ones");
+        _store.GetReviewRun(run.Id)!.ParkedAt.Should().Be(_now, "a re-park must not move the park instant");
+
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+        notifier.Notified.Should().ContainSingle("a later poll of a parked run announces nothing new");
+    }
+
+    /// <summary>Builds an orchestrator over the real store with an explicit durable budget and fake clock.</summary>
+    private PrOrchestrator Orchestrator(
+        IReviewStageExecutor executor,
+        int durableBudget,
+        RetryGovernor? governor = null,
+        IReviewParkNotifier? notifier = null
+    ) =>
+        new(
+            _store,
+            executor,
+            NullLogger<PrOrchestrator>.Instance,
+            retryGovernor: governor,
+            maxDurableRetryAttempts: durableBudget,
+            clock: () => _now,
+            parkNotifier: notifier
+        );
+
+    private sealed class RecordingParkNotifier : IReviewParkNotifier
+    {
+        public List<long> Notified { get; } = [];
+
+        public Task NotifyParkedAsync(ReviewRun run, string reason, CancellationToken cancellationToken)
+        {
+            Notified.Add(run.Id);
+            return Task.CompletedTask;
+        }
+    }
+
     private RetryGovernor Governor(int maxAttempts) =>
         new(
             maxAttempts,
@@ -413,14 +597,22 @@ public sealed class PrOrchestratorRetryTests : IDisposable
 
     /// <summary>Succeeds every stage except <paramref name="failAt"/>, where it throws what
     /// <paramref name="error"/> produces (an <see cref="InvalidOperationException"/> by default); counts
-    /// those failures. The exception TYPE is load-bearing: the governor charges only some of them.</summary>
+    /// those failures. The exception TYPE is load-bearing: the governor charges only some of them.
+    /// <para>
+    /// <see cref="Enabled"/> switches the failure off mid-test, which is how the un-charge path is driven: a
+    /// run has to actually SUCCEED at the stage that was failing for the clear to be exercised at all.
+    /// </para>
+    /// </summary>
     private sealed class FailsAtStageExecutor(ReviewStage failAt, Func<Exception>? error = null) : IReviewStageExecutor
     {
         public int FailStageCalls { get; private set; }
 
+        /// <summary>When false the stage stops failing, so the next attempt gets through it.</summary>
+        public bool Enabled { get; set; } = true;
+
         public Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken)
         {
-            if (stage == failAt)
+            if (stage == failAt && Enabled)
             {
                 FailStageCalls++;
                 throw error?.Invoke() ?? new InvalidOperationException($"simulated {failAt} failure");

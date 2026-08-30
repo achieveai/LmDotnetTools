@@ -74,6 +74,46 @@ public sealed class MigrationTests
     }
 
     [Fact]
+    public void Migration_v8_adds_the_durable_park_columns_and_leaves_pre_existing_rows_unparked()
+    {
+        // The columns are the whole point of the fix: the retry budget has to survive both a restart and
+        // StrandedRunReconciler's Reset, and a park has to be a fact in the row rather than a fact in a
+        // dictionary. Applied to a database that already holds runs, so the defaults are asserted on a row
+        // written BEFORE the migration existed — the shape every deployed daemon upgrades from. Those rows
+        // must read as "never failed, never parked", because they are: no budget was ever charged to them.
+        using var db = new TempSqliteDatabase();
+        using var connection = SqliteConnectionFactory.Open(db.ConnectionString);
+        MigrationRunner.Migrate(connection, [.. SchemaMigrations.All.Where(m => m.Version < 8)]);
+        Execute(
+            connection,
+            """
+            INSERT INTO repo (provider, normalized_key, display_name, org_or_owner, repo_name, created_at)
+            VALUES ('github', 'k', 'd', 'achieveai', 'LmDotnetTools', '2026-08-30T00:00:00.0000000+00:00');
+            INSERT INTO review_run (
+                repo_id, pr_id, head_sha, base_sha, trigger_watermark, review_kind, variant_id, mode,
+                stage, workflow_status, pr_lifecycle_state, created_at, updated_at)
+            VALUES (1, '1', 'h', 'b', 'wm', 'full', 'primary', 'post',
+                    'Discovered', 'RetryPending', 'Open',
+                    '2026-08-30T00:00:00.0000000+00:00', '2026-08-30T00:00:00.0000000+00:00');
+            """
+        );
+
+        MigrationRunner.Migrate(connection);
+
+        ColumnExists(connection, "review_run", "governed_failure_count")
+            .Should()
+            .BeTrue("migration v8 adds the durable retry budget");
+        ColumnExists(connection, "review_run", "parked_at").Should().BeTrue("migration v8 adds the park instant");
+        ColumnExists(connection, "review_run", "park_reason").Should().BeTrue("migration v8 adds the park reason");
+        ReadScalar(connection, "SELECT governed_failure_count FROM review_run WHERE id = 1;")
+            .Should()
+            .Be("0", "a row that predates the budget has spent none of it");
+        ReadScalar(connection, "SELECT COUNT(*) FROM review_run WHERE id = 1 AND parked_at IS NULL;")
+            .Should()
+            .Be("1", "an upgrade must not park work that was merely in flight when it happened");
+    }
+
+    [Fact]
     public void Re_running_migrate_on_a_current_database_is_a_noop()
     {
         using var db = new TempSqliteDatabase();

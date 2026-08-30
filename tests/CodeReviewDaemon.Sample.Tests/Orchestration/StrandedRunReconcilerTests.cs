@@ -725,6 +725,71 @@ public sealed class StrandedRunReconcilerTests
     }
 
     [Fact]
+    public void The_abandonment_listing_excludes_a_permanently_parked_run()
+    {
+        // The listing is a parked run's LAST remaining route back into the daemon, so this conjunct is what
+        // makes the park real rather than advisory. Note what does NOT do the work here: this listing selects
+        // `workflow_status <> 'Completed'`, and parking writes `Failed`, which still satisfies that — so
+        // without `parked_at IS NULL` the row comes straight back on the next pass and is resumed through
+        // ReconcileAsync, which resets the in-memory governor. That is the exact loop the fix ends.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var parked = store.CreateOrGetReviewRun(SampleRun(repoId, "101"));
+        var live = store.CreateOrGetReviewRun(SampleRun(repoId, "102"));
+        store.TryMarkReviewRunParked(parked.Id, Now, "Reviewed: the sub-agent barrier never settled").Should().BeTrue();
+        foreach (var id in new[] { parked.Id, live.Id })
+        {
+            Backdate(db, id, Now - TimeSpan.FromDays(9));
+        }
+
+        store
+            .ListStrandedRuns(Now - Grace, limit: 50)
+            .Select(s => s.Run.Id)
+            .Should()
+            .Equal(
+                [live.Id],
+                "run {0} spent its durable budget and must never be handed back to the orchestrator again",
+                parked.Id
+            );
+    }
+
+    [Fact]
+    public void The_fast_listing_excludes_a_run_whose_row_carries_a_park_instant()
+    {
+        // Said plainly, because it is the difference between a real pin and a vacuous one: through the store's
+        // own API a parked row is ALSO `Failed`, and `Failed` already fails this listing's
+        // `workflow_status = 'RetryPending'` test — so a park written the ordinary way would be excluded here
+        // whether or not the conjunct exists, and asserting on one would prove nothing about the conjunct.
+        // The park instant is therefore written directly, leaving the status where the orchestrator's stage
+        // catch puts it, so the ONLY thing that can exclude this row is `parked_at IS NULL`. The two listings
+        // share one query body precisely so neither can drift out from under a park.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var parked = store.CreateOrGetReviewRun(SampleRun(repoId, "101"));
+        var live = store.CreateOrGetReviewRun(SampleRun(repoId, "102"));
+        StampParkedAt(db, parked.Id, Now);
+        foreach (var id in new[] { parked.Id, live.Id })
+        {
+            Backdate(db, id, Now - TimeSpan.FromHours(1));
+        }
+
+        var fast = store.ListRetryPendingRuns(Now - RetryGrace, limit: 50);
+
+        fast.Select(s => s.Run.Id)
+            .Should()
+            .Equal(
+                [live.Id],
+                "run {0} is parked; the fast path exists to react SOONER, which for a parked run means "
+                    + "re-reviewing it sooner",
+                parked.Id
+            );
+    }
+
+    [Fact]
     public void The_store_flags_a_run_that_a_later_run_for_the_same_pr_has_superseded()
     {
         using var db = new TempSqliteDatabase();
@@ -1163,6 +1228,23 @@ public sealed class StrandedRunReconcilerTests
         using var command = connection.CreateCommand();
         command.CommandText = "UPDATE review_run SET updated_at = $at WHERE id = $id;";
         _ = command.Parameters.AddWithValue("$at", updatedAt.ToUniversalTime().ToString("O"));
+        _ = command.Parameters.AddWithValue("$id", runId);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Stamps <c>parked_at</c> without touching <c>workflow_status</c>. Written directly rather than through
+    /// <c>ReviewStore.TryMarkReviewRunParked</c>, which also writes <c>Failed</c> — a status that would
+    /// independently exclude the row from the retry-pending listing and so hide whether the park conjunct is
+    /// doing anything at all.
+    /// </summary>
+    private static void StampParkedAt(TempSqliteDatabase db, long runId, DateTimeOffset parkedAt)
+    {
+        using var connection = new SqliteConnection(db.ConnectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE review_run SET parked_at = $at WHERE id = $id;";
+        _ = command.Parameters.AddWithValue("$at", parkedAt.ToUniversalTime().ToString("O"));
         _ = command.Parameters.AddWithValue("$id", runId);
         _ = command.ExecuteNonQuery();
     }

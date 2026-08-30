@@ -48,7 +48,12 @@ internal sealed class ReviewPoster
                 IdempotencyKey = key,
                 Provider = request.Key.Provider,
                 ReviewRunId = request.ReviewRunId,
-                Operation = PostReviewCommentOperation,
+                // From the KEY, not the constant. The key already discriminates one logical post from
+                // another, and a second caller with its own operation (the permanent-park notice) would
+                // otherwise land a row labelled as a posted REVIEW — which is exactly what
+                // PrOrchestrator.ClassifyDeliveryOutcome reads as proof the review reached the PR. The
+                // review path passes PostReviewCommentOperation here, so nothing about it changes.
+                Operation = request.Key.Operation,
                 ArtifactKind = request.Key.ArtifactKind,
                 Status = OutboxStatus.Pending,
             }
