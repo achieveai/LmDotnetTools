@@ -98,6 +98,9 @@ internal sealed record RunMetrics
     public int RetryStormCount { get; init; }
     public IReadOnlyList<RetryStorm> RetryStorms { get; init; } = [];
 
+    /// <summary>Board-loss watch (#621 Part B): see <see cref="BoardIdVanishedReport" />.</summary>
+    public BoardIdVanishedReport BoardIdVanished { get; init; } = BoardIdVanishedReport.From([]);
+
     public bool BlockRecorded { get; init; }
     public bool BlockExplicitlyCleared { get; init; }
     public bool BlockCleared { get; init; }
@@ -111,6 +114,33 @@ internal sealed record RunMetrics
     public int PrimaryTurns { get; init; }
 
     public RunValidity Validity { get; init; } = RunValidity.From(0, 0, [], []);
+}
+
+/// <summary>
+/// The score object's <c>boardIdVanished</c> block (metrics-spec.md, "Board id vanished"): rows a
+/// run's threads minted, never deleted, and later got a not-found for.
+/// </summary>
+/// <remarks>
+/// The <see cref="Note" /> travels with the number on purpose. A reader who skips the spec sees a
+/// zero here and concludes the board held; the count is a one-directional LOWER bound, and the
+/// authoritative signal is the server-side Warning, so the field that carries the number also
+/// carries the instruction to grep the host log for the event name.
+/// </remarks>
+internal sealed record BoardIdVanishedReport
+{
+    public const string LowerBoundNote =
+        "Transcript-derived LOWER BOUND (#621 Part B). The authoritative signal is the server-side "
+        + "Warning whose event name is TodoBoardIdVanished; also grep the host structured logs for that "
+        + "name, because losses the transcript cannot see (ids minted in a process whose transcript is "
+        + "not in this directory, or bulk-initialize subtask ids, which the tool result never names) "
+        + "reach the log and not this count.";
+
+    public required int Count { get; init; }
+    public required IReadOnlyList<BoardIdVanish> Events { get; init; }
+    public string Note { get; init; } = LowerBoundNote;
+
+    public static BoardIdVanishedReport From(IReadOnlyList<BoardIdVanish> events) =>
+        new() { Count = events.Count, Events = events };
 }
 
 /// <summary>
@@ -233,6 +263,7 @@ internal static class MetricsExtractor
 
         var perTool = BuildPerTool(merged);
         var storms = group.SelectMany(t => t.RetryStorms).ToList();
+        var vanishes = group.SelectMany(t => t.BoardIdVanishes).ToList();
         var blockRecorded = group.Any(t => t.BlockRecorded);
         var blockExplicitlyCleared = group.Any(t => t.BlockExplicitlyCleared);
 
@@ -264,6 +295,7 @@ internal static class MetricsExtractor
             PerTool = perTool,
             RetryStormCount = storms.Count,
             RetryStorms = storms,
+            BoardIdVanished = BoardIdVanishedReport.From(vanishes),
             BlockRecorded = blockRecorded,
             BlockExplicitlyCleared = blockExplicitlyCleared,
             BlockCleared = blockCleared,
