@@ -29,6 +29,28 @@ public static class AnthropicExtensions
             {
                 messages.Add(message);
             }
+
+            // Preserve the thinking signature. ContentToMessage maps a thinking
+            // block to a Plain ReasoningMessage carrying only the text; the
+            // signature would otherwise be dropped, leaving round-tripped
+            // reasoning unsigned (rejected by providers that validate it). Emit
+            // the signature as a companion Encrypted ReasoningMessage exactly as
+            // the streaming path does (AnthropicStreamParser.HandleSignatureDelta);
+            // the request serializer (MergeAdjacentThinkingBlocks) reattaches it
+            // to the preceding thinking block.
+            if (content is AnthropicResponseThinkingContent { Signature: { Length: > 0 } signature })
+            {
+                messages.Add(
+                    new ReasoningMessage
+                    {
+                        Reasoning = signature,
+                        Visibility = ReasoningVisibility.Encrypted,
+                        Role = Role.Assistant,
+                        FromAgent = agentName,
+                        GenerationId = response.Id,
+                    }
+                );
+            }
         }
 
         // Add usage information as a separate message if available

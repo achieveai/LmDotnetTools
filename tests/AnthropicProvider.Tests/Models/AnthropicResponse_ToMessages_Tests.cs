@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Models;
 
@@ -81,8 +82,10 @@ public class AnthropicResponse_ToMessages_Tests
         var response2 = responses[1];
         var messages2 = response2.ToMessages("test-agent");
 
-        // Assert basic properties - we now have 4 messages because of the additional UsageMessage
-        Assert.Equal(4, messages2.Count);
+        // 5 messages: Plain reasoning (text) + Encrypted reasoning (signature) +
+        // text + tool_use + usage. The Encrypted companion preserves the thinking
+        // signature so the reasoning round-trips back into a valid request.
+        Assert.Equal(5, messages2.Count);
         Assert.Equal("msg_016", response2.Id);
 
         // Verify thinking message content — surfaced as ReasoningMessage (the
@@ -93,16 +96,26 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.Contains("The user wants to find files that are in the directory", thinkingMessage.Reasoning);
         Assert.Equal(ReasoningVisibility.Plain, thinkingMessage.Visibility);
 
+        // Verify the signature is preserved as a companion Encrypted ReasoningMessage,
+        // mirroring the streaming parser. Without it, round-tripped thinking is unsigned.
+        var expectedSignature = (response2.Content[0] as AnthropicResponseThinkingContent)?.Signature;
+        Assert.False(string.IsNullOrEmpty(expectedSignature));
+        _ = Assert.IsType<ReasoningMessage>(messages2[1]);
+        var signatureMessage = messages2[1] as ReasoningMessage;
+        Assert.NotNull(signatureMessage);
+        Assert.Equal(ReasoningVisibility.Encrypted, signatureMessage.Visibility);
+        Assert.Equal(expectedSignature, signatureMessage.Reasoning);
+
         // Verify regular text message
-        _ = Assert.IsType<TextMessage>(messages2[1]);
-        var regularTextMessage = messages2[1] as TextMessage;
+        _ = Assert.IsType<TextMessage>(messages2[2]);
+        var regularTextMessage = messages2[2] as TextMessage;
         Assert.NotNull(regularTextMessage);
         Assert.Contains("I'll help you find the files that are in", regularTextMessage.Text);
         Assert.False(regularTextMessage.IsThinking);
 
         // Verify tool message
-        _ = Assert.IsType<ToolsCallMessage>(messages2[2]);
-        var toolMessage2 = messages2[2] as ToolsCallMessage;
+        _ = Assert.IsType<ToolsCallMessage>(messages2[3]);
+        var toolMessage2 = messages2[3] as ToolsCallMessage;
         Assert.NotNull(toolMessage2);
         var toolCalls2 = toolMessage2.GetToolCalls();
         Assert.NotNull(toolCalls2);
@@ -111,10 +124,53 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.Contains("import os", toolCall2.FunctionArgs);
 
         // Verify usage message
-        _ = Assert.IsType<UsageMessage>(messages2[3]);
-        var usageMessage2 = messages2[3] as UsageMessage;
+        _ = Assert.IsType<UsageMessage>(messages2[4]);
+        var usageMessage2 = messages2[4] as UsageMessage;
         Assert.NotNull(usageMessage2);
         Assert.NotNull(usageMessage2.Usage);
+    }
+
+    /// <summary>
+    ///     Full round-trip guard for the thinking signature: a non-streaming response
+    ///     carrying a signed thinking block must convert to messages and serialize back
+    ///     into a request whose assistant thinking block still carries the signature.
+    ///     Before the fix, ToMessages dropped the signature, leaving round-tripped
+    ///     reasoning unsigned (rejected by providers that validate it, e.g. DeepSeek).
+    /// </summary>
+    [Fact]
+    public void ThinkingSignature_RoundTripsFromResponseIntoRequest()
+    {
+        // Arrange: the example response whose first content block is a signed thinking block.
+        var exampleJson = File.ReadAllText(GetExampleFilePath("example_responses.json"));
+        var responses =
+            JsonSerializer.Deserialize<AnthropicResponse[]>(
+                exampleJson,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+            ) ?? throw new InvalidOperationException("Failed to deserialize example responses");
+        var response = responses[1];
+        var expectedSignature = (response.Content[0] as AnthropicResponseThinkingContent)?.Signature;
+        Assert.False(string.IsNullOrEmpty(expectedSignature));
+
+        // Act: response → messages (assistant turn) → request, prepended with a user turn
+        // so the assistant message is valid history.
+        var assistantMessages = response.ToMessages("test-agent").Where(m => m is not UsageMessage);
+        var history = new List<IMessage>
+        {
+            new TextMessage { Role = Role.User, Text = "Find the files." },
+        };
+        history.AddRange(assistantMessages);
+
+        var request = AnthropicRequest.FromMessages(
+            history,
+            new GenerateReplyOptions { ModelId = "deepseek-v4-flash" }
+        );
+
+        // Assert: the assistant message's thinking block carries text AND signature
+        // (the Plain + Encrypted reasoning pair merged by MergeAdjacentThinkingBlocks).
+        var assistantMsg = request.Messages.Single(m => m.Role == "assistant");
+        var thinkingBlock = assistantMsg.Content.Single(c => c.Type == "thinking");
+        Assert.Contains("The user wants to find files that are in the directory", thinkingBlock.Thinking);
+        Assert.Equal(expectedSignature, thinkingBlock.ThinkingSignature);
     }
 
     [Fact]
