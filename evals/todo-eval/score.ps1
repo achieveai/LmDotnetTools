@@ -122,6 +122,87 @@ function Test-ErrorResult {
     return $text.TrimStart().StartsWith('Error:', [System.StringComparison]::Ordinal)
 }
 
+function ConvertTo-CanonicalTaskId {
+    # "01", " 1", "+1.02" -> "1", "1.2". FindTaskByStringId parses every dotted segment as an
+    # int, so those spellings all address the same row; a ledger keyed on the raw text would
+    # miss a loss purely because of how the model wrote the number. Returns $null when any
+    # segment is not an integer, which is an invalid-id error rather than a not-found.
+    param([string]$Id)
+    if ([string]::IsNullOrWhiteSpace($Id)) { return $null }
+    $segments = New-Object System.Collections.Generic.List[string]
+    foreach ($part in ($Id -split '\.')) {
+        $n = 0
+        if (-not [int]::TryParse($part.Trim(), [ref]$n)) { return $null }
+        $segments.Add([string]$n)
+    }
+    return ($segments -join '.')
+}
+
+function Add-LedgerId {
+    param($Ledger, [string]$Id)
+    $canonical = ConvertTo-CanonicalTaskId $Id
+    if ($null -ne $canonical) { $Ledger[$canonical] = $true }
+}
+
+function Remove-LedgerSubtree {
+    # A delete takes the row's whole subtree with it, so the ledger drops every descendant too;
+    # otherwise each child would be reported as vanished the first time anyone looked for it.
+    param($Ledger, [string]$Id)
+    $canonical = ConvertTo-CanonicalTaskId $Id
+    if ($null -eq $canonical) { return }
+    foreach ($key in @($Ledger.Keys)) {
+        if ($key -eq $canonical -or $key.StartsWith("$canonical.", [System.StringComparison]::Ordinal)) {
+            $Ledger.Remove($key)
+        }
+    }
+}
+
+function Update-BoardLedger {
+    # Mirrors TaskManager's own ledger from the transcript: ids the thread minted, minus ids it
+    # asked to have deleted. Only SUCCESSFUL results reach here.
+    param($Ledger, [string]$Tool, [string]$Text)
+    switch ($Tool) {
+        'add-task' {
+            if ($Text -match '^Added task ([0-9. ]+):') { Add-LedgerId $Ledger $Matches[1] }
+        }
+        'bulk-initialize' {
+            # clearExisting is a requested reset that also renumbers from 1.
+            if ($Text -match '(?m)^Cleared existing tasks\.') { $Ledger.Clear() }
+            foreach ($m in [regex]::Matches($Text, '(?m)^\s*-\s*Task ([0-9.]+):')) {
+                Add-LedgerId $Ledger $m.Groups[1].Value
+            }
+        }
+        'delete-task' {
+            if ($Text -match '^Deleted task (\S+) and all subtasks:') {
+                Remove-LedgerSubtree $Ledger $Matches[1]
+            }
+            elseif ($Text -match '^Deleted subtask (\d+) from task (\S+):') {
+                Remove-LedgerSubtree $Ledger ('{0}.{1}' -f $Matches[2], $Matches[1])
+            }
+        }
+    }
+}
+
+function Get-NotFoundTaskId {
+    # The dotted id a not-found error names, canonicalized, or $null when the error is not a
+    # not-found. The quoted forms are tested FIRST: the bare pattern would also match them and
+    # capture the quotes, which then fail canonicalization and silently lose the event.
+    param([string]$Text)
+    if ($Text -match "^Error: Task '([^']+)' has no subtask (\d+)\.") {
+        return (ConvertTo-CanonicalTaskId ('{0}.{1}' -f $Matches[1], $Matches[2]))
+    }
+    foreach ($pattern in @(
+            "^Error: Task '([^']+)' not found\.",
+            "^Error: Parent task '([^']+)' not found\.",
+            "^Error: Blocking task '([^']+)' not found\.",
+            '^Error: Task (\S+) not found\.',
+            '^Error: Parent task (\S+) not found\.'
+        )) {
+        if ($Text -match $pattern) { return (ConvertTo-CanonicalTaskId $Matches[1]) }
+    }
+    return $null
+}
+
 function Get-BoardTasks {
     # Accepts a raw TodoBoardSnapshot or a metadata.json; returns the top-level task array.
     param([string]$Path)
@@ -190,6 +271,7 @@ $primaryTurns = 0
 $subAgentThreads = 0
 $subAgentsWithoutTaskToolCalls = [System.Collections.Generic.List[string]]::new()
 $fabricatedComplianceSuspects = [System.Collections.Generic.List[string]]::new()
+$vanishEvents = [System.Collections.Generic.List[object]]::new()
 
 foreach ($dir in $threadDirs) {
     $envelopes = ConvertFrom-Json -InputObject (Get-Content -LiteralPath (Join-Path $dir.FullName 'messages.json') -Raw) -AsHashtable -Depth 64
@@ -212,6 +294,7 @@ foreach ($dir in $threadDirs) {
     # Pass 2: calls in message order + turns.
     $generationIds = [System.Collections.Generic.HashSet[string]]::new()
     $streaks = @{}   # identity -> current consecutive-failure run length
+    $ledger = @{}    # canonical dotted id -> minted here and not deleted (#621 Part B)
     $threadTaskToolCalls = 0
     $assistantTexts = [System.Collections.Generic.List[string]]::new()
     foreach ($env in @($envelopes)) {
@@ -251,6 +334,23 @@ foreach ($dir in $threadDirs) {
         $threadTaskToolCalls++
         $perTool[$tool].calls++
         if ($isError) { $perTool[$tool].errors++ }
+
+        # Board-loss watch (#621 Part B), transcript side. Same discrimination line as the
+        # server detector: a not-found naming an id THIS thread minted and never deleted is a
+        # lost row; anything else is a model typo and stays unreported.
+        if ($hasResult) {
+            $resultRaw = $resultsById[$callId].Result
+            $resultText = if ($resultRaw -is [string]) { $resultRaw } elseif ($null -eq $resultRaw) { '' } else { ConvertTo-CanonicalJson $resultRaw }
+            if ($isError) {
+                $vanishedId = Get-NotFoundTaskId $resultText
+                if ($null -ne $vanishedId -and $ledger.ContainsKey($vanishedId)) {
+                    $vanishEvents.Add([ordered]@{ threadId = $threadId; taskId = $vanishedId; tool = $tool })
+                }
+            }
+            else {
+                Update-BoardLedger -Ledger $ledger -Tool $tool -Text $resultText
+            }
+        }
 
         $canonical = Get-CanonicalArgs ([string](Get-Prop $inner 'function_args'))
         $identity = $tool + "`n" + $canonical
@@ -415,6 +515,11 @@ $score = [ordered]@{
     perTool            = $perToolOut
     retryStormCount    = $storms.Count
     retryStorms        = @($storms)
+    boardIdVanished    = [ordered]@{
+        count  = $vanishEvents.Count
+        events = @($vanishEvents)
+        note   = 'Transcript-derived LOWER BOUND (#621 Part B). The authoritative signal is the server-side Warning whose event name is TodoBoardIdVanished; also grep the host structured logs for that name, because losses the transcript cannot see (ids minted in a process whose transcript is not in this directory, or bulk-initialize subtask ids, which the tool result never names) reach the log and not this count.'
+    }
     blockRecorded      = $blockRecorded
     blockExplicitlyCleared = $blockExplicitlyCleared
     blockCleared       = $blockCleared
