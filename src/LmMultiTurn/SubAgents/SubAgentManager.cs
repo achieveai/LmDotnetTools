@@ -2970,7 +2970,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 template.EnabledTools,
                 addTools,
                 removeTools,
-                _options.RequiredToolNames
+                _options.RequiredToolNames,
+                // The roster an add_tools "*" expands to (#635): every name the parent exposes. Passed
+                // rather than looked up inside so BuildEnabledToolSet stays a pure function of its inputs.
+                [.. _parentContracts.Select(c => c.Name)]
             );
             var inheritedToolNames = new List<string>();
 
@@ -3015,6 +3018,10 @@ public sealed class SubAgentManager : IAsyncDisposable
             // The #623 warning floor, at the same boundary as the inherited-toolset line above so
             // "ordered to work the board" and "received no board tools" are correlated in one place.
             WarnIfBoardDispatchLacksTaskTools(agentId, template, spawnName, task, inheritedToolNames);
+
+            // #635: an add_tools entry that matched no parent tool, or a filter that resolved the whole
+            // toolset away, must not pass quietly regardless of what the dispatch prompt said.
+            WarnIfSpawnToolRequestMatchedNothing(agentId, template, addTools, enabledSet, inheritedToolNames);
 
             // Under collaboration the child ALWAYS gets its own manager, because messaging is not
             // delegation. SubAgentToolProvider already withholds the spawn tools when the child has no
@@ -3201,12 +3208,27 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// no-op by construction: every tool is already available. Names that the parent does not expose
     /// are unioned here but never materialize, because the caller intersects the set with the
     /// parent's inheritable contracts — which is what keeps a mode from granting what it lacks.
+    /// <para>
+    /// <paramref name="addTools"/> matches EXACT tool names, with one exception: the all-tools
+    /// wildcard (<c>*</c> or <c>*:*</c>, see <see cref="IsAllToolsWildcard"/>) expands to every name
+    /// in <paramref name="inheritableToolNames"/> — "every tool the parent exposes", which is what a
+    /// model writing <c>add_tools: "*"</c> means (#635). Before that expansion the token was added to
+    /// the set as a literal tool NAME, matched nothing at the intersection below, and so narrowed the
+    /// child to the required tools alone — a total capability loss with no error. Expanding rather
+    /// than rejecting keeps <c>removeTools</c> composable ("everything except X"), which the
+    /// no-base-set throw below otherwise makes unexpressible. Other spellings (<c>all</c>, a
+    /// group wildcard like <c>tasks:*</c>) are deliberately NOT wildcards here — <c>all</c> is a
+    /// legal tool name and this field has no group language — but a spawn whose add list matches
+    /// nothing is now reported by <see cref="WarnIfSpawnToolRequestMatchedNothing"/> rather than
+    /// passing quietly (#623's lesson).
+    /// </para>
     /// </remarks>
     internal static HashSet<string>? BuildEnabledToolSet(
         IReadOnlyList<string>? templateEnabledTools,
         string[]? addTools,
         string[]? removeTools,
-        IReadOnlyCollection<string>? requiredTools = null
+        IReadOnlyCollection<string>? requiredTools = null,
+        IReadOnlyCollection<string>? inheritableToolNames = null
     )
     {
         if (templateEnabledTools == null && addTools == null && removeTools == null)
@@ -3226,6 +3248,20 @@ public sealed class SubAgentManager : IAsyncDisposable
             result ??= [];
             foreach (var tool in addTools)
             {
+                if (IsAllToolsWildcard(tool))
+                {
+                    // "*" is a request for the parent's whole surface, not for a tool literally
+                    // named "*". With no roster to enumerate (a caller that did not supply one, or
+                    // a parent exposing nothing) it contributes no names; the wildcard token itself
+                    // is never added, so it can never masquerade as a tool name downstream.
+                    if (inheritableToolNames is not null)
+                    {
+                        result.UnionWith(inheritableToolNames);
+                    }
+
+                    continue;
+                }
+
                 _ = result.Add(tool);
             }
         }
@@ -3257,6 +3293,24 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="tool"/> is the all-tools wildcard in a spawn's <c>add_tools</c> list:
+    /// <c>*</c>, or the fully-qualified <c>*:*</c> that #623's <c>group:tool</c> pattern language
+    /// makes a natural second guess. Trimmed, because the list arrives comma-split from a model.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately narrow. <c>all</c> is not a wildcard here: it is a legal tool name, and reading it
+    /// as "everything" would silently over-grant. A group wildcard such as <c>tasks:*</c> is not one
+    /// either — <c>add_tools</c> has no group language, only exact names — and both are covered
+    /// instead by <see cref="WarnIfSpawnToolRequestMatchedNothing"/>, which refuses to let an add
+    /// entry that matched nothing pass in silence.
+    /// </remarks>
+    internal static bool IsAllToolsWildcard(string? tool)
+    {
+        var trimmed = tool?.Trim();
+        return trimmed is "*" or "*:*";
     }
 
     /// <summary>
@@ -3337,6 +3391,63 @@ public sealed class SubAgentManager : IAsyncDisposable
             spawnName,
             taskTools
         );
+    }
+
+    /// <summary>
+    /// The #635 generalization of #623's lesson — <em>a pattern that matches nothing must not pass
+    /// quietly</em> — applied to the spawn argument rather than the mode property. Two silent
+    /// narrowings are reported here, both independent of what the dispatch prompt said and of
+    /// whether the host wired <see cref="SubAgentOptions.TaskToolNames"/>:
+    /// <list type="bullet">
+    /// <item>an <c>add_tools</c> entry naming a tool the parent does not expose (a typo, an
+    /// unsupported group pattern such as <c>tasks:*</c>, or a bare <c>all</c>) — the caller asked
+    /// for something and got nothing, with no other signal;</item>
+    /// <item>a resolved toolset that inherited NOTHING while the parent had tools to give — the
+    /// total capability loss that the literal <c>*</c> used to produce.</item>
+    /// </list>
+    /// Warning, not an error: a template may legitimately restrict itself down to zero parent tools,
+    /// and refusing the spawn would turn a diagnosable line into an outage.
+    /// </summary>
+    private void WarnIfSpawnToolRequestMatchedNothing(
+        string agentId,
+        SubAgentTemplate template,
+        string[]? addTools,
+        HashSet<string>? enabledSet,
+        List<string> inheritedToolNames
+    )
+    {
+        if (addTools is { Length: > 0 })
+        {
+            var unmatched = addTools
+                .Where(tool => !IsAllToolsWildcard(tool) && !_parentContracts.Any(c => c.Name == tool))
+                .ToArray();
+
+            if (unmatched.Length > 0)
+            {
+                _logger.LogWarning(
+                    "Sub-agent {AgentId} (template {Template}) was spawned with add_tools naming "
+                        + "{UnmatchedCount} tool(s) the parent does not expose ({UnmatchedToolNames}); they were "
+                        + "ignored. add_tools matches exact tool names, or '*' for every tool the parent has.",
+                    agentId,
+                    template.Name,
+                    unmatched.Length,
+                    unmatched
+                );
+            }
+        }
+
+        if (enabledSet is not null && inheritedToolNames.Count == 0 && _parentContracts.Count > 0)
+        {
+            _logger.LogWarning(
+                "Sub-agent {AgentId} (template {Template}) resolved to an EMPTY inherited toolset from a "
+                    + "parent exposing {ParentToolCount} tool(s); the template's tools list and the spawn's "
+                    + "add_tools/remove_tools together matched none of them, so this sub-agent can call no "
+                    + "inherited tool at all.",
+                agentId,
+                template.Name,
+                _parentContracts.Count
+            );
+        }
     }
 
     /// <summary>
