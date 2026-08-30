@@ -3557,7 +3557,13 @@ public sealed class SubAgentManager : IAsyncDisposable
             return;
         }
 
-        var withheldNothing = removeTools.Where(tool => !beforeRemoval.Contains(tool)).ToArray();
+        // The two lines partition the entries by OBSERVABLE outcome, so each entry produces at most
+        // one of them: an entry still present in the resolved set was defeated by the required-tools
+        // union; an entry that is absent AND was never in the base set withheld nothing. An entry
+        // that was in the base set and is now gone did its job and is reported by neither.
+        var withheldNothing = removeTools
+            .Where(tool => !enabledSet.Contains(tool) && !beforeRemoval.Contains(tool))
+            .ToArray();
         if (withheldNothing.Length > 0)
         {
             _logger.LogWarning(
@@ -3575,9 +3581,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         // Removed, then restored by the mode's required-tools union (#623). Intentional precedence,
         // but from the caller's seat the request was defeated, so it gets its own line.
-        var restoredByRequiredTools = removeTools
-            .Where(tool => beforeRemoval.Contains(tool) && enabledSet.Contains(tool))
-            .ToArray();
+        var restoredByRequiredTools = removeTools.Where(enabledSet.Contains).ToArray();
         if (restoredByRequiredTools.Length > 0)
         {
             _logger.LogWarning(

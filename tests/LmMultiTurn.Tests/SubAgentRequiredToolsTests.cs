@@ -524,6 +524,28 @@ public sealed class SubAgentRequiredToolsTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The two lines partition by OBSERVABLE outcome, so an entry that was never in the base set AND
+    /// comes back through the required-tools union is reported as restored — the caller's question is
+    /// "is it there?", and it is. It must not ALSO draw the no-op line, which would say the opposite.
+    /// </summary>
+    [Fact]
+    public async Task RemoveToolsNamingARequiredToolTheTemplateNeverHad_ReportsItAsRestored_NotAsANoOp()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(
+            RestrictedTemplate(),
+            options => options with { RequiredToolNames = [TaskTool] },
+            logger: logger
+        );
+
+        var childLoop = await SpawnChildAsync(manager, removeTools: [TaskTool]);
+
+        childLoop.RegisteredToolNames.Should().Contain(TaskTool);
+        logger.CountAtLevel(LogLevel.Warning, RemoveRestoredMarker).Should().Be(1);
+        logger.CountAtLevel(LogLevel.Warning, RemoveWithheldNothingMarker).Should().Be(0);
+    }
+
+    /// <summary>
     /// Paired positive for the silence above: SAME harness, SAME spawn, one variable changed (the mode
     /// declares no required tools). The tool is genuinely withheld and the restored-warning is quiet,
     /// so the fired warning above is caused by the required-tools union and nothing else.
