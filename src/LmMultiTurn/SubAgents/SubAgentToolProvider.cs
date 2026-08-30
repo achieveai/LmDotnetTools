@@ -330,7 +330,10 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "add_tools",
-                    Description = "Comma-separated list of additional tool names to enable.",
+                    Description =
+                        "Comma-separated list of additional tool names to enable, matched as EXACT "
+                        + "tool names (no group or prefix patterns). Use '*' on its own to mean every "
+                        + "tool this agent has. Omit it to keep the sub-agent's default toolset.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
@@ -1616,10 +1619,26 @@ public class SubAgentToolProvider : IFunctionProvider
         };
     }
 
+    /// <summary>
+    /// Splits a comma-separated tool/agent list, or returns null when it carries no entries.
+    /// </summary>
+    /// <remarks>
+    /// Null for a list that parses to ZERO entries, not just for a blank string (#635). <c>","</c>
+    /// used to produce an EMPTY array, which is a very different thing downstream from null: the
+    /// spawn path reads null as "no filter, inherit everything" and a non-null array as "the
+    /// filter", so an empty one narrowed the sub-agent to no inherited tools at all — the same
+    /// silent capability loss as the literal <c>*</c>, from a stray separator. Callers that require
+    /// entries (<c>agent_ids</c>) now see the same "required parameter" error they already give for
+    /// a blank value.
+    /// </remarks>
     private static string[]? ParseCommaSeparated(string? value)
     {
-        return string.IsNullOrWhiteSpace(value)
-            ? null
-            : [.. value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var parts = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return parts.Length == 0 ? null : parts;
     }
 }
