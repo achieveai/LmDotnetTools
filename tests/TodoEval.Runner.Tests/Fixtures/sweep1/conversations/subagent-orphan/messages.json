@@ -1,0 +1,28 @@
+[
+ {
+  "id": "00000000000000000000000000000060",
+  "threadId": "subagent-orphan",
+  "runId": "run-fx-0002",
+  "parentRunId": null,
+  "generationId": "z1",
+  "messageOrderIdx": null,
+  "timestamp": 1788200060000,
+  "messageType": "ToolCallMessage",
+  "role": "Assistant",
+  "fromAgent": "fixture-agent",
+  "messageJson": "{\"$type\":\"tool_call\",\"role\":\"assistant\",\"from_agent\":\"fixture-agent\",\"generation_id\":\"z1\",\"threadId\":\"subagent-orphan\",\"runId\":\"run-fx-0002\",\"function_name\":\"claim-task\",\"function_args\":\"{\\\"taskId\\\":\\\"9.9\\\"}\",\"index\":1,\"tool_call_id\":\"z01\",\"toolCallIdx\":0,\"execution_target\":\"LocalFunction\"}"
+ },
+ {
+  "id": "00000000000000000000000000000061",
+  "threadId": "subagent-orphan",
+  "runId": "run-fx-0002",
+  "parentRunId": null,
+  "generationId": null,
+  "messageOrderIdx": null,
+  "timestamp": 1788200061000,
+  "messageType": "ToolCallResultMessage",
+  "role": "User",
+  "fromAgent": null,
+  "messageJson": "{\"$type\":\"tool_call_result\",\"tool_call_id\":\"z01\",\"result\":\"Error: task 9.9 does not exist\",\"tool_name\":\"claim-task\",\"is_error\":false,\"execution_target\":\"LocalFunction\",\"role\":\"user\",\"from_agent\":\"fixture-agent\",\"is_deferred\":false}"
+ }
+]

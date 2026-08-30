@@ -1,0 +1,67 @@
+[
+ {
+  "id": "00000000000000000000000000000025",
+  "threadId": "subagent-child1",
+  "runId": "run-fx-0001",
+  "parentRunId": null,
+  "generationId": "s1",
+  "messageOrderIdx": null,
+  "timestamp": 1788200025000,
+  "messageType": "ToolCallMessage",
+  "role": "Assistant",
+  "fromAgent": "fixture-agent",
+  "messageJson": "{\"$type\":\"tool_call\",\"role\":\"assistant\",\"from_agent\":\"fixture-agent\",\"generation_id\":\"s1\",\"threadId\":\"subagent-child1\",\"runId\":\"run-fx-0001\",\"function_name\":\"claim-task\",\"function_args\":\"{\\\"taskId\\\":\\\"2.1\\\"}\",\"index\":1,\"tool_call_id\":\"s01\",\"toolCallIdx\":0,\"execution_target\":\"LocalFunction\"}"
+ },
+ {
+  "id": "00000000000000000000000000000026",
+  "threadId": "subagent-child1",
+  "runId": "run-fx-0001",
+  "parentRunId": null,
+  "generationId": null,
+  "messageOrderIdx": null,
+  "timestamp": 1788200026000,
+  "messageType": "ToolCallResultMessage",
+  "role": "User",
+  "fromAgent": null,
+  "messageJson": "{\"$type\":\"tool_call_result\",\"tool_call_id\":\"s01\",\"result\":\"Task 2.1 claimed.\",\"tool_name\":\"claim-task\",\"is_error\":false,\"execution_target\":\"LocalFunction\",\"role\":\"user\",\"from_agent\":\"fixture-agent\",\"is_deferred\":false}"
+ },
+ {
+  "id": "00000000000000000000000000000027",
+  "threadId": "subagent-child1",
+  "runId": "run-fx-0001",
+  "parentRunId": null,
+  "generationId": "s1",
+  "messageOrderIdx": null,
+  "timestamp": 1788200027000,
+  "messageType": "ToolCallMessage",
+  "role": "Assistant",
+  "fromAgent": "fixture-agent",
+  "messageJson": "{\"$type\":\"tool_call\",\"role\":\"assistant\",\"from_agent\":\"fixture-agent\",\"generation_id\":\"s1\",\"threadId\":\"subagent-child1\",\"runId\":\"run-fx-0001\",\"function_name\":\"add-note\",\"function_args\":\"{\\\"noteText\\\":\\\"x\\\",\\\"subtaskId\\\":0,\\\"taskId\\\":\\\"2.1\\\"}\",\"index\":1,\"tool_call_id\":\"s02\",\"toolCallIdx\":0,\"execution_target\":\"LocalFunction\"}"
+ },
+ {
+  "id": "00000000000000000000000000000028",
+  "threadId": "subagent-child1",
+  "runId": "run-fx-0001",
+  "parentRunId": null,
+  "generationId": null,
+  "messageOrderIdx": null,
+  "timestamp": 1788200028000,
+  "messageType": "ToolCallResultMessage",
+  "role": "User",
+  "fromAgent": null,
+  "messageJson": "{\"$type\":\"tool_call_result\",\"tool_call_id\":\"s02\",\"result\":\"Note added to task 2.1.\",\"tool_name\":\"add-note\",\"is_error\":false,\"execution_target\":\"LocalFunction\",\"role\":\"user\",\"from_agent\":\"fixture-agent\",\"is_deferred\":false}"
+ },
+ {
+  "id": "00000000000000000000000000000029",
+  "threadId": "subagent-child1",
+  "runId": "run-fx-0001",
+  "parentRunId": null,
+  "generationId": null,
+  "messageOrderIdx": null,
+  "timestamp": 1788200029000,
+  "messageType": "TextMessage",
+  "role": "Assistant",
+  "fromAgent": "fixture-agent",
+  "messageJson": "{\"$type\":\"text\",\"role\":\"assistant\",\"from_agent\":\"fixture-agent\",\"generation_id\":\"s1\",\"text\":\"Marked task 2.1 completed on the board.\"}"
+ }
+]

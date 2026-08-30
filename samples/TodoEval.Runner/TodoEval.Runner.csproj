@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <OutputType>Exe</OutputType>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The runner speaks the LmStreaming.Sample headless conversation API with BCL HttpClient +
+         System.Text.Json only, following ConversationDaemon.Sample's zero-reference pattern: the
+         S2S surface needs no shared client library, and keeping the harness dependency-free means
+         the eval measures the HOST, not a client abstraction. -->
+    <InternalsVisibleTo Include="TodoEval.Runner.Tests" />
+  </ItemGroup>
+</Project>

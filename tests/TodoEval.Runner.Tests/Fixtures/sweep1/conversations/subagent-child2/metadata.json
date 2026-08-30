@@ -1,0 +1,6 @@
+{
+ "threadId": "subagent-child2",
+ "properties": {
+  "sample.subAgentOf": "thread-errors"
+ }
+}

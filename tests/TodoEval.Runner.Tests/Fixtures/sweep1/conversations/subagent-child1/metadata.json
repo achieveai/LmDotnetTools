@@ -1,0 +1,6 @@
+{
+ "threadId": "subagent-child1",
+ "properties": {
+  "sample.subAgentOf": "thread-storm"
+ }
+}
