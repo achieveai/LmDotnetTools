@@ -1,0 +1,116 @@
+{
+ "ThreadId": "thread-fixture-storm",
+ "SchemaVersion": 1,
+ "CapturedAtUtc": "2026-08-30T12:00:00.0000000+00:00",
+ "Tasks": [
+  {
+   "id": "1",
+   "status": "InProgress",
+   "title": "Workstream 1 - Build & Test",
+   "notes": [],
+   "artifacts": [],
+   "subTasks": [
+    {
+     "id": "1.1",
+     "status": "Completed",
+     "title": "Build",
+     "notes": [
+      "Build ran."
+     ],
+     "artifacts": [],
+     "subTasks": []
+    },
+    {
+     "id": "1.2",
+     "status": "InProgress",
+     "title": "Test",
+     "notes": [],
+     "artifacts": [],
+     "subTasks": []
+    },
+    {
+     "id": "1.3",
+     "status": "NotStarted",
+     "title": "Triage",
+     "notes": [],
+     "artifacts": [],
+     "subTasks": []
+    },
+    {
+     "id": "1.4",
+     "status": "NotStarted",
+     "title": "Sign-off",
+     "notes": [],
+     "artifacts": [],
+     "subTasks": []
+    }
+   ]
+  },
+  {
+   "id": "2",
+   "status": "NotStarted",
+   "title": "Workstream 2 - Documentation",
+   "notes": [],
+   "artifacts": [],
+   "subTasks": [
+    {
+     "id": "2.1",
+     "status": "NotStarted",
+     "title": "Changelog",
+     "notes": [],
+     "artifacts": [],
+     "subTasks": []
+    },
+    {
+     "id": "2.2",
+     "status": "NotStarted",
+     "title": "Upgrade notes",
+     "notes": [],
+     "artifacts": [],
+     "subTasks": []
+    },
+    {
+     "id": "2.3",
+     "status": "Blocked",
+     "title": "Publish",
+     "notes": [],
+     "artifacts": [],
+     "subTasks": []
+    }
+   ]
+  },
+  {
+   "id": "3",
+   "status": "NotStarted",
+   "title": "Workstream 3 - Packaging",
+   "notes": [],
+   "artifacts": [],
+   "subTasks": [
+    {
+     "id": "3.1",
+     "status": "NotStarted",
+     "title": "Bump",
+     "notes": [],
+     "artifacts": [],
+     "subTasks": []
+    },
+    {
+     "id": "3.2",
+     "status": "NotStarted",
+     "title": "Package",
+     "notes": [],
+     "artifacts": [],
+     "subTasks": []
+    },
+    {
+     "id": "3.3",
+     "status": "NotStarted",
+     "title": "Dry-run",
+     "notes": [],
+     "artifacts": [],
+     "subTasks": []
+    }
+   ]
+  }
+ ]
+}
