@@ -17,6 +17,46 @@ public class SystemChatModesTests
     }
 
     [Fact]
+    public void LoadModesFromFile_MissingTheDaemonMode_FailsNamingTheModeIdAndTheFilePath()
+    {
+        // The boot-failure message is the operator's only clue in the stale-yaml scenario (an edited
+        // deployed Prompts.yaml, or a partial deploy pairing new binaries with an old yaml). It must
+        // name BOTH the missing mode id and the concrete file the host resolved, and it must surface
+        // as the validation exception itself — not buried inside a TypeInitializationException
+        // (which is why SystemChatModes.All is backed by a Lazy field, not a property initializer).
+        var yamlPath = Path.Combine(Path.GetTempPath(), $"prompts-missing-daemon-{Guid.NewGuid():N}.yaml");
+        File.WriteAllText(
+            yamlPath,
+            """
+            chatModes:
+              - id: default
+                name: Default
+                systemPrompt: p
+              - id: medical-knowledge
+                name: Medical
+                systemPrompt: p
+              - id: workspace-agent
+                name: Workspace Agent
+                systemPrompt: p
+            """
+        );
+
+        try
+        {
+            var act = () => SystemChatModes.LoadModesFromFile(yamlPath);
+
+            act.Should()
+                .ThrowExactly<InvalidOperationException>()
+                .WithMessage($"*required system mode '{SystemChatModes.CodeReviewDaemonModeId}'*")
+                .WithMessage($"*{yamlPath}*");
+        }
+        finally
+        {
+            File.Delete(yamlPath);
+        }
+    }
+
+    [Fact]
     public void WorkspaceAgentMode_UsesYamlPromptAndSandboxToolConfiguration()
     {
         var mode = SystemChatModes.GetById(SystemChatModes.WorkspaceAgentModeId);

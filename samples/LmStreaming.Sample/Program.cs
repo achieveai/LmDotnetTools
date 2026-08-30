@@ -79,6 +79,12 @@ try
 {
     Log.Information("Starting LmStreaming.Sample application");
 
+    // Eagerly load + validate the system chat modes so a broken Prompts.yaml (or one missing a
+    // required mode — e.g. an operator edit, or a partial deploy pairing new binaries with a stale
+    // yaml) kills the boot HERE with the clear validation message, instead of booting a host that
+    // looks healthy and 500s every mode-touching request (#628 / PR #630 F-001).
+    SystemChatModes.EnsureLoadedAtStartup();
+
     var builder = WebApplication.CreateBuilder(args);
 
     // Bridge the operator-facing flat env var LMSTREAMING_S2S_INBOUND_SECRET into the section key the

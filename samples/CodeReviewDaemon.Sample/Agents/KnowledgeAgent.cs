@@ -27,12 +27,13 @@ internal sealed class KnowledgeAgent
     /// <summary>
     /// The output contract, restated at the <b>end of the user turn</b> — the last thing the model reads.
     /// <para>
-    /// On the S2S path this extraction runs as a hosted <c>workspace-agent</c> conversation, and the
-    /// extraction profile's system prompt is only an <i>appendix</i> to the host's mode prompt. That mode
-    /// prompt says to use sandbox tools for all operations, keep task memory, and summarize what changed —
-    /// and it won. Every August 2026 run on both daemons answered with an action summary or a review
-    /// verdict, so every run parsed to no markers and wrote nothing. Restating the contract here puts it
-    /// where the mode prompt cannot outrank it.
+    /// On the S2S path this extraction runs as a hosted conversation in the mode
+    /// <c>LmStreamingModeId</c> names (default <c>code-review-daemon</c>; <c>workspace-agent</c> at the
+    /// time of the incident), and the extraction profile's system prompt is only an <i>appendix</i> to
+    /// the host's mode prompt. That mode prompt says to use sandbox tools for all operations, keep task
+    /// memory, and summarize what changed — and it won. Every August 2026 run on both daemons answered
+    /// with an action summary or a review verdict, so every run parsed to no markers and wrote nothing.
+    /// Restating the contract here puts it where the mode prompt cannot outrank it.
     /// </para>
     /// </summary>
     private const string OutputContract = """

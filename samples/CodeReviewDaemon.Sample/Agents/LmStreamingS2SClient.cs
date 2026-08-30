@@ -96,7 +96,8 @@ internal sealed class LmStreamingS2SClient
     /// <para>
     /// That was NOT true until #528. The value was sent, stored, and read by nothing: the only function
     /// that could apply an appendix had zero production callers, so every S2S review ran under the bare
-    /// workspace-agent prompt — precisely the state <c>S2SReviewAgentLoopFactory</c>'s own
+    /// mode prompt (<c>workspace-agent</c>, the pre-#628 default) — precisely the state
+    /// <c>S2SReviewAgentLoopFactory</c>'s own
     /// ArgumentException was written to prevent. Sending it here is still only half the contract; a test
     /// asserting this call carries the field proves delivery to the host, not application to the model.
     /// The test that proves application is

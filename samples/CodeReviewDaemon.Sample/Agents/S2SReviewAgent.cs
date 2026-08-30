@@ -14,8 +14,9 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// <list type="number">
 /// <item>lazily <b>provision</b> a conversation once (caching the server-minted <c>thread-{Guid:N}</c>),
 ///   handing the review profile's system prompt to the host as the conversation's system prompt appendix —
-///   without it the hosted run sees only the diff under a generic workspace-agent prompt and never follows
-///   the daemon's methodology, sub-agent dispatch or output contract,</item>
+///   without it the hosted run sees only the diff under the bare mode prompt (identity + workspace
+///   discipline, no methodology) and never follows the daemon's methodology, sub-agent dispatch or
+///   output contract,</item>
 /// <item><b>send</b> the review input as one user message (getting an <c>inputId</c> to poll by),</item>
 /// <item><b>poll</b> <see cref="LmStreamingS2SClient.GetStatusByInputIdAsync"/> to a terminal status with a
 ///   bounded backoff and an overall timeout, and</item>

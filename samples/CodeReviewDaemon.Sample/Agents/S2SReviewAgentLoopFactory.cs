@@ -26,14 +26,15 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// <c>reasoningEffort</c> and <c>toolContext</c> are still <b>not</b> forwarded, and cannot be: the S2S
 /// surface has no carrier for either. Neither <c>ProvisionConversationRequest</c> nor
 /// <c>SendMessageRequest</c> (<c>{Text, SuppressSubAgentSpawning, IdempotencyKey}</c>) has an effort or a
-/// tool field, so there is nowhere to put them; the hosted workspace-agent mode owns tool exposure, the
-/// sub-agent catalog and per-turn thinking effort. Adding a parameter here that the wire cannot carry would
+/// tool field, so there is nowhere to put them; the hosted mode (named by
+/// <see cref="CodeReviewDaemonOptions.LmStreamingModeId"/>, default <c>code-review-daemon</c>) owns tool
+/// exposure, the sub-agent catalog and per-turn thinking effort. Adding a parameter here that the wire cannot carry would
 /// make a dead knob look live, which is worse than one that is visibly dead — so the omission is explicit
 /// and this is the place to start if the host ever grows those fields. The load-bearing inputs are
 /// <c>workspaceId</c> — the per-PR
 /// LmStreaming workspace <see cref="S2SReviewWorkspacePreparer"/> pointed at the daemon's host clone — and
 /// <c>profile.SystemPrompt</c>, which rides provision as the conversation's <b>system prompt appendix</b>
-/// (the host appends it to the workspace-agent mode's own prompt) while the review body rides the sent user
+/// (the host appends it to the provisioned mode's own prompt) while the review body rides the sent user
 /// message. Both halves are required: the hosted mode supplies the workspace, tools and sub-agent catalog,
 /// and the profile prompt supplies the review methodology, the "dispatch the <c>code-reviewer:*</c>
 /// sub-agents" instruction and the output contract. Dropping the prompt yields a run that reads the diff and

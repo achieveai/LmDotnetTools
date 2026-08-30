@@ -497,8 +497,9 @@ internal sealed class CodeReviewDaemonOptions
     /// The LmStreaming provider id to provision the review conversation with. Provision carries <b>no model
     /// field</b> — the model is whatever this provider resolves server-side — so this must name a provider on
     /// the review host that yields the intended review model (an OpenAI/Anthropic/Copilot middleware provider,
-    /// since <see cref="LmStreamingModeId"/>'s workspace-agent mode rejects CLI-only/mock providers). Required
-    /// when <see cref="UseS2SReviewAgent"/> is on.
+    /// since the workspace-backed mode <see cref="LmStreamingModeId"/> names — default
+    /// <c>code-review-daemon</c> — rejects CLI-only/mock providers). Required when
+    /// <see cref="UseS2SReviewAgent"/> is on.
     /// </summary>
     public string LmStreamingProviderId { get; init; } = "";
 
