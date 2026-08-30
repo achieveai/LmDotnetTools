@@ -5,6 +5,60 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests;
 
 public class ThinkingTests
 {
+    private static readonly JsonSerializerOptions s_jsonOptions =
+        AnthropicJsonSerializerOptionsFactory.CreateUniversal();
+
+    [Fact]
+    public void AnthropicOutputConfig_ShouldDefaultToHighEffort()
+    {
+        // "high" is the reasoning depth a regular request assumes; "max" is the opt-in lever.
+        Assert.Equal("high", new AnthropicOutputConfig().Effort);
+    }
+
+    [Fact]
+    public void FromMessages_ShouldExtractOutputConfig_AndSerializeEffort()
+    {
+        var messages = new[]
+        {
+            new TextMessage { Role = Role.User, Text = "Test message" },
+        };
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "deepseek-v4-flash",
+            ExtraProperties = ImmutableDictionary
+                .Create<string, object?>()
+                .Add("OutputConfig", new AnthropicOutputConfig { Effort = "max" }),
+        };
+
+        var request = AnthropicRequest.FromMessages(messages, options);
+
+        // Extracted from ExtraProperties...
+        Assert.NotNull(request.OutputConfig);
+        Assert.Equal("max", request.OutputConfig.Effort);
+
+        // ...and serialized under the wire name the provider expects.
+        var json = JsonSerializer.Serialize(request, s_jsonOptions);
+        Assert.Contains("\"output_config\"", json);
+        Assert.Contains("\"effort\":\"max\"", json);
+    }
+
+    [Fact]
+    public void FromMessages_WithoutOutputConfig_OmitsItFromJson()
+    {
+        var messages = new[]
+        {
+            new TextMessage { Role = Role.User, Text = "Test message" },
+        };
+        var request = AnthropicRequest.FromMessages(
+            messages,
+            new GenerateReplyOptions { ModelId = "claude-3-7-sonnet-20250219" }
+        );
+
+        Assert.Null(request.OutputConfig);
+        var json = JsonSerializer.Serialize(request, s_jsonOptions);
+        Assert.DoesNotContain("output_config", json);
+    }
+
     [Fact]
     public void AnthropicThinking_ShouldBeCreatedWithBudget()
     {
