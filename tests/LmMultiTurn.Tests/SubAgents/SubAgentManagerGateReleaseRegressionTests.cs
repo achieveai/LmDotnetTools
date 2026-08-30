@@ -1017,10 +1017,14 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await manager.SendMessageAsync(agentId, "continue", runInBackground: true).WaitAsync(TimeSpan.FromSeconds(10));
         elapsed.Stop();
 
+        // 5s, not 2s: the ceiling under test is 200ms, so this still cleanly separates "bounded at
+        // the ceiling" from both "hard-coded the 10s production ceiling" and "unbounded" (the outer
+        // WaitAsync(10s) catches forever) - while giving a loaded CI runner real scheduling headroom;
+        // 2s flaked under concurrent-lane load on work that is not itself timing-bound.
         elapsed
             .Elapsed.Should()
             .BeLessThan(
-                TimeSpan.FromSeconds(2),
+                TimeSpan.FromSeconds(5),
                 "the restart must abandon the finished run's token-ignoring RunTask at the per-agent ceiling, "
                     + "not await it forever"
             );
@@ -1082,10 +1086,12 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("restart send failed");
         elapsed.Stop();
 
+        // Same widening as the sibling test above: 200ms ceiling + loaded-runner headroom, still far
+        // below both the 10s production ceiling and the outer WaitAsync bound.
         elapsed
             .Elapsed.Should()
             .BeLessThan(
-                TimeSpan.FromSeconds(2),
+                TimeSpan.FromSeconds(5),
                 "the restart-failure cleanup must abandon the replacement run's token-ignoring RunTask at the "
                     + "per-agent ceiling so the failure surfaces, not hang on it forever"
             );

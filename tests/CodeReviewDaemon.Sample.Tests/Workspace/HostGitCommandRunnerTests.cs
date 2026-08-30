@@ -177,10 +177,14 @@ public class HostGitCommandRunnerTests : IDisposable
     [Fact]
     public async Task RunAsync_leaves_a_chatty_long_command_alone_because_the_bound_is_inactivity()
     {
-        var runner = Runner(idleTimeout: TimeSpan.FromMilliseconds(2500));
+        // 5s idle vs ~1s ticks: a 5x margin, because the tick cadence rides on real process
+        // scheduling. The earlier 2.5s bound was killed on loaded CI runners when a healthy child
+        // (or its own startup) got starved past the bound; the run still outlives the idle timeout
+        // twice over, so an idle timer "simplified" into a total ceiling still turns this red.
+        var runner = Runner(idleTimeout: TimeSpan.FromSeconds(5));
 
-        // Runs ~5s — twice the idle timeout — but never silent for more than about a second.
-        var result = await runner.RunAsync(new SandboxCommand(_lab.ChattyFor(5), _dir), default);
+        // Runs ~10s — twice the idle timeout — but never silent for more than about a second.
+        var result = await runner.RunAsync(new SandboxCommand(_lab.ChattyFor(10), _dir), default);
 
         result
             .Succeeded.Should()

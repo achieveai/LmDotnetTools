@@ -734,6 +734,15 @@ public class MultiTurnAgentBaseTests
         // Arrange - Create agent that doesn't start immediately
         var agent = new TestMultiTurnAgent("test-thread");
         var receivedMessages = new List<IMessage>();
+        var receivedGate = new object();
+
+        List<RunAssignmentMessage> ReceivedAssignments()
+        {
+            lock (receivedGate)
+            {
+                return [.. receivedMessages.OfType<RunAssignmentMessage>()];
+            }
+        }
 
         using var cts = new CancellationTokenSource();
 
@@ -741,25 +750,56 @@ public class MultiTurnAgentBaseTests
         var receipt1 = await agent.SendAsync([new TextMessage { Text = "First", Role = Role.User }], "batch-1");
         var receipt2 = await agent.SendAsync([new TextMessage { Text = "Second", Role = Role.User }], "batch-2");
 
-        // Now subscribe and start
+        // Now subscribe. The SubscribeAsync enumerator only registers its subscriber once the
+        // Task.Run body reaches its first MoveNextAsync, so the registration must be synchronized
+        // on ITS OWN observable side effect - a probe message actually arriving - not on a delay
+        // (a Task.Delay here flaked under CI load when the loop outran the subscriber).
         var subscribeTask = Task.Run(async () =>
         {
             await foreach (var msg in agent.SubscribeAsync(cts.Token))
             {
-                receivedMessages.Add(msg);
+                lock (receivedGate)
+                {
+                    receivedMessages.Add(msg);
+                }
             }
         });
 
-        await Task.Delay(50);
+        // Re-publish the probe each poll: a probe published before the subscriber registered is
+        // legitimately missed, so one eventually observed proves the subscriber IS registered now,
+        // and everything published from here on is delivered live.
+        const string ProbeText = "subscription-probe";
+        await AchieveAi.LmDotnetTools.LmTestUtils.Wait.UntilAsync(
+            async () =>
+            {
+                await agent.PublishForTest(new TextMessage { Text = ProbeText, Role = Role.System }, cts.Token);
+                lock (receivedGate)
+                {
+                    return receivedMessages.OfType<TextMessage>().Any(m => m.Text == ProbeText);
+                }
+            },
+            "the subscriber observed a probe message, proving it is registered before the run loop starts"
+        );
 
         // Start the loop - it should batch all queued inputs
         var runTask = agent.RunAsync(cts.Token);
 
-        // Wait for processing
-        await Task.Delay(500);
+        // Wait on the decision's own side effect: both receipts assigned to some run. If batching
+        // broke into two runs, the second assignment carries the second receipt, so this condition
+        // still completes and the HaveCount(1) below goes red rather than the wait hanging.
+        await AchieveAi.LmDotnetTools.LmTestUtils.Wait.UntilAsync(
+            () =>
+            {
+                var assigned = ReceivedAssignments().SelectMany(a => a.Assignment.InputIds ?? []).ToList();
+                return assigned.Contains(receipt1.ReceiptId) && assigned.Contains(receipt2.ReceiptId);
+            },
+            "both queued receipts were assigned to a run",
+            observed: () =>
+                $"assignments: [{string.Join("; ", ReceivedAssignments().Select(a => string.Join(",", a.Assignment.InputIds ?? [])))}]"
+        );
 
         // Assert - Should have exactly one run with both receipts
-        var runAssignments = receivedMessages.OfType<RunAssignmentMessage>().ToList();
+        var runAssignments = ReceivedAssignments();
         runAssignments.Should().HaveCount(1, "Multiple queued inputs should be batched into a single run");
 
         var assignment = runAssignments.First();

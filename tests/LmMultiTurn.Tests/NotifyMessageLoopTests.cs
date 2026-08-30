@@ -164,9 +164,22 @@ public class NotifyMessageLoopTests
         );
         await loop.SendAsync([notify]);
 
-        // Give the loop time to drain-and-park the notify. It must NOT start a turn (no extra LLM call),
-        // must NOT fail the run (no error completion), and the Wait stays deferred.
-        await Task.Delay(300);
+        // Wait for the drain-and-park decision's own side effect: folding the notify into history
+        // publishes its pill live (TryAppendParkedInputsAsync -> PublishIfNotifyAsync). A fixed delay
+        // here raced the loop under CI load - firing the trigger before the notify was parked let the
+        // notify drain into (or after) the resume turn instead. The condition also completes on the
+        // regression's own side effects (an extra LLM turn, or an error completion) so a broken loop
+        // fails the assertions below quickly instead of burning the whole wait.
+        await AchieveAi.LmDotnetTools.LmTestUtils.Wait.UntilAsync(
+            () =>
+                collector.Snapshot().OfType<NotifyMessage>().Any(n => n.Detail == "bg done")
+                || callCount > 1
+                || collector.Snapshot().OfType<RunCompletedMessage>().Any(m => m.IsError),
+            "the parked loop folded the notify into history and published its pill live"
+        );
+
+        // It must NOT have started a turn (no extra LLM call), NOT failed the run (no error
+        // completion), and the Wait stays deferred.
         callCount.Should().Be(1);
         collector.Snapshot().OfType<RunCompletedMessage>().Should().NotContain(m => m.IsError);
         (await loop.GetDeferredToolCallsAsync()).Should().ContainSingle(p => p.ToolCallId == "tc_host");
@@ -231,7 +244,9 @@ public class NotifyMessageLoopTests
         {
             try
             {
-                await _drain.WaitAsync(PollForCompletionsAsync(count), TimeSpan.FromSeconds(5));
+                // 10s matches Wait.DefaultTimeout: generous enough that a loaded CI runner is slower,
+                // not red; the TimeoutException below keeps the failure loud and diagnostic.
+                await _drain.WaitAsync(PollForCompletionsAsync(count), TimeSpan.FromSeconds(10));
             }
             catch (TimeoutException)
             {

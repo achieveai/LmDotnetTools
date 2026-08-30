@@ -176,7 +176,12 @@ public sealed class LifecycleDeliveryPipelineTests
 
         await harness.Pipeline.PublishAsync(Event(1)); // delivery 2 takes the only queue slot
         await harness.Pipeline.PublishAsync(Event(2)); // delivery 3 finds it full and is dropped
-        await harness.Resolver.WaitForResolutionsAsync(3);
+
+        // Barrier on the drop ITSELF, not on the pump having merely BEGUN dispatching event 2
+        // (WaitForResolutionsAsync(3) proves only that). Releasing the held attempt on that weaker
+        // signal raced the pump under CI load: the worker dequeued delivery 2 first, freeing the
+        // slot, and delivery 3 was enqueued instead of dropped - sequences read 1,2,3,4.
+        await harness.WaitForDropsAsync(1);
 
         firstAttemptHeld.SetResult();
         await harness.Sender.WaitForAttemptsAsync(2);
