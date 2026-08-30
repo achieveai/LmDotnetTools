@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import TodoBoardPanel from '@/components/TodoBoardPanel.vue';
 import { TodoStatus, type TodoTask } from '@/types/todo';
+import { normalizeTodoTasks } from '@/utils/todoBoard';
 
 /**
  * The panel is stateless/presentational, exactly like SubAgentListPanel: it takes the board as a
@@ -214,6 +215,73 @@ describe('TodoBoardPanel — artifact chips (PR 5)', () => {
   it('renders no chip strip at all for a task without artifacts', () => {
     const wrapper = mountPanel(sampleBoard());
     expect(wrapper.find('[data-testid="todo-artifact-chip"]').exists()).toBe(false);
+  });
+});
+
+/** One 20-deep single chain in the wire shape, run through the REAL normalizer — the same
+ *  pipeline useTodoBoard feeds this panel, so these tests exercise the guard, not a hand-built
+ *  imitation of its output. */
+function deepBoard(depth: number): TodoTask[] {
+  const root: Record<string, unknown> = {
+    id: '1',
+    status: 'NotStarted',
+    title: 'Level 1',
+    subTasks: [],
+  };
+  let current = root;
+  let id = '1';
+  for (let level = 2; level <= depth; level++) {
+    id = `${id}.1`;
+    const child: Record<string, unknown> = {
+      id,
+      status: 'NotStarted',
+      title: `Level ${level}`,
+      subTasks: [],
+    };
+    (current.subTasks as unknown[]).push(child);
+    current = child;
+  }
+  return normalizeTodoTasks([root]);
+}
+
+describe('TodoBoardPanel — deep boards (#608)', () => {
+  it('renders the first 16 levels of a 20-deep board plus an explicit truncation row', () => {
+    // The server nests without limit; the client's guard depth is stack safety, not policy. What
+    // the guard drops must be SAID, not silently missing — "4 deeper tasks not shown" is the
+    // difference between a safeguard and a lie about what work exists.
+    const wrapper = mountPanel(deepBoard(20));
+
+    expect(wrapper.findAll('[data-testid="todo-row"]')).toHaveLength(16);
+    expect(wrapper.get('[data-testid="todo-truncated-row"]').text()).toBe(
+      '4 deeper tasks not shown'
+    );
+  });
+
+  it('uses singular wording for a single dropped task', () => {
+    const wrapper = mountPanel(deepBoard(17));
+    expect(wrapper.get('[data-testid="todo-truncated-row"]').text()).toBe(
+      '1 deeper task not shown'
+    );
+  });
+
+  it('renders no truncation row at all for a board within the guard depth', () => {
+    expect(mountPanel(deepBoard(16)).find('[data-testid="todo-truncated-row"]').exists()).toBe(
+      false
+    );
+    expect(mountPanel(sampleBoard()).find('[data-testid="todo-truncated-row"]').exists()).toBe(
+      false
+    );
+  });
+
+  it('clamps the indent so a depth-15 row starts where a depth-8 row does and stays usable', () => {
+    // 14px per level in a 260px panel: unclamped, depth 15 would indent 224px and leave no room
+    // for the title. Depth 8 is the last stepped indent; everything deeper shares it.
+    const lines = mountPanel(deepBoard(20)).findAll('[data-testid="todo-row"] .todo-line');
+
+    expect(lines[8].attributes('style')).toContain('padding-left: 126px');
+    expect(lines[15].attributes('style')).toContain('padding-left: 126px');
+    // The clamp must not flatten the REAL hierarchy below it: depth 7 still steps.
+    expect(lines[7].attributes('style')).toContain('padding-left: 112px');
   });
 });
 

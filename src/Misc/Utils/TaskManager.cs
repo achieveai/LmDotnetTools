@@ -180,6 +180,8 @@ Hierarchy guidelines:
 • Level 2: Concrete deliverables or milestones
 • Level 3+: Specific implementation steps
 • Deeper nesting for complex subtasks that need isolation
+• Nesting is unlimited depth — each level adds one dotted id segment ('1.2.3.4', ...)
+• Ids are 1-based: the first main task is '1', its first subtask '1.1'
 
 Assignment inheritance:
 • A sub-item added under an assigned task inherits that task's assignee automatically.
@@ -194,7 +196,9 @@ Examples:
     )]
     public FunctionResult AddTask(
         [Description("Task title/description")] string title,
-        [Description("Parent task ID for nesting (e.g., '1', '1.2', '1.2.3'). Omit for main task")]
+        [Description(
+            "Parent task ID for nesting (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'. Omit for main task"
+        )]
             string? parentId = null,
         [Description(
             "Agent name to assign this task to. Omit on a subtask to inherit the parent task's assignee (if any); omit on a main task to leave it unassigned."
@@ -292,6 +296,13 @@ Philosophy:
 • Initial structure is a hypothesis - expect to modify it
 • Better to start with fewer, broader tasks and decompose as needed
 • Use clearExisting=true for fresh starts, false to extend
+
+Structure and ids:
+• Creates ONE nesting level only: each task plus a flat list of subtask titles.
+  For deeper trees, follow up with add-task and parentId — nesting there is
+  unlimited depth.
+• Ids are assigned 1-based in order: the first task becomes '1', its first
+  subtask '1.1'.
 
 After initialization:
 • Use add-task to expand as you discover complexity
@@ -460,7 +471,10 @@ Examples:
 - Abandon approach: {""taskId"": ""2.1"", ""status"": ""removed""}"
     )]
     public FunctionResult UpdateTask(
-        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
+        [Description(
+            "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
+        )]
+            string taskId,
         [Description("New status: not started|in progress|completed|removed")] string status = "not started",
         [Description(
             "Your agent name. Passing it on an 'in progress' transition claims the task (see claim-task); leave it null to just flip status without touching the claim."
@@ -584,7 +598,10 @@ Examples:
 - Re-claim / heartbeat: {""taskId"": ""3"", ""agent"": ""rev-a""}  // same agent, refreshes ClaimedAt"
     )]
     public FunctionResult ClaimTask(
-        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
+        [Description(
+            "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
+        )]
+            string taskId,
         [Description("Your agent name — recorded as the claim holder")] string agent
     )
     {
@@ -658,7 +675,10 @@ Examples:
 - Reassign after a stale lease: {""taskId"": ""3"", ""assignee"": ""rev-b""}"
     )]
     public FunctionResult AssignTask(
-        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
+        [Description(
+            "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
+        )]
+            string taskId,
         [Description("Agent name to assign this task to")] string assignee
     )
     {
@@ -754,7 +774,10 @@ Examples:
 - Re-block after a premature completion: re-open the blocker, then {""taskId"": ""3"", ""blockedBy"": [""1""]}"
     )]
     public FunctionResult BlockTask(
-        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
+        [Description(
+            "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
+        )]
+            string taskId,
         [Description("Task IDs this task is blocked on. Pass an empty list to clear the block.")]
             List<string>? blockedBy = null
     )
@@ -884,7 +907,10 @@ Examples:
 - The working spec: {""taskId"": ""3"", ""path"": ""docs/todo-board/spec.md""}"
     )]
     public FunctionResult AttachArtifact(
-        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
+        [Description(
+            "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
+        )]
+            string taskId,
         [Description("Workspace-relative file path, forward slashes only (e.g. 'docs/spec.md')")] string path
     )
     {
@@ -1235,8 +1261,14 @@ Examples:
 - Already done: {""taskId"": ""1.5""}  // Discovered existing implementation"
     )]
     public FunctionResult DeleteTask(
-        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
-        [Description("Subtask ID to delete specific subtask")] int? subtaskId = null
+        [Description(
+            "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
+        )]
+            string taskId,
+        [Description(
+            "Subtask ID to delete specific subtask — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+        )]
+            int? subtaskId = null
     )
     {
         return NotifyIfChanged(DeleteTaskCore(taskId, subtaskId));
@@ -1295,13 +1327,22 @@ Examples:
         @"Retrieve details to verify prerequisites or next steps.
 Use before acting, to confirm status/notes/subtasks.
 
+Ids are 1-based: taskId '1' is the first main task, and subtaskId 3 is the
+parent's third subtask (the per-level sibling ordinal).
+
 Examples:
 - Task: {""taskId"": 1}
 - Subtask: {""taskId"": 1, ""subtaskId"": 3}"
     )]
     public FunctionResult GetTask(
-        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
-        [Description("Subtask ID for specific subtask")] int? subtaskId = null
+        [Description(
+            "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
+        )]
+            string taskId,
+        [Description(
+            "Subtask ID for specific subtask — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+        )]
+            int? subtaskId = null
     )
     {
         lock (_sync)
@@ -1339,8 +1380,14 @@ Examples:
 - Insight: {""taskId"": ""2.1"", ""noteText"": ""Similar pattern worked in auth module - see commit abc123""}"
     )]
     public FunctionResult AddNote(
-        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
-        [Description("Subtask ID if adding note to subtask (optional)")] int? subtaskId = null,
+        [Description(
+            "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
+        )]
+            string taskId,
+        [Description(
+            "Subtask ID if adding note to subtask (optional) — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+        )]
+            int? subtaskId = null,
         [Description("Note text to add")] string noteText = ""
     )
     {
@@ -1386,8 +1433,14 @@ Examples:
 - Edit note #1 on subtask: {""taskId"": 1, ""subtaskId"": 3, ""noteIndex"": 1, ""noteText"": ""Changed approach""}"
     )]
     public FunctionResult EditNote(
-        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
-        [Description("Subtask ID if editing subtask note (optional)")] int? subtaskId = null,
+        [Description(
+            "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
+        )]
+            string taskId,
+        [Description(
+            "Subtask ID if editing subtask note (optional) — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+        )]
+            int? subtaskId = null,
         [Description("Note index to edit (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1,
         [Description("New text to replace the existing note")] string noteText = ""
     )
@@ -1442,8 +1495,14 @@ Examples:
 - Delete note #3 from subtask: {""taskId"": 1, ""subtaskId"": 2, ""noteIndex"": 3}"
     )]
     public FunctionResult DeleteNote(
-        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
-        [Description("Subtask ID if deleting subtask note (optional)")] int? subtaskId = null,
+        [Description(
+            "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
+        )]
+            string taskId,
+        [Description(
+            "Subtask ID if deleting subtask note (optional) — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+        )]
+            int? subtaskId = null,
         [Description("Note index to delete (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1
     )
     {
@@ -1527,8 +1586,14 @@ Examples:
 - Subtask notes: {""taskId"": 1, ""subtaskId"": 3}"
     )]
     public FunctionResult ListNotes(
-        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
-        [Description("Subtask ID for subtask notes")] int? subtaskId = null
+        [Description(
+            "Task ID (e.g., '1', '1.2', '1.2.3'). Ids are 1-based: the first main task is '1', its first subtask '1.1'."
+        )]
+            string taskId,
+        [Description(
+            "Subtask ID for subtask notes — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+        )]
+            int? subtaskId = null
     )
     {
         List<string> notesCopy;

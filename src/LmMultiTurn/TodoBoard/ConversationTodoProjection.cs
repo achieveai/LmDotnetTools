@@ -75,6 +75,11 @@ public static class ConversationTodoProjection
             return;
         }
 
+        // Depth bound (#608): the board model is unlimited-depth and no code in the projection or
+        // writer caps it — this Serialize call is where the practical bound lives. System.Text.Json's
+        // default MaxDepth (64) applies to the whole snapshot document, so a board nested deeper than
+        // roughly 60 task levels throws JsonException here instead of persisting. Deliberately left
+        // at the default rather than raised; requirements.md Req 1.3 states the same bound.
         var json = JsonSerializer.Serialize(snapshot);
 
         await store.UpdateMetadataAsync(

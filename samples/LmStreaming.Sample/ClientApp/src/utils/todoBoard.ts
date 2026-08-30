@@ -8,11 +8,13 @@
 import { TodoStatus, type TodoStatusValue, type TodoTask } from '@/types/todo';
 
 /**
- * Depth cap for the recursive walks. The server builds this tree from dotted ids so it cannot
- * legally nest this deep; the cap exists so a malformed or cyclic payload truncates instead of
- * blowing the stack and taking the whole chat view down with it.
+ * Depth cap for the recursive walks. The server nests without limit (#608), so a legal board CAN
+ * be deeper than this; the cap exists so a malformed or cyclic payload truncates instead of
+ * blowing the stack and taking the whole chat view down with it. Since #608 the truncation is
+ * VISIBLE rather than silent: the dropped descendants are counted onto the last kept row
+ * (`truncatedDescendants`) and the panel renders them as "N deeper tasks not shown".
  */
-const MAX_DEPTH = 16;
+export const MAX_DEPTH = 16;
 
 const STATUS_BY_LOWER_NAME: ReadonlyMap<string, TodoStatusValue> = new Map(
   Object.values(TodoStatus).map((s) => [s.toLowerCase(), s])
@@ -109,16 +111,46 @@ export function normalizeTodoTasks(raw: unknown, depth = 0): TodoTask[] {
     if (typeof id !== 'string' || id.length === 0) continue;
     if (typeof title !== 'string') continue;
 
+    // A row at the LAST kept level does not recurse — it counts what it is dropping instead, so
+    // the guard's truncation is visible on the board rather than silent (#608).
+    const atLastKeptLevel = depth + 1 >= MAX_DEPTH;
+    const truncatedDescendants = atLastKeptLevel ? countDroppedTasks(record.subTasks) : 0;
+
     out.push({
       id,
       title,
       status: coerceStatus(record.status),
       notes: coerceNotes(record.notes),
       artifacts: coerceArtifacts(record.artifacts),
-      subTasks: normalizeTodoTasks(record.subTasks, depth + 1),
+      subTasks: atLastKeptLevel ? [] : normalizeTodoTasks(record.subTasks, depth + 1),
+      // Only set when it carries information: absent on every untruncated row, so the parsed
+      // shape of a shallow board is byte-identical to what it was before #608.
+      ...(truncatedDescendants > 0 ? { truncatedDescendants } : {}),
     });
   }
   return out;
+}
+
+/**
+ * Counts the task-like entries (usable `id` + `title`, same keep-rule as `normalizeTodoTasks`) in
+ * a raw subtree the depth guard dropped. Cycle-safe via an object `seen` set rather than a depth
+ * cap — this walk exists precisely because the depth budget is exhausted, and the guard's reason
+ * for existing is exactly the cyclic payload this must survive.
+ */
+function countDroppedTasks(raw: unknown, seen = new Set<object>()): number {
+  if (!Array.isArray(raw) || seen.has(raw)) return 0;
+  seen.add(raw);
+
+  let count = 0;
+  for (const entry of raw) {
+    if (entry == null || typeof entry !== 'object' || seen.has(entry)) continue;
+    seen.add(entry);
+    const record = entry as Record<string, unknown>;
+    if (typeof record.id !== 'string' || record.id.length === 0) continue;
+    if (typeof record.title !== 'string') continue;
+    count += 1 + countDroppedTasks(record.subTasks, seen);
+  }
+  return count;
 }
 
 /** One rendered line: a task plus the nesting depth the panel indents it by. */
@@ -139,6 +171,16 @@ export function flattenTodoTasks(tasks: TodoTask[], depth = 0): TodoRow[] {
     rows.push(...flattenTodoTasks(task.subTasks, depth + 1));
   }
   return rows;
+}
+
+/**
+ * How many tasks the depth guard dropped across the whole board (#608) — the number behind the
+ * panel's "N deeper tasks not shown" row. Zero on every board within the guard depth, and the
+ * SINGLE implementation both the panel and its tests read, so the indicator cannot disagree with
+ * what `normalizeTodoTasks` actually dropped.
+ */
+export function countTruncatedTasks(tasks: TodoTask[]): number {
+  return flattenTodoTasks(tasks).reduce((sum, row) => sum + (row.truncatedDescendants ?? 0), 0);
 }
 
 export interface TodoCounts {

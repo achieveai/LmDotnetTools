@@ -263,4 +263,51 @@ public class TaskManagerFromSnapshotTests
         var takeover = rehydrated.ClaimTask("1", "agent-b");
         takeover.IsError.Should().BeFalse("a legacy lease must be able to go stale rather than wedging the row");
     }
+
+    [Fact]
+    public void FromSnapshot_TwentyLevelBoard_RoundTripsThroughJsonAndHydrationIntact()
+    {
+        // #608: the client's board panel guards its recursion at 16 levels; this pins that the cap
+        // is CLIENT-ONLY. A 20-level chain survives snapshot -> JSON (the projection's own
+        // serialize/deserialize shape, System.Text.Json default MaxDepth 64) -> hydration, with the
+        // deepest row still addressable by its 20-segment dotted id.
+        const int depth = 20;
+        var manager = new TaskManager();
+        _ = manager.AddTask("Level 1");
+        var parentId = "1";
+        for (var level = 2; level <= depth; level++)
+        {
+            _ = manager.AddTask($"Level {level}", parentId);
+            parentId = $"{parentId}.1";
+        }
+
+        var deepestId = parentId; // "1.1.1..." — 20 segments
+        deepestId.Split('.').Should().HaveCount(depth);
+
+        // The same JSON hop ConversationTodoProjection performs: default write options, then a
+        // case-insensitive read (its ReadOptions).
+        var json = JsonSerializer.Serialize(manager.GetTodoBoardSnapshot("conv-1"));
+        var persisted = JsonSerializer.Deserialize<TodoBoardSnapshot>(
+            json,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+        );
+
+        var rehydrated = TaskManager.FromSnapshot(persisted!);
+
+        var deepest = rehydrated.GetTask(deepestId);
+        deepest.IsError.Should().BeFalse("the 20-level row must still be addressable after the round trip");
+        deepest.Text.Should().Contain($"Level {depth}");
+
+        // And the re-captured snapshot still carries the full chain, node for node.
+        var recaptured = rehydrated.GetTodoBoardSnapshot("conv-1");
+        var node = recaptured.Tasks.Single();
+        for (var level = 2; level <= depth; level++)
+        {
+            node = node.SubTasks.Single();
+        }
+
+        node.Id.Should().Be(deepestId);
+        node.Title.Should().Be($"Level {depth}");
+        node.SubTasks.Should().BeEmpty();
+    }
 }
