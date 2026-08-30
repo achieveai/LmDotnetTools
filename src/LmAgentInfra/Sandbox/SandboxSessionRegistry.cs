@@ -1975,7 +1975,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// (<paramref name="sessionId"/>, <paramref name="conversationId"/>) pair, creating one on
     /// first access — seeded with <paramref name="seed"/> and remembering
     /// <paramref name="agentFactory"/> for the discovery webhook's spawn-time wiring. Subsequent
-    /// calls for the same pair return the existing binding unchanged.
+    /// calls for the same pair return the existing binding (same source, same factories), with the
+    /// seed reconciled into it: seed-keyed template content is refreshed to this call's seed,
+    /// while templates the webhook registered under other keys are preserved.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -2074,13 +2076,19 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         IReadOnlyDictionary<string, SubAgentTemplate> seed
     )
     {
-        // Reconcile the seed every call: a later pool factory invocation for the same conversation
-        // may present additional built-in templates that weren't present on the first call.
-        // TryRegister is first-wins, so previously seeded entries (and any discovered templates
-        // registered by the webhook in between) are preserved — the trust boundary holds.
+        // Reconcile the seed every call, OVERWRITING seed-keyed entries: the seed is the
+        // conversation's own trusted, freshly built catalog, and its template CONTENT is no longer
+        // build-invariant — an agent rebuild for the same conversation (mode switch, fragment
+        // edit) folds the current mode's sub-agent prompt fragment into every template's
+        // SystemPrompt at catalog build. First-wins here would pin the FIRST build's fragment for
+        // the life of the conversation (and leak it into a later fragment-less mode). First-wins
+        // remains in force for keys the seed does not carry — the templates the discovery webhook
+        // registered mid-session — so the untrusted-cannot-shadow-trusted boundary holds: only
+        // TryRegister (the webhook's entry point) is first-wins, and only the host's own seed
+        // replaces entries.
         foreach (var kvp in seed)
         {
-            _ = binding.Source.TryRegister(kvp.Key, kvp.Value);
+            binding.Source.Upsert(kvp.Key, kvp.Value);
         }
 
         return binding;

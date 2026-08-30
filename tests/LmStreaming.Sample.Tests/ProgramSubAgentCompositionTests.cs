@@ -281,30 +281,36 @@ public sealed class ProgramSubAgentCompositionTests
         );
 
         recreatedBinding.Source.Should().BeSameAs(firstBinding.Source);
-        var retained = recreatedBinding.Source.Templates["discovered"];
-        retained
-            .Should()
-            .BeEquivalentTo(
-                discovered,
-                options =>
-                    options
-                        .Excluding(template => template.AgentFactory)
-                        .Excluding(template => template.CharacteristicsAgentFactory),
-                "recreation must preserve all first-wins content and metadata"
-            );
-        retained.Name.Should().NotBe("replacement");
-        retained.AgentFactory.Should().BeSameAs(firstLegacyFactory);
-        retained.AgentFactory().Should().BeSameAs(firstProvider);
-        retained
+        // The recreation seed carries the key "discovered", and the seed is the conversation's own
+        // freshly built catalog: the reseed REPLACES that entry (#613 F-001 — template content is
+        // mode-dependent since #610, so first-wins here would pin the first build's folded prompts
+        // for the life of the conversation). First-wins preservation now applies to keys the seed
+        // does NOT carry: "first-seed" below and the post-refresh registration at the end.
+        var replaced = recreatedBinding.Source.Templates["discovered"];
+        replaced.Name.Should().Be("replacement");
+        replaced.AgentFactory.Should().BeSameAs(latestLegacyFactory);
+        replaced.AgentFactory().Should().BeSameAs(latestProvider);
+        replaced
             .CharacteristicsAgentFactory!(new SubAgentCharacteristics(null, ReasoningEffort.High))
             .Agent.Should()
-            .BeSameAs(firstProvider);
-        retained
+            .BeSameAs(latestProvider);
+        replaced
             .CharacteristicsAgentFactory!(
                 new SubAgentCharacteristics("spawn-model", ReasoningEffort.High) { IsModelExplicitlySelected = true }
             )
             .Agent.Should()
             .BeSameAs(latestProvider);
+
+        // "first-seed" is absent from the recreation seed: content and legacy factory preserved
+        // (only the characteristics wrapper is rebound to the latest factories, as it always was).
+        var preserved = recreatedBinding.Source.Templates["first-seed"];
+        preserved.Name.Should().Be("first-seed");
+        preserved.AgentFactory.Should().BeSameAs(firstLegacyFactory);
+        preserved.AgentFactory().Should().BeSameAs(firstProvider);
+        preserved
+            .CharacteristicsAgentFactory!(new SubAgentCharacteristics(null, ReasoningEffort.High))
+            .Agent.Should()
+            .BeSameAs(firstProvider);
         await using var manager = new SubAgentManager(
             Mock.Of<IMultiTurnAgent>(),
             parentContracts: [],

@@ -171,6 +171,110 @@ public sealed class ProgramModeSubAgentPromptTests
         }
     }
 
+    /// <summary>
+    /// PR #613 F-001: a mode switch rebuilds the agent and rebinds the conversation's shared
+    /// template source with a freshly folded seed. The rebind must REPLACE seed-keyed template
+    /// content (the seed is the conversation's own trusted, freshly built catalog) — otherwise the
+    /// first mode's fragment is pinned for the life of the conversation. Y-and-no-X: the new
+    /// spawn catalog carries mode B's fragment and none of mode A's.
+    /// </summary>
+    [Fact]
+    public async Task ModeSwitchRebind_RefreshesSeedTemplatesToTheNewModesFragment()
+    {
+        const string FragmentA = "Mode A fragment: be terse.";
+        const string FragmentB = "Mode B fragment: be thorough.";
+        await using var registry = CreateRegistry();
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> charFactory = _ =>
+            throw new InvalidOperationException("not spawned here");
+
+        var optionsA = await BuildAsync(Profile(FragmentA, "append"));
+        var bindingA = global::Program.BindConversationSubAgents(
+            registry,
+            "session",
+            "conversation",
+            optionsA!.Templates,
+            () => Mock.Of<IStreamingAgent>(),
+            charFactory
+        );
+
+        // A webhook discovery lands between the two builds; its key is NOT in any seed.
+        bindingA
+            .Source.TryRegister(
+                "webhook_discovered",
+                new SubAgentTemplate
+                {
+                    Name = "Webhook",
+                    SystemPrompt = "Webhook prompt.",
+                    AgentFactory = () => Mock.Of<IStreamingAgent>(),
+                }
+            )
+            .Should()
+            .BeTrue();
+
+        // Mode switch: the pool factory rebuilds and rebinds with mode B's freshly folded catalog.
+        var optionsB = await BuildAsync(Profile(FragmentB, "append"));
+        var rebound = global::Program.BindConversationSubAgents(
+            registry,
+            "session",
+            "conversation",
+            optionsB!.Templates,
+            () => Mock.Of<IStreamingAgent>(),
+            charFactory
+        );
+
+        rebound.Source.Should().BeSameAs(bindingA.Source, "the conversation keeps one template source");
+        foreach (var key in optionsB.Templates.Keys)
+        {
+            var prompt = rebound.Source.Templates[key].SystemPrompt;
+            prompt.Should().Contain(FragmentB, $"template '{key}' must carry the CURRENT mode's fragment");
+            prompt.Should().NotContain(FragmentA, $"template '{key}' must not leak the previous mode's fragment");
+        }
+
+        // The webhook-registered template's key is absent from the new seed: it survives untouched.
+        rebound.Source.Templates["webhook_discovered"].SystemPrompt.Should().Be("Webhook prompt.");
+        rebound.Source.Templates["webhook_discovered"].Name.Should().Be("Webhook");
+    }
+
+    /// <summary>
+    /// The leak variant of the same defect: switching to a mode with NO fragment must drop the old
+    /// mode's fragment entirely — the rebind seed is unfolded, so the catalog returns to the
+    /// built-in prompts byte-for-byte.
+    /// </summary>
+    [Fact]
+    public async Task ModeSwitchRebind_ToAFragmentlessMode_DropsTheOldModesFragment()
+    {
+        const string FragmentA = "Mode A fragment: be terse.";
+        var baseline = BuiltInSubAgentTemplates.Create(() => Mock.Of<IStreamingAgent>());
+        await using var registry = CreateRegistry();
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> charFactory = _ =>
+            throw new InvalidOperationException("not spawned here");
+
+        var optionsA = await BuildAsync(Profile(FragmentA, "prepend"));
+        _ = global::Program.BindConversationSubAgents(
+            registry,
+            "session",
+            "conversation",
+            optionsA!.Templates,
+            () => Mock.Of<IStreamingAgent>(),
+            charFactory
+        );
+
+        var optionsB = await BuildAsync(Profile(fragment: null, placement: null));
+        var rebound = global::Program.BindConversationSubAgents(
+            registry,
+            "session",
+            "conversation",
+            optionsB!.Templates,
+            () => Mock.Of<IStreamingAgent>(),
+            charFactory
+        );
+
+        foreach (var (key, template) in rebound.Source.Templates)
+        {
+            template.SystemPrompt.Should().Be(baseline[key].SystemPrompt, "no trace of mode A's fragment may remain");
+        }
+    }
+
     [Fact]
     public void ToAgentProfile_CarriesFragmentAndPlacement()
     {
