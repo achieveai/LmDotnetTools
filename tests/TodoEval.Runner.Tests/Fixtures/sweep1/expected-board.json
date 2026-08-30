@@ -1,0 +1,22 @@
+{
+ "schema": "todo-eval/expected-board@1",
+ "board": {
+  "topLevelTaskCount": 3,
+  "subtaskCountsSorted": [
+   3,
+   3,
+   4
+  ],
+  "level3": {
+   "minParents": 1,
+   "minChildrenPerParent": 2
+  },
+  "allTasksCompleted": true,
+  "minNotesPerSubtask": 1,
+  "maxBlockedTasks": 0
+ },
+ "conversation": {
+  "requireBlockRecorded": true,
+  "requireBlockCleared": true
+ }
+}

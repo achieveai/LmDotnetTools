@@ -1,0 +1,6 @@
+{
+ "threadId": "subagent-orphan",
+ "properties": {
+  "sample.subAgentOf": "thread-errors"
+ }
+}
