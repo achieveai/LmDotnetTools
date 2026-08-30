@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -394,6 +395,301 @@ public sealed class SubAgentRequiredToolsTests : IAsyncLifetime
 
     #endregion
 
+    #region #638 F-001 — remove_tools that withholds nothing
+
+    private const string RemoveWithheldNothingMarker = "not in its toolset to begin with";
+    private const string RemoveRestoredMarker = "restored by the required-tools union";
+
+    /// <summary>
+    /// The headline #638 F-001 case. <c>add_tools: "*"</c> (which #636 taught) plus a group pattern on
+    /// the remove side reads as "everything except the board tools" and silently produced the
+    /// OPPOSITE: every board tool granted, no warning. Both halves are asserted here — the warning
+    /// AND the over-grant it describes — so the test cannot pass on a spawn that never resolved.
+    /// </summary>
+    [Fact]
+    public async Task RemoveToolsWithAGroupPattern_OverGrants_AndLogsTheWithheldNothingWarning()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(InheritAllTemplate(), logger: logger);
+
+        var childLoop = await SpawnChildAsync(manager, addTools: ["*"], removeTools: ["tasks:*"]);
+
+        childLoop
+            .RegisteredToolNames.Should()
+            .Contain(
+                [TaskTool, SecondTaskTool],
+                "'tasks:*' is not group language on this side - the board tools are still granted"
+            );
+        logger.CountAtLevel(LogLevel.Warning, RemoveWithheldNothingMarker).Should().Be(1);
+    }
+
+    /// <summary>
+    /// The paired positive for the silence below AND the discriminator for the warning above: SAME
+    /// harness, SAME accessor, one variable changed (an exact tool name instead of a pattern). The
+    /// removal really happens and the warning really stays quiet, so neither result is an artifact of
+    /// the test never reaching the code.
+    /// </summary>
+    [Fact]
+    public async Task RemoveToolsNamingAnExactTool_WithholdsIt_AndLeavesTheWarningSilent()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(InheritAllTemplate(), logger: logger);
+
+        var childLoop = await SpawnChildAsync(manager, addTools: ["*"], removeTools: [SecondTaskTool]);
+
+        childLoop.RegisteredToolNames.Should().Contain([DomainTool, TaskTool]);
+        childLoop
+            .RegisteredToolNames.Should()
+            .NotContain(SecondTaskTool, "an exact name really is withheld - the silence below is about a no-op");
+        logger.CountAtLevel(LogLevel.Warning, RemoveWithheldNothingMarker).Should().Be(0);
+    }
+
+    /// <summary>
+    /// <c>remove_tools: "*"</c> means "remove a tool literally named <c>*</c>" — a no-op, and
+    /// deliberately still one: adding wildcard language to this side alone is the asymmetry that made
+    /// F-001 reachable. It must not be a SILENT no-op.
+    /// </summary>
+    [Fact]
+    public async Task RemoveToolsStarLiteral_IsANoOp_AndLogsTheWithheldNothingWarning()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(InheritAllTemplate(), logger: logger);
+
+        var childLoop = await SpawnChildAsync(manager, addTools: ["*"], removeTools: ["*"]);
+
+        childLoop.RegisteredToolNames.Should().Contain([DomainTool, TaskTool, SecondTaskTool]);
+        logger.CountAtLevel(LogLevel.Warning, RemoveWithheldNothingMarker).Should().Be(1);
+    }
+
+    /// <summary>
+    /// The logged COUNT must be the number of entries that withheld nothing, not "some warning fired".
+    /// Two of the three entries are no-ops; a line reporting 1 or 3 is wrong and fails here.
+    /// </summary>
+    [Fact]
+    public async Task TheWithheldNothingWarning_CountsOnlyTheEntriesThatWithheldNothing()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(InheritAllTemplate(), logger: logger);
+
+        _ = await SpawnChildAsync(manager, addTools: ["*"], removeTools: ["tasks:*", "no-such-tool", SecondTaskTool]);
+
+        var line = logger
+            .MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .ContainSingle(message => message.Contains(RemoveWithheldNothingMarker, StringComparison.Ordinal))
+            .Subject;
+
+        line.Should().Contain("naming 2 tool(s)");
+        line.Should().Contain("tasks:*").And.Contain("no-such-tool");
+        line.Should().NotContain(SecondTaskTool, "the one entry that DID withhold a tool is not an unmatched entry");
+    }
+
+    /// <summary>
+    /// Through the REAL <c>Agent</c> handler, so the <c>remove_tools</c> STRING is parsed by production
+    /// code rather than handed in pre-split — the path a model actually takes.
+    /// </summary>
+    [Fact]
+    public async Task RemoveToolsGroupPattern_ThroughTheRealToolHandler_OverGrantsAndWarns()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, provider) = CreateManager(InheritAllTemplate(), logger: logger);
+
+        var agentId = await SpawnViaToolAsync(provider, addTools: "*", removeTools: "tasks:*");
+
+        ChildLoop(manager, agentId).RegisteredToolNames.Should().Contain([TaskTool, SecondTaskTool]);
+        logger.CountAtLevel(LogLevel.Warning, RemoveWithheldNothingMarker).Should().Be(1);
+    }
+
+    /// <summary>
+    /// The second way "withhold these" produces the opposite: the entry MATCHES, is removed, and is
+    /// then put straight back by the mode's required-tools union (#623). Deliberate precedence, but
+    /// silent from the caller's seat until now — and it is a DIFFERENT line from the no-op warning,
+    /// which must stay quiet here because the entry did match.
+    /// </summary>
+    [Fact]
+    public async Task RemoveToolsNamingAModeRequiredTool_LogsTheRestoredWarning()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(
+            InheritAllTemplate(),
+            options => options with { RequiredToolNames = [TaskTool] },
+            logger: logger
+        );
+
+        var childLoop = await SpawnChildAsync(manager, addTools: ["*"], removeTools: [TaskTool]);
+
+        childLoop.RegisteredToolNames.Should().Contain(TaskTool, "the required-tools union wins - that is the point");
+        logger.CountAtLevel(LogLevel.Warning, RemoveRestoredMarker).Should().Be(1);
+        logger.CountAtLevel(LogLevel.Warning, RemoveWithheldNothingMarker).Should().Be(0);
+    }
+
+    /// <summary>
+    /// Paired positive for the silence above: SAME harness, SAME spawn, one variable changed (the mode
+    /// declares no required tools). The tool is genuinely withheld and the restored-warning is quiet,
+    /// so the fired warning above is caused by the required-tools union and nothing else.
+    /// </summary>
+    [Fact]
+    public async Task RemoveToolsWithoutModeRequiredTools_WithholdsTheTool_AndLeavesTheRestoredWarningSilent()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(InheritAllTemplate(), logger: logger);
+
+        var childLoop = await SpawnChildAsync(manager, addTools: ["*"], removeTools: [TaskTool]);
+
+        childLoop.RegisteredToolNames.Should().NotContain(TaskTool);
+        logger.CountAtLevel(LogLevel.Warning, RemoveRestoredMarker).Should().Be(0);
+    }
+
+    #endregion
+
+    #region #638 F-002 — the empty-toolset warning's count and its deny-all false positive
+
+    /// <summary>
+    /// A deliberate <c>tools: []</c> deny-all is a CORRECT configuration, and a warning that fires on
+    /// correct configuration trains people to ignore it. This is one half of the discriminator; the
+    /// other half is <see cref="GenuineCollapse_FromANonEmptyToolsList_LogsTheEmptyToolsetWarning"/>,
+    /// which resolves to the same empty toolset from a template that asked for something.
+    /// </summary>
+    [Fact]
+    public async Task DeliberateDenyAllTemplate_LeavesTheEmptyToolsetWarningSilent()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(DenyAllTemplate(), logger: logger);
+
+        var childLoop = await SpawnChildAsync(manager);
+
+        childLoop
+            .RegisteredToolNames.Should()
+            .NotContain(
+                [DomainTool, TaskTool, SecondTaskTool],
+                "deny-all really did deny all - the silence is about a REACHED empty toolset"
+            );
+        logger.CountAtLevel(LogLevel.Warning, EmptyToolsetWarningMarker).Should().Be(0);
+    }
+
+    /// <summary>
+    /// The paired positive: the SAME empty resolved toolset, from a template that named a tool and got
+    /// none of it. If the fix could not tell these two apart it would be incomplete, so this pair is
+    /// the discriminator rather than either test alone.
+    /// </summary>
+    [Fact]
+    public async Task GenuineCollapse_FromANonEmptyToolsList_LogsTheEmptyToolsetWarning()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(Template(enabledTools: ["not-a-parent-tool"]), logger: logger);
+
+        var childLoop = await SpawnChildAsync(manager);
+
+        childLoop.RegisteredToolNames.Should().NotContain([DomainTool, TaskTool, SecondTaskTool]);
+        logger.CountAtLevel(LogLevel.Warning, EmptyToolsetWarningMarker).Should().Be(1);
+    }
+
+    /// <summary>
+    /// The deny-all suppression is not a blanket over the template: a spawn that ASKS for a tool on top
+    /// of <c>tools: []</c> and receives none of it is a collapse, because the caller wanted something.
+    /// </summary>
+    [Fact]
+    public async Task DenyAllTemplate_WithAnAddToolsThatMatchesNothing_StillLogsTheEmptyToolsetWarning()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(DenyAllTemplate(), logger: logger);
+
+        _ = await SpawnChildAsync(manager, addTools: ["no-such-tool"]);
+
+        logger.CountAtLevel(LogLevel.Warning, EmptyToolsetWarningMarker).Should().Be(1);
+    }
+
+    /// <summary>
+    /// The reported count must be the number of INHERITABLE parent tools. AskUserQuestion and
+    /// NotifyClient sit in the parent's contracts but are structurally never inherited (#246), so a
+    /// parent holding all five can hand a child at most three — a line saying five is simply wrong,
+    /// and this asserts the number rather than merely that a line was logged.
+    /// </summary>
+    [Fact]
+    public async Task TheEmptyToolsetWarning_CountsOnlyTheInheritableParentTools()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(
+            Template(enabledTools: ["not-a-parent-tool"]),
+            logger: logger,
+            parentToolNames:
+            [
+                TaskTool,
+                SecondTaskTool,
+                DomainTool,
+                AskUserQuestionToolProvider.ToolName,
+                NotifyClientToolProvider.ToolName,
+            ]
+        );
+
+        _ = await SpawnChildAsync(manager);
+
+        var line = logger
+            .MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .ContainSingle(message => message.Contains(EmptyToolsetWarningMarker, StringComparison.Ordinal))
+            .Subject;
+
+        line.Should().Contain("exposing 3 inheritable tool(s)");
+        line.Should().NotContain("exposing 5", "AskUserQuestion/NotifyClient can never be inherited");
+    }
+
+    /// <summary>
+    /// A parent exposing ONLY the two never-inherited tools can hand a child nothing at all, so an
+    /// empty child toolset is structurally unavoidable there and is not a narrowing to report.
+    /// </summary>
+    [Fact]
+    public async Task ParentExposingOnlyNeverInheritedTools_LeavesTheEmptyToolsetWarningSilent()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(
+            InheritAllTemplate(),
+            logger: logger,
+            parentToolNames: [AskUserQuestionToolProvider.ToolName, NotifyClientToolProvider.ToolName]
+        );
+
+        _ = await SpawnChildAsync(manager, addTools: ["no-such-tool"]);
+
+        logger.CountAtLevel(LogLevel.Warning, EmptyToolsetWarningMarker).Should().Be(0);
+    }
+
+    /// <summary>
+    /// Paired positive for the silence above: the SAME template, the SAME spawn, the SAME accessor —
+    /// one variable changed, a single inheritable tool added to the parent — and the warning fires.
+    /// Without this the silence above would pass equally well if the spawn had failed outright.
+    /// </summary>
+    [Fact]
+    public async Task ParentWithOneInheritableToolBesideThem_LogsTheEmptyToolsetWarning()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(
+            InheritAllTemplate(),
+            logger: logger,
+            parentToolNames: [AskUserQuestionToolProvider.ToolName, NotifyClientToolProvider.ToolName, DomainTool]
+        );
+
+        _ = await SpawnChildAsync(manager, addTools: ["no-such-tool"]);
+
+        var line = logger
+            .MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .ContainSingle(message => message.Contains(EmptyToolsetWarningMarker, StringComparison.Ordinal))
+            .Subject;
+
+        line.Should().Contain("exposing 1 inheritable tool(s)");
+    }
+
+    [Fact]
+    public void IsNeverInheritedTool_NamesExactlyTheStructurallyExcludedTools()
+    {
+        SubAgentManager.IsNeverInheritedTool(AskUserQuestionToolProvider.ToolName).Should().BeTrue();
+        SubAgentManager.IsNeverInheritedTool(NotifyClientToolProvider.ToolName).Should().BeTrue();
+        SubAgentManager.IsNeverInheritedTool(TaskTool).Should().BeFalse();
+        SubAgentManager.IsNeverInheritedTool(DomainTool).Should().BeFalse();
+    }
+
+    #endregion
+
     #region Warning floor
 
     private const string WarningMarker = "contains NONE of the task tools";
@@ -513,6 +809,13 @@ public sealed class SubAgentRequiredToolsTests : IAsyncLifetime
 
     private SubAgentTemplate InheritAllTemplate() => Template(enabledTools: null);
 
+    /// <summary>
+    /// A DELIBERATE deny-all template. <c>tools: []</c> in agent markdown reaches
+    /// <c>SubAgentMarkdownParser.NormalizeTools</c>, which returns an EMPTY-but-not-null list — that is
+    /// how "deny all" is spelled, and it is a correct configuration, not a collapse (#638 F-002).
+    /// </summary>
+    private SubAgentTemplate DenyAllTemplate() => Template(enabledTools: []);
+
     private SubAgentTemplate Template(IReadOnlyList<string>? enabledTools) =>
         new()
         {
@@ -544,7 +847,8 @@ public sealed class SubAgentRequiredToolsTests : IAsyncLifetime
         SubAgentTemplate template,
         Func<SubAgentOptions, SubAgentOptions>? configure = null,
         AgentCollaborationSetup? collaboration = null,
-        ILogger? logger = null
+        ILogger? logger = null,
+        IReadOnlyList<string>? parentToolNames = null
     )
     {
         var options = new SubAgentOptions
@@ -554,16 +858,12 @@ public sealed class SubAgentRequiredToolsTests : IAsyncLifetime
         };
         options = configure?.Invoke(options) ?? options;
 
+        var toolNames = parentToolNames ?? [TaskTool, SecondTaskTool, DomainTool];
         var source = new MutableSubAgentTemplateSource(options.Templates);
         var manager = new SubAgentManager(
             parentAgent: _parentMock.Object,
-            parentContracts: [Contract(TaskTool), Contract(SecondTaskTool), Contract(DomainTool)],
-            parentHandlers: new Dictionary<string, ToolHandler>(StringComparer.Ordinal)
-            {
-                [TaskTool] = OkHandler(),
-                [SecondTaskTool] = OkHandler(),
-                [DomainTool] = OkHandler(),
-            },
+            parentContracts: [.. toolNames.Select(Contract)],
+            parentHandlers: toolNames.ToDictionary(name => name, _ => OkHandler(), StringComparer.Ordinal),
             options: options,
             source: source,
             logger: logger,
@@ -600,7 +900,11 @@ public sealed class SubAgentRequiredToolsTests : IAsyncLifetime
     /// production code rather than handed in pre-split — the seam where a lone separator used to
     /// produce an empty filter (#635).
     /// </summary>
-    private static async Task<string> SpawnViaToolAsync(SubAgentToolProvider provider, string addTools)
+    private static async Task<string> SpawnViaToolAsync(
+        SubAgentToolProvider provider,
+        string addTools,
+        string? removeTools = null
+    )
     {
         var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
         var result = await handler(
@@ -611,6 +915,7 @@ public sealed class SubAgentRequiredToolsTests : IAsyncLifetime
                     prompt = "work",
                     run_in_background = true,
                     add_tools = addTools,
+                    remove_tools = removeTools,
                 }
             ),
             new ToolCallContext(),

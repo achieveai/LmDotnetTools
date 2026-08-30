@@ -2966,14 +2966,18 @@ public sealed class SubAgentManager : IAsyncDisposable
             // overrides; the parent-contract intersection below is what stops the union from
             // granting a tool the mode itself does not expose.
             var registry = new FunctionRegistry();
+            // The roster an add_tools "*" expands to (#635): every name the parent exposes. Passed
+            // rather than looked up inside so BuildEnabledToolSet stays a pure function of its inputs.
+            // Hoisted to a local because the remove_tools diagnostic (#638) re-runs the same builder
+            // with the removals omitted, and it must be handed the IDENTICAL roster or the two
+            // resolutions could disagree about what "before removal" contained.
+            string[] inheritableToolNames = [.. _parentContracts.Select(c => c.Name)];
             var enabledSet = BuildEnabledToolSet(
                 template.EnabledTools,
                 addTools,
                 removeTools,
                 _options.RequiredToolNames,
-                // The roster an add_tools "*" expands to (#635): every name the parent exposes. Passed
-                // rather than looked up inside so BuildEnabledToolSet stays a pure function of its inputs.
-                [.. _parentContracts.Select(c => c.Name)]
+                inheritableToolNames
             );
             var inheritedToolNames = new List<string>();
 
@@ -2985,7 +2989,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // entry here too would leave two registrations of the same tool name in the child's
                 // fresh registry, and FunctionRegistry.Build()'s default (throwing) conflict
                 // resolution would crash this sub-agent's construction.
-                if (contract.Name is AskUserQuestionToolProvider.ToolName or NotifyClientToolProvider.ToolName)
+                if (IsNeverInheritedTool(contract.Name))
                 {
                     continue;
                 }
@@ -3019,9 +3023,18 @@ public sealed class SubAgentManager : IAsyncDisposable
             // "ordered to work the board" and "received no board tools" are correlated in one place.
             WarnIfBoardDispatchLacksTaskTools(agentId, template, spawnName, task, inheritedToolNames);
 
-            // #635: an add_tools entry that matched no parent tool, or a filter that resolved the whole
-            // toolset away, must not pass quietly regardless of what the dispatch prompt said.
-            WarnIfSpawnToolRequestMatchedNothing(agentId, template, addTools, enabledSet, inheritedToolNames);
+            // #635/#638: an add_tools entry that matched no parent tool, a remove_tools entry that
+            // withheld nothing, or a filter that resolved the whole toolset away, must not pass
+            // quietly regardless of what the dispatch prompt said.
+            WarnIfSpawnToolRequestMatchedNothing(
+                agentId,
+                template,
+                addTools,
+                removeTools,
+                inheritableToolNames,
+                enabledSet,
+                inheritedToolNames
+            );
 
             // Under collaboration the child ALWAYS gets its own manager, because messaging is not
             // delegation. SubAgentToolProvider already withholds the spawn tools when the child has no
@@ -3314,6 +3327,22 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Whether <paramref name="name"/> is a tool that is STRUCTURALLY never inherited by a sub-agent,
+    /// no matter what the template or the spawn asks for: <c>AskUserQuestion</c> and
+    /// <c>NotifyClient</c> (#246), which every <see cref="MultiTurnAgentLoop"/> — including the child
+    /// built here — registers its own correctly-scoped instance of unconditionally.
+    /// </summary>
+    /// <remarks>
+    /// Used by the parent-contract intersection to skip them, and by
+    /// <see cref="WarnIfSpawnToolRequestMatchedNothing"/> to count only what could actually have been
+    /// inherited. Counting them was wrong twice over (#638): the empty-toolset warning reported a
+    /// parent tool count larger than the number of tools any child could ever receive, and on a parent
+    /// exposing ONLY these two it fired on a spawn whose empty toolset was structurally unavoidable.
+    /// </remarks>
+    internal static bool IsNeverInheritedTool(string name) =>
+        name is AskUserQuestionToolProvider.ToolName or NotifyClientToolProvider.ToolName;
+
+    /// <summary>
     /// Case-insensitive markers whose presence in a spawn's dispatch prompt is read as "this agent
     /// was ordered to work the todo board" for the #623 warning floor. Deliberately a simple,
     /// documented substring heuristic (per the WI): the distinctive task-tool names a dispatch
@@ -3402,16 +3431,32 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <item>an <c>add_tools</c> entry naming a tool the parent does not expose (a typo, an
     /// unsupported group pattern such as <c>tasks:*</c>, or a bare <c>all</c>) — the caller asked
     /// for something and got nothing, with no other signal;</item>
+    /// <item>a <c>remove_tools</c> entry that withheld nothing — the #638 F-001 hole, where
+    /// <c>add_tools: "*", remove_tools: "tasks:*"</c> OVER-grants: the child receives every board
+    /// tool while the caller plainly meant to withhold them, previously with no signal at all;</item>
+    /// <item>a <c>remove_tools</c> entry that was removed and then put back by the mode's
+    /// <see cref="SubAgentOptions.RequiredToolNames"/> union — deliberate policy (#623), but the same
+    /// observable outcome for the caller, so it is reported rather than left to be inferred;</item>
     /// <item>a resolved toolset that inherited NOTHING while the parent had tools to give — the
     /// total capability loss that the literal <c>*</c> used to produce.</item>
     /// </list>
     /// Warning, not an error: a template may legitimately restrict itself down to zero parent tools,
     /// and refusing the spawn would turn a diagnosable line into an outage.
+    /// <para>
+    /// The empty-toolset line counts and gates on the INHERITABLE contracts only (see
+    /// <see cref="IsNeverInheritedTool"/>), and stays silent for a deliberate deny-all template
+    /// (<c>tools: []</c>, which <c>SubAgentMarkdownParser.NormalizeTools</c> turns into an
+    /// empty-but-not-null list — that is how "deny all" is spelled) when the spawn asked for nothing
+    /// either. Both are #638 F-002: a warning that fires on correct configuration trains people to
+    /// ignore it, which costs the very signal these warnings exist to add.
+    /// </para>
     /// </summary>
     private void WarnIfSpawnToolRequestMatchedNothing(
         string agentId,
         SubAgentTemplate template,
         string[]? addTools,
+        string[]? removeTools,
+        IReadOnlyCollection<string> inheritableToolNames,
         HashSet<string>? enabledSet,
         List<string> inheritedToolNames
     )
@@ -3436,16 +3481,114 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
         }
 
-        if (enabledSet is not null && inheritedToolNames.Count == 0 && _parentContracts.Count > 0)
+        if (removeTools is { Length: > 0 })
+        {
+            WarnIfRemoveToolsWithheldNothing(
+                agentId,
+                template,
+                addTools,
+                removeTools,
+                inheritableToolNames,
+                enabledSet
+            );
+        }
+
+        // #638 F-002: AskUserQuestion/NotifyClient can never be inherited, so counting them both
+        // overstated the loss and let this fire on a parent from which nothing was inheritable.
+        var inheritableCount = _parentContracts.Count(c => !IsNeverInheritedTool(c.Name));
+
+        // A template that declares an EMPTY tools list is asking for exactly this outcome. Only when
+        // the spawn added nothing on top: `tools: []` plus an add_tools that resolved to nothing IS a
+        // collapse, because the caller asked for a tool and did not get it.
+        var deliberateDenyAll = template.EnabledTools is { Count: 0 } && addTools is null or { Length: 0 };
+
+        if (enabledSet is not null && inheritedToolNames.Count == 0 && inheritableCount > 0 && !deliberateDenyAll)
         {
             _logger.LogWarning(
                 "Sub-agent {AgentId} (template {Template}) resolved to an EMPTY inherited toolset from a "
-                    + "parent exposing {ParentToolCount} tool(s); the template's tools list and the spawn's "
-                    + "add_tools/remove_tools together matched none of them, so this sub-agent can call no "
-                    + "inherited tool at all.",
+                    + "parent exposing {InheritableToolCount} inheritable tool(s); the template's tools list and "
+                    + "the spawn's add_tools/remove_tools together matched none of them, so this sub-agent can "
+                    + "call no inherited tool at all.",
                 agentId,
                 template.Name,
-                _parentContracts.Count
+                inheritableCount
+            );
+        }
+    }
+
+    /// <summary>
+    /// The <c>remove_tools</c> half of #638 F-001. <c>remove_tools</c> matches EXACT tool names and
+    /// has no wildcard or group language at all, so <c>remove_tools: "tasks:*"</c> — or the literal
+    /// <c>"*"</c> — removes a tool by that name, finds none, and withholds nothing. Paired with the
+    /// <c>add_tools: "*"</c> that #636 taught, that is a silent OVER-grant: the caller wrote
+    /// "everything except the board tools" and the child got the board tools.
+    /// <para>
+    /// Deliberately a diagnostic rather than new wildcard language on this side. Group/wildcard
+    /// patterns here would have to mean something <c>add_tools</c> does not mean, which is the exact
+    /// asymmetry that made this reachable; and nothing becomes inexpressible without them, because
+    /// every withholding is expressible by naming the tools. The warning also covers the whole class
+    /// — typos, <c>all</c>, group patterns, and names that were simply not in the base set — where a
+    /// wildcard would only cover the spellings we happened to think of.
+    /// </para>
+    /// </summary>
+    private void WarnIfRemoveToolsWithheldNothing(
+        string agentId,
+        SubAgentTemplate template,
+        string[]? addTools,
+        string[] removeTools,
+        IReadOnlyCollection<string> inheritableToolNames,
+        HashSet<string>? enabledSet
+    )
+    {
+        // The set the removals actually operated on: the SAME production builder, re-run with the
+        // removals (and the required-tools union) omitted, so the diagnostic cannot drift from the
+        // resolution it describes. Null only on the path where BuildEnabledToolSet already threw for
+        // removeTools without a base set, which never reaches here.
+        var beforeRemoval = BuildEnabledToolSet(
+            template.EnabledTools,
+            addTools,
+            removeTools: null,
+            requiredTools: null,
+            inheritableToolNames
+        );
+
+        if (beforeRemoval is null || enabledSet is null)
+        {
+            return;
+        }
+
+        var withheldNothing = removeTools.Where(tool => !beforeRemoval.Contains(tool)).ToArray();
+        if (withheldNothing.Length > 0)
+        {
+            _logger.LogWarning(
+                "Sub-agent {AgentId} (template {Template}) was spawned with remove_tools naming "
+                    + "{UnmatchedCount} tool(s) that were not in its toolset to begin with "
+                    + "({UnmatchedToolNames}); nothing was withheld. remove_tools matches exact tool names "
+                    + "and has NO wildcard or group language, so an entry like '*' or 'tasks:*' withholds "
+                    + "nothing - name each tool to remove it.",
+                agentId,
+                template.Name,
+                withheldNothing.Length,
+                withheldNothing
+            );
+        }
+
+        // Removed, then restored by the mode's required-tools union (#623). Intentional precedence,
+        // but from the caller's seat the request was defeated, so it gets its own line.
+        var restoredByRequiredTools = removeTools
+            .Where(tool => beforeRemoval.Contains(tool) && enabledSet.Contains(tool))
+            .ToArray();
+        if (restoredByRequiredTools.Length > 0)
+        {
+            _logger.LogWarning(
+                "Sub-agent {AgentId} (template {Template}) was spawned with remove_tools naming "
+                    + "{RestoredCount} tool(s) this mode requires every sub-agent to carry "
+                    + "({RestoredToolNames}); they were removed and then restored by the required-tools "
+                    + "union, so the sub-agent still has them.",
+                agentId,
+                template.Name,
+                restoredByRequiredTools.Length,
+                restoredByRequiredTools
             );
         }
     }

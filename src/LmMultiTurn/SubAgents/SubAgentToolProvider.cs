@@ -340,7 +340,11 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "remove_tools",
-                    Description = "Comma-separated list of tool names to disable.",
+                    Description =
+                        "Comma-separated list of tool names to disable, matched as EXACT tool names. "
+                        + "There is NO wildcard or group pattern here - '*' and 'tasks:*' remove "
+                        + "nothing. To grant everything except a few tools, pass add_tools '*' and "
+                        + "name each tool to withhold here.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
