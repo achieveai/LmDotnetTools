@@ -540,7 +540,9 @@ Examples:
                 {
                     return FunctionResult.Error(
                         TaskNotClaimedCode,
-                        $"Error: Task {targetTask.DisplayId} must be claimed and in progress before it can be completed. Use claim-task (or update-task with an agent) first."
+                        $"Error: Task {targetTask.DisplayId} must be claimed and in progress before it can be completed. "
+                            + "Sequence: claim-task with your agent name, then update-task to 'in progress' "
+                            + "(claim-task already sets it), then 'completed'."
                     );
                 }
 
@@ -1268,7 +1270,9 @@ Examples:
         )]
             string taskId,
         [Description(
-            "Subtask ID to delete specific subtask — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+            "Subtask ordinal to delete, one level BELOW taskId (1-based: taskId '1.2' + subtaskId 1 deletes '1.2.1'). "
+                + "Omit it unless deleting such a child — a dotted taskId already reaches subtasks. "
+                + "Never pass 0; a value <= 0 is treated as omitted."
         )]
             int? subtaskId = null
     )
@@ -1278,6 +1282,7 @@ Examples:
 
     private FunctionResult DeleteTaskCore(string taskId, int? subtaskId)
     {
+        subtaskId = NormalizeSubtaskId(subtaskId);
         lock (_sync)
         {
             var (task, _) = FindTaskByStringId(taskId);
@@ -1296,10 +1301,7 @@ Examples:
                     subtask = task.SubTasks.FirstOrDefault(st => st.Id == subtaskId.Value);
                     if (subtask == null)
                     {
-                        return FunctionResult.Error(
-                            TaskNotFoundCode,
-                            $"Error: Subtask {subtaskId.Value} not found under task {taskId}."
-                        );
+                        return SubtaskNotFoundError(taskId, subtaskId.Value);
                     }
 
                     _ = task.SubTasks.Remove(subtask);
@@ -1342,7 +1344,9 @@ Examples:
         )]
             string taskId,
         [Description(
-            "Subtask ID for specific subtask — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+            "Subtask ordinal one level BELOW taskId (1-based: taskId '1.2' + subtaskId 1 addresses '1.2.1'). "
+                + "Omit it unless addressing such a child — a dotted taskId already reaches subtasks. "
+                + "Never pass 0; a value <= 0 is treated as omitted."
         )]
             int? subtaskId = null
     )
@@ -1387,7 +1391,9 @@ Examples:
         )]
             string taskId,
         [Description(
-            "Subtask ID if adding note to subtask (optional) — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+            "Subtask ordinal one level BELOW taskId (1-based: taskId '1.2' + subtaskId 1 notes '1.2.1'). "
+                + "Omit it unless noting such a child — a dotted taskId already reaches subtasks, so to note "
+                + "task '1.2' itself pass only taskId. Never pass 0; a value <= 0 is treated as omitted."
         )]
             int? subtaskId = null,
         [Description("Note text to add")] string noteText = ""
@@ -1440,7 +1446,9 @@ Examples:
         )]
             string taskId,
         [Description(
-            "Subtask ID if editing subtask note (optional) — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+            "Subtask ordinal one level BELOW taskId (1-based: taskId '1.2' + subtaskId 1 edits a note on '1.2.1'). "
+                + "Omit it unless editing such a child's note — a dotted taskId already reaches subtasks. "
+                + "Never pass 0; a value <= 0 is treated as omitted."
         )]
             int? subtaskId = null,
         [Description("Note index to edit (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1,
@@ -1502,7 +1510,9 @@ Examples:
         )]
             string taskId,
         [Description(
-            "Subtask ID if deleting subtask note (optional) — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+            "Subtask ordinal one level BELOW taskId (1-based: taskId '1.2' + subtaskId 1 deletes a note on '1.2.1'). "
+                + "Omit it unless deleting such a child's note — a dotted taskId already reaches subtasks. "
+                + "Never pass 0; a value <= 0 is treated as omitted."
         )]
             int? subtaskId = null,
         [Description("Note index to delete (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1
@@ -1593,7 +1603,9 @@ Examples:
         )]
             string taskId,
         [Description(
-            "Subtask ID for subtask notes — the per-level sibling ordinal (1-based: 1 is the parent's first subtask)"
+            "Subtask ordinal one level BELOW taskId (1-based: taskId '1.2' + subtaskId 1 lists notes on '1.2.1'). "
+                + "Omit it unless listing such a child's notes — a dotted taskId already reaches subtasks. "
+                + "Never pass 0; a value <= 0 is treated as omitted."
         )]
             int? subtaskId = null
     )
@@ -1657,7 +1669,8 @@ Filtering strategies:
 • status='not started' - Plan next moves
 • status='blocked' - See what is stuck and on whom it is waiting
 • mainOnly=true - See the big picture without details
-• No filter - Full context for major decisions
+• No filter - Full context for major decisions. The default already lists ALL tasks;
+  status='all' is accepted and means the same no-filter listing
 
 Healthy patterns:
 • 1-3 tasks 'in progress' at once (focus)
@@ -1674,18 +1687,25 @@ Examples:
 - Overview: {""mainOnly"": true}"
     )]
     public FunctionResult ListTasks(
-        [Description("Filter by status: not started|in progress|blocked|completed|removed")] string? status = null,
+        [Description(
+            "Filter by status: not started|in progress|blocked|completed|removed. Omit for all tasks (the default already lists all); 'all' is accepted as the same no-filter."
+        )]
+            string? status = null,
         [Description("Show only main tasks (exclude subtasks)")] bool mainOnly = false
     )
     {
         TaskStatus? filterStatus = null;
-        if (!string.IsNullOrEmpty(status))
+
+        // 'all' is a no-filter sentinel: the default already lists every task, and models pass
+        // "all" to say exactly that — refusing it only produces a retry. (#620 F4)
+        var wantsAll = string.Equals(status?.Trim(), "all", StringComparison.OrdinalIgnoreCase);
+        if (!string.IsNullOrEmpty(status) && !wantsAll)
         {
             if (!TryParseStatus(status, out var parsedStatus))
             {
                 return FunctionResult.Error(
                     InvalidStatusCode,
-                    "Error: Invalid status filter. Use: not started, in progress, blocked, completed, removed."
+                    "Error: Invalid status filter. Use: all, not started, in progress, blocked, completed, removed."
                 );
             }
 
@@ -1905,6 +1925,33 @@ Examples:
     }
 
     /// <summary>
+    ///     Treats a non-positive subtaskId as omitted. Ordinals are 1-based, so 0 or a negative
+    ///     value can never address a real subtask — models pass them as "none" sentinels (65% of
+    ///     the failing add-note calls in the #617 corpus), and refusing the sentinel only
+    ///     produces retry storms. (#620)
+    /// </summary>
+    private static int? NormalizeSubtaskId(int? subtaskId)
+    {
+        return subtaskId <= 0 ? null : subtaskId;
+    }
+
+    /// <summary>
+    ///     The teaching error for a genuinely wrong positive ordinal: names the id the call
+    ///     actually addressed and how to reach the task the model probably meant. Shared by both
+    ///     subtask lookup routes — <see cref="FindTaskWithReference" /> and
+    ///     <see cref="DeleteTaskCore" /> — so they cannot drift apart. (#620)
+    /// </summary>
+    private static FunctionResult SubtaskNotFoundError(string taskId, int subtaskId)
+    {
+        return FunctionResult.Error(
+            TaskNotFoundCode,
+            $"Error: Task '{taskId}' has no subtask {subtaskId}. subtaskId addresses one level BELOW taskId "
+                + $"(that call names '{taskId}.{subtaskId}'). If you meant task '{taskId}' itself, omit subtaskId. "
+                + "Ids are 1-based."
+        );
+    }
+
+    /// <summary>
     ///     Finds a task by (possibly dotted) ID and optional subtask ID, returning the task, a
     ///     reference string, and any error. This consolidates the repeated task lookup pattern.
     ///     The task ID accepts the same dotted paths <c>add-task</c> produces, so every task the
@@ -1915,6 +1962,7 @@ Examples:
         int? subtaskId
     )
     {
+        subtaskId = NormalizeSubtaskId(subtaskId);
         lock (_sync)
         {
             var (task, error) = FindTaskByStringId(taskId);
@@ -1938,14 +1986,7 @@ Examples:
 
                 if (subtask == null)
                 {
-                    return (
-                        null,
-                        string.Empty,
-                        FunctionResult.Error(
-                            TaskNotFoundCode,
-                            $"Error: Subtask {subtaskId.Value} not found under task {taskId}."
-                        )
-                    );
+                    return (null, string.Empty, SubtaskNotFoundError(taskId, subtaskId.Value));
                 }
 
                 return (subtask, $"subtask {subtaskId.Value} of task {taskId}", null);
