@@ -263,4 +263,108 @@ public class TaskManagerFromSnapshotTests
         var takeover = rehydrated.ClaimTask("1", "agent-b");
         takeover.IsError.Should().BeFalse("a legacy lease must be able to go stale rather than wedging the row");
     }
+
+    [Fact]
+    public void FromSnapshot_TwentyLevelBoard_RoundTripsThroughJsonAndHydrationIntact()
+    {
+        // #608: the client's board panel guards its recursion at 16 levels; this pins that the cap
+        // is CLIENT-ONLY. A 20-level chain survives snapshot -> JSON (the projection's own
+        // serialize/deserialize shape, System.Text.Json default MaxDepth 64) -> hydration, with the
+        // deepest row still addressable by its 20-segment dotted id.
+        const int depth = 20;
+        var manager = new TaskManager();
+        _ = manager.AddTask("Level 1");
+        var parentId = "1";
+        for (var level = 2; level <= depth; level++)
+        {
+            _ = manager.AddTask($"Level {level}", parentId);
+            parentId = $"{parentId}.1";
+        }
+
+        var deepestId = parentId; // "1.1.1..." — 20 segments
+        deepestId.Split('.').Should().HaveCount(depth);
+
+        // The same JSON hop ConversationTodoProjection performs: default write options, then a
+        // case-insensitive read (its ReadOptions).
+        var json = JsonSerializer.Serialize(manager.GetTodoBoardSnapshot("conv-1"));
+        var persisted = JsonSerializer.Deserialize<TodoBoardSnapshot>(
+            json,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+        );
+
+        var rehydrated = TaskManager.FromSnapshot(persisted!);
+
+        var deepest = rehydrated.GetTask(deepestId);
+        deepest.IsError.Should().BeFalse("the 20-level row must still be addressable after the round trip");
+        deepest.Text.Should().Contain($"Level {depth}");
+
+        // And the re-captured snapshot still carries the full chain, node for node.
+        var recaptured = rehydrated.GetTodoBoardSnapshot("conv-1");
+        var node = recaptured.Tasks.Single();
+        for (var level = 2; level <= depth; level++)
+        {
+            node = node.SubTasks.Single();
+        }
+
+        node.Id.Should().Be(deepestId);
+        node.Title.Should().Be($"Level {depth}");
+        node.SubTasks.Should().BeEmpty();
+    }
+
+    /// <summary>Builds a single-chain board nested exactly <paramref name="depth" /> task levels.</summary>
+    private static TaskManager BuildChainOfDepth(int depth)
+    {
+        var manager = new TaskManager();
+        _ = manager.AddTask("Level 1");
+        var parentId = "1";
+        for (var level = 2; level <= depth; level++)
+        {
+            _ = manager.AddTask($"Level {level}", parentId);
+            parentId = $"{parentId}.1";
+        }
+        return manager;
+    }
+
+    /// <summary>
+    ///     #608 (611/F-002): the practical persistence bound is 31 task levels, NOT the "~60" one
+    ///     might derive from System.Text.Json's default MaxDepth of 64. The snapshot alternates
+    ///     task object and SubTasks array, so task level N sits at JSON depth 1 + 2N — two depth
+    ///     units per level — and 1 + 2N &lt;= 64 gives N = 31. This is the same default-options
+    ///     Serialize call ConversationTodoProjection.SaveAsync performs, so the number the comment
+    ///     there and requirements.md Req 1.3 state cannot silently drift from measured behaviour.
+    /// </summary>
+    [Fact]
+    public void Serialize_ThirtyOneLevelBoard_RoundTripsAtTheDocumentedBound()
+    {
+        const int depth = 31;
+        var json = JsonSerializer.Serialize(BuildChainOfDepth(depth).GetTodoBoardSnapshot("conv-1"));
+
+        var persisted = JsonSerializer.Deserialize<TodoBoardSnapshot>(
+            json,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+        );
+
+        var node = persisted!.Tasks.Single();
+        for (var level = 2; level <= depth; level++)
+        {
+            node = node.SubTasks.Single();
+        }
+        node.Title.Should().Be($"Level {depth}");
+    }
+
+    /// <summary>
+    ///     The other side of the 611/F-002 pin: one level past the bound throws. The exception's
+    ///     message reads "A possible object cycle was detected" — a DEPTH symptom, not an actual
+    ///     cycle, so a log reader must not chase a cycle bug — and at the persistence writer it
+    ///     surfaces as a permanently retrying background write, not a hard failure.
+    /// </summary>
+    [Fact]
+    public void Serialize_ThirtyTwoLevelBoard_ThrowsJsonException_OneLevelPastTheBound()
+    {
+        var snapshot = BuildChainOfDepth(32).GetTodoBoardSnapshot("conv-1");
+
+        var act = () => JsonSerializer.Serialize(snapshot);
+
+        act.Should().Throw<JsonException>().WithMessage("*possible object cycle*");
+    }
 }

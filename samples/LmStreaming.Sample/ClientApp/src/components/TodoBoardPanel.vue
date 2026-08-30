@@ -6,6 +6,7 @@ import {
   TODO_STATUS_LABEL,
   artifactFileName,
   countTodoTasks,
+  countTruncatedTasks,
   findActiveTaskId,
   flattenTodoTasks,
   latestNote,
@@ -52,6 +53,12 @@ const allRows = computed(() => flattenTodoTasks(props.tasks));
 const liveRows = computed(() => allRows.value.filter((r) => r.status !== TodoStatus.Removed));
 const removedRows = computed(() => allRows.value.filter((r) => r.status === TodoStatus.Removed));
 const activeTaskId = computed(() => findActiveTaskId(props.tasks));
+/**
+ * Tasks the normalizer's depth guard dropped (#608). The server nests without limit; the client
+ * keeps a guard depth for stack safety, so when a board out-nests it the panel must SAY so — a
+ * silent drop reads as "that work does not exist".
+ */
+const truncatedCount = computed(() => countTruncatedTasks(props.tasks));
 
 const progressPercent = computed(() =>
   counts.value.total === 0 ? 0 : Math.round((counts.value.done / counts.value.total) * 100)
@@ -65,9 +72,17 @@ function label(row: TodoRow): string {
   return TODO_STATUS_LABEL[row.status];
 }
 
+/**
+ * Deepest depth that still gets its own indent step (#608). The panel is 260px wide at 14px per
+ * level, so an unclamped depth-15 row would start 224px in and leave the title unreadable; rows
+ * deeper than this share one indent — the glyph and the dotted id still tell them apart.
+ */
+const MAX_INDENT_DEPTH = 8;
+
 /** Indents by tree depth so the parent/child shape is visible without a second layout pass. */
 function indentStyle(row: TodoRow): Record<string, string> {
-  return row.depth <= 0 ? {} : { paddingLeft: `${14 + row.depth * 14}px` };
+  const depth = Math.min(row.depth, MAX_INDENT_DEPTH);
+  return depth <= 0 ? {} : { paddingLeft: `${14 + depth * 14}px` };
 }
 
 /**
@@ -204,6 +219,13 @@ watch(activeTaskId, () => {
           </div>
         </li>
       </ul>
+
+      <!-- Visible truncation (#608): the depth guard in normalizeTodoTasks keeps the first 16
+           levels for stack safety, but the server nests without limit — so anything the guard
+           dropped is COUNTED here rather than silently missing from the board. -->
+      <div v-if="truncatedCount > 0" class="todo-truncated" data-testid="todo-truncated-row">
+        {{ truncatedCount }} deeper {{ truncatedCount === 1 ? 'task' : 'tasks' }} not shown
+      </div>
 
       <div v-if="removedRows.length > 0" class="todo-removed">
         <button
@@ -533,6 +555,17 @@ watch(activeTaskId, () => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The truncation indicator reads as a footnote, not a row: it names absent work, and must not be
+   mistakable for a task. */
+.todo-truncated {
+  padding: 6px 12px;
+  border-top: 1px solid #eef0f2;
+  font-size: 11px;
+  font-style: italic;
+  color: #6c757d;
+  flex: none;
 }
 
 .todo-removed {

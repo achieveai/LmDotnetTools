@@ -2240,6 +2240,84 @@ public class TaskManagerTests
 
     #endregion
 
+    #region Id Base And Depth Contract Tests (#607/#608)
+
+    private static List<FunctionContract> TaskToolContracts()
+    {
+        return [.. new TypeFunctionProvider(new TaskManager()).GetFunctions().Select(f => f.Contract)];
+    }
+
+    /// <summary>
+    ///     #607: ids ARE 1-based (NextId and NextSubTaskId both start at 1), but only the note
+    ///     tools said so. Every dotted-id parameter a model reads must state the base. These
+    ///     assertions read the same reflective contracts the model schema and the modes editor are
+    ///     built from, so a description edit that drops the statement goes red here.
+    /// </summary>
+    [Fact]
+    public void EveryTaskIdParameter_StatesTheIdsAreOneBased()
+    {
+        var idParams = TaskToolContracts()
+            .SelectMany(c => (c.Parameters ?? []).Select(p => (Tool: c.Name, Param: p)))
+            .Where(x => x.Param.Name is "taskId" or "parentId" or "blockedBy")
+            .ToList();
+
+        idParams.Should().NotBeEmpty();
+        idParams
+            .Should()
+            .OnlyContain(
+                x => x.Param.Description != null && x.Param.Description.Contains("1-based"),
+                "every dotted-id parameter must state that ids are 1-based (#607)"
+            );
+    }
+
+    /// <summary>
+    ///     #607: the int subtaskId params (get-task, delete-task, note tools) are the per-level
+    ///     sibling ordinal, also 1-based, and were undocumented while the note indices said
+    ///     "1-based" outright.
+    /// </summary>
+    [Fact]
+    public void EverySubtaskOrdinalParameter_StatesItIsOneBased()
+    {
+        var subtaskParams = TaskToolContracts()
+            .SelectMany(c => (c.Parameters ?? []).Select(p => (Tool: c.Name, Param: p)))
+            .Where(x => x.Param.Name == "subtaskId")
+            .ToList();
+
+        subtaskParams.Should().NotBeEmpty();
+        subtaskParams
+            .Should()
+            .OnlyContain(
+                x => x.Param.Description != null && x.Param.Description.Contains("1-based"),
+                "every subtask ordinal parameter must state that it is 1-based (#607)"
+            );
+    }
+
+    /// <summary>
+    ///     #607/#608: the two id-explaining tool descriptions state the base and the depth story.
+    ///     add-task says nesting is unlimited depth (#608's server truth); bulk-initialize says it
+    ///     creates ONE nesting level only (BulkTaskItem.SubTasks is a flat List&lt;string&gt;) and
+    ///     points at add-task + parentId for deeper trees.
+    /// </summary>
+    [Fact]
+    public void AddTaskAndBulkInitializeDescriptions_StateIdBaseAndDepthContract()
+    {
+        var contracts = TaskToolContracts();
+
+        var addTask = contracts.Single(c => c.Name == "add-task");
+        addTask.Description.Should().Contain("1-based");
+        addTask.Description.Should().Contain("unlimited depth");
+
+        var bulkInitialize = contracts.Single(c => c.Name == "bulk-initialize");
+        bulkInitialize.Description.Should().Contain("1-based");
+        bulkInitialize.Description.Should().Contain("ONE nesting level");
+        bulkInitialize.Description.Should().Contain("add-task");
+
+        var getTask = contracts.Single(c => c.Name == "get-task");
+        getTask.Description.Should().Contain("1-based");
+    }
+
+    #endregion
+
     #region Error Signalling Tests
 
     /// <summary>

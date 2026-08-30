@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { TodoStatus, type TodoTask } from '@/types/todo';
 import {
+  MAX_DEPTH,
   artifactFileName,
   countTodoTasks,
+  countTruncatedTasks,
   findActiveTaskId,
   flattenTodoTasks,
   isMarkdownArtifact,
@@ -192,6 +194,99 @@ describe('normalizeTodoTasks — the wire contract', () => {
     cyclic.subTasks = [cyclic];
     expect(() => normalizeTodoTasks([cyclic])).not.toThrow();
     expect(flattenTodoTasks(normalizeTodoTasks([cyclic])).length).toBeLessThanOrEqual(16);
+  });
+});
+
+/** One 20-deep single chain in the wire shape: id '1', '1.1', '1.1.1', ... */
+function deepWirePayload(depth: number): unknown[] {
+  const root: Record<string, unknown> = {
+    id: '1',
+    status: 'NotStarted',
+    title: 'Level 1',
+    subTasks: [],
+  };
+  let current = root;
+  let id = '1';
+  for (let level = 2; level <= depth; level++) {
+    id = `${id}.1`;
+    const child: Record<string, unknown> = {
+      id,
+      status: 'NotStarted',
+      title: `Level ${level}`,
+      subTasks: [],
+    };
+    (current.subTasks as unknown[]).push(child);
+    current = child;
+  }
+  return [root];
+}
+
+describe('depth guard is VISIBLE truncation, not silent (#608)', () => {
+  it('keeps the first 16 levels of a 20-deep payload and counts the 4 dropped rows', () => {
+    // The server nests without limit; the guard exists for stack safety only. What it cannot
+    // render it must COUNT — a silently missing subtree reads as work that does not exist.
+    const tasks = normalizeTodoTasks(deepWirePayload(20));
+    const rows = flattenTodoTasks(tasks);
+
+    expect(rows).toHaveLength(MAX_DEPTH);
+    expect(rows.map((r) => r.depth)).toEqual([...Array(MAX_DEPTH).keys()]);
+    expect(rows[MAX_DEPTH - 1].title).toBe(`Level ${MAX_DEPTH}`);
+
+    // The count lands on the LAST KEPT row of the chain, and nowhere else.
+    expect(rows[MAX_DEPTH - 1].truncatedDescendants).toBe(4);
+    expect(rows.slice(0, -1).every((r) => r.truncatedDescendants === undefined)).toBe(true);
+    expect(countTruncatedTasks(tasks)).toBe(4);
+  });
+
+  it('marks nothing on a board within the guard depth — the parsed shape is unchanged', () => {
+    const tasks = normalizeTodoTasks(deepWirePayload(MAX_DEPTH));
+    expect(flattenTodoTasks(tasks)).toHaveLength(MAX_DEPTH);
+    expect(flattenTodoTasks(tasks).every((r) => r.truncatedDescendants === undefined)).toBe(true);
+    expect(countTruncatedTasks(tasks)).toBe(0);
+  });
+
+  it('counts only task-like dropped entries, with the same keep-rule as the normalizer', () => {
+    // The dropped subtree gets the same id+title rule rows do: junk entries must not inflate the
+    // "N deeper tasks not shown" figure past what the board would actually have rendered.
+    const payload = deepWirePayload(MAX_DEPTH);
+    let node = payload[0] as Record<string, unknown>;
+    for (let level = 2; level <= MAX_DEPTH; level++) {
+      node = (node.subTasks as Record<string, unknown>[])[0];
+    }
+    node.subTasks = [
+      { id: 'deep-1', status: 'NotStarted', title: 'kept in the count' },
+      { status: 'NotStarted', title: 'no id' },
+      'junk',
+      null,
+    ];
+
+    expect(countTruncatedTasks(normalizeTodoTasks(payload))).toBe(1);
+  });
+
+  it('reports a finite count for a cyclic dropped subtree instead of hanging', () => {
+    // The guard exists to survive exactly this payload, so the counter must too: each object is
+    // visited once, cycle edges are simply not followed.
+    const payload = deepWirePayload(MAX_DEPTH);
+    let node = payload[0] as Record<string, unknown>;
+    for (let level = 2; level <= MAX_DEPTH; level++) {
+      node = (node.subTasks as Record<string, unknown>[])[0];
+    }
+    const cyclic: Record<string, unknown> = { id: 'x', status: 'NotStarted', title: 'loop' };
+    cyclic.subTasks = [cyclic];
+    node.subTasks = [cyclic];
+
+    expect(countTruncatedTasks(normalizeTodoTasks(payload))).toBe(1);
+  });
+
+  it('counts an arbitrarily deep ACYCLIC dropped subtree without blowing the stack (611/F-001)', () => {
+    // The guard's own comment names "malformed or cyclic" payloads, and V8's JSON.parse is
+    // iterative — it happily hands this code a 10000-level document. The counter runs precisely
+    // when the depth budget is already exhausted, so it must be bounded by a work-list, not the
+    // call stack: a payload the normalizer survived at base must never become a thrown RangeError
+    // that takes out the chat view (applyFrame calls normalizeTodoTasks with no try/catch).
+    const depth = 10_000;
+    const tasks = normalizeTodoTasks(deepWirePayload(depth));
+    expect(countTruncatedTasks(tasks)).toBe(depth - MAX_DEPTH);
   });
 });
 

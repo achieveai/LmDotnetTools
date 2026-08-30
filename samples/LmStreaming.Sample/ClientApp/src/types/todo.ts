@@ -45,6 +45,13 @@ export interface TodoTask {
    */
   artifacts: string[];
   subTasks: TodoTask[];
+  /**
+   * CLIENT-derived, never on the wire (#608): how many descendant tasks the depth guard in
+   * `normalizeTodoTasks` dropped below this row. Set (and > 0) only on a row at the last kept
+   * level whose payload nested deeper; absent everywhere else. The panel sums it into the
+   * "N deeper tasks not shown" indicator so truncation is visible instead of silent.
+   */
+  truncatedDescendants?: number;
 }
 
 /**

@@ -75,6 +75,17 @@ public static class ConversationTodoProjection
             return;
         }
 
+        // Depth bound (#608): the board model is unlimited-depth and no code in the projection or
+        // writer caps it — this Serialize call is where the practical bound lives. System.Text.Json's
+        // default MaxDepth (64) applies to the whole snapshot document, and the snapshot alternates
+        // task object and SubTasks array — TWO depth units per task level, so task level N sits at
+        // JSON depth 1 + 2N. A board nested deeper than 31 task levels therefore throws JsonException
+        // here instead of persisting (measured: 31 serializes, 32 throws). The exception's message
+        // says "A possible object cycle was detected" — that is the depth symptom, not an actual
+        // cycle — and it propagates past the TodoBoardDeclinedException-only catch into the
+        // persistence writer's retry handler, surfacing as a permanently retrying background write
+        // rather than a hard failure. Deliberately left at the default rather than raised;
+        // requirements.md Req 1.3 states the same bound.
         var json = JsonSerializer.Serialize(snapshot);
 
         await store.UpdateMetadataAsync(
