@@ -1,6 +1,9 @@
 # Snapshot of achieveai/AchieveAiReviews .gitmodules at main = 2f65038f2980e49003cc098d5530476c98177602
-# ("Onboard ClaudePlugins into the review store (#1)", 2026-08-31). Refresh this file whenever a repo
-# is added to or removed from appsettings.achieveai.json's EnabledRepos.
+# ("Onboard ClaudePlugins into the review store (#1)", 2026-08-31). Refresh this file whenever a repo is
+# added to or removed from appsettings.achieveai.json's EnabledRepos, AND whenever the store's own
+# .gitmodules changes which repos it carries, or any entry's path/URL — this is a snapshot, not a live read,
+# so either side drifting out from under it makes the pooled tests below pass against a store that no
+# longer exists.
 # Why it is here: the achieveai profile runs the pooled S2S path, which FAILS CLOSED
 # (DaemonReviewStageExecutor.FetchContextAsync, the InvalidOperationException guarded by
 # UsePooledReview && _preparer is not null) when a polled repo is not a submodule of this store.

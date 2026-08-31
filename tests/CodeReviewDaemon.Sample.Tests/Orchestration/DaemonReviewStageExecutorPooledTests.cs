@@ -2905,23 +2905,25 @@ public sealed class DaemonReviewStageExecutorPooledTests
     [Theory]
     [MemberData(nameof(AchieveAiProfileRepos))]
     public async Task Every_repo_the_achieveai_profile_polls_prepares_a_pooled_store_submodule(
-        string enabledRepoEntry,
+        string provider,
         string orgOrOwner,
+        string? project,
         string repoName
     )
     {
-        _ = enabledRepoEntry; // Identifies the Theory row in test output; the assertions key off orgOrOwner/repoName.
-
         using var fixture = Fixture.CreateS2S(); // s2s + pooled == the achieveai profile's mode
         fixture.HostFileSystem.Files.Clear();
         fixture.HostFileSystem.Seed("/pool/review-slot-0/store/.gitmodules", LoadStoreSnapshot());
+        // Reassembled from PrPollTargetBuilder.Build's actual field values (RepoIdentity itself can't cross
+        // this public Theory boundary — it is internal, CS0051) — never hard-coded, so a builder defect such
+        // as a wrong Provider or a dropped Project is visible here instead of masked by re-deriving it.
         var run = fixture.SeedRun(
             repo: new RepoIdentity
             {
-                Provider = "github",
+                Provider = provider,
                 OrgOrOwner = orgOrOwner,
+                Project = project,
                 RepoName = repoName,
-                RepoStableId = $"repo-{repoName}",
             }
         );
 
@@ -2946,6 +2948,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
     /// without this, "the theory passes" would be indistinguishable from "the theory's assertions were never
     /// reached." Seeds a pre-2f65038f store snapshot (two submodules, no ClaudePlugins) and asserts the pooled
     /// S2S path fails closed rather than silently falling back or persisting a partial context artifact.
+    /// <para>
+    /// Two ClaudePlugins DECOYS are seeded alongside the two legitimate submodules, each a near-miss that
+    /// <c>DaemonReviewStageExecutor.SubmoduleTargetsRepo</c> must still reject: same host + repo name but the
+    /// WRONG owner (<c>achieveai/ClaudePlugins</c>, not <c>gautam-achieveai/ClaudePlugins</c>), and the correct
+    /// owner/name but the WRONG host (<c>gitlab.com</c>, not <c>github.com</c>). A submodule matcher that
+    /// dropped either the owner or the host comparison would resolve one of these decoys instead of failing
+    /// closed — see the two mutation-proof cases in the fix-round test report.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task ContextReady_fails_closed_when_a_polled_repo_is_absent_from_the_pooled_store()
@@ -2960,6 +2970,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 + "[submodule \"repos/SandboxedOstoolsMcpServer\"]\n"
                 + "\tpath = repos/SandboxedOstoolsMcpServer\n"
                 + "\turl = https://github.com/achieveai/SandboxedOstoolsMcpServer.git\n"
+                + "[submodule \"repos/ClaudePlugins-wrong-owner\"]\n"
+                + "\tpath = repos/ClaudePlugins-wrong-owner\n"
+                + "\turl = https://github.com/achieveai/ClaudePlugins.git\n"
+                + "[submodule \"repos/ClaudePlugins-wrong-host\"]\n"
+                + "\tpath = repos/ClaudePlugins-wrong-host\n"
+                + "\turl = https://gitlab.com/gautam-achieveai/ClaudePlugins.git\n"
         );
         var run = fixture.SeedRun(
             repo: new RepoIdentity
@@ -2977,6 +2993,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         ex.Message.Should().Contain("is not a submodule of the review store");
         fixture.Store.GetArtifacts(run.Id).Should().BeEmpty("a fail-closed ContextReady persists no context artifact");
+        fixture
+            .Pool.ReturnCount.Should()
+            .Be(1, "a declined lease is returned immediately so it can't leak pool capacity");
     }
 
     /// <summary>
@@ -2985,8 +3004,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
     /// to (or removed from) <c>appsettings.achieveai.json</c>'s <c>EnabledRepos</c> changes this Theory's rows
     /// without an edit here (M4). Also asserts the pooled-mode preconditions rather than skipping when they are
     /// off (M5): a profile that silently drops out of pooled mode must fail this assertion, not vanish quietly.
+    /// Yields the builder's own <c>Repo.Provider</c>/<c>Repo.Project</c> field values (not hard-coded ones) so a
+    /// builder defect — e.g. a wrong <c>Provider</c> or a dropped <c>Project</c> — is visible to the Theory
+    /// instead of being masked by re-deriving the identity from strings this method already validated.
     /// </summary>
-    public static IEnumerable<object[]> AchieveAiProfileRepos()
+    public static IEnumerable<object?[]> AchieveAiProfileRepos()
     {
         using var document = JsonDocument.Parse(File.ReadAllText(LocateProfile("appsettings.achieveai.json")));
         var json = document.RootElement.GetRawText();
@@ -3000,6 +3022,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         options.Should().NotBeNull();
         options!.EnableToolAssistedReview.Should().BeTrue("the achieveai profile runs the pooled S2S path");
         options.EnableReviewerWrites.Should().BeTrue("the achieveai profile runs the pooled S2S path");
+        options.UseS2SReviewAgent.Should().BeTrue("the achieveai profile runs the pooled S2S path");
         options
             .ResolvedStoreUrl.Should()
             .Contain("AchieveAiReviews", "the achieveai profile's pooled store is AchieveAiReviews");
@@ -3009,12 +3032,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         foreach (var target in targets)
         {
-            yield return
-            [
-                $"{target.Repo.OrgOrOwner}/{target.Repo.RepoName}",
-                target.Repo.OrgOrOwner,
-                target.Repo.RepoName,
-            ];
+            yield return [target.Repo.Provider, target.Repo.OrgOrOwner, target.Repo.Project, target.Repo.RepoName];
         }
     }
 
