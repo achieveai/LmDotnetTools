@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -543,6 +543,50 @@ public sealed class SubAgentRequiredToolsTests : IAsyncLifetime
         childLoop.RegisteredToolNames.Should().Contain(TaskTool);
         logger.CountAtLevel(LogLevel.Warning, RemoveRestoredMarker).Should().Be(1);
         logger.CountAtLevel(LogLevel.Warning, RemoveWithheldNothingMarker).Should().Be(0);
+    }
+
+    /// <summary>
+    /// #641 F-001. The required-tools union re-adds a NAME; it cannot conjure a tool. On a parent that
+    /// exposes no contract/handler for the mode-required tool, the name survives into the resolved set
+    /// and the child still does not have it — so reporting it as "restored ... the sub-agent still has
+    /// them" told the operator the OPPOSITE of the truth, and, the partition being exclusive,
+    /// suppressed the accurate no-op line at the same time. This is the discriminator for
+    /// <see cref="RemoveToolsNamingARequiredToolTheTemplateNeverHad_ReportsItAsRestored_NotAsANoOp"/>
+    /// above: SAME removal, SAME required tool, one variable changed — the parent no longer exposes
+    /// it — and the two must draw DIFFERENT lines. Reading the name set makes both draw the restored
+    /// line, which is why the pre-fix predicate passed that test and fails this one.
+    /// </summary>
+    [Fact]
+    public async Task RemoveToolsNamingARequiredToolTheParentCannotMaterialize_ReportsItAsANoOp_NotAsRestored()
+    {
+        var logger = new CapturingLogger<SubAgentManager>();
+        var (manager, _) = CreateManager(
+            InheritAllTemplate(),
+            options => options with { RequiredToolNames = [TaskTool] },
+            logger: logger,
+            parentToolNames: [DomainTool]
+        );
+
+        var childLoop = await SpawnChildAsync(manager, addTools: ["*"], removeTools: [TaskTool]);
+
+        childLoop
+            .RegisteredToolNames.Should()
+            .Contain(DomainTool, "the spawn really resolved - the assertions below are not about a failed spawn");
+        childLoop
+            .RegisteredToolNames.Should()
+            .NotContain(TaskTool, "the union re-adds the NAME, but this parent exposes no tool to materialize");
+
+        logger
+            .CountAtLevel(LogLevel.Warning, RemoveRestoredMarker)
+            .Should()
+            .Be(0, "the sub-agent does NOT still have it - that line would be a false statement of fact");
+
+        var line = logger
+            .MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .ContainSingle(message => message.Contains(RemoveWithheldNothingMarker, StringComparison.Ordinal))
+            .Subject;
+        line.Should().Contain("naming 1 tool(s)").And.Contain(TaskTool);
     }
 
     /// <summary>

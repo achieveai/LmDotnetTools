@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
@@ -3489,7 +3489,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 addTools,
                 removeTools,
                 inheritableToolNames,
-                enabledSet
+                inheritedToolNames
             );
         }
 
@@ -3523,12 +3523,21 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <c>add_tools: "*"</c> that #636 taught, that is a silent OVER-grant: the caller wrote
     /// "everything except the board tools" and the child got the board tools.
     /// <para>
-    /// Deliberately a diagnostic rather than new wildcard language on this side. Group/wildcard
-    /// patterns here would have to mean something <c>add_tools</c> does not mean, which is the exact
-    /// asymmetry that made this reachable; and nothing becomes inexpressible without them, because
-    /// every withholding is expressible by naming the tools. The warning also covers the whole class
-    /// — typos, <c>all</c>, group patterns, and names that were simply not in the base set — where a
-    /// wildcard would only cover the spellings we happened to think of.
+    /// Deliberately a diagnostic rather than new wildcard language on this side, because there is no
+    /// safe automatic interpretation of an entry like <c>tasks:*</c>. Reading it as a group pattern
+    /// silently UNDER-grants for a caller who genuinely has a tool named <c>tasks:*</c>; failing
+    /// closed on an unmatched entry turns a model typo into a dead sub-agent on a field the model
+    /// authors on every spawn. Between guessing wrong quietly, refusing loudly, and doing the literal
+    /// thing and saying so, the third is the only one whose failure mode is recoverable. Group
+    /// patterns would also have to mean something <c>add_tools</c> does not mean (#636), which is the
+    /// same asymmetry that made this reachable. The warning covers the whole class — typos,
+    /// <c>all</c>, group patterns, and names simply not in the base set — where a wildcard would
+    /// only cover the spellings we happened to think of.
+    /// </para>
+    /// <para>
+    /// This line REPORTS the over-grant; it does not prevent it, and it only helps if someone reads
+    /// it. The half of #638 with a path to preventing the mistake is the <c>remove_tools</c> schema
+    /// description in <c>SubAgentToolProvider</c>, which the model reads on every spawn.
     /// </para>
     /// </summary>
     private void WarnIfRemoveToolsWithheldNothing(
@@ -3537,7 +3546,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         string[]? addTools,
         string[] removeTools,
         IReadOnlyCollection<string> inheritableToolNames,
-        HashSet<string>? enabledSet
+        IReadOnlyCollection<string> inheritedToolNames
     )
     {
         // The set the removals actually operated on: the SAME production builder, re-run with the
@@ -3552,17 +3561,27 @@ public sealed class SubAgentManager : IAsyncDisposable
             inheritableToolNames
         );
 
-        if (beforeRemoval is null || enabledSet is null)
+        if (beforeRemoval is null)
         {
             return;
         }
 
+        // #641 F-001: classify against the MATERIALIZED toolset, never the resolved NAME set. The
+        // resolved set is only a name filter; the child's real surface is that filter intersected
+        // with the parent's contracts and handlers, minus IsNeverInheritedTool - which is exactly
+        // what inheritedToolNames already holds, computed by the caller from the very loop that
+        // registered the tools. A required name the parent cannot materialize survives into the
+        // resolved set and is still absent from the child, so reading the name set reports it as
+        // restored when it is not, and - the partition being exclusive - suppresses the accurate
+        // line at the same time.
+        var childToolset = new HashSet<string>(inheritedToolNames, StringComparer.Ordinal);
+
         // The two lines partition the entries by OBSERVABLE outcome, so each entry produces at most
-        // one of them: an entry still present in the resolved set was defeated by the required-tools
-        // union; an entry that is absent AND was never in the base set withheld nothing. An entry
+        // one of them: an entry the child actually HAS was defeated by the required-tools union; an
+        // entry the child does not have AND that was never in the base set withheld nothing. An entry
         // that was in the base set and is now gone did its job and is reported by neither.
         var withheldNothing = removeTools
-            .Where(tool => !enabledSet.Contains(tool) && !beforeRemoval.Contains(tool))
+            .Where(tool => !childToolset.Contains(tool) && !beforeRemoval.Contains(tool))
             .ToArray();
         if (withheldNothing.Length > 0)
         {
@@ -3579,9 +3598,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             );
         }
 
-        // Removed, then restored by the mode's required-tools union (#623). Intentional precedence,
-        // but from the caller's seat the request was defeated, so it gets its own line.
-        var restoredByRequiredTools = removeTools.Where(enabledSet.Contains).ToArray();
+        // Removed, then restored by the mode's required-tools union (#623) AND actually materialized
+        // in the child. Intentional precedence, but from the caller's seat the request was defeated,
+        // so it gets its own line. Membership in childToolset is what makes "the sub-agent still has
+        // them" a statement the operator can rely on rather than an inference from a name set.
+        var restoredByRequiredTools = removeTools.Where(childToolset.Contains).ToArray();
         if (restoredByRequiredTools.Length > 0)
         {
             _logger.LogWarning(
