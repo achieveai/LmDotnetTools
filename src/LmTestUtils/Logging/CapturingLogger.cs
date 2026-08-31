@@ -13,7 +13,10 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 public sealed class CapturingLogger<T> : ILogger<T>
 {
     private readonly List<(LogLevel Level, string Text, Exception? Error)> _entries = [];
-    private readonly Lock _gate = new();
+
+    // A plain object, not System.Threading.Lock: this assembly also targets net8.0, where that type
+    // does not exist.
+    private readonly object _gate = new();
 
     public IDisposable? BeginScope<TState>(TState state)
         where TState : notnull => null;
