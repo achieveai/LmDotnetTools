@@ -1,0 +1,18 @@
+# Snapshot of achieveai/AchieveAiReviews .gitmodules at main = 2f65038f2980e49003cc098d5530476c98177602
+# ("Onboard ClaudePlugins into the review store (#1)", 2026-08-31). Refresh this file whenever a repo
+# is added to or removed from appsettings.achieveai.json's EnabledRepos.
+# Why it is here: the achieveai profile runs the pooled S2S path, which FAILS CLOSED
+# (DaemonReviewStageExecutor.FetchContextAsync, the InvalidOperationException guarded by
+# UsePooledReview && _preparer is not null) when a polled repo is not a submodule of this store.
+[submodule "LmDotnetTools"]
+	path = repos/LmDotnetTools
+	url = https://github.com/achieveai/LmDotnetTools.git
+	branch = main
+[submodule "repos/SandboxedOstoolsMcpServer"]
+	path = repos/SandboxedOstoolsMcpServer
+	url = https://github.com/achieveai/SandboxedOstoolsMcpServer.git
+	branch = master
+[submodule "repos/ClaudePlugins"]
+	path = repos/ClaudePlugins
+	url = https://github.com/gautam-achieveai/ClaudePlugins.git
+	branch = master

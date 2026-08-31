@@ -12,6 +12,7 @@ using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -2892,6 +2893,166 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Pool.ReturnCount.Should().Be(2, "both slots are returned once their reviews reach Posted");
     }
 
+    /// <summary>
+    /// Revobot comment 5481192816 / F-001 on PR #655: the achieveai profile's pooled S2S path fails closed
+    /// (see <see cref="ContextReady_fails_closed_when_a_polled_repo_is_absent_from_the_pooled_store"/>) when a
+    /// polled repo is not a submodule of the review store — so every repo the achieveai profile actually polls
+    /// must be onboarded. <see cref="AchieveAiProfileRepos"/> reads that repo list from the daemon's live
+    /// shipped config through the same builder <c>PrPollingService</c> runs, so a repo added to
+    /// <c>EnabledRepos</c> without a matching store submodule fails HERE instead of only at 03:00 in production
+    /// (M4 in the mutation matrix — see issue-653-pr655-feedback-resolution.md §4).
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(AchieveAiProfileRepos))]
+    public async Task Every_repo_the_achieveai_profile_polls_prepares_a_pooled_store_submodule(
+        string enabledRepoEntry,
+        string orgOrOwner,
+        string repoName
+    )
+    {
+        _ = enabledRepoEntry; // Identifies the Theory row in test output; the assertions key off orgOrOwner/repoName.
+
+        using var fixture = Fixture.CreateS2S(); // s2s + pooled == the achieveai profile's mode
+        fixture.HostFileSystem.Files.Clear();
+        fixture.HostFileSystem.Seed("/pool/review-slot-0/store/.gitmodules", LoadStoreSnapshot());
+        var run = fixture.SeedRun(
+            repo: new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = orgOrOwner,
+                RepoName = repoName,
+                RepoStableId = $"repo-{repoName}",
+            }
+        );
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        fixture
+            .Preparer.PrepareCount.Should()
+            .Be(1, $"{orgOrOwner}/{repoName} must resolve to a store submodule and prepare, not decline");
+        fixture.Preparer.LastSubmoduleRelPath.Should().Be($"repos/{repoName}");
+        var artifact = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind)
+            .Subject;
+        var payload = JsonDocument.Parse(artifact.Payload).RootElement;
+        payload.GetProperty("StoreRoot").GetString().Should().Be("/workspace/store");
+        payload.GetProperty("CheckoutRoot").GetString().Should().Be($"/workspace/store/repos/{repoName}");
+    }
+
+    /// <summary>
+    /// The non-vacuity proof for <see cref="Every_repo_the_achieveai_profile_polls_prepares_a_pooled_store_submodule"/>:
+    /// without this, "the theory passes" would be indistinguishable from "the theory's assertions were never
+    /// reached." Seeds a pre-2f65038f store snapshot (two submodules, no ClaudePlugins) and asserts the pooled
+    /// S2S path fails closed rather than silently falling back or persisting a partial context artifact.
+    /// </summary>
+    [Fact]
+    public async Task ContextReady_fails_closed_when_a_polled_repo_is_absent_from_the_pooled_store()
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.HostFileSystem.Files.Clear();
+        fixture.HostFileSystem.Seed(
+            "/pool/review-slot-0/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n"
+                + "\tpath = repos/LmDotnetTools\n"
+                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n"
+                + "[submodule \"repos/SandboxedOstoolsMcpServer\"]\n"
+                + "\tpath = repos/SandboxedOstoolsMcpServer\n"
+                + "\turl = https://github.com/achieveai/SandboxedOstoolsMcpServer.git\n"
+        );
+        var run = fixture.SeedRun(
+            repo: new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = "gautam-achieveai",
+                RepoName = "ClaudePlugins",
+                RepoStableId = "repo-ClaudePlugins",
+            }
+        );
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None)
+        );
+
+        ex.Message.Should().Contain("is not a submodule of the review store");
+        fixture.Store.GetArtifacts(run.Id).Should().BeEmpty("a fail-closed ContextReady persists no context artifact");
+    }
+
+    /// <summary>
+    /// Reads the achieveai profile's own polled-repo list through <see cref="PrPollTargetBuilder.Build"/> — the
+    /// exact mechanism <c>PrPollingService</c> uses — rather than hard-coding three repo names, so a repo added
+    /// to (or removed from) <c>appsettings.achieveai.json</c>'s <c>EnabledRepos</c> changes this Theory's rows
+    /// without an edit here (M4). Also asserts the pooled-mode preconditions rather than skipping when they are
+    /// off (M5): a profile that silently drops out of pooled mode must fail this assertion, not vanish quietly.
+    /// </summary>
+    public static IEnumerable<object[]> AchieveAiProfileRepos()
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(LocateProfile("appsettings.achieveai.json")));
+        var json = document.RootElement.GetRawText();
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+        var options = new ConfigurationBuilder()
+            .AddJsonStream(stream)
+            .Build()
+            .GetSection(CodeReviewDaemonOptions.SectionName)
+            .Get<CodeReviewDaemonOptions>();
+
+        options.Should().NotBeNull();
+        options!.EnableToolAssistedReview.Should().BeTrue("the achieveai profile runs the pooled S2S path");
+        options.EnableReviewerWrites.Should().BeTrue("the achieveai profile runs the pooled S2S path");
+        options
+            .ResolvedStoreUrl.Should()
+            .Contain("AchieveAiReviews", "the achieveai profile's pooled store is AchieveAiReviews");
+
+        var targets = PrPollTargetBuilder.Build(options, NullLogger.Instance);
+        targets.Should().NotBeEmpty("the achieveai profile must poll at least one repo");
+
+        foreach (var target in targets)
+        {
+            yield return
+            [
+                $"{target.Repo.OrgOrOwner}/{target.Repo.RepoName}",
+                target.Repo.OrgOrOwner,
+                target.Repo.RepoName,
+            ];
+        }
+    }
+
+    /// <summary>Reads the pinned <c>.gitmodules</c> snapshot of the achieveai/AchieveAiReviews store (see
+    /// <c>Fixtures/achieveai-reviews.gitmodules</c> for its provenance) that the pooled tests above seed onto
+    /// the fake host file system.</summary>
+    private static string LoadStoreSnapshot() => File.ReadAllText(LocateFixture("achieveai-reviews.gitmodules"));
+
+    /// <summary>
+    /// Walks up from the test binary until it finds the daemon's profile, mirroring
+    /// <c>DaemonProfileConfigurationTests.LocateProfile</c> (duplicated rather than shared: that file is
+    /// unrelated to this one and stays untouched). The depth is not a constant — see that method's remarks.
+    /// </summary>
+    private static string LocateProfile(string fileName) =>
+        LocateAncestorFile(Path.Combine("samples", "CodeReviewDaemon.Sample", fileName));
+
+    /// <summary>Same ancestor walk as <see cref="LocateProfile"/>, rooted at this test project's own
+    /// <c>Fixtures</c> directory instead of the daemon's profile directory.</summary>
+    private static string LocateFixture(string fileName) =>
+        LocateAncestorFile(Path.Combine("tests", "CodeReviewDaemon.Sample.Tests", "Fixtures", fileName));
+
+    private static string LocateAncestorFile(string relative)
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, relative);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new FileNotFoundException(
+            $"Could not find {relative} in any ancestor of {AppContext.BaseDirectory}.",
+            relative
+        );
+    }
+
     /// <summary>The slot index the pool leased for <paramref name="prId"/> — the assignment is whichever lease
     /// won the race, so the isolation assertions resolve it instead of assuming an order.</summary>
     private static int SlotOf(Fixture fixture, string prId)
@@ -3142,18 +3303,26 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         /// <summary>
         /// Seeds (or resumes) a review run for <paramref name="prId"/>. Distinct PR ids give distinct runs —
-        /// which is how the isolation gate drives two reviews at once.
+        /// which is how the isolation gate drives two reviews at once. <paramref name="repo"/> defaults to
+        /// the fixture's usual LmDotnetTools identity; a caller exercising a different polled repo (e.g. the
+        /// achieveai profile's cross-owner ClaudePlugins entry) passes its own <see cref="RepoIdentity"/>.
         /// </summary>
-        public ReviewRun SeedRun(string prId = "118", string? prAuthor = null, string mode = "collect-only")
+        public ReviewRun SeedRun(
+            string prId = "118",
+            string? prAuthor = null,
+            string mode = "collect-only",
+            RepoIdentity? repo = null
+        )
         {
             var repoId = Store.EnsureRepo(
-                new RepoIdentity
-                {
-                    Provider = "github",
-                    OrgOrOwner = "achieveai",
-                    RepoName = "LmDotnetTools",
-                    RepoStableId = "repo-stable-1",
-                }
+                repo
+                    ?? new RepoIdentity
+                    {
+                        Provider = "github",
+                        OrgOrOwner = "achieveai",
+                        RepoName = "LmDotnetTools",
+                        RepoStableId = "repo-stable-1",
+                    }
             );
             return Store.CreateOrGetReviewRun(
                 new ReviewRun
