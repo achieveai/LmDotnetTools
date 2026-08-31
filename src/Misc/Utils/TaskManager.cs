@@ -73,6 +73,13 @@ public class TaskManager : ITodoBoardSource
     /// </summary>
     private static readonly TimeSpan DefaultLeaseStaleAfter = TimeSpan.FromMinutes(15);
 
+    /// <summary>
+    ///     Event id for the board-loss warning (#621 Part B). Declared here rather than in a project-wide
+    ///     <c>LogEventIds</c> class because <c>Misc</c> has none and one event does not justify minting a
+    ///     numbering scheme; the NAME is what a log query greps for, and it is pinned here.
+    /// </summary>
+    private static readonly EventId TodoBoardIdVanishedEvent = new(6210, "TodoBoardIdVanished");
+
     private readonly ManagerState _state;
     private readonly object _sync = new();
     private readonly TimeProvider _timeProvider;
@@ -123,11 +130,31 @@ public class TaskManager : ITodoBoardSource
     public event Action? OnChanged;
 
     /// <summary>
-    ///     Optional logger for the change hook's last-resort catch. Wired by the same host that wires
-    ///     <see cref="OnChanged" />; when null, a throwing subscriber is swallowed silently — which is
-    ///     why subscribers own their own guarding and logging first.
+    ///     Optional logger for this board's own diagnostics: the change hook's last-resort catch, and the
+    ///     <c>TodoBoardIdVanished</c> warning. Wired by the same host that wires <see cref="OnChanged" />;
+    ///     when null, a throwing subscriber is swallowed silently — which is why subscribers own their own
+    ///     guarding and logging first — and the vanish detector is inert.
     /// </summary>
-    public ILogger? OnChangedLogger { get; set; }
+    /// <remarks>
+    ///     A settable property rather than a constructor parameter because this type is reached through
+    ///     four construction routes (two constructors plus <see cref="FromSnapshot(TodoBoardSnapshot)" />
+    ///     and <see cref="DeserializeTasks(string)" />, each with overloads) and the host wires the hook
+    ///     after construction anyway.
+    /// </remarks>
+    public ILogger? Logger { get; set; }
+
+    /// <summary>
+    ///     The conversation this board belongs to, stamped by the host right after construction so the
+    ///     <c>TodoBoardIdVanished</c> warning can name the thread that lost a row (#621 Part B).
+    /// </summary>
+    /// <remarks>
+    ///     The tool methods are the model-facing surface and cannot carry a host-supplied argument, and
+    ///     <see cref="GetTodoBoardSnapshot" /> takes its thread id at call time precisely because the read
+    ///     path has one in hand. A detector firing from inside a tool call has neither, so the id has to
+    ///     live on the instance. Null at the throwaway construction sites that only enumerate function
+    ///     contracts; those wire no logger either, so nothing is logged there regardless.
+    /// </remarks>
+    public string? ThreadId { get; set; }
 
     /// <summary>
     ///     Fires <see cref="OnChanged" /> when <paramref name="result" /> reports success, passing the
@@ -150,7 +177,7 @@ public class TaskManager : ITodoBoardSource
                 }
                 catch (Exception ex)
                 {
-                    OnChangedLogger?.LogError(
+                    Logger?.LogError(
                         ex,
                         "An OnChanged subscriber threw; that subscriber's work (live todo-board push, durable save, or nudge accounting) was skipped for this mutation"
                     );
@@ -247,6 +274,7 @@ Examples:
                 };
 
                 _state.RootTasks.Add(task);
+                RecordSeen(task, now);
                 return $"Added task {task.DisplayId}: {task.Title}";
             }
 
@@ -272,6 +300,7 @@ Examples:
             };
 
             parentTask.SubTasks.Add(task);
+            RecordSeen(task, now);
             return $"Added task {task.DisplayId}: {task.Title}";
         }
     }
@@ -336,6 +365,10 @@ Examples:
             {
                 _state.RootTasks.Clear();
                 _state.NextId = 1;
+
+                // A requested board reset is a deliberate removal of everything on it, and it renumbers
+                // from 1 besides: keeping the old ids would report every re-used id as vanished.
+                _state.SeenIds.Clear();
             }
 
             var addedTasks = new List<string>();
@@ -402,6 +435,9 @@ Examples:
                         mainTask.SubTasks.Add(subTask);
                     }
                 }
+
+                // After the subtasks, so one walk records the whole row it just minted.
+                RecordSeen(mainTask, now, includeSubtree: true);
             }
 
             var result = new StringBuilder();
@@ -1305,12 +1341,16 @@ Examples:
                     subtask = task.SubTasks.FirstOrDefault(st => st.Id == subtaskId.Value);
                     if (subtask == null)
                     {
+                        ReportVanishedId($"{task.DisplayId}.{subtaskId.Value}", "delete-task subtask lookup");
                         return SubtaskNotFoundError(taskId, subtaskId.Value);
                     }
 
                     _ = task.SubTasks.Remove(subtask);
                 }
 
+                // Deliberate removal, so the ledger forgets it: a later reference to this id is the
+                // model's own mistake, not a lost row, and must not be reported as data loss.
+                ForgetSubtree(subtask);
                 return $"Deleted subtask {subtaskId.Value} from task {taskId}: {subtask.Title}";
             }
 
@@ -1321,6 +1361,7 @@ Examples:
             }
 
             _ = RemoveTaskAndSubtasks(task);
+            ForgetSubtree(task);
             return $"Deleted task {taskId} and all subtasks: {task.Title}";
         }
     }
@@ -1776,17 +1817,39 @@ Examples:
     }
 
     /// <summary>
-    ///     Captures the board for the conversation read path (<c>GET /todos</c>). Built on
-    ///     <see cref="GetTasks" />, so it inherits that method's lock coverage and its display-id rule
-    ///     rather than re-deriving either.
+    ///     Captures the board for the conversation read path (<c>GET /todos</c>), together with the id
+    ///     ledger's unresolved entries (#621 Part B).
     /// </summary>
+    /// <remarks>
+    ///     The row projection is <see cref="GetTasks" />'s, inlined under one <see cref="_sync" /> hold
+    ///     rather than composed from it: the ledger diff must be taken against the very same rows the
+    ///     capture publishes, and two separate lock takes would let a mutation land between them and
+    ///     report a row as missing that the published tree still shows.
+    /// </remarks>
     public TodoBoardSnapshot GetTodoBoardSnapshot(string threadId)
     {
+        List<TodoTaskNode> tasks;
+        Dictionary<string, DateTimeOffset> missing;
+
+        lock (_sync)
+        {
+            tasks = [.. _state.RootTasks.Select(t => t.ToPublic()).Select(ToBoardNode)];
+
+            // Only the ids the ledger still owns and the board can no longer show are worth carrying:
+            // for every id that IS present, "last known present" is the capture instant itself, which
+            // rehydration re-derives from the rows. See TodoBoardSnapshot.MissingTaskIds. (#621 Part B)
+            var present = GetAllTasksFlat(_state.RootTasks).Select(t => t.DisplayId).ToHashSet(StringComparer.Ordinal);
+            missing = _state
+                .SeenIds.Where(entry => !present.Contains(entry.Key))
+                .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal);
+        }
+
         return new TodoBoardSnapshot
         {
             ThreadId = threadId,
             CapturedAtUtc = DateTimeOffset.UtcNow,
-            Tasks = [.. GetTasks().Select(ToBoardNode)],
+            Tasks = tasks,
+            MissingTaskIds = missing,
         };
     }
 
@@ -1959,6 +2022,101 @@ Examples:
     }
 
     /// <summary>
+    ///     Records that <paramref name="task" /> — and, when <paramref name="includeSubtree" /> is set,
+    ///     everything under it — was on this board at <paramref name="at" />. Together with
+    ///     <see cref="ForgetSubtree" /> this maintains the invariant the vanish detector rests on: the
+    ///     ledger holds exactly the ids the board <b>ought</b> to contain, so an id in the ledger that the
+    ///     board cannot find is a lost row rather than an id the model invented. (#621 Part B)
+    /// </summary>
+    /// <remarks>
+    ///     Callers hold <see cref="_sync" />. Recording on successful lookups as well as on creation is
+    ///     what makes the warning's last-seen instant mean "last time this board could still find it"
+    ///     rather than "when it was created".
+    /// </remarks>
+    private void RecordSeen(PrivateTaskItem task, DateTimeOffset at, bool includeSubtree = false)
+    {
+        _state.SeenIds[task.DisplayId] = at;
+
+        if (!includeSubtree)
+        {
+            return;
+        }
+
+        lock (task.SubTasks)
+        {
+            foreach (var child in task.SubTasks)
+            {
+                RecordSeen(child, at, includeSubtree: true);
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Drops <paramref name="task" /> and its whole subtree from the id ledger, because the board was
+    ///     asked to remove them. This is the single most important half of the detector: without it every
+    ///     post-<c>delete-task</c> reference to a deliberately removed id would be reported as data loss,
+    ///     which is the false positive that would make the warning worthless. (#621 Part B)
+    /// </summary>
+    private void ForgetSubtree(PrivateTaskItem task)
+    {
+        _ = _state.SeenIds.Remove(task.DisplayId);
+
+        lock (task.SubTasks)
+        {
+            foreach (var child in task.SubTasks)
+            {
+                ForgetSubtree(child);
+            }
+        }
+    }
+
+    /// <summary>
+    ///     The board-loss detector (#621 Part B). Called at every not-found exit with the CANONICAL dotted
+    ///     id the lookup actually addressed; logs <c>TodoBoardIdVanished</c> only when that id is in the
+    ///     ledger — that is, when this board held the row and was never told to delete it.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         The discrimination line: <b>ledger hit ⇒ state loss, ledger miss ⇒ silence.</b> An id the
+    ///         model invented was never allocated here, so it is not in the ledger; an id removed by
+    ///         <c>delete-task</c> was taken out of the ledger by <see cref="ForgetSubtree" />. Both stay
+    ///         quiet. Only a row this board is still accountable for, and can no longer find, warns.
+    ///     </para>
+    ///     <para>
+    ///         Deliberately NOT self-silencing: the ledger entry survives the report, so a retry storm
+    ///         against a vanished id produces one warning per attempt. Each of those attempts really is a
+    ///         data-loss symptom, and the alternative — reporting once — would make the log undercount
+    ///         exactly the pathology (#617's 48x storm) the watch exists to size.
+    ///     </para>
+    ///     <para>
+    ///         Callers hold <see cref="_sync" />, so the ledger read cannot race a concurrent mutation
+    ///         into a spurious report.
+    ///     </para>
+    /// </remarks>
+    /// <param name="canonicalId">
+    ///     The dotted id as this board would have spelled it, never the raw model input: lookup accepts
+    ///     <c>"01"</c>, <c>"+1"</c> and <c>" 1"</c> for task <c>1</c>, and a ledger keyed by ordinal string
+    ///     comparison would miss every one of them.
+    /// </param>
+    /// <param name="lookup">Which lookup route reported the miss, so the log says where it happened.</param>
+    private void ReportVanishedId(string canonicalId, string lookup)
+    {
+        if (Logger is not { } logger || !_state.SeenIds.TryGetValue(canonicalId, out var lastSeen))
+        {
+            return;
+        }
+
+        logger.LogWarning(
+            TodoBoardIdVanishedEvent,
+            "TodoBoardIdVanished: task {TaskId} on thread {ThreadId} was on this board at {LastSeenUtc:O} and was never deleted, but {Lookup} reported it not found — the board lost a row it still owns",
+            canonicalId,
+            ThreadId,
+            lastSeen,
+            lookup
+        );
+    }
+
+    /// <summary>
     ///     Finds a task by (possibly dotted) ID and optional subtask ID, returning the task, a
     ///     reference string, and any error. This consolidates the repeated task lookup pattern.
     ///     The task ID accepts the same dotted paths <c>add-task</c> produces, so every task the
@@ -1993,9 +2151,11 @@ Examples:
 
                 if (subtask == null)
                 {
+                    ReportVanishedId($"{task.DisplayId}.{subtaskId.Value}", "subtask lookup");
                     return (null, string.Empty, SubtaskNotFoundError(taskId, subtaskId.Value));
                 }
 
+                RecordSeen(subtask, _timeProvider.GetUtcNow());
                 return (subtask, $"subtask {subtaskId.Value} of task {taskId}", null);
             }
 
@@ -2018,6 +2178,9 @@ Examples:
             var currentTask = _state.RootTasks.FirstOrDefault(t => t.Id == rootId);
             if (currentTask == null)
             {
+                // The ledger is keyed by canonical display id, so the probe uses the PARSED root id
+                // rather than parts[0] — " 01" and "1" address the same row and must look up the same.
+                ReportVanishedId(rootId.ToString(), "task lookup");
                 return (null, FunctionResult.Error(TaskNotFoundCode, $"Error: Task '{parts[0]}' not found."));
             }
 
@@ -2044,12 +2207,17 @@ Examples:
                 if (nextTask == null)
                 {
                     var path = string.Join(".", parts.Take(i + 1));
+                    // Canonical form of that same path: the resolved parent's display id plus the parsed
+                    // segment. `path` itself is assembled from the raw input and is only for the message,
+                    // which stays byte-identical to what it has always been.
+                    ReportVanishedId($"{currentTask.DisplayId}.{subId}", "task lookup");
                     return (null, FunctionResult.Error(TaskNotFoundCode, $"Error: Task '{path}' not found."));
                 }
 
                 currentTask = nextTask;
             }
 
+            RecordSeen(currentTask, _timeProvider.GetUtcNow());
             return (currentTask, null);
         }
     }
@@ -2367,7 +2535,23 @@ Examples:
         }
 
         state.NextId = maxRootId + 1;
-        return new TaskManager(state, timeProvider, DefaultLeaseStaleAfter);
+
+        // Rebuild the id ledger (#621 Part B): every hydrated row was demonstrably present when the
+        // snapshot was taken, so CapturedAtUtc is its honest last-seen instant, and the ids the previous
+        // process had already lost ride along in MissingTaskIds. Without this the recreated board would
+        // start with an empty ledger and read every lost row as an id that never existed.
+        var rehydrated = new TaskManager(state, timeProvider, DefaultLeaseStaleAfter);
+        foreach (var root in state.RootTasks)
+        {
+            rehydrated.RecordSeen(root, snapshot.CapturedAtUtc, includeSubtree: true);
+        }
+
+        foreach (var (id, lastSeen) in snapshot.MissingTaskIds)
+        {
+            state.SeenIds[id] = lastSeen;
+        }
+
+        return rehydrated;
     }
 
     private static PrivateTaskItem FromBoardNode(
@@ -2702,5 +2886,14 @@ Examples:
 
         [JsonPropertyName("nextId")]
         public int NextId { get; set; } = 1;
+
+        /// <summary>
+        ///     The id ledger behind the <c>TodoBoardIdVanished</c> detector (#621 Part B): every dotted
+        ///     id this board has held and has not deliberately deleted, mapped to the instant it was last
+        ///     known present. Round-trips with the rest of the state so the JSON persistence route keeps
+        ///     the discrimination the detector depends on.
+        /// </summary>
+        [JsonPropertyName("seenIds")]
+        public Dictionary<string, DateTimeOffset> SeenIds { get; set; } = [];
     }
 }

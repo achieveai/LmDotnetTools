@@ -12,7 +12,7 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 /// </remarks>
 public sealed class CapturingLogger<T> : ILogger<T>
 {
-    private readonly List<(LogLevel Level, string Text, Exception? Error)> _entries = [];
+    private readonly List<(LogLevel Level, EventId EventId, string Text, Exception? Error)> _entries = [];
 
     // A plain object, not System.Threading.Lock: this assembly also targets net8.0, where that type
     // does not exist.
@@ -31,7 +31,7 @@ public sealed class CapturingLogger<T> : ILogger<T>
         Func<TState, Exception?, string> formatter
     )
     {
-        var entry = (logLevel, formatter(state, exception), exception);
+        var entry = (logLevel, eventId, formatter(state, exception), exception);
         lock (_gate)
         {
             _entries.Add(entry);
@@ -39,13 +39,25 @@ public sealed class CapturingLogger<T> : ILogger<T>
     }
 
     /// <summary>A point-in-time copy of the captured entries, safe to enumerate off-lock.</summary>
-    private (LogLevel Level, string Text, Exception? Error)[] Snapshot()
+    private (LogLevel Level, EventId EventId, string Text, Exception? Error)[] Snapshot()
     {
         lock (_gate)
         {
             return [.. _entries];
         }
     }
+
+    /// <summary>
+    ///     <see cref="EventId" /> names captured at <paramref name="level" />, in log order. Entries logged
+    ///     without an event id contribute an empty string.
+    /// </summary>
+    /// <remarks>
+    ///     The default MEL formatter renders the message template alone and drops the event id, so
+    ///     <see cref="CountAtLevel" /> cannot see it — a call site that stops passing one still renders a
+    ///     byte-identical string while every log query keyed on the event name goes quiet.
+    /// </remarks>
+    public IReadOnlyList<string> EventNamesAtLevel(LogLevel level) =>
+        [.. Snapshot().Where(e => e.Level == level).Select(e => e.EventId.Name ?? string.Empty)];
 
     public int WarningCount(string substring) =>
         Snapshot().Count(e => e.Level == LogLevel.Warning && e.Text.Contains(substring, StringComparison.Ordinal));

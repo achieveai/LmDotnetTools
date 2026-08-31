@@ -217,6 +217,72 @@ try {
     $f4 = Invoke-Score -ConversationsDir (Join-Path $tmp 'f4-conversations') `
                        -BoardSnapshot (Join-Path $fixtures 'complete-run\board.json')
     Assert ($f4.perTool.'block-task'.errors -eq 1) 'F4: is_error:true alone marks the call as an error'
+
+    # ---- V: board-id-vanished (#621 Part B) ---------------------------------------------
+    # Built here rather than as a committed fixture, the way B1/B2/F4 are: the metric is a
+    # sequence property of one thread, and the sequence IS the test.
+
+    $vCallSeq = 0
+    function New-VCall {
+        param([string]$Tool, [string]$Args, [string]$Result)
+        $script:vCallSeq++
+        $id = "call_v_{0:d4}" -f $script:vCallSeq
+        @(
+            [ordered]@{
+                messageType = 'ToolCallMessage'
+                generationId = 'gen-v'
+                role = 'Assistant'
+                messageJson = (@{ function_name = $Tool; function_args = $Args; tool_call_id = $id } | ConvertTo-Json -Compress)
+            },
+            [ordered]@{
+                messageType = 'ToolCallResultMessage'
+                generationId = 'gen-v'
+                role = 'Tool'
+                messageJson = (@{ tool_call_id = $id; result = $Result; is_error = $false } | ConvertTo-Json -Compress)
+            }
+        )
+    }
+
+    function Invoke-VScore {
+        param([string]$Name, $Messages)
+        $dir = Join-Path $tmp "$Name\thread-vanish"
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        ConvertTo-Json -InputObject @($Messages) -Depth 30 | Set-Content (Join-Path $dir 'messages.json')
+        return Invoke-Score -ConversationsDir (Join-Path $tmp $Name) `
+                            -BoardSnapshot (Join-Path $fixtures 'complete-run\board.json')
+    }
+
+    $mint = @()
+    $mint += New-VCall 'add-task' '{"title":"Alpha"}' 'Added task 1: Alpha'
+    $mint += New-VCall 'add-task' '{"title":"Gamma","parentId":"1"}' 'Added task 1.3: Gamma'
+    $mint += New-VCall 'add-task' '{"title":"Beta"}' 'Added task 2: Beta'
+    $deleteCall = New-VCall 'delete-task' '{"taskId":"2"}' 'Deleted task 2 and all subtasks: Beta'
+    $probes = @()
+    $probes += New-VCall 'get-task' '{"taskId":"9"}' "Error: Task '9' not found."
+    $probes += New-VCall 'get-task' '{"taskId":"2"}' "Error: Task '2' not found."
+    $probes += New-VCall 'get-task' '{"taskId":" 01"}' "Error: Task ' 01' not found."
+    $probes += New-VCall 'add-note' '{"taskId":"1","subtaskId":3}' "Error: Task '1' has no subtask 3."
+
+    $v = Invoke-VScore 'v-conversations' ($mint + $deleteCall + $probes)
+    $vIds = @($v.boardIdVanished.events | ForEach-Object { $_.taskId })
+
+    # The two positives. They are also this section's non-vacuity proof: the negatives below
+    # are asserted on the SAME run, so "no event" cannot be an unreached code path.
+    Assert ($v.boardIdVanished.count -eq 2) 'V1: exactly the two ids this thread minted and never deleted are reported'
+    Assert ($vIds -contains '1') 'V1: a not-found for a minted id is a vanish (canonicalized from " 01")'
+    Assert ($vIds -contains '1.3') 'V2: the has-no-subtask wording resolves to the dotted id 1.3'
+
+    # The negatives.
+    Assert (-not ($vIds -contains '9')) 'V3: an id this thread never minted is NOT a vanish'
+    Assert (-not ($vIds -contains '2')) 'V4: an id the thread deliberately deleted is NOT a vanish'
+    Assert ($v.boardIdVanished.note -match 'TodoBoardIdVanished') 'V5: the emitted note points the reader at the server log event'
+
+    # Mutation: drop the successful delete-task from the transcript and id 2 is no longer a
+    # deliberate removal, so the very same probe becomes a reported vanish. Pins V4 to the
+    # delete-ledger logic rather than to anything incidental about id 2.
+    $vm = Invoke-VScore 'vm-conversations' ($mint + $probes)
+    Assert ($vm.boardIdVanished.count -eq 3) 'V6: without the delete, the deleted-id probe DOES count as a vanish'
+    Assert (@($vm.boardIdVanished.events | ForEach-Object { $_.taskId }) -contains '2') 'V6: and the id it names is 2'
 }
 finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
