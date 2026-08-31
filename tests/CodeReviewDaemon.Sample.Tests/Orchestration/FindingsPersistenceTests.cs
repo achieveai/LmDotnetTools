@@ -85,6 +85,14 @@ public sealed class FindingsPersistenceTests
         blocker.SeverityTokens.Should().Contain("Blocker");
         blocker.Outcome.Should().Be("kept");
         findings.DerivedFrom.Should().Be("reviewer-transcripts-via-reconciler");
+
+        // Match tracing survives the same round trip — it is copied straight off ReconciledFinding, not
+        // recomputed, so a lossy (de)serialisation of the new fields would show up here too.
+        blocker
+            .MatchScore.Should()
+            .Be(1, "the DI-coupling finding shares exactly one citation with the shipped review");
+        blocker.MatchTiedCandidates.Should().Be(1, "only one shipped item cited that line");
+        findings.AmbiguousMatches.Should().Be(0, "neither finding's join needed to break a tie");
     }
 
     [Fact]

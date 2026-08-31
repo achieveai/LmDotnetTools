@@ -83,6 +83,20 @@ internal sealed record ParsedReviewFinding(
 /// <param name="ShippedSeverity">The severity the shipped review assigned, or null when nothing cited it.</param>
 /// <param name="ShippedTitle">The shipped item's lead line, or null when nothing cited it.</param>
 /// <param name="SynthesisNote">The shipped review's own stated reason, never a generated one.</param>
+/// <param name="MatchScore">
+/// The shared-citation count that decided <paramref name="ShippedTitle"/> — the number of this finding's
+/// locations the chosen shipped item also cites. Zero on a <see cref="ReviewFindingOutcome.Dropped"/> row,
+/// where there was no candidate to score. Carried so a join can be audited rather than merely trusted: a
+/// score of 1 is one coincidental line in common, a score of 3+ is a strong location match, and the number is
+/// what tells the two apart on the same row a human already reads.
+/// </param>
+/// <param name="MatchTiedCandidates">
+/// How many shipped items scored <see cref="MatchScore"/> against this finding — 1 for an unambiguous best
+/// match, more than 1 when the join had to break a tie (the first-seen shipped item won, arbitrarily), and 0
+/// on a <see cref="ReviewFindingOutcome.Dropped"/> row. A value above 1 marks the one case where
+/// <see cref="ShippedTitle"/> could have been a different, equally-scored row — visible here instead of
+/// silently resolved.
+/// </param>
 internal sealed record ReconciledFinding(
     int SourceIndex,
     string Source,
@@ -94,7 +108,9 @@ internal sealed record ReconciledFinding(
     ReviewFindingOutcome Outcome,
     string? ShippedSeverity,
     string? ShippedTitle,
-    string? SynthesisNote
+    string? SynthesisNote,
+    int MatchScore,
+    int MatchTiedCandidates
 );
 
 /// <summary>How many finding-shaped blocks one reviewer contributed, before any matching happened.</summary>
@@ -229,6 +245,15 @@ internal static partial class ReviewFindingReconciler
     /// a finding's own sub-bullets stay with it. Never throws: unparseable text yields no findings, which is
     /// reported as "no parseable findings" rather than as an empty success.
     /// </para>
+    /// <para>
+    /// <b>A top-level bullet under a Question heading is its own block even with no marker of its own.</b>
+    /// The common shape is a <c>## Questions</c>/<c>## Context questions</c> heading followed by a plain
+    /// bulleted list — each bullet is one question, and the heading is what says so; nothing on the bullet
+    /// itself needs to. Before this, a bullet in that shape opened a block only if it separately carried a
+    /// severity word or its own <c>[QUESTION]</c>/<c>Question:</c> marker, which almost none do — so its
+    /// citations were dropped with no trace: not a finding, not folded into anyone else's body, simply never
+    /// seen. A tally or grading line is still excluded here exactly as it would be anywhere else.
+    /// </para>
     /// </summary>
     internal static IReadOnlyList<ParsedReviewFinding> ParseFindings(string? markdown)
     {
@@ -272,11 +297,20 @@ internal static partial class ReviewFindingReconciler
             if (item.Success)
             {
                 var itemText = item.Groups["text"].Value.Trim();
-                if (StartsFinding(Head(itemText)))
+                var headLine = Head(itemText);
+
+                // Under a Question heading (`AnyQuestion(headings)`), a top-level bullet with no severity
+                // word and no [QUESTION]/`Question:` marker of its own is still one question in that
+                // section's list — the heading is what marks it, not the bullet. `StartsFinding` alone never
+                // opens a block for it, so its citations were silently invisible to the parser: not a
+                // finding, not carried as anyone else's body, gone. `IsNotAFinding` still applies, so a tally
+                // or grading line under a Questions heading is excluded exactly as it would be anywhere else.
+                var opensQuestionItem = AnyQuestion(headings) && !IsNotAFinding(headLine);
+                if (StartsFinding(headLine) || opensQuestionItem)
                 {
                     Flush(findings, ref openTitle, ref openIsQuestion, openBody);
                     openTitle = itemText;
-                    openIsQuestion = AnyQuestion(headings) || IsQuestionMarker(Head(itemText));
+                    openIsQuestion = AnyQuestion(headings) || IsQuestionMarker(headLine);
                     _ = openBody.AppendLine(itemText);
                     continue;
                 }
@@ -311,7 +345,14 @@ internal static partial class ReviewFindingReconciler
 
         var shipped = ParseFindings(shippedReviewBody);
         var pending =
-            new List<(int SourceIndex, ReviewFindingSource Source, ParsedReviewFinding Finding, int ShippedIndex)>();
+            new List<(
+                int SourceIndex,
+                ReviewFindingSource Source,
+                ParsedReviewFinding Finding,
+                int ShippedIndex,
+                int Score,
+                int TiedCandidates
+            )>();
         for (var sourceIndex = 0; sourceIndex < sources.Count; sourceIndex++)
         {
             var source = sources[sourceIndex];
@@ -319,6 +360,7 @@ internal static partial class ReviewFindingReconciler
             {
                 var best = -1;
                 var bestScore = 0;
+                var tied = 0;
                 for (var i = 0; i < shipped.Count; i++)
                 {
                     var score = SharedCitationCount(finding, shipped[i]);
@@ -326,10 +368,18 @@ internal static partial class ReviewFindingReconciler
                     {
                         bestScore = score;
                         best = i;
+                        tied = 1;
+                    }
+                    else if (score > 0 && score == bestScore)
+                    {
+                        // A second shipped item tied the current best — the join below breaks the tie by
+                        // taking the first-seen one, which is exactly the case worth recording as ambiguous
+                        // rather than silently resolving.
+                        tied++;
                     }
                 }
 
-                pending.Add((sourceIndex, source, finding, best));
+                pending.Add((sourceIndex, source, finding, best, bestScore, tied));
             }
         }
 
@@ -337,7 +387,7 @@ internal static partial class ReviewFindingReconciler
         // row is classified, because "merged" is a property of the shipped item and cannot be seen from one
         // specialist's side.
         var absorbed = new int[shipped.Count];
-        foreach (var (_, _, _, index) in pending)
+        foreach (var (_, _, _, index, _, _) in pending)
         {
             if (index >= 0)
             {
@@ -346,7 +396,7 @@ internal static partial class ReviewFindingReconciler
         }
 
         var rows = new List<ReconciledFinding>(pending.Count);
-        foreach (var (sourceIndex, source, finding, index) in pending)
+        foreach (var (sourceIndex, source, finding, index, score, tied) in pending)
         {
             if (index < 0)
             {
@@ -362,7 +412,9 @@ internal static partial class ReviewFindingReconciler
                         ReviewFindingOutcome.Dropped,
                         ShippedSeverity: null,
                         ShippedTitle: null,
-                        SynthesisNote: null
+                        SynthesisNote: null,
+                        MatchScore: 0,
+                        MatchTiedCandidates: 0
                     )
                 );
                 continue;
@@ -394,7 +446,9 @@ internal static partial class ReviewFindingReconciler
                     outcome,
                     match.SeverityPhrase,
                     match.Title,
-                    StatedDisposition(match)
+                    StatedDisposition(match),
+                    MatchScore: score,
+                    MatchTiedCandidates: tied
                 )
             );
         }
@@ -485,9 +539,9 @@ internal static partial class ReviewFindingReconciler
             .AppendLine("## Outcomes")
             .AppendLine()
             .AppendLine(
-                "| # | Reviewer | Template | Specialist finding | Location | Specialist severity | Outcome | Shipped severity | Shipped as | Stated reason |"
+                "| # | Reviewer | Template | Specialist finding | Location | Specialist severity | Outcome | Shipped severity | Shipped as | Stated reason | Match |"
             )
-            .AppendLine("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+            .AppendLine("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
 
         var rendered = 0;
         var spent = 0;
@@ -522,6 +576,8 @@ internal static partial class ReviewFindingReconciler
                 .Append(row.ShippedTitle is null ? "—" : Cell(row.ShippedTitle, 90))
                 .Append(" | ")
                 .Append(row.SynthesisNote is null ? "—" : Cell(row.SynthesisNote, MaxNoteChars))
+                .Append(" | ")
+                .Append(MatchCell(row))
                 .AppendLine(" |");
             spent += builder.Length - before;
         }
@@ -558,10 +614,84 @@ internal static partial class ReviewFindingReconciler
             .AppendLine(" |")
             .AppendLine();
 
+        AppendParserHealth(builder, rows, shippedReviewBody!);
         AppendUnattributedDispositions(builder, shippedReviewBody, rows);
         AppendSources(builder, sources);
         return builder.ToString();
     }
+
+    /// <summary>
+    /// Completeness signals about the PARSE, as distinct from the totals above, which are about the REVIEW.
+    /// A round can have a perfect `kept` rate and a bad parse, or the reverse, and the two must not be read
+    /// off the same numbers.
+    /// <para>
+    /// <see cref="ReconciledFinding.MatchTiedCandidates"/> above 1 counts a real fact about the join: two or
+    /// more shipped items scored identically and the tie was broken by shipped-list order, arbitrarily. The
+    /// uncited count and the shipped-orphan count below are directional, not exact — see the caveats on each.
+    /// </para>
+    /// </summary>
+    private static void AppendParserHealth(
+        StringBuilder builder,
+        IReadOnlyList<ReconciledFinding> rows,
+        string shippedReviewBody
+    )
+    {
+        var uncited = rows.Count(r => r.Location == UncitedLocation);
+        var ambiguous = rows.Count(r => r.MatchTiedCandidates > 1);
+
+        // Recomputed here rather than threaded through from `Reconcile`, the same trade-off `AppendSources`
+        // already makes for its per-reviewer counts: one more pass over text already in hand, in exchange for
+        // `Render` staying answerable from (round, sources, rows, shippedReviewBody) alone.
+        var shipped = ParseFindings(shippedReviewBody);
+        var citedShippedTitles = new HashSet<string>(
+            rows.Where(r => r.ShippedTitle is not null).Select(r => r.ShippedTitle!),
+            StringComparer.Ordinal
+        );
+
+        // DIRECTIONAL, not exact: two distinct shipped items with byte-identical lead lines would collapse
+        // to one entry here, undercounting the orphan total by the duplicate. Titles are what `Reconcile`
+        // exposes to `Render`; the shipped item's own index is not.
+        var orphanedShipped = shipped.Count(s => !citedShippedTitles.Contains(s.Title));
+
+        builder
+            .AppendLine("## Parser health")
+            .AppendLine()
+            .AppendLine("Completeness of the parse itself, not of the review. A round can score well above and")
+            .AppendLine("badly here, or the reverse.")
+            .AppendLine()
+            .AppendLine("| Signal | Count |")
+            .AppendLine("| --- | --- |")
+            .Append("| Specialist findings parsed | ")
+            .Append(rows.Count.ToString(CultureInfo.InvariantCulture))
+            .AppendLine(" |")
+            .Append("| ...citing no `path:line` (cannot be matched by construction) | ")
+            .Append(uncited.ToString(CultureInfo.InvariantCulture))
+            .AppendLine(" |")
+            .Append("| Shipped findings parsed | ")
+            .Append(shipped.Count.ToString(CultureInfo.InvariantCulture))
+            .AppendLine(" |")
+            .Append("| ...never cited by any specialist finding above | ")
+            .Append(orphanedShipped.ToString(CultureInfo.InvariantCulture))
+            .AppendLine(" |")
+            .Append("| Matches decided by a tie (see the `Match` column) | ")
+            .Append(ambiguous.ToString(CultureInfo.InvariantCulture))
+            .AppendLine(" |")
+            .AppendLine();
+    }
+
+    /// <summary>The exact string <see cref="RenderLocation"/> renders for a citation-less finding.</summary>
+    private const string UncitedLocation = "(no file:line cited)";
+
+    /// <summary>
+    /// The `Match` column: the shared-citation score that won the join, flagged when it was a tie. Blank for
+    /// <c>dropped</c>, where there was no candidate to score at all — a bare <c>0</c> there would read as a
+    /// weak match rather than as no match.
+    /// </summary>
+    private static string MatchCell(ReconciledFinding row) =>
+        row.Outcome == ReviewFindingOutcome.Dropped ? "—"
+        : row.MatchTiedCandidates > 1
+            ? $"{row.MatchScore.ToString(CultureInfo.InvariantCulture)} (tied ×{row.MatchTiedCandidates.ToString(CultureInfo.InvariantCulture)})"
+        : row.MatchScore.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Disposition statements the shipped review made that could NOT be tied to a row, listed verbatim and
@@ -653,13 +783,20 @@ internal static partial class ReviewFindingReconciler
             .AppendLine("roll-up (`0 Critical, 2 High`), a summary/overview lead, a sentence narrating the")
             .AppendLine("review-grader's decision, and a bare label with no text after it. A question must be")
             .AppendLine("the bracketed tag, a `Question:` prefix, or a heading naming a questions section; the")
-            .AppendLine("bare word in a sentence does not make one.")
+            .AppendLine("bare word in a sentence does not make one. A plain bullet under a questions heading is")
+            .AppendLine("its own item even carrying none of those markers itself — the heading is what says the")
+            .AppendLine("list underneath it is questions, not the bullet.")
             .AppendLine()
             .AppendLine("Location(s) are the `path:line` and `path:line-line` citations in a finding's text. A")
             .AppendLine("specialist finding is matched to the shipped finding it shares the most citations with,")
             .AppendLine("where two citations match if their line ranges overlap AND one path is a suffix of the")
             .AppendLine("other at a path-segment boundary (`src/Foo.cs` matches `sub/src/Foo.cs`, and does not")
-            .AppendLine("match `src/BarFoo.cs`).")
+            .AppendLine("match `src/BarFoo.cs`). The `Match` column is that shared-citation count — how many")
+            .AppendLine("locations the two sides have in common — so a reader can tell a well-evidenced join")
+            .AppendLine("(several shared citations) from a coincidental one (one shared line). `2 (tied ×N)`")
+            .AppendLine("means N shipped items scored equally and the first-seen one won arbitrarily; that is")
+            .AppendLine("the one case where a different, equally-plausible `Shipped as` was possible. `—` on a")
+            .AppendLine("`dropped` row means there was no candidate to score, not a score of zero.")
             .AppendLine()
             .AppendLine("`reframed` means a transformation — raised as a finding, shipped as a question. An item")
             .AppendLine("already phrased as a question that stayed one is `kept`, because nothing happened to it.")
@@ -690,6 +827,10 @@ internal static partial class ReviewFindingReconciler
             .AppendLine("under **Disposition statements not tied to a row**, unattached, because deciding WHICH")
             .AppendLine("finding a review-level sentence refers to would be a guess, and a guessed attribution")
             .AppendLine("is indistinguishable from a recorded one. Read that section together with this column.")
+            .AppendLine()
+            .AppendLine("**Parser health, below, is about the extraction, not the review.** A round can carry a")
+            .AppendLine("healthy `kept`/`dropped` split and a bad parse, or the reverse — the two use different")
+            .AppendLine("numbers and answer different questions.")
             .AppendLine();
 
     private static void AppendSources(StringBuilder builder, IReadOnlyList<ReviewFindingSource> sources)
@@ -968,7 +1109,7 @@ internal static partial class ReviewFindingReconciler
     {
         if (finding.Citations.Count == 0)
         {
-            return "(no file:line cited)";
+            return UncitedLocation;
         }
 
         var shown = finding.Citations.Take(3).Select(c => c.ToString());

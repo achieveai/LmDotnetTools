@@ -18,6 +18,15 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// <param name="ShippedSeverity">The severity the shipped review assigned, or null when nothing cited it.</param>
 /// <param name="ShippedTitle">The shipped item's lead line, or null when nothing cited it.</param>
 /// <param name="SynthesisNote">The shipped review's own stated reason for the change, never a generated one.</param>
+/// <param name="MatchScore">
+/// The shared-citation count that decided <paramref name="ShippedTitle"/>, copied from
+/// <see cref="ReconciledFinding.MatchScore"/>. Zero on a <c>dropped</c> row, where nothing was scored.
+/// </param>
+/// <param name="MatchTiedCandidates">
+/// How many shipped items tied at <paramref name="MatchScore"/>, copied from
+/// <see cref="ReconciledFinding.MatchTiedCandidates"/>. Above 1 means the join broke a tie arbitrarily —
+/// this is what <see cref="ReviewFindingsArtifactPayload.AmbiguousMatches"/> counts across the round.
+/// </param>
 internal sealed record ReviewFindingRecord(
     string Source,
     string Template,
@@ -28,7 +37,9 @@ internal sealed record ReviewFindingRecord(
     string Outcome,
     string? ShippedSeverity,
     string? ShippedTitle,
-    string? SynthesisNote
+    string? SynthesisNote,
+    int MatchScore,
+    int MatchTiedCandidates
 );
 
 /// <summary>
@@ -112,6 +123,14 @@ internal sealed record ReviewFindingsArtifactPayload(
     public int Shortfall => ParsedCount - RecordedCount;
 
     /// <summary>
+    /// Rows in <see cref="Findings"/> whose <see cref="ReviewFindingRecord.MatchTiedCandidates"/> is above 1 —
+    /// the join to a shipped item broke a tie rather than finding one clear best candidate. This is a count
+    /// of the JOIN's confidence, not of the review's quality: a tied-but-correct match and a clean-but-wrong
+    /// one are both invisible to <see cref="Shortfall"/>, which is why this is tracked separately.
+    /// </summary>
+    public int AmbiguousMatches => Findings.Count(f => f.MatchTiedCandidates > 1);
+
+    /// <summary>
     /// Projects the reconciled list the notes builder already holds. Takes both the sources and the
     /// reconciled rows so the parsed count comes off a separate pass over the source text — a count derived
     /// from <paramref name="reconciled"/> would agree with itself no matter what the loop dropped.
@@ -157,7 +176,9 @@ internal sealed record ReviewFindingsArtifactPayload(
                 ReviewFindingReconciler.Wire(r.Outcome),
                 r.ShippedSeverity,
                 r.ShippedTitle,
-                r.SynthesisNote
+                r.SynthesisNote,
+                r.MatchScore,
+                r.MatchTiedCandidates
             ))
             .ToArray();
 
