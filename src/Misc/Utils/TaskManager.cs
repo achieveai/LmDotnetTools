@@ -65,6 +65,21 @@ public class TaskManager : ITodoBoardSource
     private const string BlockCycleCode = "block_cycle";
 
     /// <summary>
+    ///     One nesting level of indentation in <c>bulk-initialize</c>'s result echo. Two spaces per
+    ///     level, matching the markdown renderer's <c>level * 2</c> step, so the same tree reads the
+    ///     same way in the echo and in <c>list-tasks</c>.
+    /// </summary>
+    private const string BulkEchoIndent = "  ";
+
+    /// <summary>
+    ///     How many rows <c>bulk-initialize</c> echoes before it elides the tail. A large tree can
+    ///     mint hundreds of rows and echoing every one back verbatim would spend more context than
+    ///     the structural signal is worth; the elision line states its own size, because a cap the
+    ///     model cannot see reads to it as a complete list.
+    /// </summary>
+    private const int MaxBulkEchoRows = 50;
+
+    /// <summary>
     ///     A claim is a lease, not a hard lock (see the design doc's stale-row research): an
     ///     agent that goes quiet without releasing its claim would otherwise wedge the task
     ///     forever. Past this much time since <c>ClaimedAt</c>, a different agent's claim
@@ -371,7 +386,14 @@ Examples:
                 _state.SeenIds.Clear();
             }
 
-            var addedTasks = new List<string>();
+            // Every row this call mints, rendered the way add-task renders its own mint —
+            // "Task <dotted id>: <title>" — and indented two spaces per nesting level so the shape
+            // is readable as well as parseable. Echoing only the main tasks made two calls that
+            // differ ONLY in how many children they hung under a task return byte-identical text,
+            // which is no signal at all to a model checking the structure it just built (#634 R1).
+            var addedLines = new List<string>();
+            var mainTaskCount = 0;
+            var subTaskCount = 0;
             var errors = new List<string>();
             var now = _timeProvider.GetUtcNow();
 
@@ -395,7 +417,8 @@ Examples:
                 };
 
                 _state.RootTasks.Add(mainTask);
-                addedTasks.Add($"Task {mainTask.DisplayId}: {mainTask.Title}");
+                mainTaskCount++;
+                addedLines.Add($"{BulkEchoIndent}- Task {mainTask.DisplayId}: {mainTask.Title}");
 
                 // Add notes to main task
                 if (bulkItem.Notes != null)
@@ -433,6 +456,8 @@ Examples:
                         };
 
                         mainTask.SubTasks.Add(subTask);
+                        subTaskCount++;
+                        addedLines.Add($"{BulkEchoIndent}{BulkEchoIndent}- Task {subTask.DisplayId}: {subTask.Title}");
                     }
                 }
 
@@ -447,12 +472,32 @@ Examples:
                 AppendLine(result, "Cleared existing tasks.");
             }
 
-            if (addedTasks.Count > 0)
+            if (addedLines.Count > 0)
             {
-                AppendLine(result, $"Added {addedTasks.Count} task(s):");
-                foreach (var task in addedTasks)
+                // The subtask count is stated only when there is one, so a flat initialization keeps
+                // the shorter header it always had; when there IS nesting the header carries the
+                // totals independently of the listing, which is what survives a truncated tail.
+                AppendLine(
+                    result,
+                    subTaskCount > 0
+                        ? $"Added {mainTaskCount} task(s) and {subTaskCount} subtask(s):"
+                        : $"Added {mainTaskCount} task(s):"
+                );
+
+                foreach (var line in addedLines.Take(MaxBulkEchoRows))
                 {
-                    AppendLine(result, $"  - {task}");
+                    AppendLine(result, line);
+                }
+
+                // A silent cap reads to the model as "that was everything", so the elision names its
+                // own size and points at the tool that shows the rest.
+                if (addedLines.Count > MaxBulkEchoRows)
+                {
+                    AppendLine(
+                        result,
+                        $"{BulkEchoIndent}... {addedLines.Count - MaxBulkEchoRows} more row(s) not listed "
+                            + $"({MaxBulkEchoRows} of {addedLines.Count} shown). Use list-tasks to see them all."
+                    );
                 }
             }
 

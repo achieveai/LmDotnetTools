@@ -132,7 +132,8 @@ internal sealed record BoardIdVanishedReport
         "Transcript-derived LOWER BOUND (#621 Part B). The authoritative signal is the server-side "
         + "Warning whose event name is TodoBoardIdVanished; also grep the host structured logs for that "
         + "name, because losses the transcript cannot see (ids minted in a process whose transcript is "
-        + "not in this directory, or bulk-initialize subtask ids, which the tool result never names) "
+        + "not in this directory, or bulk-initialize subtask ids its result text never named, which is "
+        + "every one before #634 R1 and any past its row cap since) "
         + "reach the log and not this count.";
 
     public required int Count { get; init; }

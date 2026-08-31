@@ -17,12 +17,22 @@ internal sealed record BoardIdVanish
 /// </summary>
 /// <remarks>
 /// <para>
-/// The count this feeds is a LOWER BOUND, one-directionally. Three gaps, all documented in the
-/// spec and repeated in the emitted note: <c>bulk-initialize</c> never names the subtask ids it
-/// mints (only main tasks appear in its result text), a row minted in a process whose transcript is
-/// not in this store is invisible, and a thread that starts from a rehydrated board knows nothing of
-/// ids that predate its own transcript. The server-side detector has none of those gaps, which is
-/// why the note tells the reader to grep the host log for the event name too.
+/// The count this feeds is a LOWER BOUND, one-directionally. Three gaps, all documented in the spec
+/// and repeated in the emitted note: <c>bulk-initialize</c> names the rows it mints only as far as
+/// its echo cap reaches, so a row elided past that cap never enters the ledger; a row minted in a
+/// process whose transcript is not in this store is invisible; and a thread that starts from a
+/// rehydrated board knows nothing of ids that predate its own transcript. The server-side detector
+/// has none of them, which is why the note tells the reader to grep the host log for the event name
+/// too.
+/// </para>
+/// <para>
+/// The first gap was once total — <c>bulk-initialize</c> named only its main tasks, never the subtask
+/// ids it minted. #634 R1 NARROWED it; it did not close it. The subtask rows are now echoed, indented
+/// deeper but carrying the same <c>- Task &lt;id&gt;: </c> shape, so <see cref="BulkAdded" /> picks
+/// them up unchanged. What is left is the tail past that tool's row cap, which goes unnamed on new
+/// transcripts as much as on archived ones, plus every subtask row in a transcript recorded before
+/// the change. Such a transcript still parses; it simply contributes no subtask ids, exactly as it
+/// did then.
 /// </para>
 /// </remarks>
 internal sealed class BoardIdLedger

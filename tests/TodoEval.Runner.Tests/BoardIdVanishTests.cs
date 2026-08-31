@@ -103,6 +103,65 @@ public class BoardIdVanishTests
     }
 
     /// <summary>
+    ///     bulk-initialize now echoes its subtask rows too (#634 R1), indented one level deeper but in
+    ///     the same shape, so the ledger picks them up with no regex change. That NARROWS the first of
+    ///     its three documented undercount gaps rather than closing it: rows past the tool's echo cap
+    ///     are still never named, on new transcripts as much as archived ones.
+    /// </summary>
+    [Fact]
+    public void Ledger_TakesTheSubtaskIdsBulkInitializeNowEchoes()
+    {
+        var ledger = new BoardIdLedger();
+        ledger.RecordSuccess(
+            "bulk-initialize",
+            "Added 2 task(s) and 3 subtask(s):\n"
+                + "  - Task 1: Alpha\n"
+                + "    - Task 1.1: Alpha one\n"
+                + "    - Task 1.2: Alpha two\n"
+                + "  - Task 2: Beta\n"
+                + "    - Task 2.1: Beta one\n"
+        );
+
+        ledger.Owns("1.1").Should().BeTrue();
+        ledger.Owns("1.2").Should().BeTrue();
+        ledger.Owns("2.1").Should().BeTrue();
+        ledger.Owns("1").Should().BeTrue("the main tasks are still named");
+        ledger.Owns("2.2").Should().BeFalse("nothing invents rows the echo did not name");
+    }
+
+    /// <summary>
+    ///     The archived corpus. This is the VERBATIM payload every seed of the #617/#634 sweep got
+    ///     back from <c>bulk-initialize</c> — byte-identical across runs that nested different numbers
+    ///     of children, which is the defect #634 R1 names. Replayed through today's parser it behaves
+    ///     exactly as it did when it was recorded: the three main ids land, and the subtask ids the
+    ///     payload never named are still absent. That is the claim the ledger's XML docs and the
+    ///     metrics spec make about pre-change transcripts, executed rather than asserted from the
+    ///     regex — the gap did not widen, it simply stays open for text recorded before the fix.
+    /// </summary>
+    [Fact]
+    public void Ledger_ParsesAPreChangeBulkInitializePayloadExactlyAsItDidBefore()
+    {
+        var ledger = new BoardIdLedger();
+        ledger.RecordSuccess(
+            "bulk-initialize",
+            "Cleared existing tasks.\n"
+                + "Added 3 task(s):\n"
+                + "  - Task 1: Workstream 1 \u2014 Build & Test\n"
+                + "  - Task 2: Workstream 2 \u2014 Documentation\n"
+                + "  - Task 3: Workstream 3 \u2014 Packaging\n"
+        );
+
+        ledger.Owns("1").Should().BeTrue();
+        ledger.Owns("2").Should().BeTrue();
+        ledger.Owns("3").Should().BeTrue();
+
+        // The run that produced this text had nested children under Workstream 1. The payload never
+        // named them, so the ledger cannot know them — undercounting, exactly as before.
+        ledger.Owns("1.1").Should().BeFalse("the old payload named no subtask ids, so none enter the ledger");
+        ledger.Owns("4").Should().BeFalse();
+    }
+
+    /// <summary>
     ///     End to end through the real store reader: one synthetic thread whose transcript contains
     ///     both a genuine loss and the two things that must stay quiet.
     /// </summary>
