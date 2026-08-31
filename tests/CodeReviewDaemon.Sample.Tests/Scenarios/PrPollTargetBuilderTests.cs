@@ -43,6 +43,32 @@ public sealed class PrPollTargetBuilderTests : LoggingTestBase
         target.VariantId.Should().Be("primary");
     }
 
+    /// <summary>
+    /// #653 — the achieveai profile's <c>EnabledRepos</c> is not scoped to a single owner: it must poll both
+    /// <c>achieveai/*</c> and a hyphenated different-owner repo (<c>gautam-achieveai/ClaudePlugins</c>).
+    /// <c>PrPollTargetBuilder</c>'s GitHub-target construction builds each entry from its own two segments
+    /// with no shared-owner assumption, so this pins that cross-owner behaviour rather than exercising only a
+    /// single same-owner entry, which every other GitHub-target test above does.
+    /// </summary>
+    [Fact]
+    public void Cross_owner_github_entries_each_become_independent_targets()
+    {
+        var targets = Build(
+            new CodeReviewDaemonOptions { EnabledRepos = ["achieveai/LmDotnetTools", "gautam-achieveai/ClaudePlugins"] }
+        );
+
+        targets.Should().HaveCount(2);
+        targets.Should().OnlyContain(t => t.Provider == "github" && t.Repo.Provider == "github");
+
+        var claudePlugins = targets.Should().ContainSingle(t => t.Repo.RepoName == "ClaudePlugins").Subject;
+        claudePlugins.Repo.OrgOrOwner.Should().Be("gautam-achieveai");
+        claudePlugins.Repo.Project.Should().BeNull();
+        claudePlugins.Scope.Should().Be("gautam-achieveai/ClaudePlugins:open-prs");
+
+        var lmDotnetTools = targets.Should().ContainSingle(t => t.Repo.RepoName == "LmDotnetTools").Subject;
+        lmDotnetTools.Repo.OrgOrOwner.Should().Be("achieveai");
+    }
+
     [Fact]
     public void A_three_segment_entry_becomes_an_ado_target_when_ado_is_enabled()
     {
