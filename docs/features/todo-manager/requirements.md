@@ -123,8 +123,8 @@ summary block appears only for an unfiltered, non-`mainOnly` listing.
   1. Rate limit is 100/min
   2. Auth via JWT
   [x] 1.1. Define endpoints [@tester]
-    [ ] 1.1.1. Validate JWT
   [~] 1.2. Draft schema (removed)
+    [ ] 1.2.1. Validate JWT
 [ ] 2. Ship it
 ```
 
@@ -135,10 +135,14 @@ tag because completing it required claiming it first (Requirement 8.8) and `assi
 durable ownership that survives the `Completed` transition rather than being cleared — see
 Requirement 8 for the coordination fields (`Blocked`, `assignee`, `blockedBy`, elapsed-time)
 that this document was amended to cover, and the row-suffix rendering (`[@assignee]`,
-`(Nm)`, `(blocked by ...)`) they add. A task with attached artifacts (Requirement 9)
-additionally renders an `Artifacts:` block of `- <path>` bullets directly after its notes,
-at the same indent — `ListTasks_RendersArtifactsAsPlainBulletsUnderTheTask` pins that
-rendering byte for byte.
+`(Nm)`, `(blocked by ...)`) they add. "Validate JWT" nests under "Draft schema" rather than
+under "Define endpoints" because a parent cannot be completed while any descendant is still
+`not started`, `in progress`, or `blocked` (Requirement 8, the completion gate); `removed` is
+terminal like `completed` and carries no such check, so it is the shape that lets 1.1
+complete while a `not started` leaf is still on the tree. A task with attached artifacts
+(Requirement 9) additionally renders an `Artifacts:` block of `- <path>` bullets directly
+after its notes, at the same indent — `ListTasks_RendersArtifactsAsPlainBulletsUnderTheTask`
+pins that rendering byte for byte.
 
 ### Requirement 6: Markdown Generation Method
 - **User Story**: As a developer, I need a method to generate markdown representation so that I can get formatted output programmatically.

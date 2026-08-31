@@ -304,6 +304,218 @@ public class TaskManagerTests
 
     #endregion
 
+    #region Parent Completion Descendant Guard Tests (task 22)
+
+    /// <summary>
+    ///     Direct case: a NotStarted child refuses the parent's completion outright — the parent
+    ///     is never even reached before the descendant check, since a claimed-but-not-finished
+    ///     subtree is exactly what task 22 exists to catch.
+    /// </summary>
+    [Fact]
+    public void UpdateTask_ToCompletedWithANotStartedChild_IsRefused()
+    {
+        // Arrange
+        _taskManager.AddTask("Parent");
+        _taskManager.AddTask("Child", "1");
+        _taskManager.ClaimTask("1", "lead");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_has_incomplete_descendants");
+        result.Text.Should().Contain("1.1");
+
+        _taskManager.GetTasks().Single().Status.Should().Be(TaskManager.TaskStatus.InProgress);
+    }
+
+    /// <summary>
+    ///     Direct case: an InProgress child (someone else's active work) also refuses — using a
+    ///     different assignee for the child than for the parent, since claiming a second task for
+    ///     the same agent would release the first one (claim discipline), which would silently
+    ///     defeat the very state this test needs to hold.
+    /// </summary>
+    [Fact]
+    public void UpdateTask_ToCompletedWithAnInProgressChild_IsRefused()
+    {
+        // Arrange
+        _taskManager.AddTask("Parent");
+        _taskManager.AddTask("Child", "1");
+        _taskManager.ClaimTask("1.1", "child-worker");
+        _taskManager.ClaimTask("1", "lead");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_has_incomplete_descendants");
+        result.Text.Should().Contain("1.1");
+    }
+
+    /// <summary>
+    ///     Direct case: a Blocked child also refuses. Blocked is not named in "not started or in
+    ///     progress" literally, but it is not terminal either — a blocked descendant has not
+    ///     finished, it is only waiting — so it must count the same as the two named statuses.
+    /// </summary>
+    [Fact]
+    public void UpdateTask_ToCompletedWithABlockedChild_IsRefused()
+    {
+        // Arrange
+        _taskManager.AddTask("Parent"); // 1
+        _taskManager.AddTask("Blocker"); // 2
+        _taskManager.AddTask("Child", "1"); // 1.1
+        _taskManager.BlockTask("1.1", ["2"]);
+        _taskManager.ClaimTask("1", "lead");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_has_incomplete_descendants");
+        result.Text.Should().Contain("1.1");
+    }
+
+    /// <summary>
+    ///     Nested case: the guard walks the whole subtree, not just direct children. A grandchild
+    ///     added under an already-completed child (a legitimate sequence — nothing refuses adding
+    ///     a subtask under a Completed row) still refuses the top-level parent, because the
+    ///     grandchild itself was never finished or removed.
+    /// </summary>
+    [Fact]
+    public void UpdateTask_ToCompletedWithAnOpenGrandchildAddedAfterItsParentCompleted_IsRefused()
+    {
+        // Arrange
+        _taskManager.AddTask("Parent"); // 1
+        _taskManager.AddTask("Child", "1"); // 1.1
+        _taskManager.ClaimTask("1.1", "child-worker");
+        _taskManager.UpdateTask("1.1", "completed"); // no open descendants at this point
+        _taskManager.AddTask("Late grandchild", "1.1"); // 1.1.1, added after 1.1 completed
+        _taskManager.ClaimTask("1", "lead");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_has_incomplete_descendants");
+        result.Text.Should().Contain("1.1.1");
+
+        // The already-completed intermediate child is unaffected by the refusal.
+        var parent = _taskManager.GetTasks().Single();
+        parent.SubTasks.Single(t => t.Id == "1.1").Status.Should().Be(TaskManager.TaskStatus.Completed);
+    }
+
+    /// <summary>
+    ///     Removed case: a Removed descendant does not block completion — it is terminal exactly
+    ///     like Completed, per task 22's contract.
+    /// </summary>
+    [Fact]
+    public void UpdateTask_ToCompletedWithOnlyCompletedAndRemovedDescendants_Succeeds()
+    {
+        // Arrange
+        _taskManager.AddTask("Parent"); // 1
+        _taskManager.AddTask("Done child", "1"); // 1.1
+        _taskManager.AddTask("Abandoned child", "1"); // 1.2
+        _taskManager.ClaimTask("1.1", "child-worker");
+        _taskManager.UpdateTask("1.1", "completed");
+        _taskManager.UpdateTask("1.2", "removed");
+        _taskManager.ClaimTask("1", "lead");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeFalse();
+        result.Text.Should().Contain("status to 'completed'");
+        _taskManager.GetTasks().Single().Status.Should().Be(TaskManager.TaskStatus.Completed);
+    }
+
+    /// <summary>
+    ///     Concurrency-relevant: many attempts to complete the parent race a separate thread that
+    ///     is finishing the one remaining open child. Whichever ordering wins, the guard and the
+    ///     completion it gates share <c>_sync</c>, so it must never observe a parent that completed
+    ///     while a descendant was left open — regardless of how the race actually interleaves.
+    /// </summary>
+    [Fact]
+    public async Task UpdateTask_CompletingParentConcurrentlyWithFinishingLastChild_NeverCompletesWithAnOpenDescendant()
+    {
+        // Arrange
+        var manager = new TaskManager();
+        manager.AddTask("Parent"); // 1
+        for (var i = 0; i < 5; i++)
+        {
+            manager.AddTask($"Done child {i}", "1");
+            manager.ClaimTask($"1.{i + 1}", "child-worker");
+            manager.UpdateTask($"1.{i + 1}", "completed");
+        }
+
+        manager.AddTask("Last child", "1"); // 1.6
+        manager.ClaimTask("1.6", "child-worker");
+        manager.ClaimTask("1", "lead");
+
+        var successes = new ConcurrentBag<int>();
+        var failures = new ConcurrentBag<Exception>();
+        using var startingGun = new ManualResetEventSlim(false);
+
+        // Act
+        var finisher = Task.Run(() =>
+        {
+            startingGun.Wait();
+            _ = manager.UpdateTask("1.6", "completed");
+        });
+
+        var completers = Enumerable
+            .Range(0, 8)
+            .Select(i =>
+                Task.Run(() =>
+                {
+                    startingGun.Wait();
+                    try
+                    {
+                        var result = manager.UpdateTask("1", "completed");
+                        if (!result.IsError)
+                        {
+                            successes.Add(i);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        failures.Add(ex);
+                    }
+                })
+            )
+            .ToArray();
+
+        startingGun.Set();
+        await Task.WhenAll(completers);
+        await finisher;
+
+        // Assert - no exceptions, at most one caller ever sees the parent flip to Completed, and
+        // whenever one did, every descendant it walked was already terminal.
+        failures.Should().BeEmpty();
+        successes.Count.Should().BeLessThanOrEqualTo(1);
+
+        var parent = manager.GetTasks().Single();
+        if (successes.Count == 1)
+        {
+            parent.Status.Should().Be(TaskManager.TaskStatus.Completed);
+            parent
+                .SubTasks.Should()
+                .OnlyContain(t =>
+                    t.Status == TaskManager.TaskStatus.Completed || t.Status == TaskManager.TaskStatus.Removed
+                );
+        }
+        else
+        {
+            parent.Status.Should().NotBe(TaskManager.TaskStatus.Completed);
+        }
+    }
+
+    #endregion
+
     #region DeleteTask Tests
 
     [Fact]
@@ -611,6 +823,10 @@ public class TaskManagerTests
         var task2Id = ExtractTaskId(task2Result);
         _taskManager.AddTask("Subtask", task1Id);
 
+        // The subtask must itself be terminal (task 22) before task1 — its parent — can complete.
+        _taskManager.ClaimTask($"{task1Id}.1", "subtask-tester");
+        _taskManager.UpdateTask($"{task1Id}.1", status: "completed");
+
         _taskManager.ClaimTask(task1Id.ToString(), "tester");
         _taskManager.UpdateTask(task1Id, status: "completed");
         _taskManager.UpdateTask(task2Id, status: "removed");
@@ -623,8 +839,8 @@ public class TaskManagerTests
 
         // Assert
         totalCount.Should().Be("Total tasks: 3");
-        completedCount.Should().Be("Completed tasks: 1");
-        pendingCount.Should().Be("Pending tasks: 1");
+        completedCount.Should().Be("Completed tasks: 2");
+        pendingCount.Should().Be("Pending tasks: 0");
         removedCount.Should().Be("Removed tasks: 1");
     }
 
@@ -939,10 +1155,15 @@ public class TaskManagerTests
         // Arrange - one tree covering all four statuses, three levels of nesting,
         // and numbered notes. This is the only full-string assertion on the rendered
         // markdown, so it is what pins the format the spec documents.
+        //
+        // "Validate JWT" nests under "Draft schema" (soon Removed), not under "Define
+        // endpoints" (soon Completed): task 22 refuses to complete a parent over an open
+        // descendant, and Removed carries no such check, so this is the shape that lets 1.1
+        // still complete while a NotStarted leaf is still on the tree.
         _taskManager.AddTask("Design API");
         _taskManager.AddTask("Define endpoints", "1");
-        _taskManager.AddTask("Validate JWT", "1.1");
         _taskManager.AddTask("Draft schema", "1");
+        _taskManager.AddTask("Validate JWT", "1.2");
         _taskManager.AddTask("Ship it");
         _taskManager.AddNote("1", noteText: "Rate limit is 100/min");
         _taskManager.AddNote("1", noteText: "Auth via JWT");
@@ -975,8 +1196,8 @@ public class TaskManagerTests
             + "  1. Rate limit is 100/min\n"
             + "  2. Auth via JWT\n"
             + "  [x] 1.1. Define endpoints [@tester]\n"
-            + "    [ ] 1.1.1. Validate JWT\n"
             + "  [~] 1.2. Draft schema (removed)\n"
+            + "    [ ] 1.2.1. Validate JWT\n"
             + "[ ] 2. Ship it";
 
         result.Should().Be(expected);

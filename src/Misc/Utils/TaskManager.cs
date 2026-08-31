@@ -63,6 +63,7 @@ public class TaskManager : ITodoBoardSource
     private const string TaskNotClaimedCode = "task_not_claimed";
     private const string InvalidArtifactPathCode = "invalid_artifact_path";
     private const string BlockCycleCode = "block_cycle";
+    private const string TaskHasIncompleteDescendantsCode = "task_has_incomplete_descendants";
 
     /// <summary>
     ///     A claim is a lease, not a hard lock (see the design doc's stale-row research): an
@@ -492,7 +493,9 @@ Claim discipline:
 
 Before marking complete:
 • Add notes about what was learned
-• Verify subtasks are handled
+• Every descendant must already be 'completed' or 'removed' — this is enforced, not just
+  advisory. A descendant left 'not started', 'in progress', or 'blocked' refuses the
+  parent's completion; finish or remove it first.
 • Consider if follow-up tasks are needed
 
 Status meanings:
@@ -579,6 +582,16 @@ Examples:
                         $"Error: Task {targetTask.DisplayId} must be claimed and in progress before it can be completed. "
                             + "Sequence: claim-task with your agent name, then update-task to 'in progress' "
                             + "(claim-task already sets it), then 'completed'."
+                    );
+                }
+
+                if (GetIncompleteDescendants(targetTask) is { Count: > 0 } incompleteDescendants)
+                {
+                    return FunctionResult.Error(
+                        TaskHasIncompleteDescendantsCode,
+                        $"Error: Task {targetTask.DisplayId} cannot be completed while descendant(s) "
+                            + $"{string.Join(", ", incompleteDescendants)} are not started, in progress, or "
+                            + "blocked. Complete or remove them first."
                     );
                 }
 
@@ -1123,6 +1136,25 @@ Examples:
                 && t.Status == TaskStatus.InProgress
                 && string.Equals(t.Assignee, agent, StringComparison.Ordinal)
             );
+    }
+
+    /// <summary>
+    ///     Descendants of <paramref name="task" /> (task 22) whose status is neither
+    ///     <see cref="TaskStatus.Completed" /> nor <see cref="TaskStatus.Removed" /> — the only two
+    ///     terminal statuses. NotStarted, InProgress, and Blocked all mean "not actually finished
+    ///     yet", so a parent completing over one of them would silently claim a subtree is done when
+    ///     part of it is still open, still being worked, or still waiting on something else. Returns
+    ///     dotted display ids so the refusal can name exactly which rows are still outstanding. Must
+    ///     be called while holding <see cref="_sync" />.
+    /// </summary>
+    private static List<string> GetIncompleteDescendants(PrivateTaskItem task)
+    {
+        return
+        [
+            .. GetAllTasksFlat(task.SubTasks)
+                .Where(t => t.Status is not (TaskStatus.Completed or TaskStatus.Removed))
+                .Select(t => t.DisplayId),
+        ];
     }
 
     /// <summary>
