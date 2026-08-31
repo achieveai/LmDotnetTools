@@ -189,4 +189,33 @@ public sealed class ReviewFindingReconcilerTests
         rendered.Should().Contain("| ...never cited by any specialist finding above | 2 |");
         rendered.Should().Contain("| Matches decided by a tie (see the `Match` column) | 1 |");
     }
+
+    [Fact]
+    public void Duplicate_shipped_titles_are_counted_as_distinct_identities_not_collapsed()
+    {
+        // F-006: two DISTINCT shipped items share a byte-identical title but cite different lines. Only
+        // the first is ever cited by a specialist finding, so exactly one of the two is a real orphan.
+        // A title-keyed HashSet would see "widget" already marked cited by the first match and read the
+        // second, uncited item as cited too — undercounting the orphan total.
+        var sources = new[]
+        {
+            new ReviewFindingSource("reviewer-1", "template-1", "#### [LOW] widget\nsrc/Foo.cs:10\n"),
+        };
+        var shippedBody = "#### [LOW] widget\nsrc/Foo.cs:10\n\n#### [LOW] widget\nsrc/Zeta.cs:99\n";
+
+        var rows = ReviewFindingReconciler.Reconcile(sources, shippedBody);
+        var rendered = ReviewFindingReconciler.Render("1", sources, rows, shippedBody);
+
+        rows.Should().ContainSingle();
+        rows[0].ShippedTitle.Should().Be("[LOW] widget");
+        rows[0].ShippedIndex.Should().Be(0, "the first shipped item is the one that shares the citation");
+
+        rendered.Should().Contain("| Shipped findings parsed | 2 |");
+        rendered
+            .Should()
+            .Contain(
+                "| ...never cited by any specialist finding above | 1 |",
+                "the second same-titled shipped item was never cited by anything"
+            );
+    }
 }

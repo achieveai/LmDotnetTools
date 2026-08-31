@@ -20,12 +20,18 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// <param name="SynthesisNote">The shipped review's own stated reason for the change, never a generated one.</param>
 /// <param name="MatchScore">
 /// The shared-citation count that decided <paramref name="ShippedTitle"/>, copied from
-/// <see cref="ReconciledFinding.MatchScore"/>. Zero on a <c>dropped</c> row, where nothing was scored.
+/// <see cref="ReconciledFinding.MatchScore"/>. Zero on a <c>dropped</c> row, where nothing was scored — a
+/// MEASURED zero, not an absent one. <see langword="null"/> means the opposite: this row was hydrated from
+/// an artifact written before match tracing existed (schema-v1 JSON, with no <c>MatchScore</c> property at
+/// all) and <see cref="System.Text.Json"/> left the field unset rather than guessing. A row this old is
+/// simply outside the question "what did the join score here" — it must never be read as if it scored zero.
 /// </param>
 /// <param name="MatchTiedCandidates">
 /// How many shipped items tied at <paramref name="MatchScore"/>, copied from
 /// <see cref="ReconciledFinding.MatchTiedCandidates"/>. Above 1 means the join broke a tie arbitrarily —
 /// this is what <see cref="ReviewFindingsArtifactPayload.AmbiguousMatches"/> counts across the round.
+/// <see langword="null"/> for the same pre-match-tracing rows as <paramref name="MatchScore"/>, and for the
+/// same reason: a legacy row was never scored, so it cannot be reported as unambiguous either.
 /// </param>
 internal sealed record ReviewFindingRecord(
     string Source,
@@ -38,8 +44,8 @@ internal sealed record ReviewFindingRecord(
     string? ShippedSeverity,
     string? ShippedTitle,
     string? SynthesisNote,
-    int MatchScore,
-    int MatchTiedCandidates
+    int? MatchScore,
+    int? MatchTiedCandidates
 );
 
 /// <summary>
@@ -127,6 +133,12 @@ internal sealed record ReviewFindingsArtifactPayload(
     /// the join to a shipped item broke a tie rather than finding one clear best candidate. This is a count
     /// of the JOIN's confidence, not of the review's quality: a tied-but-correct match and a clean-but-wrong
     /// one are both invisible to <see cref="Shortfall"/>, which is why this is tracked separately.
+    /// <para>
+    /// A row with a <see langword="null"/> <see cref="ReviewFindingRecord.MatchTiedCandidates"/> — one
+    /// hydrated from a pre-match-tracing artifact — is never counted here. The nullable comparison already
+    /// evaluates to <see langword="false"/> for a <see langword="null"/> operand, which is the correct answer:
+    /// a legacy row's join was never scored, so it cannot be reported as ambiguous OR as clean.
+    /// </para>
     /// </summary>
     public int AmbiguousMatches => Findings.Count(f => f.MatchTiedCandidates > 1);
 
@@ -134,6 +146,12 @@ internal sealed record ReviewFindingsArtifactPayload(
     /// Projects the reconciled list the notes builder already holds. Takes both the sources and the
     /// reconciled rows so the parsed count comes off a separate pass over the source text — a count derived
     /// from <paramref name="reconciled"/> would agree with itself no matter what the loop dropped.
+    /// <para>
+    /// Every row this produces carries a non-null <see cref="ReviewFindingRecord.MatchScore"/> and
+    /// <see cref="ReviewFindingRecord.MatchTiedCandidates"/> — <see langword="null"/> is reserved for rows
+    /// hydrated from a pre-match-tracing artifact and this method never reads one back in; it only ever
+    /// builds from a fresh <see cref="ReconciledFinding"/> list, whose own fields are non-nullable ints.
+    /// </para>
     /// </summary>
     public static ReviewFindingsArtifactPayload Build(
         int round,

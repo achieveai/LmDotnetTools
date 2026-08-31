@@ -95,6 +95,112 @@ public sealed class FindingsPersistenceTests
         findings.AmbiguousMatches.Should().Be(0, "neither finding's join needed to break a tie");
     }
 
+    /// <summary>
+    /// F-001 — a schema-v1 artifact written before match tracing existed has no <c>MatchScore</c> or
+    /// <c>MatchTiedCandidates</c> property in its JSON at all. Deserialised into today's
+    /// <see cref="ReviewFindingRecord"/>, those fields must come back <see langword="null"/> — an EXPLICIT
+    /// "not measured" — rather than <c>0</c>, which already means "measured, no candidate matched" on a
+    /// freshly built dropped row. A non-nullable field would have hydrated both cases identically.
+    /// </summary>
+    [Fact]
+    public void A_legacy_pre_match_tracing_payload_hydrates_match_fields_as_null_not_zero()
+    {
+        // No `MatchScore`/`MatchTiedCandidates`/`ShippedTitle` properties at all — exactly what
+        // JsonSerializer.Serialize produced before this field pair existed.
+        const string legacyJson = """
+            {
+              "Round": 1,
+              "CapturedAtUtc": "2026-01-01T00:00:00Z",
+              "PromptTemplateHash": null,
+              "Compared": true,
+              "ParsedCount": 2,
+              "RecordedCount": 2,
+              "Sources": [],
+              "Findings": [
+                {
+                  "Source": "architecture",
+                  "Template": "reviewer",
+                  "Title": "[BLOCKER] High — DI coupling",
+                  "Location": "src/Foo.cs:1",
+                  "Severity": "Blocker/High",
+                  "SeverityTokens": ["Blocker"],
+                  "Outcome": "kept",
+                  "ShippedSeverity": "Blocker/High",
+                  "ShippedTitle": "[BLOCKER] High — DI coupling",
+                  "SynthesisNote": null
+                },
+                {
+                  "Source": "architecture",
+                  "Template": "reviewer",
+                  "Title": "[MEDIUM] unchecked cast",
+                  "Location": "src/Bar.cs:1",
+                  "Severity": "Medium",
+                  "SeverityTokens": ["Medium"],
+                  "Outcome": "dropped",
+                  "ShippedSeverity": null,
+                  "ShippedTitle": null,
+                  "SynthesisNote": null
+                }
+              ]
+            }
+            """;
+
+        var payload = JsonSerializer.Deserialize<ReviewFindingsArtifactPayload>(legacyJson);
+
+        payload.Should().NotBeNull();
+        foreach (var row in payload!.Findings)
+        {
+            row.MatchScore.Should().BeNull("this row predates match tracing and was never scored");
+            row.MatchTiedCandidates.Should().BeNull("this row predates match tracing and was never scored");
+        }
+
+        // The whole point: a legacy `kept` row and a legacy `dropped` row must be equally distinguishable
+        // from a freshly measured zero. Neither reads as "scored 0" — see the non-legacy assertion below.
+        payload.AmbiguousMatches.Should().Be(0, "a null MatchTiedCandidates must not count as ambiguous");
+    }
+
+    /// <summary>
+    /// The other half of F-001: a freshly built (schema-v2-shaped) payload round-trips its real scores —
+    /// including a genuine measured zero on a dropped row — rather than losing them to the same nullable
+    /// fields that carry "unknown" for legacy data.
+    /// </summary>
+    [Fact]
+    public void A_freshly_built_payload_round_trips_real_match_scores_including_a_measured_zero()
+    {
+        var sources = new[]
+        {
+            new ReviewFindingSource(
+                "reviewer-1",
+                "template-1",
+                "#### [MEDIUM] kept\nsrc/Foo.cs:10\n\n#### [MEDIUM] dropped\nsrc/Bar.cs:20\n"
+            ),
+        };
+        var shippedBody = "#### [MEDIUM] kept\nsrc/Foo.cs:10\n";
+
+        var reconciled = ReviewFindingReconciler.Reconcile(sources, shippedBody);
+        var built = ReviewFindingsArtifactPayload.Build(
+            1,
+            sources,
+            reconciled,
+            compared: true,
+            promptTemplateHash: null
+        );
+
+        var json = JsonSerializer.Serialize(built);
+        var roundTripped = JsonSerializer.Deserialize<ReviewFindingsArtifactPayload>(json);
+
+        roundTripped.Should().NotBeNull();
+        var kept = roundTripped!.Findings.Should().ContainSingle(f => f.Outcome == "kept").Subject;
+        var dropped = roundTripped.Findings.Should().ContainSingle(f => f.Outcome == "dropped").Subject;
+
+        kept.MatchScore.Should().Be(1, "a freshly built row always carries a real, non-null score");
+        kept.MatchTiedCandidates.Should().Be(1);
+
+        // A MEASURED zero — this is exactly the value F-001 says must never be confused with "unknown".
+        dropped.MatchScore.Should().Be(0, "a dropped row was scored and found no candidate at all");
+        dropped.MatchTiedCandidates.Should().Be(0);
+    }
+
     [Fact]
     public async Task The_stored_findings_row_is_its_own_artifact_kind_at_its_own_schema_version()
     {

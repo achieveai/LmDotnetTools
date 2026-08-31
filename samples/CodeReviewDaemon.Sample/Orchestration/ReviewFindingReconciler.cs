@@ -97,6 +97,14 @@ internal sealed record ParsedReviewFinding(
 /// <see cref="ShippedTitle"/> could have been a different, equally-scored row — visible here instead of
 /// silently resolved.
 /// </param>
+/// <param name="ShippedIndex">
+/// The winning shipped item's POSITION in <c>ParseFindings(shippedReviewBody)</c>, or -1 on a
+/// <see cref="ReviewFindingOutcome.Dropped"/> row. <paramref name="ShippedTitle"/> is a display copy of that
+/// item's lead line and is NOT a safe join key on its own: two distinct shipped items can share a
+/// byte-identical title, and a consumer that groups rows by title alone will silently merge them into one
+/// identity. This is the actual identity — see <see cref="ReviewFindingReconciler.AppendParserHealth"/>,
+/// which is exactly the case that title-only grouping got wrong.
+/// </param>
 internal sealed record ReconciledFinding(
     int SourceIndex,
     string Source,
@@ -110,7 +118,8 @@ internal sealed record ReconciledFinding(
     string? ShippedTitle,
     string? SynthesisNote,
     int MatchScore,
-    int MatchTiedCandidates
+    int MatchTiedCandidates,
+    int ShippedIndex
 );
 
 /// <summary>How many finding-shaped blocks one reviewer contributed, before any matching happened.</summary>
@@ -414,7 +423,8 @@ internal static partial class ReviewFindingReconciler
                         ShippedTitle: null,
                         SynthesisNote: null,
                         MatchScore: 0,
-                        MatchTiedCandidates: 0
+                        MatchTiedCandidates: 0,
+                        ShippedIndex: -1
                     )
                 );
                 continue;
@@ -448,7 +458,8 @@ internal static partial class ReviewFindingReconciler
                     match.Title,
                     StatedDisposition(match),
                     MatchScore: score,
-                    MatchTiedCandidates: tied
+                    MatchTiedCandidates: tied,
+                    ShippedIndex: index
                 )
             );
         }
@@ -627,7 +638,8 @@ internal static partial class ReviewFindingReconciler
     /// <para>
     /// <see cref="ReconciledFinding.MatchTiedCandidates"/> above 1 counts a real fact about the join: two or
     /// more shipped items scored identically and the tie was broken by shipped-list order, arbitrarily. The
-    /// uncited count and the shipped-orphan count below are directional, not exact — see the caveats on each.
+    /// shipped-orphan count below is keyed by <see cref="ReconciledFinding.ShippedIndex"/> rather than by
+    /// title, so it stays exact even when two distinct shipped items share a byte-identical lead line.
     /// </para>
     /// </summary>
     private static void AppendParserHealth(
@@ -643,15 +655,14 @@ internal static partial class ReviewFindingReconciler
         // already makes for its per-reviewer counts: one more pass over text already in hand, in exchange for
         // `Render` staying answerable from (round, sources, rows, shippedReviewBody) alone.
         var shipped = ParseFindings(shippedReviewBody);
-        var citedShippedTitles = new HashSet<string>(
-            rows.Where(r => r.ShippedTitle is not null).Select(r => r.ShippedTitle!),
-            StringComparer.Ordinal
-        );
 
-        // DIRECTIONAL, not exact: two distinct shipped items with byte-identical lead lines would collapse
-        // to one entry here, undercounting the orphan total by the duplicate. Titles are what `Reconcile`
-        // exposes to `Render`; the shipped item's own index is not.
-        var orphanedShipped = shipped.Count(s => !citedShippedTitles.Contains(s.Title));
+        // Keyed by ShippedIndex — the shipped item's POSITION — and never by title. Two distinct shipped
+        // items can share a byte-identical lead line; a title-keyed HashSet would collapse them into one
+        // identity and undercount the orphan total by however many duplicates existed. The index is unique
+        // by construction, so this is exact rather than directional.
+        var citedShippedIndices = new HashSet<int>(rows.Where(r => r.ShippedIndex >= 0).Select(r => r.ShippedIndex));
+
+        var orphanedShipped = Enumerable.Range(0, shipped.Count).Count(i => !citedShippedIndices.Contains(i));
 
         builder
             .AppendLine("## Parser health")
