@@ -179,4 +179,28 @@ public sealed class DiffCitationVerifierTests
 
         result.Outcome.Should().Be(CitationOutcome.OutOfScope);
     }
+
+    [Fact]
+    public void MalformedHunkWithUnderCountedHeader_NeverFabricatesVerifiedEvidenceForSmuggledLines()
+    {
+        // F-005: a hunk header that under-declares its new-side count must not let the extra body lines it
+        // didn't promise still resolve as verified citation evidence. UnifiedDiffManifest.Parse drops the
+        // whole malformed hunk, so a citation against any of the smuggled lines resolves OutOfScope rather
+        // than VerifiedChanged.
+        var manifest = UnifiedDiffParser.Parse(
+            """
+            diff --git a/src/Smuggled.cs b/src/Smuggled.cs
+            --- a/src/Smuggled.cs
+            +++ b/src/Smuggled.cs
+            @@ -0,0 +1,1 @@
+            +line1
+            +line2
+            +line3
+            """
+        );
+
+        var result = DiffCitationVerifier.Verify(manifest, new DiffCitation("src/Smuggled.cs", 3, DiffSide.New));
+
+        result.Outcome.Should().Be(CitationOutcome.OutOfScope);
+    }
 }

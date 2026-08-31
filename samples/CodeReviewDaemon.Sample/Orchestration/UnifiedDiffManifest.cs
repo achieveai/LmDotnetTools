@@ -261,7 +261,12 @@ internal static partial class UnifiedDiffParser
                 return;
             }
 
-            file.Hunks.Add(hunk.Build(file.Path));
+            var built = hunk.Build(file.Path);
+            if (built is not null)
+            {
+                file.Hunks.Add(built);
+            }
+
             hunk = null;
         }
 
@@ -619,8 +624,45 @@ internal static partial class UnifiedDiffParser
         public int NewCursor { get; set; } = newRange.Start;
         public List<DiffLine> Body { get; } = [];
 
-        public DiffHunk Build(string path)
+        /// <summary>
+        /// Builds the hunk, or returns <c>null</c> if the header's declared old/new counts do not reconcile
+        /// with what the body actually consumed. F-005: a hunk header lies about how many old-side
+        /// (Context+Deleted) and new-side (Context+Added) rows follow it; the parse loop has no lookahead and
+        /// simply keeps consuming body lines until the next boundary, so an under-counted, over-counted, or
+        /// one-sided ("side-mismatch") header would otherwise still produce a hunk whose <see cref="DiffHunk.Lines"/>
+        /// carry line numbers and content the header never actually promised — exactly the kind of fabricated
+        /// evidence <see cref="DiffCitationVerifier"/> must not be able to verify a citation against. Dropping
+        /// the whole hunk (never adding it to <c>file.Hunks</c>) keeps this consistent with the parser's
+        /// existing "never fabricate, skip what's malformed" philosophy. A well-formed hunk — including a
+        /// legitimate zero-count side for a pure add or pure delete — always reconciles exactly, so this never
+        /// rejects valid input.
+        /// </summary>
+        public DiffHunk? Build(string path)
         {
+            var oldConsumed = 0;
+            var newConsumed = 0;
+            foreach (var bodyLine in Body)
+            {
+                if (bodyLine.Kind == DiffLineKind.Context)
+                {
+                    oldConsumed++;
+                    newConsumed++;
+                }
+                else if (bodyLine.Kind == DiffLineKind.Deleted)
+                {
+                    oldConsumed++;
+                }
+                else if (bodyLine.Kind == DiffLineKind.Added)
+                {
+                    newConsumed++;
+                }
+            }
+
+            if (oldConsumed != oldRange.Count || newConsumed != newRange.Count)
+            {
+                return null;
+            }
+
             var addedRuns = new List<LineRange>();
             var deleted = new List<DiffDeletedLine>();
             var runStart = -1;

@@ -575,4 +575,108 @@ public sealed class UnifiedDiffManifestTests
 
         hunk.Classification.Should().HaveFlag(DiffRiskClassification.Security);
     }
+
+    [Fact]
+    public void HunkHeader_UnderCountedNewSide_DropsTheHunkRatherThanFabricatingExtraLines()
+    {
+        // F-005: the header declares only 1 new-side row, but the body actually carries 5 added lines
+        // before the diff ends. Left unchecked, those extra lines would still be assigned new-side line
+        // numbers and would resolve as verifiable citation evidence even though the header never promised
+        // them. The whole hunk must be dropped instead of trusting the body over the header.
+        const string diff = """
+            diff --git a/src/Under.cs b/src/Under.cs
+            --- a/src/Under.cs
+            +++ b/src/Under.cs
+            @@ -0,0 +1,1 @@
+            +line1
+            +line2
+            +line3
+            +line4
+            +line5
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.Hunks.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void HunkHeader_OverCountedOldSide_DropsTheHunkRatherThanOverstatingCoverage()
+    {
+        // F-005: the header declares 5 old-side rows, but the body only carries 1 deleted line before the
+        // diff ends. The declared span overstates what this hunk actually covers, so it must be dropped
+        // rather than kept with a range nothing in the body backs up.
+        const string diff = """
+            diff --git a/src/Over.cs b/src/Over.cs
+            --- a/src/Over.cs
+            +++ b/src/Over.cs
+            @@ -1,5 +1,1 @@
+            -old
+            +new
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.Hunks.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void HunkHeader_SideMismatch_DropsTheHunkWhenOldAndNewCountsAreBothInconsistentWithConsumption()
+    {
+        // F-005: header declares old=2/new=2, but the body only carries 1 old-side row (the context line)
+        // against 3 new-side rows (context + two adds) — neither side reconciles, a stronger malformation
+        // than a one-sided under/over count.
+        const string diff = """
+            diff --git a/src/Mismatch.cs b/src/Mismatch.cs
+            --- a/src/Mismatch.cs
+            +++ b/src/Mismatch.cs
+            @@ -1,2 +1,2 @@
+             context1
+            +added1
+            +added2
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.Hunks.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void HunkHeader_ZeroCountPureAddition_IsStillAcceptedAfterReconciliation()
+    {
+        // F-005 must not regress the legitimate zero-count case: a pure addition declares 0 old-side rows
+        // and some added lines. This has to keep parsing exactly as before.
+        const string diff = """
+            diff --git a/src/New.cs b/src/New.cs
+            --- /dev/null
+            +++ b/src/New.cs
+            @@ -0,0 +1,2 @@
+            +line1
+            +line2
+            """;
+
+        var hunk = UnifiedDiffParser.Parse(diff).Files.Single().Hunks.Single();
+
+        hunk.OldRange.Count.Should().Be(0);
+        hunk.NewRange.Count.Should().Be(2);
+    }
+
+    [Fact]
+    public void HunkHeader_ZeroCountPureDeletion_IsStillAcceptedAfterReconciliation()
+    {
+        // Mirror of the pure-addition case: 0 new-side rows, some deleted lines.
+        const string diff = """
+            diff --git a/src/Gone.cs b/src/Gone.cs
+            --- a/src/Gone.cs
+            +++ /dev/null
+            @@ -1,2 +0,0 @@
+            -line1
+            -line2
+            """;
+
+        var hunk = UnifiedDiffParser.Parse(diff).Files.Single().Hunks.Single();
+
+        hunk.OldRange.Count.Should().Be(2);
+        hunk.NewRange.Count.Should().Be(0);
+    }
 }
