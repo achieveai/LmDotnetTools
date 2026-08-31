@@ -207,6 +207,164 @@ public class TaskManagerTests
         result2.Should().Be("Error: No tasks provided for initialization.");
     }
 
+    /// <summary>
+    ///     #634 R1, the regression this whole change exists for. Before it, the echo listed only main
+    ///     tasks, so two initializations that agreed on the three workstream titles and differed ONLY
+    ///     in how many children hung under the first one came back byte-identical — the model got zero
+    ///     signal that it had built the wrong shape. Same titles, different nesting, different text.
+    /// </summary>
+    [Fact]
+    public void BulkInitialize_TwoShapesDifferingOnlyInNesting_ProduceDifferentResults()
+    {
+        static List<TaskManager.BulkTaskItem> Workstreams(int childrenUnderFirst) =>
+            [
+                new()
+                {
+                    Task = "Workstream 1 — Build & Test",
+                    SubTasks = [.. Enumerable.Range(1, childrenUnderFirst).Select(i => $"Step {i}")],
+                },
+                new() { Task = "Workstream 2 — Documentation" },
+                new() { Task = "Workstream 3 — Packaging" },
+            ];
+
+        var four = new TaskManager().BulkInitialize(Workstreams(4)).Text;
+        var six = new TaskManager().BulkInitialize(Workstreams(6)).Text;
+
+        four.Should().NotBe(six);
+
+        // And not merely different: each names the ids it actually minted, so the shape is readable
+        // rather than only inferable from a length difference.
+        four.Should().Contain("- Task 1.4: Step 4").And.NotContain("- Task 1.5:");
+        six.Should().Contain("- Task 1.6: Step 6");
+        four.Should().Contain("Added 3 task(s) and 4 subtask(s):");
+        six.Should().Contain("Added 3 task(s) and 6 subtask(s):");
+    }
+
+    /// <summary>
+    ///     The echo matches add-task's idiom — "Task &lt;dotted id&gt;: &lt;title&gt;" — and indents two
+    ///     spaces per level, so depth is visible twice over: in the dotted id and in the indentation.
+    /// </summary>
+    [Fact]
+    public void BulkInitialize_EchoesEachRowWithItsDottedIdAndDepthIndent()
+    {
+        var tasks = new List<TaskManager.BulkTaskItem>
+        {
+            new() { Task = "Alpha", SubTasks = ["Alpha one", "Alpha two"] },
+            new() { Task = "Beta", SubTasks = ["Beta one"] },
+        };
+
+        var lines = _taskManager.BulkInitialize(tasks).Text.Split('\n');
+
+        lines
+            .Should()
+            .ContainInOrder(
+                "Added 2 task(s) and 3 subtask(s):",
+                "  - Task 1: Alpha",
+                "    - Task 1.1: Alpha one",
+                "    - Task 1.2: Alpha two",
+                "  - Task 2: Beta",
+                "    - Task 2.1: Beta one"
+            );
+
+        // The subtask rows sit strictly deeper than the parent they belong to. Asserted as a
+        // relation, not just as the literal above, because the indent is what carries the shape
+        // for a reader who is scanning rather than parsing ids.
+        var parent = lines.Single(l => l.Contains("Task 1: Alpha"));
+        var child = lines.Single(l => l.Contains("Task 1.1:"));
+        LeadingSpaces(child).Should().BeGreaterThan(LeadingSpaces(parent));
+    }
+
+    /// <summary>A flat initialization keeps the shorter header it always had — no "and 0 subtask(s)".</summary>
+    [Fact]
+    public void BulkInitialize_WithNoSubtasks_OmitsTheSubtaskCountFromTheHeader()
+    {
+        var result = _taskManager.BulkInitialize([new() { Task = "Only task" }]).Text;
+
+        result.Should().StartWith("Added 1 task(s):");
+        result.Should().Contain("  - Task 1: Only task");
+        result.Should().NotContain("subtask(s)");
+    }
+
+    /// <summary>Skipped-because-blank subtasks must not be counted in the header or listed as rows.</summary>
+    [Fact]
+    public void BulkInitialize_WithBlankSubtasks_CountsAndListsOnlyTheRowsItMinted()
+    {
+        var tasks = new List<TaskManager.BulkTaskItem>
+        {
+            new() { Task = "Main", SubTasks = ["", "Real", "   ", null!] },
+        };
+
+        var result = _taskManager.BulkInitialize(tasks).Text;
+
+        result.Should().Contain("Added 1 task(s) and 1 subtask(s):");
+        result.Should().Contain("    - Task 1.1: Real");
+        result.Should().NotContain("Task 1.2");
+    }
+
+    /// <summary>The clear is still announced, and still announced first, ahead of the richer listing.</summary>
+    [Fact]
+    public void BulkInitialize_WithClearExisting_StillReportsTheClearBeforeTheRows()
+    {
+        _ = _taskManager.AddTask("Existing task");
+
+        var result = _taskManager
+            .BulkInitialize([new() { Task = "New task", SubTasks = ["New sub"] }], clearExisting: true)
+            .Text;
+
+        result.Should().StartWith("Cleared existing tasks.\n");
+        result.Should().Contain("Added 1 task(s) and 1 subtask(s):");
+        result.Should().Contain("    - Task 1.1: New sub");
+        result.Should().NotContain("Existing task");
+    }
+
+    /// <summary>
+    ///     Exactly at the 50-row cap nothing is elided. Pinned separately from the over-cap case so an
+    ///     off-by-one in the boundary cannot hide behind the truncation test.
+    /// </summary>
+    [Fact]
+    public void BulkInitialize_AtExactlyTheRowCap_ListsEveryRowAndSaysNothingAboutTruncation()
+    {
+        // 25 tasks x (itself + 1 subtask) = 50 rows.
+        var tasks = Enumerable
+            .Range(1, 25)
+            .Select(i => new TaskManager.BulkTaskItem { Task = $"T{i}", SubTasks = [$"S{i}"] })
+            .ToList();
+
+        var result = _taskManager.BulkInitialize(tasks).Text;
+
+        result.Should().NotContain("not listed");
+        result.Should().Contain("  - Task 25: T25");
+        result.Should().Contain("    - Task 25.1: S25");
+        result.Split('\n').Count(l => l.Contains("- Task ")).Should().Be(50);
+    }
+
+    /// <summary>
+    ///     Past the cap the tail is elided — and the elision NAMES its own size. A silent cap reads to
+    ///     the model as "that was everything", which is the same false-complete-list failure this whole
+    ///     change is about.
+    /// </summary>
+    [Fact]
+    public void BulkInitialize_PastTheRowCap_ElidesTheTailAndSaysHowMuchItHid()
+    {
+        // 26 tasks x (itself + 1 subtask) = 52 rows, 2 past the cap.
+        var tasks = Enumerable
+            .Range(1, 26)
+            .Select(i => new TaskManager.BulkTaskItem { Task = $"T{i}", SubTasks = [$"S{i}"] })
+            .ToList();
+
+        var result = _taskManager.BulkInitialize(tasks).Text;
+
+        // The header still carries the true totals, independently of the truncated listing.
+        result.Should().Contain("Added 26 task(s) and 26 subtask(s):");
+        result.Should().Contain("... 2 more row(s) not listed (50 of 52 shown). Use list-tasks to see them all.");
+        result.Split('\n').Count(l => l.Contains("- Task ")).Should().Be(50);
+
+        // The elided rows really are absent, not merely uncounted.
+        result.Should().NotContain("Task 26:");
+    }
+
+    private static int LeadingSpaces(string line) => line.Length - line.TrimStart(' ').Length;
+
     #endregion
 
     #region UpdateTask Tests

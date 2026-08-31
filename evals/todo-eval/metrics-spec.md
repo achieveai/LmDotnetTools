@@ -120,8 +120,10 @@ archived transcripts (the #617 baseline corpus predates the detector and has no 
 and because neither this oracle nor the C# harness reads structured logs. Three known gaps,
 all one-directional — they undercount, never overcount:
 
-1. A row minted by `bulk-initialize` as a **subtask** is never named in that tool's result text
-   (only main tasks are listed), so it never enters the ledger.
+1. A row minted by `bulk-initialize` as a **subtask**, in a transcript recorded before that tool
+   echoed its subtask rows (#634 R1). It now lists every row it creates, indented one level deeper
+   but in the same `- Task <id>:` shape both ledgers already match, so this gap is closed for
+   transcripts recorded after the change and remains open only for the archived corpus.
 2. A row minted in a process whose transcript is not in this conversations directory.
 3. A thread that starts from a rehydrated board — every id predating the transcript is unknown
    to the ledger. The server detector has no such gap: its ledger's unresolved entries ride the
