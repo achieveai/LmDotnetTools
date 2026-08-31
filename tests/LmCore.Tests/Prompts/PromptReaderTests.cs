@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Prompts;
@@ -97,5 +98,43 @@ public class PromptReaderTests
 
         // Act & Assert
         _ = Assert.Throws<InvalidOperationException>(() => _promptReader.GetPromptChain(promptName));
+    }
+
+    [Fact]
+    public void Constructor_PromptGroupWithAllNonVersionedKeys_DoesNotThrow_ExactKeyWorks_LatestNotFound()
+    {
+        // Arrange - a prompt group whose keys are all non-version strings, e.g. a domain-context
+        // lookup table keyed by exam name rather than "vX.Y" (real-world shape: ExamContext
+        // prompts keyed "NeetUG"/"NeetPG"). Before the FindLatestVersion guard in
+        // PromptReader.ParseYamlFile, this crashed the constructor with KeyNotFoundException from
+        // indexing versions[""], because FindLatestVersion returns "" when no key parses via
+        // Version.TryParse.
+        const string yaml = """
+            ExamContext:
+              NeetUG: "NEET UG context text."
+              NeetPG: "NEET PG context text."
+            """;
+
+        // Act
+        PromptReader? reader = null;
+        var constructionException = Record.Exception(() =>
+        {
+            using var stream = new MemoryStream(Encoding.UTF8.GetBytes(yaml));
+            reader = new PromptReader(stream);
+        });
+
+        // Assert - construction must not throw
+        Assert.Null(constructionException);
+        Assert.NotNull(reader);
+
+        // Exact-key lookup (the only supported lookup for a non-versioned group) works
+        var prompt = reader!.GetPrompt("ExamContext", "NeetUG");
+        Assert.Equal("NeetUG", prompt.Version);
+        Assert.Equal("NEET UG context text.", prompt.Value);
+
+        // "latest" was never registered for this group (guard skipped it), so requesting it
+        // via the default version parameter throws KeyNotFoundException rather than silently
+        // resolving to an arbitrary entry.
+        _ = Assert.Throws<KeyNotFoundException>(() => reader.GetPrompt("ExamContext"));
     }
 }

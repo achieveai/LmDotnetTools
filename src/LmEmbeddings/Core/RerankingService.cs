@@ -151,6 +151,19 @@ public class RerankingService : IRerankService, IDisposable
     }
 
     /// <summary>
+    ///     Approximate characters-per-token used to budget documents into batches that fit
+    ///     within the reranker model's combined (query + all documents) context window.
+    ///     The server enforces this on the whole request, not per document.
+    /// </summary>
+    private const double CharsPerTokenEstimate = 4.0;
+
+    /// <summary>
+    ///     Conservative token budget per rerank request, leaving headroom below typical
+    ///     8192-token reranker context limits for tokenizer estimation error and query tokens.
+    /// </summary>
+    private const int MaxTokensPerBatch = 6000;
+
+    /// <summary>
     ///     Reranks documents based on their relevance to the provided query
     /// </summary>
     /// <param name="query">The query to rank documents against</param>
@@ -171,40 +184,128 @@ public class RerankingService : IRerankService, IDisposable
         ArgumentNullException.ThrowIfNull(documents);
 
         var docList = documents.ToList();
-        return docList.Count == 0
-            ? throw new ArgumentException("Documents cannot be empty", nameof(documents))
-            : await ExecuteWithLinearRetryAsync(
-                async attemptNumber =>
+        if (docList.Count == 0)
+        {
+            throw new ArgumentException("Documents cannot be empty", nameof(documents));
+        }
+
+        var queryTokens = EstimateTokens(query);
+        var batches = BuildTokenBudgetBatches(docList, queryTokens);
+
+        if (batches.Count == 1)
+        {
+            return await RerankBatchAsync(query, docList, cancellationToken);
+        }
+
+        _logger.LogDebug(
+            "Splitting {DocumentCount} documents into {BatchCount} rerank batches to stay within the model's context window",
+            docList.Count,
+            batches.Count
+        );
+
+        var allResults = new List<RankedDocument>();
+        foreach (var batch in batches)
+        {
+            var batchDocs = batch.Select(originalIndex => docList[originalIndex]).ToList();
+            var batchResults = await RerankBatchAsync(query, batchDocs, cancellationToken);
+
+            allResults.AddRange(
+                batchResults.Select(r => new RankedDocument
                 {
-                    var requestPayload = new RerankRequest
-                    {
-                        Model = _model,
-                        Query = query,
-                        Documents = [.. documents],
-                        TopN = null, // Return all documents ranked
-                    };
-
-                    var json = JsonSerializer.Serialize(requestPayload);
-                    var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-                    var response = await _httpClient.PostAsync("/v1/rerank", content, cancellationToken);
-
-                    if (response.IsSuccessStatusCode)
-                    {
-                        var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
-                        return ParseResponse(responseJson, docList);
-                    }
-
-                    if (!IsRetryableStatusCode(response.StatusCode))
-                    {
-                        _ = response.EnsureSuccessStatusCode(); // This will throw
-                    }
-
-                    throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
-                },
-                cancellationToken
+                    Index = batch[r.Index],
+                    Score = r.Score,
+                    Document = r.Document,
+                })
             );
+        }
+
+        allResults.Sort((a, b) => b.Score.CompareTo(a.Score));
+        return allResults;
     }
+
+    /// <summary>
+    ///     Sends a single rerank request for a batch of documents that already fits within the
+    ///     model's context window.
+    /// </summary>
+    private async Task<List<RankedDocument>> RerankBatchAsync(
+        string query,
+        IList<string> docList,
+        CancellationToken cancellationToken
+    )
+    {
+        return await ExecuteWithLinearRetryAsync(
+            async attemptNumber =>
+            {
+                var requestPayload = new RerankRequest
+                {
+                    Model = _model,
+                    Query = query,
+                    Documents = [.. docList],
+                    TopN = docList.Count, // Return all documents ranked
+                };
+
+                var json = JsonSerializer.Serialize(requestPayload);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+                var response = await _httpClient.PostAsync("/v1/rerank", content, cancellationToken);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
+                    return ParseResponse(responseJson, docList);
+                }
+
+                if (!IsRetryableStatusCode(response.StatusCode))
+                {
+                    _ = response.EnsureSuccessStatusCode(); // This will throw
+                }
+
+                throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
+            },
+            cancellationToken
+        );
+    }
+
+    /// <summary>
+    ///     Groups document indices into batches whose estimated combined token count (plus the
+    ///     query) stays within <see cref="MaxTokensPerBatch" />. A single document that alone
+    ///     exceeds the budget is still sent by itself, since it cannot be split further.
+    /// </summary>
+    private static List<List<int>> BuildTokenBudgetBatches(IReadOnlyList<string> docList, int queryTokens)
+    {
+        // Floor at 1 rather than at the first document's size: keying the floor off docList[0]
+        // raises the ceiling for *every* batch whenever that one document happens to be large.
+        // An oversized document is already sent by itself, because the split below only fires
+        // once the current batch is non-empty.
+        var budget = Math.Max(MaxTokensPerBatch - queryTokens, 1);
+        var batches = new List<List<int>>();
+        var currentBatch = new List<int>();
+        var currentTokens = 0;
+
+        for (var i = 0; i < docList.Count; i++)
+        {
+            var docTokens = EstimateTokens(docList[i]);
+
+            if (currentBatch.Count > 0 && currentTokens + docTokens > budget)
+            {
+                batches.Add(currentBatch);
+                currentBatch = [];
+                currentTokens = 0;
+            }
+
+            currentBatch.Add(i);
+            currentTokens += docTokens;
+        }
+
+        if (currentBatch.Count > 0)
+        {
+            batches.Add(currentBatch);
+        }
+
+        return batches;
+    }
+
+    private static int EstimateTokens(string text) => (int)Math.Ceiling(text.Length / CharsPerTokenEstimate);
 
     /// <summary>
     ///     Executes an operation with linear retry logic (500ms × retryCount)

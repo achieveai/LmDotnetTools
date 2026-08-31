@@ -55,7 +55,12 @@ public record AnthropicThinking
 /// </summary>
 public record AnthropicOutputConfig
 {
-    /// <summary>Reasoning effort — e.g. <c>"low"</c>, <c>"medium"</c>, <c>"high"</c>.</summary>
+    /// <summary>
+    ///     Reasoning effort — e.g. <c>"low"</c>, <c>"medium"</c>, <c>"high"</c>, <c>"max"</c>.
+    ///     Defaults to <c>"high"</c>: that is the depth DeepSeek's Anthropic-compatible endpoint
+    ///     assumes for a regular request, so an <see cref="AnthropicOutputConfig" /> constructed
+    ///     without an explicit effort asks for the same thing rather than sending <c>effort: null</c>.
+    /// </summary>
     [JsonPropertyName("effort")]
-    public string? Effort { get; init; }
+    public string? Effort { get; init; } = "high";
 }

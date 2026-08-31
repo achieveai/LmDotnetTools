@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Net;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -339,6 +341,107 @@ public class RerankingServiceTests
         Debug.WriteLine($"Non-retryable error failed after {attemptCount} attempt(s)");
     }
 
+    [Fact]
+    [Trait("Category", "TokenBudgetBatching")]
+    public async Task RerankAsync_WithDocumentsExceedingTokenBudget_SplitsIntoMultipleBatchesAndRemapsIndices()
+    {
+        Debug.WriteLine("Testing token-budget multi-batch splitting and index re-mapping");
+
+        // Arrange - 10 documents of ~1000 estimated tokens each (4000 chars / 4 chars-per-token).
+        // With MaxTokensPerBatch=6000 and a short query (~3 tokens), the budget is ~5997 tokens,
+        // which fits exactly 5 documents per batch => this must produce exactly 2 batches.
+        var documentsList = Enumerable.Range(0, 10).Select(i => BuildMarkerDocument(i)).ToList();
+        var requestCount = 0;
+
+        // Each fake server response derives its score from the MARKER embedded in the document
+        // text itself (not from the document's position within the batch), so a passing test
+        // proves the batch-local RerankResult.Index was correctly re-mapped back to the
+        // original document list position via `batch[r.Index]`.
+        var fakeHandler = new FakeHttpMessageHandler(
+            async (request, cancellationToken) =>
+            {
+                requestCount++;
+
+                var bodyJson = await request.Content!.ReadAsStringAsync(cancellationToken);
+                using var bodyDoc = JsonDocument.Parse(bodyJson);
+                var documentsElement = bodyDoc.RootElement.GetProperty("documents");
+
+                var results = new List<object>();
+                var localIndex = 0;
+                foreach (var documentElement in documentsElement.EnumerateArray())
+                {
+                    var marker = ParseMarker(documentElement.GetString()!);
+                    results.Add(new { index = localIndex, relevance_score = (double)(100 - marker) });
+                    localIndex++;
+                }
+
+                var responseJson = JsonSerializer.Serialize(new { id = Guid.NewGuid().ToString(), results });
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(responseJson, Encoding.UTF8, "application/json"),
+                };
+            }
+        );
+        using var service = CreateRerankingService(fakeHandler);
+
+        // Act
+        var result = await service.RerankAsync("test query", documentsList);
+
+        // Assert
+        Assert.Equal(documentsList.Count, result.Count);
+        Assert.Equal(2, requestCount); // Confirms the documents were actually split into 2 batches
+
+        // Sorted score-descending
+        for (var i = 1; i < result.Count; i++)
+        {
+            Assert.True(result[i - 1].Score >= result[i].Score, "Merged results should be sorted score-descending");
+        }
+
+        // Every result's Index must refer to the ORIGINAL document list position, and the
+        // score/document must correspond to that exact original document (pins batch[r.Index]).
+        foreach (var r in result)
+        {
+            Assert.InRange(r.Index, 0, documentsList.Count - 1);
+            Assert.Equal(documentsList[r.Index], r.Document);
+
+            var marker = ParseMarker(r.Document!);
+            Assert.Equal(r.Index, marker); // Marker was assigned equal to the original index
+            Assert.Equal(100 - marker, r.Score);
+        }
+
+        // Indices form a permutation of the original document positions (no duplicates/drops)
+        Assert.Equal(documentsList.Count, result.Select(r => r.Index).Distinct().Count());
+
+        Debug.WriteLine($"Multi-batch rerank produced {result.Count} results across {requestCount} HTTP requests");
+    }
+
+    [Fact]
+    [Trait("Category", "TokenBudgetBatching")]
+    public async Task RerankAsync_WithOversizedQuery_FloorsBudgetToOneAndCompletesWithoutThrowing()
+    {
+        Debug.WriteLine("Testing oversized query forces per-document batches via the Math.Max budget floor");
+
+        // Arrange - query alone is estimated at >= 6000 tokens (24,000 chars / 4), so
+        // MaxTokensPerBatch - queryTokens would be <= 0; the Math.Max(..., 1) floor must kick in
+        // so batching still proceeds (one document per batch) instead of throwing/looping forever.
+        var longQuery = new string('q', 24_000);
+        var docs = new[] { "doc-a", "doc-b", "doc-c" };
+
+        // Each batch contains exactly one document, so a response with a single result works for
+        // every request regardless of how many requests are made.
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateValidRerankResponse(1));
+        using var service = CreateRerankingService(fakeHandler);
+
+        // Act
+        var result = await service.RerankAsync(longQuery, docs);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(docs.Length, result.Count);
+
+        Debug.WriteLine($"Oversized-query rerank completed with {result.Count} results");
+    }
+
     // Helper Methods
     private RerankingService CreateRerankingService(
         FakeHttpMessageHandler httpHandler,
@@ -359,6 +462,28 @@ public class RerankingServiceTests
             httpClient
         );
         return service;
+    }
+
+    /// <summary>
+    ///     Builds a document of exactly <paramref name="totalLength" /> characters whose content
+    ///     begins with a parseable "MARKER_nnnn" tag identifying its original index. Used so a
+    ///     fake batch handler can compute a deterministic score from document content alone,
+    ///     independent of the document's position within its batch.
+    /// </summary>
+    private static string BuildMarkerDocument(int marker, int totalLength = 4000)
+    {
+        var markerText = $"MARKER_{marker:D4}";
+        return markerText + new string('x', totalLength - markerText.Length);
+    }
+
+    private static int ParseMarker(string document)
+    {
+        var match = Regex.Match(document, "^MARKER_(\\d+)");
+        Assert.True(
+            match.Success,
+            $"Document did not contain a MARKER tag: {document[..Math.Min(20, document.Length)]}"
+        );
+        return int.Parse(match.Groups[1].Value);
     }
 
     private static string CreateValidRerankResponse(int documentCount)

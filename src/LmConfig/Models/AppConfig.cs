@@ -141,10 +141,20 @@ public record AppConfig
 public record ProviderConnectionInfo
 {
     /// <summary>
-    ///     The endpoint URL for this provider's API.
+    ///     The endpoint URL for this provider's API. Used as a fallback when
+    ///     <see cref="EndpointUrlEnvironmentVariable" /> is unset or empty.
     /// </summary>
     [JsonPropertyName("endpoint_url")]
     public required string EndpointUrl { get; init; }
+
+    /// <summary>
+    ///     Optional environment variable name holding the endpoint URL. When set
+    ///     and non-empty, its value overrides <see cref="EndpointUrl" /> (mirrors
+    ///     <see cref="ApiKeyEnvironmentVariable" /> for the key). Lets a provider
+    ///     point at a self-hosted or compatible endpoint without editing config.
+    /// </summary>
+    [JsonPropertyName("endpoint_url_environment_variable")]
+    public string? EndpointUrlEnvironmentVariable { get; init; }
 
     /// <summary>
     ///     Environment variable name containing the API key for this provider.
@@ -189,6 +199,25 @@ public record ProviderConnectionInfo
     public string? GetApiKey()
     {
         return Environment.GetEnvironmentVariable(ApiKeyEnvironmentVariable);
+    }
+
+    /// <summary>
+    ///     Resolves the effective endpoint URL: the value of
+    ///     <see cref="EndpointUrlEnvironmentVariable" /> when set and non-empty,
+    ///     otherwise the literal <see cref="EndpointUrl" />.
+    /// </summary>
+    public string GetEndpointUrl()
+    {
+        if (!string.IsNullOrWhiteSpace(EndpointUrlEnvironmentVariable))
+        {
+            var fromEnv = Environment.GetEnvironmentVariable(EndpointUrlEnvironmentVariable);
+            if (!string.IsNullOrWhiteSpace(fromEnv))
+            {
+                return fromEnv;
+            }
+        }
+
+        return EndpointUrl;
     }
 
     /// <summary>

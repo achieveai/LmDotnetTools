@@ -18,6 +18,9 @@
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.3.0" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="McpIntegrationTests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
   </ItemGroup>
 </Project>

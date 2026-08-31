@@ -707,7 +707,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// <summary>
     ///     Extracts image content blocks from an MCP tool response, detecting MIME types from bytes.
     /// </summary>
-    private static List<LmCore.Messages.ToolResultContentBlock> ExtractImageBlocks(
+    internal static List<LmCore.Messages.ToolResultContentBlock> ExtractImageBlocks(
         CallToolResult response,
         string toolName,
         ILogger<McpClientFunctionProvider> logger
@@ -731,11 +731,36 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         var imageIndex = 0;
         foreach (var content in response.Content.Where(c => c?.Type == "image"))
         {
-            if (content is ImageContentBlock imgBlock && !imgBlock.Data.IsEmpty)
+            if (content is not ImageContentBlock imgBlock)
             {
-                try
+                logger.LogDebug(
+                    "Skipping content block declared as image but not an ImageContentBlock: ToolName={ToolName}, ImageIndex={ImageIndex}, BlockType={BlockType}",
+                    toolName,
+                    imageIndex,
+                    content?.GetType().Name ?? "null"
+                );
+
+                imageIndex++;
+                continue;
+            }
+
+            try
+            {
+                // Read the decoded bytes directly. ImageContentBlock.Data holds base64-encoded
+                // UTF-8 text, so probing it for emptiness would force a needless base64 encode of
+                // the whole image; DecodedData is the form this method needs anyway.
+                var dataSpan = imgBlock.DecodedData.Span;
+
+                if (dataSpan.IsEmpty)
                 {
-                    var dataSpan = imgBlock.Data.Span;
+                    logger.LogDebug(
+                        "Skipping image block with missing data: ToolName={ToolName}, ImageIndex={ImageIndex}",
+                        toolName,
+                        imageIndex
+                    );
+                }
+                else
+                {
                     var detectedMimeType = DetectImageMimeType(dataSpan, imgBlock.MimeType, logger);
 
                     if (detectedMimeType != imgBlock.MimeType)
@@ -768,23 +793,14 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         }
                     );
                 }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(
-                        ex,
-                        "Failed to process image from MCP response: ToolName={ToolName}, ImageIndex={ImageIndex}",
-                        toolName,
-                        imageIndex
-                    );
-                }
             }
-            else
+            catch (Exception ex)
             {
-                logger.LogDebug(
-                    "Skipping image block with missing data: ToolName={ToolName}, ImageIndex={ImageIndex}, IsImageContentBlock={IsImageContentBlock}",
+                logger.LogWarning(
+                    ex,
+                    "Failed to process image from MCP response: ToolName={ToolName}, ImageIndex={ImageIndex}",
                     toolName,
-                    imageIndex,
-                    content is ImageContentBlock
+                    imageIndex
                 );
             }
 
