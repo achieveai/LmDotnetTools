@@ -234,6 +234,8 @@ public sealed class SystemPromptCompositionTests
         prompt
             .Should()
             .Contain("Your workspace directory is:", "the sandbox workspace enrichment must reach the model");
+        prompt.Should().Contain("KnowledgeBase/", "issue #648: the fixed KB navigation must reach the primary");
+        prompt.Should().Contain("KnowledgeBase/_toc.md", "issue #648: the fixed KB navigation must reach the primary");
         prompt.TrimEnd().Should().EndWith(AppendixMarker, "the daemon's appendix is composed last");
 
         // ...and in exactly the pinned order: date + mode prompt + workspace enrichment + appendix.

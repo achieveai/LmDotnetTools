@@ -275,6 +275,28 @@ public sealed class ProgramModeSubAgentPromptTests
         }
     }
 
+    /// <summary>
+    /// Issue #648: every sub-agent template spawned in the <c>code-review-daemon</c> mode must carry
+    /// the fixed KnowledgeBase navigation paragraph appended to the mode's real, shipped
+    /// <c>subAgentPrompt:</c> in <c>Prompts.yaml</c>. Loads the mode from the shipped yaml (not the
+    /// synthetic <see cref="Profile"/> helper) so this fact is pinned to the actual fragment text,
+    /// not just the generic fold mechanism already covered above.
+    /// </summary>
+    [Fact]
+    public async Task CodeReviewDaemonMode_SubAgentTemplates_CarryFixedKnowledgeBaseNavigation()
+    {
+        var mode = SystemChatModes.GetById(SystemChatModes.CodeReviewDaemonModeId)!.ToAgentProfile();
+
+        var options = await BuildAsync(mode);
+
+        options.Should().NotBeNull();
+        foreach (var (_, template) in options!.Templates)
+        {
+            template.SystemPrompt.Should().Contain("KnowledgeBase/");
+            template.SystemPrompt.Should().Contain("KnowledgeBase/_toc.md");
+        }
+    }
+
     [Fact]
     public void ToAgentProfile_CarriesFragmentAndPlacement()
     {

@@ -299,6 +299,11 @@ chatModes:
 
       IMPORTANT: Keep ToDos up to date. It allows the team to see each other's progress.
       </mode_of_operation>
+
+      Review navigation: treat the workspace directory above as the workspace root. Consult
+      KnowledgeBase/ when prior project knowledge could change the review. Start with
+      KnowledgeBase/_toc.md when it exists. These are fixed navigation paths, not a claim that any
+      entry is relevant.
     subAgentPromptPlacement: prepend
     # Every sub-agent spawned in this mode is guaranteed the board + Agent tools even when its
     # template declares a restricted `tools:` list (#623: 4 of 8 code-reviewer templates could not
