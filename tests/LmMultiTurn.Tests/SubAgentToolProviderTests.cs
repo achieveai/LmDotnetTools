@@ -175,6 +175,34 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         desc.Should().Contain("auto-derived");
     }
 
+    /// <summary>
+    /// #641 F-005. This description is the only half of #638 the MODEL reads, on every spawn, and so
+    /// the only half with a path to PREVENTING the over-grant rather than reporting it afterwards.
+    /// The warning in <c>SubAgentManager</c> fires after the child already holds the tools the caller
+    /// meant to withhold. A silent wording regression here would put the whole class back, so the
+    /// three load-bearing claims are pinned: exact names only, no wildcard/group language on this
+    /// side, and the composition that replaces it.
+    /// </summary>
+    [Fact]
+    public void AgentDescriptor_RemoveToolsParameter_SaysExactNamesOnly_AndNamesTheAddToolsStarComposition()
+    {
+        // Act
+        var agent = _provider!.GetFunctions().First(f => f.Contract.Name == "Agent");
+        var removeTools = agent.Contract.Parameters!.First(p => p.Name == "remove_tools");
+
+        // Assert
+        var desc = removeTools.Description!;
+        desc.Should().Contain("EXACT tool names");
+        desc.Should()
+            .Contain("NO wildcard or group pattern", "a model that thinks 'tasks:*' works here silently over-grants");
+        desc.Should().Contain("'*'").And.Contain("'tasks:*'");
+        desc.Should()
+            .Contain(
+                "add_tools '*'",
+                "'everything except a few' is only expressible as add_tools '*' plus exact names"
+            );
+    }
+
     [Fact]
     public void SendMessageDescriptor_PrefersContinuationOverSpawningANewAgent()
     {
