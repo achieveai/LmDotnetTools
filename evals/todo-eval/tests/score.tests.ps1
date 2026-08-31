@@ -15,6 +15,8 @@ Coverage:
   clear, never as a recorded block; the []-form clear stays covered by complete-run.
 - B2: an empty conversations dir is invalid with a distinct misconfiguration reason.
 - F4: is_error:true alone marks a result as an error (union with the "Error:" prefix).
+- V7/V8: the board ledger accepts both indents bulk-initialize's echo emits (2-space main
+  rows, 4-space subtask rows), and still invents nothing the echo did not name.
 #>
 [CmdletBinding()]
 param()
@@ -283,6 +285,36 @@ try {
     $vm = Invoke-VScore 'vm-conversations' ($mint + $probes)
     Assert ($vm.boardIdVanished.count -eq 3) 'V6: without the delete, the deleted-id probe DOES count as a vanish'
     Assert (@($vm.boardIdVanished.events | ForEach-Object { $_.taskId }) -contains '2') 'V6: and the id it names is 2'
+
+    # V7/V8: the indents bulk-initialize's echo actually uses (#634 R1). Its main-task rows sit at
+    # two spaces and its subtask rows at four, and this ledger's regex has to accept BOTH. Pinned
+    # through a real scoring run rather than by reading the pattern: the C# BoardIdLedger has a
+    # mutation-proved twin of this check, and without one here the PowerShell regex could be
+    # narrowed to either indent alone and every existing check would stay green.
+    $bulkEcho = @(
+        'Added 2 task(s) and 3 subtask(s):'
+        '  - Task 1: Alpha'
+        '    - Task 1.1: Alpha one'
+        '    - Task 1.2: Alpha two'
+        '  - Task 2: Beta'
+        '    - Task 2.1: Beta one'
+    ) -join "`n"
+
+    $bulkMint = New-VCall 'bulk-initialize' '{"tasks":[]}' $bulkEcho
+    $bulkProbes = @()
+    $bulkProbes += New-VCall 'get-task' '{"taskId":"1.1"}' "Error: Task '1.1' not found."
+    $bulkProbes += New-VCall 'get-task' '{"taskId":"2"}' "Error: Task '2' not found."
+    $bulkProbes += New-VCall 'get-task' '{"taskId":"2.2"}' "Error: Task '2.2' not found."
+
+    $vb = Invoke-VScore 'vb-conversations' ($bulkMint + $bulkProbes)
+    $vbIds = @($vb.boardIdVanished.events | ForEach-Object { $_.taskId })
+
+    Assert ($vbIds -contains '1.1') 'V7: a subtask row the echo names at a 4-space indent enters the ledger'
+    Assert ($vbIds -contains '2') 'V7: and a main-task row at a 2-space indent still does'
+    Assert ($vb.boardIdVanished.count -eq 2) 'V7: exactly those two probes are reported'
+
+    # The paired negative, on the SAME run, so the positives above cannot be an unreached path.
+    Assert (-not ($vbIds -contains '2.2')) 'V8: a row the echo never named is NOT in the ledger, so its not-found stays a typo'
 }
 finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

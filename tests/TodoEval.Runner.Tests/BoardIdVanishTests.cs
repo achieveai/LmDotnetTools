@@ -104,8 +104,9 @@ public class BoardIdVanishTests
 
     /// <summary>
     ///     bulk-initialize now echoes its subtask rows too (#634 R1), indented one level deeper but in
-    ///     the same shape, so the ledger picks them up with no regex change and one of its three
-    ///     documented undercount gaps closes for transcripts recorded from here on.
+    ///     the same shape, so the ledger picks them up with no regex change. That NARROWS the first of
+    ///     its three documented undercount gaps rather than closing it: rows past the tool's echo cap
+    ///     are still never named, on new transcripts as much as archived ones.
     /// </summary>
     [Fact]
     public void Ledger_TakesTheSubtaskIdsBulkInitializeNowEchoes()
