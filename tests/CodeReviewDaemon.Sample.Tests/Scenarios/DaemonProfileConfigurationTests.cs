@@ -29,6 +29,35 @@ public sealed class DaemonProfileConfigurationTests
     }
 
     [Fact]
+    public void The_achieveai_profile_enables_polling_of_the_ClaudePlugins_repo()
+    {
+        // #653: the cross-owner PrPollTargetBuilder test proves the builder can turn a
+        // "gautam-achieveai/ClaudePlugins" entry into a target — it never reads this file, so it stays green
+        // even if the entry here is missing or renamed. This is the assertion that actually pins the shipped
+        // config: without it, deleting the entry from appsettings.achieveai.json breaks nothing in the suite.
+        using var document = JsonDocument.Parse(File.ReadAllText(LocateProfile("appsettings.achieveai.json")));
+        var enabledRepos = document
+            .RootElement.GetProperty("CodeReviewDaemon")
+            .GetProperty("EnabledRepos")
+            .EnumerateArray()
+            .Select(element => element.GetString())
+            .ToList();
+
+        enabledRepos
+            .Should()
+            .Contain(
+                "gautam-achieveai/ClaudePlugins",
+                "the achieveai daemon must monitor pull requests on gautam-achieveai/ClaudePlugins per issue #653"
+            );
+        enabledRepos
+            .Should()
+            .Contain(
+                ["achieveai/LmDotnetTools", "achieveai/SandboxedOstoolsMcpServer"],
+                "issue #653 adds an entry rather than replacing the existing ones"
+            );
+    }
+
+    [Fact]
     public void The_shipped_settings_state_the_stranded_run_knobs_at_their_defaults()
     {
         using var document = JsonDocument.Parse(File.ReadAllText(LocateProfile("appsettings.json")));
