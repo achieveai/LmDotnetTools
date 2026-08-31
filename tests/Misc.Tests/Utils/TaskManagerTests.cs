@@ -434,16 +434,29 @@ public class TaskManagerTests
     }
 
     /// <summary>
-    ///     Concurrency-relevant: many attempts to complete the parent race a separate thread that
-    ///     is finishing the one remaining open child. Whichever ordering wins, the guard and the
-    ///     completion it gates share <c>_sync</c>, so it must never observe a parent that completed
-    ///     while a descendant was left open — regardless of how the race actually interleaves.
+    ///     Concurrency-relevant: several threads race the guard while the last child is
+    ///     deterministically still <c>InProgress</c> — nothing else is touching it yet, rather
+    ///     than hoping a separate finisher thread loses a race. Every attempt in that phase must
+    ///     be refused with <c>task_has_incomplete_descendants</c> and the parent must stay open.
+    ///     Only after the child is explicitly finished does a second wave of racing attempts get
+    ///     to succeed, and — because the guard and the completion it gates share <c>_sync</c> —
+    ///     exactly one of them wins it.
+    ///     <para>
+    ///         The prior version of this test raced a "finish the child" thread against the
+    ///         completers behind a single gate: nothing stopped every completer from running
+    ///         before the finisher, in which case the guard was never exercised against an open
+    ///         descendant and the test passed even against a pre-change implementation with no
+    ///         guard at all. Splitting the race into two deterministic phases — attempt while
+    ///         open, then attempt while closed — closes that hole. All waits below are bounded so
+    ///         a scheduling or setup failure fails the test instead of hanging the suite.
+    ///     </para>
     /// </summary>
     [Fact]
-    public async Task UpdateTask_CompletingParentConcurrentlyWithFinishingLastChild_NeverCompletesWithAnOpenDescendant()
+    public async Task UpdateTask_CompletingParentWhileLastChildIsInProgress_IsRefusedUntilChildFinishes()
     {
         // Arrange
         var manager = new TaskManager();
+        var bound = TimeSpan.FromSeconds(30);
         manager.AddTask("Parent"); // 1
         for (var i = 0; i < 5; i++)
         {
@@ -456,62 +469,82 @@ public class TaskManagerTests
         manager.ClaimTask("1.6", "child-worker");
         manager.ClaimTask("1", "lead");
 
+        // Act, phase 1 - race the guard while the last child is definitely InProgress: nothing
+        // in this phase ever touches it, so every attempt must observe the same open descendant.
+        var openResults = new ConcurrentBag<FunctionResult>();
+        using (var startingGun = new ManualResetEventSlim(false))
+        {
+            var openAttempts = Enumerable
+                .Range(0, 8)
+                .Select(_ =>
+                    Task.Run(() =>
+                    {
+                        startingGun.Wait(bound).Should().BeTrue("the starting gun must fire promptly");
+                        openResults.Add(manager.UpdateTask("1", "completed"));
+                    })
+                )
+                .ToArray();
+
+            startingGun.Set();
+            await Task.WhenAll(openAttempts).WaitAsync(bound);
+        }
+
+        // Assert, phase 1 - every attempt was refused for the same reason, and neither the
+        // parent nor the still-open child moved.
+        openResults.Should().HaveCount(8);
+        openResults.Should().OnlyContain(r => r.IsError && r.ErrorCode == "task_has_incomplete_descendants");
+
+        var parentWhileChildOpen = manager.GetTasks().Single();
+        parentWhileChildOpen.Status.Should().NotBe(TaskManager.TaskStatus.Completed);
+        parentWhileChildOpen.SubTasks.Single(t => t.Id == "1.6").Status.Should().Be(TaskManager.TaskStatus.InProgress);
+
+        // Act, phase 2 - finish the last child, then race the guard again; it must now let
+        // exactly one attempt through.
+        var finishResult = manager.UpdateTask("1.6", "completed");
+        finishResult.IsError.Should().BeFalse();
+
         var successes = new ConcurrentBag<int>();
         var failures = new ConcurrentBag<Exception>();
-        using var startingGun = new ManualResetEventSlim(false);
-
-        // Act
-        var finisher = Task.Run(() =>
+        using (var secondGun = new ManualResetEventSlim(false))
         {
-            startingGun.Wait();
-            _ = manager.UpdateTask("1.6", "completed");
-        });
-
-        var completers = Enumerable
-            .Range(0, 8)
-            .Select(i =>
-                Task.Run(() =>
-                {
-                    startingGun.Wait();
-                    try
+            var closedAttempts = Enumerable
+                .Range(0, 8)
+                .Select(i =>
+                    Task.Run(() =>
                     {
-                        var result = manager.UpdateTask("1", "completed");
-                        if (!result.IsError)
+                        secondGun.Wait(bound).Should().BeTrue("the second starting gun must fire promptly");
+                        try
                         {
-                            successes.Add(i);
+                            var result = manager.UpdateTask("1", "completed");
+                            if (!result.IsError)
+                            {
+                                successes.Add(i);
+                            }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        failures.Add(ex);
-                    }
-                })
-            )
-            .ToArray();
+                        catch (Exception ex)
+                        {
+                            failures.Add(ex);
+                        }
+                    })
+                )
+                .ToArray();
 
-        startingGun.Set();
-        await Task.WhenAll(completers);
-        await finisher;
+            secondGun.Set();
+            await Task.WhenAll(closedAttempts).WaitAsync(bound);
+        }
 
-        // Assert - no exceptions, at most one caller ever sees the parent flip to Completed, and
-        // whenever one did, every descendant it walked was already terminal.
+        // Assert, phase 2 - no exceptions, exactly one caller wins the completion, and the
+        // parent now shows every descendant terminal.
         failures.Should().BeEmpty();
-        successes.Count.Should().BeLessThanOrEqualTo(1);
+        successes.Count.Should().Be(1);
 
-        var parent = manager.GetTasks().Single();
-        if (successes.Count == 1)
-        {
-            parent.Status.Should().Be(TaskManager.TaskStatus.Completed);
-            parent
-                .SubTasks.Should()
-                .OnlyContain(t =>
-                    t.Status == TaskManager.TaskStatus.Completed || t.Status == TaskManager.TaskStatus.Removed
-                );
-        }
-        else
-        {
-            parent.Status.Should().NotBe(TaskManager.TaskStatus.Completed);
-        }
+        var parentAfterCompletion = manager.GetTasks().Single();
+        parentAfterCompletion.Status.Should().Be(TaskManager.TaskStatus.Completed);
+        parentAfterCompletion
+            .SubTasks.Should()
+            .OnlyContain(t =>
+                t.Status == TaskManager.TaskStatus.Completed || t.Status == TaskManager.TaskStatus.Removed
+            );
     }
 
     #endregion
