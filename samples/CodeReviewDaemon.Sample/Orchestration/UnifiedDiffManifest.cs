@@ -30,8 +30,11 @@ internal enum DiffLineKind
 /// side (nothing to point at pre-image) or a pure-deletion hunk's new side.</param>
 internal sealed record LineRange(int Start, int Count)
 {
-    /// <summary>Last line number the range covers. Meaningless (and never read) when <see cref="Count"/> is 0.</summary>
-    public int End => Start + Count - 1;
+    /// <summary>Last line number the range covers. Meaningless (and never read) when <see cref="Count"/> is 0.
+    /// Computed in <c>long</c> and clamped rather than left to wrap: <see cref="Start"/>/<see cref="Count"/>
+    /// are validated at every construction site this parser uses, but a defensive endpoint keeps this type
+    /// from silently reporting a wrapped (negative) end if that ever stops being true (F-001).</summary>
+    public int End => Count > 0 ? (int)Math.Min((long)Start + Count - 1, int.MaxValue) : Start - 1;
 
     /// <summary>Whether <paramref name="line"/> falls inside this range. Always false when <see cref="Count"/> is 0.</summary>
     public bool Contains(int line) => Count > 0 && line >= Start && line <= End;
@@ -148,15 +151,20 @@ internal sealed record DiffFileEntry(
 internal sealed record DiffManifest(string? BaseSha, string? HeadSha, IReadOnlyList<DiffFileEntry> Files)
 {
     /// <summary>
-    /// Finds the file entry <paramref name="path"/> refers to, or null when this diff never touched it.
+    /// Finds the file entry <paramref name="path"/> refers to, or null when this diff never touched it, or
+    /// when more than one file entry could plausibly be the one <paramref name="path"/> means.
     /// <para>
-    /// Tries an exact match (post-image path, then pre-image path) first, then falls back to a path-suffix
-    /// match at a path-segment boundary in either direction — the same accommodation
-    /// <see cref="ReviewFindingReconciler"/> makes, for the same reason: a finding and this diff can each be
-    /// written relative to a different root (repo-relative against submodule-relative) and still be talking
-    /// about the same file. The fallback is a best-effort, first-match convenience and is deliberately not
-    /// exhaustive-checked for ambiguity — a corpus where two files share a suffix is rare enough that a wrong
-    /// join here is an acceptable cost against parsing every citation twice.
+    /// Three tiers, each tried only if the previous one found nothing: an exact, case-sensitive path match
+    /// (post-image path, then pre-image path); failing that, a case-insensitive exact match, but only when
+    /// exactly one file qualifies — a case-sensitive repository can legitimately hold both <c>Foo.cs</c> and
+    /// <c>foo.cs</c>, and picking whichever one iteration happens to reach first would silently pull evidence
+    /// from the wrong file; failing that, the same path-suffix-at-a-segment-boundary fallback
+    /// <see cref="ReviewFindingReconciler"/> uses — a finding and this diff can each be written relative to a
+    /// different root — again only when exactly one file qualifies.
+    /// </para>
+    /// <para>
+    /// A match is authoritative only when it is unique. Two files that could each plausibly be the citation's
+    /// target is not a coin a citation check gets to flip — it is treated the same as no match at all.
     /// </para>
     /// </summary>
     public DiffFileEntry? FindFile(string? path)
@@ -167,37 +175,36 @@ internal sealed record DiffManifest(string? BaseSha, string? HeadSha, IReadOnlyL
         }
 
         var normalized = NormalizePath(path);
-        foreach (var file in Files)
+
+        var exactMatches = Files.Where(f => IsExactPathMatch(f, normalized, StringComparison.Ordinal)).ToList();
+        if (exactMatches.Count > 0)
         {
-            if (
-                string.Equals(file.Path, normalized, StringComparison.OrdinalIgnoreCase)
-                || (
-                    file.OldPath is not null
-                    && string.Equals(file.OldPath, normalized, StringComparison.OrdinalIgnoreCase)
-                )
-            )
-            {
-                return file;
-            }
+            return exactMatches.Count == 1 ? exactMatches[0] : null;
         }
 
-        foreach (var file in Files)
+        var caseInsensitiveMatches = Files
+            .Where(f => IsExactPathMatch(f, normalized, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (caseInsensitiveMatches.Count > 0)
         {
-            if (
-                IsPathSuffix(file.Path, normalized)
-                || IsPathSuffix(normalized, file.Path)
-                || (
-                    file.OldPath is not null
-                    && (IsPathSuffix(file.OldPath, normalized) || IsPathSuffix(normalized, file.OldPath))
-                )
-            )
-            {
-                return file;
-            }
+            return caseInsensitiveMatches.Count == 1 ? caseInsensitiveMatches[0] : null;
         }
 
-        return null;
+        var suffixMatches = Files.Where(f => IsSuffixPathMatch(f, normalized)).ToList();
+        return suffixMatches.Count == 1 ? suffixMatches[0] : null;
     }
+
+    private static bool IsExactPathMatch(DiffFileEntry file, string normalized, StringComparison comparison) =>
+        string.Equals(file.Path, normalized, comparison)
+        || (file.OldPath is not null && string.Equals(file.OldPath, normalized, comparison));
+
+    private static bool IsSuffixPathMatch(DiffFileEntry file, string normalized) =>
+        IsPathSuffix(file.Path, normalized)
+        || IsPathSuffix(normalized, file.Path)
+        || (
+            file.OldPath is not null
+            && (IsPathSuffix(file.OldPath, normalized) || IsPathSuffix(normalized, file.OldPath))
+        );
 
     private static string NormalizePath(string raw)
     {
@@ -351,7 +358,13 @@ internal static partial class UnifiedDiffParser
                 continue;
             }
 
-            if (line.StartsWith("--- ", StringComparison.Ordinal))
+            // Gated on `hunk is null`: once a hunk is active, a body line whose CONTENT happens to start
+            // with "-- " or "++ " renders as "--- "/"+++ " once its own diff marker is prepended (e.g. a
+            // deleted line reading "-- config" becomes "--- config"). Recognising these as file headers
+            // unconditionally would drop that line from the hunk and could stomp the file's path (F-002) —
+            // so file-header recognition is restricted to the pre-hunk state, and once a hunk has started
+            // these markers fall through to the hunk-body switch below like any other line.
+            if (hunk is null && line.StartsWith("--- ", StringComparison.Ordinal))
             {
                 var path = ParseDiffPath(line, "--- ");
                 if (path is null)
@@ -366,7 +379,7 @@ internal static partial class UnifiedDiffParser
                 continue;
             }
 
-            if (line.StartsWith("+++ ", StringComparison.Ordinal))
+            if (hunk is null && line.StartsWith("+++ ", StringComparison.Ordinal))
             {
                 var path = ParseDiffPath(line, "+++ ");
                 if (path is null)
@@ -385,19 +398,29 @@ internal static partial class UnifiedDiffParser
             if (headerMatch.Success)
             {
                 FlushHunk();
-                var oldStart = ParseInt(headerMatch.Groups["oldStart"].Value);
-                var oldCount = headerMatch.Groups["oldCount"].Success
-                    ? ParseInt(headerMatch.Groups["oldCount"].Value)
-                    : 1;
-                var newStart = ParseInt(headerMatch.Groups["newStart"].Value);
-                var newCount = headerMatch.Groups["newCount"].Success
-                    ? ParseInt(headerMatch.Groups["newCount"].Value)
-                    : 1;
-                hunk = new HunkBuilder(
-                    new LineRange(oldStart, oldCount),
-                    new LineRange(newStart, newCount),
-                    headerMatch.Groups["heading"].Value.Trim()
-                );
+
+                // A hunk header's coordinates are matched by \d+ — unbounded digit runs, not bounded ints —
+                // so a malformed or adversarial diff can present a number `int.Parse` throws on (overflow)
+                // long before it could ever describe a real file. Reject such a header the same way any
+                // other line this parser does not recognise is rejected: skip it, do not throw (F-001).
+                // `hunk` stays null, so this header's body lines fall into the "no active hunk" branch below
+                // and are skipped too, rather than being attributed to whatever hunk preceded them.
+                if (
+                    TryParseHunkRange(
+                        headerMatch.Groups["oldStart"].Value,
+                        headerMatch.Groups["oldCount"],
+                        out var oldRange
+                    )
+                    && TryParseHunkRange(
+                        headerMatch.Groups["newStart"].Value,
+                        headerMatch.Groups["newCount"],
+                        out var newRange
+                    )
+                )
+                {
+                    hunk = new HunkBuilder(oldRange, newRange, headerMatch.Groups["heading"].Value.Trim());
+                }
+
                 continue;
             }
 
@@ -462,7 +485,42 @@ internal static partial class UnifiedDiffParser
             $"v1:{path}:{oldRange.Start},{oldRange.Count}->{newRange.Start},{newRange.Count}"
         );
 
-    private static int ParseInt(string value) => int.Parse(value, CultureInfo.InvariantCulture);
+    /// <summary>
+    /// Parses one side's start/count pair off a hunk header into a <see cref="LineRange"/>, bounded and
+    /// never-throwing (F-001). <paramref name="startText"/> and <paramref name="countGroup"/> both come off
+    /// <c>\d+</c> regex captures — an unbounded digit run, not a bounded integer — so both the parse itself
+    /// and the range it would describe are validated before a <see cref="LineRange"/> is built: a digit run
+    /// too long for <see cref="int"/> fails <see cref="int.TryParse(string,NumberStyles,IFormatProvider,out int)"/>
+    /// rather than throwing, and a start/count pair whose <see cref="LineRange.End"/> would overflow
+    /// <see cref="int"/> is rejected outright rather than silently wrapping.
+    /// </summary>
+    private static bool TryParseHunkRange(string startText, Group countGroup, out LineRange range)
+    {
+        range = new LineRange(0, 0);
+
+        if (!TryParseBoundedInt(startText, out var start) || start < 0)
+        {
+            return false;
+        }
+
+        var count = 1;
+        if (countGroup.Success && (!TryParseBoundedInt(countGroup.Value, out count) || count < 0))
+        {
+            return false;
+        }
+
+        // Bounded-endpoint check, computed in `long` so the check itself cannot be the thing that overflows.
+        if (count > 0 && (long)start + count - 1 > int.MaxValue)
+        {
+            return false;
+        }
+
+        range = new LineRange(start, count);
+        return true;
+    }
+
+    private static bool TryParseBoundedInt(string value, out int result) =>
+        int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out result);
 
     /// <summary>
     /// Reads the path off a <c>--- </c>/<c>+++ </c> line, stripping the <c>a/</c>/<c>b/</c> prefix git adds by

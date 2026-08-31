@@ -1,6 +1,4 @@
 using CodeReviewDaemon.Sample.Orchestration;
-using FluentAssertions;
-using Xunit;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 
@@ -310,6 +308,93 @@ public sealed class UnifiedDiffManifestTests
     }
 
     [Fact]
+    public void HunkBody_LineContentStartingWithHeaderMarkerLikeText_IsPreservedNotMisreadAsAFileHeader()
+    {
+        // F-002 regression: a deleted/added line whose OWN content begins with "-- "/"++ " renders, once
+        // its diff marker is prepended, as "--- "/"+++ " — indistinguishable from a real file-header line
+        // unless recognition is gated on whether a hunk is currently active.
+        const string diff = """
+            diff --git a/src/Marker.cs b/src/Marker.cs
+            --- a/src/Marker.cs
+            +++ b/src/Marker.cs
+            @@ -1,2 +1,2 @@
+             context
+            --- deleted marker-like line
+            +++ added marker-like line
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        // The file's real path must survive — a naive "+++ " match would have overwritten it with
+        // "added marker-like line".
+        file.Path.Should().Be("src/Marker.cs");
+
+        var hunk = file.Hunks.Single();
+        hunk.Lines.Should().HaveCount(3);
+        hunk.DeletedLines.Should().ContainSingle().Which.Text.Should().Be("-- deleted marker-like line");
+        hunk.Lines[2].Kind.Should().Be(DiffLineKind.Added);
+        hunk.Lines[2].Text.Should().Be("++ added marker-like line");
+    }
+
+    [Fact]
+    public void HunkHeader_OverflowingCoordinate_NeverThrowsAndSkipsOnlyThatHunk()
+    {
+        // F-001 regression: hunk coordinates are matched by \d+ — an unbounded digit run — so a header
+        // presenting more digits than an int can hold must be rejected rather than throwing OverflowException.
+        const string diff = """
+            diff --git a/src/Big.cs b/src/Big.cs
+            --- a/src/Big.cs
+            +++ b/src/Big.cs
+            @@ -99999999999999999999,1 +1,1 @@
+            -bad old
+            +bad new
+            @@ -1,1 +1,1 @@
+            -old
+            +new
+            """;
+
+        var act = () => UnifiedDiffParser.Parse(diff);
+        act.Should().NotThrow();
+
+        var file = act().Files.Single();
+
+        // Only the malformed hunk is dropped; the well-formed one that follows still parses.
+        var hunk = file.Hunks.Should().ContainSingle().Subject;
+        hunk.OldRange.Should().Be(new LineRange(1, 1));
+        hunk.Lines.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void HunkHeader_StartPlusCountOverflow_IsRejectedRatherThanWrapping()
+    {
+        // Both coordinates individually parse as valid ints, but Start + Count - 1 would overflow — the
+        // "unchecked LineRange.End arithmetic can wrap" half of F-001.
+        const string diff = """
+            diff --git a/src/Overflow.cs b/src/Overflow.cs
+            --- a/src/Overflow.cs
+            +++ b/src/Overflow.cs
+            @@ -2147483646,5 +1,1 @@
+            -old
+            +new
+            """;
+
+        var act = () => UnifiedDiffParser.Parse(diff);
+
+        act.Should().NotThrow();
+        act().Files.Single().Hunks.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void LineRange_EndDoesNotWrapWhenStartPlusCountOverflowsInt()
+    {
+        // Defense in depth for F-001: even if something else ever constructs a LineRange from extreme
+        // values, the endpoint must clamp rather than silently wrap into a negative number.
+        var range = new LineRange(int.MaxValue - 1, 5);
+
+        range.End.Should().Be(int.MaxValue);
+    }
+
+    [Fact]
     public void NullOrEmptyDiffText_ReturnsEmptyManifestWithoutThrowing()
     {
         UnifiedDiffParser.Parse(null).Files.Should().BeEmpty();
@@ -357,6 +442,67 @@ public sealed class UnifiedDiffManifestTests
 
         manifest.FindFile("src/Unrelated.cs").Should().BeNull();
         manifest.FindFile(null).Should().BeNull();
+    }
+
+    /// <summary>Two files whose paths differ only by case — a legal, distinct pair on a case-sensitive
+    /// repository. F-004 regression fixture for both the exact-match and ambiguity halves of the fix.</summary>
+    private const string CaseDistinctDiff = """
+        diff --git a/src/Foo.cs b/src/Foo.cs
+        --- a/src/Foo.cs
+        +++ b/src/Foo.cs
+        @@ -1,1 +1,1 @@
+        -old upper
+        +new upper
+        diff --git a/src/foo.cs b/src/foo.cs
+        --- a/src/foo.cs
+        +++ b/src/foo.cs
+        @@ -1,1 +1,1 @@
+        -old lower
+        +new lower
+        """;
+
+    [Fact]
+    public void FindFile_ExactCaseMatchWinsOverASameNamedFileDifferingOnlyByCase()
+    {
+        var manifest = UnifiedDiffParser.Parse(CaseDistinctDiff);
+
+        manifest.FindFile("src/Foo.cs")!.Hunks.Single().DeletedLines.Single().Text.Should().Be("old upper");
+        manifest.FindFile("src/foo.cs")!.Hunks.Single().DeletedLines.Single().Text.Should().Be("old lower");
+    }
+
+    [Fact]
+    public void FindFile_CaseInsensitiveMatchIsRejectedWhenTwoFilesOnlyDifferByCase()
+    {
+        // No exact-case match for "FOO.cs" itself, and the case-insensitive fallback now has two equally
+        // plausible candidates (Foo.cs and foo.cs) — that ambiguity must not resolve to either one.
+        var manifest = UnifiedDiffParser.Parse(CaseDistinctDiff);
+
+        manifest.FindFile("src/FOO.cs").Should().BeNull();
+    }
+
+    [Fact]
+    public void FindFile_SuffixMatchIsRejectedWhenTwoFilesShareTheSameSuffix()
+    {
+        // F-004 regression: two unrelated files sharing a path suffix must not let a suffix-relative
+        // citation silently resolve to whichever one this parser happened to see first.
+        const string diff = """
+            diff --git a/moduleA/src/Util.cs b/moduleA/src/Util.cs
+            --- a/moduleA/src/Util.cs
+            +++ b/moduleA/src/Util.cs
+            @@ -1,1 +1,1 @@
+            -old a
+            +new a
+            diff --git a/moduleB/src/Util.cs b/moduleB/src/Util.cs
+            --- a/moduleB/src/Util.cs
+            +++ b/moduleB/src/Util.cs
+            @@ -1,1 +1,1 @@
+            -old b
+            +new b
+            """;
+
+        var manifest = UnifiedDiffParser.Parse(diff);
+
+        manifest.FindFile("src/Util.cs").Should().BeNull();
     }
 
     [Fact]

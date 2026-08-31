@@ -1,6 +1,4 @@
 using CodeReviewDaemon.Sample.Orchestration;
-using FluentAssertions;
-using Xunit;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 
