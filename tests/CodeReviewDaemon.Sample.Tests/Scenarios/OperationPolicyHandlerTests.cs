@@ -213,4 +213,200 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
             .Headers.Authorization.Should()
             .BeNull("a denied GraphQL request must withhold the credential (fail closed both ways)");
     }
+
+    /// <summary>
+    /// Sends <paramref name="request"/> through <paramref name="client"/> and asserts the fail-closed
+    /// contract every denied GraphQL request-envelope boundary must uphold: the handler throws
+    /// <see cref="OperationDeniedException"/>, the request's credential is stripped, and the inner handler
+    /// — and thus the network — is never reached.
+    /// </summary>
+    private static async Task AssertDeniedAndNeverReachedTheInnerHandlerAsync(
+        HttpClient client,
+        HttpRequestMessage request,
+        FakeHttpMessageHandler inner
+    )
+    {
+        var act = () => client.SendAsync(request, CancellationToken.None);
+
+        await act.Should().ThrowAsync<OperationDeniedException>();
+        inner.Requests.Should().BeEmpty("a denied GraphQL request must never reach the inner handler");
+        request
+            .Headers.Authorization.Should()
+            .BeNull("a denied GraphQL request must withhold the credential (fail closed both ways)");
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_whose_declared_content_length_exceeds_the_cap()
+    {
+        // The declared Content-Length header alone must short-circuit the read before anything is parsed.
+        // Proven by attaching the actual SAFE document as the body and lying only about its declared
+        // length: if the length gate did not fire first, this body would otherwise be allowed.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        var content = new StringContent(
+            JsonSerializer.Serialize(new { query = GitHubIssueContextReader.Query }),
+            Encoding.UTF8,
+            "application/json"
+        );
+        content.Headers.ContentLength = (16 * 1024) + 1; // one byte over the 16 KiB MaxGraphQlBodyBytes cap
+        request.Content = content;
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_whose_actual_body_exceeds_the_cap_when_content_length_is_absent()
+    {
+        // No declared Content-Length (as with a chunked transfer) must not bypass the cap — the handler
+        // falls back to measuring the body AFTER reading it, and an oversized body must still be denied.
+        // The padding lives in a SIBLING field, not inside "query" itself: "query" is byte-identical to the
+        // safe document, so this isolates the post-read size guard specifically — if it did not fire, the
+        // exact-match check downstream would otherwise let this body through.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        var content = new StringContent(
+            JsonSerializer.Serialize(
+                new { query = GitHubIssueContextReader.Query, padding = new string('x', 16 * 1024) }
+            ),
+            Encoding.UTF8,
+            "application/json"
+        );
+        content.Headers.ContentLength = null; // simulate a transfer with no declared length
+        request.Content = content;
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_with_malformed_json()
+    {
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent("{\"query\": \"unterminated", Encoding.UTF8, "application/json");
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_with_top_level_non_object_json()
+    {
+        // Valid JSON, but not an object — the "query" property lookup only ever applies to an object
+        // root, so a top-level array (or any other JSON value kind) must be denied, not throw.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(new[] { "query", GitHubIssueContextReader.Query }),
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_whose_query_differs_only_by_case_from_the_safe_document()
+    {
+        // A byte-for-byte copy of the safe document except for one letter's case must still be denied —
+        // this is what proves the comparison is StringComparison.Ordinal, not OrdinalIgnoreCase.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        var caseFlipped = FlipFirstLetterCase(GitHubIssueContextReader.Query);
+        caseFlipped
+            .Should()
+            .NotBe(GitHubIssueContextReader.Query, "the test fixture must actually differ from the safe document");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(new { query = caseFlipped }),
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_whose_query_differs_only_by_trailing_whitespace_from_the_safe_document()
+    {
+        // A byte-for-byte copy of the safe document plus one trailing space must still be denied — this is
+        // what proves the comparison is exact, not trimmed/normalized.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(new { query = GitHubIssueContextReader.Query + " " }),
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_whose_body_cannot_be_read()
+    {
+        // Simulates a content stream that fails while being read (e.g. a connection torn mid-body). No
+        // declared Content-Length forces the handler down the read path, where the failure must fail closed
+        // rather than propagate an unhandled exception or fail open.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new FailingHttpContent();
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    /// <summary>Flips the case of the first letter found in <paramref name="text"/>.</summary>
+    private static string FlipFirstLetterCase(string text)
+    {
+        var chars = text.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i]) ? char.ToLowerInvariant(chars[i]) : char.ToUpperInvariant(chars[i]);
+                return new string(chars);
+            }
+        }
+
+        throw new InvalidOperationException("Expected at least one letter to flip case on.");
+    }
+
+    /// <summary>Test double whose body always fails to read, simulating a torn/broken connection.</summary>
+    private sealed class FailingHttpContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            Task.FromException(new IOException("simulated read failure"));
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
 }
