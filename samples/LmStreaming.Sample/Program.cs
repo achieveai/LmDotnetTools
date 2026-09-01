@@ -1009,11 +1009,7 @@ try
                     // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
                     // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
                     // narrowed suffix instead of Workspace Agent's promises.
-                    var wsSuffix = BuildWorkspaceSuffix(
-                        sandboxSession.HostPath,
-                        caps.SandboxToolAllowList,
-                        includeReviewKnowledgeNavigation: mode.Id == SystemChatModes.CodeReviewDaemonModeId
-                    );
+                    var wsSuffix = BuildWorkspaceSuffix(sandboxSession.HostPath, caps.SandboxToolAllowList);
 
                     // Seed any context files (CLAUDE.md / AGENTS.md) the gateway has already
                     // discovered into the system prompt. Mid-session deliveries land via the
@@ -4291,59 +4287,32 @@ public partial class Program
     /// <param name="sandboxToolAllowList">
     ///     The mode's sandbox allow-list, or <c>null</c> when it took the whole gateway surface.
     /// </param>
-    /// <param name="includeReviewKnowledgeNavigation">
-    ///     #648: true only for the <c>code-review-daemon</c> mode. Appends a fixed navigation
-    ///     paragraph pointing at the review workspace's <c>KnowledgeBase/</c> directory so the
-    ///     PRIMARY agent's prompt carries the same fixed navigation the mode's <c>subAgentPrompt</c>
-    ///     fragment gives every sub-agent template (see <c>Prompts.yaml</c>'s
-    ///     <c>code-review-daemon.subAgentPrompt</c>). Every other mode passes <c>false</c> (the
-    ///     default), so this branch never executes for them.
-    /// </param>
-    internal static string BuildWorkspaceSuffix(
-        string hostPath,
-        IReadOnlySet<string>? sandboxToolAllowList,
-        bool includeReviewKnowledgeNavigation = false
-    )
+    internal static string BuildWorkspaceSuffix(string hostPath, IReadOnlySet<string>? sandboxToolAllowList)
     {
         var prefix = "\n\nYour workspace directory is: " + hostPath;
 
-        string result;
         // Whole-surface modes keep the long-standing wording verbatim; it names the tools the gateway
         // has always provided and is what the Workspace Agent prompts were written against.
         if (sandboxToolAllowList is null)
         {
-            result =
-                prefix
+            return prefix
                 + "\nUse this absolute path as the base for the file tools (Read, Write, Edit, Glob, Grep). "
                 + "The shell tools (Bash, PowerShell) already start in this directory.";
         }
-        else if (sandboxToolAllowList.Count == 0)
-        {
-            result = prefix + "\nNo workspace file or shell tools are available in this mode.";
-        }
-        else
-        {
-            var names = sandboxToolAllowList.OrderBy(n => n, StringComparer.Ordinal).ToList();
-            var toolList =
-                names.Count == 1 ? names[0] : string.Join(", ", names.Take(names.Count - 1)) + " and " + names[^1];
 
-            result =
-                prefix
-                + "\nUse this absolute path as the base for the workspace tools available to you: "
-                + toolList
-                + ". No other file or shell tools exist in this mode - do not attempt to use any.";
+        if (sandboxToolAllowList.Count == 0)
+        {
+            return prefix + "\nNo workspace file or shell tools are available in this mode.";
         }
 
-        if (includeReviewKnowledgeNavigation)
-        {
-            result +=
-                "\n\nReview navigation: treat the workspace directory above as the workspace root. "
-                + "Consult KnowledgeBase/ when prior project knowledge could change the review. "
-                + "Start with KnowledgeBase/_toc.md when it exists. These are fixed navigation paths, "
-                + "not a claim that any entry is relevant.";
-        }
+        var names = sandboxToolAllowList.OrderBy(n => n, StringComparer.Ordinal).ToList();
+        var toolList =
+            names.Count == 1 ? names[0] : string.Join(", ", names.Take(names.Count - 1)) + " and " + names[^1];
 
-        return result;
+        return prefix
+            + "\nUse this absolute path as the base for the workspace tools available to you: "
+            + toolList
+            + ". No other file or shell tools exist in this mode - do not attempt to use any.";
     }
 
     /// <summary>

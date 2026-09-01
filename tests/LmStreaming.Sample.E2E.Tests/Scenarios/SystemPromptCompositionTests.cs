@@ -234,8 +234,24 @@ public sealed class SystemPromptCompositionTests
         prompt
             .Should()
             .Contain("Your workspace directory is:", "the sandbox workspace enrichment must reach the model");
-        prompt.Should().Contain("KnowledgeBase/", "issue #648: the fixed KB navigation must reach the primary");
-        prompt.Should().Contain("KnowledgeBase/_toc.md", "issue #648: the fixed KB navigation must reach the primary");
+        prompt
+            .Should()
+            .Contain(
+                "/workspace/store/KnowledgeBase/",
+                "issue #648 ruling: the fixed exact-path KB navigation must reach the primary"
+            );
+        prompt
+            .Should()
+            .Contain(
+                "do NOT start from a KnowledgeBase/_toc.md file",
+                "the no-search/no-_toc.md-start rule must reach the primary"
+            );
+        prompt
+            .Should()
+            .NotContain(
+                "Start with KnowledgeBase/_toc.md",
+                "the superseded relative-navigation wording must not return"
+            );
         prompt.TrimEnd().Should().EndWith(AppendixMarker, "the daemon's appendix is composed last");
 
         // ...and in exactly the pinned order: date + mode prompt + workspace enrichment + appendix.

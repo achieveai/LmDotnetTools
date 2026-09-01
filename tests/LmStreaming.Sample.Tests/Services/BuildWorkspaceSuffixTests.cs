@@ -71,24 +71,4 @@ public class BuildWorkspaceSuffixTests
         suffix.Should().Contain("No workspace file or shell tools are available in this mode.");
         suffix.Should().NotContain("Read");
     }
-
-    [Fact]
-    public void ReviewNavigation_Included_WhenFlagTrue()
-    {
-        var suffix = Program.BuildWorkspaceSuffix(HostPath, null, includeReviewKnowledgeNavigation: true);
-
-        suffix.Should().Contain("KnowledgeBase/");
-        suffix.Should().Contain("KnowledgeBase/_toc.md");
-        suffix.Should().Contain("workspace root");
-    }
-
-    [Fact]
-    public void ReviewNavigation_Omitted_WhenFlagFalseOrDefault()
-    {
-        Program.BuildWorkspaceSuffix(HostPath, null).Should().NotContain("KnowledgeBase/");
-        Program
-            .BuildWorkspaceSuffix(HostPath, null, includeReviewKnowledgeNavigation: false)
-            .Should()
-            .NotContain("KnowledgeBase/");
-    }
 }

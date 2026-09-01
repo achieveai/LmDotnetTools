@@ -74,6 +74,30 @@ public class ModeCapabilitiesCloneTests : IDisposable
         caps.Collaboration.Should().BeFalse();
     }
 
+    /// <summary>
+    /// Issue #648 fix round 1: <see cref="FileChatModeStore.CopyModeAsync"/> is the real seam a
+    /// user actually exercises to make their own review-style mode. A copy has a fresh id, so
+    /// pin here (not just via the shipped mode directly) that BOTH halves of the #648 fixed
+    /// exact-path Knowledge Base navigation contract - the primary paragraph in
+    /// <c>SystemPrompt</c> and the child paragraph in <c>SubAgentPrompt</c> - survive the copy,
+    /// since the mechanism lives entirely in yaml content the copy carries forward, not in any
+    /// mode-id-keyed selection that a fresh id could fall through.
+    /// </summary>
+    [Fact]
+    public async Task CopyOfCodeReviewDaemon_KeepsBothHalvesOfTheKnowledgeBaseNavigationContract()
+    {
+        var store = new FileChatModeStore(_dir);
+        var original = SystemChatModes.GetById(SystemChatModes.CodeReviewDaemonModeId)!;
+
+        var copy = await store.CopyModeAsync(SystemChatModes.CodeReviewDaemonModeId, "My Review Mode");
+
+        copy.Id.Should().NotBe(SystemChatModes.CodeReviewDaemonModeId);
+        copy.SystemPrompt.Should().Be(original.SystemPrompt);
+        copy.SubAgentPrompt.Should().Be(original.SubAgentPrompt);
+        copy.SystemPrompt.Should().Contain("/workspace/store/KnowledgeBase/");
+        copy.SubAgentPrompt.Should().Contain("/workspace/store/KnowledgeBase/");
+    }
+
     [Fact]
     public async Task EditingACopy_PreservesItsCapabilitySelection()
     {
