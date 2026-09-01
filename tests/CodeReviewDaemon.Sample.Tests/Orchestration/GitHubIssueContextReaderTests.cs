@@ -71,6 +71,7 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         public ReviewStore Store { get; }
         public FakeOAuthTokenProvider Tokens { get; } = new("github", "gh-token-xyz");
         public GitHubIssueContextReader Reader { get; }
+        public string DatabasePath => _db.Path;
 
         public Harness(FakeHttpMessageHandler handler, ILoggerFactory loggerFactory)
         {
@@ -171,6 +172,17 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
     }
 
     private Harness NewHarness(FakeHttpMessageHandler handler) => new(handler, LoggerFactory);
+
+    private static void RenameTable(string databasePath, string tableName)
+    {
+        using var connection = new SqliteConnection(
+            new SqliteConnectionStringBuilder { DataSource = databasePath, Pooling = false }.ToString()
+        );
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"ALTER TABLE {tableName} RENAME TO unavailable_{tableName};";
+        _ = command.ExecuteNonQuery();
+    }
 
     /// <summary>Reads the outgoing GraphQL request body synchronously — the handler already buffered it
     /// (it is a fully-materialized <see cref="StringContent"/>), so re-reading here cannot deadlock or
@@ -1139,6 +1151,37 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         result.Outcome.Should().Be(GitHubIssueLookup.Unavailable, "there is no run to derive a scope from");
         handler.Requests.Should().BeEmpty("a missing run must never reach the HTTP client");
         harness.Tokens.IssuedTokens.Should().BeEmpty("a missing run must never reach the token provider");
+    }
+
+    [Theory]
+    [InlineData("review_run")]
+    [InlineData("repo")]
+    public async Task ReadAsync_returns_Failed_without_token_or_network_when_a_persisted_identity_lookup_throws(
+        string unavailableTable
+    )
+    {
+        const string sensitiveMarker = "secret-marker-not-for-logs";
+        var handler = new FakeHttpMessageHandler();
+        using var logs = new CapturingLoggerFactory();
+        using var harness = new Harness(handler, logs);
+        var runId = harness.SeedRun(Repo, "7", headSha: sensitiveMarker);
+        RenameTable(harness.DatabasePath, unavailableTable);
+
+        var act = () => harness.Reader.ReadAsync(runId, CancellationToken.None);
+
+        var result = await act.Should().NotThrowAsync("persisted identity failures use the reader's Failed outcome");
+        result.Which.Outcome.Should().Be(GitHubIssueLookup.Failed);
+        handler.Requests.Should().BeEmpty("a failed identity lookup must not construct or dispatch a request");
+        harness.Tokens.IssuedTokens.Should().BeEmpty("a failed identity lookup must not acquire a credential");
+        logs.Capturing.CountAtLevel(LogLevel.Debug, nameof(SqliteException)).Should().BePositive();
+        logs.Capturing.CountAtLevelWithExceptionText(LogLevel.Debug, "no such table").Should().Be(0);
+        logs.Capturing.CountAtLevelWithExceptionText(LogLevel.Debug, sensitiveMarker).Should().Be(0);
+        logs.Capturing.MessagesAtLevel(LogLevel.Debug)
+            .Should()
+            .OnlyContain(
+                message => !message.Contains(sensitiveMarker, StringComparison.Ordinal),
+                "the failure diagnostic must not contain persisted review data"
+            );
     }
 
     [Fact]

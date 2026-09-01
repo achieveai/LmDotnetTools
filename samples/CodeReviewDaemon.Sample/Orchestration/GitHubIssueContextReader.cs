@@ -197,48 +197,51 @@ internal sealed class GitHubIssueContextReader
     /// </returns>
     public async Task<GitHubIssueContext> ReadAsync(long reviewRunId, CancellationToken cancellationToken)
     {
-        var run = _reviewStore.GetReviewRun(reviewRunId);
-        if (run is null)
-        {
-            _logger.LogDebug("GitHub linked-issue read found no persisted review run {ReviewRunId}.", reviewRunId);
-            return GitHubIssueContext.Unavailable;
-        }
-
-        var repo = _reviewStore.GetRepo(run.RepoId);
-        if (repo is null)
-        {
-            _logger.LogDebug(
-                "GitHub linked-issue read for review run {ReviewRunId} found no persisted repo {RepoId}.",
-                reviewRunId,
-                run.RepoId
-            );
-            return GitHubIssueContext.Unavailable;
-        }
-
-        if (!string.Equals(repo.Provider, "github", StringComparison.Ordinal))
-        {
-            // Storage-namespace check (see RepoIdentity.Provider / ToPublisherNamespace) — an ADO repo has
-            // no GraphQL endpoint to ask, so nobody attempted anything. Exact/case-sensitive on purpose: every
-            // producer of RepoIdentity.Provider in this codebase writes the canonical lower-case spelling
-            // (RepoIdentity.ToPublisherNamespace compares the same way against "azure-devops"), so a
-            // differently-cased value is not a GitHub repo spelled unusually — it is data nothing in this
-            // codebase has ever promised to normalize, and Unavailable is the right answer for it too.
-            return GitHubIssueContext.Unavailable;
-        }
-
-        if (!int.TryParse(run.PrId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) || number <= 0)
-        {
-            _logger.LogDebug(
-                "GitHub linked-issue read for review run {ReviewRunId} has a non-positive/unparseable persisted PrId {PrId}.",
-                reviewRunId,
-                run.PrId
-            );
-            return GitHubIssueContext.Unavailable;
-        }
-
-        var prId = run.PrId;
         try
         {
+            var run = _reviewStore.GetReviewRun(reviewRunId);
+            if (run is null)
+            {
+                _logger.LogDebug("GitHub linked-issue read found no persisted review run {ReviewRunId}.", reviewRunId);
+                return GitHubIssueContext.Unavailable;
+            }
+
+            var repo = _reviewStore.GetRepo(run.RepoId);
+            if (repo is null)
+            {
+                _logger.LogDebug(
+                    "GitHub linked-issue read for review run {ReviewRunId} found no persisted repo {RepoId}.",
+                    reviewRunId,
+                    run.RepoId
+                );
+                return GitHubIssueContext.Unavailable;
+            }
+
+            if (!string.Equals(repo.Provider, "github", StringComparison.Ordinal))
+            {
+                // Storage-namespace check (see RepoIdentity.Provider / ToPublisherNamespace) — an ADO repo has
+                // no GraphQL endpoint to ask, so nobody attempted anything. Exact/case-sensitive on purpose: every
+                // producer of RepoIdentity.Provider in this codebase writes the canonical lower-case spelling
+                // (RepoIdentity.ToPublisherNamespace compares the same way against "azure-devops"), so a
+                // differently-cased value is not a GitHub repo spelled unusually — it is data nothing in this
+                // codebase has ever promised to normalize, and Unavailable is the right answer for it too.
+                return GitHubIssueContext.Unavailable;
+            }
+
+            if (
+                !int.TryParse(run.PrId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number)
+                || number <= 0
+            )
+            {
+                _logger.LogDebug(
+                    "GitHub linked-issue read for review run {ReviewRunId} has a non-positive/unparseable persisted PrId {PrId}.",
+                    reviewRunId,
+                    run.PrId
+                );
+                return GitHubIssueContext.Unavailable;
+            }
+
+            var prId = run.PrId;
             using var client = _httpClientFactory.CreateForGitHubGraphQl(repo, number);
             var issues = new List<GitHubLinkedIssue>();
             var truncated = false;
@@ -389,15 +392,17 @@ internal sealed class GitHubIssueContextReader
         }
         catch (Exception ex)
         {
-            // Everything else — an egress denial from the operation policy, an HttpClient timeout, or a
-            // malformed body — is a lookup that was ATTEMPTED and did not complete. That is Failed, not
-            // Unavailable: the brief has to say the daemon could not read the linked issues, because the
-            // alternative is a reviewer that reads silence as "this PR closes none".
+            // Everything else — a persisted-identity read failure, an egress denial, an HttpClient timeout,
+            // or a malformed body — is a lookup that could not be completed. That is Failed, not Unavailable:
+            // the brief has to say the daemon could not read the linked issues, because the alternative is a
+            // reviewer that reads silence as "this PR closes none". Log only the exception TYPE, not the
+            // exception object: provider/database details belong neither in the rendered event nor Serilog's
+            // separate exception field.
             _logger.LogDebug(
-                ex,
-                "GitHub linked-issue read for {Repository} PR {PrId} failed; the brief will say the lookup failed.",
-                repo.DisplayName,
-                prId
+                "GitHub linked-issue read for persisted review run {ReviewRunId} failed ({ExceptionType}); "
+                    + "the brief will say the lookup failed.",
+                reviewRunId,
+                ex.GetType().Name
             );
             return GitHubIssueContext.Failed;
         }
