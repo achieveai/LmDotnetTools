@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
 using LmStreaming.Sample.E2E.Tests.Infrastructure;
+using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -285,98 +286,185 @@ public sealed class SystemPromptCompositionTests
     [Fact]
     public async Task SandboxCapableModeCopy_StillReceivesTheWorkspaceSuffix_ThroughTheRealAgentFactory()
     {
-        string? promptTheModelReceived = null;
-        var responder = ScriptedSseResponder
-            .New()
-            .ForRole(
-                "sandbox-mode-copy",
-                ctx =>
-                {
-                    promptTheModelReceived ??= ctx.SystemPrompt;
-                    return true;
-                }
-            )
-            .Turn(t => t.Text("ack"))
-            .Build();
-
         // Isolated user-mode store so CopyModeAsync's write does not touch the shared production
         // chat-modes.json path (see ModeCapabilitiesCloneTests for the same precedent).
         var modeStoreDir = Path.Combine(Path.GetTempPath(), "lmstreaming-f004-modes-" + Guid.NewGuid().ToString("N"));
-        var chatModeStore = new LmStreaming.Sample.Persistence.FileChatModeStore(modeStoreDir);
-        var copiedMode = await chatModeStore.CopyModeAsync(
-            LmStreaming.Sample.Persistence.SystemChatModes.CodeReviewDaemonModeId,
-            "F-004 sandbox-capable copy"
-        );
-        copiedMode.Id.Should().NotBe(LmStreaming.Sample.Persistence.SystemChatModes.CodeReviewDaemonModeId);
-
-        var gatewayOptions = new SandboxGatewayOptions
-        {
-            BaseUrl = "http://127.0.0.1:3000",
-            WorkspaceBasePath = null,
-            Workspace = "default-leaf",
-        };
-
-        var stubHandler = new StubSandboxGatewayHandler();
-        var gatewayLifetime = new SandboxGatewayLifetime(
-            gatewayOptions,
-            NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(stubHandler)
-        );
         var secretStoreDir = Path.Combine(
             Path.GetTempPath(),
             "lmstreaming-f004-secrets-" + Guid.NewGuid().ToString("N")
         );
-        var sandboxRegistry = new SandboxSessionRegistry(
-            gatewayLifetime,
-            gatewayOptions,
-            NullLogger<SandboxSessionRegistry>.Instance,
-            new HttpClient(stubHandler),
-            new AuthOptions(),
-            new SessionSecretStore(secretStoreDir, NullLogger<SessionSecretStore>.Instance)
-        );
+        try
+        {
+            string? promptTheModelReceived = null;
+            var responder = ScriptedSseResponder
+                .New()
+                .ForRole(
+                    "sandbox-mode-copy",
+                    ctx =>
+                    {
+                        promptTheModelReceived ??= ctx.SystemPrompt;
+                        return true;
+                    }
+                )
+                .Turn(t => t.Text("ack"))
+                .Build();
 
-        var builder = new ScriptedBuilder(responder.AsAnthropicHandler());
-        using var factory = new E2EWebAppFactory(
-            "test-anthropic",
-            builder,
-            configureServices: services =>
-            {
-                services.RemoveAll<LmStreaming.Sample.Persistence.IChatModeStore>();
-                services.AddSingleton<LmStreaming.Sample.Persistence.IChatModeStore>(chatModeStore);
-                services.RemoveAll<SandboxGatewayLifetime>();
-                services.AddSingleton(gatewayLifetime);
-                services.RemoveAll<SandboxSessionRegistry>();
-                services.AddSingleton(sandboxRegistry);
-            }
-        );
-
-        var threadId = $"f004-{Guid.NewGuid():N}";
-        var socket = await factory.ConnectWebSocketAsync(threadId, copiedMode.Id);
-        await using var client = new WebSocketTestClient(socket);
-        await client.SendUserMessageAsync("begin the review");
-        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
-
-        frames.ConcatText().Should().Contain("ack");
-        promptTheModelReceived
-            .Should()
-            .NotBeNull("the scripted provider must have received a request to capture a prompt from");
-
-        promptTheModelReceived
-            .Should()
-            .Contain(
-                "Your workspace directory is:",
-                "a copy of the daemon mode still resolves caps.NeedsSandbox from its capability "
-                    + "selection, so the real ApplyWorkspaceSuffix call site must still run for it"
+            var chatModeStore = new LmStreaming.Sample.Persistence.FileChatModeStore(modeStoreDir);
+            var copiedMode = await chatModeStore.CopyModeAsync(
+                LmStreaming.Sample.Persistence.SystemChatModes.CodeReviewDaemonModeId,
+                "F-004 sandbox-capable copy"
             );
+            copiedMode.Id.Should().NotBe(LmStreaming.Sample.Persistence.SystemChatModes.CodeReviewDaemonModeId);
+
+            var gatewayOptions = new SandboxGatewayOptions
+            {
+                BaseUrl = "http://127.0.0.1:3000",
+                WorkspaceBasePath = null,
+                Workspace = "default-leaf",
+            };
+
+            var stubHandler = new StubSandboxGatewayHandler();
+            var gatewayLifetime = new SandboxGatewayLifetime(
+                gatewayOptions,
+                NullLogger<SandboxGatewayLifetime>.Instance,
+                new HttpClient(stubHandler)
+            );
+            var sandboxRegistry = new SandboxSessionRegistry(
+                gatewayLifetime,
+                gatewayOptions,
+                NullLogger<SandboxSessionRegistry>.Instance,
+                new HttpClient(stubHandler),
+                new AuthOptions(),
+                new SessionSecretStore(secretStoreDir, NullLogger<SessionSecretStore>.Instance)
+            );
+
+            // The real agent factory validates the resolved workspace's marketplace selection via
+            // WorkspaceCatalogCompatibilityService BEFORE it establishes the sandbox session (see
+            // Program.cs, guarded by `if (workspace is not null)`). That service depends on
+            // IMarketplaceCatalogClient, which — unlike the two overrides above — was NOT swapped for
+            // a test double: it stayed the real MarketplaceCatalogClient, wired to a live HttpClient
+            // pointed at SandboxGatewayOptions.BaseUrl. On a clean CI host nothing answers that
+            // address, so the real client fails, the compatibility service reports the catalog
+            // Unavailable, and Program.cs fails the request closed — before it ever reaches the LLM.
+            // The default workspace's Marketplaces list is empty (FileWorkspaceStore), so any
+            // catalog that answers WITHOUT throwing is already "compatible"; this stub only needs to
+            // answer successfully. CallCount below proves it was actually consulted, not merely wired.
+            var catalogClient = new StubMarketplaceCatalogClient();
+
+            var builder = new ScriptedBuilder(responder.AsAnthropicHandler());
+            using var factory = new E2EWebAppFactory(
+                "test-anthropic",
+                builder,
+                configureServices: services =>
+                {
+                    services.RemoveAll<LmStreaming.Sample.Persistence.IChatModeStore>();
+                    services.AddSingleton<LmStreaming.Sample.Persistence.IChatModeStore>(chatModeStore);
+                    services.RemoveAll<SandboxGatewayLifetime>();
+                    services.AddSingleton(gatewayLifetime);
+                    services.RemoveAll<SandboxSessionRegistry>();
+                    services.AddSingleton(sandboxRegistry);
+                    services.RemoveAll<IMarketplaceCatalogClient>();
+                    services.AddSingleton<IMarketplaceCatalogClient>(catalogClient);
+                }
+            );
+
+            var threadId = $"f004-{Guid.NewGuid():N}";
+            var socket = await factory.ConnectWebSocketAsync(threadId, copiedMode.Id);
+            await using var client = new WebSocketTestClient(socket);
+            await client.SendUserMessageAsync("begin the review");
+            using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
+
+            // With every external dependency (chat-mode store, sandbox gateway, marketplace catalog)
+            // stubbed, a completed turn ending in "ack" is a genuine full-turn witness, not a
+            // vacuously-satisfied assertion — if any real dependency were still live and unreachable,
+            // the run would error out before the model ever replied.
+            frames.ConcatText().Should().Contain("ack");
+            promptTheModelReceived
+                .Should()
+                .NotBeNull(
+                    "the scripted provider must have received a request to capture a prompt from; a "
+                        + "null capture here means the turn errored before reaching the LLM — check "
+                        + "for a SandboxSessionUnavailableException from the marketplace-catalog "
+                        + "validation step, which is the exact failure this test was added to prevent"
+                );
+
+            promptTheModelReceived
+                .Should()
+                .Contain(
+                    "Your workspace directory is:",
+                    "a copy of the daemon mode still resolves caps.NeedsSandbox from its capability "
+                        + "selection, so the real ApplyWorkspaceSuffix call site must still run for it"
+                );
+
+            // Non-vacuity: prove the fake catalog client was actually reached by the production
+            // validation route (WorkspaceCatalogCompatibilityService.ValidateForSessionAsync), rather
+            // than the test passing because that call site was skipped for some other reason.
+            catalogClient
+                .CallCount.Should()
+                .BeGreaterThan(
+                    0,
+                    "Program.cs's agent factory validates the workspace's marketplace selection "
+                        + "through WorkspaceCatalogCompatibilityService before establishing the "
+                        + "sandbox session, so the fake catalog client must actually be consulted"
+                );
+        }
+        finally
+        {
+            // Best-effort temp cleanup (same idiom as ModeCapabilitiesCloneTests.Dispose) — a leftover
+            // temp directory must never mask whatever the assertions above already reported.
+            foreach (var dir in new[] { modeStoreDir, secretStoreDir })
+            {
+                try
+                {
+                    if (Directory.Exists(dir))
+                    {
+                        Directory.Delete(dir, recursive: true);
+                    }
+                }
+                catch (IOException)
+                {
+                    // A leftover temp directory is not worth failing a test over.
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Minimal <see cref="IMarketplaceCatalogClient"/> stub: always returns an empty-but-available
+    /// catalog (never throws). The default workspace's <c>Marketplaces</c> list is empty (see
+    /// <c>FileWorkspaceStore</c>), so an empty catalog is already compatible with it — this stub only
+    /// needs to answer without throwing for
+    /// <see cref="WorkspaceCatalogCompatibilityService.ValidateForSessionAsync"/> to succeed.
+    /// <see cref="CallCount"/> lets the test prove this double was actually consulted.
+    /// </summary>
+    private sealed class StubMarketplaceCatalogClient : IMarketplaceCatalogClient
+    {
+        private int _callCount;
+
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        public Task<MarketplaceCatalog> GetCatalogAsync(
+            IReadOnlyList<string>? marketplaces = null,
+            CancellationToken ct = default
+        )
+        {
+            Interlocked.Increment(ref _callCount);
+            return Task.FromResult(new MarketplaceCatalog(Selected: [], Marketplaces: []));
+        }
     }
 
     /// <summary>
     /// Answers only the gateway calls the real agent-factory's sandbox branch makes on a first
     /// session: the health probe, session creation, and the post-create liveness probe (see
-    /// <c>SandboxSessionRegistry.GetOrCreateLiveSessionAsync</c>). Anything else — notably the root
-    /// CLAUDE.md/AGENTS.md file read — is left unanswered on purpose: <c>Program.cs</c>'s
-    /// <c>TryBuildRootContextSuffix</c> catches any read failure and degrades to an empty seed rather
-    /// than throwing, so this test does not need to model that endpoint's wire shape at all.
+    /// <c>SandboxSessionRegistry.GetOrCreateLiveSessionAsync</c>, which calls
+    /// <c>SandboxClient.GetAsync(sessionId)</c> — <c>GET api/v1/sandboxes/{sessionId}</c>, exactly two
+    /// path segments and nothing after the id). Anything else — notably the root CLAUDE.md/AGENTS.md
+    /// file read and any <c>.../sandboxes/{id}/files/...</c> workspace-file request — is left
+    /// unanswered ON PURPOSE and must fail closed: <c>Program.cs</c>'s <c>TryBuildRootContextSuffix</c>
+    /// catches a root-read failure and degrades to an empty seed rather than throwing, so this test
+    /// does not need to model that endpoint's wire shape at all, and a stub that accidentally matched a
+    /// file-read path could hide a real behavioral difference between "session is alive" and "this file
+    /// exists" — see <see cref="StubSandboxGatewayHandler_DoesNotMatchWorkspaceFileReads"/>.
     /// </summary>
     private sealed class StubSandboxGatewayHandler : HttpMessageHandler
     {
@@ -400,9 +488,17 @@ public sealed class SystemPromptCompositionTests
                 return Task.FromResult(BuildSessionResponse(_sessionId));
             }
 
-            if (request.Method == HttpMethod.Get && path.Contains("/api/v1/sandboxes/", StringComparison.Ordinal))
+            // Exact match only: `SandboxClient.GetAsync` requests exactly
+            // `api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}` with no trailing segments. A
+            // `Contains` match here would also answer `.../sandboxes/{id}/files/{mount}?path=...`
+            // (workspace file reads), silently treating "the session is alive" as "this file exists".
+            if (
+                request.Method == HttpMethod.Get
+                && _sessionId is not null
+                && path.EndsWith($"/api/v1/sandboxes/{Uri.EscapeDataString(_sessionId)}", StringComparison.Ordinal)
+            )
             {
-                return Task.FromResult(BuildSessionResponse(_sessionId ?? "sess-unknown"));
+                return Task.FromResult(BuildSessionResponse(_sessionId));
             }
 
             return Task.FromException<HttpResponseMessage>(
@@ -421,6 +517,40 @@ public sealed class SystemPromptCompositionTests
                     )
                 ),
             };
+    }
+
+    /// <summary>
+    /// Route-exactness pin for <see cref="StubSandboxGatewayHandler"/>: an unexpected
+    /// <c>.../sandboxes/{id}/files/...</c> workspace-file request must still fail closed (the same
+    /// exception the handler throws for any other unmodeled path), not be silently answered by the
+    /// tightened liveness-probe match. Cheap and self-contained — no web app factory, no WebSocket turn.
+    /// </summary>
+    [Fact]
+    public async Task StubSandboxGatewayHandler_DoesNotMatchWorkspaceFileReads()
+    {
+        var handler = new StubSandboxGatewayHandler();
+        using var invoker = new HttpMessageInvoker(handler);
+
+        // Establish a session id first, exactly as the real factory does, so the tightened match has a
+        // real `_sessionId` to (correctly) decline to extend to a files sub-path.
+        using var createResponse = await invoker.SendAsync(
+            new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:3000/api/v1/sandboxes"),
+            CancellationToken.None
+        );
+        var created = await createResponse.Content.ReadFromJsonAsync<CreateSandboxResponseProbe>();
+
+        var filesRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"http://127.0.0.1:3000/api/v1/sandboxes/{created!.SessionId}/files/workspace?path=%2Ffoo"
+        );
+
+        var act = () => invoker.SendAsync(filesRequest, CancellationToken.None);
+
+        await act.Should()
+            .ThrowAsync<HttpRequestException>(
+                "a workspace-file read is a different endpoint than the session-liveness probe and "
+                    + "must not be silently answered by it"
+            );
     }
 
     // Local mirrors of the registry's private snake_case JSON contract (same pattern as
