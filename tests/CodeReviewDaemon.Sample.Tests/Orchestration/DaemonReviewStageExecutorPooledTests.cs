@@ -80,6 +80,29 @@ public sealed class DaemonReviewStageExecutorPooledTests
         payload.GetProperty("Diff").GetString().Should().Contain("Foo.cs");
     }
 
+    /// <summary>
+    /// Issue #647 — the pooled path's context artifact must carry the merge-base commit id
+    /// <c>ReviewSlotPreparer.PrepareAsync</c> resolved, not just the diff it took from the prepared
+    /// checkout. <see cref="FakeReviewSlotPreparer.MergeBaseSha"/> stands in for that resolution.
+    /// </summary>
+    [Fact]
+    public async Task ContextReady_persists_the_merge_base_sha_the_prepared_checkout_resolved()
+    {
+        using var fixture = Fixture.Create();
+        fixture.Preparer.MergeBaseSha = "d34db33f";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var payload = JsonDocument.Parse(artifact.Payload).RootElement;
+        payload
+            .GetProperty("MergeBaseSha")
+            .GetString()
+            .Should()
+            .Be("d34db33f", "the pooled diff and the merge base it was taken against must name the same commit");
+    }
+
     [Fact]
     public async Task ContextReady_falls_back_to_the_per_run_checkout_when_the_repo_is_not_a_store_submodule()
     {
@@ -105,6 +128,46 @@ public sealed class DaemonReviewStageExecutorPooledTests
             .Store.GetArtifacts(run.Id)
             .Should()
             .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind);
+    }
+
+    /// <summary>
+    /// Issue #647 — on the direct/non-pooled fallback checkout (repo not a store submodule), the context
+    /// artifact must also carry a real merge-base commit id: <c>FetchContextAsync</c> resolves it itself via
+    /// <see cref="MergeBaseResolver"/> on this path, since there is no <c>ReviewSlotPreparer</c> to hand one
+    /// over for free. <see cref="RecordingProvisioner.DefaultRunner"/> is the runner that checkout, diff and
+    /// merge-base all run through here (via <c>ResolveSandboxAsync</c>'s non-slot session).
+    /// </summary>
+    [Fact]
+    public async Task ContextReady_threads_a_real_merge_base_commit_id_on_the_fallback_checkout_path()
+    {
+        using var fixture = Fixture.Create();
+        fixture.HostFileSystem.Files.Clear();
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/.gitmodules",
+            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n"
+        );
+        fixture.Provisioner.DefaultRunner.OnArgvContains(
+            "merge-base",
+            new SandboxCommandResult(0, "feedcafe\n", string.Empty)
+        );
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind)
+            .Subject;
+        var payload = JsonDocument.Parse(artifact.Payload).RootElement;
+        payload
+            .GetProperty("MergeBaseSha")
+            .GetString()
+            .Should()
+            .Be(
+                "feedcafe",
+                "the fallback path resolves its own merge base via MergeBaseResolver rather than leaving it null"
+            );
     }
 
     [Fact]
@@ -3480,6 +3543,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// </summary>
         public MergeBaseOutcome MergeBase { get; set; } = MergeBaseOutcome.Resolved;
 
+        /// <summary>The commit id stamped onto every checkout alongside <see cref="MergeBase"/> — issue #647.
+        /// Defaults to null, matching production's own default for every non-<see cref="MergeBaseOutcome.Resolved"/>
+        /// outcome and letting pre-existing tests (which never set it) keep asserting nothing about the SHA.</summary>
+        public string? MergeBaseSha { get; set; }
+
         public Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
@@ -3558,7 +3626,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
                     $"{storeRoot}/{submoduleRelPath}",
                     $"{storeRoot}/{notesRelPath}",
                     branch,
-                    MergeBase
+                    MergeBase,
+                    MergeBaseSha
                 );
                 Prepared.Add(checkout);
             }
@@ -3584,6 +3653,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public FakeSandboxFileSystem SdkFileSystem { get; } = new();
 
         /// <summary>
+        /// The runner behind the NON-slot-scoped session <see cref="GetOrCreateAsync"/> hands back — what the
+        /// direct/non-pooled review-context path (<c>FetchContextAsync</c>'s fallback branch, via
+        /// <c>ResolveSandboxAsync</c>) actually runs its checkout, diff and merge-base probes through. Exposed
+        /// (rather than left as the inline, unreachable <c>new FakeSandboxCommandRunner()</c> this replaced) so a
+        /// test can script that path's <c>git merge-base</c> answer — issue #647.
+        /// </summary>
+        public FakeSandboxCommandRunner DefaultRunner { get; } = new();
+
+        /// <summary>
         /// What <c>git diff --name-only</c> answers in the session. Settable so a test can make it FAIL, which is
         /// how the changed-path listing goes missing on a live run — <c>BuildChangedPathsAsync</c> degrades to an
         /// empty listing on a non-zero exit rather than failing the run.
@@ -3600,7 +3678,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 new ReviewRunSession(
                     $"session-{run.Id}",
                     $"/workspace/review-run-{run.Id}",
-                    new FakeSandboxCommandRunner(),
+                    DefaultRunner,
                     new FakeSandboxFileSystem()
                 )
             );

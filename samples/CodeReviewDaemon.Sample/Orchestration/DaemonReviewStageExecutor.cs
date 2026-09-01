@@ -52,8 +52,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// shape as the <c>JudgeArtifactSchemaVersion</c> 1-to-2 bump, where a v1 row's absent value is
     /// permanently unknown rather than a zero.
     /// </para>
+    /// <para>
+    /// v3 adds <see cref="ContextArtifactPayload.MergeBaseSha"/> (issue #647) — the exact commit id
+    /// <see cref="MergeBaseResolver"/> resolved base...head against, threaded through on all three
+    /// construction sites so later diff-based anchor validation always diffs against the same base the
+    /// review itself used. Same append-compatible shape as v2: null and omitted on older rows, and a v2 row
+    /// carries no less information than it did before this field existed.
+    /// </para>
     /// </summary>
-    public const int ContextArtifactSchemaVersion = 2;
+    public const int ContextArtifactSchemaVersion = 3;
 
     /// <summary>Artifact kind for the primary review output.</summary>
     public const string ReviewArtifactKind = "review";
@@ -888,6 +895,18 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var layout = await EnsureCheckoutAsync(git, fileSystem, policy, repo, provider, run, cancellationToken)
             .ConfigureAwait(false);
 
+        // Resolve the merge base ourselves on this path — unlike the two pooled paths (which get it for free
+        // from ReviewSlotPreparer.PrepareAsync), the direct/non-pooled checkout above never asks. Reuse
+        // MergeBaseResolver (not a bare `git merge-base`) so a shallow checkout that has not yet fetched the
+        // history it needs still gets the same deepen-retry ladder every other path relies on, rather than
+        // silently regressing to "no merge base" the moment this path's checkout happens to be shallow.
+        // enableObjectStoreMaintenance is omitted (defaults false) — this executor has no equivalent option,
+        // and false is ReviewSlotPreparer's own default absent one, so this is not a downgrade relative to the
+        // pooled paths' common case.
+        var mergeBase = await new MergeBaseResolver(git, _logger)
+            .ResolveAsync(layout.TargetDir, run, cancellationToken)
+            .ConfigureAwait(false);
+
         // Diff the reviewed repo — base...head — from wherever it was checked out, and persist the bounded
         // context artifact alongside the head file manifest (so the agent can Read files by exact path).
         var diff = await git.RunAsync(
@@ -924,7 +943,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                         fileManifest,
                         layout.TargetDir,
                         layout.StoreRoot,
-                        changedPaths
+                        changedPaths,
+                        MergeBaseSha: mergeBase.CommitId
                     )
                 ),
             }
@@ -1088,7 +1108,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                             prepared.TargetDir,
                             StoreRoot,
                             changedPaths,
-                            uncomparableReason
+                            uncomparableReason,
+                            prepared.MergeBaseSha
                         )
                     ),
                 }
@@ -1228,7 +1249,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                         PosixJoin(StoreRoot, submoduleRelPath),
                         StoreRoot,
                         changedPaths,
-                        uncomparableReason
+                        uncomparableReason,
+                        prepared.MergeBaseSha
                     )
                 ),
             }
@@ -5985,6 +6007,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 /// preparation established share no ancestor at all — and is omitted from the JSON entirely when null, so an
 /// ordinary artifact serializes to exactly the bytes it did before the property existed. It is what makes a
 /// v2 row distinguishable from a v1 one: see <c>DaemonReviewStageExecutor.ContextArtifactSchemaVersion</c>.
+/// </para>
+/// <para>
+/// <see cref="MergeBaseSha"/> (v3, issue #647) is the commit id <see cref="MergeBaseResolver"/> resolved
+/// base...head against on this run's checkout — populated on all three construction sites, including the
+/// direct/non-pooled path, which resolves it explicitly for this purpose (the pooled paths get it for free
+/// from <c>PreparedCheckout.MergeBaseSha</c>). Null and omitted from the JSON on any run whose merge base was
+/// not <see cref="MergeBaseOutcome.Resolved"/>, and on any artifact written before this field existed.
 /// </para></summary>
 internal sealed record ContextArtifactPayload(
     string PrId,
@@ -5995,7 +6024,8 @@ internal sealed record ContextArtifactPayload(
     string? CheckoutRoot = null,
     string? StoreRoot = null,
     string? ChangedPaths = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UncomparableReason = null
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UncomparableReason = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? MergeBaseSha = null
 );
 
 /// <summary>The persisted primary review output (kind <c>review</c>). <see cref="ThreadId"/> is the conversation

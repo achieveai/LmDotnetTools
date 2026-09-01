@@ -484,6 +484,15 @@ builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCom
     sp.GetRequiredService<ILogger<GitHubReviewCommentPublisher>>()
 ));
 
+// Issue #647 — what the PR was ASKED to do, read from GitHub's issue-linking graph (the GitHub analog of
+// the ADO work-item context reader registered below). Registered unconditionally alongside the other
+// GitHub services; the reader itself returns Unavailable for a non-GitHub repo.
+builder.Services.AddSingleton(sp => new GitHubIssueContextReader(
+    sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
+    sp.GetRequiredService<GitHubOAuthProvider>(),
+    sp.GetRequiredService<ILogger<GitHubIssueContextReader>>()
+));
+
 if (daemonOptions.EnableAdoProvider)
 {
     builder.Services.AddSingleton<IPrProvider>(sp => new AdoPrProvider(

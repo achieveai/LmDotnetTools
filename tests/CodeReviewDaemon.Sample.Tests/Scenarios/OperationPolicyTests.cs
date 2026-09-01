@@ -352,6 +352,77 @@ public sealed class OperationPolicyTests
     }
 
     [Fact]
+    public void CollectOnlyVariant_still_denies_a_non_graphql_post_to_provider_metadata()
+    {
+        // Regression pin for the carve-out added below: a collect-only policy must still hard-deny a
+        // plain (non-GraphQL) POST to the API host under ReadProviderMetadata — the exception is for the
+        // one GraphQL route, not for "any POST classified as ReadProviderMetadata".
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
+
+        var decision = collectOnly.Decide(
+            new OperationRequest(
+                SandboxOperation.ReadProviderMetadata,
+                "github",
+                "api.github.com",
+                "POST",
+                "/repos/acme/widgets/pulls/7"
+            )
+        );
+
+        decision.IsAllowed.Should().BeFalse("only the GraphQL metadata route is carved out, not every POST");
+    }
+
+    [Fact]
+    public void CollectOnlyVariant_allows_graphql_post_for_reading_provider_metadata()
+    {
+        // Issue #647 — GitHubIssueContextReader is the first GraphQL consumer, and GraphQL reads are
+        // POSTs by protocol. A collect-only (B) variant must still be able to run this READ, or issue
+        // #647 becomes unavailable in exactly the run where the daemon most needs a second opinion.
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
+
+        var decision = collectOnly.Decide(
+            new OperationRequest(SandboxOperation.ReadProviderMetadata, "github", "api.github.com", "POST", "/graphql")
+        );
+
+        decision.IsAllowed.Should().BeTrue("reading linked issues over GraphQL is a read, not a write");
+    }
+
+    [Fact]
+    public void PostReviewComment_does_not_inherit_the_graphql_carve_out()
+    {
+        // The carve-out is keyed to ReadProviderMetadata's own arm, not to "POST /graphql on the API
+        // host" in the abstract — a write operation must not be able to route through it.
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
+
+        var decision = collectOnly.Decide(
+            new OperationRequest(SandboxOperation.PostReviewComment, "github", "api.github.com", "POST", "/graphql")
+        );
+
+        decision.IsAllowed.Should().BeFalse("PostReviewComment has no write capability in a collect-only policy");
+    }
+
+    [Fact]
+    public void ReadProviderMetadata_denies_post_to_a_non_graphql_path_even_with_write_capability()
+    {
+        // Even with write capability granted, ReadProviderMetadata's arm must still reject a POST to
+        // anything other than the GraphQL path — it is still declared a GET-only operation apart from
+        // that one carved-out route.
+        var policy = CreatePolicy();
+
+        var decision = policy.Decide(
+            new OperationRequest(
+                SandboxOperation.ReadProviderMetadata,
+                "github",
+                "api.github.com",
+                "POST",
+                "/repos/acme/widgets/pulls/7"
+            )
+        );
+
+        decision.IsAllowed.Should().BeFalse("only the /graphql route is carved out of the GET-only rule");
+    }
+
+    [Fact]
     public void ShouldInjectCredential_mirrors_the_deny_decision()
     {
         var policy = CreatePolicy();

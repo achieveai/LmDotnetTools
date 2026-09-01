@@ -131,6 +131,13 @@ internal sealed record ReviewScope(
 /// </summary>
 internal sealed class OperationPolicy
 {
+    /// <summary>
+    /// GitHub's sole GraphQL endpoint. Every GraphQL request — reads included — is an HTTP POST, which is
+    /// why <see cref="SandboxOperation.ReadProviderMetadata"/>'s otherwise GET-only arm needs a named
+    /// exception for exactly this path rather than a blanket allowance for any POST.
+    /// </summary>
+    private const string GitHubGraphQlPath = "/graphql";
+
     private readonly ReviewScope _scope;
     private readonly bool _allowWriteOperations;
 
@@ -183,7 +190,12 @@ internal sealed class OperationPolicy
         // Scoped to the provider-API operations on purpose: git transport legitimately POSTs
         // (git-upload-pack is a POST), so a blanket method ban would break every fetch. The distinction is
         // the operation's ARM, not the host — on ADO the API host and the git host are the same name.
-        if (!_allowWriteOperations && IsProviderApiOperation(request.Operation) && IsMutatingMethod(request.Method))
+        if (
+            !_allowWriteOperations
+            && IsProviderApiOperation(request.Operation)
+            && IsMutatingMethod(request.Method)
+            && !IsGitHubGraphQlMetadataRequest(request)
+        )
         {
             return PolicyDecision.Deny(
                 $"this policy is collect-only and has no provider-API write capability; refusing "
@@ -217,12 +229,11 @@ internal sealed class OperationPolicy
                 ? PolicyDecision.Deny("this variant is collect-only and has no post capability")
                 : DecideApi(request, "POST", "post review comment", allowReadOnlyProjectRoutes: false),
 
-            SandboxOperation.ReadProviderMetadata => DecideApi(
-                request,
-                "GET",
-                "read provider metadata",
-                allowReadOnlyProjectRoutes: true
-            ),
+            // GitHub's linked-issues read (issue #647) is GraphQL, and GraphQL is POST by protocol — the
+            // one carved-out route the read-only arm still has to recognize as a read.
+            SandboxOperation.ReadProviderMetadata => IsGitHubGraphQlMetadataRequest(request)
+                ? DecideGraphQlMetadata(request)
+                : DecideApi(request, "GET", "read provider metadata", allowReadOnlyProjectRoutes: true),
 
             _ => PolicyDecision.Deny($"unknown operation '{request.Operation}'"),
         };
@@ -333,6 +344,25 @@ internal sealed class OperationPolicy
 
         return PolicyDecision.Deny($"submodule '{request.Host}{StripQuery(request.Path)}' is not on the allow-list");
     }
+
+    /// <summary>
+    /// Whether <paramref name="request"/> targets GitHub's GraphQL metadata endpoint (a POST to
+    /// <c>/graphql</c> on the run's API host). Checks host/method/path only, deliberately not the
+    /// operation — the caller (the <see cref="SandboxOperation.ReadProviderMetadata"/> arm, and the
+    /// collect-only gate above it) is what restricts which operation may reach this exception, so a
+    /// write operation routed through some other classification cannot bootstrap itself into it here.
+    /// </summary>
+    private bool IsGitHubGraphQlMetadataRequest(OperationRequest request) =>
+        HostMatches(request.Host, _scope.ApiHost)
+        && string.Equals(request.Method, "POST", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(StripQuery(request.Path), GitHubGraphQlPath, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Allows a GraphQL read once <see cref="IsGitHubGraphQlMetadataRequest"/> has already validated
+    /// host, method and path — nothing further to check, so this simply grants it.
+    /// </summary>
+    private PolicyDecision DecideGraphQlMetadata(OperationRequest request) =>
+        PolicyDecision.Allow($"read provider metadata (GraphQL) on '{_scope.ApiHost}'");
 
     /// <summary>
     /// Evaluates a provider-API request. <paramref name="allowReadOnlyProjectRoutes"/> lets the run's
