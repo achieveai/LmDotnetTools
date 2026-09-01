@@ -462,6 +462,251 @@ public class TaskManagerTests
 
     #endregion
 
+    #region Parent Completion Descendant Guard Tests (task 22)
+
+    /// <summary>
+    ///     Direct case: a NotStarted child refuses the parent's completion outright — the parent
+    ///     is never even reached before the descendant check, since a claimed-but-not-finished
+    ///     subtree is exactly what task 22 exists to catch.
+    /// </summary>
+    [Fact]
+    public void UpdateTask_ToCompletedWithANotStartedChild_IsRefused()
+    {
+        // Arrange
+        _taskManager.AddTask("Parent");
+        _taskManager.AddTask("Child", "1");
+        _taskManager.ClaimTask("1", "lead");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_has_incomplete_descendants");
+        result.Text.Should().Contain("1.1");
+
+        _taskManager.GetTasks().Single().Status.Should().Be(TaskManager.TaskStatus.InProgress);
+    }
+
+    /// <summary>
+    ///     Direct case: an InProgress child (someone else's active work) also refuses — using a
+    ///     different assignee for the child than for the parent, since claiming a second task for
+    ///     the same agent would release the first one (claim discipline), which would silently
+    ///     defeat the very state this test needs to hold.
+    /// </summary>
+    [Fact]
+    public void UpdateTask_ToCompletedWithAnInProgressChild_IsRefused()
+    {
+        // Arrange
+        _taskManager.AddTask("Parent");
+        _taskManager.AddTask("Child", "1");
+        _taskManager.ClaimTask("1.1", "child-worker");
+        _taskManager.ClaimTask("1", "lead");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_has_incomplete_descendants");
+        result.Text.Should().Contain("1.1");
+    }
+
+    /// <summary>
+    ///     Direct case: a Blocked child also refuses. Blocked is not named in "not started or in
+    ///     progress" literally, but it is not terminal either — a blocked descendant has not
+    ///     finished, it is only waiting — so it must count the same as the two named statuses.
+    /// </summary>
+    [Fact]
+    public void UpdateTask_ToCompletedWithABlockedChild_IsRefused()
+    {
+        // Arrange
+        _taskManager.AddTask("Parent"); // 1
+        _taskManager.AddTask("Blocker"); // 2
+        _taskManager.AddTask("Child", "1"); // 1.1
+        _taskManager.BlockTask("1.1", ["2"]);
+        _taskManager.ClaimTask("1", "lead");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_has_incomplete_descendants");
+        result.Text.Should().Contain("1.1");
+    }
+
+    /// <summary>
+    ///     Nested case: the guard walks the whole subtree, not just direct children. A grandchild
+    ///     added under an already-completed child (a legitimate sequence — nothing refuses adding
+    ///     a subtask under a Completed row) still refuses the top-level parent, because the
+    ///     grandchild itself was never finished or removed.
+    /// </summary>
+    [Fact]
+    public void UpdateTask_ToCompletedWithAnOpenGrandchildAddedAfterItsParentCompleted_IsRefused()
+    {
+        // Arrange
+        _taskManager.AddTask("Parent"); // 1
+        _taskManager.AddTask("Child", "1"); // 1.1
+        _taskManager.ClaimTask("1.1", "child-worker");
+        _taskManager.UpdateTask("1.1", "completed"); // no open descendants at this point
+        _taskManager.AddTask("Late grandchild", "1.1"); // 1.1.1, added after 1.1 completed
+        _taskManager.ClaimTask("1", "lead");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("task_has_incomplete_descendants");
+        result.Text.Should().Contain("1.1.1");
+
+        // The already-completed intermediate child is unaffected by the refusal.
+        var parent = _taskManager.GetTasks().Single();
+        parent.SubTasks.Single(t => t.Id == "1.1").Status.Should().Be(TaskManager.TaskStatus.Completed);
+    }
+
+    /// <summary>
+    ///     Removed case: a Removed descendant does not block completion — it is terminal exactly
+    ///     like Completed, per task 22's contract.
+    /// </summary>
+    [Fact]
+    public void UpdateTask_ToCompletedWithOnlyCompletedAndRemovedDescendants_Succeeds()
+    {
+        // Arrange
+        _taskManager.AddTask("Parent"); // 1
+        _taskManager.AddTask("Done child", "1"); // 1.1
+        _taskManager.AddTask("Abandoned child", "1"); // 1.2
+        _taskManager.ClaimTask("1.1", "child-worker");
+        _taskManager.UpdateTask("1.1", "completed");
+        _taskManager.UpdateTask("1.2", "removed");
+        _taskManager.ClaimTask("1", "lead");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", "completed");
+
+        // Assert
+        result.IsError.Should().BeFalse();
+        result.Text.Should().Contain("status to 'completed'");
+        _taskManager.GetTasks().Single().Status.Should().Be(TaskManager.TaskStatus.Completed);
+    }
+
+    /// <summary>
+    ///     Concurrency-relevant: several threads race the guard while the last child is
+    ///     deterministically still <c>InProgress</c> — nothing else is touching it yet, rather
+    ///     than hoping a separate finisher thread loses a race. Every attempt in that phase must
+    ///     be refused with <c>task_has_incomplete_descendants</c> and the parent must stay open.
+    ///     Only after the child is explicitly finished does a second wave of racing attempts get
+    ///     to succeed, and — because the guard and the completion it gates share <c>_sync</c> —
+    ///     exactly one of them wins it.
+    ///     <para>
+    ///         The prior version of this test raced a "finish the child" thread against the
+    ///         completers behind a single gate: nothing stopped every completer from running
+    ///         before the finisher, in which case the guard was never exercised against an open
+    ///         descendant and the test passed even against a pre-change implementation with no
+    ///         guard at all. Splitting the race into two deterministic phases — attempt while
+    ///         open, then attempt while closed — closes that hole. All waits below are bounded so
+    ///         a scheduling or setup failure fails the test instead of hanging the suite.
+    ///     </para>
+    /// </summary>
+    [Fact]
+    public async Task UpdateTask_CompletingParentWhileLastChildIsInProgress_IsRefusedUntilChildFinishes()
+    {
+        // Arrange
+        var manager = new TaskManager();
+        var bound = TimeSpan.FromSeconds(30);
+        manager.AddTask("Parent"); // 1
+        for (var i = 0; i < 5; i++)
+        {
+            manager.AddTask($"Done child {i}", "1");
+            manager.ClaimTask($"1.{i + 1}", "child-worker");
+            manager.UpdateTask($"1.{i + 1}", "completed");
+        }
+
+        manager.AddTask("Last child", "1"); // 1.6
+        manager.ClaimTask("1.6", "child-worker");
+        manager.ClaimTask("1", "lead");
+
+        // Act, phase 1 - race the guard while the last child is definitely InProgress: nothing
+        // in this phase ever touches it, so every attempt must observe the same open descendant.
+        var openResults = new ConcurrentBag<FunctionResult>();
+        using (var startingGun = new ManualResetEventSlim(false))
+        {
+            var openAttempts = Enumerable
+                .Range(0, 8)
+                .Select(_ =>
+                    Task.Run(() =>
+                    {
+                        startingGun.Wait(bound).Should().BeTrue("the starting gun must fire promptly");
+                        openResults.Add(manager.UpdateTask("1", "completed"));
+                    })
+                )
+                .ToArray();
+
+            startingGun.Set();
+            await Task.WhenAll(openAttempts).WaitAsync(bound);
+        }
+
+        // Assert, phase 1 - every attempt was refused for the same reason, and neither the
+        // parent nor the still-open child moved.
+        openResults.Should().HaveCount(8);
+        openResults.Should().OnlyContain(r => r.IsError && r.ErrorCode == "task_has_incomplete_descendants");
+
+        var parentWhileChildOpen = manager.GetTasks().Single();
+        parentWhileChildOpen.Status.Should().NotBe(TaskManager.TaskStatus.Completed);
+        parentWhileChildOpen.SubTasks.Single(t => t.Id == "1.6").Status.Should().Be(TaskManager.TaskStatus.InProgress);
+
+        // Act, phase 2 - finish the last child, then race the guard again; it must now let
+        // exactly one attempt through.
+        var finishResult = manager.UpdateTask("1.6", "completed");
+        finishResult.IsError.Should().BeFalse();
+
+        var successes = new ConcurrentBag<int>();
+        var failures = new ConcurrentBag<Exception>();
+        using (var secondGun = new ManualResetEventSlim(false))
+        {
+            var closedAttempts = Enumerable
+                .Range(0, 8)
+                .Select(i =>
+                    Task.Run(() =>
+                    {
+                        secondGun.Wait(bound).Should().BeTrue("the second starting gun must fire promptly");
+                        try
+                        {
+                            var result = manager.UpdateTask("1", "completed");
+                            if (!result.IsError)
+                            {
+                                successes.Add(i);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            failures.Add(ex);
+                        }
+                    })
+                )
+                .ToArray();
+
+            secondGun.Set();
+            await Task.WhenAll(closedAttempts).WaitAsync(bound);
+        }
+
+        // Assert, phase 2 - no exceptions, exactly one caller wins the completion, and the
+        // parent now shows every descendant terminal.
+        failures.Should().BeEmpty();
+        successes.Count.Should().Be(1);
+
+        var parentAfterCompletion = manager.GetTasks().Single();
+        parentAfterCompletion.Status.Should().Be(TaskManager.TaskStatus.Completed);
+        parentAfterCompletion
+            .SubTasks.Should()
+            .OnlyContain(t =>
+                t.Status == TaskManager.TaskStatus.Completed || t.Status == TaskManager.TaskStatus.Removed
+            );
+    }
+
+    #endregion
+
     #region DeleteTask Tests
 
     [Fact]
@@ -769,6 +1014,10 @@ public class TaskManagerTests
         var task2Id = ExtractTaskId(task2Result);
         _taskManager.AddTask("Subtask", task1Id);
 
+        // The subtask must itself be terminal (task 22) before task1 — its parent — can complete.
+        _taskManager.ClaimTask($"{task1Id}.1", "subtask-tester");
+        _taskManager.UpdateTask($"{task1Id}.1", status: "completed");
+
         _taskManager.ClaimTask(task1Id.ToString(), "tester");
         _taskManager.UpdateTask(task1Id, status: "completed");
         _taskManager.UpdateTask(task2Id, status: "removed");
@@ -781,8 +1030,8 @@ public class TaskManagerTests
 
         // Assert
         totalCount.Should().Be("Total tasks: 3");
-        completedCount.Should().Be("Completed tasks: 1");
-        pendingCount.Should().Be("Pending tasks: 1");
+        completedCount.Should().Be("Completed tasks: 2");
+        pendingCount.Should().Be("Pending tasks: 0");
         removedCount.Should().Be("Removed tasks: 1");
     }
 
@@ -1097,10 +1346,15 @@ public class TaskManagerTests
         // Arrange - one tree covering all four statuses, three levels of nesting,
         // and numbered notes. This is the only full-string assertion on the rendered
         // markdown, so it is what pins the format the spec documents.
+        //
+        // "Validate JWT" nests under "Draft schema" (soon Removed), not under "Define
+        // endpoints" (soon Completed): task 22 refuses to complete a parent over an open
+        // descendant, and Removed carries no such check, so this is the shape that lets 1.1
+        // still complete while a NotStarted leaf is still on the tree.
         _taskManager.AddTask("Design API");
         _taskManager.AddTask("Define endpoints", "1");
-        _taskManager.AddTask("Validate JWT", "1.1");
         _taskManager.AddTask("Draft schema", "1");
+        _taskManager.AddTask("Validate JWT", "1.2");
         _taskManager.AddTask("Ship it");
         _taskManager.AddNote("1", noteText: "Rate limit is 100/min");
         _taskManager.AddNote("1", noteText: "Auth via JWT");
@@ -1133,8 +1387,8 @@ public class TaskManagerTests
             + "  1. Rate limit is 100/min\n"
             + "  2. Auth via JWT\n"
             + "  [x] 1.1. Define endpoints [@tester]\n"
-            + "    [ ] 1.1.1. Validate JWT\n"
             + "  [~] 1.2. Draft schema (removed)\n"
+            + "    [ ] 1.2.1. Validate JWT\n"
             + "[ ] 2. Ship it";
 
         result.Should().Be(expected);

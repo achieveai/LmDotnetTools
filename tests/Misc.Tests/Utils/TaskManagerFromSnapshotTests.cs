@@ -148,7 +148,15 @@ public class TaskManagerFromSnapshotTests
         agentlessStart.ErrorCode.Should().Be("task_blocked");
 
         // And the recorded blocker still lifts the block: completing task 1 auto-unblocks task 3,
-        // which only works because the blocker id itself survived the restart.
+        // which only works because the blocker id itself survived the restart. Task 1 carries its
+        // own subtree (1.1, 1.1.1 from BuildPopulatedManager) — task 22 refuses to complete a
+        // parent over an open descendant, so those must be finished first, under a different
+        // assignee so claiming them does not release task 1's own live lease.
+        _ = rehydrated.ClaimTask("1.1.1", "agent-sub");
+        _ = rehydrated.UpdateTask("1.1.1", "completed");
+        _ = rehydrated.ClaimTask("1.1", "agent-sub");
+        _ = rehydrated.UpdateTask("1.1", "completed");
+
         _ = rehydrated.ClaimTask("1", "agent-a");
         var complete = rehydrated.UpdateTask("1", "completed");
         complete.IsError.Should().BeFalse();

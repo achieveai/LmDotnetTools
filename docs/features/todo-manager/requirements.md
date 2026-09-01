@@ -123,8 +123,8 @@ summary block appears only for an unfiltered, non-`mainOnly` listing.
   1. Rate limit is 100/min
   2. Auth via JWT
   [x] 1.1. Define endpoints [@tester]
-    [ ] 1.1.1. Validate JWT
   [~] 1.2. Draft schema (removed)
+    [ ] 1.2.1. Validate JWT
 [ ] 2. Ship it
 ```
 
@@ -135,10 +135,14 @@ tag because completing it required claiming it first (Requirement 8.8) and `assi
 durable ownership that survives the `Completed` transition rather than being cleared — see
 Requirement 8 for the coordination fields (`Blocked`, `assignee`, `blockedBy`, elapsed-time)
 that this document was amended to cover, and the row-suffix rendering (`[@assignee]`,
-`(Nm)`, `(blocked by ...)`) they add. A task with attached artifacts (Requirement 9)
-additionally renders an `Artifacts:` block of `- <path>` bullets directly after its notes,
-at the same indent — `ListTasks_RendersArtifactsAsPlainBulletsUnderTheTask` pins that
-rendering byte for byte.
+`(Nm)`, `(blocked by ...)`) they add. "Validate JWT" nests under "Draft schema" rather than
+under "Define endpoints" because a parent cannot be completed while any descendant is still
+`not started`, `in progress`, or `blocked` (Requirement 8, the completion gate); `removed` is
+terminal like `completed` and carries no such check, so it is the shape that lets 1.1
+complete while a `not started` leaf is still on the tree. A task with attached artifacts
+(Requirement 9) additionally renders an `Artifacts:` block of `- <path>` bullets directly
+after its notes, at the same indent — `ListTasks_RendersArtifactsAsPlainBulletsUnderTheTask`
+pins that rendering byte for byte.
 
 ### Requirement 6: Markdown Generation Method
 - **User Story**: As a developer, I need a method to generate markdown representation so that I can get formatted output programmatically.
@@ -160,7 +164,7 @@ rendering byte for byte.
    - *Amended.* The original eleven operations are unchanged; `claim-task`, `assign-task`, and `block-task` were added for the coordination fields in Requirement 8, and `attach-artifact` for the file artifacts in Requirement 9.
 3. **Parameter Mapping**: WHEN functions are called THEN arguments SHALL bind even when the model's JSON types differ from the declared ones — a quoted number onto a numeric parameter, an unquoted number onto a string parameter — and a parameter the model omitted SHALL take its declared C# default rather than the type's zero value
 4. **Error Handling**: WHEN operations fail THEN it SHALL return descriptive error messages instead of throwing exceptions, and SHOULD mark the tool result as an error so the model and the host can tell a failure from a successful answer whose text happens to start with "Error"
-   - *Amended.* Both halves are shipped. Every failure returns a message rather than throwing, and all fifteen tools return `FunctionResult`, so a domain failure reaches the model with `IsError = true` and a lower_snake_case error code (`task_not_found`, `invalid_args`, `invalid_task_id`, `invalid_status`, `note_index_out_of_range`, `task_not_claimable`, `task_blocked`, `task_already_claimed`, `task_not_claimed`, `invalid_artifact_path`, `block_cycle`) while a success carries no code. The text on the wire is unchanged — only `Text` is serialized — so the contract still advertises `string`.
+   - *Amended.* Both halves are shipped. Every failure returns a message rather than throwing, and all fifteen tools return `FunctionResult`, so a domain failure reaches the model with `IsError = true` and a lower_snake_case error code (`task_not_found`, `invalid_args`, `invalid_task_id`, `invalid_status`, `note_index_out_of_range`, `task_not_claimable`, `task_blocked`, `task_already_claimed`, `task_not_claimed`, `invalid_artifact_path`, `block_cycle`, `task_has_incomplete_descendants` — the parent completion gate in Requirement 8, refusing `update-task ... completed` while a descendant is still `not started`, `in progress`, or `blocked`) while a success carries no code. The text on the wire is unchanged — only `Text` is serialized — so the contract still advertises `string`.
 5. **Statefulness**: WHEN a provider is built around a live instance THEN its descriptors SHALL be marked `IsStateful`, so hosts that only accept stateless tools exclude it rather than sharing one conversation's list with another
 
 ### Requirement 8: Coordination Fields (Assignee, Claim/Lease, Blocked)
