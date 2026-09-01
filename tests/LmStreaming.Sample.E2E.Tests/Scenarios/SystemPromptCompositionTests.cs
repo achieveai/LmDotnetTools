@@ -348,7 +348,12 @@ public sealed class SystemPromptCompositionTests
             // Unavailable, and Program.cs fails the request closed — before it ever reaches the LLM.
             // The default workspace's Marketplaces list is empty (FileWorkspaceStore), so any
             // catalog that answers WITHOUT throwing is already "compatible"; this stub only needs to
-            // answer successfully. CallCount below proves it was actually consulted, not merely wired.
+            // answer successfully. CallCount below proves the DI override is actually wired into the
+            // production graph and consulted by it — not, on its own, that
+            // WorkspaceCatalogCompatibilityService.ValidateForSessionAsync specifically is the caller:
+            // the copied daemon mode enables subagents, and MarketplaceSubAgentLoader can reach the
+            // same IMarketplaceCatalogClient, so a nonzero count is consistent with either call site
+            // (or both) having run.
             var catalogClient = new StubMarketplaceCatalogClient();
 
             var builder = new ScriptedBuilder(responder.AsAnthropicHandler());
@@ -396,9 +401,14 @@ public sealed class SystemPromptCompositionTests
                         + "selection, so the real ApplyWorkspaceSuffix call site must still run for it"
                 );
 
-            // Non-vacuity: prove the fake catalog client was actually reached by the production
-            // validation route (WorkspaceCatalogCompatibilityService.ValidateForSessionAsync), rather
-            // than the test passing because that call site was skipped for some other reason.
+            // Non-vacuity: prove the test-owned fake is actually wired into the production DI graph
+            // and consulted by it, rather than the test passing because the DI override was silently
+            // dropped (see the poison-double and removed-override mutation notes in the commit this
+            // test was added in). This does NOT isolate or pin
+            // WorkspaceCatalogCompatibilityService.ValidateForSessionAsync as the caller: the copied
+            // daemon mode enables subagents, and MarketplaceSubAgentLoader can reach the same
+            // IMarketplaceCatalogClient, so CallCount > 0 is consistent with either call site (or
+            // both) having run.
             catalogClient
                 .CallCount.Should()
                 .BeGreaterThan(
@@ -435,7 +445,10 @@ public sealed class SystemPromptCompositionTests
     /// <c>FileWorkspaceStore</c>), so an empty catalog is already compatible with it — this stub only
     /// needs to answer without throwing for
     /// <see cref="WorkspaceCatalogCompatibilityService.ValidateForSessionAsync"/> to succeed.
-    /// <see cref="CallCount"/> lets the test prove this double was actually consulted.
+    /// <see cref="CallCount"/> lets the test prove this double was actually consulted by the
+    /// production DI graph, rather than the DI override having been silently dropped; it does not
+    /// isolate which caller reached it (see the call site for the caveat about a second caller in a
+    /// mode with subagents enabled).
     /// </summary>
     private sealed class StubMarketplaceCatalogClient : IMarketplaceCatalogClient
     {
