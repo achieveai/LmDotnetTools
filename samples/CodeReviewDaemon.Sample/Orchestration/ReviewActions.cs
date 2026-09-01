@@ -1,3 +1,4 @@
+using System.Globalization;
 using YamlDotNet.Core;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
@@ -16,6 +17,12 @@ internal enum ReviewActionKind
 /// One successfully validated action. <see cref="Index"/> is its 0-based position in the raw YAML
 /// list — preserved rather than renumbered, so a caller can tell "this action" apart from a sibling
 /// that was rejected without needing to re-derive positions from two separate lists.
+/// <para>
+/// <see cref="Ref"/> and <see cref="Path"/> are untrusted model output: the host that applies this
+/// action (issue #652) must validate the target/containment itself — e.g. that <see cref="Path"/>
+/// stays within the reviewed diff and <see cref="Ref"/> resolves to a real, in-scope comment —
+/// before acting on it. This parser only checks presence, not trustworthiness.
+/// </para>
 /// </summary>
 internal sealed record ReviewAction(
     int Index,
@@ -70,10 +77,14 @@ internal static class ReviewActionsParser
         .Build();
 
     /// <summary>
-    /// Parses <paramref name="response"/>. Never throws: every failure mode (malformed YAML, an
-    /// unterminated fence, more than one fence) is reported through
-    /// <see cref="ReviewActionsParseResult.WholeBlockFailed"/> rather than an exception, because a
-    /// caller receiving raw model output cannot be expected to wrap every call in a try/catch.
+    /// Parses <paramref name="response"/>. Never throws for malformed input content: every content
+    /// failure mode (malformed YAML, an unterminated fence, more than one fence, an out-of-range or
+    /// non-numeric per-action field) is reported through
+    /// <see cref="ReviewActionsParseResult.WholeBlockFailed"/> or a per-action
+    /// <see cref="RejectedReviewAction"/> rather than an exception, because a caller receiving raw
+    /// model output cannot be expected to wrap every call in a try/catch. A null
+    /// <paramref name="response"/> remains a caller error, not malformed model content, and still
+    /// throws <see cref="ArgumentNullException"/>.
     /// </summary>
     public static ReviewActionsParseResult Parse(string response)
     {
@@ -150,6 +161,12 @@ internal static class ReviewActionsParser
     /// body for `reply`; path, then a positive line, then body for `finding`) purely so the outcome is
     /// deterministic when more than one field is missing at once — the spec pins only the single-field
     /// cases.
+    /// <para>
+    /// Matching against the canonical `reply`/`finding`/`summary` tokens below is exact and
+    /// case-sensitive by design: the structured protocol defines those as fixed lowercase tokens, and
+    /// "tolerant" here means item-scoped rejection of anything else — not case-folding or synonym
+    /// normalization.
+    /// </para>
     /// </summary>
     private static void Validate(
         int index,
@@ -181,7 +198,10 @@ internal static class ReviewActionsParser
                 {
                     Reject(index, raw, "finding requires path", rejections);
                 }
-                else if (raw.Line is not > 0)
+                else if (
+                    !int.TryParse(raw.Line, NumberStyles.Integer, CultureInfo.InvariantCulture, out var line)
+                    || line <= 0
+                )
                 {
                     Reject(index, raw, "finding requires a positive line", rejections);
                 }
@@ -192,7 +212,7 @@ internal static class ReviewActionsParser
                 else
                 {
                     actions.Add(
-                        new ReviewAction(index, ReviewActionKind.Finding, raw.Body, Path: raw.Path, Line: raw.Line)
+                        new ReviewAction(index, ReviewActionKind.Finding, raw.Body, Path: raw.Path, Line: line)
                     );
                 }
 
@@ -296,6 +316,24 @@ internal static class ReviewActionsParser
     /// for any unrecognized value while deserializing the whole list, turning "unknown kind rejects
     /// only that action" into an incorrect whole-block failure. The C# switch in
     /// <see cref="Validate"/> does that mapping instead, one item at a time.
+    /// <para>
+    /// <see cref="Line"/> is deliberately <c>string?</c>, not <c>int?</c>, for the identical reason:
+    /// an out-of-range or non-numeric per-action line value (e.g. <c>"42-58"</c> or <c>"L42"</c>)
+    /// must reject only that one finding, not the whole block. Typing it as <c>int?</c> would make
+    /// YamlDotNet's type converter throw while deserializing the whole list the moment any single
+    /// action supplied a non-integer line — exactly the bug this field's typing exists to avoid. The
+    /// value is parsed with <see cref="int.TryParse(string?, NumberStyles, IFormatProvider?, out int)"/>
+    /// per item in <see cref="Validate"/> instead; the resulting <see cref="ReviewAction.Line"/>
+    /// remains a real <c>int?</c> once validated.
+    /// </para>
+    /// <para>
+    /// Fields still deserialized directly onto their natural CLR type (e.g. <see cref="Body"/> as a
+    /// plain string) remain subject to a whole-block <see cref="YamlException"/> if the YAML document
+    /// gives them a structurally incompatible node — e.g. a mapping where a scalar was expected. That
+    /// is by design: this issue's tolerance model is "reject the one malformed action", not "coerce
+    /// any YAML shape into any field type". No dictionary/object-mapping fallback is introduced to
+    /// paper over that residual case.
+    /// </para>
     /// </summary>
     private sealed class RawReviewAction
     {
@@ -307,6 +345,6 @@ internal static class ReviewActionsParser
 
         public string? Path { get; set; }
 
-        public int? Line { get; set; }
+        public string? Line { get; set; }
     }
 }

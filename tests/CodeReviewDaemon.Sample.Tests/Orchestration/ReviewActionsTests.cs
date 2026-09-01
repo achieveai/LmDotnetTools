@@ -29,7 +29,9 @@ public sealed class ReviewActionsTests
 
         result.WholeBlockFailed.Should().BeFalse();
         result.Rejections.Should().ContainSingle(r => r.Index == 0 && r.Reason == "reply requires ref");
-        result.Actions.Should().ContainSingle(a => a.Kind == ReviewActionKind.Summary && a.Body == "all good");
+        result
+            .Actions.Should()
+            .ContainSingle(a => a.Kind == ReviewActionKind.Summary && a.Body == "all good" && a.Index == 1);
     }
 
     [Fact]
@@ -40,7 +42,9 @@ public sealed class ReviewActionsTests
         );
 
         result.WholeBlockFailed.Should().BeFalse();
-        result.Rejections.Should().ContainSingle(r => r.Index == 0 && r.Reason == "reply requires body");
+        result
+            .Rejections.Should()
+            .ContainSingle(r => r.Index == 0 && r.Reason == "reply requires body" && r.Ref == "gh-review:123");
         result.Actions.Should().BeEmpty();
     }
 
@@ -71,6 +75,54 @@ public sealed class ReviewActionsTests
 
         result.WholeBlockFailed.Should().BeFalse();
         result.Rejections.Should().ContainSingle(r => r.Index == 0 && r.Reason == "finding requires a positive line");
+    }
+
+    [Fact]
+    public void Finding_with_range_like_line_value_is_rejected_but_sibling_summary_survives()
+    {
+        // RawReviewAction.Line is string?, not int?: a per-action line value that isn't a plain
+        // integer (e.g. a copied range like "42-58") must reject only this one finding. Before the
+        // fix-round-1 correction, Line was typed int? directly, so YamlDotNet's type converter threw
+        // while deserializing the *whole* list the moment this action's line failed to parse as an
+        // int — turning a should-be-per-action rejection into an incorrect WholeBlockFailed=true.
+        var result = ReviewActionsParser.Parse(
+            "```review-actions\n"
+                + "- kind: summary\n"
+                + "  body: \"all good\"\n"
+                + "- kind: finding\n"
+                + "  path: src/Foo.cs\n"
+                + "  line: 42-58\n"
+                + "  body: \"oops\"\n"
+                + "```"
+        );
+
+        result.WholeBlockFailed.Should().BeFalse();
+        result
+            .Actions.Should()
+            .ContainSingle(a => a.Kind == ReviewActionKind.Summary && a.Body == "all good" && a.Index == 0);
+        result.Rejections.Should().ContainSingle(r => r.Index == 1 && r.Reason == "finding requires a positive line");
+    }
+
+    [Fact]
+    public void Finding_with_nonnumeric_line_value_is_rejected_but_sibling_summary_survives()
+    {
+        // Same regression guard as above, for a non-numeric value ("L42") rather than a range.
+        var result = ReviewActionsParser.Parse(
+            "```review-actions\n"
+                + "- kind: summary\n"
+                + "  body: \"all good\"\n"
+                + "- kind: finding\n"
+                + "  path: src/Foo.cs\n"
+                + "  line: L42\n"
+                + "  body: \"oops\"\n"
+                + "```"
+        );
+
+        result.WholeBlockFailed.Should().BeFalse();
+        result
+            .Actions.Should()
+            .ContainSingle(a => a.Kind == ReviewActionKind.Summary && a.Body == "all good" && a.Index == 0);
+        result.Rejections.Should().ContainSingle(r => r.Index == 1 && r.Reason == "finding requires a positive line");
     }
 
     [Fact]
@@ -119,6 +171,39 @@ public sealed class ReviewActionsTests
         result.WholeBlockFailed.Should().BeFalse();
         result.Rejections.Should().ContainSingle(r => r.Index == 0 && r.Kind == "bogus");
         result.Actions.Should().ContainSingle(a => a.Kind == ReviewActionKind.Summary);
+    }
+
+    [Fact]
+    public void Missing_kind_is_rejected_with_missing_placeholder_but_sibling_survives()
+    {
+        var result = ReviewActionsParser.Parse(
+            "```review-actions\n"
+                + "- body: \"no kind field\"\n"
+                + "- kind: summary\n"
+                + "  body: \"all good\"\n"
+                + "```"
+        );
+
+        result.WholeBlockFailed.Should().BeFalse();
+        result.Rejections.Should().ContainSingle(r => r.Index == 0 && r.Reason == "unknown kind '(missing)'");
+        result.Actions.Should().ContainSingle(a => a.Kind == ReviewActionKind.Summary && a.Index == 1);
+    }
+
+    [Fact]
+    public void Blank_kind_is_rejected_with_empty_reason_but_sibling_survives()
+    {
+        var result = ReviewActionsParser.Parse(
+            "```review-actions\n"
+                + "- kind: \"\"\n"
+                + "  body: \"blank kind\"\n"
+                + "- kind: summary\n"
+                + "  body: \"all good\"\n"
+                + "```"
+        );
+
+        result.WholeBlockFailed.Should().BeFalse();
+        result.Rejections.Should().ContainSingle(r => r.Index == 0 && r.Reason == "unknown kind ''");
+        result.Actions.Should().ContainSingle(a => a.Kind == ReviewActionKind.Summary && a.Index == 1);
     }
 
     [Fact]
@@ -175,6 +260,10 @@ public sealed class ReviewActionsTests
         result.WholeBlockFailed.Should().BeTrue();
         result.Actions.Should().BeEmpty();
         result.Rejections.Should().ContainSingle(r => r.Index == -1 && r.Reason == WholeBlockFailureReason);
+        // Pins the one-newline Markdown join semantics exactly: both fenced spans (including their
+        // own trailing newlines) are removed, leaving the prose before the first fence joined to the
+        // prose between the two fences by a single '\n' each — not zero, not two.
+        result.Markdown.Should().Be("Intro\nMore text");
     }
 
     [Fact]
@@ -294,12 +383,16 @@ public sealed class ReviewActionsTests
     }
 
     [Fact]
-    public void Reply_with_ref_and_body_and_finding_with_all_required_fields_both_parse()
+    public void Reply_and_finding_both_round_trip_their_type_specific_fields()
     {
-        // Direct-deserialization / enum-mapping regression guard: both non-summary kinds must
-        // round-trip their type-specific fields onto ReviewAction, proving Kind was mapped from the
-        // raw string rather than accidentally deserialized straight onto the ReviewActionKind enum
-        // (which would throw for "bogus" mid-document instead of scoping to one rejection).
+        // Round-trip guard: both non-summary kinds must carry their type-specific fields (Ref for
+        // reply; Path/Line for finding) through onto ReviewAction unchanged. This is NOT itself the
+        // enum-direct-deserialization regression guard — neither action here has an invalid `kind`,
+        // so this test would pass even if Kind were (incorrectly) typed as the ReviewActionKind enum
+        // directly. That regression is instead caught by
+        // Unknown_kind_is_rejected_but_sibling_valid_action_survives above: with a direct-enum Kind,
+        // YamlDotNet would throw while deserializing the whole list the moment it hit "bogus",
+        // turning that test's expected per-action rejection into an incorrect WholeBlockFailed=true.
         var result = ReviewActionsParser.Parse(
             "```review-actions\n"
                 + "- kind: reply\n"
@@ -326,5 +419,74 @@ public sealed class ReviewActionsTests
         finding.Line.Should().Be(42);
         finding.Body.Should().Be("looks off");
         finding.Index.Should().Be(1);
+    }
+
+    // ---- Fix-round-1 (#649 blocker 2): Markdown-preservation and fence-scan mutation coverage ----
+
+    [Fact]
+    public void Single_valid_fence_with_prose_before_and_after_preserves_both_exactly()
+    {
+        // Pins the one-newline Markdown join semantics exactly for the common case: prose before and
+        // after a single valid fence must survive verbatim, joined by exactly one '\n' each — proving
+        // the span-removal only removes the fence's own lines, not a prefix- or suffix-only slice of
+        // the surrounding text.
+        var result = ReviewActionsParser.Parse(
+            "Intro text\n"
+                + "```review-actions\n"
+                + "- kind: summary\n"
+                + "  body: \"all good\"\n"
+                + "```\n"
+                + "Outro text"
+        );
+
+        result.WholeBlockFailed.Should().BeFalse();
+        result.Markdown.Should().Be("Intro text\nOutro text");
+        result.Actions.Should().ContainSingle(a => a.Kind == ReviewActionKind.Summary && a.Body == "all good");
+    }
+
+    [Fact]
+    public void Crlf_line_endings_around_a_valid_fence_still_parse_and_preserve_markdown()
+    {
+        // Fence-line matching uses TrimEnd() (which strips a trailing '\r' along with other trailing
+        // whitespace), so CRLF documents must be tolerated for free. Removing that TrimEnd() call (or
+        // narrowing it to only '\n') would make this fence go undetected under CRLF, and this test
+        // would fail — proving the CRLF tolerance is load-bearing, not accidental.
+        var result = ReviewActionsParser.Parse(
+            "Intro text\r\n"
+                + "```review-actions\r\n"
+                + "- kind: summary\r\n"
+                + "  body: \"all good\"\r\n"
+                + "```\r\n"
+                + "Outro text"
+        );
+
+        result.WholeBlockFailed.Should().BeFalse();
+        result.Markdown.Should().Be("Intro text\r\nOutro text");
+        result.Actions.Should().ContainSingle(a => a.Kind == ReviewActionKind.Summary && a.Body == "all good");
+    }
+
+    [Fact]
+    public void Multiline_block_scalar_body_containing_an_indented_fence_line_is_not_truncated()
+    {
+        // The closing-fence scan matches only an exact `TrimEnd() == "```"` line (no leading
+        // whitespace stripped), so an indented ``` inside a YAML block-scalar body must NOT be
+        // mistaken for the real closing fence. Changing that comparison to Trim() (stripping leading
+        // whitespace too) would make the indented ``` below match first, truncating the fence body
+        // before the real close and losing "more text" from the parsed action entirely.
+        var result = ReviewActionsParser.Parse(
+            "```review-actions\n"
+                + "- kind: summary\n"
+                + "  body: |\n"
+                + "    Some text\n"
+                + "    ```\n"
+                + "    more text\n"
+                + "```"
+        );
+
+        result.WholeBlockFailed.Should().BeFalse();
+        result.Rejections.Should().BeEmpty();
+        var action = result.Actions.Should().ContainSingle(a => a.Kind == ReviewActionKind.Summary).Subject;
+        action.Body.Should().Contain("```");
+        action.Body.Should().Contain("more text");
     }
 }
