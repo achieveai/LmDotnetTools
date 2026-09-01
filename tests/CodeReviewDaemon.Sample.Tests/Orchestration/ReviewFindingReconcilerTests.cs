@@ -67,6 +67,46 @@ public sealed class ReviewFindingReconcilerTests
         findings[0].Citations.Should().HaveCount(2);
     }
 
+    /// <summary>
+    /// F-006 — broadening what opens a block under a Questions heading means a bare 1-3-space-indented
+    /// sub-bullet now ALSO matches <c>ListItemLine</c> (which only tracks 0-3 leading spaces and cannot by
+    /// itself tell a sibling question from its own nested detail). Left unguarded, each of these would flush
+    /// and replace its parent as a spurious second question rather than staying attached as its content.
+    /// </summary>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void A_one_to_three_space_nested_bullet_under_a_questions_heading_stays_folded_into_its_parent(
+        int indentSpaces
+    )
+    {
+        var indent = new string(' ', indentSpaces);
+        var findings = ReviewFindingReconciler.ParseFindings(
+            "## Questions\n" + "- Does retry reset per attempt? src/Foo.cs:10\n" + $"{indent}- see also src/Bar.cs:99\n"
+        );
+
+        findings.Should().ContainSingle("the nested bullet is content of the open question, not a sibling");
+        findings[0].Citations.Should().HaveCount(2, "both the parent's and the nested bullet's citations survive");
+    }
+
+    [Fact]
+    public void Genuine_sibling_top_level_question_bullets_stay_separate_even_after_a_nested_bullet()
+    {
+        // The indentation guard must not over-fold: a later bullet back at the same (top) indentation as
+        // the question list is a real sibling question and must still open its own block.
+        var findings = ReviewFindingReconciler.ParseFindings(
+            "## Questions\n"
+                + "- Does retry reset per attempt? src/Foo.cs:10\n"
+                + "  - see also src/Bar.cs:99\n"
+                + "- What owns cleanup on cancel? src/Baz.cs:30\n"
+        );
+
+        findings.Should().HaveCount(2);
+        findings[0].Citations.Should().HaveCount(2, "the nested bullet folds into the first question");
+        findings[1].Citations.Should().ContainSingle(c => c.Path == "src/Baz.cs" && c.StartLine == 30);
+    }
+
     // ── Match tracing: MatchScore / MatchTiedCandidates ──────────────────────────────────────────────
 
     [Fact]

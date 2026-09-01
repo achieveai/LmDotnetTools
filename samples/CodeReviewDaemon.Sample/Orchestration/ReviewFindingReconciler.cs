@@ -263,6 +263,17 @@ internal static partial class ReviewFindingReconciler
     /// citations were dropped with no trace: not a finding, not folded into anyone else's body, simply never
     /// seen. A tally or grading line is still excluded here exactly as it would be anywhere else.
     /// </para>
+    /// <para>
+    /// <b>A more-indented bullet under an open question stays that question's content.</b> Broadening what
+    /// opens a block under a Questions heading (above) means a plain 1-3-space-indented sub-bullet — a
+    /// clarifying aside, a "see also" pointer — now also matches <see cref="ListItemLine"/> (which only
+    /// tracks 0-3 leading spaces and cannot by itself tell a sibling question from its own nested detail).
+    /// Left unguarded, that sub-bullet would flush and replace its parent as a second, unrelated question.
+    /// The indentation of the bullet that opened the current question is remembered for exactly this
+    /// comparison, so any subsequent bullet indented further than it folds into the open question's body
+    /// instead of starting a new one; a bullet at or above that indentation is a genuine sibling and still
+    /// opens its own block.
+    /// </para>
     /// </summary>
     internal static IReadOnlyList<ParsedReviewFinding> ParseFindings(string? markdown)
     {
@@ -276,6 +287,7 @@ internal static partial class ReviewFindingReconciler
         var headings = new List<(int Level, string Text)>();
         string? openTitle = null;
         var openIsQuestion = false;
+        int? openQuestionItemIndent = null;
         var openBody = new StringBuilder();
 
         foreach (var line in text.Split('\n'))
@@ -284,6 +296,7 @@ internal static partial class ReviewFindingReconciler
             if (heading.Success)
             {
                 Flush(findings, ref openTitle, ref openIsQuestion, openBody);
+                openQuestionItemIndent = null;
                 var level = heading.Groups["hashes"].Value.Length;
                 var headingText = heading.Groups["text"].Value.Trim();
                 while (headings.Count > 0 && headings[^1].Level >= level)
@@ -305,23 +318,36 @@ internal static partial class ReviewFindingReconciler
             var item = ListItemLine().Match(line);
             if (item.Success)
             {
+                var indent = item.Groups["indent"].Value.Length;
                 var itemText = item.Groups["text"].Value.Trim();
                 var headLine = Head(itemText);
 
-                // Under a Question heading (`AnyQuestion(headings)`), a top-level bullet with no severity
-                // word and no [QUESTION]/`Question:` marker of its own is still one question in that
-                // section's list — the heading is what marks it, not the bullet. `StartsFinding` alone never
-                // opens a block for it, so its citations were silently invisible to the parser: not a
-                // finding, not carried as anyone else's body, gone. `IsNotAFinding` still applies, so a tally
-                // or grading line under a Questions heading is excluded exactly as it would be anywhere else.
-                var opensQuestionItem = AnyQuestion(headings) && !IsNotAFinding(headLine);
-                if (StartsFinding(headLine) || opensQuestionItem)
+                // A bullet more indented than the question item currently open is that question's own
+                // nested sub-bullet, not a sibling question — it stays folded into the open item's body
+                // even though it independently matches ListItemLine (which only tracks 0-3 leading spaces
+                // and, on its own, cannot tell "another top-level item" from "this item's own nested
+                // detail"). `openQuestionItemIndent` is only set while the currently open item was itself
+                // opened as a question, so this never touches ordinary (non-question) findings elsewhere.
+                var isNestedUnderOpenQuestionItem = openQuestionItemIndent is int parentIndent && indent > parentIndent;
+
+                if (!isNestedUnderOpenQuestionItem)
                 {
-                    Flush(findings, ref openTitle, ref openIsQuestion, openBody);
-                    openTitle = itemText;
-                    openIsQuestion = AnyQuestion(headings) || IsQuestionMarker(headLine);
-                    _ = openBody.AppendLine(itemText);
-                    continue;
+                    // Under a Question heading (`AnyQuestion(headings)`), a top-level bullet with no severity
+                    // word and no [QUESTION]/`Question:` marker of its own is still one question in that
+                    // section's list — the heading is what marks it, not the bullet. `StartsFinding` alone never
+                    // opens a block for it, so its citations were silently invisible to the parser: not a
+                    // finding, not carried as anyone else's body, gone. `IsNotAFinding` still applies, so a tally
+                    // or grading line under a Questions heading is excluded exactly as it would be anywhere else.
+                    var opensQuestionItem = AnyQuestion(headings) && !IsNotAFinding(headLine);
+                    if (StartsFinding(headLine) || opensQuestionItem)
+                    {
+                        Flush(findings, ref openTitle, ref openIsQuestion, openBody);
+                        openTitle = itemText;
+                        openIsQuestion = AnyQuestion(headings) || IsQuestionMarker(headLine);
+                        openQuestionItemIndent = openIsQuestion ? indent : null;
+                        _ = openBody.AppendLine(itemText);
+                        continue;
+                    }
                 }
             }
 
@@ -1141,7 +1167,7 @@ internal static partial class ReviewFindingReconciler
     [GeneratedRegex(@"^(?<hashes>\#{1,6})\s+(?<text>.*)$")]
     private static partial Regex HeadingLine();
 
-    [GeneratedRegex(@"^ {0,3}(?:[-*+]|\d{1,3}[.)])\s+(?<text>\S.*)$")]
+    [GeneratedRegex(@"^(?<indent> {0,3})(?:[-*+]|\d{1,3}[.)])\s+(?<text>\S.*)$")]
     private static partial Regex ListItemLine();
 
     /// <summary>

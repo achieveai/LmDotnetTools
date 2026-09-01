@@ -33,6 +33,15 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// <see langword="null"/> for the same pre-match-tracing rows as <paramref name="MatchScore"/>, and for the
 /// same reason: a legacy row was never scored, so it cannot be reported as unambiguous either.
 /// </param>
+/// <param name="ShippedIndex">
+/// The winning shipped item's position in <c>ParseFindings(shippedReviewBody)</c>, copied from
+/// <see cref="ReconciledFinding.ShippedIndex"/> — a collision-safe identity that survives duplicate shipped
+/// titles, where a title-keyed lookup would silently merge two distinct shipped items into one. <c>-1</c> is
+/// a MEASURED "no shipped item won this join" (a <c>dropped</c> row), not an absent value.
+/// <see langword="null"/> means the opposite: this row was hydrated from an artifact written before this
+/// identity existed, and it must never be read as <c>-1</c> — that would misreport a never-tracked row as a
+/// deliberately dropped one.
+/// </param>
 internal sealed record ReviewFindingRecord(
     string Source,
     string Template,
@@ -45,7 +54,8 @@ internal sealed record ReviewFindingRecord(
     string? ShippedTitle,
     string? SynthesisNote,
     int? MatchScore,
-    int? MatchTiedCandidates
+    int? MatchTiedCandidates,
+    int? ShippedIndex
 );
 
 /// <summary>
@@ -147,10 +157,11 @@ internal sealed record ReviewFindingsArtifactPayload(
     /// reconciled rows so the parsed count comes off a separate pass over the source text — a count derived
     /// from <paramref name="reconciled"/> would agree with itself no matter what the loop dropped.
     /// <para>
-    /// Every row this produces carries a non-null <see cref="ReviewFindingRecord.MatchScore"/> and
-    /// <see cref="ReviewFindingRecord.MatchTiedCandidates"/> — <see langword="null"/> is reserved for rows
-    /// hydrated from a pre-match-tracing artifact and this method never reads one back in; it only ever
-    /// builds from a fresh <see cref="ReconciledFinding"/> list, whose own fields are non-nullable ints.
+    /// Every row this produces carries a non-null <see cref="ReviewFindingRecord.MatchScore"/>,
+    /// <see cref="ReviewFindingRecord.MatchTiedCandidates"/>, and <see cref="ReviewFindingRecord.ShippedIndex"/>
+    /// — <see langword="null"/> is reserved for rows hydrated from an artifact written before these fields
+    /// existed, and this method never reads one back in; it only ever builds from a fresh
+    /// <see cref="ReconciledFinding"/> list, whose own fields are non-nullable ints.
     /// </para>
     /// </summary>
     public static ReviewFindingsArtifactPayload Build(
@@ -196,7 +207,8 @@ internal sealed record ReviewFindingsArtifactPayload(
                 r.ShippedTitle,
                 r.SynthesisNote,
                 r.MatchScore,
-                r.MatchTiedCandidates
+                r.MatchTiedCandidates,
+                r.ShippedIndex
             ))
             .ToArray();
 

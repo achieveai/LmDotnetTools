@@ -157,6 +157,51 @@ public sealed class FindingsPersistenceTests
         // The whole point: a legacy `kept` row and a legacy `dropped` row must be equally distinguishable
         // from a freshly measured zero. Neither reads as "scored 0" — see the non-legacy assertion below.
         payload.AmbiguousMatches.Should().Be(0, "a null MatchTiedCandidates must not count as ambiguous");
+
+        // Same JSON also predates ShippedIndex — no such property either. It must hydrate null, and
+        // critically must NOT collapse to -1 (the real, MEASURED "dropped" sentinel a fresh row would
+        // carry), which would misreport a never-tracked legacy row as a deliberately dropped one.
+        foreach (var row in payload.Findings)
+        {
+            row.ShippedIndex.Should().BeNull("this row predates ShippedIndex and its identity was never tracked");
+        }
+    }
+
+    /// <summary>
+    /// F-009 — <see cref="ReconciledFinding.ShippedIndex"/> is what keeps two shipped items sharing a
+    /// byte-identical title from being collapsed into one identity by <c>AppendParserHealth</c>. That
+    /// protection is worthless if the identity itself does not survive being written to and read back from
+    /// the artifact store — this proves it does, for the exact duplicate-title shape
+    /// <see cref="ReviewFindingReconcilerTests.Duplicate_shipped_titles_are_counted_as_distinct_identities_not_collapsed"/>
+    /// covers in memory.
+    /// </summary>
+    [Fact]
+    public void A_freshly_built_payload_round_trips_distinct_shipped_indices_for_duplicate_shipped_titles()
+    {
+        var sources = new[]
+        {
+            new ReviewFindingSource("reviewer-1", "template-1", "#### [LOW] widget\nsrc/Foo.cs:10\n"),
+        };
+        // Two DISTINCT shipped items share a title; only the first is cited by the specialist finding, so
+        // its ShippedIndex must come back as 0 — never null (unknown) and never merged with the second.
+        var shippedBody = "#### [LOW] widget\nsrc/Foo.cs:10\n\n#### [LOW] widget\nsrc/Zeta.cs:99\n";
+
+        var reconciled = ReviewFindingReconciler.Reconcile(sources, shippedBody);
+        var built = ReviewFindingsArtifactPayload.Build(
+            1,
+            sources,
+            reconciled,
+            compared: true,
+            promptTemplateHash: null
+        );
+
+        var json = JsonSerializer.Serialize(built);
+        var roundTripped = JsonSerializer.Deserialize<ReviewFindingsArtifactPayload>(json);
+
+        roundTripped.Should().NotBeNull();
+        var row = roundTripped!.Findings.Should().ContainSingle().Subject;
+        row.ShippedTitle.Should().Be("[LOW] widget");
+        row.ShippedIndex.Should().Be(0, "the first shipped item is the one that shares the citation");
     }
 
     /// <summary>
@@ -195,10 +240,12 @@ public sealed class FindingsPersistenceTests
 
         kept.MatchScore.Should().Be(1, "a freshly built row always carries a real, non-null score");
         kept.MatchTiedCandidates.Should().Be(1);
+        kept.ShippedIndex.Should().Be(0, "the kept row matched the one and only shipped item");
 
         // A MEASURED zero — this is exactly the value F-001 says must never be confused with "unknown".
         dropped.MatchScore.Should().Be(0, "a dropped row was scored and found no candidate at all");
         dropped.MatchTiedCandidates.Should().Be(0);
+        dropped.ShippedIndex.Should().Be(-1, "no shipped item won this join — a MEASURED absence, not an unknown one");
     }
 
     [Fact]
