@@ -500,6 +500,35 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ReadAsync_folds_an_in_page_repeat_of_the_same_issue_without_dropping_the_issue_after_it()
+    {
+        // Issue #647 item 7: distinguishes the duplicate branch's "continue" (skip only the repeated node,
+        // keep walking the rest of THIS page) from a "break" (abort the whole page's remaining nodes). A
+        // single page of [A, exact duplicate of A, B] with hasNextPage:false is the minimal case where only
+        // "continue" reaches B — "break" would silently drop it, even though nothing here is a next-page
+        // fetch or a cap truncation.
+        var body = GraphQlResponse(
+            [IssueNode(1, id: "I_1"), IssueNode(1, id: "I_1"), IssueNode(2, id: "I_2")],
+            hasNextPage: false,
+            endCursor: null
+        );
+        var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
+
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Linked);
+        result.Truncated.Should().BeFalse("two distinct issues on one page never approaches the cap");
+        result
+            .Issues.Select(i => i.Number)
+            .Should()
+            .BeEquivalentTo(
+                [1, 2],
+                o => o.WithStrictOrdering(),
+                "the duplicate of A must fold away without consuming B, which sits right after it in the same page"
+            );
+    }
+
+    [Fact]
     public async Task ReadAsync_returns_Failed_when_the_same_repository_and_number_disagree_on_node_id()
     {
         // Same (repository, number) pair reported with two different GraphQL node ids is an identity
