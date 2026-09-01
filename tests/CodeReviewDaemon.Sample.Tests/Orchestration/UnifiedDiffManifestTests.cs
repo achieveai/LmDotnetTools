@@ -802,4 +802,161 @@ public sealed class UnifiedDiffManifestTests
         var hunk = fileB.Hunks.Should().ContainSingle().Subject;
         hunk.HunkId.Should().Be("v1:src/B.cs:1,1->1,1");
     }
+
+    // F-010: the quarantine established for F-004 only gated the "--- "/"+++ " pair. Every other file-metadata
+    // handler ("Binary files ", "rename from "/"rename to ", "copy from "/"copy to ", "new file mode"/
+    // "deleted file mode") was still unconditional, so a rejected hunk header's quarantined body shaped like
+    // any of them could still mutate the file's identity, change kind, or binary flag. Each test below plants
+    // exactly one such forged line inside a rejected hunk's body and asserts (a) the genuine header's metadata
+    // survives unmutated, and (b) a trailing well-formed hunk still parses and attributes to the right file.
+
+    [Fact]
+    public void RejectedHunkHeader_QuarantinesBodySoBinaryFilesLineCannotForgeABinaryFlag()
+    {
+        const string diff = """
+            diff --git a/src/Real2.cs b/src/Real2.cs
+            --- a/src/Real2.cs
+            +++ b/src/Real2.cs
+            @@ -0,1 +1,1 @@
+            Binary files a/forged and b/forged differ
+            @@ -1,1 +1,1 @@
+            -old
+            +new
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.IsBinary.Should().BeFalse();
+        file.Path.Should().Be("src/Real2.cs");
+        var hunk = file.Hunks.Should().ContainSingle().Subject;
+        hunk.HunkId.Should().Be("v1:src/Real2.cs:1,1->1,1");
+    }
+
+    [Fact]
+    public void RejectedHunkHeader_QuarantinesBodySoRenameFromLineCannotForgeAnOldPath()
+    {
+        const string diff = """
+            diff --git a/src/Real3.cs b/src/Real3.cs
+            --- a/src/Real3.cs
+            +++ b/src/Real3.cs
+            @@ -0,1 +1,1 @@
+            rename from forged/Old.cs
+            @@ -1,1 +1,1 @@
+            -old
+            +new
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.OldPath.Should().BeNull();
+        file.ChangeKind.Should().Be(DiffChangeKind.Modified);
+        var hunk = file.Hunks.Should().ContainSingle().Subject;
+        hunk.HunkId.Should().Be("v1:src/Real3.cs:1,1->1,1");
+    }
+
+    [Fact]
+    public void RejectedHunkHeader_QuarantinesBodySoRenameToLineCannotForgeAPath()
+    {
+        const string diff = """
+            diff --git a/src/Real4.cs b/src/Real4.cs
+            --- a/src/Real4.cs
+            +++ b/src/Real4.cs
+            @@ -0,1 +1,1 @@
+            rename to forged/New.cs
+            @@ -1,1 +1,1 @@
+            -old
+            +new
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.Path.Should().Be("src/Real4.cs");
+        var hunk = file.Hunks.Should().ContainSingle().Subject;
+        hunk.HunkId.Should().Be("v1:src/Real4.cs:1,1->1,1");
+    }
+
+    [Fact]
+    public void RejectedHunkHeader_QuarantinesBodySoCopyFromLineCannotForgeAnOldPath()
+    {
+        const string diff = """
+            diff --git a/src/Real5.cs b/src/Real5.cs
+            --- a/src/Real5.cs
+            +++ b/src/Real5.cs
+            @@ -0,1 +1,1 @@
+            copy from forged/Old.cs
+            @@ -1,1 +1,1 @@
+            -old
+            +new
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.OldPath.Should().BeNull();
+        file.ChangeKind.Should().Be(DiffChangeKind.Modified);
+        var hunk = file.Hunks.Should().ContainSingle().Subject;
+        hunk.HunkId.Should().Be("v1:src/Real5.cs:1,1->1,1");
+    }
+
+    [Fact]
+    public void RejectedHunkHeader_QuarantinesBodySoCopyToLineCannotForgeAPath()
+    {
+        const string diff = """
+            diff --git a/src/Real6.cs b/src/Real6.cs
+            --- a/src/Real6.cs
+            +++ b/src/Real6.cs
+            @@ -0,1 +1,1 @@
+            copy to forged/New.cs
+            @@ -1,1 +1,1 @@
+            -old
+            +new
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.Path.Should().Be("src/Real6.cs");
+        var hunk = file.Hunks.Should().ContainSingle().Subject;
+        hunk.HunkId.Should().Be("v1:src/Real6.cs:1,1->1,1");
+    }
+
+    [Fact]
+    public void RejectedHunkHeader_QuarantinesBodySoNewFileModeLineCannotForgeAnAddedChangeKind()
+    {
+        const string diff = """
+            diff --git a/src/Real7.cs b/src/Real7.cs
+            --- a/src/Real7.cs
+            +++ b/src/Real7.cs
+            @@ -0,1 +1,1 @@
+            new file mode 100644
+            @@ -1,1 +1,1 @@
+            -old
+            +new
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.ChangeKind.Should().Be(DiffChangeKind.Modified);
+        var hunk = file.Hunks.Should().ContainSingle().Subject;
+        hunk.HunkId.Should().Be("v1:src/Real7.cs:1,1->1,1");
+    }
+
+    [Fact]
+    public void RejectedHunkHeader_QuarantinesBodySoDeletedFileModeLineCannotForgeADeletedChangeKind()
+    {
+        const string diff = """
+            diff --git a/src/Real8.cs b/src/Real8.cs
+            --- a/src/Real8.cs
+            +++ b/src/Real8.cs
+            @@ -0,1 +1,1 @@
+            deleted file mode 100644
+            @@ -1,1 +1,1 @@
+            -old
+            +new
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.ChangeKind.Should().Be(DiffChangeKind.Modified);
+        var hunk = file.Hunks.Should().ContainSingle().Subject;
+        hunk.HunkId.Should().Be("v1:src/Real8.cs:1,1->1,1");
+    }
 }

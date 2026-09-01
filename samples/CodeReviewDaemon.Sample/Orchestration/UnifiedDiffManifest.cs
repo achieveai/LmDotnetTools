@@ -256,11 +256,18 @@ internal static partial class UnifiedDiffParser
 
         // Set when a hunk header line was recognised (syntactically shaped, `HunkHeader()` matched) but its
         // coordinates were numerically invalid and the header itself was rejected — see the header-match
-        // block below (F-004). While this is true, `hunk` is null for a different reason than "no hunk has
-        // started yet": the rejected header's own body is still coming and must not be read as a fresh
-        // file-header pair (see the `--- `/`+++ ` gate below). Cleared on the next file boundary or the next
-        // hunk header line, valid or not — at that point either a new hunk has legitimately started, or a
-        // new rejected header has already replaced whatever this one flagged.
+        // block below (F-004, widened by F-010). While this is true, `hunk` is null for a different reason
+        // than "no hunk has started yet": the rejected header's own body is still coming, and NONE of the
+        // file-metadata handlers below (the `--- `/`+++ ` pair, `Binary files `, `rename from `/`rename to `,
+        // `copy from `/`copy to `, `new file mode`/`deleted file mode`) may act on it — every one of them is
+        // a plausible shape for quarantined body content to coincidentally match, and any of them mutating
+        // `file` would forge identity or metadata for whatever this manifest attributes next (F-010). The one
+        // deliberate exception is `diff --git `, checked unconditionally at the very top of the loop: that is
+        // the genuine file boundary, the only line this format gives the parser to end quarantine and start a
+        // new file on, so it must always be honoured even mid-quarantine — a real PR diff routinely follows a
+        // malformed trailing hunk with the very next file's ordinary header. Cleared on that file boundary or
+        // the next hunk header line, valid or not — at that point either a new hunk has legitimately started,
+        // or a new rejected header has already replaced whatever this one flagged.
         var hunkHeaderRejected = false;
 
         void FlushHunk()
@@ -328,46 +335,57 @@ internal static partial class UnifiedDiffParser
                 continue;
             }
 
-            if (line.StartsWith("Binary files ", StringComparison.Ordinal))
+            // Every metadata handler from here down to the "--- "/"+++ " pair is gated on
+            // `!hunkHeaderRejected` for the same reason (F-010): none of these prefixes ("Binary files ",
+            // "rename from "/"rename to ", "copy from "/"copy to ", "new file mode"/"deleted file mode")
+            // start with a character a genuine hunk-body marker (' ', '+', '-', '\\') can produce, so they
+            // cannot arise from the marker-prepend collision the "--- "/"+++ " comment above describes — but
+            // a rejected header's quarantined body is raw, unvalidated text, and nothing stops it from
+            // containing one of these lines verbatim. Left ungated, any of them would still mutate `file`
+            // (identity, change kind, or binary flag) from inside what is supposed to be inert, discarded
+            // content, forging provenance for a citation check to trust. `diff --git ` is deliberately the
+            // one exception (see its own comment above): it is the genuine file boundary this quarantine
+            // must still end at, not one more thing to quarantine against.
+            if (!hunkHeaderRejected && line.StartsWith("Binary files ", StringComparison.Ordinal))
             {
                 FlushHunk();
                 file.IsBinary = true;
                 continue;
             }
 
-            if (line.StartsWith("rename from ", StringComparison.Ordinal))
+            if (!hunkHeaderRejected && line.StartsWith("rename from ", StringComparison.Ordinal))
             {
                 file.OldPath = line["rename from ".Length..].Trim();
                 file.ChangeKind = DiffChangeKind.Renamed;
                 continue;
             }
 
-            if (line.StartsWith("rename to ", StringComparison.Ordinal))
+            if (!hunkHeaderRejected && line.StartsWith("rename to ", StringComparison.Ordinal))
             {
                 file.Path = line["rename to ".Length..].Trim();
                 continue;
             }
 
-            if (line.StartsWith("copy from ", StringComparison.Ordinal))
+            if (!hunkHeaderRejected && line.StartsWith("copy from ", StringComparison.Ordinal))
             {
                 file.OldPath = line["copy from ".Length..].Trim();
                 file.ChangeKind = DiffChangeKind.Copied;
                 continue;
             }
 
-            if (line.StartsWith("copy to ", StringComparison.Ordinal))
+            if (!hunkHeaderRejected && line.StartsWith("copy to ", StringComparison.Ordinal))
             {
                 file.Path = line["copy to ".Length..].Trim();
                 continue;
             }
 
-            if (line.StartsWith("new file mode", StringComparison.Ordinal))
+            if (!hunkHeaderRejected && line.StartsWith("new file mode", StringComparison.Ordinal))
             {
                 file.ChangeKind = DiffChangeKind.Added;
                 continue;
             }
 
-            if (line.StartsWith("deleted file mode", StringComparison.Ordinal))
+            if (!hunkHeaderRejected && line.StartsWith("deleted file mode", StringComparison.Ordinal))
             {
                 file.ChangeKind = DiffChangeKind.Deleted;
                 continue;
