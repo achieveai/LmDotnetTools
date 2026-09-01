@@ -1,10 +1,14 @@
 using System.Collections.Immutable;
+using System.Net;
+using System.Net.Http.Json;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
 using LmStreaming.Sample.E2E.Tests.Infrastructure;
 using LmStreaming.Sample.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 
@@ -262,4 +266,177 @@ public sealed class SystemPromptCompositionTests
         workspaceIndex.Should().BeGreaterThan(modeIndex, "the workspace enrichment follows the mode prompt");
         appendixIndex.Should().BeGreaterThan(workspaceIndex, "the appendix follows the workspace enrichment");
     }
+
+    /// <summary>
+    /// F-004: <c>effectiveMode = ApplyWorkspaceSuffix(mode, wsSuffix)</c> in <c>Program.cs</c>'s agent
+    /// factory was reachable in this suite only through <see cref="CodeReviewDaemonMode_ComposesDateThenModeThenWorkspaceThenAppendix_InOrder"/>,
+    /// a <see cref="SkippableFactAttribute"/> gated on a live sandbox gateway — green-by-skip in
+    /// ordinary CI, so deleting the call site changed nothing any non-skipped test could see.
+    /// </summary>
+    /// <remarks>
+    /// This test reaches the same real, unmodified agent-factory branch without a live gateway: it
+    /// stubs the sandbox gateway's HTTP surface (health probe, session create, session-liveness probe)
+    /// and swaps in an isolated <see cref="LmStreaming.Sample.Persistence.FileChatModeStore"/> so it can
+    /// call the production <c>CopyModeAsync</c> seam to obtain a COPY of the daemon mode under a fresh
+    /// id. <c>caps.NeedsSandbox</c> is resolved from <c>EnabledCapabilityTools</c>, not from the mode's
+    /// id (see <c>Program.cs</c>), so the copy takes the sandbox branch exactly like the original —
+    /// proving the call site is reachable for any sandbox-capable mode, not merely a hard-coded id.
+    /// </remarks>
+    [Fact]
+    public async Task SandboxCapableModeCopy_StillReceivesTheWorkspaceSuffix_ThroughTheRealAgentFactory()
+    {
+        string? promptTheModelReceived = null;
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole(
+                "sandbox-mode-copy",
+                ctx =>
+                {
+                    promptTheModelReceived ??= ctx.SystemPrompt;
+                    return true;
+                }
+            )
+            .Turn(t => t.Text("ack"))
+            .Build();
+
+        // Isolated user-mode store so CopyModeAsync's write does not touch the shared production
+        // chat-modes.json path (see ModeCapabilitiesCloneTests for the same precedent).
+        var modeStoreDir = Path.Combine(Path.GetTempPath(), "lmstreaming-f004-modes-" + Guid.NewGuid().ToString("N"));
+        var chatModeStore = new LmStreaming.Sample.Persistence.FileChatModeStore(modeStoreDir);
+        var copiedMode = await chatModeStore.CopyModeAsync(
+            LmStreaming.Sample.Persistence.SystemChatModes.CodeReviewDaemonModeId,
+            "F-004 sandbox-capable copy"
+        );
+        copiedMode.Id.Should().NotBe(LmStreaming.Sample.Persistence.SystemChatModes.CodeReviewDaemonModeId);
+
+        var gatewayOptions = new SandboxGatewayOptions
+        {
+            BaseUrl = "http://127.0.0.1:3000",
+            WorkspaceBasePath = null,
+            Workspace = "default-leaf",
+        };
+
+        var stubHandler = new StubSandboxGatewayHandler();
+        var gatewayLifetime = new SandboxGatewayLifetime(
+            gatewayOptions,
+            NullLogger<SandboxGatewayLifetime>.Instance,
+            new HttpClient(stubHandler)
+        );
+        var secretStoreDir = Path.Combine(
+            Path.GetTempPath(),
+            "lmstreaming-f004-secrets-" + Guid.NewGuid().ToString("N")
+        );
+        var sandboxRegistry = new SandboxSessionRegistry(
+            gatewayLifetime,
+            gatewayOptions,
+            NullLogger<SandboxSessionRegistry>.Instance,
+            new HttpClient(stubHandler),
+            new AuthOptions(),
+            new SessionSecretStore(secretStoreDir, NullLogger<SessionSecretStore>.Instance)
+        );
+
+        var builder = new ScriptedBuilder(responder.AsAnthropicHandler());
+        using var factory = new E2EWebAppFactory(
+            "test-anthropic",
+            builder,
+            configureServices: services =>
+            {
+                services.RemoveAll<LmStreaming.Sample.Persistence.IChatModeStore>();
+                services.AddSingleton<LmStreaming.Sample.Persistence.IChatModeStore>(chatModeStore);
+                services.RemoveAll<SandboxGatewayLifetime>();
+                services.AddSingleton(gatewayLifetime);
+                services.RemoveAll<SandboxSessionRegistry>();
+                services.AddSingleton(sandboxRegistry);
+            }
+        );
+
+        var threadId = $"f004-{Guid.NewGuid():N}";
+        var socket = await factory.ConnectWebSocketAsync(threadId, copiedMode.Id);
+        await using var client = new WebSocketTestClient(socket);
+        await client.SendUserMessageAsync("begin the review");
+        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
+
+        frames.ConcatText().Should().Contain("ack");
+        promptTheModelReceived
+            .Should()
+            .NotBeNull("the scripted provider must have received a request to capture a prompt from");
+
+        promptTheModelReceived
+            .Should()
+            .Contain(
+                "Your workspace directory is:",
+                "a copy of the daemon mode still resolves caps.NeedsSandbox from its capability "
+                    + "selection, so the real ApplyWorkspaceSuffix call site must still run for it"
+            );
+    }
+
+    /// <summary>
+    /// Answers only the gateway calls the real agent-factory's sandbox branch makes on a first
+    /// session: the health probe, session creation, and the post-create liveness probe (see
+    /// <c>SandboxSessionRegistry.GetOrCreateLiveSessionAsync</c>). Anything else — notably the root
+    /// CLAUDE.md/AGENTS.md file read — is left unanswered on purpose: <c>Program.cs</c>'s
+    /// <c>TryBuildRootContextSuffix</c> catches any read failure and degrades to an empty seed rather
+    /// than throwing, so this test does not need to model that endpoint's wire shape at all.
+    /// </summary>
+    private sealed class StubSandboxGatewayHandler : HttpMessageHandler
+    {
+        private string? _sessionId;
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            var path = request.RequestUri!.AbsolutePath;
+
+            if (path.EndsWith("/health", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            }
+
+            if (request.Method == HttpMethod.Post && path.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal))
+            {
+                _sessionId ??= "sess-" + Guid.NewGuid().ToString("N");
+                return Task.FromResult(BuildSessionResponse(_sessionId));
+            }
+
+            if (request.Method == HttpMethod.Get && path.Contains("/api/v1/sandboxes/", StringComparison.Ordinal))
+            {
+                return Task.FromResult(BuildSessionResponse(_sessionId ?? "sess-unknown"));
+            }
+
+            return Task.FromException<HttpResponseMessage>(
+                new HttpRequestException($"Unhandled stub gateway request: {request.Method} {path}")
+            );
+        }
+
+        private static HttpResponseMessage BuildSessionResponse(string sessionId) =>
+            new(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(
+                    new CreateSandboxResponseProbe(
+                        SessionId: sessionId,
+                        ContainerId: "container-1",
+                        Volumes: new VolumesProbe(new WorkspaceVolumeProbe("/workspace", ReadOnly: false))
+                    )
+                ),
+            };
+    }
+
+    // Local mirrors of the registry's private snake_case JSON contract (same pattern as
+    // SandboxSessionRegistryWorkspaceTests), used only to compose the stub gateway's responses.
+    private sealed record CreateSandboxResponseProbe(
+        [property: System.Text.Json.Serialization.JsonPropertyName("session_id")] string SessionId,
+        [property: System.Text.Json.Serialization.JsonPropertyName("container_id")] string? ContainerId,
+        [property: System.Text.Json.Serialization.JsonPropertyName("volumes")] VolumesProbe? Volumes
+    );
+
+    private sealed record VolumesProbe(
+        [property: System.Text.Json.Serialization.JsonPropertyName("workspace")] WorkspaceVolumeProbe? Workspace
+    );
+
+    private sealed record WorkspaceVolumeProbe(
+        [property: System.Text.Json.Serialization.JsonPropertyName("container_path")] string? ContainerPath,
+        [property: System.Text.Json.Serialization.JsonPropertyName("read_only")] bool ReadOnly
+    );
 }
