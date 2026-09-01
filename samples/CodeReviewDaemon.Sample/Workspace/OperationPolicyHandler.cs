@@ -135,13 +135,24 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
         // left completely untouched, so this can never become a blanket "buffer every outbound request"
         // cost or hazard. StringContent.ReadAsStringAsync reads from its own internal buffer, so this does
         // not consume anything base.SendAsync below still needs.
-        var graphQlBody =
+        var isGraphQlBodyCandidate =
             operation.Value == SandboxOperation.ReadProviderMetadata
-            && OperationPolicy.IsGraphQlPostCandidate(method, path)
-                ? await TryReadGraphQlQueryAsync(request.Content, cancellationToken).ConfigureAwait(false)
-                : null;
+            && OperationPolicy.IsGraphQlPostCandidate(method, path);
+        var (graphQlBody, graphQlVariables) = isGraphQlBodyCandidate
+            ? await TryReadGraphQlBodyAsync(request.Content, cancellationToken).ConfigureAwait(false)
+            : (null, null);
+        var expectedGraphQlScope = isGraphQlBodyCandidate ? request.GetGitHubGraphQlScope() : null;
 
-        var operationRequest = new OperationRequest(operation.Value, _provider, host, method, path, graphQlBody);
+        var operationRequest = new OperationRequest(
+            operation.Value,
+            _provider,
+            host,
+            method,
+            path,
+            graphQlBody,
+            graphQlVariables,
+            expectedGraphQlScope
+        );
 
         // Allow when ANY allow-listed repo's policy both permits AND would inject the credential; deny
         // only when every policy denies. Both halves of the fail-closed-both-ways guarantee are required.
@@ -183,32 +194,40 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
     private const int MaxGraphQlBodyBytes = 16 * 1024;
 
     /// <summary>
-    /// Extracts the JSON <c>"query"</c> field from a candidate GraphQL request body, or <c>null</c> on
-    /// anything that stops this from being read as exactly that: no content, an oversized or unreadable
-    /// body, invalid JSON, or a document without a string <c>"query"</c> property. Every one of those
-    /// collapses to the same <c>null</c>, which is the only value
-    /// <see cref="OperationPolicy.IsGitHubGraphQlMetadataRequest"/> can never match against — fail closed,
-    /// not fail open with a best-effort guess.
+    /// Extracts the JSON <c>"query"</c> field and, in the same bounded parse pass, the
+    /// <c>variables.owner</c>/<c>repo</c>/<c>number</c> scope from a candidate GraphQL request body.
+    /// <c>Query</c> is <c>null</c> on anything that stops this from being read as exactly that: no
+    /// content, an oversized or unreadable body, invalid JSON, or a document without a string
+    /// <c>"query"</c> property. Every one of those collapses to the same <c>null</c>, which is the only
+    /// value <see cref="OperationPolicy.IsGitHubGraphQlMetadataRequest"/> can never match against — fail
+    /// closed, not fail open with a best-effort guess.
     /// <para>
-    /// <c>variables</c> is deliberately excluded: the reader's own request body is
-    /// <c>{"query": Query, "variables": {...}}</c>, and <c>variables</c> legitimately differs on every
-    /// page/PR the reader ever asks about, so only <c>query</c> is a candidate for an exact-document
-    /// comparison.
+    /// <c>Variables</c> is parsed all-or-nothing: <c>variables</c> must be a JSON object, <c>owner</c> and
+    /// <c>repo</c> must be non-empty JSON strings, and <c>number</c> must be a JSON number that fits an
+    /// <c>int</c> and is positive. Any one of those missing or the wrong shape collapses <c>Variables</c>
+    /// to <c>null</c> too — never a partially-populated scope built from whichever fields happened to
+    /// parse.
+    /// </para>
+    /// <para>
+    /// Read failures (a torn connection) and malformed JSON are logged at Debug with only the exception's
+    /// TYPE — never the raw body or any header/credential — so an operator can tell "the read failed" from
+    /// "the JSON was malformed" without this becoming a body-content leak. Cancellation is not logged and
+    /// still propagates via the <c>when</c> guard below.
     /// </para>
     /// </summary>
-    private static async Task<string?> TryReadGraphQlQueryAsync(
+    private async Task<(string? Query, GitHubGraphQlRequestScope? Variables)> TryReadGraphQlBodyAsync(
         HttpContent? content,
         CancellationToken cancellationToken
     )
     {
         if (content is null)
         {
-            return null;
+            return (null, null);
         }
 
         if (content.Headers.ContentLength is { } declaredLength && declaredLength > MaxGraphQlBodyBytes)
         {
-            return null;
+            return (null, null);
         }
 
         string raw;
@@ -218,28 +237,88 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return null;
+            _logger.LogDebug(
+                ex,
+                "Failed to read a candidate GraphQL request body ({ExceptionType}).",
+                ex.GetType().Name
+            );
+            return (null, null);
         }
 
         if (raw.Length > MaxGraphQlBodyBytes)
         {
-            return null;
+            return (null, null);
         }
 
         try
         {
             using var document = JsonDocument.Parse(raw);
-            return
-                document.RootElement.ValueKind is JsonValueKind.Object
-                && document.RootElement.TryGetProperty("query", out var queryEl)
+            if (document.RootElement.ValueKind is not JsonValueKind.Object)
+            {
+                return (null, null);
+            }
+
+            var query =
+                document.RootElement.TryGetProperty("query", out var queryEl)
                 && queryEl.ValueKind is JsonValueKind.String
-                ? queryEl.GetString()
-                : null;
+                    ? queryEl.GetString()
+                    : null;
+
+            return (query, TryParseGraphQlScope(document.RootElement));
         }
-        catch (JsonException)
+        catch (JsonException ex)
+        {
+            _logger.LogDebug(
+                ex,
+                "Failed to parse a candidate GraphQL request body as JSON ({ExceptionType}).",
+                ex.GetType().Name
+            );
+            return (null, null);
+        }
+    }
+
+    /// <summary>
+    /// Parses <c>variables.owner</c>/<c>repo</c>/<c>number</c> off an already-parsed GraphQL request
+    /// body's root element. All-or-nothing: <c>null</c> unless <c>variables</c> is an object carrying a
+    /// non-empty string <c>owner</c>, a non-empty string <c>repo</c>, and a positive <c>int</c>-fitting
+    /// <c>number</c>.
+    /// </summary>
+    private static GitHubGraphQlRequestScope? TryParseGraphQlScope(JsonElement root)
+    {
+        if (!root.TryGetProperty("variables", out var variablesEl) || variablesEl.ValueKind is not JsonValueKind.Object)
         {
             return null;
         }
+
+        if (
+            !variablesEl.TryGetProperty("owner", out var ownerEl)
+            || ownerEl.ValueKind is not JsonValueKind.String
+            || string.IsNullOrEmpty(ownerEl.GetString())
+        )
+        {
+            return null;
+        }
+
+        if (
+            !variablesEl.TryGetProperty("repo", out var repoEl)
+            || repoEl.ValueKind is not JsonValueKind.String
+            || string.IsNullOrEmpty(repoEl.GetString())
+        )
+        {
+            return null;
+        }
+
+        if (
+            !variablesEl.TryGetProperty("number", out var numberEl)
+            || numberEl.ValueKind is not JsonValueKind.Number
+            || !numberEl.TryGetInt32(out var number)
+            || number <= 0
+        )
+        {
+            return null;
+        }
+
+        return new GitHubGraphQlRequestScope(ownerEl.GetString()!, repoEl.GetString()!, number);
     }
 
     /// <summary>

@@ -148,33 +148,10 @@ internal sealed class GitHubIssueContextReader
     // Internal rather than private: OperationPolicy.IsGitHubGraphQlMetadataRequest compares a captured
     // request's "query" field against this exact constant, so the safe document has exactly one
     // definition shared by the reader that sends it and the policy that verifies it (issue #647 review).
-    internal const string Query = """
-        query($owner: String!, $repo: String!, $number: Int!, $pageSize: Int!, $after: String) {
-          repository(owner: $owner, name: $repo) {
-            pullRequest(number: $number) {
-              closingIssuesReferences(first: $pageSize, after: $after, orderBy: { field: CREATED_AT, direction: ASC }) {
-                pageInfo { hasNextPage endCursor }
-                nodes {
-                  id
-                  number
-                  url
-                  title
-                  state
-                  repository { nameWithOwner }
-                  closedByPullRequestsReferences(first: 20) {
-                    nodes {
-                      id
-                      number
-                      url
-                      repository { nameWithOwner }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        """;
+    // The canonical text lives in GitHubGraphQlContract (Workspace) so OperationPolicy never has to
+    // depend on this (Orchestration) namespace to see it (issue #666 review); this is a const-to-const
+    // alias kept for source compatibility with every existing call site that names it here.
+    internal const string Query = GitHubGraphQlContract.Query;
 
     private readonly HttpClient _httpClient;
     private readonly IOAuthTokenProvider _tokenProvider;
@@ -419,9 +396,9 @@ internal sealed class GitHubIssueContextReader
         };
         var requestBody = JsonSerializer.Serialize(new { query = Query, variables });
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GraphQlUrl).WithOperation(
-            SandboxOperation.ReadProviderMetadata
-        );
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GraphQlUrl)
+            .WithOperation(SandboxOperation.ReadProviderMetadata)
+            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope(repo.OrgOrOwner, repo.RepoName, number));
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken).ConfigureAwait(false);
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
         httpRequest.Headers.UserAgent.ParseAdd(UserAgent);

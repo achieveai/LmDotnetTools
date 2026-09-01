@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -6,6 +7,7 @@ using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -737,6 +739,68 @@ public sealed class PrOrchestratorRetryTests : IDisposable
                     + "the phrase after it looks like"
             );
         body.Should().Contain("the review could not be completed", "so it degrades to the neutral phrase");
+    }
+
+    [Fact]
+    public async Task The_permanent_park_debug_log_refuses_a_park_reason_the_current_vocabulary_could_not_have_written()
+    {
+        // Issue #666 review (SHOULD #3): the poll's park-guard debug log replays a PERSISTED column, exactly
+        // like the notifier replay above, and must go through the same TrustedParkReasonForReplay allow-list
+        // rather than logging run.ParkReason raw. A legacy/tampered row can carry arbitrary text (e.g. a raw
+        // exception message from a build predating this vocabulary).
+        const string Sentinel = "SENTINEL-DEBUGLOG-def456";
+        var run = SeedRun();
+        _store.TryMarkReviewRunParked(run.Id, _now, "Reviewed: the review host rejected the request").Should().BeTrue();
+        StampParkReason(_db, run.Id, $"Reviewed: host replied 401 with body {Sentinel}");
+
+        var logger = new CapturingLogger<PrOrchestrator>();
+        var orchestrator = new PrOrchestrator(
+            _store,
+            new CountingFailingExecutor(),
+            logger,
+            maxDurableRetryAttempts: 1,
+            clock: () => _now
+        );
+
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+
+        logger
+            .MessagesAtLevel(LogLevel.Debug)
+            .Should()
+            .OnlyContain(
+                message => !message.Contains(Sentinel, StringComparison.Ordinal),
+                "the park-guard debug log must never replay text the daemon never wrote"
+            );
+        logger
+            .CountAtLevel(LogLevel.Debug, "the review could not be completed")
+            .Should()
+            .BePositive("an unrecognised reason degrades to the neutral phrase, exactly like the notifier replay");
+    }
+
+    [Fact]
+    public async Task The_permanent_park_debug_log_still_carries_the_specific_phrase_a_real_park_wrote()
+    {
+        // The non-vacuity half of the pair above: an allow-list that always returned the neutral phrase would
+        // pass the test above while destroying the log's only purpose — telling an operator polling logs WHY
+        // a run is stuck.
+        var run = SeedRun();
+        _store.TryMarkReviewRunParked(run.Id, _now, "Reviewed: the review host rejected the request").Should().BeTrue();
+
+        var logger = new CapturingLogger<PrOrchestrator>();
+        var orchestrator = new PrOrchestrator(
+            _store,
+            new CountingFailingExecutor(),
+            logger,
+            maxDurableRetryAttempts: 1,
+            clock: () => _now
+        );
+
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+
+        logger
+            .CountAtLevel(LogLevel.Debug, "the review host rejected the request")
+            .Should()
+            .BePositive("a reason the current vocabulary DID write must still reach the debug log intact");
     }
 
     /// <summary>

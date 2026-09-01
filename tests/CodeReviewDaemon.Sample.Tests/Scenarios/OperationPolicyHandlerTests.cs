@@ -36,7 +36,11 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
                 ReviewBotRepoPath: "/acme/reviewbot",
                 ApiHost: "api.github.com",
                 AllowedSubmodules: []
-            ),
+            )
+            {
+                GraphQlOwner = "acme",
+                GraphQlRepo = "widgets",
+            },
             allowWriteOperations
         );
 
@@ -49,6 +53,22 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
             InnerHandler = inner,
         };
         return (new HttpClient(handler), inner);
+    }
+
+    /// <summary>
+    /// Same wiring as <see cref="BuildClient"/>, but with a <see cref="CapturingLogger{T}"/> a test can
+    /// assert against directly — used only by the diagnostic-logging tests below, which need to inspect
+    /// what the handler logged rather than just the resulting decision.
+    /// </summary>
+    private static (HttpClient Client, CapturingLogger<OperationPolicyHandler> Logger) BuildClientWithCapturingLogger(
+        OperationPolicy policy
+    )
+    {
+        var inner = new FakeHttpMessageHandler();
+        _ = inner.On(_ => true, _ => new HttpResponseMessage(HttpStatusCode.OK));
+        var logger = new CapturingLogger<OperationPolicyHandler>();
+        var handler = new OperationPolicyHandler(policy, "github", logger) { InnerHandler = inner };
+        return (new HttpClient(handler), logger);
     }
 
     [Fact]
@@ -163,9 +183,9 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
                 },
             }
         );
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
-            SandboxOperation.ReadProviderMetadata
-        );
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
+            .WithOperation(SandboxOperation.ReadProviderMetadata)
+            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
         request.Content = new StringContent(requestBody, Encoding.UTF8, "application/json");
 
@@ -365,6 +385,167 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Denies_a_graphql_post_that_was_never_tagged_with_the_expected_scope()
+    {
+        // Issue #666 review (MUST #1) — a byte-identical safe query with a fully well-formed, in-scope
+        // variables envelope, sent WITHOUT the trusted caller's WithGitHubGraphQlScope tag. Body content
+        // alone (attacker-influenceable) must never be sufficient; only the ONE trusted caller
+        // (GitHubIssueContextReader.FetchPageAsync) attaches that tag.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        // Deliberately no .WithGitHubGraphQlScope(...) call.
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(
+                new
+                {
+                    query = GitHubIssueContextReader.Query,
+                    variables = new
+                    {
+                        owner = "acme",
+                        repo = "widgets",
+                        number = 7,
+                    },
+                }
+            ),
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_whose_body_variables_are_missing()
+    {
+        // The envelope carries the safe query but no "variables" object at all — the all-or-nothing parse
+        // in TryParseGraphQlScope yields null, so there is nothing to compare the trusted tag against.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
+            .WithOperation(SandboxOperation.ReadProviderMetadata)
+            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(new { query = GitHubIssueContextReader.Query }),
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_whose_variables_number_is_the_wrong_json_type()
+    {
+        // "number" as a JSON string ("7") rather than a JSON number must not be coerced — the all-or-nothing
+        // parse requires a JSON number, so a wrong-typed field collapses the whole scope to null (deny).
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
+            .WithOperation(SandboxOperation.ReadProviderMetadata)
+            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(
+                new
+                {
+                    query = GitHubIssueContextReader.Query,
+                    variables = new
+                    {
+                        owner = "acme",
+                        repo = "widgets",
+                        number = "7",
+                    },
+                }
+            ),
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_whose_variables_owner_field_is_missing()
+    {
+        // A required field simply absent (not just wrong-typed) must also collapse the whole scope to null.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
+            .WithOperation(SandboxOperation.ReadProviderMetadata)
+            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(
+                new { query = GitHubIssueContextReader.Query, variables = new { repo = "widgets", number = 7 } }
+            ),
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_whose_variables_repo_field_is_missing()
+    {
+        // The symmetric case to the owner test above: "repo" absent (not just wrong-typed) must also
+        // collapse the whole scope to null, isolating this field's own guard from owner's.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
+            .WithOperation(SandboxOperation.ReadProviderMetadata)
+            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(
+                new { query = GitHubIssueContextReader.Query, variables = new { owner = "acme", number = 7 } }
+            ),
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_whose_body_variables_target_a_different_pr_than_the_tag()
+    {
+        // Issue #666 review (MUST #1) end-to-end: the trusted tag names PR 7 (as FetchPageAsync would for
+        // this run), but the body's own "variables.number" claims PR 8 — proving the handler's parsed
+        // GraphQlVariables and the request's ExpectedGraphQlScope both reach OperationPolicy, and a
+        // disagreement between them denies even though the query text and the tag's owner/repo are exact.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
+            .WithOperation(SandboxOperation.ReadProviderMetadata)
+            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(
+                new
+                {
+                    query = GitHubIssueContextReader.Query,
+                    variables = new
+                    {
+                        owner = "acme",
+                        repo = "widgets",
+                        number = 8,
+                    },
+                }
+            ),
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
     public async Task Denies_a_graphql_post_whose_body_cannot_be_read()
     {
         // Simulates a content stream that fails while being read (e.g. a connection torn mid-body). No
@@ -379,6 +560,72 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
         request.Content = new FailingHttpContent();
 
         await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task Logs_a_debug_diagnostic_naming_the_exception_type_when_a_graphql_body_fails_to_read()
+    {
+        // SHOULD #2 (issue #666 follow-up): a body-read failure must leave a diagnostic trail — but only
+        // the exception TYPE, never the raw request content or the Authorization header — so an operator
+        // can tell "the read failed" apart from "the JSON was malformed" without this becoming a body leak.
+        var (client, logger) = BuildClientWithCapturingLogger(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new FailingHttpContent();
+
+        var act = () => client.SendAsync(request, CancellationToken.None);
+        await act.Should().ThrowAsync<OperationDeniedException>();
+
+        // The .NET content-reading pipeline wraps a stream failure (e.g. FailingHttpContent's IOException)
+        // as HttpRequestException — that is the type the handler's catch actually observes and logs.
+        logger
+            .CountAtLevel(LogLevel.Debug, nameof(HttpRequestException))
+            .Should()
+            .BePositive("the read-failure diagnostic must name the exception type at Debug");
+        logger
+            .MessagesAtLevel(LogLevel.Debug)
+            .Should()
+            .OnlyContain(
+                message => !message.Contains("secret-token", StringComparison.Ordinal),
+                "the diagnostic must never carry the credential"
+            );
+    }
+
+    [Fact]
+    public async Task Logs_a_debug_diagnostic_naming_the_exception_type_when_a_graphql_body_is_malformed_json()
+    {
+        // SHOULD #2 (issue #666 follow-up): same diagnostic contract, but for the parse-failure branch —
+        // must not log the raw (malformed) body text itself, only the exception type.
+        var (client, logger) = BuildClientWithCapturingLogger(CreateGitHubPolicy(allowWriteOperations: false));
+
+        const string malformedBody = "{\"query\": \"unterminated";
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(malformedBody, Encoding.UTF8, "application/json");
+
+        var act = () => client.SendAsync(request, CancellationToken.None);
+        await act.Should().ThrowAsync<OperationDeniedException>();
+
+        // JsonDocument.Parse throws the JsonException subclass JsonReaderException for malformed syntax
+        // (JsonException itself is reserved for higher-level document/converter failures) — that concrete
+        // type is what the handler's catch(JsonException) actually observes and logs. The type is
+        // internal to System.Text.Json, so it is named as a literal rather than via nameof/typeof.
+        logger
+            .CountAtLevel(LogLevel.Debug, "JsonReaderException")
+            .Should()
+            .BePositive("the parse-failure diagnostic must name the exception type at Debug");
+        logger
+            .MessagesAtLevel(LogLevel.Debug)
+            .Should()
+            .OnlyContain(
+                message => !message.Contains(malformedBody, StringComparison.Ordinal),
+                "the diagnostic must never carry the raw request body"
+            );
     }
 
     /// <summary>Flips the case of the first letter found in <paramref name="text"/>.</summary>
