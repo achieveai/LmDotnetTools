@@ -1026,7 +1026,7 @@ try
                         wsSuffix += contextSuffix;
                     }
 
-                    effectiveMode = mode with { SystemPrompt = mode.SystemPrompt + wsSuffix };
+                    effectiveMode = ApplyWorkspaceSuffix(mode, wsSuffix);
                 }
 
                 // *-mock providers reuse the same agent-loop helpers as their real counterparts;
@@ -4314,6 +4314,25 @@ public partial class Program
             + toolList
             + ". No other file or shell tools exist in this mode - do not attempt to use any.";
     }
+
+    /// <summary>
+    ///     Appends a workspace suffix (from <see cref="BuildWorkspaceSuffix" />, optionally with a
+    ///     context-discovery suffix folded in) onto a mode's system prompt, returning the sandbox-backed
+    ///     copy the agent factory actually runs with.
+    /// </summary>
+    /// <remarks>
+    ///     Extracted PR #660 F-002: this one-line concatenation is the agent factory's own composition
+    ///     glue - the thing a recombination test of <c>PrependCurrentDate</c> + <c>BuildWorkspaceSuffix</c>
+    ///     alone does NOT exercise. Naming a real seam here lets a test call the production code path
+    ///     directly instead of re-implementing it.
+    /// </remarks>
+    /// <param name="mode">The date-augmented profile about to receive a sandbox session.</param>
+    /// <param name="wsSuffix">The workspace (and optional context-discovery) suffix to append.</param>
+    internal static AgentProfile ApplyWorkspaceSuffix(AgentProfile mode, string wsSuffix) =>
+        mode with
+        {
+            SystemPrompt = mode.SystemPrompt + wsSuffix,
+        };
 
     /// <summary>
     ///     Builds a single-entry MCP server configuration for an HTTP endpoint.
