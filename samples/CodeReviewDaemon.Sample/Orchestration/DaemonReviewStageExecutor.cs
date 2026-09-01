@@ -876,6 +876,39 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             );
         }
 
+        // Replay a same-head re-entry of the direct (non-pooled) path (issue #647 §D) using only the existing
+        // artifact store — no new cache/table/outbox. The one reachable window is a crash between this method's
+        // own AddArtifact below and the orchestrator's subsequent stage-state write: Stage is still ContextReady,
+        // but the checkout/diff/merge-base resolution already ran and its artifact already landed. Re-running any
+        // of that for a head/base that has not moved would waste the work AND mint a new context generation
+        // (BuildLifecycleIdentity below), spuriously invalidating a Reviewed-stage checkpoint that is still valid
+        // for the diff it actually reviewed. A different head/base — a genuine re-entry, e.g. a new push moving
+        // the run back to ContextReady — is NOT a replay and falls through unchanged, since the guard compares
+        // both shas. Scoped to this direct path only: the pooled path's own resume-safety (re-lease when
+        // _leasedReviews lacks this run, see TryPooledFetchContextAsync's call sites) already answers the same
+        // question for a live slot, which an artifact alone cannot stand in for.
+        if (
+            _store.TryGetLatestArtifact(run.Id, ContextArtifactKind)
+                is { ArtifactSchemaVersion: ContextArtifactSchemaVersion } existingArtifact
+            && JsonSerializer.Deserialize<ContextArtifactPayload>(existingArtifact.Payload, PayloadOptions)
+                is { } existingContext
+            && existingContext.BaseSha == run.BaseSha
+            && existingContext.HeadSha == run.HeadSha
+        )
+        {
+            _logger.LogInformation(
+                "Run {RunId}: ContextReady re-entered at an unchanged base/head ({BaseSha}...{HeadSha}); reusing "
+                    + "the already-persisted {Kind} artifact {ArtifactId} instead of re-checking-out, re-diffing "
+                    + "or re-resolving the merge base.",
+                run.Id,
+                run.BaseSha,
+                run.HeadSha,
+                ContextArtifactKind,
+                existingArtifact.Id
+            );
+            return;
+        }
+
         var (runner, fileSystem) = await ResolveSandboxAsync(run, cancellationToken).ConfigureAwait(false);
         var git = new GitRunner(runner);
 
@@ -900,9 +933,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // MergeBaseResolver (not a bare `git merge-base`) so a shallow checkout that has not yet fetched the
         // history it needs still gets the same deepen-retry ladder every other path relies on, rather than
         // silently regressing to "no merge base" the moment this path's checkout happens to be shallow.
-        // enableObjectStoreMaintenance is omitted (defaults false) — this executor has no equivalent option,
-        // and false is ReviewSlotPreparer's own default absent one, so this is not a downgrade relative to the
-        // pooled paths' common case.
+        // enableObjectStoreMaintenance is omitted (defaults false), NOT because this executor has no such
+        // option — MergeBaseResolver's constructor takes one, and Program.cs threads
+        // daemonOptions.EnableObjectStoreMaintenance into it for both pooled paths (ReviewSlotPreparer). It is
+        // omitted here because EnsureCheckoutAsync above clones a fresh, per-run, non-slot checkout into
+        // TargetRoot that this run discards when it finishes: the option exists to maintain a SHARED object
+        // store across many runs' worth of fetches (the pool's slots), and there is no such store here to
+        // maintain — passing the daemon's configured value through would repack/gc a repo this method is
+        // about to throw away.
         var mergeBase = await new MergeBaseResolver(git, _logger)
             .ResolveAsync(layout.TargetDir, run, cancellationToken)
             .ConfigureAwait(false);
@@ -4170,9 +4208,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// whichever slot this process leased, so after a restart the same run can be re-leased a slot holding a
     /// DIFFERENT PR — resuming the old conversation would then synthesize a review of the wrong tree. The
     /// modality flips with configuration, and an in-process checkpoint's thread id is a daemon-local
-    /// <c>review-run-*</c> string that no host would recognise. The context generation changes whenever the
-    /// ContextReady stage is re-entered, which is the documented rollback path: the diff the checkpointed
-    /// conversation reviewed is no longer the diff this run is about.
+    /// <c>review-run-*</c> string that no host would recognise. The context generation changes when the
+    /// ContextReady stage produces a genuinely NEW artifact — a real base/head move — because the diff the
+    /// checkpointed conversation reviewed is no longer the diff this run is about. A same-head re-entry of the
+    /// direct path (issue #647 §D) reuses the existing artifact instead of minting a new one, so the
+    /// generation correctly stays put: nothing about the diff changed, so no checkpoint should be invalidated.
     /// </para>
     /// </summary>
     private ReviewLifecycleIdentity BuildLifecycleIdentity(
@@ -6103,9 +6143,11 @@ internal enum CommentFetchOutcome
 /// the SLOT this process leased, and slots are re-assigned from an in-memory pool that resets on restart — so
 /// the same run can come back holding a slot whose checkout is a different PR entirely. Resuming the old
 /// conversation there would synthesize a review of that other PR and post it here, silently.
-/// <see cref="ContextGeneration"/> is the id of the latest <c>review-context</c> artifact, which changes every
-/// time the ContextReady stage is re-entered: the documented rollback path, after which the checkpointed
-/// conversation is reviewing a diff this run is no longer about.
+/// <see cref="ContextGeneration"/> is the id of the latest <c>review-context</c> artifact, which changes
+/// only when the ContextReady stage mints a genuinely NEW artifact — a real base/head move — after which the
+/// checkpointed conversation is reviewing a diff this run is no longer about. A same-head re-entry (a
+/// crash/restart before the prior ContextReady attempt's artifact-then-state writes both landed) reuses that
+/// same artifact id rather than minting a new one, so a checkpoint built against it stays valid.
 /// </para>
 /// </summary>
 internal sealed record ReviewLifecycleIdentity(

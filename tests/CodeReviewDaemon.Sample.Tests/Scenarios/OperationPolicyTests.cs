@@ -1,4 +1,10 @@
+using System.Net;
+using System.Text;
+using CodeReviewDaemon.Sample.Orchestration;
+using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -445,5 +451,89 @@ public sealed class OperationPolicyTests
 
         policy.ShouldInjectCredential(deniedRequest).Should().BeFalse();
         policy.ShouldInjectCredential(allowedRequest).Should().BeTrue();
+    }
+
+    [Fact]
+    public void CollectOnlyVariant_denies_an_ado_tagged_request_shaped_like_the_graphql_carve_out()
+    {
+        // Same host/method/path as the legitimate carve-out (CreatePolicy's own ApiHost, "api.github.com",
+        // POST, "/graphql"), but tagged with a different provider. The carve-out is GitHub-only — a
+        // same-shaped request from another provider must not ride through on host/path/method alone.
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
+
+        var decision = collectOnly.Decide(
+            new OperationRequest(
+                SandboxOperation.ReadProviderMetadata,
+                "azure-devops",
+                "api.github.com",
+                "POST",
+                "/graphql"
+            )
+        );
+
+        decision
+            .IsAllowed.Should()
+            .BeFalse("the GraphQL carve-out is GitHub-only, not any provider matching the shape");
+    }
+
+    [Fact]
+    public async Task RealPolicy_allows_the_exact_request_GitHubIssueContextReader_emits_for_a_collect_only_run()
+    {
+        // Issue #647 Section C — proves the ACTUAL request GitHubIssueContextReader emits (not a
+        // hand-built stand-in) is accepted by the real OperationPolicy for a collect-only (B) variant. A
+        // mutation to the operation tag WithOperation passes, or to the GraphQL URL's path, must each turn
+        // this test red.
+        HttpRequestMessage? captured = null;
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.Method == HttpMethod.Post && req.RequestUri is not null,
+            req =>
+            {
+                captured = req;
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}""",
+                        Encoding.UTF8,
+                        "application/json"
+                    ),
+                };
+            }
+        );
+        var reader = new GitHubIssueContextReader(
+            new HttpClient(handler),
+            new FakeOAuthTokenProvider("github", "gh-token-xyz"),
+            NullLogger<GitHubIssueContextReader>.Instance
+        );
+        var repo = new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "acme",
+            RepoName = "widgets",
+            RepoStableId = "R_node_123",
+        };
+
+        await reader.ReadAsync(repo, "7", CancellationToken.None);
+
+        captured.Should().NotBeNull("the reader must have made its one GraphQL request");
+        var operation = captured!.GetOperation();
+        operation.Should().Be(SandboxOperation.ReadProviderMetadata);
+
+        // Built the same way OperationPolicyHandler.SendAsync builds it from a real outgoing request —
+        // reusing the existing policy rather than a second, duplicate policy client.
+        var operationRequest = new OperationRequest(
+            operation!.Value,
+            "github",
+            captured!.RequestUri!.Host,
+            captured.Method.Method,
+            captured.RequestUri.PathAndQuery
+        );
+
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
+        var decision = collectOnly.Decide(operationRequest);
+
+        decision
+            .IsAllowed.Should()
+            .BeTrue("the reader's own GraphQL read must remain reachable under a collect-only (B) variant");
+        collectOnly.ShouldInjectCredential(operationRequest).Should().BeTrue();
     }
 }

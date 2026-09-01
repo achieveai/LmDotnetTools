@@ -232,7 +232,7 @@ internal sealed class OperationPolicy
             // GitHub's linked-issues read (issue #647) is GraphQL, and GraphQL is POST by protocol — the
             // one carved-out route the read-only arm still has to recognize as a read.
             SandboxOperation.ReadProviderMetadata => IsGitHubGraphQlMetadataRequest(request)
-                ? DecideGraphQlMetadata(request)
+                ? PolicyDecision.Allow($"read provider metadata (GraphQL) on '{_scope.ApiHost}'")
                 : DecideApi(request, "GET", "read provider metadata", allowReadOnlyProjectRoutes: true),
 
             _ => PolicyDecision.Deny($"unknown operation '{request.Operation}'"),
@@ -347,22 +347,30 @@ internal sealed class OperationPolicy
 
     /// <summary>
     /// Whether <paramref name="request"/> targets GitHub's GraphQL metadata endpoint (a POST to
-    /// <c>/graphql</c> on the run's API host). Checks host/method/path only, deliberately not the
-    /// operation — the caller (the <see cref="SandboxOperation.ReadProviderMetadata"/> arm, and the
-    /// collect-only gate above it) is what restricts which operation may reach this exception, so a
-    /// write operation routed through some other classification cannot bootstrap itself into it here.
+    /// <c>/graphql</c> on the run's API host, for the GitHub provider). Checks provider/host/method/path
+    /// only, deliberately not the operation — the caller (the
+    /// <see cref="SandboxOperation.ReadProviderMetadata"/> arm, and the collect-only gate above it) is what
+    /// restricts which operation may reach this exception, so a write operation routed through some other
+    /// classification cannot bootstrap itself into it here.
+    /// <para>
+    /// The provider check matters on its own: an ADO run's <see cref="ReviewScope.ApiHost"/> is never
+    /// literally <c>"/graphql"</c>-shaped, but nothing stops a same-shaped POST from being misclassified
+    /// under a differently-provider-scoped policy in a multi-repo host — this check is what keeps the
+    /// carve-out GitHub-only rather than "any provider whose API host happens to answer a POST to
+    /// <c>/graphql</c>".
+    /// </para>
+    /// <para>
+    /// This is a transport-level classification only: provider, host, method, and path are all this policy
+    /// layer ever sees. It cannot inspect the GraphQL request body, so it cannot verify which repository's
+    /// issues a query actually asks about — that identity is established by the caller's own scoped token
+    /// and query variables, not by anything checked here.
+    /// </para>
     /// </summary>
     private bool IsGitHubGraphQlMetadataRequest(OperationRequest request) =>
-        HostMatches(request.Host, _scope.ApiHost)
+        string.Equals(request.Provider, "github", StringComparison.Ordinal)
+        && HostMatches(request.Host, _scope.ApiHost)
         && string.Equals(request.Method, "POST", StringComparison.OrdinalIgnoreCase)
         && string.Equals(StripQuery(request.Path), GitHubGraphQlPath, StringComparison.Ordinal);
-
-    /// <summary>
-    /// Allows a GraphQL read once <see cref="IsGitHubGraphQlMetadataRequest"/> has already validated
-    /// host, method and path — nothing further to check, so this simply grants it.
-    /// </summary>
-    private PolicyDecision DecideGraphQlMetadata(OperationRequest request) =>
-        PolicyDecision.Allow($"read provider metadata (GraphQL) on '{_scope.ApiHost}'");
 
     /// <summary>
     /// Evaluates a provider-API request. <paramref name="allowReadOnlyProjectRoutes"/> lets the run's
