@@ -957,17 +957,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 cancellationToken
             )
             .ConfigureAwait(false);
-        if (!diff.Succeeded)
-        {
-            throw new InvalidOperationException(
-                $"Fetching the diff for run {run.Id} failed (exit {diff.ExitCode}): {diff.Stderr}"
-            );
-        }
+        // Same rule the two pooled paths already follow: a failed diff only becomes a stated verdict when
+        // MergeBaseResolver proved UnrelatedHistories (a permanent fact about the commit pair); every other
+        // outcome still throws so the stage retries. This path resolves its own merge base above (the pooled
+        // paths get PreparedCheckout.MergeBase from ReviewSlotPreparer instead), so it must apply the same
+        // check rather than letting the diff failure fall through to a generic throw.
+        var uncomparableReason = diff.Succeeded ? null : DescribeUncomparableOrThrow(run, mergeBase.Outcome, diff);
 
-        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
+        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Succeeded ? diff.Stdout : string.Empty);
         var fileManifest = await BuildFileManifestAsync(git, layout.TargetDir, cancellationToken).ConfigureAwait(false);
-        var changedPaths = await BuildChangedPathsAsync(git, layout.TargetDir, run, cancellationToken)
-            .ConfigureAwait(false);
+        // Skipped rather than attempted-and-degraded when the commits are uncomparable — see the sibling sites
+        // in TryPooledFetchContextAsync/TryHostPreparedPooledContextAsync: the listing is the same symmetric
+        // difference and fails the same way.
+        var changedPaths = uncomparableReason is null
+            ? await BuildChangedPathsAsync(git, layout.TargetDir, run, cancellationToken).ConfigureAwait(false)
+            : string.Empty;
 
         _ = _store.AddArtifact(
             new ReviewArtifact
@@ -986,7 +990,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                         layout.TargetDir,
                         layout.StoreRoot,
                         changedPaths,
-                        MergeBaseSha: mergeBase.CommitId
+                        uncomparableReason,
+                        mergeBase.CommitId
                     )
                 ),
             }
@@ -1120,7 +1125,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     cancellationToken
                 )
                 .ConfigureAwait(false);
-            var uncomparableReason = diff.Succeeded ? null : DescribeUncomparableOrThrow(run, prepared, diff);
+            var uncomparableReason = diff.Succeeded ? null : DescribeUncomparableOrThrow(run, prepared.MergeBase, diff);
 
             var boundedDiff = _options.Limits.CapArtifactPayload(diff.Succeeded ? diff.Stdout : string.Empty);
             var fileManifest = await BuildFileManifestAsync(sdkGit, prepared.TargetDir, cancellationToken)
@@ -1262,7 +1267,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 cancellationToken
             )
             .ConfigureAwait(false);
-        var uncomparableReason = diff.Succeeded ? null : DescribeUncomparableOrThrow(run, prepared, diff);
+        var uncomparableReason = diff.Succeeded ? null : DescribeUncomparableOrThrow(run, prepared.MergeBase, diff);
 
         var boundedDiff = _options.Limits.CapArtifactPayload(diff.Succeeded ? diff.Stdout : string.Empty);
         var fileManifest = await BuildFileManifestAsync(hostGit, prepared.TargetDir, cancellationToken)
@@ -1886,9 +1891,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <exception cref="InvalidOperationException">On every merge-base outcome except
     /// <see cref="MergeBaseOutcome.UnrelatedHistories"/> — the diff failure is not (yet) known to be
     /// permanent, so it stays a failure and the stage retries.</exception>
-    private string DescribeUncomparableOrThrow(ReviewRun run, PreparedCheckout prepared, SandboxCommandResult diff)
+    private string DescribeUncomparableOrThrow(ReviewRun run, MergeBaseOutcome mergeBase, SandboxCommandResult diff)
     {
-        if (prepared.MergeBase != MergeBaseOutcome.UnrelatedHistories)
+        if (mergeBase != MergeBaseOutcome.UnrelatedHistories)
         {
             throw new InvalidOperationException(
                 $"Fetching the diff for run {run.Id} failed (exit {diff.ExitCode}): {diff.Stderr}"
@@ -1908,7 +1913,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             run.HeadSha,
             diff.ExitCode,
             FirstLine(diff.Stderr),
-            prepared.MergeBase
+            mergeBase
         );
 
         return $"`{run.BaseSha}` and `{run.HeadSha}` share no common ancestor. The daemon walked both "

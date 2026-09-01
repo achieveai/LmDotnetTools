@@ -423,6 +423,180 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ReadAsync_returns_Failed_when_pageInfo_is_missing_entirely()
+    {
+        // Issue #647 follow-up (Confirmed Should): a response that omits "pageInfo" altogether used to read
+        // as pageInfoPresent=false, which defaulted hasNextPage to false and endCursor to null — indistinguishable
+        // from a genuine last-page-with-no-more-results. That is silently trusting an assumption GitHub's schema
+        // never actually promised for this response. Fail closed instead: a connection missing its required
+        // pageInfo container could not be read, not that it reported "no more pages".
+        var body = JsonSerializer.Serialize(
+            new
+            {
+                data = new
+                {
+                    repository = new
+                    {
+                        pullRequest = new { closingIssuesReferences = new { nodes = new[] { IssueNode(1) } } },
+                    },
+                },
+            }
+        );
+        var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
+
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Failed, "a missing pageInfo container could not be read");
+    }
+
+    [Fact]
+    public async Task ReadAsync_returns_Failed_when_hasNextPage_is_the_wrong_kind()
+    {
+        // "hasNextPage" must be a JSON boolean per GitHub's schema; a string/number/null here means the
+        // response could not be trusted, not that the field silently defaulted to false.
+        var body = JsonSerializer.Serialize(
+            new
+            {
+                data = new
+                {
+                    repository = new
+                    {
+                        pullRequest = new
+                        {
+                            closingIssuesReferences = new
+                            {
+                                pageInfo = new { hasNextPage = "false", endCursor = (string?)null },
+                                nodes = new[] { IssueNode(1) },
+                            },
+                        },
+                    },
+                },
+            }
+        );
+        var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
+
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result
+            .Outcome.Should()
+            .Be(GitHubIssueLookup.Failed, "hasNextPage as a string is not the boolean the schema promises");
+    }
+
+    [Fact]
+    public async Task ReadAsync_returns_Failed_when_endCursor_is_the_wrong_kind()
+    {
+        // "endCursor" must be a JSON string or null; a number/boolean/object here is a shape GitHub's schema
+        // never produces, so the page cannot be trusted rather than treated as cursor-less.
+        var body = JsonSerializer.Serialize(
+            new
+            {
+                data = new
+                {
+                    repository = new
+                    {
+                        pullRequest = new
+                        {
+                            closingIssuesReferences = new
+                            {
+                                pageInfo = new { hasNextPage = false, endCursor = 12345 },
+                                nodes = new[] { IssueNode(1) },
+                            },
+                        },
+                    },
+                },
+            }
+        );
+        var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
+
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result
+            .Outcome.Should()
+            .Be(
+                GitHubIssueLookup.Failed,
+                "endCursor as a number is neither the string nor the null the schema promises"
+            );
+    }
+
+    [Fact]
+    public async Task ReadAsync_returns_Failed_when_nodes_is_missing_entirely()
+    {
+        // Issue #647 follow-up (Confirmed Should): a response that omits "nodes" altogether used to read as
+        // an empty list with RawNodeCount 0 — indistinguishable from a genuine "this PR closes no issues".
+        // Fail closed instead: a connection missing its required nodes array could not be read, not that it
+        // reported NoneLinked.
+        var body = JsonSerializer.Serialize(
+            new
+            {
+                data = new
+                {
+                    repository = new
+                    {
+                        pullRequest = new
+                        {
+                            closingIssuesReferences = new
+                            {
+                                pageInfo = new { hasNextPage = false, endCursor = (string?)null },
+                            },
+                        },
+                    },
+                },
+            }
+        );
+        var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
+
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Failed, "a missing nodes container could not be read");
+    }
+
+    [Fact]
+    public async Task ReadAsync_returns_Failed_when_nodes_is_not_an_array()
+    {
+        // "nodes" must be a JSON array per GitHub's schema; an object/string/number here means the response
+        // could not be trusted, not that it silently contained zero entries.
+        var body = JsonSerializer.Serialize(
+            new
+            {
+                data = new
+                {
+                    repository = new
+                    {
+                        pullRequest = new
+                        {
+                            closingIssuesReferences = new
+                            {
+                                pageInfo = new { hasNextPage = false, endCursor = (string?)null },
+                                nodes = "not-an-array",
+                            },
+                        },
+                    },
+                },
+            }
+        );
+        var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
+
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Failed, "nodes as a string is not the array the schema promises");
+    }
+
+    [Fact]
+    public async Task ReadAsync_returns_NoneLinked_when_pageInfo_and_nodes_are_well_formed_but_empty()
+    {
+        // Pinning the case Part C must NOT break: a genuinely well-formed page with zero linked issues
+        // (both containers present with the right shapes, nodes simply empty) is still a real NoneLinked,
+        // not a failure.
+        var body = GraphQlResponse([], hasNextPage: false, endCursor: null);
+        var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
+
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.NoneLinked);
+        result.Issues.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task ReadAsync_truncates_mid_page_when_a_single_page_exceeds_the_cap_on_its_own()
     {
         // A page reporting more nodes than the cap in one shot is nonconformant (a well-behaved server

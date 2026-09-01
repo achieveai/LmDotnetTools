@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -384,13 +385,83 @@ public sealed class OperationPolicyTests
         // Issue #647 — GitHubIssueContextReader is the first GraphQL consumer, and GraphQL reads are
         // POSTs by protocol. A collect-only (B) variant must still be able to run this READ, or issue
         // #647 becomes unavailable in exactly the run where the daemon most needs a second opinion.
+        // Body must carry the one reviewed-safe document exactly — the carve-out is document-gated, not
+        // shape-gated alone (issue #647 follow-up, MUST #1).
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
+
+        var decision = collectOnly.Decide(
+            new OperationRequest(
+                SandboxOperation.ReadProviderMetadata,
+                "github",
+                "api.github.com",
+                "POST",
+                "/graphql",
+                GitHubIssueContextReader.Query
+            )
+        );
+
+        decision.IsAllowed.Should().BeTrue("reading linked issues over GraphQL is a read, not a write");
+    }
+
+    [Fact]
+    public void CollectOnlyVariant_denies_graphql_post_whose_body_is_not_the_reviewed_safe_document()
+    {
+        // Issue #647 follow-up (MUST #1) — same provider/host/method/path as the legitimate carve-out, but
+        // a body that is NOT the exact document GitHubIssueContextReader.Query defines. A same-shaped
+        // mutation (or any other GraphQL document) must not ride the carve-out on transport shape alone.
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
+
+        var decision = collectOnly.Decide(
+            new OperationRequest(
+                SandboxOperation.ReadProviderMetadata,
+                "github",
+                "api.github.com",
+                "POST",
+                "/graphql",
+                "mutation { addComment(input: { body: \"pwned\" }) { clientMutationId } }"
+            )
+        );
+
+        decision
+            .IsAllowed.Should()
+            .BeFalse("only the one reviewed-safe query document is carved out, not any GraphQL body");
+    }
+
+    [Fact]
+    public void CollectOnlyVariant_denies_graphql_post_carrying_a_hidden_mutation_alongside_the_safe_query()
+    {
+        // A document that starts with (or contains) the benign query text but smuggles a second, named
+        // mutation operation alongside it must still be denied — an exact byte comparison against the one
+        // reviewed-safe document is what defeats this, not a substring/prefix check.
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
+
+        var decision = collectOnly.Decide(
+            new OperationRequest(
+                SandboxOperation.ReadProviderMetadata,
+                "github",
+                "api.github.com",
+                "POST",
+                "/graphql",
+                GitHubIssueContextReader.Query
+                    + "\nmutation Evil { addComment(input: { body: \"pwned\" }) { clientMutationId } }"
+            )
+        );
+
+        decision.IsAllowed.Should().BeFalse("a hidden mutation appended alongside the safe query must still be denied");
+    }
+
+    [Fact]
+    public void CollectOnlyVariant_denies_graphql_post_with_no_body_captured()
+    {
+        // A GraphQL-shaped POST whose body could not be read/parsed (OperationRequest.Body left null) must
+        // deny exactly like a wrong document — never treated as "shape matches, so allow".
         var collectOnly = CreatePolicy(allowWriteOperations: false);
 
         var decision = collectOnly.Decide(
             new OperationRequest(SandboxOperation.ReadProviderMetadata, "github", "api.github.com", "POST", "/graphql")
         );
 
-        decision.IsAllowed.Should().BeTrue("reading linked issues over GraphQL is a read, not a write");
+        decision.IsAllowed.Should().BeFalse("an unreadable/absent body must fail closed, not fail open");
     }
 
     [Fact]
@@ -516,11 +587,15 @@ public sealed class OperationPolicyTests
         // mutation to the operation tag WithOperation passes, or to the GraphQL URL's path, must each turn
         // this test red.
         HttpRequestMessage? captured = null;
+        string? recordedBody = null;
         var handler = new FakeHttpMessageHandler().On(
             req => req.Method == HttpMethod.Post && req.RequestUri is not null,
             req =>
             {
                 captured = req;
+                // Read the body here, synchronously with SendAsync, not after ReadAsync(...) returns below:
+                // the reader disposes its HttpRequestMessage (and content) once the read completes.
+                recordedBody = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(
@@ -551,13 +626,24 @@ public sealed class OperationPolicyTests
         operation.Should().Be(SandboxOperation.ReadProviderMetadata);
 
         // Built the same way OperationPolicyHandler.SendAsync builds it from a real outgoing request —
-        // reusing the existing policy rather than a second, duplicate policy client.
+        // reusing the existing policy rather than a second, duplicate policy client. Body is the "query"
+        // field the handler would have extracted from the real request's content (issue #647 follow-up,
+        // MUST #1) — pulled here from the actual body the reader sent, not a hand-built stand-in. Read from
+        // the recorded request body captured synchronously inside SendAsync, not from `captured.Content`:
+        // GitHubIssueContextReader disposes its HttpRequestMessage once ReadAsync returns, so the content
+        // is already disposed by the time control gets back here.
+        captured!.Content.Should().NotBeNull("the reader must attach the GraphQL envelope as request content");
+        recordedBody.Should().NotBeNull("the handler must have recorded the request body before disposal");
+        using var bodyDocument = JsonDocument.Parse(recordedBody!);
+        var capturedQuery = bodyDocument.RootElement.GetProperty("query").GetString();
+
         var operationRequest = new OperationRequest(
             operation!.Value,
             "github",
             captured!.RequestUri!.Host,
             captured.Method.Method,
-            captured.RequestUri.PathAndQuery
+            captured.RequestUri.PathAndQuery,
+            capturedQuery
         );
 
         var collectOnly = CreatePolicy(allowWriteOperations: false);

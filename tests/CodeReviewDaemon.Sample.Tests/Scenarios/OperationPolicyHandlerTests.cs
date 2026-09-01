@@ -1,6 +1,9 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging;
@@ -136,5 +139,78 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
 
         await act.Should().ThrowAsync<OperationDeniedException>();
         inner.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Allows_the_reviewed_safe_graphql_query_end_to_end_with_the_body_preserved_intact()
+    {
+        // Issue #647 follow-up (MUST #1): a collect-only policy carves out exactly one GraphQL document.
+        // Reading the body to make that decision must not consume or alter it — the inner handler must
+        // still see the FULL original envelope, "query" and "variables" both (body-preservation pin).
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        var requestBody = JsonSerializer.Serialize(
+            new
+            {
+                query = GitHubIssueContextReader.Query,
+                variables = new
+                {
+                    owner = "acme",
+                    repo = "widgets",
+                    number = 7,
+                    pageSize = 20,
+                    after = (string?)null,
+                },
+            }
+        );
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(requestBody, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        inner.Requests.Should().ContainSingle();
+        inner
+            .Requests[0]
+            .Authorization.Should()
+            .Be("Bearer secret-token", "the reviewed-safe GraphQL read must keep its credential");
+        inner
+            .Requests[0]
+            .Body.Should()
+            .Be(requestBody, "reading the body for the policy check must not alter what the inner handler receives");
+    }
+
+    [Fact]
+    public async Task Denies_a_graphql_post_carrying_a_mutation_document_and_never_reaches_the_inner_handler()
+    {
+        // A hidden mutation tagged as ReadProviderMetadata must never egress and must never keep its credential.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(
+                new { query = "mutation { addComment(input: { body: \"pwned\" }) { clientMutationId } }" }
+            ),
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        var act = () => client.SendAsync(request, CancellationToken.None);
+
+        await act.Should().ThrowAsync<OperationDeniedException>();
+        inner
+            .Requests.Should()
+            .BeEmpty(
+                "a mutation document must never reach the inner handler, even when tagged as ReadProviderMetadata"
+            );
+        request
+            .Headers.Authorization.Should()
+            .BeNull("a denied GraphQL request must withhold the credential (fail closed both ways)");
     }
 }

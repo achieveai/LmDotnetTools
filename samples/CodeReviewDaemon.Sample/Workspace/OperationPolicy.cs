@@ -1,3 +1,5 @@
+using CodeReviewDaemon.Sample.Orchestration;
+
 namespace CodeReviewDaemon.Sample.Workspace;
 
 /// <summary>
@@ -51,12 +53,24 @@ internal sealed record PolicyDecision(PolicyOutcome Outcome, string Reason)
 /// may carry a query string (e.g. <c>/owner/repo.git/info/refs?service=git-upload-pack</c>) so git
 /// smart-HTTP can be classified.
 /// </summary>
+/// <param name="Operation">The classified operation this request performs.</param>
+/// <param name="Provider">Provider key (<c>github</c>/<c>ado</c>) this request was issued for.</param>
+/// <param name="Host">The request's target host.</param>
+/// <param name="Method">The request's HTTP method.</param>
+/// <param name="Path">The URL path component, optionally carrying a query string.</param>
+/// <param name="Body">
+/// The GraphQL request's <c>"query"</c> document text, when <paramref name="Path"/> is a GraphQL-shaped
+/// POST and the caller could read one — <c>null</c> for every other operation, and <c>null</c> (fail
+/// closed, never guessed) whenever the body could not be read/parsed. Optional and trailing so every
+/// existing call site that only ever evaluated transport shape keeps compiling unchanged.
+/// </param>
 internal sealed record OperationRequest(
     SandboxOperation Operation,
     string Provider,
     string Host,
     string Method,
-    string Path
+    string Path,
+    string? Body = null
 );
 
 /// <summary>
@@ -347,8 +361,9 @@ internal sealed class OperationPolicy
 
     /// <summary>
     /// Whether <paramref name="request"/> targets GitHub's GraphQL metadata endpoint (a POST to
-    /// <c>/graphql</c> on the run's API host, for the GitHub provider). Checks provider/host/method/path
-    /// only, deliberately not the operation — the caller (the
+    /// <c>/graphql</c> on the run's API host, for the GitHub provider, carrying exactly the one reviewed
+    /// safe query document <see cref="GitHubIssueContextReader.Query"/> defines). Checks the operation's
+    /// caller-supplied classification too, deliberately not the operation enum itself — the caller (the
     /// <see cref="SandboxOperation.ReadProviderMetadata"/> arm, and the collect-only gate above it) is what
     /// restricts which operation may reach this exception, so a write operation routed through some other
     /// classification cannot bootstrap itself into it here.
@@ -360,17 +375,32 @@ internal sealed class OperationPolicy
     /// <c>/graphql</c>".
     /// </para>
     /// <para>
-    /// This is a transport-level classification only: provider, host, method, and path are all this policy
-    /// layer ever sees. It cannot inspect the GraphQL request body, so it cannot verify which repository's
-    /// issues a query actually asks about — that identity is established by the caller's own scoped token
-    /// and query variables, not by anything checked here.
+    /// <see cref="OperationRequest.Body"/> is the ONLY thing that can turn this transport-shaped POST into
+    /// an allow: <see cref="OperationPolicyHandler"/> captures the request's <c>"query"</c> field before
+    /// this method ever runs, and a body that is missing, unreadable, or byte-different from
+    /// <see cref="GitHubIssueContextReader.Query"/> denies exactly like a wrong host or method would.
+    /// <c>variables</c> is deliberately excluded from the comparison — it legitimately differs per request
+    /// (owner/repo/number/page cursor) and comparing the whole envelope would reject every real paginated
+    /// call the reader ever makes.
     /// </para>
     /// </summary>
     private bool IsGitHubGraphQlMetadataRequest(OperationRequest request) =>
         string.Equals(request.Provider, "github", StringComparison.Ordinal)
         && HostMatches(request.Host, _scope.ApiHost)
-        && string.Equals(request.Method, "POST", StringComparison.OrdinalIgnoreCase)
-        && string.Equals(StripQuery(request.Path), GitHubGraphQlPath, StringComparison.Ordinal);
+        && IsGraphQlPostCandidate(request.Method, request.Path)
+        && string.Equals(request.Body, GitHubIssueContextReader.Query, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The transport shape both <see cref="IsGitHubGraphQlMetadataRequest"/> and
+    /// <see cref="OperationPolicyHandler"/> key off to decide "is this worth reading the body for at all" —
+    /// a POST to <c>/graphql</c> (query string ignored). Shared so the two can never drift on what counts
+    /// as GraphQL-shaped: the handler uses it to gate a body read that would otherwise buffer every
+    /// outbound request regardless of operation, and this policy uses the identical check as one of the
+    /// four conditions the carve-out requires.
+    /// </summary>
+    internal static bool IsGraphQlPostCandidate(string method, string path) =>
+        string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(StripQuery(path), GitHubGraphQlPath, StringComparison.Ordinal);
 
     /// <summary>
     /// Evaluates a provider-API request. <paramref name="allowReadOnlyProjectRoutes"/> lets the run's

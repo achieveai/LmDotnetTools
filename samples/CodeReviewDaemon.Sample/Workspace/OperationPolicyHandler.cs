@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace CodeReviewDaemon.Sample.Workspace;
 
 /// <summary>
@@ -100,7 +102,7 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
         _refusals = refusals;
     }
 
-    protected override Task<HttpResponseMessage> SendAsync(
+    protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken
     )
@@ -124,13 +126,22 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
             );
         }
 
-        var operationRequest = new OperationRequest(
-            operation.Value,
-            _provider,
-            request.RequestUri?.Host ?? string.Empty,
-            request.Method.Method,
-            request.RequestUri is null ? string.Empty : request.RequestUri.PathAndQuery
-        );
+        var host = request.RequestUri?.Host ?? string.Empty;
+        var method = request.Method.Method;
+        var path = request.RequestUri is null ? string.Empty : request.RequestUri.PathAndQuery;
+
+        // Only a request BOTH tagged ReadProviderMetadata AND shaped like a GraphQL POST ever has its body
+        // read — every other operation's content (git transport payloads, provider-API write bodies) is
+        // left completely untouched, so this can never become a blanket "buffer every outbound request"
+        // cost or hazard. StringContent.ReadAsStringAsync reads from its own internal buffer, so this does
+        // not consume anything base.SendAsync below still needs.
+        var graphQlBody =
+            operation.Value == SandboxOperation.ReadProviderMetadata
+            && OperationPolicy.IsGraphQlPostCandidate(method, path)
+                ? await TryReadGraphQlQueryAsync(request.Content, cancellationToken).ConfigureAwait(false)
+                : null;
+
+        var operationRequest = new OperationRequest(operation.Value, _provider, host, method, path, graphQlBody);
 
         // Allow when ANY allow-listed repo's policy both permits AND would inject the credential; deny
         // only when every policy denies. Both halves of the fail-closed-both-ways guarantee are required.
@@ -140,7 +151,7 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
             var decision = policy.Decide(operationRequest);
             if (decision.IsAllowed && policy.ShouldInjectCredential(operationRequest))
             {
-                return base.SendAsync(request, cancellationToken);
+                return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
             }
 
             lastDeny = decision;
@@ -161,6 +172,74 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
         );
         RecordRefusal(operation.Value.ToString(), request, reason);
         throw new OperationDeniedException(operation.Value, reason);
+    }
+
+    /// <summary>
+    /// The largest body this reviewed-safe GraphQL document could ever legitimately produce, with generous
+    /// headroom for its <c>variables</c> envelope (owner/repo/number/page-size/cursor are all short
+    /// scalars). Anything bigger cannot be the safe document, so it is rejected before it is even parsed —
+    /// this is a cap on what this handler will READ, not a general request-size policy.
+    /// </summary>
+    private const int MaxGraphQlBodyBytes = 16 * 1024;
+
+    /// <summary>
+    /// Extracts the JSON <c>"query"</c> field from a candidate GraphQL request body, or <c>null</c> on
+    /// anything that stops this from being read as exactly that: no content, an oversized or unreadable
+    /// body, invalid JSON, or a document without a string <c>"query"</c> property. Every one of those
+    /// collapses to the same <c>null</c>, which is the only value
+    /// <see cref="OperationPolicy.IsGitHubGraphQlMetadataRequest"/> can never match against — fail closed,
+    /// not fail open with a best-effort guess.
+    /// <para>
+    /// <c>variables</c> is deliberately excluded: the reader's own request body is
+    /// <c>{"query": Query, "variables": {...}}</c>, and <c>variables</c> legitimately differs on every
+    /// page/PR the reader ever asks about, so only <c>query</c> is a candidate for an exact-document
+    /// comparison.
+    /// </para>
+    /// </summary>
+    private static async Task<string?> TryReadGraphQlQueryAsync(
+        HttpContent? content,
+        CancellationToken cancellationToken
+    )
+    {
+        if (content is null)
+        {
+            return null;
+        }
+
+        if (content.Headers.ContentLength is { } declaredLength && declaredLength > MaxGraphQlBodyBytes)
+        {
+            return null;
+        }
+
+        string raw;
+        try
+        {
+            raw = await content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+
+        if (raw.Length > MaxGraphQlBodyBytes)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(raw);
+            return
+                document.RootElement.ValueKind is JsonValueKind.Object
+                && document.RootElement.TryGetProperty("query", out var queryEl)
+                && queryEl.ValueKind is JsonValueKind.String
+                ? queryEl.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

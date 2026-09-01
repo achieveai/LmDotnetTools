@@ -145,7 +145,10 @@ internal sealed class GitHubIssueContextReader
     /// — GitHub's own GraphQL identity for the issue/PR — because <c>(repository, number)</c> alone is not a
     /// deterministic identity across repositories.
     /// </summary>
-    private const string Query = """
+    // Internal rather than private: OperationPolicy.IsGitHubGraphQlMetadataRequest compares a captured
+    // request's "query" field against this exact constant, so the safe document has exactly one
+    // definition shared by the reader that sends it and the policy that verifies it (issue #647 review).
+    internal const string Query = """
         query($owner: String!, $repo: String!, $number: Int!, $pageSize: Int!, $after: String) {
           repository(owner: $owner, name: $repo) {
             pullRequest(number: $number) {
@@ -468,30 +471,39 @@ internal sealed class GitHubIssueContextReader
             return null;
         }
 
-        var pageInfoPresent =
-            connection.TryGetProperty("pageInfo", out var pageInfo) && pageInfo.ValueKind is JsonValueKind.Object;
-        var hasNextPage =
-            pageInfoPresent
-            && pageInfo.TryGetProperty("hasNextPage", out var hasNextPageEl)
-            && hasNextPageEl.ValueKind is JsonValueKind.True;
-        var endCursor =
-            pageInfoPresent
-            && pageInfo.TryGetProperty("endCursor", out var endCursorEl)
-            && endCursorEl.ValueKind is JsonValueKind.String
-                ? endCursorEl.GetString()
-                : null;
+        // Fail closed on the connection's required containers/fields rather than defaulting a missing or
+        // wrong-kind one away: a page whose pageInfo/nodes shape does not match what GitHub's schema promises
+        // could not be read, and must never be silently reinterpreted as "no more pages" or "no linked
+        // issues" (see ReadAsync_returns_Failed_when_pageInfo_is_missing_entirely and its siblings). A
+        // genuinely well-formed page with an empty nodes array is unaffected — that is still NoneLinked.
+        if (
+            !connection.TryGetProperty("pageInfo", out var pageInfo)
+            || pageInfo.ValueKind is not JsonValueKind.Object
+            || !pageInfo.TryGetProperty("hasNextPage", out var hasNextPageEl)
+            || hasNextPageEl.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+            || !pageInfo.TryGetProperty("endCursor", out var endCursorEl)
+            || endCursorEl.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)
+        )
+        {
+            return null;
+        }
+
+        if (!connection.TryGetProperty("nodes", out var nodesEl) || nodesEl.ValueKind is not JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var hasNextPage = hasNextPageEl.ValueKind is JsonValueKind.True;
+        var endCursor = endCursorEl.ValueKind is JsonValueKind.String ? endCursorEl.GetString() : null;
 
         var nodes = new List<GitHubLinkedIssue>();
         var rawNodeCount = 0;
-        if (connection.TryGetProperty("nodes", out var nodesEl) && nodesEl.ValueKind is JsonValueKind.Array)
+        foreach (var node in nodesEl.EnumerateArray())
         {
-            foreach (var node in nodesEl.EnumerateArray())
+            rawNodeCount++;
+            if (ParseLinkedIssue(node) is { } issue)
             {
-                rawNodeCount++;
-                if (ParseLinkedIssue(node) is { } issue)
-                {
-                    nodes.Add(issue);
-                }
+                nodes.Add(issue);
             }
         }
 

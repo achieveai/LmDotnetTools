@@ -2828,6 +2828,47 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ContextReady_persists_one_uncomparable_artifact_on_the_direct_path_when_histories_are_unrelated()
+    {
+        // Issue #647 follow-up (Must #2): the direct/non-pooled checkout path resolves its own merge base
+        // (unlike the two pooled paths, which get PreparedCheckout.MergeBase for free) but used to ignore the
+        // outcome entirely and let the subsequent diff fail into the generic "diff fetch failed" throw. That
+        // throw burns the run's retry budget re-discovering the same permanent fact forever. Bring this path to
+        // parity with the pooled paths: UnrelatedHistories must persist exactly one artifact carrying the
+        // uncomparable reason and no MergeBaseSha, not throw.
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            diffResult: new SandboxCommandResult(1, string.Empty, "fatal: no merge base")
+        );
+        fixture
+            .Runner.OnArgvContains(
+                "merge-base base-sha head-sha",
+                new SandboxCommandResult(1, string.Empty, string.Empty)
+            )
+            .OnArgvContains("is-shallow-repository", new SandboxCommandResult(0, "false\n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var root = JsonDocument.Parse(artifact.Payload).RootElement;
+        root.GetProperty("UncomparableReason")
+            .GetString()
+            .Should()
+            .Contain(
+                "share no common ancestor",
+                "the direct path must state the same permanent fact the pooled paths do"
+            );
+        root.TryGetProperty("MergeBaseSha", out _)
+            .Should()
+            .BeFalse("UnrelatedHistories never resolves a merge base commit, so none is persisted");
+        fixture
+            .Runner.Commands.Count(c => string.Join(' ', c.Argv).Contains("merge-base base-sha head-sha"))
+            .Should()
+            .Be(1, "the direct path must not re-resolve the merge base once UnrelatedHistories is established");
+    }
+
+    [Fact]
     public async Task Posted_throws_when_no_publisher_matches_the_provider()
     {
         // An ado run but only a 'github' publisher registered → the provider lookup must fail fast.
