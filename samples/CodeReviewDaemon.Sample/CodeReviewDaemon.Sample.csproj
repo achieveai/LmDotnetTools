@@ -20,6 +20,11 @@
     <PackageReference Include="Serilog.Extensions.Logging" Version="9.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
     <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
+    <!-- ReviewActionsParser (Orchestration/ReviewActions.cs) deserializes the synthesis turn's
+         `review-actions` fence directly, so it declares this explicitly rather than relying on the
+         transitive reference LmSampleShared already brings in. Pinned to the version used everywhere
+         else in the repo (src/LmCore, samples/LmSampleShared, samples/LmStreaming.Sample). -->
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
   </ItemGroup>
   <ItemGroup>
     <!-- All reusable agent/sandbox/OAuth/webhook machinery lives in LmAgentInfra (shared with
