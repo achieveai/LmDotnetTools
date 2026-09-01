@@ -3,10 +3,9 @@ using CodeReviewDaemon.Sample.Orchestration;
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 
 /// <summary>
-/// Issue #649 — the tolerant `review-actions` fenced-block parser. Test matrix numbers in the
-/// `[Fact]` names below (e.g. "8a_1") trace back to the acceptance-criteria matrix in
-/// `.claude/scratchpad/issue-649-implementation-brief.md` §8, so a reviewer can check coverage
-/// against the brief directly rather than re-deriving it from these names.
+/// Issue #649 — the tolerant `review-actions` fenced-block parser. Tests are grouped by outcome
+/// under the section headers below: 8a per-action rejection (a bad action never takes the block
+/// down), 8b whole-block structural failure, and 8c valid/neutral outcomes.
 /// </summary>
 public sealed class ReviewActionsTests
 {
@@ -488,5 +487,91 @@ public sealed class ReviewActionsTests
         var action = result.Actions.Should().ContainSingle(a => a.Kind == ReviewActionKind.Summary).Subject;
         action.Body.Should().Contain("```");
         action.Body.Should().Contain("more text");
+    }
+
+    // ---- Fix-round-2 (PR #659 review 5486805528): null-item and top-level-null structural coverage ----
+
+    [Fact]
+    public void Null_sequence_item_is_rejected_but_sibling_summary_survives()
+    {
+        // A bare `-` with nothing after it deserializes as a null list element (not a
+        // RawReviewAction), even though the surrounding sequence is otherwise well-formed YAML.
+        // Dereferencing it directly (e.g. `raw.Kind`) would throw a NullReferenceException instead
+        // of the per-action rejection the "never throws for malformed content" contract promises.
+        var result = ReviewActionsParser.Parse(
+            "```review-actions\n" + "-\n" + "- kind: summary\n" + "  body: \"all good\"\n" + "```"
+        );
+
+        result.WholeBlockFailed.Should().BeFalse();
+        result.Rejections.Should().ContainSingle(r => r.Index == 0 && r.Reason == "action must be a mapping");
+        result.Actions.Should().ContainSingle(a => a.Kind == ReviewActionKind.Summary && a.Index == 1);
+    }
+
+    [Fact]
+    public void Null_sequence_item_after_a_valid_summary_preserves_its_own_index()
+    {
+        // Same defect class as above, with the null item second — proves the rejection's Index
+        // reflects its own position in the raw list (1), not a renumbered/derived position, and that
+        // the valid sibling ahead of it is unaffected.
+        var result = ReviewActionsParser.Parse(
+            "```review-actions\n" + "- kind: summary\n" + "  body: \"all good\"\n" + "-\n" + "```"
+        );
+
+        result.WholeBlockFailed.Should().BeFalse();
+        result.Actions.Should().ContainSingle(a => a.Kind == ReviewActionKind.Summary && a.Index == 0);
+        result.Rejections.Should().ContainSingle(r => r.Index == 1 && r.Reason == "action must be a mapping");
+    }
+
+    [Fact]
+    public void Top_level_null_fence_body_fails_the_whole_block()
+    {
+        // A fence body whose only content is an explicit YAML null (the literal token `null`) still
+        // deserializes to a null list — same as a genuinely empty body — but it is not "no actions
+        // offered": the document never resolved to a sequence at all, so this must be a structural
+        // whole-block failure, distinct from the empty-fence-body case below.
+        var result = ReviewActionsParser.Parse("```review-actions\n" + "null\n" + "```");
+
+        result.WholeBlockFailed.Should().BeTrue();
+        result.Actions.Should().BeEmpty();
+        result.Rejections.Should().ContainSingle(r => r.Index == -1 && r.Reason == WholeBlockFailureReason);
+    }
+
+    [Fact]
+    public void Explicit_empty_sequence_bracket_is_valid_with_zero_actions()
+    {
+        // `[]` deserializes to a non-null, zero-count list, so it must be treated the same as a
+        // genuinely empty fence body (valid, zero actions) — not conflated with the top-level-null
+        // case above, which never produces a list at all.
+        var result = ReviewActionsParser.Parse("```review-actions\n" + "[]\n" + "```");
+
+        result.WholeBlockFailed.Should().BeFalse();
+        result.Actions.Should().BeEmpty();
+        result.Rejections.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Explicit_null_kind_value_is_treated_as_missing_kind()
+    {
+        // A different null edge than the two above: here the *item* is a real mapping (not a null
+        // list element), but its `kind` field is an explicit YAML null rather than simply absent.
+        // Both must land on the same "(missing)" placeholder reason, since RawReviewAction.Kind is
+        // string? either way.
+        var result = ReviewActionsParser.Parse(
+            "```review-actions\n" + "- kind: null\n" + "  body: \"no real kind\"\n" + "```"
+        );
+
+        result.WholeBlockFailed.Should().BeFalse();
+        result.Rejections.Should().ContainSingle(r => r.Index == 0 && r.Reason == "unknown kind '(missing)'");
+    }
+
+    [Fact]
+    public void Null_response_argument_still_throws_argument_null_exception()
+    {
+        // The "never throws" contract is scoped to malformed *content*; a null response argument
+        // remains a caller error per the Parse XML doc, and must still throw rather than being
+        // silently treated as empty input.
+        var act = () => ReviewActionsParser.Parse(null!);
+
+        act.Should().Throw<ArgumentNullException>();
     }
 }

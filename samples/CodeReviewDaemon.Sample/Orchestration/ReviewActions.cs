@@ -127,17 +127,32 @@ internal static class ReviewActionsParser
         var body = string.Join('\n', lines[(openIdx + 1)..closeIdx]);
         var trimmedMarkdown = StripFencedSpans(response, lines, lineStarts, [(openIdx, closeIdx)]);
 
-        List<RawReviewAction>? raw;
+        List<RawReviewAction?>? raw;
         try
         {
-            raw = YamlDeserializer.Deserialize<List<RawReviewAction>>(body);
+            raw = YamlDeserializer.Deserialize<List<RawReviewAction?>>(body);
         }
         catch (YamlException)
         {
             return WholeBlockFailure(trimmedMarkdown);
         }
 
-        if (raw is null || raw.Count == 0)
+        if (raw is null)
+        {
+            // YamlDotNet returns null (rather than throwing) for two different documents: a
+            // genuinely empty fence body, and a body whose only content is an explicit YAML null
+            // (e.g. the literal word `null` or `~`). Those must not be treated the same: an empty
+            // fence is "no actions offered" (valid), while an explicit top-level null is malformed
+            // structure the same way `kind: [` is — it never resolved to a sequence at all. Only the
+            // former is a valid empty result; the latter is a whole-block failure. A true empty
+            // sequence (`[]`) deserializes to a non-null, zero-count list and falls through to the
+            // `raw.Count == 0` check below instead of this branch.
+            return string.IsNullOrWhiteSpace(body)
+                ? new ReviewActionsParseResult(trimmedMarkdown, [], [], false)
+                : WholeBlockFailure(trimmedMarkdown);
+        }
+
+        if (raw.Count == 0)
         {
             return new ReviewActionsParseResult(trimmedMarkdown, [], [], false);
         }
@@ -167,14 +182,26 @@ internal static class ReviewActionsParser
     /// "tolerant" here means item-scoped rejection of anything else — not case-folding or synonym
     /// normalization.
     /// </para>
+    /// <para>
+    /// <paramref name="raw"/> is nullable because a YAML sequence can carry a null element (a bare
+    /// `-` with nothing after it, or an explicit `null`/`~`) even while the surrounding list is
+    /// perfectly well-formed. That is scoped to this one item, not the whole block: it is rejected at
+    /// its own index below rather than dereferenced, and every sibling is still validated normally.
+    /// </para>
     /// </summary>
     private static void Validate(
         int index,
-        RawReviewAction raw,
+        RawReviewAction? raw,
         List<ReviewAction> actions,
         List<RejectedReviewAction> rejections
     )
     {
+        if (raw is null)
+        {
+            rejections.Add(new RejectedReviewAction(index, null, null, "action must be a mapping"));
+            return;
+        }
+
         switch (raw.Kind)
         {
             case "reply":
