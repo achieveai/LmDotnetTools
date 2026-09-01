@@ -28,6 +28,46 @@ public sealed class DaemonProfileConfigurationTests
         listener.Port.Should().Be(5082, "the GitHub daemon owns 5081 and cannot validate MCQdb session secrets");
     }
 
+    [Theory]
+    [InlineData("appsettings.achieveai.json")]
+    [InlineData("appsettings.mcqdb.json")]
+    public void The_shipped_review_profiles_default_the_primary_review_conversation_to_sol(string profileFileName)
+    {
+        // The Luna-only-child-routing fast PR: the primary review conversation (ReviewModelId, the
+        // orchestrator's model, and its S2S fallback provider id LmStreamingProviderId) must start on
+        // gpt-5.6-sol in both shipped tenant profiles. Bound through CodeReviewDaemonOptions rather than
+        // read as raw JSON so a misspelled key (which binds nothing and silently keeps the class default)
+        // fails this test instead of passing it.
+        var options = BindDaemonOptions(profileFileName);
+
+        options.ReviewModelId.Should().Be("gpt-5.6-sol", "the primary orchestrator loop must run on Sol");
+        options
+            .LmStreamingProviderId.Should()
+            .Be(
+                "gpt-5.6-sol",
+                "S2SReviewAgentLoopFactory warns at boot when ReviewModelId and LmStreamingProviderId "
+                    + "disagree, since both mean 'the review model' — they must stay in lockstep"
+            );
+    }
+
+    /// <summary>
+    /// Binds a shipped profile's <c>CodeReviewDaemon</c> section through the same
+    /// <see cref="ConfigurationBuilder"/> + typed <see cref="CodeReviewDaemonOptions"/> path the daemon
+    /// itself uses, rather than reading the raw JSON — a renamed/misspelled key binds nothing and silently
+    /// keeps the class default, which a raw-JSON read would not catch.
+    /// </summary>
+    private static CodeReviewDaemonOptions BindDaemonOptions(string profileFileName)
+    {
+        var options = new ConfigurationBuilder()
+            .AddJsonFile(LocateProfile(profileFileName))
+            .Build()
+            .GetSection(CodeReviewDaemonOptions.SectionName)
+            .Get<CodeReviewDaemonOptions>();
+
+        options.Should().NotBeNull($"{profileFileName} must bind a {nameof(CodeReviewDaemonOptions)} section");
+        return options!;
+    }
+
     [Fact]
     public void The_achieveai_profile_enables_polling_of_the_ClaudePlugins_repo()
     {
