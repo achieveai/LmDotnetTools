@@ -1,14 +1,13 @@
 namespace CodeReviewDaemon.Sample.Workspace;
 
 /// <summary>
-/// The GitHub GraphQL request identity the daemon's own reader ever legitimately issues:
+/// The GitHub GraphQL request identity a review run legitimately asks about:
 /// <c>variables.owner</c>/<c>variables.repo</c>/<c>variables.number</c> from the reviewed-safe
-/// linked-issues query (<see cref="GitHubGraphQlContract.Query"/>). One record serves two roles —
-/// the EXPECTED scope a trusted caller tags onto its own request (see
-/// <see cref="GitHubGraphQlRequestTagging.WithGitHubGraphQlScope"/>), and the ACTUAL scope
-/// <see cref="OperationPolicyHandler"/> parses back out of that same request's body — so the policy
-/// can compare "what the trusted caller meant to ask" against "what the body on the wire actually
-/// says" without two near-duplicate shapes to keep in sync.
+/// linked-issues query (<see cref="GitHubGraphQlContract.Query"/>). Serves two roles — the CANONICAL
+/// scope bound once into <see cref="OperationPolicyHandler"/>'s constructor at client-construction
+/// time, and the ACTUAL scope <see cref="OperationPolicyHandler"/> parses back out of a candidate
+/// request's body — so the handler can compare "what this client was built to ask about" against
+/// "what the body on the wire actually says" without two near-duplicate shapes to keep in sync.
 /// </summary>
 /// <param name="Owner">The repository owner/org the query is scoped to.</param>
 /// <param name="Repo">The repository name the query is scoped to.</param>
@@ -56,35 +55,4 @@ internal static class GitHubGraphQlContract
           }
         }
         """;
-}
-
-/// <summary>
-/// Tags an <see cref="HttpRequestMessage"/> with the <see cref="GitHubGraphQlRequestScope"/> it expects
-/// to ask about, mirroring <see cref="OperationRequestTagging"/>'s <c>WithOperation</c>/<c>GetOperation</c>
-/// shape. Set once, by the one trusted call site that knows owner/repo/number from its own method
-/// arguments (<c>GitHubIssueContextReader.FetchPageAsync</c>) — never derived from ambient/current-run
-/// state, because the policy that reads it back is a DI singleton shared across every concurrent run.
-/// </summary>
-internal static class GitHubGraphQlRequestTagging
-{
-    private static readonly HttpRequestOptionsKey<GitHubGraphQlRequestScope> ScopeKey = new("crd.github-graphql-scope");
-
-    /// <summary>Tags <paramref name="request"/> with <paramref name="scope"/> and returns it (fluent).</summary>
-    public static HttpRequestMessage WithGitHubGraphQlScope(
-        this HttpRequestMessage request,
-        GitHubGraphQlRequestScope scope
-    )
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        ArgumentNullException.ThrowIfNull(scope);
-        request.Options.Set(ScopeKey, scope);
-        return request;
-    }
-
-    /// <summary>Reads the expected-scope tag, or <c>null</c> when the request was never tagged.</summary>
-    public static GitHubGraphQlRequestScope? GetGitHubGraphQlScope(this HttpRequestMessage request)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        return request.Options.TryGetValue(ScopeKey, out var scope) ? scope : null;
-    }
 }

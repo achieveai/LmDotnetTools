@@ -488,7 +488,7 @@ builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCom
 // the ADO work-item context reader registered below). Registered unconditionally alongside the other
 // GitHub services; the reader itself returns Unavailable for a non-GitHub repo.
 builder.Services.AddSingleton(sp => new GitHubIssueContextReader(
-    sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
+    sp.GetRequiredService<PolicyEnforcedHttpClientFactory>(),
     sp.GetRequiredService<GitHubOAuthProvider>(),
     sp.GetRequiredService<ILogger<GitHubIssueContextReader>>()
 ));

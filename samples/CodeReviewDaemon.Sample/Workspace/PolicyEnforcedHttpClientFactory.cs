@@ -18,18 +18,21 @@ internal sealed class PolicyEnforcedHttpClientFactory
     private readonly ILogger<OperationPolicyHandler> _logger;
     private readonly ILogger<RetryHandler> _retryLogger;
     private readonly IPolicyRefusalRecorder? _refusals;
+    private readonly Func<HttpMessageHandler> _innerHandlerFactory;
 
     public PolicyEnforcedHttpClientFactory(
         CodeReviewDaemonOptions options,
         ILogger<OperationPolicyHandler> logger,
         ILogger<RetryHandler> retryLogger,
-        IPolicyRefusalRecorder? refusals = null
+        IPolicyRefusalRecorder? refusals = null,
+        Func<HttpMessageHandler>? innerHandlerFactory = null
     )
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _retryLogger = retryLogger ?? throw new ArgumentNullException(nameof(retryLogger));
         _refusals = refusals;
+        _innerHandlerFactory = innerHandlerFactory ?? (() => new HttpClientHandler());
     }
 
     /// <summary>
@@ -46,14 +49,56 @@ internal sealed class PolicyEnforcedHttpClientFactory
     /// refused at the seam instead of succeeding. It stays exactly as capable as before when posting IS
     /// enabled: this narrows the collect-only case only, it does not remove the feature.
     /// </para>
+    /// <para>
+    /// Binds no canonical GraphQL scope (<c>null</c>), so <see cref="OperationPolicyHandler"/>
+    /// unconditionally denies GraphQL on this client regardless of what any policy would otherwise allow.
+    /// A caller that needs GraphQL uses <see cref="CreateForGitHubGraphQl"/> instead.
+    /// </para>
     /// </summary>
     public HttpClient Create(string provider)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(provider);
 
-        var policyHandler = new OperationPolicyHandler(BuildPolicies(provider), provider, _logger, _refusals)
+        var policyHandler = new OperationPolicyHandler(
+            BuildPolicies(provider),
+            provider,
+            _logger,
+            _refusals,
+            canonicalGraphQlScope: null
+        )
         {
-            InnerHandler = new HttpClientHandler(),
+            InnerHandler = _innerHandlerFactory(),
+        };
+
+        return new HttpClient(new RetryHandler(_retryLogger) { InnerHandler = policyHandler });
+    }
+
+    /// <summary>
+    /// Creates a policy-enforced client scoped to exactly one GitHub pull request's linked-issue GraphQL
+    /// lookup. Builds the same mandatory configured allow-list/write policies <see cref="Create"/> does —
+    /// GraphQL still has to fall within an allow-listed repo's boundary — but additionally binds
+    /// <paramref name="repo"/>/<paramref name="prNumber"/> as this client's immutable canonical GraphQL
+    /// scope, so <see cref="OperationPolicyHandler"/> only ever allows a GraphQL request whose body names
+    /// exactly this owner, repo, and PR number. No request can set or replace that binding after
+    /// construction; a caller that wants a different PR gets a different client from a fresh call to this
+    /// method. Same retry/socket pipeline shape as <see cref="Create"/>.
+    /// </summary>
+    /// <param name="repo">The repository the linked-issue lookup belongs to.</param>
+    /// <param name="prNumber">The pull request this client's GraphQL calls are scoped to.</param>
+    public HttpClient CreateForGitHubGraphQl(RepoIdentity repo, int prNumber)
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+
+        var canonicalScope = new GitHubGraphQlRequestScope(repo.OrgOrOwner, repo.RepoName, prNumber);
+        var policyHandler = new OperationPolicyHandler(
+            BuildPolicies("github"),
+            "github",
+            _logger,
+            _refusals,
+            canonicalScope
+        )
+        {
+            InnerHandler = _innerHandlerFactory(),
         };
 
         return new HttpClient(new RetryHandler(_retryLogger) { InnerHandler = policyHandler });

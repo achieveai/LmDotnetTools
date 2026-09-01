@@ -1,6 +1,6 @@
 using System.Net;
 using System.Text;
-using System.Text.Json;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -18,7 +18,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class OperationPolicyTests
 {
-    private static OperationPolicy CreatePolicy(bool allowWriteOperations = true, int? graphQlPrNumber = null) =>
+    private static OperationPolicy CreatePolicy(bool allowWriteOperations = true) =>
         new(
             new ReviewScope(
                 Provider: "github",
@@ -34,17 +34,14 @@ public sealed class OperationPolicyTests
             {
                 GraphQlOwner = "acme",
                 GraphQlRepo = "widgets",
-                GraphQlPrNumber = graphQlPrNumber,
             },
             allowWriteOperations
         );
 
     /// <summary>
-    /// The scope this run's GraphQL requests must carry to be allowed: matches both
-    /// <see cref="CreatePolicy"/>'s <c>ReviewScope.GraphQlOwner</c>/<c>GraphQlRepo</c> and the PR number
-    /// the reviewed-safe tests below target. Reused as both the trusted tag
-    /// (<c>ExpectedGraphQlScope</c>) and the parsed body (<c>GraphQlVariables</c>) wherever a test wants
-    /// those two to agree, so only the one thing that test isolates has to vary.
+    /// The scope this run's GraphQL requests must carry to be allowed: matches
+    /// <see cref="CreatePolicy"/>'s <c>ReviewScope.GraphQlOwner</c>/<c>GraphQlRepo</c>. Passed as the parsed
+    /// body (<c>GraphQlVariables</c>) wherever a test wants a request that satisfies the configured boundary.
     /// </summary>
     private static readonly GitHubGraphQlRequestScope ScopedTarget = new("acme", "widgets", 7);
 
@@ -400,9 +397,8 @@ public sealed class OperationPolicyTests
         // POSTs by protocol. A collect-only (B) variant must still be able to run this READ, or issue
         // #647 becomes unavailable in exactly the run where the daemon most needs a second opinion.
         // Body must carry the one reviewed-safe document exactly — the carve-out is document-gated, not
-        // shape-gated alone (issue #647 follow-up, MUST #1). GraphQlPrNumber is bound to match
-        // ScopedTarget's PR (issue #666 second correction: an unbound PR number now denies outright).
-        var collectOnly = CreatePolicy(allowWriteOperations: false, graphQlPrNumber: 7);
+        // shape-gated alone (issue #647 follow-up, MUST #1).
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
 
         var decision = collectOnly.Decide(
             new OperationRequest(
@@ -412,7 +408,6 @@ public sealed class OperationPolicyTests
                 "POST",
                 "/graphql",
                 GitHubIssueContextReader.Query,
-                ScopedTarget,
                 ScopedTarget
             )
         );
@@ -439,7 +434,6 @@ public sealed class OperationPolicyTests
                 "POST",
                 "/graphql",
                 "mutation { addComment(input: { body: \"pwned\" }) { clientMutationId } }",
-                ScopedTarget,
                 ScopedTarget
             )
         );
@@ -467,7 +461,6 @@ public sealed class OperationPolicyTests
                 "/graphql",
                 GitHubIssueContextReader.Query
                     + "\nmutation Evil { addComment(input: { body: \"pwned\" }) { clientMutationId } }",
-                ScopedTarget,
                 ScopedTarget
             )
         );
@@ -491,8 +484,7 @@ public sealed class OperationPolicyTests
                 "POST",
                 "/graphql",
                 Body: null,
-                GraphQlVariables: ScopedTarget,
-                ExpectedGraphQlScope: ScopedTarget
+                GraphQlVariables: ScopedTarget
             )
         );
 
@@ -615,36 +607,11 @@ public sealed class OperationPolicyTests
     }
 
     [Fact]
-    public void CollectOnlyVariant_denies_graphql_post_missing_the_expected_scope_tag()
-    {
-        // Issue #647 follow-up (MUST #1) — the body carries a well-formed, in-scope variables envelope,
-        // but the request was never tagged with an expected scope (ExpectedGraphQlScope null). The tag is
-        // what proves the caller is the trusted GitHubIssueContextReader; body content alone is
-        // attacker-influenceable and must never be sufficient on its own.
-        var collectOnly = CreatePolicy(allowWriteOperations: false);
-
-        var decision = collectOnly.Decide(
-            new OperationRequest(
-                SandboxOperation.ReadProviderMetadata,
-                "github",
-                "api.github.com",
-                "POST",
-                "/graphql",
-                GitHubIssueContextReader.Query,
-                GraphQlVariables: ScopedTarget,
-                ExpectedGraphQlScope: null
-            )
-        );
-
-        decision.IsAllowed.Should().BeFalse("a request never tagged with the expected scope must fail closed");
-    }
-
-    [Fact]
     public void CollectOnlyVariant_denies_graphql_post_whose_variables_could_not_be_parsed()
     {
-        // The expected-scope tag is present (as the trusted caller would attach), but the body's variables
-        // could not be parsed into a scope (handler-level parse failure surfaces here as a null
-        // GraphQlVariables) — there is nothing to compare the trusted tag against, so this must deny too.
+        // The body's variables could not be parsed into a scope (handler-level parse failure surfaces here
+        // as a null GraphQlVariables) — there is nothing to compare against this policy's own boundary, so
+        // this must deny too.
         var collectOnly = CreatePolicy(allowWriteOperations: false);
 
         var decision = collectOnly.Decide(
@@ -655,8 +622,7 @@ public sealed class OperationPolicyTests
                 "POST",
                 "/graphql",
                 GitHubIssueContextReader.Query,
-                GraphQlVariables: null,
-                ExpectedGraphQlScope: ScopedTarget
+                GraphQlVariables: null
             )
         );
 
@@ -664,19 +630,19 @@ public sealed class OperationPolicyTests
     }
 
     [Theory]
-    [InlineData("evil", "widgets", 7)]
-    [InlineData("acme", "evil-repo", 7)]
-    [InlineData("acme", "widgets", 8)]
-    public void CollectOnlyVariant_denies_graphql_post_whose_body_variables_disagree_with_the_expected_tag(
+    [InlineData("evil", "widgets")]
+    [InlineData("acme", "evil-repo")]
+    public void CollectOnlyVariant_denies_graphql_post_whose_body_variables_are_outside_the_configured_repo(
         string owner,
-        string repo,
-        int number
+        string repo
     )
     {
-        // Issue #647 follow-up (MUST #1) — the trusted tag says one PR, the body's variables claim
-        // another. Each field is mismatched in isolation (the other two still agree) so this pins that
-        // owner, repo, AND number are each independently load-bearing in the comparison, not just checked
-        // as a group where one mismatch happens to be redundant with another.
+        // Issue #666 second review — pins the owner-vs-configured-scope and repo-vs-configured-scope
+        // conjuncts of Decide's own boundary check, each varied alone so neither can mask the other's
+        // mutation. The PR number this policy never checks (it has none of its own to compare against) —
+        // that is OperationPolicyHandler's separate, mandatory, constructor-bound canonical-scope gate,
+        // covered end-to-end by
+        // OperationPolicyHandlerTests.Denies_a_graphql_post_whose_body_variables_target_a_different_pr_than_the_clients_canonical_scope.
         var collectOnly = CreatePolicy(allowWriteOperations: false);
 
         var decision = collectOnly.Decide(
@@ -687,16 +653,15 @@ public sealed class OperationPolicyTests
                 "POST",
                 "/graphql",
                 GitHubIssueContextReader.Query,
-                GraphQlVariables: new GitHubGraphQlRequestScope(owner, repo, number),
-                ExpectedGraphQlScope: ScopedTarget
+                GraphQlVariables: new GitHubGraphQlRequestScope(owner, repo, 7)
             )
         );
 
-        decision.IsAllowed.Should().BeFalse("body variables that disagree with the trusted tag must deny");
+        decision.IsAllowed.Should().BeFalse("body variables outside this policy's configured owner/repo must deny");
     }
 
     [Fact]
-    public void CollectOnlyVariant_denies_graphql_post_whose_owner_differs_only_by_case_from_the_expected_tag()
+    public void CollectOnlyVariant_denies_graphql_post_whose_owner_differs_only_by_case_from_the_configured_scope()
     {
         // The comparison must be Ordinal, not case-insensitive: "ACME" is not "acme" even though GitHub
         // itself treats owner names case-insensitively at the API layer — this policy must not.
@@ -710,8 +675,7 @@ public sealed class OperationPolicyTests
                 "POST",
                 "/graphql",
                 GitHubIssueContextReader.Query,
-                GraphQlVariables: new GitHubGraphQlRequestScope("ACME", "widgets", 7),
-                ExpectedGraphQlScope: ScopedTarget
+                GraphQlVariables: new GitHubGraphQlRequestScope("ACME", "widgets", 7)
             )
         );
 
@@ -723,8 +687,8 @@ public sealed class OperationPolicyTests
     [InlineData(-1)]
     public void CollectOnlyVariant_denies_graphql_post_with_a_non_positive_pr_number(int number)
     {
-        // A non-positive PR number can never be legitimate — pinned here even though the tag and body
-        // agree with each other, isolating the ">0" requirement from the equality requirement above.
+        // A non-positive PR number can never be legitimate — pinned even though owner/repo agree with this
+        // policy's own scope, isolating the ">0" requirement from the owner/repo requirement above.
         var collectOnly = CreatePolicy(allowWriteOperations: false);
         var nonPositiveScope = new GitHubGraphQlRequestScope("acme", "widgets", number);
 
@@ -736,22 +700,19 @@ public sealed class OperationPolicyTests
                 "POST",
                 "/graphql",
                 GitHubIssueContextReader.Query,
-                GraphQlVariables: nonPositiveScope,
-                ExpectedGraphQlScope: nonPositiveScope
+                GraphQlVariables: nonPositiveScope
             )
         );
 
-        decision.IsAllowed.Should().BeFalse("a non-positive PR number must be denied even if tag and body agree");
+        decision.IsAllowed.Should().BeFalse("a non-positive PR number must be denied even if owner/repo agree");
     }
 
     [Fact]
-    public void CollectOnlyVariant_denies_graphql_post_whose_agreeing_tag_and_body_target_a_different_run_scope()
+    public void CollectOnlyVariant_denies_graphql_post_whose_body_targets_a_different_run_scope_entirely()
     {
-        // Issue #647 follow-up (MUST #1) — the trusted tag and the body's parsed variables agree WITH EACH
-        // OTHER, but neither matches this run's own ReviewScope.GraphQlOwner/GraphQlRepo ("acme"/"widgets").
-        // This pins the third, independent comparison: matching each other is not enough on its own — both
-        // must also match the CURRENT review's own scope, or a stale/misdirected tag+body pair from a
-        // different run could be validated as if it belonged to this one.
+        // Issue #647 follow-up (MUST #1) — the body's parsed variables name neither half of this policy's
+        // own configured owner/repo ("acme"/"widgets"). Pins that matching a DIFFERENT run's scope
+        // internally-consistently is not enough; the body must match THIS policy's own configured scope.
         var collectOnly = CreatePolicy(allowWriteOperations: false);
         var otherRunScope = new GitHubGraphQlRequestScope("someone-else", "other-repo", 7);
 
@@ -763,30 +724,27 @@ public sealed class OperationPolicyTests
                 "POST",
                 "/graphql",
                 GitHubIssueContextReader.Query,
-                GraphQlVariables: otherRunScope,
-                ExpectedGraphQlScope: otherRunScope
+                GraphQlVariables: otherRunScope
             )
         );
 
-        decision
-            .IsAllowed.Should()
-            .BeFalse("a tag+body pair that agree with each other must still match this run's own scope");
+        decision.IsAllowed.Should().BeFalse("body variables must match this policy's own configured scope");
     }
 
     [Theory]
     [InlineData("someone-else", "widgets")]
     [InlineData("acme", "other-repo")]
-    public void CollectOnlyVariant_denies_an_agreeing_tag_and_body_that_match_only_one_half_of_the_run_scope(
+    public void CollectOnlyVariant_denies_body_variables_that_match_only_one_half_of_the_configured_scope(
         string owner,
         string repo
     )
     {
         // Issue #666 review follow-up — pins the owner-vs-scope and repo-vs-scope comparisons SEPARATELY.
-        // The test above (different_run_scope) varies both owner AND repo together, so removing either
-        // scope-comparison conjunct on its own still denies via the other one — a redundant-conjunct gap
-        // where the two halves mask each other's mutation. Each InlineData here changes exactly one half
-        // away from CreatePolicy's own scope ("acme"/"widgets") while leaving the other matching, so only
-        // ONE conjunct is what makes this deny.
+        // The test above (different_run_scope_entirely) varies both owner AND repo together, so removing
+        // either scope-comparison conjunct on its own still denies via the other one — a redundant-conjunct
+        // gap where the two halves mask each other's mutation. Each InlineData here changes exactly one
+        // half away from CreatePolicy's own scope ("acme"/"widgets") while leaving the other matching, so
+        // only ONE conjunct is what makes this deny.
         var collectOnly = CreatePolicy(allowWriteOperations: false);
         var oneHalfOffScope = new GitHubGraphQlRequestScope(owner, repo, 7);
 
@@ -798,45 +756,42 @@ public sealed class OperationPolicyTests
                 "POST",
                 "/graphql",
                 GitHubIssueContextReader.Query,
-                GraphQlVariables: oneHalfOffScope,
-                ExpectedGraphQlScope: oneHalfOffScope
+                GraphQlVariables: oneHalfOffScope
             )
         );
 
         decision
             .IsAllowed.Should()
-            .BeFalse("a tag+body pair must match BOTH halves of the run's own scope, not just one");
+            .BeFalse("body variables must match BOTH halves of the configured scope, not just one");
     }
 
     [Fact]
     public async Task RealPolicy_allows_the_exact_request_GitHubIssueContextReader_emits_for_a_collect_only_run()
     {
-        // Issue #647 Section C — proves the ACTUAL request GitHubIssueContextReader emits (not a
-        // hand-built stand-in) is accepted by the real OperationPolicy for a collect-only (B) variant. A
-        // mutation to the operation tag WithOperation passes, or to the GraphQL URL's path, must each turn
-        // this test red.
-        HttpRequestMessage? captured = null;
-        string? recordedBody = null;
+        // Issue #666 redesign — proves a collect-only run (write operations denied) still completes a
+        // GraphQL read end-to-end through the REAL production pipeline: PolicyEnforcedHttpClientFactory
+        // .CreateForGitHubGraphQl builds the client GitHubIssueContextReader.ReadAsync asks for per call,
+        // binding this run's own (repo, PR) as the client's canonical scope. Nothing here hand-builds an
+        // OperationRequest or a policy — the real send either goes through or the read comes back Failed.
         var handler = new FakeHttpMessageHandler().On(
             req => req.Method == HttpMethod.Post && req.RequestUri is not null,
-            req =>
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
             {
-                captured = req;
-                // Read the body here, synchronously with SendAsync, not after ReadAsync(...) returns below:
-                // the reader disposes its HttpRequestMessage (and content) once the read completes.
-                recordedBody = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent(
-                        """{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}""",
-                        Encoding.UTF8,
-                        "application/json"
-                    ),
-                };
+                Content = new StringContent(
+                    """{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}""",
+                    Encoding.UTF8,
+                    "application/json"
+                ),
             }
         );
+        var factory = new PolicyEnforcedHttpClientFactory(
+            new CodeReviewDaemonOptions { EnabledRepos = ["acme/widgets"], EnableCommentPosting = false },
+            NullLogger<OperationPolicyHandler>.Instance,
+            NullLogger<RetryHandler>.Instance,
+            innerHandlerFactory: () => handler
+        );
         var reader = new GitHubIssueContextReader(
-            new HttpClient(handler),
+            factory,
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
             NullLogger<GitHubIssueContextReader>.Instance
         );
@@ -848,56 +803,15 @@ public sealed class OperationPolicyTests
             RepoStableId = "R_node_123",
         };
 
-        await reader.ReadAsync(repo, "7", CancellationToken.None);
+        var result = await reader.ReadAsync(repo, "7", CancellationToken.None);
 
-        captured.Should().NotBeNull("the reader must have made its one GraphQL request");
-        var operation = captured!.GetOperation();
-        operation.Should().Be(SandboxOperation.ReadProviderMetadata);
-
-        // Built the same way OperationPolicyHandler.SendAsync builds it from a real outgoing request —
-        // reusing the existing policy rather than a second, duplicate policy client. Body is the "query"
-        // field the handler would have extracted from the real request's content (issue #647 follow-up,
-        // MUST #1) — pulled here from the actual body the reader sent, not a hand-built stand-in. Read from
-        // the recorded request body captured synchronously inside SendAsync, not from `captured.Content`:
-        // GitHubIssueContextReader disposes its HttpRequestMessage once ReadAsync returns, so the content
-        // is already disposed by the time control gets back here.
-        captured!.Content.Should().NotBeNull("the reader must attach the GraphQL envelope as request content");
-        recordedBody.Should().NotBeNull("the handler must have recorded the request body before disposal");
-        using var bodyDocument = JsonDocument.Parse(recordedBody!);
-        var capturedQuery = bodyDocument.RootElement.GetProperty("query").GetString();
-        var capturedVariables = bodyDocument.RootElement.GetProperty("variables");
-        var parsedVariables = new GitHubGraphQlRequestScope(
-            capturedVariables.GetProperty("owner").GetString()!,
-            capturedVariables.GetProperty("repo").GetString()!,
-            capturedVariables.GetProperty("number").GetInt32()
-        );
-
-        // The trusted tag FetchPageAsync attaches from its own (owner, repo, number) arguments (MUST #1) —
-        // read here off the real captured request, not reconstructed by hand, so a mutation to the tagging
-        // call site itself would also turn this test red.
-        var expectedScope = captured.GetGitHubGraphQlScope();
-        expectedScope.Should().NotBeNull("FetchPageAsync must tag its GraphQL request with the expected scope");
-
-        var operationRequest = new OperationRequest(
-            operation!.Value,
-            "github",
-            captured!.RequestUri!.Host,
-            captured.Method.Method,
-            captured.RequestUri.PathAndQuery,
-            capturedQuery,
-            parsedVariables,
-            expectedScope
-        );
-
-        // Issue #666 second correction: bound to the SAME PR number (7) the reader actually requested —
-        // an unbound PR number now denies GraphQL outright, and this test evaluates the policy directly
-        // (not through OperationPolicyHandler's per-request override).
-        var collectOnly = CreatePolicy(allowWriteOperations: false, graphQlPrNumber: 7);
-        var decision = collectOnly.Decide(operationRequest);
-
-        decision
-            .IsAllowed.Should()
-            .BeTrue("the reader's own GraphQL read must remain reachable under a collect-only (B) variant");
-        collectOnly.ShouldInjectCredential(operationRequest).Should().BeTrue();
+        result
+            .Outcome.Should()
+            .Be(
+                GitHubIssueLookup.NoneLinked,
+                "the reader's own GraphQL read must remain reachable under a collect-only (B) variant"
+            );
+        handler.Requests.Should().ContainSingle();
+        handler.Requests[0].Authorization.Should().Be("Bearer gh-token-xyz");
     }
 }

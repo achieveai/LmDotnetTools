@@ -77,10 +77,10 @@ internal sealed record GitHubIssueContext(
 /// <para>
 /// GitHub exposes no REST route for "issues this PR closes" — only GraphQL's
 /// <c>PullRequest.closingIssuesReferences</c> carries it — so this is the first GraphQL consumer in the
-/// codebase. Requests go through the injected policy-enforced <see cref="HttpClient"/> tagged
-/// <see cref="SandboxOperation.ReadProviderMetadata"/>, same as <see cref="GitHubPrProvider"/>'s REST calls;
-/// <see cref="OperationPolicy"/> carves out exactly this one route (POST to <c>/graphql</c> on the API host)
-/// for it.
+/// codebase. Each <see cref="ReadAsync"/> call builds its own PR-scoped client via
+/// <see cref="PolicyEnforcedHttpClientFactory.CreateForGitHubGraphQl"/>, which binds this run's
+/// (repo, PR number) as the client's immutable canonical GraphQL scope; <see cref="OperationPolicyHandler"/>
+/// only allows a GraphQL request whose body matches that binding exactly.
 /// </para>
 /// <para>
 /// Issue #647 scope stops at reading and returning this context — nothing in the daemon calls
@@ -153,17 +153,17 @@ internal sealed class GitHubIssueContextReader
     // alias kept for source compatibility with every existing call site that names it here.
     internal const string Query = GitHubGraphQlContract.Query;
 
-    private readonly HttpClient _httpClient;
+    private readonly PolicyEnforcedHttpClientFactory _httpClientFactory;
     private readonly IOAuthTokenProvider _tokenProvider;
     private readonly ILogger<GitHubIssueContextReader> _logger;
 
     public GitHubIssueContextReader(
-        HttpClient httpClient,
+        PolicyEnforcedHttpClientFactory httpClientFactory,
         IOAuthTokenProvider tokenProvider,
         ILogger<GitHubIssueContextReader> logger
     )
     {
-        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
         _tokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -198,6 +198,7 @@ internal sealed class GitHubIssueContextReader
         try
         {
             var number = int.Parse(prId, CultureInfo.InvariantCulture);
+            using var client = _httpClientFactory.CreateForGitHubGraphQl(repo, number);
             var issues = new List<GitHubLinkedIssue>();
             var truncated = false;
             var degenerate = false;
@@ -222,7 +223,7 @@ internal sealed class GitHubIssueContextReader
                     break;
                 }
 
-                var page = await FetchPageAsync(repo, number, cursor, cancellationToken).ConfigureAwait(false);
+                var page = await FetchPageAsync(client, repo, number, cursor, cancellationToken).ConfigureAwait(false);
                 pageRequestCount++;
                 if (page is null)
                 {
@@ -380,6 +381,7 @@ internal sealed class GitHubIssueContextReader
     /// response missing the expected shape.
     /// </summary>
     private async Task<GraphQlPage?> FetchPageAsync(
+        HttpClient client,
         RepoIdentity repo,
         int number,
         string? cursor,
@@ -396,27 +398,19 @@ internal sealed class GitHubIssueContextReader
         };
         var requestBody = JsonSerializer.Serialize(new { query = Query, variables });
 
-        // Every request this reader sends is bound, per call, to the exact (repo, number) it was asked to
-        // fetch via a fresh OperationPolicy — not the shared/DI-singleton policy list the reader's own
-        // HttpClient may otherwise carry, which is built once per provider at process startup and has no
-        // single run's PR number to name (issue #666 review).
-        var callPolicy = DaemonOperationPolicy.BuildForRun(
-            repo,
-            reviewBotRepoUrl: null,
-            allowWriteOperations: false,
-            prNumber: number
+        // client is scoped to exactly this (repo, number) — see
+        // PolicyEnforcedHttpClientFactory.CreateForGitHubGraphQl — so no per-request tag is needed for
+        // OperationPolicyHandler to compare the parsed body against.
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GraphQlUrl).WithOperation(
+            SandboxOperation.ReadProviderMetadata
         );
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GraphQlUrl)
-            .WithOperation(SandboxOperation.ReadProviderMetadata)
-            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope(repo.OrgOrOwner, repo.RepoName, number))
-            .WithPolicyOverride(callPolicy);
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken).ConfigureAwait(false);
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
         httpRequest.Headers.UserAgent.ParseAdd(UserAgent);
         httpRequest.Headers.Accept.ParseAdd("application/vnd.github+json");
         httpRequest.Content = new StringContent(requestBody, Encoding.UTF8, "application/json");
 
-        using var response = await _httpClient.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+        using var response = await client.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogDebug(

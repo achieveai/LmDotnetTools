@@ -50,35 +50,6 @@ internal static class OperationRequestTagging
 }
 
 /// <summary>
-/// Tags an <see cref="HttpRequestMessage"/> with an <see cref="OperationPolicy"/> that evaluates THIS
-/// request in place of the shared, DI-singleton <see cref="OperationPolicyHandler"/>'s policy list (issue
-/// #666 review). <see cref="PolicyEnforcedHttpClientFactory"/> builds one policy per allow-listed repo at
-/// process startup, bound to no single run's PR number; a caller that knows its own PR (built via
-/// <see cref="DaemonOperationPolicy.BuildForRun"/> with a <c>prNumber</c>) tags the request with that
-/// policy instead, per-call — no shared/instance state is written, so concurrent runs never race or leak.
-/// </summary>
-internal static class OperationPolicyOverrideTagging
-{
-    private static readonly HttpRequestOptionsKey<OperationPolicy> PolicyOverrideKey = new("crd.policy-override");
-
-    /// <summary>Tags <paramref name="request"/> with <paramref name="policy"/> and returns it (fluent).</summary>
-    public static HttpRequestMessage WithPolicyOverride(this HttpRequestMessage request, OperationPolicy policy)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        ArgumentNullException.ThrowIfNull(policy);
-        request.Options.Set(PolicyOverrideKey, policy);
-        return request;
-    }
-
-    /// <summary>Reads the policy-override tag, or <c>null</c> when the request was never tagged with one.</summary>
-    public static OperationPolicy? GetPolicyOverride(this HttpRequestMessage request)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        return request.Options.TryGetValue(PolicyOverrideKey, out var policy) ? policy : null;
-    }
-}
-
-/// <summary>
 /// The daemon's outbound HTTP enforcement seam (plan §4). Every provider-API request the daemon issues
 /// (post a review comment, read PR/repo metadata) flows through this <see cref="DelegatingHandler"/>,
 /// which classifies it via the request's <see cref="SandboxOperation"/> tag and evaluates it against the
@@ -93,14 +64,22 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
     private readonly string _provider;
     private readonly ILogger<OperationPolicyHandler> _logger;
     private readonly IPolicyRefusalRecorder? _refusals;
+    private readonly GitHubGraphQlRequestScope? _canonicalGraphQlScope;
 
     public OperationPolicyHandler(
         OperationPolicy policy,
         string provider,
         ILogger<OperationPolicyHandler> logger,
-        IPolicyRefusalRecorder? refusals = null
+        IPolicyRefusalRecorder? refusals = null,
+        GitHubGraphQlRequestScope? canonicalGraphQlScope = null
     )
-        : this([policy ?? throw new ArgumentNullException(nameof(policy))], provider, logger, refusals) { }
+        : this(
+            [policy ?? throw new ArgumentNullException(nameof(policy))],
+            provider,
+            logger,
+            refusals,
+            canonicalGraphQlScope
+        ) { }
 
     /// <summary>
     /// Enforces a set of per-repo policies (PR #121 H2): a request is allowed when <b>any</b> policy
@@ -116,11 +95,19 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
     /// Production wiring always supplies one, because a refusal nothing recorded cannot be told apart from
     /// an attempt nobody made — and that distinction is the whole question a collect-only posture raises.
     /// </param>
+    /// <param name="canonicalGraphQlScope">
+    /// The one GraphQL identity (owner, repo, PR number) this client instance was built to ask about,
+    /// bound once at construction and immutable afterward. <c>null</c> — the default, and what every
+    /// ordinary shared client gets — makes GraphQL unconditionally denied by this handler, independently
+    /// of every configured policy's own verdict: a request can never supply or widen this value, only the
+    /// caller that constructed the handler can.
+    /// </param>
     public OperationPolicyHandler(
         IReadOnlyList<OperationPolicy> policies,
         string provider,
         ILogger<OperationPolicyHandler> logger,
-        IPolicyRefusalRecorder? refusals = null
+        IPolicyRefusalRecorder? refusals = null,
+        GitHubGraphQlRequestScope? canonicalGraphQlScope = null
     )
     {
         ArgumentNullException.ThrowIfNull(policies);
@@ -129,6 +116,7 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
         _provider = provider;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _refusals = refusals;
+        _canonicalGraphQlScope = canonicalGraphQlScope;
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(
@@ -170,7 +158,6 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
         var (graphQlBody, graphQlVariables) = isGraphQlBodyCandidate
             ? await TryReadGraphQlBodyAsync(request.Content, cancellationToken).ConfigureAwait(false)
             : (null, null);
-        var expectedGraphQlScope = isGraphQlBodyCandidate ? request.GetGitHubGraphQlScope() : null;
 
         var operationRequest = new OperationRequest(
             operation.Value,
@@ -179,37 +166,55 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
             method,
             path,
             graphQlBody,
-            graphQlVariables,
-            expectedGraphQlScope
+            graphQlVariables
         );
 
-        // A per-request policy override (issue #666 review) replaces the whole evaluation set for THIS
-        // request only, in favor of a caller that knows its own run's PR number. No shared/instance state
-        // is read or written to make this substitution.
-        IReadOnlyList<OperationPolicy> policies = request.GetPolicyOverride() is { } overridePolicy
-            ? [overridePolicy]
-            : _policies;
+        // GraphQL's mandatory gate: this client instance's own constructor-bound canonical scope (set
+        // once, at construction — see <see cref="_canonicalGraphQlScope"/>) must match the request's own
+        // body exactly (owner, repo, number). The configured/allow-listed policies below only ever check
+        // the body against their own owner/repo boundary — none of them carries a PR number, because the
+        // same policy set is shared across every concurrent review of a repo. A client built with no
+        // canonical scope (the ordinary shared client) denies every GraphQL candidate here, before any
+        // policy is even consulted — no policy allow can substitute for it.
+        string? graphQlReason = null;
+        if (isGraphQlBodyCandidate && !ActiveGraphQlScopeMatches(_canonicalGraphQlScope, graphQlVariables))
+        {
+            graphQlReason = _canonicalGraphQlScope is null
+                ? "this client has no canonical GraphQL scope bound; GraphQL is unconditionally denied"
+                : "GraphQL request body does not match this client's canonical GraphQL scope";
+        }
 
+        // The configured/allow-listed policy set is ALWAYS what is evaluated for repo/query/write
+        // authority — a request never replaces or extends which policies run, and never carries any
+        // authority of its own beyond what its body says.
+        //
         // Allow when ANY allow-listed repo's policy both permits AND would inject the credential; deny
         // only when every policy denies. Both halves of the fail-closed-both-ways guarantee are required.
         PolicyDecision? lastDeny = null;
-        foreach (var policy in policies)
+        if (graphQlReason is null)
         {
-            var decision = policy.Decide(operationRequest);
-            if (decision.IsAllowed && policy.ShouldInjectCredential(operationRequest))
+            foreach (var policy in _policies)
             {
-                return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            }
+                var decision = policy.Decide(operationRequest);
+                if (decision.IsAllowed && policy.ShouldInjectCredential(operationRequest))
+                {
+                    return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                }
 
-            lastDeny = decision;
+                lastDeny = decision;
+            }
         }
 
-        // No policy permitted the request. Withhold the credential the moment it is denied, then block egress.
+        // No policy permitted the request (or the GraphQL active-scope gate above already denied it).
+        // Withhold the credential the moment it is denied, then block egress.
         request.Headers.Authorization = null;
         var reason =
-            policies.Count == 0
-                ? "no repository is allow-listed for this provider"
-                : lastDeny?.Reason ?? "denied by every per-repo policy";
+            graphQlReason
+            ?? (
+                _policies.Count == 0
+                    ? "no repository is allow-listed for this provider"
+                    : lastDeny?.Reason ?? "denied by every per-repo policy"
+            );
         _logger.LogWarning(
             "Denied {Operation} {Method} {Uri}: {Reason}",
             operation,
@@ -220,6 +225,24 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
         RecordRefusal(operation.Value.ToString(), request, reason);
         throw new OperationDeniedException(operation.Value, reason);
     }
+
+    /// <summary>
+    /// The mandatory active-scope gate: <paramref name="expected"/> is this client's own
+    /// constructor-bound canonical scope; <paramref name="actual"/> is what the request body itself
+    /// claims. Both must be present and agree on owner, repo, AND number — a null canonical scope, an
+    /// unparsed body, or any one field disagreeing denies. No configured policy can substitute for this:
+    /// it carries no PR to compare.
+    /// </summary>
+    private static bool ActiveGraphQlScopeMatches(
+        GitHubGraphQlRequestScope? expected,
+        GitHubGraphQlRequestScope? actual
+    ) =>
+        expected is not null
+        && actual is not null
+        && expected.Number > 0
+        && string.Equals(expected.Owner, actual.Owner, StringComparison.Ordinal)
+        && string.Equals(expected.Repo, actual.Repo, StringComparison.Ordinal)
+        && expected.Number == actual.Number;
 
     /// <summary>
     /// The largest body this reviewed-safe GraphQL document could ever legitimately produce, with generous

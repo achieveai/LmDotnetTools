@@ -67,14 +67,6 @@ internal sealed record PolicyDecision(PolicyOutcome Outcome, string Reason)
 /// <c>null</c> whenever any of them is missing, the wrong JSON type, or the body could not be read —
 /// fail closed, all-or-nothing, never a partially-populated guess.
 /// </param>
-/// <param name="ExpectedGraphQlScope">
-/// The <see cref="GitHubGraphQlRequestScope"/> the ONE trusted caller
-/// (<c>GitHubIssueContextReader.FetchPageAsync</c>) tagged onto the request via
-/// <see cref="GitHubGraphQlRequestTagging.WithGitHubGraphQlScope"/>, or <c>null</c> when the request
-/// carries no such tag. This is what makes the carve-out request-specific rather than transport-shape
-/// deep: a request that merely looks like the safe GraphQL POST but was never tagged by the trusted
-/// reader has no expected scope to compare against, so it is denied.
-/// </param>
 internal sealed record OperationRequest(
     SandboxOperation Operation,
     string Provider,
@@ -82,8 +74,7 @@ internal sealed record OperationRequest(
     string Method,
     string Path,
     string? Body = null,
-    GitHubGraphQlRequestScope? GraphQlVariables = null,
-    GitHubGraphQlRequestScope? ExpectedGraphQlScope = null
+    GitHubGraphQlRequestScope? GraphQlVariables = null
 );
 
 /// <summary>
@@ -120,27 +111,15 @@ internal sealed record ReviewScope(
     public string? ApiRepoPathPrefix { get; init; }
 
     /// <summary>
-    /// This run's GitHub owner/repo identity, used only to validate the GraphQL carve-out's expected
-    /// scope tag (see <see cref="OperationPolicy.IsGitHubGraphQlMetadataRequest"/>) against the repo this
-    /// review actually allow-lists — a request tagged for a DIFFERENT owner/repo is denied even if it
-    /// carries the exact safe query text. <c>null</c> for ADO runs, which have no GraphQL carve-out to
-    /// validate.
+    /// This run's GitHub owner/repo identity: the GraphQL carve-out's configured boundary (see
+    /// <see cref="OperationPolicy.IsGitHubGraphQlMetadataRequest"/>) requires the request BODY's own
+    /// owner/repo to fall inside it — a request whose body names a DIFFERENT owner/repo is denied even if
+    /// it carries the exact safe query text. <c>null</c> for ADO runs, which have no GraphQL carve-out.
     /// </summary>
     public string? GraphQlOwner { get; init; }
 
     /// <summary>See <see cref="GraphQlOwner"/>.</summary>
     public string? GraphQlRepo { get; init; }
-
-    /// <summary>
-    /// This run's own PR number. GraphQL is allowed ONLY when this is bound AND matches the request's
-    /// expected scope tag (issue #666 review) — <c>null</c> denies every GraphQL request outright, rather
-    /// than leaving the PR number unconstrained. This is deliberate: the shared, per-provider policies
-    /// <see cref="PolicyEnforcedHttpClientFactory"/> builds once at process startup have no single run's PR
-    /// number to name, so they must never grant GraphQL on their own — only a per-run policy that binds its
-    /// own <c>prNumber</c> (via a per-request override, see <see cref="OperationPolicyOverrideTagging"/>)
-    /// can.
-    /// </summary>
-    public int? GraphQlPrNumber { get; init; }
 
     /// <summary>
     /// The provider-API route roots outside <see cref="ApiRepoPathPrefix"/> this run may READ to establish
@@ -396,32 +375,17 @@ internal sealed class OperationPolicy
     }
 
     /// <summary>
-    /// Whether <paramref name="request"/> targets GitHub's GraphQL metadata endpoint (a POST to
-    /// <c>/graphql</c> on the run's API host, for the GitHub provider, carrying exactly the one reviewed
-    /// safe query document <see cref="GitHubGraphQlContract.Query"/> defines, for exactly the owner/repo/PR
-    /// this review is scoped to). Checks the operation's caller-supplied classification too, deliberately
-    /// not the operation enum itself — the caller (the <see cref="SandboxOperation.ReadProviderMetadata"/>
-    /// arm, and the collect-only gate above it) is what restricts which operation may reach this
-    /// exception, so a write operation routed through some other classification cannot bootstrap itself
-    /// into it here.
+    /// Whether <paramref name="request"/> is a GraphQL POST this CONFIGURED policy's own owner/repo/read
+    /// boundary allows — a POST to <c>/graphql</c> on the run's API host, for the GitHub provider,
+    /// carrying exactly the reviewed-safe query document, whose body targets this policy's own
+    /// <see cref="ReviewScope.GraphQlOwner"/>/<see cref="ReviewScope.GraphQlRepo"/>.
     /// <para>
-    /// The provider check matters on its own: an ADO run's <see cref="ReviewScope.ApiHost"/> is never
-    /// literally <c>"/graphql"</c>-shaped, but nothing stops a same-shaped POST from being misclassified
-    /// under a differently-provider-scoped policy in a multi-repo host — this check is what keeps the
-    /// carve-out GitHub-only rather than "any provider whose API host happens to answer a POST to
-    /// <c>/graphql</c>".
-    /// </para>
-    /// <para>
-    /// <see cref="OperationRequest.Body"/> is the ONLY thing that can turn this transport-shaped POST into
-    /// an allow on the query-text side: <see cref="OperationPolicyHandler"/> captures the request's
-    /// <c>"query"</c> field before this method ever runs, and a body that is missing, unreadable, or
-    /// byte-different from <see cref="GitHubGraphQlContract.Query"/> denies exactly like a wrong host or
-    /// method would. On the <c>variables</c> side, <see cref="IsGraphQlVariablesInScope"/> requires the
-    /// request's expected-scope TAG (set by the one trusted caller) to match both the body's own
-    /// <c>variables.owner</c>/<c>repo</c>/<c>number</c> AND this run's allow-listed
-    /// <see cref="ReviewScope.GraphQlOwner"/>/<see cref="ReviewScope.GraphQlRepo"/> — closing the vector a
-    /// query-text-only comparison left open, where a byte-identical safe document could still be asked
-    /// about an off-scope owner/repo/PR (issue #666 review).
+    /// This is a BOUNDARY check only and is deliberately NOT sufficient authority for GraphQL on its own:
+    /// this policy is shared/reused across every concurrent review of this repo, so it has no single run's
+    /// PR to bind. <see cref="OperationPolicyHandler"/> is the public seam — it never lets a GraphQL
+    /// request through on this boundary allow alone, and independently requires the client's own
+    /// constructor-bound canonical scope to match the request's body exactly (owner, repo, AND number)
+    /// before this policy is even consulted.
     /// </para>
     /// </summary>
     private bool IsGitHubGraphQlMetadataRequest(OperationRequest request) =>
@@ -429,29 +393,19 @@ internal sealed class OperationPolicy
         && HostMatches(request.Host, _scope.ApiHost)
         && IsGraphQlPostCandidate(request.Method, request.Path)
         && string.Equals(request.Body, GitHubGraphQlContract.Query, StringComparison.Ordinal)
-        && IsGraphQlVariablesInScope(request);
+        && IsGraphQlBodyWithinConfiguredBoundary(request);
 
     /// <summary>
-    /// Whether the request's expected GraphQL scope tag (set by the one trusted caller,
-    /// <c>GitHubIssueContextReader.FetchPageAsync</c>) is present, matches the <c>variables</c> the body
-    /// actually carries, matches this run's allow-listed owner/repo, AND matches this policy's own bound
-    /// <see cref="ReviewScope.GraphQlPrNumber"/>. Every conjunct is mandatory: a <c>null</c>
-    /// <see cref="ReviewScope.GraphQlPrNumber"/> denies GraphQL outright rather than leaving the PR number
-    /// unconstrained (issue #666 review, second correction) — the shared, per-provider policies built once
-    /// at process startup have no single run's PR number to bind, so they must never grant GraphQL on their
-    /// own; only a per-run/per-request policy override that names its own PR can.
+    /// Whether the body's own <c>variables.owner</c>/<c>repo</c> fall within this policy's allow-listed
+    /// scope, with a positive PR number. Body only — no comparison against a canonical scope, which this
+    /// policy never reads: that comparison is <see cref="OperationPolicyHandler"/>'s separate, mandatory,
+    /// constructor-bound gate.
     /// </summary>
-    private bool IsGraphQlVariablesInScope(OperationRequest request) =>
-        request.ExpectedGraphQlScope is { } expected
-        && request.GraphQlVariables is { } actual
-        && expected.Number > 0
-        && string.Equals(expected.Owner, actual.Owner, StringComparison.Ordinal)
-        && string.Equals(expected.Repo, actual.Repo, StringComparison.Ordinal)
-        && expected.Number == actual.Number
-        && string.Equals(expected.Owner, _scope.GraphQlOwner, StringComparison.Ordinal)
-        && string.Equals(expected.Repo, _scope.GraphQlRepo, StringComparison.Ordinal)
-        && _scope.GraphQlPrNumber is { } scopedPrNumber
-        && scopedPrNumber == expected.Number;
+    private bool IsGraphQlBodyWithinConfiguredBoundary(OperationRequest request) =>
+        request.GraphQlVariables is { } actual
+        && actual.Number > 0
+        && string.Equals(actual.Owner, _scope.GraphQlOwner, StringComparison.Ordinal)
+        && string.Equals(actual.Repo, _scope.GraphQlRepo, StringComparison.Ordinal);
 
     /// <summary>
     /// The transport shape both <see cref="IsGitHubGraphQlMetadataRequest"/> and

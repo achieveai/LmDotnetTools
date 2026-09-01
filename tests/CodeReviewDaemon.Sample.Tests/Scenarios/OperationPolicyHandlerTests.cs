@@ -25,7 +25,7 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     public OperationPolicyHandlerTests(ITestOutputHelper output)
         : base(output) { }
 
-    private static OperationPolicy CreateGitHubPolicy(bool allowWriteOperations = true, int? graphQlPrNumber = null) =>
+    private static OperationPolicy CreateGitHubPolicy(bool allowWriteOperations = true) =>
         new(
             new ReviewScope(
                 Provider: "github",
@@ -41,16 +41,29 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
             {
                 GraphQlOwner = "acme",
                 GraphQlRepo = "widgets",
-                GraphQlPrNumber = graphQlPrNumber,
             },
             allowWriteOperations
         );
 
-    private (HttpClient Client, FakeHttpMessageHandler Inner) BuildClient(OperationPolicy policy)
+    /// <summary>
+    /// Builds a client whose <see cref="OperationPolicyHandler"/> is bound, at construction, to
+    /// <paramref name="canonicalGraphQlScope"/> — <c>null</c> (the default) matches the ordinary shared
+    /// client every ADO/GitHub caller other than the linked-issue reader gets, and unconditionally denies
+    /// GraphQL regardless of body content.
+    /// </summary>
+    private (HttpClient Client, FakeHttpMessageHandler Inner) BuildClient(
+        OperationPolicy policy,
+        GitHubGraphQlRequestScope? canonicalGraphQlScope = null
+    )
     {
         var inner = new FakeHttpMessageHandler();
         _ = inner.On(_ => true, _ => new HttpResponseMessage(HttpStatusCode.OK));
-        var handler = new OperationPolicyHandler(policy, "github", LoggerFactory.CreateLogger<OperationPolicyHandler>())
+        var handler = new OperationPolicyHandler(
+            policy,
+            "github",
+            LoggerFactory.CreateLogger<OperationPolicyHandler>(),
+            canonicalGraphQlScope: canonicalGraphQlScope
+        )
         {
             InnerHandler = inner,
         };
@@ -63,13 +76,17 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     /// what the handler logged rather than just the resulting decision.
     /// </summary>
     private static (HttpClient Client, CapturingLogger<OperationPolicyHandler> Logger) BuildClientWithCapturingLogger(
-        OperationPolicy policy
+        OperationPolicy policy,
+        GitHubGraphQlRequestScope? canonicalGraphQlScope = null
     )
     {
         var inner = new FakeHttpMessageHandler();
         _ = inner.On(_ => true, _ => new HttpResponseMessage(HttpStatusCode.OK));
         var logger = new CapturingLogger<OperationPolicyHandler>();
-        var handler = new OperationPolicyHandler(policy, "github", logger) { InnerHandler = inner };
+        var handler = new OperationPolicyHandler(policy, "github", logger, canonicalGraphQlScope: canonicalGraphQlScope)
+        {
+            InnerHandler = inner,
+        };
         return (new HttpClient(handler), logger);
     }
 
@@ -169,8 +186,10 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
         // Issue #647 follow-up (MUST #1): a collect-only policy carves out exactly one GraphQL document.
         // Reading the body to make that decision must not consume or alter it — the inner handler must
         // still see the FULL original envelope, "query" and "variables" both (body-preservation pin).
-        // GraphQlPrNumber must be bound (issue #666 second correction) or GraphQL denies outright.
-        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false, graphQlPrNumber: 7));
+        var (client, inner) = BuildClient(
+            CreateGitHubPolicy(allowWriteOperations: false),
+            canonicalGraphQlScope: new GitHubGraphQlRequestScope("acme", "widgets", 7)
+        );
 
         var requestBody = JsonSerializer.Serialize(
             new
@@ -186,9 +205,9 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
                 },
             }
         );
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
-            .WithOperation(SandboxOperation.ReadProviderMetadata)
-            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
         request.Content = new StringContent(requestBody, Encoding.UTF8, "application/json");
 
@@ -388,18 +407,18 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task Denies_a_graphql_post_that_was_never_tagged_with_the_expected_scope()
+    public async Task Denies_a_graphql_post_when_the_client_has_no_canonical_graphql_scope_bound()
     {
-        // Issue #666 review (MUST #1) — a byte-identical safe query with a fully well-formed, in-scope
-        // variables envelope, sent WITHOUT the trusted caller's WithGitHubGraphQlScope tag. Body content
-        // alone (attacker-influenceable) must never be sufficient; only the ONE trusted caller
-        // (GitHubIssueContextReader.FetchPageAsync) attaches that tag.
+        // A byte-identical safe query with a fully well-formed, in-scope variables envelope, sent through
+        // a client built with no canonical GraphQL scope (BuildClient's default) — the ordinary shared
+        // client every caller other than the linked-issue reader gets. Body content alone
+        // (attacker-influenceable) must never be sufficient; only a client built via
+        // PolicyEnforcedHttpClientFactory.CreateForGitHubGraphQl carries a canonical scope at all.
         var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
             SandboxOperation.ReadProviderMetadata
         );
-        // Deliberately no .WithGitHubGraphQlScope(...) call.
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
         request.Content = new StringContent(
             JsonSerializer.Serialize(
@@ -425,12 +444,16 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     public async Task Denies_a_graphql_post_whose_body_variables_are_missing()
     {
         // The envelope carries the safe query but no "variables" object at all — the all-or-nothing parse
-        // in TryParseGraphQlScope yields null, so there is nothing to compare the trusted tag against.
-        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+        // in TryParseGraphQlScope yields null, so there is nothing to compare the client's canonical scope
+        // against.
+        var (client, inner) = BuildClient(
+            CreateGitHubPolicy(allowWriteOperations: false),
+            canonicalGraphQlScope: new GitHubGraphQlRequestScope("acme", "widgets", 7)
+        );
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
-            .WithOperation(SandboxOperation.ReadProviderMetadata)
-            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
         request.Content = new StringContent(
             JsonSerializer.Serialize(new { query = GitHubIssueContextReader.Query }),
@@ -446,11 +469,14 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     {
         // "number" as a JSON string ("7") rather than a JSON number must not be coerced — the all-or-nothing
         // parse requires a JSON number, so a wrong-typed field collapses the whole scope to null (deny).
-        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+        var (client, inner) = BuildClient(
+            CreateGitHubPolicy(allowWriteOperations: false),
+            canonicalGraphQlScope: new GitHubGraphQlRequestScope("acme", "widgets", 7)
+        );
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
-            .WithOperation(SandboxOperation.ReadProviderMetadata)
-            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
         request.Content = new StringContent(
             JsonSerializer.Serialize(
@@ -476,11 +502,14 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     public async Task Denies_a_graphql_post_whose_variables_owner_field_is_missing()
     {
         // A required field simply absent (not just wrong-typed) must also collapse the whole scope to null.
-        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+        var (client, inner) = BuildClient(
+            CreateGitHubPolicy(allowWriteOperations: false),
+            canonicalGraphQlScope: new GitHubGraphQlRequestScope("acme", "widgets", 7)
+        );
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
-            .WithOperation(SandboxOperation.ReadProviderMetadata)
-            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
         request.Content = new StringContent(
             JsonSerializer.Serialize(
@@ -498,11 +527,14 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     {
         // The symmetric case to the owner test above: "repo" absent (not just wrong-typed) must also
         // collapse the whole scope to null, isolating this field's own guard from owner's.
-        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+        var (client, inner) = BuildClient(
+            CreateGitHubPolicy(allowWriteOperations: false),
+            canonicalGraphQlScope: new GitHubGraphQlRequestScope("acme", "widgets", 7)
+        );
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
-            .WithOperation(SandboxOperation.ReadProviderMetadata)
-            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
         request.Content = new StringContent(
             JsonSerializer.Serialize(
@@ -516,17 +548,20 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task Denies_a_graphql_post_whose_body_variables_target_a_different_pr_than_the_tag()
+    public async Task Denies_a_graphql_post_whose_body_variables_target_a_different_pr_than_the_clients_canonical_scope()
     {
-        // Issue #666 review (MUST #1) end-to-end: the trusted tag names PR 7 (as FetchPageAsync would for
-        // this run), but the body's own "variables.number" claims PR 8 — proving the handler's parsed
-        // GraphQlVariables and the request's ExpectedGraphQlScope both reach OperationPolicy, and a
-        // disagreement between them denies even though the query text and the tag's owner/repo are exact.
-        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+        // The client's canonical scope names PR 7 (as CreateForGitHubGraphQl would bind for this run), but
+        // the body's own "variables.number" claims PR 8 — proving the handler's parsed GraphQlVariables and
+        // this client's constructor-bound canonical scope both reach the comparison, and a disagreement
+        // between them denies even though the query text and the canonical scope's owner/repo are exact.
+        var (client, inner) = BuildClient(
+            CreateGitHubPolicy(allowWriteOperations: false),
+            canonicalGraphQlScope: new GitHubGraphQlRequestScope("acme", "widgets", 7)
+        );
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
-            .WithOperation(SandboxOperation.ReadProviderMetadata)
-            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", 7));
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
         request.Content = new StringContent(
             JsonSerializer.Serialize(
@@ -668,13 +703,24 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
         RepoStableId = "R_node_1",
     };
 
-    /// <summary>Builds a GraphQL request shaped exactly like <c>GitHubIssueContextReader.FetchPageAsync</c>'s
-    /// own output: a tag and a self-consistent body naming <paramref name="prNumber"/>.</summary>
-    private static HttpRequestMessage BuildGraphQlRequest(int prNumber)
+    [Fact]
+    public async Task Denies_a_graphql_request_for_a_different_repo_than_the_configured_policy_allows()
     {
-        var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
-            .WithOperation(SandboxOperation.ReadProviderMetadata)
-            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", prNumber));
+        // Proof category: a configured/allow-listed policy names ONE repo (acme/widgets); a client whose
+        // own canonical scope AND body self-consistently name a DIFFERENT repo must still be denied,
+        // withhold the credential, and never reach the inner handler. The client's own canonical scope can
+        // only narrow an already-permitted evaluation, never widen which repo the configured policy allows.
+        var sharedPolicy = DaemonOperationPolicy.BuildForRun(
+            AcmeWidgetsRepo,
+            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git",
+            allowWriteOperations: false
+        );
+        var offRepoScope = new GitHubGraphQlRequestScope("someone-else", "other-repo", 7);
+        var (client, inner) = BuildClient(sharedPolicy, canonicalGraphQlScope: offRepoScope);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql").WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
         request.Content = new StringContent(
             JsonSerializer.Serialize(
@@ -683,86 +729,44 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
                     query = GitHubIssueContextReader.Query,
                     variables = new
                     {
-                        owner = "acme",
-                        repo = "widgets",
-                        number = prNumber,
-                        pageSize = 20,
-                        after = (string?)null,
+                        owner = offRepoScope.Owner,
+                        repo = offRepoScope.Repo,
+                        number = offRepoScope.Number,
                     },
                 }
             ),
             Encoding.UTF8,
             "application/json"
         );
-        return request;
-    }
-
-    [Fact]
-    public async Task SendAsync_denies_a_same_repo_wrong_pr_graphql_request_when_no_override_is_present()
-    {
-        // Issue #666 second correction: the shared, PR-agnostic policy PolicyEnforcedHttpClientFactory
-        // builds once at process startup (no prNumber) must deny GraphQL outright, not merely leave the PR
-        // number unconstrained — otherwise any future caller that tags scope but forgets a per-request
-        // override would still get a wrong-PR request through.
-        var sharedPolicy = DaemonOperationPolicy.BuildForRun(
-            AcmeWidgetsRepo,
-            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git"
-        );
-        var (client, inner) = BuildClient(sharedPolicy);
-
-        using var request = BuildGraphQlRequest(prNumber: 99);
 
         await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
     }
 
     [Fact]
-    public async Task SendAsync_denies_a_per_request_policy_override_whose_pr_number_does_not_match_the_request()
+    public async Task A_graphql_canonical_scope_cannot_broaden_a_collect_only_policys_write_denial()
     {
-        // The override's PR number is itself mandatory-checked, not just present: bound to PR 7, a request
-        // tagged/bodied for PR 99 is denied even though the override (not the shared policy) is what's
-        // being evaluated.
-        var sharedPolicy = DaemonOperationPolicy.BuildForRun(
-            AcmeWidgetsRepo,
-            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git"
-        );
-        var (client, inner) = BuildClient(sharedPolicy);
-        var runPolicy = DaemonOperationPolicy.BuildForRun(
-            AcmeWidgetsRepo,
-            reviewBotRepoUrl: null,
-            allowWriteOperations: false,
-            prNumber: 7
+        // Proof category: no client-level value can enable writes or broaden a collect-only policy. The
+        // ONLY value this design binds per client is the GitHubGraphQlRequestScope canonical scope, which
+        // OperationPolicyHandler's active-scope gate only even evaluates for a ReadProviderMetadata GraphQL
+        // candidate — binding it on a client that also sends a write-classified request must be inert.
+        var (client, inner) = BuildClient(
+            CreateGitHubPolicy(allowWriteOperations: false),
+            canonicalGraphQlScope: new GitHubGraphQlRequestScope("acme", "widgets", 7)
         );
 
-        using var request = BuildGraphQlRequest(prNumber: 99);
-        request.WithPolicyOverride(runPolicy);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "https://api.github.com/repos/acme/widgets/issues/7/comments"
+        ).WithOperation(SandboxOperation.PostReviewComment);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
 
-        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
-    }
+        var act = () => client.SendAsync(request, CancellationToken.None);
 
-    [Fact]
-    public async Task SendAsync_allows_a_per_request_policy_override_whose_pr_number_matches_the_request()
-    {
-        // The override's happy path: when the request's own (tag, body) genuinely matches the number the
-        // override was built for, the same real SendAsync path allows it and keeps the credential.
-        var sharedPolicy = DaemonOperationPolicy.BuildForRun(
-            AcmeWidgetsRepo,
-            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git"
-        );
-        var (client, inner) = BuildClient(sharedPolicy);
-        var runPolicy = DaemonOperationPolicy.BuildForRun(
-            AcmeWidgetsRepo,
-            reviewBotRepoUrl: null,
-            allowWriteOperations: false,
-            prNumber: 7
-        );
-
-        using var request = BuildGraphQlRequest(prNumber: 7);
-        request.WithPolicyOverride(runPolicy);
-
-        using var response = await client.SendAsync(request, CancellationToken.None);
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        inner.Requests.Should().ContainSingle();
-        inner.Requests[0].Authorization.Should().Be("Bearer secret-token");
+        var thrown = (await act.Should().ThrowAsync<OperationDeniedException>()).Which;
+        thrown.Operation.Should().Be(SandboxOperation.PostReviewComment);
+        request
+            .Headers.Authorization.Should()
+            .BeNull("a client's canonical GraphQL scope must not grant write capability to a collect-only policy");
+        inner.Requests.Should().BeEmpty();
     }
 }

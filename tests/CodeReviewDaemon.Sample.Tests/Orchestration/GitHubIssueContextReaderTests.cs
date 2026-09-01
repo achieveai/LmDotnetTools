@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -51,35 +52,24 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         RepoStableId = "R_node_123",
     };
 
-    private GitHubIssueContextReader Reader(FakeHttpMessageHandler handler) =>
-        new(
-            new HttpClient(handler),
-            new FakeOAuthTokenProvider("github", "gh-token-xyz"),
-            LoggerFactory.CreateLogger<GitHubIssueContextReader>()
-        );
-
     /// <summary>
-    /// Builds the reader wired through the REAL <see cref="OperationPolicyHandler"/> — production shape,
-    /// carrying the same repo-only shared policy <see cref="PolicyEnforcedHttpClientFactory"/> builds at
-    /// process startup (no <c>prNumber</c>). Proves the reader's per-call policy override (issue #666
-    /// review) integrates with the real enforcement seam end to end, not just against a bare fake handler.
+    /// Builds the reader through the REAL <see cref="PolicyEnforcedHttpClientFactory"/> /
+    /// <see cref="OperationPolicyHandler"/> pipeline production uses — not a bare fake handler directly on
+    /// an <see cref="HttpClient"/>. <see cref="GitHubIssueContextReader.ReadAsync"/> calls
+    /// <see cref="PolicyEnforcedHttpClientFactory.CreateForGitHubGraphQl"/> itself, per call, so every test
+    /// here exercises the same PR-scoped canonical-scope binding production wiring does; <paramref
+    /// name="handler"/> only replaces the innermost socket handler.
     /// </summary>
-    private GitHubIssueContextReader ReaderThroughRealPolicyHandler(FakeHttpMessageHandler innerHandler)
+    private GitHubIssueContextReader Reader(FakeHttpMessageHandler handler)
     {
-        var sharedProductionShapedPolicy = DaemonOperationPolicy.BuildForRun(
-            Repo,
-            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git"
+        var factory = new PolicyEnforcedHttpClientFactory(
+            new CodeReviewDaemonOptions { EnabledRepos = ["acme/widgets"], EnableCommentPosting = true },
+            LoggerFactory.CreateLogger<OperationPolicyHandler>(),
+            LoggerFactory.CreateLogger<RetryHandler>(),
+            innerHandlerFactory: () => handler
         );
-        var policyHandler = new OperationPolicyHandler(
-            sharedProductionShapedPolicy,
-            "github",
-            LoggerFactory.CreateLogger<OperationPolicyHandler>()
-        )
-        {
-            InnerHandler = innerHandler,
-        };
         return new GitHubIssueContextReader(
-            new HttpClient(policyHandler),
+            factory,
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
             LoggerFactory.CreateLogger<GitHubIssueContextReader>()
         );
@@ -163,21 +153,20 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
 
     /// <summary>
-    /// Production-path integration proof (issue #666 review, MUST #2): the reader, wired through the REAL
-    /// <see cref="OperationPolicyHandler"/> carrying the same repo-only shared policy production builds,
-    /// still completes a successful read with the credential intact — the per-call override this reader
-    /// attaches (built from its own <c>(repo, number)</c>) both survives the real enforcement seam and
-    /// narrows it, without breaking the reader's own request/response contract.
+    /// Production-path integration proof: this reader's <see cref="Reader"/> helper already builds the
+    /// real <see cref="PolicyEnforcedHttpClientFactory"/> / <see cref="OperationPolicyHandler"/> pipeline
+    /// for every test in this file — this test asserts that pipeline actually completes a successful read
+    /// with the credential intact, not merely that it compiles into the wiring.
     /// </summary>
     [Fact]
-    public async Task ReadAsync_completes_successfully_through_the_real_OperationPolicyHandler_with_its_per_call_policy_override()
+    public async Task ReadAsync_completes_successfully_through_the_real_PolicyEnforcedHttpClientFactory_pipeline()
     {
         var handler = new FakeHttpMessageHandler().On(
             IsGraphQlPost,
             _ => JsonResponse(GraphQlResponse([IssueNode(1)], hasNextPage: false, endCursor: null))
         );
 
-        var result = await ReaderThroughRealPolicyHandler(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Issues.Should().ContainSingle();

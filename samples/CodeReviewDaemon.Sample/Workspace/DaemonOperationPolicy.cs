@@ -75,19 +75,11 @@ internal static class DaemonOperationPolicy
     /// </para>
     /// </param>
     /// <param name="allowedSubmodules">Per-run allow-listed submodules (empty by default).</param>
-    /// <param name="prNumber">
-    /// This run's own PR number, or <c>null</c> when no single run's PR number is known at construction
-    /// time (the host-only/per-provider policies built once at process startup). Threaded into
-    /// <see cref="ReviewScope.GraphQlPrNumber"/> so the GraphQL carve-out can additionally validate the
-    /// run's own PR number, not just its owner/repo (issue #666 review). ADO has no GraphQL carve-out, so
-    /// it is left unset for an ADO run regardless of what is passed.
-    /// </param>
     public static OperationPolicy BuildForRun(
         RepoIdentity repo,
         string? reviewBotRepoUrl,
         bool allowWriteOperations = false,
-        IReadOnlyList<SubmoduleAllowRule>? allowedSubmodules = null,
-        int? prNumber = null
+        IReadOnlyList<SubmoduleAllowRule>? allowedSubmodules = null
     )
     {
         ArgumentNullException.ThrowIfNull(repo);
@@ -119,7 +111,6 @@ internal static class DaemonOperationPolicy
                 ApiWorkItemPaths = isAdo ? AdoApiWorkItemPaths(repo) : [],
                 GraphQlOwner = isAdo ? null : repo.OrgOrOwner,
                 GraphQlRepo = isAdo ? null : repo.RepoName,
-                GraphQlPrNumber = isAdo ? null : prNumber,
             },
             allowWriteOperations
         );

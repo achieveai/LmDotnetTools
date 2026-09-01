@@ -323,66 +323,19 @@ public sealed class DaemonOperationPolicyTests
         // Issue #666 review — BuildForRun must thread the run's own owner/repo into
         // ReviewScope.GraphQlOwner/GraphQlRepo, or the GraphQL scope check has nothing of the run's OWN
         // repo to validate a request against and the carve-out degrades back to "byte-identical query
-        // text, any owner/repo". A PR number is bound so this test isolates the owner/repo check from the
-        // separate mandatory PR-number check (see the PR-number tests below).
-        var policy = DaemonOperationPolicy.BuildForRun(
-            GitHubRepo,
-            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git",
-            allowWriteOperations: false,
-            prNumber: 7
-        );
-        var inScope = new GitHubGraphQlRequestScope("acme", "widgets", 7);
-        var offScope = new GitHubGraphQlRequestScope("someone-else", "other-repo", 7);
-
-        GraphQl(policy, inScope, inScope).IsAllowed.Should().BeTrue("the tag/body match the run's own repo");
-        GraphQl(policy, offScope, offScope)
-            .IsAllowed.Should()
-            .BeFalse("a tag/body pair for a DIFFERENT owner/repo must not ride this run's carve-out");
-    }
-
-    [Fact]
-    public void GitHub_run_policy_scopes_the_graphql_carve_out_to_the_runs_own_pr_number()
-    {
-        // Issue #666 review (MUST #2) — BuildForRun must also thread the run's own PR NUMBER into
-        // ReviewScope.GraphQlPrNumber, or a tag/body pair that is self-consistent and names the run's own
-        // owner/repo still rides the carve-out for a DIFFERENT pull request on that same repo. Owner/repo
-        // binding alone (MUST #1, above) closes the off-repo vector but not the off-PR one.
-        var policy = DaemonOperationPolicy.BuildForRun(
-            GitHubRepo,
-            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git",
-            allowWriteOperations: false,
-            prNumber: 7
-        );
-        var ownRun = new GitHubGraphQlRequestScope("acme", "widgets", 7);
-        var differentPrSameRepo = new GitHubGraphQlRequestScope("acme", "widgets", 99);
-
-        GraphQl(policy, ownRun, ownRun).IsAllowed.Should().BeTrue("the tag/body match the run's own PR");
-        GraphQl(policy, differentPrSameRepo, differentPrSameRepo)
-            .IsAllowed.Should()
-            .BeFalse(
-                "a self-consistent tag/body pair for a DIFFERENT PR on the SAME repo must not ride this "
-                    + "run's carve-out, even though owner/repo match"
-            );
-    }
-
-    [Fact]
-    public void GitHub_run_policy_without_a_bound_pr_number_denies_graphql_outright()
-    {
-        // Issue #666 second correction: the host-only/per-provider policies
-        // (PolicyEnforcedHttpClientFactory.BuildPolicies, built once at process startup with no single
-        // run's PR number to name) must DENY GraphQL outright rather than leaving the PR number
-        // unconstrained — the prior "owner/repo only" carve-out let any future caller that tags scope but
-        // forgets a per-request override through for any PR number on the allow-listed repo.
+        // text, any owner/repo".
         var policy = DaemonOperationPolicy.BuildForRun(
             GitHubRepo,
             reviewBotRepoUrl: "https://github.com/acme/reviewbot.git",
             allowWriteOperations: false
         );
-        var anyPr = new GitHubGraphQlRequestScope("acme", "widgets", 12345);
+        var inScope = new GitHubGraphQlRequestScope("acme", "widgets", 7);
+        var offScope = new GitHubGraphQlRequestScope("someone-else", "other-repo", 7);
 
-        GraphQl(policy, anyPr, anyPr)
+        GraphQl(policy, inScope).IsAllowed.Should().BeTrue("the tag/body match the run's own repo");
+        GraphQl(policy, offScope)
             .IsAllowed.Should()
-            .BeFalse("with no PR number bound, GraphQL must be denied rather than left unconstrained");
+            .BeFalse("a tag/body pair for a DIFFERENT owner/repo must not ride this run's carve-out");
     }
 
     [Fact]
@@ -406,7 +359,6 @@ public sealed class DaemonOperationPolicyTests
                 "POST",
                 "/graphql",
                 GitHubIssueContextReader.Query,
-                scope,
                 scope
             )
         );
@@ -428,11 +380,7 @@ public sealed class DaemonOperationPolicyTests
     private static PolicyDecision Receive(OperationPolicy policy, string host, string path) =>
         policy.Decide(new OperationRequest(SandboxOperation.PushReviewBot, "github", host, "POST", path));
 
-    private static PolicyDecision GraphQl(
-        OperationPolicy policy,
-        GitHubGraphQlRequestScope variables,
-        GitHubGraphQlRequestScope expectedScope
-    ) =>
+    private static PolicyDecision GraphQl(OperationPolicy policy, GitHubGraphQlRequestScope variables) =>
         policy.Decide(
             new OperationRequest(
                 SandboxOperation.ReadProviderMetadata,
@@ -441,8 +389,7 @@ public sealed class DaemonOperationPolicyTests
                 "POST",
                 "/graphql",
                 GitHubIssueContextReader.Query,
-                variables,
-                expectedScope
+                variables
             )
         );
 }
