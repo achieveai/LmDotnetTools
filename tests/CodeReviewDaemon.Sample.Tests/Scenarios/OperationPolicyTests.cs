@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
+using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
@@ -773,6 +774,8 @@ public sealed class OperationPolicyTests
         // .CreateForGitHubGraphQl builds the client GitHubIssueContextReader.ReadAsync asks for per call,
         // binding this run's own (repo, PR) as the client's canonical scope. Nothing here hand-builds an
         // OperationRequest or a policy — the real send either goes through or the read comes back Failed.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
         var handler = new FakeHttpMessageHandler().On(
             req => req.Method == HttpMethod.Post && req.RequestUri is not null,
             _ => new HttpResponseMessage(HttpStatusCode.OK)
@@ -792,6 +795,7 @@ public sealed class OperationPolicyTests
         );
         var reader = new GitHubIssueContextReader(
             factory,
+            store,
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
             NullLogger<GitHubIssueContextReader>.Instance
         );
@@ -802,8 +806,25 @@ public sealed class OperationPolicyTests
             RepoName = "widgets",
             RepoStableId = "R_node_123",
         };
+        var repoId = store.EnsureRepo(repo);
+        var run = store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = "7",
+                HeadSha = "head-sha",
+                BaseSha = "base-sha",
+                TriggerWatermark = "2026-06-29T12:34:56Z",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Running,
+                PrLifecycleState = PrLifecycleState.Open,
+            }
+        );
 
-        var result = await reader.ReadAsync(repo, "7", CancellationToken.None);
+        var result = await reader.ReadAsync(run.Id, CancellationToken.None);
 
         result
             .Outcome.Should()

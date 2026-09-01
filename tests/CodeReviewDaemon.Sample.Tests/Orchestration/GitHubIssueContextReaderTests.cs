@@ -1,12 +1,15 @@
 using System.Net;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
+using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Xunit.Abstractions;
 
@@ -53,27 +56,121 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
     };
 
     /// <summary>
-    /// Builds the reader through the REAL <see cref="PolicyEnforcedHttpClientFactory"/> /
-    /// <see cref="OperationPolicyHandler"/> pipeline production uses — not a bare fake handler directly on
-    /// an <see cref="HttpClient"/>. <see cref="GitHubIssueContextReader.ReadAsync"/> calls
-    /// <see cref="PolicyEnforcedHttpClientFactory.CreateForGitHubGraphQl"/> itself, per call, so every test
-    /// here exercises the same PR-scoped canonical-scope binding production wiring does; <paramref
-    /// name="handler"/> only replaces the innermost socket handler.
+    /// Builds a reader through the REAL <see cref="PolicyEnforcedHttpClientFactory"/> /
+    /// <see cref="OperationPolicyHandler"/> pipeline production uses, backed by a REAL <see cref="ReviewStore"/>
+    /// (a throwaway on-disk SQLite database) — not a bare fake handler directly on an <see cref="HttpClient"/>,
+    /// and not a mocked store. <see cref="GitHubIssueContextReader.ReadAsync"/> derives its scope from a
+    /// persisted <see cref="ReviewRun"/> and calls <see cref="PolicyEnforcedHttpClientFactory.CreateForGitHubGraphQl"/>
+    /// itself, per call, so every test here exercises the same run-identity-bound canonical-scope binding
+    /// production wiring does; the constructor's <c>handler</c> only replaces the innermost socket handler.
     /// </summary>
-    private GitHubIssueContextReader Reader(FakeHttpMessageHandler handler)
+    private sealed class Harness : IDisposable
     {
-        var factory = new PolicyEnforcedHttpClientFactory(
-            new CodeReviewDaemonOptions { EnabledRepos = ["acme/widgets"], EnableCommentPosting = true },
-            LoggerFactory.CreateLogger<OperationPolicyHandler>(),
-            LoggerFactory.CreateLogger<RetryHandler>(),
-            innerHandlerFactory: () => handler
-        );
-        return new GitHubIssueContextReader(
-            factory,
-            new FakeOAuthTokenProvider("github", "gh-token-xyz"),
-            LoggerFactory.CreateLogger<GitHubIssueContextReader>()
-        );
+        private readonly TempSqliteDatabase _db = new();
+
+        public ReviewStore Store { get; }
+        public FakeOAuthTokenProvider Tokens { get; } = new("github", "gh-token-xyz");
+        public GitHubIssueContextReader Reader { get; }
+
+        public Harness(FakeHttpMessageHandler handler, ILoggerFactory loggerFactory)
+        {
+            Store = new ReviewStore(_db.ConnectionString);
+            var factory = new PolicyEnforcedHttpClientFactory(
+                new CodeReviewDaemonOptions
+                {
+                    EnabledRepos = ["acme/widgets", "acme/gadgets"],
+                    EnableCommentPosting = true,
+                },
+                loggerFactory.CreateLogger<OperationPolicyHandler>(),
+                loggerFactory.CreateLogger<RetryHandler>(),
+                innerHandlerFactory: () => handler
+            );
+            Reader = new GitHubIssueContextReader(
+                factory,
+                Store,
+                Tokens,
+                loggerFactory.CreateLogger<GitHubIssueContextReader>()
+            );
+        }
+
+        /// <summary>Persists <paramref name="repo"/> (via <see cref="ReviewStore.EnsureRepo"/>) plus a
+        /// <see cref="ReviewRun"/> naming it and <paramref name="prId"/>, and returns the run's id — the only
+        /// handle a caller now has to reach either persisted value.</summary>
+        public long SeedRun(RepoIdentity repo, string prId, string headSha = "head-sha") =>
+            SeedRunForRepoId(Store.EnsureRepo(repo), prId, headSha);
+
+        /// <summary>Seeds a run whose <see cref="ReviewRun.RepoId"/> is then made to point at a repo row
+        /// that no longer exists. <see cref="ReviewStore"/>'s own connection enforces
+        /// <c>PRAGMA foreign_keys = ON</c> (see <see cref="Persistence.SqliteConnectionFactory"/>), so it
+        /// cannot itself insert or delete across a dangling reference — a fresh repo is created and a valid
+        /// run seeded against it first. The repo row is then removed through a SEPARATE raw connection to
+        /// the same file with <c>foreign_keys</c> explicitly turned off on THAT connection only: SQLite
+        /// enforces the pragma per-connection at write time, not globally, so this delete succeeds while
+        /// leaving the run's already-committed <c>repo_id</c> dangling — reproducing "the run's repo is
+        /// gone" without asking <see cref="ReviewStore"/>'s own connection to violate its own
+        /// constraint.</summary>
+        public long SeedRunWithMissingRepo(string prId, string headSha = "head-sha")
+        {
+            var repoId = Store.EnsureRepo(
+                new RepoIdentity
+                {
+                    Provider = "github",
+                    OrgOrOwner = "ghost-org",
+                    RepoName = "vanished-repo",
+                }
+            );
+            var runId = SeedRunForRepoId(repoId, prId, headSha);
+            DeleteRepoRow(repoId);
+            return runId;
+        }
+
+        private void DeleteRepoRow(long repoId)
+        {
+            using var connection = new SqliteConnection(_db.ConnectionString);
+            connection.Open();
+            // This build's default differs from stock SQLite: explicitly turn enforcement off on THIS
+            // connection only — Store's own connection (opened earlier, PRAGMA foreign_keys = ON) is
+            // unaffected, since the pragma is scoped per-connection.
+            using (var pragma = connection.CreateCommand())
+            {
+                pragma.CommandText = "PRAGMA foreign_keys = OFF;";
+                _ = pragma.ExecuteNonQuery();
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM repo WHERE id = $id;";
+            _ = command.Parameters.AddWithValue("$id", repoId);
+            _ = command.ExecuteNonQuery();
+        }
+
+        private long SeedRunForRepoId(long repoId, string prId, string headSha) =>
+            Store
+                .CreateOrGetReviewRun(
+                    new ReviewRun
+                    {
+                        RepoId = repoId,
+                        PrId = prId,
+                        HeadSha = headSha,
+                        BaseSha = "base-sha",
+                        TriggerWatermark = "2026-06-29T12:34:56Z",
+                        ReviewKind = "full",
+                        VariantId = "primary",
+                        Mode = "collect-only",
+                        Stage = ReviewStage.Discovered,
+                        WorkflowStatus = WorkflowStatus.Running,
+                        PrLifecycleState = PrLifecycleState.Open,
+                    }
+                )
+                .Id;
+
+        public void Dispose()
+        {
+            Store.Dispose();
+            _db.Dispose();
+        }
     }
+
+    private Harness NewHarness(FakeHttpMessageHandler handler) => new(handler, LoggerFactory);
 
     /// <summary>Reads the outgoing GraphQL request body synchronously — the handler already buffered it
     /// (it is a fully-materialized <see cref="StringContent"/>), so re-reading here cannot deadlock or
@@ -153,9 +250,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
 
     /// <summary>
-    /// Production-path integration proof: this reader's <see cref="Reader"/> helper already builds the
-    /// real <see cref="PolicyEnforcedHttpClientFactory"/> / <see cref="OperationPolicyHandler"/> pipeline
-    /// for every test in this file — this test asserts that pipeline actually completes a successful read
+    /// Production-path integration proof: this file's <see cref="Harness"/> already builds the real
+    /// <see cref="PolicyEnforcedHttpClientFactory"/> / <see cref="OperationPolicyHandler"/> pipeline for
+    /// every test in this file — this test asserts that pipeline actually completes a successful read
     /// with the credential intact, not merely that it compiles into the wiring.
     /// </summary>
     [Fact]
@@ -166,7 +263,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
             _ => JsonResponse(GraphQlResponse([IssueNode(1)], hasNextPage: false, endCursor: null))
         );
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Issues.Should().ContainSingle();
@@ -178,19 +277,24 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
     public async Task ReadAsync_returns_Unavailable_for_a_non_github_repo_and_makes_no_request()
     {
         var handler = new FakeHttpMessageHandler();
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(AdoRepo, "7");
 
-        var result = await Reader(handler).ReadAsync(AdoRepo, "7", CancellationToken.None);
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Unavailable);
         handler.Requests.Should().BeEmpty("nobody attempted anything, so no HTTP call should ever fire");
+        harness.Tokens.IssuedTokens.Should().BeEmpty("a non-GitHub repo must not even reach the token provider");
     }
 
     [Fact]
     public async Task ReadAsync_returns_Unavailable_for_a_differently_cased_provider_value()
     {
         var handler = new FakeHttpMessageHandler();
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(DifferentlyCasedRepo, "7");
 
-        var result = await Reader(handler).ReadAsync(DifferentlyCasedRepo, "7", CancellationToken.None);
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result
             .Outcome.Should()
@@ -202,14 +306,36 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task ReadAsync_returns_Failed_for_a_nonnumeric_pr_id_instead_of_throwing()
+    public async Task ReadAsync_returns_Unavailable_for_a_persisted_nonnumeric_pr_id_instead_of_throwing()
     {
         var handler = new FakeHttpMessageHandler();
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "not-a-number");
 
-        var result = await Reader(handler).ReadAsync(Repo, "not-a-number", CancellationToken.None);
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
-        result.Outcome.Should().Be(GitHubIssueLookup.Failed);
+        result
+            .Outcome.Should()
+            .Be(
+                GitHubIssueLookup.Unavailable,
+                "an unparseable persisted PrId is a precondition nothing was asked about, not a failed attempt"
+            );
         handler.Requests.Should().BeEmpty("parsing fails before any request is attempted");
+        harness.Tokens.IssuedTokens.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReadAsync_returns_Unavailable_for_a_nonpositive_persisted_pr_id()
+    {
+        var handler = new FakeHttpMessageHandler();
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "0");
+
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Unavailable, "a PR number cannot be zero or negative");
+        handler.Requests.Should().BeEmpty();
+        harness.Tokens.IssuedTokens.Should().BeEmpty();
     }
 
     [Fact]
@@ -220,7 +346,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
             _ => new HttpResponseMessage(HttpStatusCode.InternalServerError)
         );
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Failed);
         result.Issues.Should().BeEmpty();
@@ -238,7 +366,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Failed);
     }
@@ -272,7 +402,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result
             .Outcome.Should()
@@ -288,7 +420,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         var body = GraphQlResponse([], hasNextPage: false, endCursor: null);
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.NoneLinked);
         result.Issues.Should().BeEmpty();
@@ -313,7 +447,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Issues.Should().HaveCount(1);
@@ -343,7 +479,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         var relatedPr = result.Issues[0].RelatedPullRequests.Should().ContainSingle().Subject;
@@ -364,7 +502,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Issues[0].Title.Should().Be("Line one Line two Line three");
         result.Issues[1].Title.Should().HaveLength(GitHubIssueContextReader.MaxTitleChars);
@@ -377,7 +517,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         var body = GraphQlResponse([], hasNextPage: false, endCursor: null);
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         var recorded = handler.Requests.Should().ContainSingle().Subject;
         using var requestJson = JsonDocument.Parse(recorded.Body!);
@@ -426,7 +568,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
             }
         );
 
-        var act = () => Reader(handler).ReadAsync(Repo, "7", cts.Token);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var act = () => harness.Reader.ReadAsync(runId, cts.Token);
 
         await act.Should()
             .ThrowAsync<OperationCanceledException>(
@@ -440,7 +584,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         var body = GraphQlResponse([IssueNode(1), IssueNodeMissingId(2)], hasNextPage: false, endCursor: null);
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result
             .Outcome.Should()
@@ -457,7 +603,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         var body = GraphQlResponse([IssueNodeMissingId(1), IssueNodeMissingId(2)], hasNextPage: false, endCursor: null);
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Failed);
     }
@@ -484,7 +632,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Failed, "a missing pageInfo container could not be read");
     }
@@ -515,7 +665,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result
             .Outcome.Should()
@@ -548,7 +700,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result
             .Outcome.Should()
@@ -585,7 +739,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Failed, "a missing nodes container could not be read");
     }
@@ -616,7 +772,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Failed, "nodes as a string is not the array the schema promises");
     }
@@ -630,7 +788,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         var body = GraphQlResponse([], hasNextPage: false, endCursor: null);
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.NoneLinked);
         result.Issues.Should().BeEmpty();
@@ -648,7 +808,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         var body = GraphQlResponse(oversizedNodes, hasNextPage: false, endCursor: null);
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Issues.Should().HaveCount(GitHubIssueContextReader.MaxIssues);
@@ -672,7 +834,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
                 _ => JsonResponse(page2)
             );
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Truncated.Should().BeFalse();
@@ -702,7 +866,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
                 _ => JsonResponse(page2)
             );
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Truncated.Should().BeFalse("MaxIssues copies of the same issue must not consume the cap");
@@ -728,7 +894,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Truncated.Should().BeFalse("two distinct issues on one page never approaches the cap");
@@ -754,7 +922,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Failed);
     }
@@ -771,7 +941,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         );
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Issues.Should().HaveCount(2);
@@ -788,7 +960,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
             _ => throw new OperationCanceledException("unrelated internal timeout")
         );
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Failed, "the caller's own token was never cancelled");
     }
@@ -817,7 +991,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
                 _ => JsonResponse(page2)
             );
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Issues.Should().HaveCount(GitHubIssueContextReader.MaxIssues);
@@ -834,7 +1010,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
         var body = GraphQlResponse([IssueNode(1)], hasNextPage: true, endCursor: null);
         var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Failed);
         handler.Requests.Should().HaveCount(1, "the walk must stop, not retry the same broken page forever");
@@ -856,7 +1034,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
                 _ => JsonResponse(page2)
             );
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Truncated.Should().BeTrue();
@@ -881,7 +1061,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
                 _ => JsonResponse(page2)
             );
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Truncated.Should().BeTrue();
@@ -913,7 +1095,9 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
                 _ => JsonResponse(page3)
             );
 
-        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRun(Repo, "7");
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
 
         result.Outcome.Should().Be(GitHubIssueLookup.Linked);
         result.Truncated.Should().BeTrue();
@@ -924,5 +1108,93 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
                 (GitHubIssueContextReader.MaxIssues / GitHubIssueContextReader.PageSize) + 1,
                 "the absolute page-request bound must stop the walk even though the server keeps nominally advancing"
             );
+    }
+
+    [Fact]
+    public void ReadAsync_has_exactly_one_overload_and_it_accepts_only_a_review_run_id()
+    {
+        // A caller must not be able to pass an alternate repo or PR beside the run id. The strongest proof
+        // of that is not a runtime check on some hypothetical caller — it is that the type itself exposes no
+        // method shape a caller could use to try.
+        var overloads = typeof(GitHubIssueContextReader)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Where(m => m.Name == nameof(GitHubIssueContextReader.ReadAsync))
+            .ToArray();
+
+        var readAsync = overloads.Should().ContainSingle("no bypass of the run-id-only contract may remain").Subject;
+        var parameters = readAsync.GetParameters();
+        parameters.Should().HaveCount(2);
+        parameters[0].ParameterType.Should().Be(typeof(long), "the only input identifying WHICH run is the run id");
+        parameters[1].ParameterType.Should().Be(typeof(CancellationToken));
+    }
+
+    [Fact]
+    public async Task ReadAsync_returns_Unavailable_and_touches_neither_network_nor_token_for_a_missing_run()
+    {
+        var handler = new FakeHttpMessageHandler();
+        using var harness = NewHarness(handler);
+
+        var result = await harness.Reader.ReadAsync(reviewRunId: 999_999, CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Unavailable, "there is no run to derive a scope from");
+        handler.Requests.Should().BeEmpty("a missing run must never reach the HTTP client");
+        harness.Tokens.IssuedTokens.Should().BeEmpty("a missing run must never reach the token provider");
+    }
+
+    [Fact]
+    public async Task ReadAsync_returns_Unavailable_and_touches_neither_network_nor_token_when_the_runs_repo_is_gone()
+    {
+        // A run whose repo row has since been removed must fail exactly like a missing run — Unavailable,
+        // before the client or the token provider is ever touched.
+        var handler = new FakeHttpMessageHandler();
+        using var harness = NewHarness(handler);
+        var runId = harness.SeedRunWithMissingRepo("7");
+
+        var result = await harness.Reader.ReadAsync(runId, CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Unavailable, "the run's repo row does not exist");
+        handler.Requests.Should().BeEmpty();
+        harness.Tokens.IssuedTokens.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReadAsync_derives_both_the_canonical_scope_and_the_request_variables_from_the_same_persisted_run()
+    {
+        // The binding under test: the client's canonical GraphQL scope AND the request body's (owner, repo,
+        // number) variables must come from the SAME persisted row, not from two independently supplied
+        // values that happen to usually agree. Proven by seeding two DIFFERENT runs and showing the request
+        // each one actually sends tracks its OWN persisted identity — and that both succeed, which the
+        // policy handler (bound per-call to that call's own canonical scope) would refuse to do if the scope
+        // and the body variables had drifted apart from one another.
+        var otherRepo = new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "acme",
+            RepoName = "gadgets",
+            RepoStableId = "R_node_456",
+        };
+        var body = GraphQlResponse([], hasNextPage: false, endCursor: null);
+        var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
+        using var harness = NewHarness(handler);
+
+        var firstRunId = harness.SeedRun(Repo, "7", headSha: "head-a");
+        var firstResult = await harness.Reader.ReadAsync(firstRunId, CancellationToken.None);
+
+        var secondRunId = harness.SeedRun(otherRepo, "9", headSha: "head-b");
+        var secondResult = await harness.Reader.ReadAsync(secondRunId, CancellationToken.None);
+
+        firstResult.Outcome.Should().Be(GitHubIssueLookup.NoneLinked);
+        secondResult.Outcome.Should().Be(GitHubIssueLookup.NoneLinked);
+        handler.Requests.Should().HaveCount(2, "each run's own request must actually reach the (fake) network");
+
+        using var firstVariables = JsonDocument.Parse(handler.Requests[0].Body!);
+        firstVariables.RootElement.GetProperty("variables").GetProperty("owner").GetString().Should().Be("acme");
+        firstVariables.RootElement.GetProperty("variables").GetProperty("repo").GetString().Should().Be("widgets");
+        firstVariables.RootElement.GetProperty("variables").GetProperty("number").GetInt32().Should().Be(7);
+
+        using var secondVariables = JsonDocument.Parse(handler.Requests[1].Body!);
+        secondVariables.RootElement.GetProperty("variables").GetProperty("owner").GetString().Should().Be("acme");
+        secondVariables.RootElement.GetProperty("variables").GetProperty("repo").GetString().Should().Be("gadgets");
+        secondVariables.RootElement.GetProperty("variables").GetProperty("number").GetInt32().Should().Be(9);
     }
 }

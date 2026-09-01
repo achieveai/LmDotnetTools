@@ -489,6 +489,7 @@ builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCom
 // GitHub services; the reader itself returns Unavailable for a non-GitHub repo.
 builder.Services.AddSingleton(sp => new GitHubIssueContextReader(
     sp.GetRequiredService<PolicyEnforcedHttpClientFactory>(),
+    sp.GetRequiredService<ReviewStore>(),
     sp.GetRequiredService<GitHubOAuthProvider>(),
     sp.GetRequiredService<ILogger<GitHubIssueContextReader>>()
 ));

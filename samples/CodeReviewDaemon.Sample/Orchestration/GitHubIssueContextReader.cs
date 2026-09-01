@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
 
@@ -77,10 +78,18 @@ internal sealed record GitHubIssueContext(
 /// <para>
 /// GitHub exposes no REST route for "issues this PR closes" — only GraphQL's
 /// <c>PullRequest.closingIssuesReferences</c> carries it — so this is the first GraphQL consumer in the
-/// codebase. Each <see cref="ReadAsync"/> call builds its own PR-scoped client via
-/// <see cref="PolicyEnforcedHttpClientFactory.CreateForGitHubGraphQl"/>, which binds this run's
-/// (repo, PR number) as the client's immutable canonical GraphQL scope; <see cref="OperationPolicyHandler"/>
-/// only allows a GraphQL request whose body matches that binding exactly.
+/// codebase.
+/// </para>
+/// <para>
+/// <see cref="ReadAsync"/> takes only a <c>reviewRunId</c> — never a repo or PR number — and loads the
+/// persisted <see cref="Persistence.Models.ReviewRun"/> (and its repo) from <see cref="ReviewStore"/>
+/// itself, so the (repo, PR) pair a lookup ever runs against is exactly what this daemon already recorded
+/// for that run. It then builds a client scoped to those persisted values via
+/// <see cref="PolicyEnforcedHttpClientFactory.CreateForGitHubGraphQl"/>, which binds them as the client's
+/// immutable canonical GraphQL scope; <see cref="OperationPolicyHandler"/> only allows a GraphQL request
+/// whose body matches that binding exactly. A missing run/repo, a non-GitHub repo, or an invalid/non-positive
+/// persisted PR id all return <see cref="GitHubIssueLookup.Unavailable"/> before any client or token is
+/// touched.
 /// </para>
 /// <para>
 /// Issue #647 scope stops at reading and returning this context — nothing in the daemon calls
@@ -154,35 +163,57 @@ internal sealed class GitHubIssueContextReader
     internal const string Query = GitHubGraphQlContract.Query;
 
     private readonly PolicyEnforcedHttpClientFactory _httpClientFactory;
+    private readonly ReviewStore _reviewStore;
     private readonly IOAuthTokenProvider _tokenProvider;
     private readonly ILogger<GitHubIssueContextReader> _logger;
 
     public GitHubIssueContextReader(
         PolicyEnforcedHttpClientFactory httpClientFactory,
+        ReviewStore reviewStore,
         IOAuthTokenProvider tokenProvider,
         ILogger<GitHubIssueContextReader> logger
     )
     {
         _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
+        _reviewStore = reviewStore ?? throw new ArgumentNullException(nameof(reviewStore));
         _tokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>
-    /// Reads the issues linked to one pull request, plus each issue's related PRs.
+    /// Reads the issues linked to one pull request, plus each issue's related PRs, for the persisted
+    /// <see cref="Persistence.Models.ReviewRun"/> identified by <paramref name="reviewRunId"/>.
     /// </summary>
-    /// <param name="repo">The run's repository identity; supplies the owner/repo the query is built from.</param>
-    /// <param name="prId">The pull request number.</param>
+    /// <param name="reviewRunId">
+    /// The persisted run's row id. Its repo and PR number are loaded from <see cref="ReviewStore"/> — this is
+    /// the only input a caller has; there is no way to name a different repo or PR beside it.
+    /// </param>
     /// <param name="cancellationToken">Cancels the read.</param>
     /// <returns>
-    /// The context. <see cref="GitHubIssueContext.Unavailable"/> when there was nothing to ask,
-    /// <see cref="GitHubIssueContext.Failed"/> when the ask could not be completed, and never an exception
-    /// for a failed read.
+    /// The context. <see cref="GitHubIssueContext.Unavailable"/> when there was nothing to ask — no such run,
+    /// no such repo, a non-GitHub repo, or an unparseable/non-positive persisted PR id, none of which touch a
+    /// client or token — and <see cref="GitHubIssueContext.Failed"/> when an ask was attempted and could not
+    /// be completed. Never an exception for a failed read.
     /// </returns>
-    public async Task<GitHubIssueContext> ReadAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
+    public async Task<GitHubIssueContext> ReadAsync(long reviewRunId, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(repo);
-        ArgumentException.ThrowIfNullOrEmpty(prId);
+        var run = _reviewStore.GetReviewRun(reviewRunId);
+        if (run is null)
+        {
+            _logger.LogDebug("GitHub linked-issue read found no persisted review run {ReviewRunId}.", reviewRunId);
+            return GitHubIssueContext.Unavailable;
+        }
+
+        var repo = _reviewStore.GetRepo(run.RepoId);
+        if (repo is null)
+        {
+            _logger.LogDebug(
+                "GitHub linked-issue read for review run {ReviewRunId} found no persisted repo {RepoId}.",
+                reviewRunId,
+                run.RepoId
+            );
+            return GitHubIssueContext.Unavailable;
+        }
 
         if (!string.Equals(repo.Provider, "github", StringComparison.Ordinal))
         {
@@ -195,9 +226,19 @@ internal sealed class GitHubIssueContextReader
             return GitHubIssueContext.Unavailable;
         }
 
+        if (!int.TryParse(run.PrId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) || number <= 0)
+        {
+            _logger.LogDebug(
+                "GitHub linked-issue read for review run {ReviewRunId} has a non-positive/unparseable persisted PrId {PrId}.",
+                reviewRunId,
+                run.PrId
+            );
+            return GitHubIssueContext.Unavailable;
+        }
+
+        var prId = run.PrId;
         try
         {
-            var number = int.Parse(prId, CultureInfo.InvariantCulture);
             using var client = _httpClientFactory.CreateForGitHubGraphQl(repo, number);
             var issues = new List<GitHubLinkedIssue>();
             var truncated = false;
@@ -348,10 +389,10 @@ internal sealed class GitHubIssueContextReader
         }
         catch (Exception ex)
         {
-            // Everything else — an egress denial from the operation policy, an HttpClient timeout, a
-            // malformed body, or a non-numeric prId — is a lookup that was ATTEMPTED and did not complete.
-            // That is Failed, not Unavailable: the brief has to say the daemon could not read the linked
-            // issues, because the alternative is a reviewer that reads silence as "this PR closes none".
+            // Everything else — an egress denial from the operation policy, an HttpClient timeout, or a
+            // malformed body — is a lookup that was ATTEMPTED and did not complete. That is Failed, not
+            // Unavailable: the brief has to say the daemon could not read the linked issues, because the
+            // alternative is a reviewer that reads silence as "this PR closes none".
             _logger.LogDebug(
                 ex,
                 "GitHub linked-issue read for {Repository} PR {PrId} failed; the brief will say the lookup failed.",
