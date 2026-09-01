@@ -103,12 +103,17 @@ internal sealed class PrOrchestrator
         // a new identity tuple and therefore a new row with a full budget.
         if (run.ParkedAt is not null)
         {
+            // ParkReason is replayed here, not the raw persisted value: a legacy/tampered row could carry
+            // arbitrary text (e.g. exception detail from a build predating this vocabulary), and this log is
+            // not the protected operator sink that gets to see that — TrustedParkReasonForReplay is the
+            // same allow-list guard RetryOutstandingParkNoticeAsync already applies before this reason ever
+            // reaches the pull request.
             _logger.LogDebug(
                 "Review run {RunId} (pr {PrId}) is permanently parked since {ParkedAt}; skipping. Reason: {Reason}",
                 run.Id,
                 run.PrId,
                 run.ParkedAt,
-                run.ParkReason
+                TrustedParkReasonForReplay(run.ParkReason)
             );
 
             // The one retry cadence a lost park notice has. It cannot resurrect the run — the guard returns

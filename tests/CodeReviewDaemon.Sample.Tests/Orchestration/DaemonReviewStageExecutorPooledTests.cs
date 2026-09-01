@@ -80,6 +80,157 @@ public sealed class DaemonReviewStageExecutorPooledTests
         payload.GetProperty("Diff").GetString().Should().Contain("Foo.cs");
     }
 
+    /// <summary>
+    /// Issue #647 — the pooled path's context artifact must carry the merge-base commit id
+    /// <c>ReviewSlotPreparer.PrepareAsync</c> resolved, not just the diff it took from the prepared
+    /// checkout. <see cref="FakeReviewSlotPreparer.MergeBaseSha"/> stands in for that resolution.
+    /// </summary>
+    [Fact]
+    public async Task ContextReady_persists_the_merge_base_sha_the_prepared_checkout_resolved()
+    {
+        using var fixture = Fixture.Create();
+        fixture.Preparer.MergeBaseSha = "d34db33f";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var payload = JsonDocument.Parse(artifact.Payload).RootElement;
+        payload
+            .GetProperty("MergeBaseSha")
+            .GetString()
+            .Should()
+            .Be("d34db33f", "the pooled diff and the merge base it was taken against must name the same commit");
+    }
+
+    /// <summary>
+    /// Issue #647 — the S2S/host-prepared branch (<c>TryHostPreparedPooledContextAsync</c>) must persist the
+    /// same merge-base commit id as the in-process pooled path above. Both branches read it off the SAME
+    /// <see cref="FakeReviewSlotPreparer"/>: the fixture wires it as <c>ReviewSlotWorkspace.HostPreparer</c>
+    /// regardless of the <c>s2s</c> flag, so <see cref="FakeReviewSlotPreparer.MergeBaseSha"/> is a valid
+    /// observable here too, not just on the in-process branch.
+    /// </summary>
+    [Fact]
+    public async Task ContextReady_persists_the_merge_base_sha_the_host_prepared_pooled_checkout_resolved()
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.Preparer.MergeBaseSha = "d34db33f";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind)
+            .Subject;
+        var payload = JsonDocument.Parse(artifact.Payload).RootElement;
+        payload
+            .GetProperty("MergeBaseSha")
+            .GetString()
+            .Should()
+            .Be(
+                "d34db33f",
+                "the S2S/host-prepared branch reads the merge base off the same slot preparer as the in-process path"
+            );
+    }
+
+    /// <summary>
+    /// Issue #647 — a same-head <c>ContextReady</c> replay on the pooled IN-PROCESS path must not re-lease the
+    /// slot or re-run prepare: the hoisted persisted-context guard in <c>FetchContextAsync</c> returns before
+    /// any path selection runs a second time. There is no checkpoint claim here — <c>LoadOrStartCheckpoint</c>'s
+    /// resume machinery is S2S-only — so the only observables are the lease/prepare counts and the artifact
+    /// identity staying put, plus the ordinary Reviewed stage that follows still completing untouched.
+    /// </summary>
+    [Fact]
+    public async Task ContextReady_pooled_replay_at_the_same_head_does_not_re_lease_or_re_prepare()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var contextArtifactId = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind)
+            .Subject.Id;
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(1, "a same-head replay must not lease a second slot");
+        fixture.Preparer.PrepareCount.Should().Be(1, "a same-head replay must not re-run prepare");
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind)
+            .Subject.Id.Should()
+            .Be(contextArtifactId, "the replay must reuse the existing artifact, not mint a new one");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture
+            .Factory.CreatedAgents.Should()
+            .ContainSingle(
+                "the replayed context must not have disturbed the ordinary in-process review that follows it"
+            );
+    }
+
+    /// <summary>
+    /// Issue #647 — the pooled S2S/host-prepared analogue of the replay test above. A same-head replay must
+    /// not re-lease the slot, re-run prepare, or mint a second context artifact, AND a persisted Reviewed
+    /// checkpoint across that replay must still resume: the seeded identity is the one production would itself
+    /// reconstruct for this fixture's BASE attempt (workspace <c>"ws-review-slot-0"</c> — the leaf this
+    /// fixture's single slot echoes back as its S2S workspace id; <c>ToolAssisted</c> false, since
+    /// <c>BuildToolContextAsync</c> always returns null on <c>UseS2SReviewAgent</c>).
+    /// </summary>
+    [Fact]
+    public async Task ContextReady_pooled_s2s_replay_at_the_same_head_resumes_the_persisted_checkpoint()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var contextArtifactId = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind)
+            .Subject.Id;
+        SeedProvisionalCheckpoint(
+            fixture,
+            run,
+            "thread-pooled-persisted",
+            DateTimeOffset.UtcNow.AddMinutes(20),
+            LifecycleOf(fixture, run, workspaceId: "ws-review-slot-0")
+        );
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(1, "a same-head replay must not lease a second slot");
+        fixture.Preparer.PrepareCount.Should().Be(1, "a same-head replay must not re-run prepare");
+        fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind)
+            .Subject.Id.Should()
+            .Be(contextArtifactId, "the replay must reuse the existing artifact, not mint a new one");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture
+            .Factory.ResumeHostedThreadIds.Should()
+            .ContainSingle("one turn was created")
+            .Which.Should()
+            .Be(
+                "thread-pooled-persisted",
+                "a same-head replay must not invalidate a checkpoint whose diff never changed"
+            );
+        fixture
+            .Factory.CreatedAgents.Should()
+            .ContainSingle(
+                "the provisional turn ran before the replay; re-running it would fan out a second sub-agent tree"
+            );
+    }
+
     [Fact]
     public async Task ContextReady_falls_back_to_the_per_run_checkout_when_the_repo_is_not_a_store_submodule()
     {
@@ -105,6 +256,46 @@ public sealed class DaemonReviewStageExecutorPooledTests
             .Store.GetArtifacts(run.Id)
             .Should()
             .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind);
+    }
+
+    /// <summary>
+    /// Issue #647 — on the direct/non-pooled fallback checkout (repo not a store submodule), the context
+    /// artifact must also carry a real merge-base commit id: <c>FetchContextAsync</c> resolves it itself via
+    /// <see cref="MergeBaseResolver"/> on this path, since there is no <c>ReviewSlotPreparer</c> to hand one
+    /// over for free. <see cref="RecordingProvisioner.DefaultRunner"/> is the runner that checkout, diff and
+    /// merge-base all run through here (via <c>ResolveSandboxAsync</c>'s non-slot session).
+    /// </summary>
+    [Fact]
+    public async Task ContextReady_threads_a_real_merge_base_commit_id_on_the_fallback_checkout_path()
+    {
+        using var fixture = Fixture.Create();
+        fixture.HostFileSystem.Files.Clear();
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/.gitmodules",
+            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n"
+        );
+        fixture.Provisioner.DefaultRunner.OnArgvContains(
+            "merge-base",
+            new SandboxCommandResult(0, "feedcafe\n", string.Empty)
+        );
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture
+            .Store.GetArtifacts(run.Id)
+            .Should()
+            .ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind)
+            .Subject;
+        var payload = JsonDocument.Parse(artifact.Payload).RootElement;
+        payload
+            .GetProperty("MergeBaseSha")
+            .GetString()
+            .Should()
+            .Be(
+                "feedcafe",
+                "the fallback path resolves its own merge base via MergeBaseResolver rather than leaving it null"
+            );
     }
 
     [Fact]
@@ -3104,6 +3295,61 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
     }
 
+    /// <summary>
+    /// The lifecycle identity the S2S/host-prepared pooled fixture's Reviewed stage would build for the BASE
+    /// attempt — the one a checkpoint has to still match to be resumable. Mirrors
+    /// <c>DaemonReviewStageExecutorTests.LifecycleOf</c>: <c>ToolAssisted</c> defaults to false because
+    /// <c>BuildToolContextAsync</c> always returns null on <c>UseS2SReviewAgent</c>, before
+    /// <c>EnableToolAssistedReview</c> is even consulted, and <c>workspaceId</c> defaults to null so a
+    /// non-pooled caller does not have to name one it never leases.
+    /// </summary>
+    private static ReviewLifecycleIdentity LifecycleOf(
+        Fixture fixture,
+        ReviewRun run,
+        string? workspaceId = null,
+        bool toolAssisted = false
+    ) =>
+        new(
+            DaemonReviewStageExecutor.S2SModality,
+            DaemonReviewStageExecutor.ThreadId(run, run.VariantId),
+            workspaceId,
+            run.ModelId,
+            toolAssisted,
+            fixture.Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ContextArtifactKind)?.Id ?? 0
+        );
+
+    /// <summary>Writes the checkpoint a Reviewed stage leaves behind once the provisional turn has returned —
+    /// mirrors <c>DaemonReviewStageExecutorTests.SeedProvisionalCheckpoint</c>, reimplemented locally because
+    /// that one is private to the other test class.</summary>
+    private static void SeedProvisionalCheckpoint(
+        Fixture fixture,
+        ReviewRun run,
+        string hostedThreadId,
+        DateTimeOffset deadlineUtc,
+        ReviewLifecycleIdentity? lifecycle = null
+    ) =>
+        _ = fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new ReviewArtifactPayload(
+                        "stale provisional finding",
+                        "run-provisional",
+                        run.VariantId,
+                        hostedThreadId,
+                        deadlineUtc.AddMinutes(-10),
+                        deadlineUtc,
+                        lifecycle ?? LifecycleOf(fixture, run),
+                        ProvisionalComplete: true
+                    )
+                ),
+            }
+        );
+
     private sealed class Fixture : IDisposable
     {
         private readonly TempSqliteDatabase _db;
@@ -3480,6 +3726,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// </summary>
         public MergeBaseOutcome MergeBase { get; set; } = MergeBaseOutcome.Resolved;
 
+        /// <summary>The commit id stamped onto every checkout alongside <see cref="MergeBase"/> — issue #647.
+        /// Defaults to null, matching production's own default for every non-<see cref="MergeBaseOutcome.Resolved"/>
+        /// outcome and letting pre-existing tests (which never set it) keep asserting nothing about the SHA.</summary>
+        public string? MergeBaseSha { get; set; }
+
         public Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
@@ -3558,7 +3809,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
                     $"{storeRoot}/{submoduleRelPath}",
                     $"{storeRoot}/{notesRelPath}",
                     branch,
-                    MergeBase
+                    MergeBase,
+                    MergeBaseSha
                 );
                 Prepared.Add(checkout);
             }
@@ -3584,6 +3836,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public FakeSandboxFileSystem SdkFileSystem { get; } = new();
 
         /// <summary>
+        /// The runner behind the NON-slot-scoped session <see cref="GetOrCreateAsync"/> hands back — what the
+        /// direct/non-pooled review-context path (<c>FetchContextAsync</c>'s fallback branch, via
+        /// <c>ResolveSandboxAsync</c>) actually runs its checkout, diff and merge-base probes through. Exposed
+        /// (rather than left as the inline, unreachable <c>new FakeSandboxCommandRunner()</c> this replaced) so a
+        /// test can script that path's <c>git merge-base</c> answer — issue #647.
+        /// </summary>
+        public FakeSandboxCommandRunner DefaultRunner { get; } = new();
+
+        /// <summary>
         /// What <c>git diff --name-only</c> answers in the session. Settable so a test can make it FAIL, which is
         /// how the changed-path listing goes missing on a live run — <c>BuildChangedPathsAsync</c> degrades to an
         /// empty listing on a non-zero exit rather than failing the run.
@@ -3600,7 +3861,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 new ReviewRunSession(
                     $"session-{run.Id}",
                     $"/workspace/review-run-{run.Id}",
-                    new FakeSandboxCommandRunner(),
+                    DefaultRunner,
                     new FakeSandboxFileSystem()
                 )
             );

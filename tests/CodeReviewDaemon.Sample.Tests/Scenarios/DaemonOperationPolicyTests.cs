@@ -1,3 +1,4 @@
+using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
 
@@ -316,6 +317,55 @@ public sealed class DaemonOperationPolicyTests
             .BeFalse("no ReviewBot remote is configured, so push has no destination");
     }
 
+    [Fact]
+    public void GitHub_run_policy_scopes_the_graphql_carve_out_to_the_run_repo()
+    {
+        // Issue #666 review — BuildForRun must thread the run's own owner/repo into
+        // ReviewScope.GraphQlOwner/GraphQlRepo, or the GraphQL scope check has nothing of the run's OWN
+        // repo to validate a request against and the carve-out degrades back to "byte-identical query
+        // text, any owner/repo".
+        var policy = DaemonOperationPolicy.BuildForRun(
+            GitHubRepo,
+            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git",
+            allowWriteOperations: false
+        );
+        var inScope = new GitHubGraphQlRequestScope("acme", "widgets", 7);
+        var offScope = new GitHubGraphQlRequestScope("someone-else", "other-repo", 7);
+
+        GraphQl(policy, inScope).IsAllowed.Should().BeTrue("the tag/body match the run's own repo");
+        GraphQl(policy, offScope)
+            .IsAllowed.Should()
+            .BeFalse("a tag/body pair for a DIFFERENT owner/repo must not ride this run's carve-out");
+    }
+
+    [Fact]
+    public void Ado_run_policy_has_no_graphql_scope_to_validate_against()
+    {
+        // ADO has no GraphQL carve-out (issue #647 is GitHub-only); BuildForRun leaves
+        // GraphQlOwner/GraphQlRepo null for an ADO run, so even a same-shaped GraphQL POST at the run's own
+        // API host can never validate — there is no owner/repo for the tag/body to agree with.
+        var policy = DaemonOperationPolicy.BuildForRun(
+            AdoRepo,
+            reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot",
+            allowWriteOperations: false
+        );
+        var scope = new GitHubGraphQlRequestScope("contoso", "core", 7);
+
+        var decision = policy.Decide(
+            new OperationRequest(
+                SandboxOperation.ReadProviderMetadata,
+                "github",
+                "dev.azure.com",
+                "POST",
+                "/graphql",
+                GitHubIssueContextReader.Query,
+                scope
+            )
+        );
+
+        decision.IsAllowed.Should().BeFalse("an ADO run has no GraphQL owner/repo scope to validate against");
+    }
+
     private static PolicyDecision Fetch(OperationPolicy policy, SandboxOperation op, string host, string path) =>
         policy.Decide(new OperationRequest(op, "github", host, "GET", path));
 
@@ -329,4 +379,17 @@ public sealed class DaemonOperationPolicyTests
 
     private static PolicyDecision Receive(OperationPolicy policy, string host, string path) =>
         policy.Decide(new OperationRequest(SandboxOperation.PushReviewBot, "github", host, "POST", path));
+
+    private static PolicyDecision GraphQl(OperationPolicy policy, GitHubGraphQlRequestScope variables) =>
+        policy.Decide(
+            new OperationRequest(
+                SandboxOperation.ReadProviderMetadata,
+                "github",
+                "api.github.com",
+                "POST",
+                "/graphql",
+                GitHubIssueContextReader.Query,
+                variables
+            )
+        );
 }

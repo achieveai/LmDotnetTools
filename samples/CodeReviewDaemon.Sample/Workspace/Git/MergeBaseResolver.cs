@@ -51,6 +51,14 @@ internal enum MergeBaseOutcome
 }
 
 /// <summary>
+/// What <see cref="MergeBaseResolver.ResolveAsync"/> established. <see cref="CommitId"/> is populated only
+/// alongside <see cref="MergeBaseOutcome.Resolved"/> — every other outcome is a statement about why there is
+/// no merge base to name, so there is no commit for it to carry (issue #647: this is the SHA the context
+/// artifact needs to record which commit the diff was actually taken against).
+/// </summary>
+internal sealed record MergeBaseResolution(MergeBaseOutcome Outcome, string? CommitId);
+
+/// <summary>
 /// Establishes whether the PR's base and head share a merge base in a prepared checkout, deepening a shallow
 /// clone until they do — and, when they do not, says WHICH kind of "no" it is.
 /// </summary>
@@ -149,7 +157,7 @@ internal sealed class MergeBaseResolver
     /// diff is posted to a PR.
     /// </para>
     /// </remarks>
-    public async Task<MergeBaseOutcome> ResolveAsync(
+    public async Task<MergeBaseResolution> ResolveAsync(
         string repoRoot,
         ReviewRun run,
         CancellationToken cancellationToken
@@ -158,10 +166,10 @@ internal sealed class MergeBaseResolver
         ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
         ArgumentNullException.ThrowIfNull(run);
 
-        var mergeBase = await MergeBaseAnswerAsync(repoRoot, run, cancellationToken).ConfigureAwait(false);
+        var (mergeBase, commitId) = await MergeBaseAnswerAsync(repoRoot, run, cancellationToken).ConfigureAwait(false);
         if (mergeBase == GitAnswer.Yes)
         {
-            return MergeBaseOutcome.Resolved;
+            return new MergeBaseResolution(MergeBaseOutcome.Resolved, commitId);
         }
 
         if (mergeBase == GitAnswer.Unknown)
@@ -171,7 +179,7 @@ internal sealed class MergeBaseResolver
             // gigabytes on the live store, spent to answer a question we could not even ask, through the same
             // runner that just failed to ask it. A retry re-runs the PR-commit fetch first, which is the fix
             // for the one benign cause (an object this checkout does not hold, exit 128).
-            return MergeBaseOutcome.Indeterminate;
+            return new MergeBaseResolution(MergeBaseOutcome.Indeterminate, null);
         }
 
         var shallow = await IsShallowAnswerAsync(repoRoot, run, cancellationToken).ConfigureAwait(false);
@@ -181,7 +189,7 @@ internal sealed class MergeBaseResolver
             // stdout != "true"`, which reads a probe that never ran as a confirmed full clone and returns
             // UnrelatedHistories from it — a killed `rev-parse` presented to an author as proof their branch
             // descends from nothing.
-            return MergeBaseOutcome.Indeterminate;
+            return new MergeBaseResolution(MergeBaseOutcome.Indeterminate, null);
         }
 
         if (shallow == GitAnswer.No)
@@ -196,7 +204,7 @@ internal sealed class MergeBaseResolver
                 run.BaseSha,
                 run.HeadSha
             );
-            return MergeBaseOutcome.UnrelatedHistories;
+            return new MergeBaseResolution(MergeBaseOutcome.UnrelatedHistories, null);
         }
 
         // Climb the depth while each round is still buying history, rather than walking a fixed ladder.
@@ -274,7 +282,7 @@ internal sealed class MergeBaseResolver
                         run.BaseSha,
                         run.HeadSha
                     );
-                    return MergeBaseOutcome.Indeterminate;
+                    return new MergeBaseResolution(MergeBaseOutcome.Indeterminate, null);
                 }
 
                 _logger.LogWarning(
@@ -287,7 +295,7 @@ internal sealed class MergeBaseResolver
                     run.BaseSha,
                     run.HeadSha
                 );
-                return MergeBaseOutcome.UnrelatedHistories;
+                return new MergeBaseResolution(MergeBaseOutcome.UnrelatedHistories, null);
             }
 
             if (targets.Count == 0)
@@ -314,7 +322,7 @@ internal sealed class MergeBaseResolver
                     deepen.ExitCode,
                     deepen.Stderr
                 );
-                return MergeBaseOutcome.DeepenFailed;
+                return new MergeBaseResolution(MergeBaseOutcome.DeepenFailed, null);
             }
 
             everFetched = true;
@@ -324,12 +332,13 @@ internal sealed class MergeBaseResolver
             // on the live NOVA store that meant four packs of 7.2-7.7 GB coexisting.
             await CompactObjectStoreAsync(repoRoot, run, depth, cancellationToken).ConfigureAwait(false);
 
-            var answer = await MergeBaseAnswerAsync(repoRoot, run, cancellationToken).ConfigureAwait(false);
+            var (answer, reAskCommitId) = await MergeBaseAnswerAsync(repoRoot, run, cancellationToken)
+                .ConfigureAwait(false);
             if (answer == GitAnswer.Unknown)
             {
                 // Same reasoning as the probe that opened the method, and it matters more here: the next
                 // round's exhaustion test reads counts taken through the runner that just stopped answering.
-                return MergeBaseOutcome.Indeterminate;
+                return new MergeBaseResolution(MergeBaseOutcome.Indeterminate, null);
             }
 
             if (answer == GitAnswer.Yes)
@@ -343,7 +352,7 @@ internal sealed class MergeBaseResolver
                     run.BaseSha,
                     run.HeadSha
                 );
-                return MergeBaseOutcome.Resolved;
+                return new MergeBaseResolution(MergeBaseOutcome.Resolved, reAskCommitId);
             }
         }
 
@@ -359,7 +368,7 @@ internal sealed class MergeBaseResolver
             MergeBaseDepthCeiling
         );
 
-        return MergeBaseOutcome.DepthCeilingReached;
+        return new MergeBaseResolution(MergeBaseOutcome.DepthCeilingReached, null);
     }
 
     /// <summary>
@@ -449,7 +458,8 @@ internal sealed class MergeBaseResolver
     }
 
     /// <summary>
-    /// Whether the PR's base and head share a merge base in this checkout as it currently stands.
+    /// Whether the PR's base and head share a merge base in this checkout as it currently stands, and the
+    /// commit id <c>merge-base</c> printed when they do.
     /// </summary>
     /// <remarks>
     /// <c>merge-base</c> exits 1 with no output when the commits are unrelated, and that exit is the answer
@@ -462,7 +472,7 @@ internal sealed class MergeBaseResolver
     /// habit being removed.
     /// </para>
     /// </remarks>
-    private async Task<GitAnswer> MergeBaseAnswerAsync(
+    private async Task<(GitAnswer Answer, string? CommitId)> MergeBaseAnswerAsync(
         string repoRoot,
         ReviewRun run,
         CancellationToken cancellationToken
@@ -476,12 +486,12 @@ internal sealed class MergeBaseResolver
             .ConfigureAwait(false);
         if (result.Succeeded && !string.IsNullOrWhiteSpace(result.Stdout))
         {
-            return GitAnswer.Yes;
+            return (GitAnswer.Yes, result.Stdout.Trim());
         }
 
         if (result.ExitCode == GitNoMergeBaseExitCode)
         {
-            return GitAnswer.No;
+            return (GitAnswer.No, null);
         }
 
         _logger.LogWarning(
@@ -496,7 +506,7 @@ internal sealed class MergeBaseResolver
             result.ExitCode,
             result.Stderr
         );
-        return GitAnswer.Unknown;
+        return (GitAnswer.Unknown, null);
     }
 
     /// <summary>

@@ -1,0 +1,641 @@
+using System.Globalization;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using CodeReviewDaemon.Sample.Persistence;
+using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
+
+namespace CodeReviewDaemon.Sample.Orchestration;
+
+/// <summary>How the linked-issue lookup ended. Mirrors <see cref="AdoWorkItemContextReader"/>'s
+/// <c>AdoWorkItemLookup</c> exactly — four DIFFERENT statements about the pull request (three) or the
+/// daemon (one), and collapsing any pair of them is the defect this enum exists to prevent.</summary>
+internal enum GitHubIssueLookup
+{
+    /// <summary>Nothing was ever asked — a non-GitHub repo (e.g. an ADO daemon) has no GraphQL endpoint to
+    /// query. Deliberately the default (value 0) so a record nobody filled in renders no block, rather than
+    /// defaulting into <see cref="NoneLinked"/>, which would tell the reviewer a false fact about the pull
+    /// request on the strength of nobody having looked.</summary>
+    Unavailable = 0,
+
+    /// <summary>The lookup was attempted and could not be completed — a non-success HTTP status, a
+    /// GraphQL-level error returned alongside HTTP 200, or a response shape this parser cannot read.
+    /// Distinct from <see cref="NoneLinked"/> on purpose: "this PR closes no issues" and "we could not read
+    /// this PR's linked issues" license opposite reviewer behaviour.</summary>
+    Failed,
+
+    /// <summary>The PR was read and closes no issues at all. A positive finding, not an absence of one.</summary>
+    NoneLinked,
+
+    /// <summary>At least one linked issue was read.</summary>
+    Linked,
+}
+
+/// <summary>One pull request GitHub reports as closing (or closed by) a linked issue. <see cref="NodeId"/> is
+/// GitHub's own GraphQL <c>id</c> — the deterministic identity a (repository, number) pair cannot give by
+/// itself, since numbers are only unique within one repository.</summary>
+internal sealed record GitHubRelatedPullRequest(string NodeId, string Repository, int Number, string Url);
+
+/// <summary>One issue the pull request closes, plus the PRs GitHub already associates with it. <see cref="NodeId"/>
+/// is GitHub's own GraphQL <c>id</c> for this issue — the deterministic identity a (repository, number) pair
+/// cannot give by itself.</summary>
+internal sealed record GitHubLinkedIssue(
+    string NodeId,
+    string Repository,
+    int Number,
+    string Url,
+    string Title,
+    string State,
+    IReadOnlyList<GitHubRelatedPullRequest> RelatedPullRequests
+);
+
+/// <summary>What the pull request was asked to do, as far as the daemon could establish it from GitHub's
+/// issue-linking graph. Bounded so it can be dropped straight into a review brief.</summary>
+internal sealed record GitHubIssueContext(
+    GitHubIssueLookup Outcome,
+    IReadOnlyList<GitHubLinkedIssue> Issues,
+    bool Truncated
+)
+{
+    /// <summary>Nobody looked. Renders no block at all.</summary>
+    public static GitHubIssueContext Unavailable { get; } = new(GitHubIssueLookup.Unavailable, [], false);
+
+    /// <summary>Somebody looked and could not read the answer. Renders an explicit failure marker.</summary>
+    public static GitHubIssueContext Failed { get; } = new(GitHubIssueLookup.Failed, [], false);
+
+    /// <summary>The PR genuinely closes nothing. Renders an explicit "none linked" statement.</summary>
+    public static GitHubIssueContext NoneLinked { get; } = new(GitHubIssueLookup.NoneLinked, [], false);
+}
+
+/// <summary>
+/// Reads a pull request's linked issues — and each issue's own related PRs — from GitHub's GraphQL API, so
+/// the review brief can state what the change was actually asked to do. The ADO analog is
+/// <see cref="AdoWorkItemContextReader"/>; this reader follows the same four-outcome shape and the same
+/// "never throw for a failed read" discipline, adapted to GitHub's issue-linking graph instead of ADO's
+/// work-item hierarchy.
+/// <para>
+/// GitHub exposes no REST route for "issues this PR closes" — only GraphQL's
+/// <c>PullRequest.closingIssuesReferences</c> carries it — so this is the first GraphQL consumer in the
+/// codebase.
+/// </para>
+/// <para>
+/// <see cref="ReadAsync"/> takes only a <c>reviewRunId</c> — never a repo or PR number — and loads the
+/// persisted <see cref="Persistence.Models.ReviewRun"/> (and its repo) from <see cref="ReviewStore"/>
+/// itself, so the (repo, PR) pair a lookup ever runs against is exactly what this daemon already recorded
+/// for that run. It then builds a client scoped to those persisted values via
+/// <see cref="PolicyEnforcedHttpClientFactory.CreateForGitHubGraphQl"/>, which binds them as the client's
+/// immutable canonical GraphQL scope; <see cref="OperationPolicyHandler"/> only allows a GraphQL request
+/// whose body matches that binding exactly. A missing run/repo, a non-GitHub repo, or an invalid/non-positive
+/// persisted PR id all return <see cref="GitHubIssueLookup.Unavailable"/> before any client or token is
+/// touched.
+/// </para>
+/// <para>
+/// Issue #647 scope stops at reading and returning this context — nothing in the daemon calls
+/// <see cref="ReadAsync"/> yet, and no review brief renders it. Wiring it into the rendered prompt is
+/// issue #650's job; this type exists ahead of that consumer so #650 can be a pure wiring change against an
+/// already-tested reader, not a combined read-and-render change.
+/// </para>
+/// </summary>
+internal sealed class GitHubIssueContextReader
+{
+    private const string GraphQlUrl = "https://api.github.com/graphql";
+    private const string UserAgent = "LmDotnetTools-CodeReviewDaemon";
+
+    /// <summary>Cap on a free-text field (issue title) carried into the brief — mirrors
+    /// <c>AdoWorkItemContextReader.MaxTitleChars</c>. GitHub's <c>state</c> is a fixed GraphQL enum
+    /// (<c>OPEN</c>/<c>CLOSED</c>), not free text, and cannot itself carry the line-collapse hazard the
+    /// title can, so only the title is condensed.</summary>
+    internal const int MaxTitleChars = 200;
+
+    /// <summary>
+    /// How many issues are requested per <c>closingIssuesReferences</c> page. Also the fixed window used for
+    /// each issue's own <c>closedByPullRequestsReferences</c> — related PRs are bounded navigation, not
+    /// exhaustive enumeration (see the doc comment on <see cref="ReadAsync"/>'s pagination loop), so that
+    /// one is not driven by a variable at all.
+    /// </summary>
+    internal const int PageSize = 100;
+
+    /// <summary>
+    /// Hard cap on how many linked issues are fetched in total. A PR can legitimately close many issues, but
+    /// the brief has room for what the change was asked to do, not for an unbounded backlog. Reaching this
+    /// cap while more pages remain is reported through <see cref="GitHubIssueContext.Truncated"/> rather than
+    /// silently dropped — the same counted-not-hidden convention <c>AdoWorkItemContextReader</c> uses for its
+    /// own caps.
+    /// </summary>
+    internal const int MaxIssues = 200;
+
+    /// <summary>
+    /// Absolute cap on how many <c>closingIssuesReferences</c> page requests one <see cref="ReadAsync"/> call
+    /// will ever issue — independent of how many issues actually parsed out of any of them, so a page that
+    /// comes back empty or entirely unparseable still counts against it. <see cref="MaxIssues"/> divided by
+    /// <see cref="PageSize"/> is the fewest requests a well-behaved server could possibly need to fill the cap
+    /// exactly; the one request beyond that is what lets this walk tell "the cap landed exactly on a page
+    /// boundary" (see the exact-cap-boundary test) apart from "the server never really made progress". A
+    /// server needing more than that is not a large PR — it is a pagination cursor this walk cannot trust, and
+    /// the no-progress guard below already gives that its own diagnosis; this bound is strictly the
+    /// last-resort stop for the case where the cursor keeps nominally advancing without ever getting anywhere.
+    /// </summary>
+    private const int MaxPageRequests = (MaxIssues / PageSize) + 1;
+
+    /// <summary>
+    /// The one GraphQL document this reader ever sends. <c>closingIssuesReferences</c> is cursor-paginated
+    /// (<c>$after</c>) because issue #647's acceptance criteria requires it walked exhaustively; each issue's
+    /// <c>closedByPullRequestsReferences</c> is a FIXED <c>first: 20</c> window, deliberately not
+    /// cursor-walked — cursor-walking it too would multiply request count per issue (up to
+    /// <see cref="MaxIssues"/> issues, each running its own page loop), which is exactly the
+    /// unbounded-nested-pagination shape this reader avoids. A related-PR list longer than 20 is simply
+    /// reported as whatever the fixed window returns; there is no per-issue truncation flag for it, by
+    /// controller ruling on issue #647 (out of that issue's acceptance criteria as written).
+    /// <c>orderBy: CREATED_AT ASC</c> is pinned explicitly (GitHub's own connection default is unspecified) so
+    /// that walking pages in order — and the no-progress/cursor-repeat guard that depends on a stable
+    /// ordering — is not resting on an implicit, unversioned server default. Each node also selects <c>id</c>
+    /// — GitHub's own GraphQL identity for the issue/PR — because <c>(repository, number)</c> alone is not a
+    /// deterministic identity across repositories.
+    /// </summary>
+    // Internal rather than private: OperationPolicy.IsGitHubGraphQlMetadataRequest compares a captured
+    // request's "query" field against this exact constant, so the safe document has exactly one
+    // definition shared by the reader that sends it and the policy that verifies it (issue #647 review).
+    // The canonical text lives in GitHubGraphQlContract (Workspace) so OperationPolicy never has to
+    // depend on this (Orchestration) namespace to see it (issue #666 review); this is a const-to-const
+    // alias kept for source compatibility with every existing call site that names it here.
+    internal const string Query = GitHubGraphQlContract.Query;
+
+    private readonly PolicyEnforcedHttpClientFactory _httpClientFactory;
+    private readonly ReviewStore _reviewStore;
+    private readonly IOAuthTokenProvider _tokenProvider;
+    private readonly ILogger<GitHubIssueContextReader> _logger;
+
+    public GitHubIssueContextReader(
+        PolicyEnforcedHttpClientFactory httpClientFactory,
+        ReviewStore reviewStore,
+        IOAuthTokenProvider tokenProvider,
+        ILogger<GitHubIssueContextReader> logger
+    )
+    {
+        _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
+        _reviewStore = reviewStore ?? throw new ArgumentNullException(nameof(reviewStore));
+        _tokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    /// <summary>
+    /// Reads the issues linked to one pull request, plus each issue's related PRs, for the persisted
+    /// <see cref="Persistence.Models.ReviewRun"/> identified by <paramref name="reviewRunId"/>.
+    /// </summary>
+    /// <param name="reviewRunId">
+    /// The persisted run's row id. Its repo and PR number are loaded from <see cref="ReviewStore"/> — this is
+    /// the only input a caller has; there is no way to name a different repo or PR beside it.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the read.</param>
+    /// <returns>
+    /// The context. <see cref="GitHubIssueContext.Unavailable"/> when there was nothing to ask — no such run,
+    /// no such repo, a non-GitHub repo, or an unparseable/non-positive persisted PR id, none of which touch a
+    /// client or token — and <see cref="GitHubIssueContext.Failed"/> when an ask was attempted and could not
+    /// be completed. Never an exception for a failed read.
+    /// </returns>
+    public async Task<GitHubIssueContext> ReadAsync(long reviewRunId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var run = _reviewStore.GetReviewRun(reviewRunId);
+            if (run is null)
+            {
+                _logger.LogDebug("GitHub linked-issue read found no persisted review run {ReviewRunId}.", reviewRunId);
+                return GitHubIssueContext.Unavailable;
+            }
+
+            var repo = _reviewStore.GetRepo(run.RepoId);
+            if (repo is null)
+            {
+                _logger.LogDebug(
+                    "GitHub linked-issue read for review run {ReviewRunId} found no persisted repo {RepoId}.",
+                    reviewRunId,
+                    run.RepoId
+                );
+                return GitHubIssueContext.Unavailable;
+            }
+
+            if (!string.Equals(repo.Provider, "github", StringComparison.Ordinal))
+            {
+                // Storage-namespace check (see RepoIdentity.Provider / ToPublisherNamespace) — an ADO repo has
+                // no GraphQL endpoint to ask, so nobody attempted anything. Exact/case-sensitive on purpose: every
+                // producer of RepoIdentity.Provider in this codebase writes the canonical lower-case spelling
+                // (RepoIdentity.ToPublisherNamespace compares the same way against "azure-devops"), so a
+                // differently-cased value is not a GitHub repo spelled unusually — it is data nothing in this
+                // codebase has ever promised to normalize, and Unavailable is the right answer for it too.
+                return GitHubIssueContext.Unavailable;
+            }
+
+            if (
+                !int.TryParse(run.PrId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number)
+                || number <= 0
+            )
+            {
+                _logger.LogDebug(
+                    "GitHub linked-issue read for review run {ReviewRunId} has a non-positive/unparseable persisted PrId {PrId}.",
+                    reviewRunId,
+                    run.PrId
+                );
+                return GitHubIssueContext.Unavailable;
+            }
+
+            var prId = run.PrId;
+            using var client = _httpClientFactory.CreateForGitHubGraphQl(repo, number);
+            var issues = new List<GitHubLinkedIssue>();
+            var truncated = false;
+            var degenerate = false;
+            string? cursor = null;
+            var hasNextPage = true;
+            var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+            var pageRequestCount = 0;
+            // Stable dedup identity (issue #647 item 7): the same (repository, number) issue can legitimately
+            // repeat across — or within — a page (GitHub re-surfacing it after a page-boundary edit, or a
+            // non-conformant server). Keyed on the pair rather than NodeId alone so two DIFFERENT repositories
+            // that happen to share an issue number are never folded together.
+            var seenIssueKeys = new Dictionary<(string Repository, int Number), string>();
+
+            while (hasNextPage)
+            {
+                if (pageRequestCount >= MaxPageRequests)
+                {
+                    // The absolute safety net (see MaxPageRequests) — stop a server that keeps answering
+                    // hasNextPage: true forever from turning one review into an unbounded fetch loop.
+                    truncated = true;
+                    degenerate = issues.Count == 0;
+                    break;
+                }
+
+                var page = await FetchPageAsync(client, repo, number, cursor, cancellationToken).ConfigureAwait(false);
+                pageRequestCount++;
+                if (page is null)
+                {
+                    return GitHubIssueContext.Failed;
+                }
+
+                if (page.RawNodeCount > 0 && page.Nodes.Count < page.RawNodeCount)
+                {
+                    // At least one node in a non-empty page could not be parsed. Never claim NoneLinked (or a
+                    // partial Linked) on the strength of only the nodes that DID parse — the brief has to say
+                    // the lookup could not be completed, not state a fact built on a silently dropped node.
+                    _logger.LogDebug(
+                        "GitHub linked-issue page for {Repository} PR {PrId} had {RawCount} node(s) but only "
+                            + "{ParsedCount} parsed; the brief will say the lookup failed.",
+                        repo.DisplayName,
+                        prId,
+                        page.RawNodeCount,
+                        page.Nodes.Count
+                    );
+                    return GitHubIssueContext.Failed;
+                }
+
+                if (page.HasNextPage && string.IsNullOrEmpty(page.EndCursor))
+                {
+                    // The server claims more pages exist but handed back no cursor to ask for them with —
+                    // walking further is impossible, not merely capped.
+                    truncated = true;
+                    degenerate = issues.Count == 0;
+                    break;
+                }
+
+                if (page.HasNextPage && !seenCursors.Add(page.EndCursor!))
+                {
+                    // The cursor repeated (or never changed) — walking again would just re-fetch this same
+                    // page forever instead of making progress.
+                    truncated = true;
+                    degenerate = issues.Count == 0;
+                    break;
+                }
+
+                hasNextPage = page.HasNextPage;
+                cursor = page.EndCursor;
+
+                foreach (var node in page.Nodes)
+                {
+                    var issueKey = (node.Repository, node.Number);
+                    if (seenIssueKeys.TryGetValue(issueKey, out var seenNodeId))
+                    {
+                        if (!string.Equals(seenNodeId, node.NodeId, StringComparison.Ordinal))
+                        {
+                            // Same (repository, number) but a different GraphQL node id — an identity
+                            // disagreement nothing here can resolve. Fail honestly rather than silently
+                            // keeping whichever occurrence happened to be seen first.
+                            _logger.LogDebug(
+                                "GitHub linked-issue {Repository}#{Number} for PR {PrId} was reported with two "
+                                    + "different GraphQL node ids; the brief will say the lookup failed.",
+                                node.Repository,
+                                node.Number,
+                                prId
+                            );
+                            return GitHubIssueContext.Failed;
+                        }
+
+                        // An exact repeat of an issue already recorded — folded into the one entry already
+                        // held, and (deliberately) never counted against the cap: a duplicate-heavy page
+                        // must not starve room for a genuinely new issue later in the walk.
+                        continue;
+                    }
+
+                    if (issues.Count >= MaxIssues)
+                    {
+                        // The cap was already full before this node — something in THIS page is still
+                        // pending, so the walk stops here and reports it rather than silently dropping it.
+                        truncated = true;
+                        hasNextPage = false;
+                        break;
+                    }
+
+                    seenIssueKeys[issueKey] = node.NodeId;
+                    issues.Add(node);
+                }
+
+                if (issues.Count >= MaxIssues && hasNextPage)
+                {
+                    // The cap filled exactly at a page boundary and the server still has more.
+                    truncated = true;
+                    hasNextPage = false;
+                }
+            }
+
+            if (degenerate)
+            {
+                // Pagination could not make progress and nothing was actually read — Failed, never
+                // NoneLinked: the brief must not state a fact about the pull request on the strength of a
+                // walk that never got anywhere.
+                _logger.LogDebug(
+                    "GitHub linked-issue pagination for {Repository} PR {PrId} could not make progress and "
+                        + "read no issues; the brief will say the lookup failed.",
+                    repo.DisplayName,
+                    prId
+                );
+                return GitHubIssueContext.Failed;
+            }
+
+            _logger.LogDebug(
+                "Read GitHub linked issues for {Repository} PR {PrId}: {Outcome}, {IssueCount} issue(s), truncated: {Truncated}.",
+                repo.DisplayName,
+                prId,
+                issues.Count == 0 ? GitHubIssueLookup.NoneLinked : GitHubIssueLookup.Linked,
+                issues.Count,
+                truncated
+            );
+
+            return issues.Count == 0
+                ? GitHubIssueContext.NoneLinked
+                : new GitHubIssueContext(GitHubIssueLookup.Linked, issues, truncated);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // A real caller cancellation (the review was abandoned) — propagate; nobody wants this result.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Everything else — a persisted-identity read failure, an egress denial, an HttpClient timeout,
+            // or a malformed body — is a lookup that could not be completed. That is Failed, not Unavailable:
+            // the brief has to say the daemon could not read the linked issues, because the alternative is a
+            // reviewer that reads silence as "this PR closes none". Log only the exception TYPE, not the
+            // exception object: provider/database details belong neither in the rendered event nor Serilog's
+            // separate exception field.
+            _logger.LogDebug(
+                "GitHub linked-issue read for persisted review run {ReviewRunId} failed ({ExceptionType}); "
+                    + "the brief will say the lookup failed.",
+                reviewRunId,
+                ex.GetType().Name
+            );
+            return GitHubIssueContext.Failed;
+        }
+    }
+
+    /// <summary>One page of <c>closingIssuesReferences</c>, parsed. <see cref="RawNodeCount"/> is the number
+    /// of entries GitHub actually returned in <c>nodes</c> — deliberately kept apart from
+    /// <see cref="Nodes"/>.Count (the number that parsed) so the caller can tell "an empty page" apart from
+    /// "a page where something could not be read".</summary>
+    private sealed record GraphQlPage(
+        IReadOnlyList<GitHubLinkedIssue> Nodes,
+        bool HasNextPage,
+        string? EndCursor,
+        int RawNodeCount
+    );
+
+    /// <summary>
+    /// One GraphQL request/response round trip. Returns <c>null</c> when the response could not be read at
+    /// all — a non-success HTTP status, a top-level GraphQL <c>errors</c> entry (GitHub returns HTTP 200 with
+    /// an <c>errors</c> array and a null/partial <c>data</c> for e.g. a NOT_FOUND pull request — an
+    /// HTTP-success check alone is not enough here, unlike the REST readers elsewhere in this codebase), or a
+    /// response missing the expected shape.
+    /// </summary>
+    private async Task<GraphQlPage?> FetchPageAsync(
+        HttpClient client,
+        RepoIdentity repo,
+        int number,
+        string? cursor,
+        CancellationToken cancellationToken
+    )
+    {
+        var variables = new Dictionary<string, object?>
+        {
+            ["owner"] = repo.OrgOrOwner,
+            ["repo"] = repo.RepoName,
+            ["number"] = number,
+            ["pageSize"] = PageSize,
+            ["after"] = cursor,
+        };
+        var requestBody = JsonSerializer.Serialize(new { query = Query, variables });
+
+        // client is scoped to exactly this (repo, number) — see
+        // PolicyEnforcedHttpClientFactory.CreateForGitHubGraphQl — so no per-request tag is needed for
+        // OperationPolicyHandler to compare the parsed body against.
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GraphQlUrl).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
+        var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken).ConfigureAwait(false);
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
+        httpRequest.Headers.UserAgent.ParseAdd(UserAgent);
+        httpRequest.Headers.Accept.ParseAdd("application/vnd.github+json");
+        httpRequest.Content = new StringContent(requestBody, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogDebug(
+                "GitHub GraphQL issue-link fetch returned {Status}; that part of the lookup stays unread.",
+                (int)response.StatusCode
+            );
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var document = await JsonDocument
+            .ParseAsync(stream, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        var root = document.RootElement;
+
+        if (
+            root.TryGetProperty("errors", out var errors)
+            && errors.ValueKind is JsonValueKind.Array
+            && errors.GetArrayLength() > 0
+        )
+        {
+            _logger.LogDebug(
+                "GitHub GraphQL issue-link fetch returned {ErrorCount} error(s); that part of the lookup stays unread.",
+                errors.GetArrayLength()
+            );
+            return null;
+        }
+
+        if (
+            !root.TryGetProperty("data", out var data)
+            || data.ValueKind is not JsonValueKind.Object
+            || !data.TryGetProperty("repository", out var repository)
+            || repository.ValueKind is not JsonValueKind.Object
+            || !repository.TryGetProperty("pullRequest", out var pullRequest)
+            || pullRequest.ValueKind is not JsonValueKind.Object
+            || !pullRequest.TryGetProperty("closingIssuesReferences", out var connection)
+            || connection.ValueKind is not JsonValueKind.Object
+        )
+        {
+            return null;
+        }
+
+        // Fail closed on the connection's required containers/fields rather than defaulting a missing or
+        // wrong-kind one away: a page whose pageInfo/nodes shape does not match what GitHub's schema promises
+        // could not be read, and must never be silently reinterpreted as "no more pages" or "no linked
+        // issues" (see ReadAsync_returns_Failed_when_pageInfo_is_missing_entirely and its siblings). A
+        // genuinely well-formed page with an empty nodes array is unaffected — that is still NoneLinked.
+        if (
+            !connection.TryGetProperty("pageInfo", out var pageInfo)
+            || pageInfo.ValueKind is not JsonValueKind.Object
+            || !pageInfo.TryGetProperty("hasNextPage", out var hasNextPageEl)
+            || hasNextPageEl.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+            || !pageInfo.TryGetProperty("endCursor", out var endCursorEl)
+            || endCursorEl.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)
+        )
+        {
+            return null;
+        }
+
+        if (!connection.TryGetProperty("nodes", out var nodesEl) || nodesEl.ValueKind is not JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var hasNextPage = hasNextPageEl.ValueKind is JsonValueKind.True;
+        var endCursor = endCursorEl.ValueKind is JsonValueKind.String ? endCursorEl.GetString() : null;
+
+        var nodes = new List<GitHubLinkedIssue>();
+        var rawNodeCount = 0;
+        foreach (var node in nodesEl.EnumerateArray())
+        {
+            rawNodeCount++;
+            if (ParseLinkedIssue(node) is { } issue)
+            {
+                nodes.Add(issue);
+            }
+        }
+
+        return new GraphQlPage(nodes, hasNextPage, endCursor, rawNodeCount);
+    }
+
+    private static GitHubLinkedIssue? ParseLinkedIssue(JsonElement node)
+    {
+        if (node.ValueKind is not JsonValueKind.Object || !TryGetInt(node, "number", out var number))
+        {
+            return null;
+        }
+
+        var nodeId = StringOf(node, "id");
+        if (nodeId is null)
+        {
+            // No deterministic identity — never fabricate one, and never let this node parse silently
+            // without it (see the RawNodeCount / Nodes.Count mismatch check in ReadAsync).
+            return null;
+        }
+
+        var relatedPrs = new List<GitHubRelatedPullRequest>();
+        if (
+            node.TryGetProperty("closedByPullRequestsReferences", out var related)
+            && related.ValueKind is JsonValueKind.Object
+            && related.TryGetProperty("nodes", out var relatedNodes)
+            && relatedNodes.ValueKind is JsonValueKind.Array
+        )
+        {
+            foreach (var relatedNode in relatedNodes.EnumerateArray())
+            {
+                if (ParseRelatedPullRequest(relatedNode) is { } pr)
+                {
+                    relatedPrs.Add(pr);
+                }
+            }
+        }
+
+        return new GitHubLinkedIssue(
+            nodeId,
+            RepositoryNameOf(node),
+            number,
+            StringOf(node, "url") ?? string.Empty,
+            // The author's words — condensed for the same reason AdoWorkItemContextReader condenses a work
+            // item title: this reaches the brief as a rendered list entry, and an embedded line break would
+            // forge entries the daemon never wrote.
+            Condense(StringOf(node, "title")) ?? string.Empty,
+            StringOf(node, "state") ?? string.Empty,
+            relatedPrs
+        );
+    }
+
+    private static GitHubRelatedPullRequest? ParseRelatedPullRequest(JsonElement node)
+    {
+        if (node.ValueKind is not JsonValueKind.Object || !TryGetInt(node, "number", out var number))
+        {
+            return null;
+        }
+
+        var nodeId = StringOf(node, "id");
+        if (nodeId is null)
+        {
+            return null;
+        }
+
+        return new GitHubRelatedPullRequest(
+            nodeId,
+            RepositoryNameOf(node),
+            number,
+            StringOf(node, "url") ?? string.Empty
+        );
+    }
+
+    private static string RepositoryNameOf(JsonElement node) =>
+        node.TryGetProperty("repository", out var repository)
+            ? StringOf(repository, "nameWithOwner") ?? string.Empty
+            : string.Empty;
+
+    private static bool TryGetInt(JsonElement element, string property, out int value)
+    {
+        value = 0;
+        return element.ValueKind is JsonValueKind.Object
+            && element.TryGetProperty(property, out var el)
+            && el.ValueKind is JsonValueKind.Number
+            && el.TryGetInt32(out value);
+    }
+
+    /// <summary>Collapses the issue title to a single truncated line — see the doc comment on
+    /// <see cref="ParseLinkedIssue"/> for why. Mirrors <c>AdoWorkItemContextReader.Condense</c>.</summary>
+    private static string? Condense(string? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        var line = value.ReplaceLineEndings(" ").Trim();
+        return line.Length <= MaxTitleChars ? line : line[..(MaxTitleChars - 1)] + "…";
+    }
+
+    private static string? StringOf(JsonElement element, string property) =>
+        element.ValueKind is JsonValueKind.Object
+        && element.TryGetProperty(property, out var value)
+        && value.ValueKind is JsonValueKind.String
+            ? value.GetString()
+            : null;
+}

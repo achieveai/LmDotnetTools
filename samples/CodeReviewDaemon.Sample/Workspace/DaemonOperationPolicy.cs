@@ -109,6 +109,8 @@ internal static class DaemonOperationPolicy
             {
                 ApiRepoPathPrefix = apiRepoPathPrefix,
                 ApiWorkItemPaths = isAdo ? AdoApiWorkItemPaths(repo) : [],
+                GraphQlOwner = isAdo ? null : repo.OrgOrOwner,
+                GraphQlRepo = isAdo ? null : repo.RepoName,
             },
             allowWriteOperations
         );

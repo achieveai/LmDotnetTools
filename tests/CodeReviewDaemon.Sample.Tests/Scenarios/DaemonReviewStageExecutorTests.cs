@@ -9,6 +9,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -160,6 +161,243 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var diff = JsonDocument.Parse(artifact.Payload).RootElement.GetProperty("Diff").GetString()!;
         diff.Length.Should().BeLessThan(hugeDiff.Length, "an oversized diff must be capped before persisting (H4)");
         diff.Should().Contain("truncated");
+    }
+
+    [Fact]
+    public void ContextArtifactSchemaVersion_is_pinned_to_3()
+    {
+        // Issue #647 §F: MergeBaseSha is exactly the field that separates schema 3 from the prior schema
+        // 2 — pin the literal so a future field addition cannot silently land without also bumping it.
+        DaemonReviewStageExecutor.ContextArtifactSchemaVersion.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task ContextReady_resolves_the_merge_base_immediately_without_deepening_when_it_is_already_reachable()
+    {
+        // A checkout whose base and head already share a merge base must resolve on the very first probe —
+        // no deepening fetch, no shallow check even needs reaching. Issue #647 §F.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        fixture.Runner.OnArgvContains(
+            "merge-base base-sha head-sha",
+            new SandboxCommandResult(0, "merge-base-commit-sha\n", string.Empty)
+        );
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        JsonDocument
+            .Parse(artifact.Payload)
+            .RootElement.GetProperty("MergeBaseSha")
+            .GetString()
+            .Should()
+            .Be("merge-base-commit-sha");
+        fixture
+            .Runner.Commands.Should()
+            .NotContain(
+                c => string.Join(' ', c.Argv).Contains("--depth="),
+                "the merge base was already reachable — no deepening fetch is needed"
+            );
+    }
+
+    [Fact]
+    public async Task ContextReady_omits_the_merge_base_sha_when_the_probe_is_indeterminate()
+    {
+        // Issue #647 §F: `git merge-base` answering neither a commit nor its documented "none" exit (1) is
+        // an unanswered probe, not a verdict — MergeBaseSha must be null, and a null MergeBaseSha must be
+        // OMITTED from the persisted JSON rather than written as a literal null.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        fixture.Runner.OnArgvContains(
+            "merge-base base-sha head-sha",
+            new SandboxCommandResult(0, string.Empty, string.Empty)
+        );
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        JsonDocument
+            .Parse(artifact.Payload)
+            .RootElement.TryGetProperty("MergeBaseSha", out _)
+            .Should()
+            .BeFalse("a null MergeBaseSha must be omitted from the persisted JSON, not written as null");
+    }
+
+    [Fact]
+    public async Task ContextReady_omits_the_merge_base_sha_when_deepening_fails()
+    {
+        // Issue #647 §F: a deepening fetch failure (network, auth, a remote refusing the depth) says
+        // nothing about whether the commits are related, so no SHA is persisted.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        fixture
+            .Runner.OnArgvContains(
+                "merge-base base-sha head-sha",
+                new SandboxCommandResult(1, string.Empty, string.Empty)
+            )
+            .OnArgvContains("is-shallow-repository", new SandboxCommandResult(0, "true\n", string.Empty))
+            .OnArgvContains("--depth=", new SandboxCommandResult(1, string.Empty, "fatal: could not fetch"));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        JsonDocument
+            .Parse(artifact.Payload)
+            .RootElement.TryGetProperty("MergeBaseSha", out _)
+            .Should()
+            .BeFalse("a deepening fetch failure resolves nothing, so no SHA is persisted");
+    }
+
+    [Fact]
+    public async Task ContextReady_omits_the_merge_base_sha_when_the_depth_ceiling_is_reached()
+    {
+        // Issue #647 §F: every merge-base probe answers git's documented "no merge base" exit, the
+        // checkout is shallow, and every deepening round keeps buying history for both commits — so the
+        // climb never gives up on grounds of exhausted history, only on grounds of hitting its own
+        // configured ceiling. No SHA is ever resolved to persist.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        fixture
+            .Runner.OnArgvContains(
+                "merge-base base-sha head-sha",
+                new SandboxCommandResult(1, string.Empty, string.Empty)
+            )
+            .OnArgvContains("is-shallow-repository", new SandboxCommandResult(0, "true\n", string.Empty))
+            .OnArgvContains("--depth=", new SandboxCommandResult(0, string.Empty, string.Empty))
+            .OnArgvContainsSequence(
+                "rev-list --count base-sha",
+                new SandboxCommandResult(0, "100", string.Empty),
+                new SandboxCommandResult(0, "200", string.Empty),
+                new SandboxCommandResult(0, "300", string.Empty),
+                new SandboxCommandResult(0, "400", string.Empty)
+            )
+            .OnArgvContainsSequence(
+                "rev-list --count head-sha",
+                new SandboxCommandResult(0, "1000", string.Empty),
+                new SandboxCommandResult(0, "2000", string.Empty),
+                new SandboxCommandResult(0, "3000", string.Empty),
+                new SandboxCommandResult(0, "4000", string.Empty)
+            );
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        JsonDocument
+            .Parse(artifact.Payload)
+            .RootElement.TryGetProperty("MergeBaseSha", out _)
+            .Should()
+            .BeFalse("the climb hit its depth ceiling without ever resolving a merge base");
+        fixture
+            .Runner.Commands.Should()
+            .Contain(
+                c => string.Join(' ', c.Argv).Contains("--depth=100000"),
+                "the climb must reach its documented ceiling, not give up early"
+            );
+    }
+
+    [Fact]
+    public async Task MergeBaseResolver_produces_byte_identical_resolutions_across_two_reads_of_the_same_scripted_head()
+    {
+        // Issue #647 §D: replay must be safe to trust — two independent resolutions over the identical
+        // scripted command sequence must agree exactly, or reusing a persisted resolution across a retry
+        // would be reusing an answer the resolver itself is not stable on.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        fixture.Runner.OnArgvContains(
+            "merge-base base-sha head-sha",
+            new SandboxCommandResult(0, "merge-base-commit-sha\n", string.Empty)
+        );
+        var run = fixture.SeedRun();
+        var resolver = new MergeBaseResolver(new GitRunner(fixture.Runner), NullLogger<MergeBaseResolver>.Instance);
+
+        var first = await resolver.ResolveAsync("/workspace", run, CancellationToken.None);
+        var second = await resolver.ResolveAsync("/workspace", run, CancellationToken.None);
+
+        second.Should().Be(first, "the same scripted head must resolve identically on a second, independent read");
+        first.Outcome.Should().Be(MergeBaseOutcome.Resolved);
+        first.CommitId.Should().Be("merge-base-commit-sha");
+    }
+
+    [Fact]
+    public async Task ContextReady_does_not_reuse_the_persisted_artifact_for_a_different_head()
+    {
+        // Issue #647 §D, the negative case: a different head is a real change to review, not a replay — the
+        // same-head reuse guard must NOT fire, and a fresh context artifact carrying the new head must be
+        // minted rather than the stale one being handed back.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var rolledBackToNewHead = run with { HeadSha = "head-sha-2" };
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, rolledBackToNewHead, CancellationToken.None);
+
+        var artifacts = ArtifactsOf(fixture, run, DaemonReviewStageExecutor.ContextArtifactKind).ToList();
+        artifacts.Should().HaveCount(2, "a different head must mint a new context artifact, not reuse the old one");
+        JsonDocument
+            .Parse(artifacts[^1].Payload)
+            .RootElement.GetProperty("HeadSha")
+            .GetString()
+            .Should()
+            .Be("head-sha-2", "the newest artifact must reflect the new head, not the stale one");
+    }
+
+    [Fact]
+    public async Task ContextReady_does_not_reuse_the_persisted_artifact_for_a_different_base()
+    {
+        // Issue #647 §D, the negative case: a different base is a real change to review (e.g. main advanced
+        // and the run was rebased/re-targeted), not a replay — the same-base/head reuse guard must NOT fire,
+        // and a fresh context artifact carrying the new base must be minted rather than the stale one being
+        // handed back.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var rolledOntoNewBase = run with { BaseSha = "base-sha-2" };
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, rolledOntoNewBase, CancellationToken.None);
+
+        var artifacts = ArtifactsOf(fixture, run, DaemonReviewStageExecutor.ContextArtifactKind).ToList();
+        artifacts.Should().HaveCount(2, "a different base must mint a new context artifact, not reuse the old one");
+        JsonDocument
+            .Parse(artifacts[^1].Payload)
+            .RootElement.GetProperty("BaseSha")
+            .GetString()
+            .Should()
+            .Be("base-sha-2", "the newest artifact must reflect the new base, not the stale one");
+    }
+
+    [Fact]
+    public async Task ContextReady_does_not_reuse_a_persisted_artifact_at_an_old_schema_version()
+    {
+        // Issue #647 §D: the replay guard also gates on schema version — an artifact written before a schema
+        // bump (e.g. before MergeBaseSha existed) must not be handed back as current just because base/head
+        // are unchanged, since a resumed Reviewed checkpoint would then read fields the old row never
+        // populated. The guard must mint a fresh, current-schema artifact instead of reusing it.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+        _ = fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ContextArtifactSchemaVersion - 1,
+                ArtifactKind = DaemonReviewStageExecutor.ContextArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new ContextArtifactPayload(run.PrId, run.BaseSha, run.HeadSha, "stale diff")
+                ),
+            }
+        );
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifacts = ArtifactsOf(fixture, run, DaemonReviewStageExecutor.ContextArtifactKind).ToList();
+        artifacts
+            .Should()
+            .HaveCount(2, "an old-schema artifact must not be reused; a fresh one is minted alongside it");
+        artifacts[^1]
+            .ArtifactSchemaVersion.Should()
+            .Be(
+                DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
+                "the freshly-minted artifact must be at the current schema version"
+            );
     }
 
     [Fact]
@@ -1702,15 +1940,20 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task Reviewed_starts_a_fresh_lifecycle_when_the_context_stage_was_re_entered_after_the_checkpoint()
     {
-        // The documented rollback path: a run is reset to ContextReady and its context rebuilt. The checkpoint
-        // is keyed to the context generation it was built from — a new 'review-context' row — so re-entering
-        // the stage invalidates it without needing a tombstone to be written by whoever did the rollback.
+        // The documented rollback path: a run is reset to ContextReady after a NEW push and its context
+        // rebuilt against the new head. The checkpoint is keyed to the context generation it was built
+        // from — a new 'review-context' row — so re-entering the stage at a DIFFERENT head invalidates it
+        // without needing a tombstone to be written by whoever did the rollback. A SAME-head re-entry is a
+        // replay, not a rollback, and must NOT invalidate the checkpoint — see
+        // Reviewed_resumes_the_persisted_checkpoint_across_a_same_head_context_ready_replay below (issue
+        // #647 §D).
         using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
         var run = fixture.SeedRun();
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         SeedProvisionalCheckpoint(fixture, run, "thread-persisted", DateTimeOffset.UtcNow.AddMinutes(20));
 
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var rolledBackToNewHead = run with { HeadSha = "head-sha-2" };
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, rolledBackToNewHead, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         fixture
@@ -1719,6 +1962,38 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             .Which.Should()
             .BeNull("the conversation reviewed a diff this run is no longer about");
         fixture.Factory.ResumableLoops.Should().ContainSingle().Which.MintedThreadIds.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Reviewed_resumes_the_persisted_checkpoint_across_a_same_head_context_ready_replay()
+    {
+        // Issue #647 §D: a same-head re-entry of ContextReady (e.g. a crash between this stage minting the
+        // context artifact and the orchestrator's subsequent stage-state write) is a REPLAY, not a rollback —
+        // the diff this run is about never changed. Reusing the already-persisted 'review-context' artifact
+        // must not mint a new context generation, so a checkpoint built against the original artifact stays
+        // valid and resumes rather than being spuriously discarded.
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        SeedProvisionalCheckpoint(fixture, run, "thread-persisted", DateTimeOffset.UtcNow.AddMinutes(20));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        ArtifactsOf(fixture, run, DaemonReviewStageExecutor.ContextArtifactKind)
+            .Should()
+            .ContainSingle("a same-head replay reuses the existing artifact instead of minting a new one");
+        fixture
+            .Factory.ResumeHostedThreadIds.Should()
+            .ContainSingle("one turn was created")
+            .Which.Should()
+            .Be("thread-persisted", "a same-head replay must not invalidate a checkpoint whose diff never changed");
+        var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        agent
+            .ReceivedInputs.Should()
+            .ContainSingle(
+                "the provisional turn ran before the replay; re-running it would fan out a second sub-agent tree"
+            );
     }
 
     [Fact]
@@ -2550,6 +2825,47 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         await act.Should().ThrowAsync<InvalidOperationException>("a failed diff must surface so the stage retries");
         fixture.Store.GetArtifacts(run.Id).Should().BeEmpty("no partial context artifact is persisted on failure");
+    }
+
+    [Fact]
+    public async Task ContextReady_persists_one_uncomparable_artifact_on_the_direct_path_when_histories_are_unrelated()
+    {
+        // Issue #647 follow-up (Must #2): the direct/non-pooled checkout path resolves its own merge base
+        // (unlike the two pooled paths, which get PreparedCheckout.MergeBase for free) but used to ignore the
+        // outcome entirely and let the subsequent diff fail into the generic "diff fetch failed" throw. That
+        // throw burns the run's retry budget re-discovering the same permanent fact forever. Bring this path to
+        // parity with the pooled paths: UnrelatedHistories must persist exactly one artifact carrying the
+        // uncomparable reason and no MergeBaseSha, not throw.
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            diffResult: new SandboxCommandResult(1, string.Empty, "fatal: no merge base")
+        );
+        fixture
+            .Runner.OnArgvContains(
+                "merge-base base-sha head-sha",
+                new SandboxCommandResult(1, string.Empty, string.Empty)
+            )
+            .OnArgvContains("is-shallow-repository", new SandboxCommandResult(0, "false\n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var root = JsonDocument.Parse(artifact.Payload).RootElement;
+        root.GetProperty("UncomparableReason")
+            .GetString()
+            .Should()
+            .Contain(
+                "share no common ancestor",
+                "the direct path must state the same permanent fact the pooled paths do"
+            );
+        root.TryGetProperty("MergeBaseSha", out _)
+            .Should()
+            .BeFalse("UnrelatedHistories never resolves a merge base commit, so none is persisted");
+        fixture
+            .Runner.Commands.Count(c => string.Join(' ', c.Argv).Contains("merge-base base-sha head-sha"))
+            .Should()
+            .Be(1, "the direct path must not re-resolve the merge base once UnrelatedHistories is established");
     }
 
     [Fact]

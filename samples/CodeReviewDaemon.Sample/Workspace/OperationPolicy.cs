@@ -51,12 +51,30 @@ internal sealed record PolicyDecision(PolicyOutcome Outcome, string Reason)
 /// may carry a query string (e.g. <c>/owner/repo.git/info/refs?service=git-upload-pack</c>) so git
 /// smart-HTTP can be classified.
 /// </summary>
+/// <param name="Operation">The classified operation this request performs.</param>
+/// <param name="Provider">Provider key (<c>github</c>/<c>ado</c>) this request was issued for.</param>
+/// <param name="Host">The request's target host.</param>
+/// <param name="Method">The request's HTTP method.</param>
+/// <param name="Path">The URL path component, optionally carrying a query string.</param>
+/// <param name="Body">
+/// The GraphQL request's <c>"query"</c> document text, when <paramref name="Path"/> is a GraphQL-shaped
+/// POST and the caller could read one — <c>null</c> for every other operation, and <c>null</c> (fail
+/// closed, never guessed) whenever the body could not be read/parsed. Optional and trailing so every
+/// existing call site that only ever evaluated transport shape keeps compiling unchanged.
+/// </param>
+/// <param name="GraphQlVariables">
+/// The <c>variables.owner</c>/<c>repo</c>/<c>number</c> parsed from the same GraphQL body, or
+/// <c>null</c> whenever any of them is missing, the wrong JSON type, or the body could not be read —
+/// fail closed, all-or-nothing, never a partially-populated guess.
+/// </param>
 internal sealed record OperationRequest(
     SandboxOperation Operation,
     string Provider,
     string Host,
     string Method,
-    string Path
+    string Path,
+    string? Body = null,
+    GitHubGraphQlRequestScope? GraphQlVariables = null
 );
 
 /// <summary>
@@ -91,6 +109,17 @@ internal sealed record ReviewScope(
     /// where the concrete repo route is not yet known).
     /// </summary>
     public string? ApiRepoPathPrefix { get; init; }
+
+    /// <summary>
+    /// This run's GitHub owner/repo identity: the GraphQL carve-out's configured boundary (see
+    /// <see cref="OperationPolicy.IsGitHubGraphQlMetadataRequest"/>) requires the request BODY's own
+    /// owner/repo to fall inside it — a request whose body names a DIFFERENT owner/repo is denied even if
+    /// it carries the exact safe query text. <c>null</c> for ADO runs, which have no GraphQL carve-out.
+    /// </summary>
+    public string? GraphQlOwner { get; init; }
+
+    /// <summary>See <see cref="GraphQlOwner"/>.</summary>
+    public string? GraphQlRepo { get; init; }
 
     /// <summary>
     /// The provider-API route roots outside <see cref="ApiRepoPathPrefix"/> this run may READ to establish
@@ -131,6 +160,13 @@ internal sealed record ReviewScope(
 /// </summary>
 internal sealed class OperationPolicy
 {
+    /// <summary>
+    /// GitHub's sole GraphQL endpoint. Every GraphQL request — reads included — is an HTTP POST, which is
+    /// why <see cref="SandboxOperation.ReadProviderMetadata"/>'s otherwise GET-only arm needs a named
+    /// exception for exactly this path rather than a blanket allowance for any POST.
+    /// </summary>
+    private const string GitHubGraphQlPath = "/graphql";
+
     private readonly ReviewScope _scope;
     private readonly bool _allowWriteOperations;
 
@@ -183,7 +219,12 @@ internal sealed class OperationPolicy
         // Scoped to the provider-API operations on purpose: git transport legitimately POSTs
         // (git-upload-pack is a POST), so a blanket method ban would break every fetch. The distinction is
         // the operation's ARM, not the host — on ADO the API host and the git host are the same name.
-        if (!_allowWriteOperations && IsProviderApiOperation(request.Operation) && IsMutatingMethod(request.Method))
+        if (
+            !_allowWriteOperations
+            && IsProviderApiOperation(request.Operation)
+            && IsMutatingMethod(request.Method)
+            && !IsGitHubGraphQlMetadataRequest(request)
+        )
         {
             return PolicyDecision.Deny(
                 $"this policy is collect-only and has no provider-API write capability; refusing "
@@ -217,12 +258,11 @@ internal sealed class OperationPolicy
                 ? PolicyDecision.Deny("this variant is collect-only and has no post capability")
                 : DecideApi(request, "POST", "post review comment", allowReadOnlyProjectRoutes: false),
 
-            SandboxOperation.ReadProviderMetadata => DecideApi(
-                request,
-                "GET",
-                "read provider metadata",
-                allowReadOnlyProjectRoutes: true
-            ),
+            // GitHub's linked-issues read (issue #647) is GraphQL, and GraphQL is POST by protocol — the
+            // one carved-out route the read-only arm still has to recognize as a read.
+            SandboxOperation.ReadProviderMetadata => IsGitHubGraphQlMetadataRequest(request)
+                ? PolicyDecision.Allow($"read provider metadata (GraphQL) on '{_scope.ApiHost}'")
+                : DecideApi(request, "GET", "read provider metadata", allowReadOnlyProjectRoutes: true),
 
             _ => PolicyDecision.Deny($"unknown operation '{request.Operation}'"),
         };
@@ -333,6 +373,51 @@ internal sealed class OperationPolicy
 
         return PolicyDecision.Deny($"submodule '{request.Host}{StripQuery(request.Path)}' is not on the allow-list");
     }
+
+    /// <summary>
+    /// Whether <paramref name="request"/> is a GraphQL POST this CONFIGURED policy's own owner/repo/read
+    /// boundary allows — a POST to <c>/graphql</c> on the run's API host, for the GitHub provider,
+    /// carrying exactly the reviewed-safe query document, whose body targets this policy's own
+    /// <see cref="ReviewScope.GraphQlOwner"/>/<see cref="ReviewScope.GraphQlRepo"/>.
+    /// <para>
+    /// This is a BOUNDARY check only and is deliberately NOT sufficient authority for GraphQL on its own:
+    /// this policy is shared/reused across every concurrent review of this repo, so it has no single run's
+    /// PR to bind. <see cref="OperationPolicyHandler"/> is the public seam — it never lets a GraphQL
+    /// request through on this boundary allow alone, and independently requires the client's own
+    /// constructor-bound canonical scope to match the request's body exactly (owner, repo, AND number)
+    /// before this policy is even consulted.
+    /// </para>
+    /// </summary>
+    private bool IsGitHubGraphQlMetadataRequest(OperationRequest request) =>
+        string.Equals(request.Provider, "github", StringComparison.Ordinal)
+        && HostMatches(request.Host, _scope.ApiHost)
+        && IsGraphQlPostCandidate(request.Method, request.Path)
+        && string.Equals(request.Body, GitHubGraphQlContract.Query, StringComparison.Ordinal)
+        && IsGraphQlBodyWithinConfiguredBoundary(request);
+
+    /// <summary>
+    /// Whether the body's own <c>variables.owner</c>/<c>repo</c> fall within this policy's allow-listed
+    /// scope, with a positive PR number. Body only — no comparison against a canonical scope, which this
+    /// policy never reads: that comparison is <see cref="OperationPolicyHandler"/>'s separate, mandatory,
+    /// constructor-bound gate.
+    /// </summary>
+    private bool IsGraphQlBodyWithinConfiguredBoundary(OperationRequest request) =>
+        request.GraphQlVariables is { } actual
+        && actual.Number > 0
+        && string.Equals(actual.Owner, _scope.GraphQlOwner, StringComparison.Ordinal)
+        && string.Equals(actual.Repo, _scope.GraphQlRepo, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The transport shape both <see cref="IsGitHubGraphQlMetadataRequest"/> and
+    /// <see cref="OperationPolicyHandler"/> key off to decide "is this worth reading the body for at all" —
+    /// a POST to <c>/graphql</c> (query string ignored). Shared so the two can never drift on what counts
+    /// as GraphQL-shaped: the handler uses it to gate a body read that would otherwise buffer every
+    /// outbound request regardless of operation, and this policy uses the identical check as one of the
+    /// four conditions the carve-out requires.
+    /// </summary>
+    internal static bool IsGraphQlPostCandidate(string method, string path) =>
+        string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(StripQuery(path), GitHubGraphQlPath, StringComparison.Ordinal);
 
     /// <summary>
     /// Evaluates a provider-API request. <paramref name="allowReadOnlyProjectRoutes"/> lets the run's

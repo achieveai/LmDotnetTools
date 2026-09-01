@@ -52,8 +52,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// shape as the <c>JudgeArtifactSchemaVersion</c> 1-to-2 bump, where a v1 row's absent value is
     /// permanently unknown rather than a zero.
     /// </para>
+    /// <para>
+    /// v3 adds <see cref="ContextArtifactPayload.MergeBaseSha"/> (issue #647) — the exact commit id
+    /// <see cref="MergeBaseResolver"/> resolved base...head against, threaded through on all three
+    /// construction sites so later diff-based anchor validation always diffs against the same base the
+    /// review itself used. Same append-compatible shape as v2: null and omitted on older rows, and a v2 row
+    /// carries no less information than it did before this field existed.
+    /// </para>
     /// </summary>
-    public const int ContextArtifactSchemaVersion = 2;
+    public const int ContextArtifactSchemaVersion = 3;
 
     /// <summary>Artifact kind for the primary review output.</summary>
     public const string ReviewArtifactKind = "review";
@@ -815,6 +822,43 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var (repo, provider) = ResolveRepo(run);
 
+        // Replay a same-identity re-entry of ContextReady (issue #647 §D) using only the existing artifact
+        // store — no new cache/table/outbox. Hoisted ahead of EVERY path (pooled, S2S host-prepared, and
+        // direct) so a same-base/head/schema replay never leases a slot, never runs a host prepare/checkout,
+        // and never re-resolves the merge base on any of them — not just the direct path this guard
+        // originally covered. The one reachable window is a crash (or stage-write race) between this
+        // method's own artifact-persisting call and the orchestrator's subsequent stage-state write: Stage
+        // is still ContextReady, but the checkout/diff/merge-base resolution already ran and its artifact
+        // already landed. Re-running any of that for a head/base/schema that has not moved would waste the
+        // work AND mint a new context generation (BuildLifecycleIdentity below), spuriously invalidating a
+        // Reviewed-stage checkpoint that is still valid for the diff it actually reviewed. A different
+        // head/base/schema — a genuine re-entry, e.g. a new push moving the run back to ContextReady — is
+        // NOT a replay and falls through to the normal path selection below, since the guard compares all
+        // three. A same-process re-entry while this run's slot is still leased here (_leasedReviews) is also
+        // safe: this guard returns before any lease is taken or released, so the existing lease is simply
+        // left untouched.
+        if (
+            _store.TryGetLatestArtifact(run.Id, ContextArtifactKind)
+                is { ArtifactSchemaVersion: ContextArtifactSchemaVersion } existingArtifact
+            && JsonSerializer.Deserialize<ContextArtifactPayload>(existingArtifact.Payload, PayloadOptions)
+                is { } existingContext
+            && existingContext.BaseSha == run.BaseSha
+            && existingContext.HeadSha == run.HeadSha
+        )
+        {
+            _logger.LogInformation(
+                "Run {RunId}: ContextReady re-entered at an unchanged base/head ({BaseSha}...{HeadSha}); reusing "
+                    + "the already-persisted {Kind} artifact {ArtifactId} instead of re-checking-out, re-diffing, "
+                    + "re-leasing or re-resolving the merge base.",
+                run.Id,
+                run.BaseSha,
+                run.HeadSha,
+                ContextArtifactKind,
+                existingArtifact.Id
+            );
+            return;
+        }
+
         // Pooled scoped-writable path (Layer 1): lease a warm slot, prepare it host-side (branch reuse
         // carries prior notes), diff the prepared submodule host-side, and persist the context. When the
         // reviewed repo is not a submodule of the store — or the pooled path isn't wired — this returns
@@ -888,6 +932,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var layout = await EnsureCheckoutAsync(git, fileSystem, policy, repo, provider, run, cancellationToken)
             .ConfigureAwait(false);
 
+        // Resolve the merge base ourselves on this path — unlike the two pooled paths (which get it for free
+        // from ReviewSlotPreparer.PrepareAsync), the direct/non-pooled checkout above never asks. Reuse
+        // MergeBaseResolver (not a bare `git merge-base`) so a shallow checkout that has not yet fetched the
+        // history it needs still gets the same deepen-retry ladder every other path relies on, rather than
+        // silently regressing to "no merge base" the moment this path's checkout happens to be shallow.
+        // enableObjectStoreMaintenance is omitted (defaults false), NOT because this executor has no such
+        // option — MergeBaseResolver's constructor takes one, and Program.cs threads
+        // daemonOptions.EnableObjectStoreMaintenance into it for both pooled paths (ReviewSlotPreparer). It is
+        // omitted here because EnsureCheckoutAsync above clones a fresh, per-run, non-slot checkout into
+        // TargetRoot that this run discards when it finishes: the option exists to maintain a SHARED object
+        // store across many runs' worth of fetches (the pool's slots), and there is no such store here to
+        // maintain — passing the daemon's configured value through would repack/gc a repo this method is
+        // about to throw away.
+        var mergeBase = await new MergeBaseResolver(git, _logger)
+            .ResolveAsync(layout.TargetDir, run, cancellationToken)
+            .ConfigureAwait(false);
+
         // Diff the reviewed repo — base...head — from wherever it was checked out, and persist the bounded
         // context artifact alongside the head file manifest (so the agent can Read files by exact path).
         var diff = await git.RunAsync(
@@ -896,17 +957,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 cancellationToken
             )
             .ConfigureAwait(false);
-        if (!diff.Succeeded)
-        {
-            throw new InvalidOperationException(
-                $"Fetching the diff for run {run.Id} failed (exit {diff.ExitCode}): {diff.Stderr}"
-            );
-        }
+        // Same rule the two pooled paths already follow: a failed diff only becomes a stated verdict when
+        // MergeBaseResolver proved UnrelatedHistories (a permanent fact about the commit pair); every other
+        // outcome still throws so the stage retries. This path resolves its own merge base above (the pooled
+        // paths get PreparedCheckout.MergeBase from ReviewSlotPreparer instead), so it must apply the same
+        // check rather than letting the diff failure fall through to a generic throw.
+        var uncomparableReason = diff.Succeeded ? null : DescribeUncomparableOrThrow(run, mergeBase.Outcome, diff);
 
-        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
+        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Succeeded ? diff.Stdout : string.Empty);
         var fileManifest = await BuildFileManifestAsync(git, layout.TargetDir, cancellationToken).ConfigureAwait(false);
-        var changedPaths = await BuildChangedPathsAsync(git, layout.TargetDir, run, cancellationToken)
-            .ConfigureAwait(false);
+        // Skipped rather than attempted-and-degraded when the commits are uncomparable — see the sibling sites
+        // in TryPooledFetchContextAsync/TryHostPreparedPooledContextAsync: the listing is the same symmetric
+        // difference and fails the same way.
+        var changedPaths = uncomparableReason is null
+            ? await BuildChangedPathsAsync(git, layout.TargetDir, run, cancellationToken).ConfigureAwait(false)
+            : string.Empty;
 
         _ = _store.AddArtifact(
             new ReviewArtifact
@@ -924,7 +989,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                         fileManifest,
                         layout.TargetDir,
                         layout.StoreRoot,
-                        changedPaths
+                        changedPaths,
+                        uncomparableReason,
+                        mergeBase.CommitId
                     )
                 ),
             }
@@ -1058,7 +1125,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     cancellationToken
                 )
                 .ConfigureAwait(false);
-            var uncomparableReason = diff.Succeeded ? null : DescribeUncomparableOrThrow(run, prepared, diff);
+            var uncomparableReason = diff.Succeeded ? null : DescribeUncomparableOrThrow(run, prepared.MergeBase, diff);
 
             var boundedDiff = _options.Limits.CapArtifactPayload(diff.Succeeded ? diff.Stdout : string.Empty);
             var fileManifest = await BuildFileManifestAsync(sdkGit, prepared.TargetDir, cancellationToken)
@@ -1088,7 +1155,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                             prepared.TargetDir,
                             StoreRoot,
                             changedPaths,
-                            uncomparableReason
+                            uncomparableReason,
+                            prepared.MergeBaseSha
                         )
                     ),
                 }
@@ -1199,7 +1267,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 cancellationToken
             )
             .ConfigureAwait(false);
-        var uncomparableReason = diff.Succeeded ? null : DescribeUncomparableOrThrow(run, prepared, diff);
+        var uncomparableReason = diff.Succeeded ? null : DescribeUncomparableOrThrow(run, prepared.MergeBase, diff);
 
         var boundedDiff = _options.Limits.CapArtifactPayload(diff.Succeeded ? diff.Stdout : string.Empty);
         var fileManifest = await BuildFileManifestAsync(hostGit, prepared.TargetDir, cancellationToken)
@@ -1228,7 +1296,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                         PosixJoin(StoreRoot, submoduleRelPath),
                         StoreRoot,
                         changedPaths,
-                        uncomparableReason
+                        uncomparableReason,
+                        prepared.MergeBaseSha
                     )
                 ),
             }
@@ -1822,9 +1891,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <exception cref="InvalidOperationException">On every merge-base outcome except
     /// <see cref="MergeBaseOutcome.UnrelatedHistories"/> — the diff failure is not (yet) known to be
     /// permanent, so it stays a failure and the stage retries.</exception>
-    private string DescribeUncomparableOrThrow(ReviewRun run, PreparedCheckout prepared, SandboxCommandResult diff)
+    private string DescribeUncomparableOrThrow(ReviewRun run, MergeBaseOutcome mergeBase, SandboxCommandResult diff)
     {
-        if (prepared.MergeBase != MergeBaseOutcome.UnrelatedHistories)
+        if (mergeBase != MergeBaseOutcome.UnrelatedHistories)
         {
             throw new InvalidOperationException(
                 $"Fetching the diff for run {run.Id} failed (exit {diff.ExitCode}): {diff.Stderr}"
@@ -1844,7 +1913,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             run.HeadSha,
             diff.ExitCode,
             FirstLine(diff.Stderr),
-            prepared.MergeBase
+            mergeBase
         );
 
         return $"`{run.BaseSha}` and `{run.HeadSha}` share no common ancestor. The daemon walked both "
@@ -4148,9 +4217,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// whichever slot this process leased, so after a restart the same run can be re-leased a slot holding a
     /// DIFFERENT PR — resuming the old conversation would then synthesize a review of the wrong tree. The
     /// modality flips with configuration, and an in-process checkpoint's thread id is a daemon-local
-    /// <c>review-run-*</c> string that no host would recognise. The context generation changes whenever the
-    /// ContextReady stage is re-entered, which is the documented rollback path: the diff the checkpointed
-    /// conversation reviewed is no longer the diff this run is about.
+    /// <c>review-run-*</c> string that no host would recognise. The context generation changes when the
+    /// ContextReady stage produces a genuinely NEW artifact — a real base/head move — because the diff the
+    /// checkpointed conversation reviewed is no longer the diff this run is about. A same-head re-entry of the
+    /// direct path (issue #647 §D) reuses the existing artifact instead of minting a new one, so the
+    /// generation correctly stays put: nothing about the diff changed, so no checkpoint should be invalidated.
     /// </para>
     /// </summary>
     private ReviewLifecycleIdentity BuildLifecycleIdentity(
@@ -5985,6 +6056,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 /// preparation established share no ancestor at all — and is omitted from the JSON entirely when null, so an
 /// ordinary artifact serializes to exactly the bytes it did before the property existed. It is what makes a
 /// v2 row distinguishable from a v1 one: see <c>DaemonReviewStageExecutor.ContextArtifactSchemaVersion</c>.
+/// </para>
+/// <para>
+/// <see cref="MergeBaseSha"/> (v3, issue #647) is the commit id <see cref="MergeBaseResolver"/> resolved
+/// base...head against on this run's checkout — populated on all three construction sites, including the
+/// direct/non-pooled path, which resolves it explicitly for this purpose (the pooled paths get it for free
+/// from <c>PreparedCheckout.MergeBaseSha</c>). Null and omitted from the JSON on any run whose merge base was
+/// not <see cref="MergeBaseOutcome.Resolved"/>, and on any artifact written before this field existed.
 /// </para></summary>
 internal sealed record ContextArtifactPayload(
     string PrId,
@@ -5995,7 +6073,8 @@ internal sealed record ContextArtifactPayload(
     string? CheckoutRoot = null,
     string? StoreRoot = null,
     string? ChangedPaths = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UncomparableReason = null
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UncomparableReason = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? MergeBaseSha = null
 );
 
 /// <summary>The persisted primary review output (kind <c>review</c>). <see cref="ThreadId"/> is the conversation
@@ -6073,9 +6152,11 @@ internal enum CommentFetchOutcome
 /// the SLOT this process leased, and slots are re-assigned from an in-memory pool that resets on restart — so
 /// the same run can come back holding a slot whose checkout is a different PR entirely. Resuming the old
 /// conversation there would synthesize a review of that other PR and post it here, silently.
-/// <see cref="ContextGeneration"/> is the id of the latest <c>review-context</c> artifact, which changes every
-/// time the ContextReady stage is re-entered: the documented rollback path, after which the checkpointed
-/// conversation is reviewing a diff this run is no longer about.
+/// <see cref="ContextGeneration"/> is the id of the latest <c>review-context</c> artifact, which changes
+/// only when the ContextReady stage mints a genuinely NEW artifact — a real base/head move — after which the
+/// checkpointed conversation is reviewing a diff this run is no longer about. A same-head re-entry (a
+/// crash/restart before the prior ContextReady attempt's artifact-then-state writes both landed) reuses that
+/// same artifact id rather than minting a new one, so a checkpoint built against it stays valid.
 /// </para>
 /// </summary>
 internal sealed record ReviewLifecycleIdentity(

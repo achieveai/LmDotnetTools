@@ -1375,6 +1375,9 @@ public sealed class ReviewSlotPreparerTests : IDisposable
                     + "not shallow has no more history to find — this is the one shape that is genuinely a fact "
                     + "about the pull request's commits"
             );
+        prepared
+            .MergeBaseSha.Should()
+            .BeNull("there is no merge base to name a commit id for when the histories are unrelated");
         logs.Capturing.MessagesAtLevel(LogLevel.Warning)
             .Should()
             .Contain(
@@ -1840,6 +1843,13 @@ public sealed class ReviewSlotPreparerTests : IDisposable
                 MergeBaseOutcome.Resolved,
                 "the deepening fetch brought base its ancestry, and the re-ask after the fetch is what observes it"
             );
+        prepared
+            .MergeBaseSha.Should()
+            .Be(
+                "d34db33f",
+                "the re-ask after deepening is the call that actually printed the commit id — the first, "
+                    + "pre-deepening attempt only ever answered exit 1 with no stdout to capture"
+            );
         runner
             .Commands.Select(c => string.Join(' ', c.Argv))
             .Should()
@@ -1891,6 +1901,48 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             .NotContain(
                 a => a.Contains("fetch --depth=", StringComparison.Ordinal),
                 "the question was already answered, so no history needed buying"
+            );
+    }
+
+    /// <summary>
+    /// Issue #647 — the merge-base commit id `git merge-base` printed must reach the returned checkout, not
+    /// just the fact that one was found. Reuses the "already reachable" fixture above, whose stdout is the
+    /// literal commit id "d34db33f".
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_ThreadsTheMergeBaseCommitIdWhenAlreadyReachable()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = new FakeSandboxCommandRunner().OnArgvContains(
+            $"-C {target} merge-base",
+            new SandboxCommandResult(0, "d34db33f\n", string.Empty)
+        );
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance
+        );
+
+        var prepared = await preparer.PrepareAsync(
+            slot,
+            run,
+            StoreUrl,
+            SubmoduleRelPath,
+            Branch,
+            DefaultBranch,
+            NotesRelPath,
+            BuildPolicy(),
+            CancellationToken.None
+        );
+
+        prepared
+            .MergeBaseSha.Should()
+            .Be(
+                "d34db33f",
+                "the diff site (and, eventually, the context artifact) needs the exact commit the merge base resolved to"
             );
     }
 

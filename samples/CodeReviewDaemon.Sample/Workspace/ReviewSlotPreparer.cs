@@ -9,13 +9,17 @@ namespace CodeReviewDaemon.Sample.Workspace;
 /// <c>base...head</c>, and defaults to <see cref="MergeBaseOutcome.Resolved"/> so a caller that never sets
 /// it keeps the pre-existing behaviour — the diff runs and a failure throws. That default is deliberately the
 /// loud one: an unset value can never cause a degraded verdict to be posted to a pull request.
+/// <see cref="MergeBaseSha"/> is the commit id the resolver found — populated only alongside
+/// <see cref="MergeBaseOutcome.Resolved"/> (issue #647: the context artifact records which commit the diff
+/// was actually taken against).
 /// </summary>
 internal sealed record PreparedCheckout(
     string StoreRoot,
     string TargetDir,
     string NotesDir,
     string Branch,
-    MergeBaseOutcome MergeBase = MergeBaseOutcome.Resolved
+    MergeBaseOutcome MergeBase = MergeBaseOutcome.Resolved,
+    string? MergeBaseSha = null
 );
 
 internal interface IReviewSlotPreparer
@@ -400,7 +404,14 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 .ConfigureAwait(false);
         }
 
-        return new PreparedCheckout(storeRoot, targetDir, PosixJoin(storeRoot, notesRelPath), branch, mergeBase);
+        return new PreparedCheckout(
+            storeRoot,
+            targetDir,
+            PosixJoin(storeRoot, notesRelPath),
+            branch,
+            mergeBase.Outcome,
+            mergeBase.CommitId
+        );
     }
 
     private async Task RunGitOrThrowAsync(
