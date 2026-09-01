@@ -477,6 +477,38 @@ public sealed class OperationPolicyTests
     }
 
     [Fact]
+    public void ReadProviderMetadata_denies_a_graphql_carve_out_request_aimed_at_a_mismatched_host()
+    {
+        // Same provider/method/path as the legitimate carve-out (github, POST, "/graphql") but a host that
+        // is NOT CreatePolicy's own ApiHost ("api.github.com") — the carve-out must key off the run's
+        // scoped API host, not off "github provider + graphql path" alone, or a compromised/misdirected
+        // request could ride the carve-out to an attacker-controlled endpoint. Write capability is left ON
+        // so the request reaches ReadProviderMetadata's own host check instead of being pre-empted by the
+        // collect-only write gate — isolating the host predicate this test exists to pin.
+        var policy = CreatePolicy();
+        var mismatchedHostRequest = new OperationRequest(
+            SandboxOperation.ReadProviderMetadata,
+            "github",
+            "evil.example.com",
+            "POST",
+            "/graphql"
+        );
+
+        var decision = policy.Decide(mismatchedHostRequest);
+
+        decision.IsAllowed.Should().BeFalse("the carve-out is scoped to the run's own API host");
+        decision
+            .Reason.Should()
+            .Contain("api.github.com", "the denial should name the host the carve-out actually requires");
+
+        // Fail-closed both ways (plan §4): a request the carve-out denies must never get a credential either.
+        policy
+            .ShouldInjectCredential(mismatchedHostRequest)
+            .Should()
+            .BeFalse("a denied request must never receive a credential");
+    }
+
+    [Fact]
     public async Task RealPolicy_allows_the_exact_request_GitHubIssueContextReader_emits_for_a_collect_only_run()
     {
         // Issue #647 Section C — proves the ACTUAL request GitHubIssueContextReader emits (not a

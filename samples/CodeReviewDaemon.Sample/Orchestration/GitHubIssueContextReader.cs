@@ -225,6 +225,11 @@ internal sealed class GitHubIssueContextReader
             var hasNextPage = true;
             var seenCursors = new HashSet<string>(StringComparer.Ordinal);
             var pageRequestCount = 0;
+            // Stable dedup identity (issue #647 item 7): the same (repository, number) issue can legitimately
+            // repeat across — or within — a page (GitHub re-surfacing it after a page-boundary edit, or a
+            // non-conformant server). Keyed on the pair rather than NodeId alone so two DIFFERENT repositories
+            // that happen to share an issue number are never folded together.
+            var seenIssueKeys = new Dictionary<(string Repository, int Number), string>();
 
             while (hasNextPage)
             {
@@ -283,6 +288,30 @@ internal sealed class GitHubIssueContextReader
 
                 foreach (var node in page.Nodes)
                 {
+                    var issueKey = (node.Repository, node.Number);
+                    if (seenIssueKeys.TryGetValue(issueKey, out var seenNodeId))
+                    {
+                        if (!string.Equals(seenNodeId, node.NodeId, StringComparison.Ordinal))
+                        {
+                            // Same (repository, number) but a different GraphQL node id — an identity
+                            // disagreement nothing here can resolve. Fail honestly rather than silently
+                            // keeping whichever occurrence happened to be seen first.
+                            _logger.LogDebug(
+                                "GitHub linked-issue {Repository}#{Number} for PR {PrId} was reported with two "
+                                    + "different GraphQL node ids; the brief will say the lookup failed.",
+                                node.Repository,
+                                node.Number,
+                                prId
+                            );
+                            return GitHubIssueContext.Failed;
+                        }
+
+                        // An exact repeat of an issue already recorded — folded into the one entry already
+                        // held, and (deliberately) never counted against the cap: a duplicate-heavy page
+                        // must not starve room for a genuinely new issue later in the walk.
+                        continue;
+                    }
+
                     if (issues.Count >= MaxIssues)
                     {
                         // The cap was already full before this node — something in THIS page is still
@@ -292,6 +321,7 @@ internal sealed class GitHubIssueContextReader
                         break;
                     }
 
+                    seenIssueKeys[issueKey] = node.NodeId;
                     issues.Add(node);
                 }
 

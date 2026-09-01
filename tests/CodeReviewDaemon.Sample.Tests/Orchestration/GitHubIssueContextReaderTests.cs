@@ -466,6 +466,91 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ReadAsync_folds_a_cross_page_repeat_of_the_same_issue_into_one_entry_without_consuming_the_cap()
+    {
+        // Issue #647 item 7: a duplicate-heavy first page (here, MaxIssues copies of the SAME issue) must
+        // fold to one entry AND must not be allowed to look "full" — the walk still has to reach the second
+        // page's genuinely new issue instead of truncating on nothing but repeats.
+        var duplicateNodes = Enumerable
+            .Range(0, GitHubIssueContextReader.MaxIssues)
+            .Select(_ => IssueNode(1))
+            .ToArray();
+        var page1 = GraphQlResponse(duplicateNodes, hasNextPage: true, endCursor: "cursor-1");
+        var page2 = GraphQlResponse([IssueNode(2)], hasNextPage: false, endCursor: null);
+
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => IsGraphQlPost(req) && RequestBody(req).Contains("\"after\":null", StringComparison.Ordinal),
+                _ => JsonResponse(page1)
+            )
+            .On(
+                req => IsGraphQlPost(req) && RequestBody(req).Contains("cursor-1", StringComparison.Ordinal),
+                _ => JsonResponse(page2)
+            );
+
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Linked);
+        result.Truncated.Should().BeFalse("MaxIssues copies of the same issue must not consume the cap");
+        result.Issues.Select(i => i.Number).Should().BeEquivalentTo([1, 2], o => o.WithStrictOrdering());
+        handler
+            .CountRequests("/graphql")
+            .Should()
+            .Be(2, "a duplicate-filled first page must not look full, so the walk must still fetch the next page");
+    }
+
+    [Fact]
+    public async Task ReadAsync_returns_Failed_when_the_same_repository_and_number_disagree_on_node_id()
+    {
+        // Same (repository, number) pair reported with two different GraphQL node ids is an identity
+        // disagreement nothing here can resolve — Failed is the only honest outcome, never a silent pick.
+        var body = GraphQlResponse(
+            [IssueNode(1, id: "I_1"), IssueNode(1, id: "I_1_different")],
+            hasNextPage: false,
+            endCursor: null
+        );
+        var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
+
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Failed);
+    }
+
+    [Fact]
+    public async Task ReadAsync_does_not_collapse_the_same_issue_number_across_different_repositories()
+    {
+        // The dedup key is (repository, number), not number alone — two repositories that happen to share an
+        // issue number are two distinct issues, not a duplicate.
+        var body = GraphQlResponse(
+            [IssueNode(1, repo: "acme/widgets", id: "I_1"), IssueNode(1, repo: "acme/gadgets", id: "I_1_other")],
+            hasNextPage: false,
+            endCursor: null
+        );
+        var handler = new FakeHttpMessageHandler().On(IsGraphQlPost, _ => JsonResponse(body));
+
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Linked);
+        result.Issues.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ReadAsync_reports_Failed_for_an_operationcanceledexception_not_tied_to_the_callers_own_token()
+    {
+        // An internal timeout (e.g. an HttpClient-owned linked CTS) can surface as OperationCanceledException
+        // even though the caller's own token was never cancelled. Only the caller's OWN token being cancelled
+        // means "the review was abandoned" (see the sibling test above); anything else is a failed attempt.
+        var handler = new FakeHttpMessageHandler().On(
+            IsGraphQlPost,
+            _ => throw new OperationCanceledException("unrelated internal timeout")
+        );
+
+        var result = await Reader(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Failed, "the caller's own token was never cancelled");
+    }
+
+    [Fact]
     public async Task ReadAsync_sets_Truncated_when_the_cap_is_reached_with_more_pages_still_pending()
     {
         // MaxIssues == 2 * PageSize: two full pages exactly fill the cap while the server still reports

@@ -341,6 +341,66 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ContextReady_does_not_reuse_the_persisted_artifact_for_a_different_base()
+    {
+        // Issue #647 §D, the negative case: a different base is a real change to review (e.g. main advanced
+        // and the run was rebased/re-targeted), not a replay — the same-base/head reuse guard must NOT fire,
+        // and a fresh context artifact carrying the new base must be minted rather than the stale one being
+        // handed back.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var rolledOntoNewBase = run with { BaseSha = "base-sha-2" };
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, rolledOntoNewBase, CancellationToken.None);
+
+        var artifacts = ArtifactsOf(fixture, run, DaemonReviewStageExecutor.ContextArtifactKind).ToList();
+        artifacts.Should().HaveCount(2, "a different base must mint a new context artifact, not reuse the old one");
+        JsonDocument
+            .Parse(artifacts[^1].Payload)
+            .RootElement.GetProperty("BaseSha")
+            .GetString()
+            .Should()
+            .Be("base-sha-2", "the newest artifact must reflect the new base, not the stale one");
+    }
+
+    [Fact]
+    public async Task ContextReady_does_not_reuse_a_persisted_artifact_at_an_old_schema_version()
+    {
+        // Issue #647 §D: the replay guard also gates on schema version — an artifact written before a schema
+        // bump (e.g. before MergeBaseSha existed) must not be handed back as current just because base/head
+        // are unchanged, since a resumed Reviewed checkpoint would then read fields the old row never
+        // populated. The guard must mint a fresh, current-schema artifact instead of reusing it.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+        _ = fixture.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ContextArtifactSchemaVersion - 1,
+                ArtifactKind = DaemonReviewStageExecutor.ContextArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new ContextArtifactPayload(run.PrId, run.BaseSha, run.HeadSha, "stale diff")
+                ),
+            }
+        );
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifacts = ArtifactsOf(fixture, run, DaemonReviewStageExecutor.ContextArtifactKind).ToList();
+        artifacts
+            .Should()
+            .HaveCount(2, "an old-schema artifact must not be reused; a fresh one is minted alongside it");
+        artifacts[^1]
+            .ArtifactSchemaVersion.Should()
+            .Be(
+                DaemonReviewStageExecutor.ContextArtifactSchemaVersion,
+                "the freshly-minted artifact must be at the current schema version"
+            );
+    }
+
+    [Fact]
     public async Task ContextReady_checks_out_the_pr_head_so_reads_reflect_the_proposed_code()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);

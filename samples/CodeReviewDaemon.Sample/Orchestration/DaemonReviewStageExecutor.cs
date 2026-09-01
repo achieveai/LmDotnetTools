@@ -822,6 +822,43 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var (repo, provider) = ResolveRepo(run);
 
+        // Replay a same-identity re-entry of ContextReady (issue #647 §D) using only the existing artifact
+        // store — no new cache/table/outbox. Hoisted ahead of EVERY path (pooled, S2S host-prepared, and
+        // direct) so a same-base/head/schema replay never leases a slot, never runs a host prepare/checkout,
+        // and never re-resolves the merge base on any of them — not just the direct path this guard
+        // originally covered. The one reachable window is a crash (or stage-write race) between this
+        // method's own artifact-persisting call and the orchestrator's subsequent stage-state write: Stage
+        // is still ContextReady, but the checkout/diff/merge-base resolution already ran and its artifact
+        // already landed. Re-running any of that for a head/base/schema that has not moved would waste the
+        // work AND mint a new context generation (BuildLifecycleIdentity below), spuriously invalidating a
+        // Reviewed-stage checkpoint that is still valid for the diff it actually reviewed. A different
+        // head/base/schema — a genuine re-entry, e.g. a new push moving the run back to ContextReady — is
+        // NOT a replay and falls through to the normal path selection below, since the guard compares all
+        // three. A same-process re-entry while this run's slot is still leased here (_leasedReviews) is also
+        // safe: this guard returns before any lease is taken or released, so the existing lease is simply
+        // left untouched.
+        if (
+            _store.TryGetLatestArtifact(run.Id, ContextArtifactKind)
+                is { ArtifactSchemaVersion: ContextArtifactSchemaVersion } existingArtifact
+            && JsonSerializer.Deserialize<ContextArtifactPayload>(existingArtifact.Payload, PayloadOptions)
+                is { } existingContext
+            && existingContext.BaseSha == run.BaseSha
+            && existingContext.HeadSha == run.HeadSha
+        )
+        {
+            _logger.LogInformation(
+                "Run {RunId}: ContextReady re-entered at an unchanged base/head ({BaseSha}...{HeadSha}); reusing "
+                    + "the already-persisted {Kind} artifact {ArtifactId} instead of re-checking-out, re-diffing, "
+                    + "re-leasing or re-resolving the merge base.",
+                run.Id,
+                run.BaseSha,
+                run.HeadSha,
+                ContextArtifactKind,
+                existingArtifact.Id
+            );
+            return;
+        }
+
         // Pooled scoped-writable path (Layer 1): lease a warm slot, prepare it host-side (branch reuse
         // carries prior notes), diff the prepared submodule host-side, and persist the context. When the
         // reviewed repo is not a submodule of the store — or the pooled path isn't wired — this returns
@@ -874,39 +911,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     + "— it will not fall back to an unmanaged per-PR host clone and LmStreaming workspace, which is "
                     + "never cleaned up."
             );
-        }
-
-        // Replay a same-head re-entry of the direct (non-pooled) path (issue #647 §D) using only the existing
-        // artifact store — no new cache/table/outbox. The one reachable window is a crash between this method's
-        // own AddArtifact below and the orchestrator's subsequent stage-state write: Stage is still ContextReady,
-        // but the checkout/diff/merge-base resolution already ran and its artifact already landed. Re-running any
-        // of that for a head/base that has not moved would waste the work AND mint a new context generation
-        // (BuildLifecycleIdentity below), spuriously invalidating a Reviewed-stage checkpoint that is still valid
-        // for the diff it actually reviewed. A different head/base — a genuine re-entry, e.g. a new push moving
-        // the run back to ContextReady — is NOT a replay and falls through unchanged, since the guard compares
-        // both shas. Scoped to this direct path only: the pooled path's own resume-safety (re-lease when
-        // _leasedReviews lacks this run, see TryPooledFetchContextAsync's call sites) already answers the same
-        // question for a live slot, which an artifact alone cannot stand in for.
-        if (
-            _store.TryGetLatestArtifact(run.Id, ContextArtifactKind)
-                is { ArtifactSchemaVersion: ContextArtifactSchemaVersion } existingArtifact
-            && JsonSerializer.Deserialize<ContextArtifactPayload>(existingArtifact.Payload, PayloadOptions)
-                is { } existingContext
-            && existingContext.BaseSha == run.BaseSha
-            && existingContext.HeadSha == run.HeadSha
-        )
-        {
-            _logger.LogInformation(
-                "Run {RunId}: ContextReady re-entered at an unchanged base/head ({BaseSha}...{HeadSha}); reusing "
-                    + "the already-persisted {Kind} artifact {ArtifactId} instead of re-checking-out, re-diffing "
-                    + "or re-resolving the merge base.",
-                run.Id,
-                run.BaseSha,
-                run.HeadSha,
-                ContextArtifactKind,
-                existingArtifact.Id
-            );
-            return;
         }
 
         var (runner, fileSystem) = await ResolveSandboxAsync(run, cancellationToken).ConfigureAwait(false);
