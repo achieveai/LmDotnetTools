@@ -205,6 +205,42 @@ public sealed class FindingsPersistenceTests
     }
 
     /// <summary>
+    /// The mirror of the test above: when the specialist finding cites the SECOND of two duplicate-titled
+    /// shipped items, its persisted <see cref="ReconciledFinding.ShippedIndex"/> must come back as 1 — not
+    /// 0 (the first item's index) and not null (the "never tracked" sentinel). A round trip that silently
+    /// re-resolved the citation to the first same-titled item, or dropped the index entirely, would read
+    /// identically to a correct one unless this exact position is asserted.
+    /// </summary>
+    [Fact]
+    public void A_freshly_built_payload_round_trips_shipped_index_for_the_second_duplicate_shipped_title()
+    {
+        var sources = new[]
+        {
+            new ReviewFindingSource("reviewer-1", "template-1", "#### [LOW] widget\nsrc/Zeta.cs:99\n"),
+        };
+        // Two DISTINCT shipped items share a title; only the SECOND is cited by the specialist finding, so
+        // its ShippedIndex must come back as 1 — never 0 (the first item's position) and never null.
+        var shippedBody = "#### [LOW] widget\nsrc/Foo.cs:10\n\n#### [LOW] widget\nsrc/Zeta.cs:99\n";
+
+        var reconciled = ReviewFindingReconciler.Reconcile(sources, shippedBody);
+        var built = ReviewFindingsArtifactPayload.Build(
+            1,
+            sources,
+            reconciled,
+            compared: true,
+            promptTemplateHash: null
+        );
+
+        var json = JsonSerializer.Serialize(built);
+        var roundTripped = JsonSerializer.Deserialize<ReviewFindingsArtifactPayload>(json);
+
+        roundTripped.Should().NotBeNull();
+        var row = roundTripped!.Findings.Should().ContainSingle().Subject;
+        row.ShippedTitle.Should().Be("[LOW] widget");
+        row.ShippedIndex.Should().Be(1, "the second shipped item is the one that shares the citation");
+    }
+
+    /// <summary>
     /// The other half of F-001: a freshly built (schema-v2-shaped) payload round-trips its real scores —
     /// including a genuine measured zero on a dropped row — rather than losing them to the same nullable
     /// fields that carry "unknown" for legacy data.
