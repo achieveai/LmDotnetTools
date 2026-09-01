@@ -18,7 +18,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class OperationPolicyTests
 {
-    private static OperationPolicy CreatePolicy(bool allowWriteOperations = true) =>
+    private static OperationPolicy CreatePolicy(bool allowWriteOperations = true, int? graphQlPrNumber = null) =>
         new(
             new ReviewScope(
                 Provider: "github",
@@ -34,6 +34,7 @@ public sealed class OperationPolicyTests
             {
                 GraphQlOwner = "acme",
                 GraphQlRepo = "widgets",
+                GraphQlPrNumber = graphQlPrNumber,
             },
             allowWriteOperations
         );
@@ -399,8 +400,9 @@ public sealed class OperationPolicyTests
         // POSTs by protocol. A collect-only (B) variant must still be able to run this READ, or issue
         // #647 becomes unavailable in exactly the run where the daemon most needs a second opinion.
         // Body must carry the one reviewed-safe document exactly — the carve-out is document-gated, not
-        // shape-gated alone (issue #647 follow-up, MUST #1).
-        var collectOnly = CreatePolicy(allowWriteOperations: false);
+        // shape-gated alone (issue #647 follow-up, MUST #1). GraphQlPrNumber is bound to match
+        // ScopedTarget's PR (issue #666 second correction: an unbound PR number now denies outright).
+        var collectOnly = CreatePolicy(allowWriteOperations: false, graphQlPrNumber: 7);
 
         var decision = collectOnly.Decide(
             new OperationRequest(
@@ -887,7 +889,10 @@ public sealed class OperationPolicyTests
             expectedScope
         );
 
-        var collectOnly = CreatePolicy(allowWriteOperations: false);
+        // Issue #666 second correction: bound to the SAME PR number (7) the reader actually requested —
+        // an unbound PR number now denies GraphQL outright, and this test evaluates the policy directly
+        // (not through OperationPolicyHandler's per-request override).
+        var collectOnly = CreatePolicy(allowWriteOperations: false, graphQlPrNumber: 7);
         var decision = collectOnly.Decide(operationRequest);
 
         decision

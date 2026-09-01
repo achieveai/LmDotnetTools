@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
+using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging;
@@ -24,7 +25,7 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
     public OperationPolicyHandlerTests(ITestOutputHelper output)
         : base(output) { }
 
-    private static OperationPolicy CreateGitHubPolicy(bool allowWriteOperations = true) =>
+    private static OperationPolicy CreateGitHubPolicy(bool allowWriteOperations = true, int? graphQlPrNumber = null) =>
         new(
             new ReviewScope(
                 Provider: "github",
@@ -40,6 +41,7 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
             {
                 GraphQlOwner = "acme",
                 GraphQlRepo = "widgets",
+                GraphQlPrNumber = graphQlPrNumber,
             },
             allowWriteOperations
         );
@@ -167,7 +169,8 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
         // Issue #647 follow-up (MUST #1): a collect-only policy carves out exactly one GraphQL document.
         // Reading the body to make that decision must not consume or alter it — the inner handler must
         // still see the FULL original envelope, "query" and "variables" both (body-preservation pin).
-        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false));
+        // GraphQlPrNumber must be bound (issue #666 second correction) or GraphQL denies outright.
+        var (client, inner) = BuildClient(CreateGitHubPolicy(allowWriteOperations: false, graphQlPrNumber: 7));
 
         var requestBody = JsonSerializer.Serialize(
             new
@@ -655,5 +658,111 @@ public sealed class OperationPolicyHandlerTests : LoggingTestBase
             length = 0;
             return false;
         }
+    }
+
+    private static readonly RepoIdentity AcmeWidgetsRepo = new()
+    {
+        Provider = "github",
+        OrgOrOwner = "acme",
+        RepoName = "widgets",
+        RepoStableId = "R_node_1",
+    };
+
+    /// <summary>Builds a GraphQL request shaped exactly like <c>GitHubIssueContextReader.FetchPageAsync</c>'s
+    /// own output: a tag and a self-consistent body naming <paramref name="prNumber"/>.</summary>
+    private static HttpRequestMessage BuildGraphQlRequest(int prNumber)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "https://api.github.com/graphql")
+            .WithOperation(SandboxOperation.ReadProviderMetadata)
+            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope("acme", "widgets", prNumber));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret-token");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(
+                new
+                {
+                    query = GitHubIssueContextReader.Query,
+                    variables = new
+                    {
+                        owner = "acme",
+                        repo = "widgets",
+                        number = prNumber,
+                        pageSize = 20,
+                        after = (string?)null,
+                    },
+                }
+            ),
+            Encoding.UTF8,
+            "application/json"
+        );
+        return request;
+    }
+
+    [Fact]
+    public async Task SendAsync_denies_a_same_repo_wrong_pr_graphql_request_when_no_override_is_present()
+    {
+        // Issue #666 second correction: the shared, PR-agnostic policy PolicyEnforcedHttpClientFactory
+        // builds once at process startup (no prNumber) must deny GraphQL outright, not merely leave the PR
+        // number unconstrained — otherwise any future caller that tags scope but forgets a per-request
+        // override would still get a wrong-PR request through.
+        var sharedPolicy = DaemonOperationPolicy.BuildForRun(
+            AcmeWidgetsRepo,
+            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git"
+        );
+        var (client, inner) = BuildClient(sharedPolicy);
+
+        using var request = BuildGraphQlRequest(prNumber: 99);
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task SendAsync_denies_a_per_request_policy_override_whose_pr_number_does_not_match_the_request()
+    {
+        // The override's PR number is itself mandatory-checked, not just present: bound to PR 7, a request
+        // tagged/bodied for PR 99 is denied even though the override (not the shared policy) is what's
+        // being evaluated.
+        var sharedPolicy = DaemonOperationPolicy.BuildForRun(
+            AcmeWidgetsRepo,
+            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git"
+        );
+        var (client, inner) = BuildClient(sharedPolicy);
+        var runPolicy = DaemonOperationPolicy.BuildForRun(
+            AcmeWidgetsRepo,
+            reviewBotRepoUrl: null,
+            allowWriteOperations: false,
+            prNumber: 7
+        );
+
+        using var request = BuildGraphQlRequest(prNumber: 99);
+        request.WithPolicyOverride(runPolicy);
+
+        await AssertDeniedAndNeverReachedTheInnerHandlerAsync(client, request, inner);
+    }
+
+    [Fact]
+    public async Task SendAsync_allows_a_per_request_policy_override_whose_pr_number_matches_the_request()
+    {
+        // The override's happy path: when the request's own (tag, body) genuinely matches the number the
+        // override was built for, the same real SendAsync path allows it and keeps the credential.
+        var sharedPolicy = DaemonOperationPolicy.BuildForRun(
+            AcmeWidgetsRepo,
+            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git"
+        );
+        var (client, inner) = BuildClient(sharedPolicy);
+        var runPolicy = DaemonOperationPolicy.BuildForRun(
+            AcmeWidgetsRepo,
+            reviewBotRepoUrl: null,
+            allowWriteOperations: false,
+            prNumber: 7
+        );
+
+        using var request = BuildGraphQlRequest(prNumber: 7);
+        request.WithPolicyOverride(runPolicy);
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        inner.Requests.Should().ContainSingle();
+        inner.Requests[0].Authorization.Should().Be("Bearer secret-token");
     }
 }

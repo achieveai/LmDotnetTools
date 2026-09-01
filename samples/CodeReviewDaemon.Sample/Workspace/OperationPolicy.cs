@@ -132,6 +132,17 @@ internal sealed record ReviewScope(
     public string? GraphQlRepo { get; init; }
 
     /// <summary>
+    /// This run's own PR number. GraphQL is allowed ONLY when this is bound AND matches the request's
+    /// expected scope tag (issue #666 review) — <c>null</c> denies every GraphQL request outright, rather
+    /// than leaving the PR number unconstrained. This is deliberate: the shared, per-provider policies
+    /// <see cref="PolicyEnforcedHttpClientFactory"/> builds once at process startup have no single run's PR
+    /// number to name, so they must never grant GraphQL on their own — only a per-run policy that binds its
+    /// own <c>prNumber</c> (via a per-request override, see <see cref="OperationPolicyOverrideTagging"/>)
+    /// can.
+    /// </summary>
+    public int? GraphQlPrNumber { get; init; }
+
+    /// <summary>
     /// The provider-API route roots outside <see cref="ApiRepoPathPrefix"/> this run may READ to establish
     /// what its PR was ASKED to do (ADO: the work-item batch route, walked up the
     /// <c>System.LinkTypes.Hierarchy-Reverse</c> chain to the Epic). Empty for GitHub, whose linked issues
@@ -423,10 +434,12 @@ internal sealed class OperationPolicy
     /// <summary>
     /// Whether the request's expected GraphQL scope tag (set by the one trusted caller,
     /// <c>GitHubIssueContextReader.FetchPageAsync</c>) is present, matches the <c>variables</c> the body
-    /// actually carries, and matches this run's allow-listed owner/repo. Every conjunct is Ordinal — a
-    /// case-different owner/repo is a DIFFERENT GitHub identity, not the same one spelled differently —
-    /// and any missing piece (no tag, unparseable body, non-positive PR number) collapses to deny rather
-    /// than a best-effort match.
+    /// actually carries, matches this run's allow-listed owner/repo, AND matches this policy's own bound
+    /// <see cref="ReviewScope.GraphQlPrNumber"/>. Every conjunct is mandatory: a <c>null</c>
+    /// <see cref="ReviewScope.GraphQlPrNumber"/> denies GraphQL outright rather than leaving the PR number
+    /// unconstrained (issue #666 review, second correction) — the shared, per-provider policies built once
+    /// at process startup have no single run's PR number to bind, so they must never grant GraphQL on their
+    /// own; only a per-run/per-request policy override that names its own PR can.
     /// </summary>
     private bool IsGraphQlVariablesInScope(OperationRequest request) =>
         request.ExpectedGraphQlScope is { } expected
@@ -436,7 +449,9 @@ internal sealed class OperationPolicy
         && string.Equals(expected.Repo, actual.Repo, StringComparison.Ordinal)
         && expected.Number == actual.Number
         && string.Equals(expected.Owner, _scope.GraphQlOwner, StringComparison.Ordinal)
-        && string.Equals(expected.Repo, _scope.GraphQlRepo, StringComparison.Ordinal);
+        && string.Equals(expected.Repo, _scope.GraphQlRepo, StringComparison.Ordinal)
+        && _scope.GraphQlPrNumber is { } scopedPrNumber
+        && scopedPrNumber == expected.Number;
 
     /// <summary>
     /// The transport shape both <see cref="IsGitHubGraphQlMetadataRequest"/> and

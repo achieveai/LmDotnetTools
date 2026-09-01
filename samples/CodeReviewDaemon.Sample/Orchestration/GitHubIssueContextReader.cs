@@ -396,9 +396,20 @@ internal sealed class GitHubIssueContextReader
         };
         var requestBody = JsonSerializer.Serialize(new { query = Query, variables });
 
+        // Every request this reader sends is bound, per call, to the exact (repo, number) it was asked to
+        // fetch via a fresh OperationPolicy — not the shared/DI-singleton policy list the reader's own
+        // HttpClient may otherwise carry, which is built once per provider at process startup and has no
+        // single run's PR number to name (issue #666 review).
+        var callPolicy = DaemonOperationPolicy.BuildForRun(
+            repo,
+            reviewBotRepoUrl: null,
+            allowWriteOperations: false,
+            prNumber: number
+        );
         using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GraphQlUrl)
             .WithOperation(SandboxOperation.ReadProviderMetadata)
-            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope(repo.OrgOrOwner, repo.RepoName, number));
+            .WithGitHubGraphQlScope(new GitHubGraphQlRequestScope(repo.OrgOrOwner, repo.RepoName, number))
+            .WithPolicyOverride(callPolicy);
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken).ConfigureAwait(false);
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
         httpRequest.Headers.UserAgent.ParseAdd(UserAgent);

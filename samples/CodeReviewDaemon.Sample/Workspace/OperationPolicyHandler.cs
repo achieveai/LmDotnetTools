@@ -50,6 +50,35 @@ internal static class OperationRequestTagging
 }
 
 /// <summary>
+/// Tags an <see cref="HttpRequestMessage"/> with an <see cref="OperationPolicy"/> that evaluates THIS
+/// request in place of the shared, DI-singleton <see cref="OperationPolicyHandler"/>'s policy list (issue
+/// #666 review). <see cref="PolicyEnforcedHttpClientFactory"/> builds one policy per allow-listed repo at
+/// process startup, bound to no single run's PR number; a caller that knows its own PR (built via
+/// <see cref="DaemonOperationPolicy.BuildForRun"/> with a <c>prNumber</c>) tags the request with that
+/// policy instead, per-call — no shared/instance state is written, so concurrent runs never race or leak.
+/// </summary>
+internal static class OperationPolicyOverrideTagging
+{
+    private static readonly HttpRequestOptionsKey<OperationPolicy> PolicyOverrideKey = new("crd.policy-override");
+
+    /// <summary>Tags <paramref name="request"/> with <paramref name="policy"/> and returns it (fluent).</summary>
+    public static HttpRequestMessage WithPolicyOverride(this HttpRequestMessage request, OperationPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(policy);
+        request.Options.Set(PolicyOverrideKey, policy);
+        return request;
+    }
+
+    /// <summary>Reads the policy-override tag, or <c>null</c> when the request was never tagged with one.</summary>
+    public static OperationPolicy? GetPolicyOverride(this HttpRequestMessage request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return request.Options.TryGetValue(PolicyOverrideKey, out var policy) ? policy : null;
+    }
+}
+
+/// <summary>
 /// The daemon's outbound HTTP enforcement seam (plan §4). Every provider-API request the daemon issues
 /// (post a review comment, read PR/repo metadata) flows through this <see cref="DelegatingHandler"/>,
 /// which classifies it via the request's <see cref="SandboxOperation"/> tag and evaluates it against the
@@ -154,10 +183,17 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
             expectedGraphQlScope
         );
 
+        // A per-request policy override (issue #666 review) replaces the whole evaluation set for THIS
+        // request only, in favor of a caller that knows its own run's PR number. No shared/instance state
+        // is read or written to make this substitution.
+        IReadOnlyList<OperationPolicy> policies = request.GetPolicyOverride() is { } overridePolicy
+            ? [overridePolicy]
+            : _policies;
+
         // Allow when ANY allow-listed repo's policy both permits AND would inject the credential; deny
         // only when every policy denies. Both halves of the fail-closed-both-ways guarantee are required.
         PolicyDecision? lastDeny = null;
-        foreach (var policy in _policies)
+        foreach (var policy in policies)
         {
             var decision = policy.Decide(operationRequest);
             if (decision.IsAllowed && policy.ShouldInjectCredential(operationRequest))
@@ -171,7 +207,7 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
         // No policy permitted the request. Withhold the credential the moment it is denied, then block egress.
         request.Headers.Authorization = null;
         var reason =
-            _policies.Count == 0
+            policies.Count == 0
                 ? "no repository is allow-listed for this provider"
                 : lastDeny?.Reason ?? "denied by every per-repo policy";
         _logger.LogWarning(

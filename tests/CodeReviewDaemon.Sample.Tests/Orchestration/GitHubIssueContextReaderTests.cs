@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging;
 using Xunit.Abstractions;
 
@@ -56,6 +57,33 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
             LoggerFactory.CreateLogger<GitHubIssueContextReader>()
         );
+
+    /// <summary>
+    /// Builds the reader wired through the REAL <see cref="OperationPolicyHandler"/> — production shape,
+    /// carrying the same repo-only shared policy <see cref="PolicyEnforcedHttpClientFactory"/> builds at
+    /// process startup (no <c>prNumber</c>). Proves the reader's per-call policy override (issue #666
+    /// review) integrates with the real enforcement seam end to end, not just against a bare fake handler.
+    /// </summary>
+    private GitHubIssueContextReader ReaderThroughRealPolicyHandler(FakeHttpMessageHandler innerHandler)
+    {
+        var sharedProductionShapedPolicy = DaemonOperationPolicy.BuildForRun(
+            Repo,
+            reviewBotRepoUrl: "https://github.com/acme/reviewbot.git"
+        );
+        var policyHandler = new OperationPolicyHandler(
+            sharedProductionShapedPolicy,
+            "github",
+            LoggerFactory.CreateLogger<OperationPolicyHandler>()
+        )
+        {
+            InnerHandler = innerHandler,
+        };
+        return new GitHubIssueContextReader(
+            new HttpClient(policyHandler),
+            new FakeOAuthTokenProvider("github", "gh-token-xyz"),
+            LoggerFactory.CreateLogger<GitHubIssueContextReader>()
+        );
+    }
 
     /// <summary>Reads the outgoing GraphQL request body synchronously — the handler already buffered it
     /// (it is a fully-materialized <see cref="StringContent"/>), so re-reading here cannot deadlock or
@@ -133,6 +161,29 @@ public sealed class GitHubIssueContextReaderTests : LoggingTestBase
                 },
             }
         );
+
+    /// <summary>
+    /// Production-path integration proof (issue #666 review, MUST #2): the reader, wired through the REAL
+    /// <see cref="OperationPolicyHandler"/> carrying the same repo-only shared policy production builds,
+    /// still completes a successful read with the credential intact — the per-call override this reader
+    /// attaches (built from its own <c>(repo, number)</c>) both survives the real enforcement seam and
+    /// narrows it, without breaking the reader's own request/response contract.
+    /// </summary>
+    [Fact]
+    public async Task ReadAsync_completes_successfully_through_the_real_OperationPolicyHandler_with_its_per_call_policy_override()
+    {
+        var handler = new FakeHttpMessageHandler().On(
+            IsGraphQlPost,
+            _ => JsonResponse(GraphQlResponse([IssueNode(1)], hasNextPage: false, endCursor: null))
+        );
+
+        var result = await ReaderThroughRealPolicyHandler(handler).ReadAsync(Repo, "7", CancellationToken.None);
+
+        result.Outcome.Should().Be(GitHubIssueLookup.Linked);
+        result.Issues.Should().ContainSingle();
+        handler.Requests.Should().ContainSingle();
+        handler.Requests[0].Authorization.Should().Be("Bearer gh-token-xyz");
+    }
 
     [Fact]
     public async Task ReadAsync_returns_Unavailable_for_a_non_github_repo_and_makes_no_request()
