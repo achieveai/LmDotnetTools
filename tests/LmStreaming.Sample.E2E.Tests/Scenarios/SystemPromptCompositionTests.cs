@@ -413,9 +413,9 @@ public sealed class SystemPromptCompositionTests
                 .CallCount.Should()
                 .BeGreaterThan(
                     0,
-                    "Program.cs's agent factory validates the workspace's marketplace selection "
-                        + "through WorkspaceCatalogCompatibilityService before establishing the "
-                        + "sandbox session, so the fake catalog client must actually be consulted"
+                    "the fake catalog client must be consulted through the production DI graph (via "
+                        + "WorkspaceCatalogCompatibilityService validation and/or "
+                        + "MarketplaceSubAgentLoader), not silently bypassed"
                 );
         }
         finally
