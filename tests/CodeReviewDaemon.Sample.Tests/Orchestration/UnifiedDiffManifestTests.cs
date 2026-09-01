@@ -679,4 +679,127 @@ public sealed class UnifiedDiffManifestTests
         hunk.OldRange.Count.Should().Be(2);
         hunk.NewRange.Count.Should().Be(0);
     }
+
+    [Fact]
+    public void HunkHeader_NonEmptyOldRangeStartingAtLineZero_IsRejected()
+    {
+        // F-001 residual: unified-diff line numbers are 1-based, so a non-empty old-side range (count > 0)
+        // starting at line 0 is malformed. The body below is deliberately built to reconcile exactly against
+        // the declared counts (F-005 would accept it), isolating that rejection here comes from the
+        // start-0 check specifically, not from a declared/consumed mismatch.
+        const string diff = """
+            diff --git a/src/OldZero.cs b/src/OldZero.cs
+            --- a/src/OldZero.cs
+            +++ b/src/OldZero.cs
+            @@ -0,2 +1,2 @@
+             context1
+             context2
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.Hunks.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void HunkHeader_NonEmptyNewRangeStartingAtLineZero_IsRejected()
+    {
+        // Mirror of the old-side case: the new-side range is the one that is non-empty and zero-started.
+        const string diff = """
+            diff --git a/src/NewZero.cs b/src/NewZero.cs
+            --- a/src/NewZero.cs
+            +++ b/src/NewZero.cs
+            @@ -1,2 +0,2 @@
+             context1
+             context2
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.Hunks.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void HunkHeader_ImplicitCountOneStartingAtLineZero_IsRejected()
+    {
+        // A header with no explicit ",count" defaults to count 1 (git omits the count when it is 1) — still
+        // a non-empty range, so a zero start must be rejected exactly as it would be with an explicit count.
+        const string diff = """
+            diff --git a/src/ImplicitZero.cs b/src/ImplicitZero.cs
+            --- a/src/ImplicitZero.cs
+            +++ b/src/ImplicitZero.cs
+            @@ -0 +1 @@
+            +line1
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        file.Hunks.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RejectedHunkHeader_QuarantinesBodySoMarkerLikeLinesCannotForgeFileIdentityAndLaterHunkStaysAttributed()
+    {
+        // F-004: a hunk header that is syntactically shaped ("@@ ... @@" matches) but numerically rejected —
+        // here, a non-empty old-range starting at line 0, the same F-001 residual fixed above — leaves no
+        // active HunkBuilder for its body to fall into. Without quarantining that body, "--- "/"+++ "-shaped
+        // content is exactly what a citation-verifying caller must not be able to smuggle: it would be read
+        // as a genuine file-header pair (the same class of collision the F-002 fix guards against once a
+        // hunk IS active) and silently retarget the file this manifest attributes everything else to.
+        const string diff = """
+            diff --git a/src/Real.cs b/src/Real.cs
+            --- a/src/Real.cs
+            +++ b/src/Real.cs
+            @@ -0,2 +1,2 @@
+            --- forged/Old.cs
+            +++ forged/New.cs
+            @@ -1,1 +1,1 @@
+            -old
+            +new
+            """;
+
+        var file = UnifiedDiffParser.Parse(diff).Files.Single();
+
+        // The genuine "--- "/"+++ " pair from before the rejected hunk must survive its quarantined body.
+        file.Path.Should().Be("src/Real.cs");
+        file.OldPath.Should().BeNull();
+
+        // Only the well-formed trailing hunk parses, and it is attributed to the correct (unforged) file —
+        // the citation-attribution guarantee a downstream verifier relies on.
+        var hunk = file.Hunks.Should().ContainSingle().Subject;
+        hunk.HunkId.Should().Be("v1:src/Real.cs:1,1->1,1");
+        hunk.DeletedLines.Should().ContainSingle().Which.Text.Should().Be("old");
+    }
+
+    [Fact]
+    public void RejectedHunkHeader_QuarantineDoesNotLeakAcrossAFileBoundary()
+    {
+        // The quarantine flag is per-hunk-header, not per-file: a rejected header with no subsequent valid
+        // hunk in the SAME file must not suppress genuine "--- "/"+++ " recognition for the NEXT file's
+        // header, once a "diff --git" boundary is crossed.
+        const string diff = """
+            diff --git a/src/A.cs b/src/A.cs
+            --- a/src/A.cs
+            +++ b/src/A.cs
+            @@ -0,1 +1,1 @@
+            --- forged/path
+            diff --git a/src/B.cs b/src/B.cs
+            --- a/src/B.cs
+            +++ b/src/B.cs
+            @@ -1,1 +1,1 @@
+            -old
+            +new
+            """;
+
+        var manifest = UnifiedDiffParser.Parse(diff);
+
+        var fileA = manifest.Files[0];
+        fileA.Path.Should().Be("src/A.cs");
+        fileA.Hunks.Should().BeEmpty();
+
+        var fileB = manifest.Files[1];
+        fileB.Path.Should().Be("src/B.cs");
+        var hunk = fileB.Hunks.Should().ContainSingle().Subject;
+        hunk.HunkId.Should().Be("v1:src/B.cs:1,1->1,1");
+    }
 }

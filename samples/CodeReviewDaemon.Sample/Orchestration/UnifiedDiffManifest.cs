@@ -254,6 +254,15 @@ internal static partial class UnifiedDiffParser
         FileBuilder? file = null;
         HunkBuilder? hunk = null;
 
+        // Set when a hunk header line was recognised (syntactically shaped, `HunkHeader()` matched) but its
+        // coordinates were numerically invalid and the header itself was rejected — see the header-match
+        // block below (F-004). While this is true, `hunk` is null for a different reason than "no hunk has
+        // started yet": the rejected header's own body is still coming and must not be read as a fresh
+        // file-header pair (see the `--- `/`+++ ` gate below). Cleared on the next file boundary or the next
+        // hunk header line, valid or not — at that point either a new hunk has legitimately started, or a
+        // new rejected header has already replaced whatever this one flagged.
+        var hunkHeaderRejected = false;
+
         void FlushHunk()
         {
             if (file is null || hunk is null)
@@ -293,6 +302,7 @@ internal static partial class UnifiedDiffParser
             {
                 FlushFile();
                 file = new FileBuilder();
+                hunkHeaderRejected = false;
 
                 // Fallback path source for the one case nothing else provides one: a binary file, or a pure
                 // 100%-similarity rename/copy, both of which git renders with no "--- "/"+++ " pair at all.
@@ -369,7 +379,16 @@ internal static partial class UnifiedDiffParser
             // unconditionally would drop that line from the hunk and could stomp the file's path (F-002) —
             // so file-header recognition is restricted to the pre-hunk state, and once a hunk has started
             // these markers fall through to the hunk-body switch below like any other line.
-            if (hunk is null && line.StartsWith("--- ", StringComparison.Ordinal))
+            //
+            // ALSO gated on `!hunkHeaderRejected`: a rejected hunk header's body is exactly as capable of
+            // carrying marker-like content, but there is no active `HunkBuilder` for it to fall through into
+            // — `hunk` is null for that quarantined body too. Without this second gate, a body line here
+            // would still read as a genuine "--- "/"+++ " file-header pair and mutate `file.Path`/`OldPath`,
+            // letting a syntactically-shaped-but-numerically-rejected header forge citation attribution
+            // for whatever file the parser reads next (F-004). Once flagged, this quarantined body is
+            // skipped like any other unrecognised pre-hunk line, all the way to the next file boundary or
+            // the next hunk header (which clears the flag either way).
+            if (hunk is null && !hunkHeaderRejected && line.StartsWith("--- ", StringComparison.Ordinal))
             {
                 var path = ParseDiffPath(line, "--- ");
                 if (path is null)
@@ -384,7 +403,7 @@ internal static partial class UnifiedDiffParser
                 continue;
             }
 
-            if (hunk is null && line.StartsWith("+++ ", StringComparison.Ordinal))
+            if (hunk is null && !hunkHeaderRejected && line.StartsWith("+++ ", StringComparison.Ordinal))
             {
                 var path = ParseDiffPath(line, "+++ ");
                 if (path is null)
@@ -405,11 +424,13 @@ internal static partial class UnifiedDiffParser
                 FlushHunk();
 
                 // A hunk header's coordinates are matched by \d+ — unbounded digit runs, not bounded ints —
-                // so a malformed or adversarial diff can present a number `int.Parse` throws on (overflow)
-                // long before it could ever describe a real file. Reject such a header the same way any
-                // other line this parser does not recognise is rejected: skip it, do not throw (F-001).
-                // `hunk` stays null, so this header's body lines fall into the "no active hunk" branch below
-                // and are skipped too, rather than being attributed to whatever hunk preceded them.
+                // so a malformed or adversarial diff can present a number `int.Parse` throws on (overflow),
+                // a non-1-based start, or a declared/consumed mismatch long before it could ever describe a
+                // real file. Reject such a header the same way any other line this parser does not
+                // recognise is rejected: skip it, do not throw (F-001). `hunk` stays null, and
+                // `hunkHeaderRejected` is set so this header's own body — which can itself contain
+                // marker-like content — is quarantined rather than being read as a new file header or
+                // attributed to whatever hunk preceded it (F-004).
                 if (
                     TryParseHunkRange(
                         headerMatch.Groups["oldStart"].Value,
@@ -424,6 +445,11 @@ internal static partial class UnifiedDiffParser
                 )
                 {
                     hunk = new HunkBuilder(oldRange, newRange, headerMatch.Groups["heading"].Value.Trim());
+                    hunkHeaderRejected = false;
+                }
+                else
+                {
+                    hunkHeaderRejected = true;
                 }
 
                 continue;
@@ -497,7 +523,11 @@ internal static partial class UnifiedDiffParser
     /// and the range it would describe are validated before a <see cref="LineRange"/> is built: a digit run
     /// too long for <see cref="int"/> fails <see cref="int.TryParse(string,NumberStyles,IFormatProvider,out int)"/>
     /// rather than throwing, and a start/count pair whose <see cref="LineRange.End"/> would overflow
-    /// <see cref="int"/> is rejected outright rather than silently wrapping.
+    /// <see cref="int"/> is rejected outright rather than silently wrapping. Unified-diff line numbers are
+    /// 1-based, so a non-empty range (<c>count &gt; 0</c>) that starts at line 0 is also rejected here — that
+    /// combination cannot describe a real pre-/post-image span and would otherwise resolve as line-zero
+    /// citation evidence. The one legitimate zero-start case, a count-0 anchor (e.g. <c>-0,0</c> on a brand
+    /// new file's old side), is preserved: the check below only fires when <c>count &gt; 0</c> (F-001 residual).
     /// </summary>
     private static bool TryParseHunkRange(string startText, Group countGroup, out LineRange range)
     {
@@ -510,6 +540,11 @@ internal static partial class UnifiedDiffParser
 
         var count = 1;
         if (countGroup.Success && (!TryParseBoundedInt(countGroup.Value, out count) || count < 0))
+        {
+            return false;
+        }
+
+        if (count > 0 && start == 0)
         {
             return false;
         }
