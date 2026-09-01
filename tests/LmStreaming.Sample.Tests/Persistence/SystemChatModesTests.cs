@@ -428,6 +428,48 @@ public class SystemChatModesTests
         fragment.Should().NotContain("Consult KnowledgeBase/ when prior project knowledge could change the review");
     }
 
+    /// <summary>
+    /// PR #660 Revobot F-001: the block/exact-path source is not limited to the daemon (a direct or
+    /// copied invocation of this mode goes through this identical <c>mode.SystemPrompt</c> text -
+    /// there is no separate daemon-composed variant), and the absence-of-supplied-paths rule must
+    /// never harden into a claim that the Knowledge Base itself is unavailable - only prescribe not
+    /// looking for one, which is already what the action-only wording above says.
+    /// </summary>
+    [Fact]
+    public void CodeReviewDaemonMode_PrimaryPrompt_KnowledgeBaseRuleIsSourceAgnosticAndDrawsNoExistenceConclusion()
+    {
+        var mode = SystemChatModes.GetById(SystemChatModes.CodeReviewDaemonModeId)!;
+        var prompt = Normalize(mode.SystemPrompt);
+
+        prompt
+            .Should()
+            .Contain(
+                "the daemon, your input, or a task brief supplies",
+                "the block/exact-path source is not daemon-only, so a direct or copied invocation can supply it too"
+            );
+        prompt.Should().NotContain("there is no Knowledge Base", "the reusable prompt must not conclude non-existence");
+        prompt.Should().NotContain("has no Knowledge Base", "the reusable prompt must not conclude non-existence");
+        prompt
+            .Should()
+            .NotContain("the Knowledge Base does not exist", "the reusable prompt must not conclude non-existence");
+    }
+
+    /// <summary>
+    /// Twin of the primary-prompt pin above for the child copy.
+    /// </summary>
+    [Fact]
+    public void CodeReviewDaemonMode_ChildFragment_KnowledgeBaseRuleDrawsNoExistenceConclusion()
+    {
+        var mode = SystemChatModes.GetById(SystemChatModes.CodeReviewDaemonModeId)!;
+        var fragment = Normalize(mode.SubAgentPrompt!);
+
+        fragment.Should().NotContain("there is no Knowledge Base", "the child copy must not conclude non-existence");
+        fragment.Should().NotContain("has no Knowledge Base", "the child copy must not conclude non-existence");
+        fragment
+            .Should()
+            .NotContain("the Knowledge Base does not exist", "the child copy must not conclude non-existence");
+    }
+
     [Fact]
     public void CodeReviewDaemonMode_KnowledgeBaseNavigation_IsReviewModeOnly()
     {

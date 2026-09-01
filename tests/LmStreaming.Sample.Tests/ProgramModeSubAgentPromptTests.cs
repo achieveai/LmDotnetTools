@@ -11,6 +11,21 @@ namespace LmStreaming.Sample.Tests;
 /// (<c>SubAgentManager</c>'s spawn path), so asserting on the templates the composition root
 /// produces IS asserting on the prompt every spawned sub-agent runs with.
 /// </summary>
+/// <remarks>
+/// PR #660 Revobot F-003 (Consider): these tests stop at the folded template rather than an actual
+/// child outbound request. Verified, not assumed - the pass-through from here to the wire has zero
+/// transformation at every hop: <c>SubAgentManager.cs:3077</c> passes <c>template.SystemPrompt</c>
+/// verbatim as the <c>systemPrompt:</c> argument into <c>new MultiTurnAgentLoop(...)</c> (the sole
+/// call site, confirmed by grep); <c>MultiTurnAgentBase</c> stores it unchanged in its
+/// <c>SystemPrompt</c> property (set once, in its constructor); and
+/// <c>GetMessagesWithSystemPrompt()</c> wraps it byte-for-byte into the outbound
+/// <c>new TextMessage { Text = SystemPrompt, Role = Role.System }</c> - the literal system message
+/// every turn sends to the provider. Because every one of those hops is a verbatim pass-through
+/// with no other code path into it, asserting on the folded template already IS asserting on the
+/// delivered child prompt; a scripted-provider capture test would exercise this same fact through
+/// more machinery for no additional coverage, so this class intentionally stops here rather than
+/// adding one.
+/// </remarks>
 public sealed class ProgramModeSubAgentPromptTests
 {
     private const string Fragment = "Mode-wide sub-agent expectations.";
