@@ -2770,6 +2770,35 @@ public sealed class SubAgentManager : IAsyncDisposable
             modelOverride = null;
         }
 
+        // A calling LLM commonly re-states its OWN (parent) model id as the explicit `model` argument
+        // while ALSO supplying `modelIntelligence` for a tier it actually wants honored — the model id is
+        // the one thing the LLM already knows about itself, so it fills the field rather than leaving it
+        // blank. Spawn-model has the strongest precedence (see BuildRouting), so left as-is this
+        // redundant self-reference silently overrides the requested tier and any template tier/model
+        // choice, which is exactly how every high-judgment template ended up running on the primary
+        // agent's own (mechanical-tier) model. Only clear the override when a tier was ALSO requested:
+        // that is the signal the model id is redundant filler rather than a deliberate "run this one on
+        // my own model" choice, which a same-as-parent override with no tier still expresses and this
+        // must not disturb. Comparison is case-insensitive, matching the tolerant handling already used
+        // for template-name resolution (see TryResolveTemplateName).
+        if (
+            !string.IsNullOrWhiteSpace(modelOverride)
+            && modelIntelligence is not null
+            && !string.IsNullOrWhiteSpace(_parentModelId)
+            && string.Equals(modelOverride, _parentModelId, StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            _logger.LogDebug(
+                "Sub-agent {AgentId} requested model override {ModelOverride} equal to the parent's own "
+                    + "model alongside tier {ModelIntelligence}; treating the override as a redundant "
+                    + "self-reference and resolving via spawn-tier/template instead",
+                agentId,
+                modelOverride,
+                modelIntelligence
+            );
+            modelOverride = null;
+        }
+
         // A per-spawn model-intelligence tier resolves to a concrete model ONLY when the spawn set no
         // explicit model override (an explicit model always wins over a tier) AND the host supplied a
         // tier resolver. The resolved id is then fed into option resolution as if it were the requested

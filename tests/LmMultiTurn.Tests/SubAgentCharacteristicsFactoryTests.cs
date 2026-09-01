@@ -799,6 +799,187 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
             );
     }
 
+    // ---- Redundant self-referential explicit model normalization (Luna-only child routing defect) ----
+    // A calling LLM commonly restates its OWN (parent) model id as the explicit `model` argument while
+    // ALSO supplying `modelIntelligence` for a tier it actually wants honored — the model id is the one
+    // thing the LLM already knows about itself, so it fills the field rather than leaving it blank.
+    // Spawn-model has the strongest precedence, so left as-is this redundant self-reference silently
+    // overrode the requested tier and any template tier/model choice — the defect that made every child of
+    // a review conversation resolve to the primary agent's own (mechanical-tier) model regardless of the
+    // tier it authored. Only a same-as-parent override supplied ALONGSIDE a tier is redundant filler; a
+    // same-as-parent override with no tier still expresses a deliberate "run this one on my own model"
+    // choice and a genuinely different override always wins outright.
+
+    [Fact]
+    public async Task SpawnAsync_ExplicitModelEqualToParentWithTier_NormalizesToSpawnTier()
+    {
+        // The restated override is Luna, same as the parent, but the requested tier maps to a DIFFERENT
+        // model — the override must be treated as filler, not a deliberate choice, so the tier wins.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "gpt-5.6-luna",
+            tierModelResolver: tier => tier == 5 ? "gpt-5.6-sol" : null
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "gpt-5.6-luna", modelIntelligence: 5);
+
+        receivedCharacteristics!
+            .ModelId.Should()
+            .Be("gpt-5.6-sol", "the restated parent model is filler, so the requested tier must win");
+        receivedCharacteristics.IsModelTierResolved.Should().BeTrue();
+        receivedCharacteristics.IsModelExplicitlySelected.Should().BeFalse();
+
+        var snapshot = manager.ListAgents().Should().ContainSingle().Subject;
+        snapshot
+            .ModelSelectionSource.Should()
+            .Be("spawn-tier", "the redundant self-reference must not shadow the requested tier");
+        snapshot.EffectiveModelIntelligence.Should().Be(5);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ExplicitModelEqualToParentWithMechanicalTier_StillResolvesMechanicalModel()
+    {
+        // Guards against the opposite regression once the primary agent's own default is a high-tier
+        // model: a mechanical-tier request must still resolve to the mechanical model, proving this
+        // normalization does not make every child inherit the (now stronger) primary model.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "gpt-5.6-sol",
+            tierModelResolver: tier => tier == 1 ? "gpt-5.6-luna" : null
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "gpt-5.6-sol", modelIntelligence: 1);
+
+        receivedCharacteristics!
+            .ModelId.Should()
+            .Be("gpt-5.6-luna", "a mechanical tier must resolve to the mechanical model, not the parent");
+
+        manager.ListAgents().Should().ContainSingle().Subject.ModelSelectionSource.Should().Be("spawn-tier");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ExplicitDifferentModelWithTier_StillOutranksTheTier()
+    {
+        // A genuinely different explicit model must still win outright: normalization only applies when
+        // the override equals the parent's own model. The tier resolver must not even be consulted, since
+        // an explicit model always short-circuits tier resolution regardless of this normalization.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var resolverCalls = 0;
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "gpt-5.6-luna",
+            tierModelResolver: _ =>
+            {
+                resolverCalls++;
+                return "gpt-5.6-terra";
+            }
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "gpt-5.6-sol", modelIntelligence: 5);
+
+        resolverCalls.Should().Be(0, "an explicit non-self-referential model still short-circuits tier resolution");
+        receivedCharacteristics!.ModelId.Should().Be("gpt-5.6-sol");
+        receivedCharacteristics.IsModelExplicitlySelected.Should().BeTrue();
+
+        manager.ListAgents().Should().ContainSingle().Subject.ModelSelectionSource.Should().Be("spawn-model");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ExplicitModelEqualToParentWithNoTier_RemainsAnHonoredSpawnModel()
+    {
+        // With no modelIntelligence supplied there is no tier to defer to: a same-as-parent explicit
+        // override still expresses "run this one on my own model" and must be honored as spawn-model,
+        // exactly as before this normalization existed.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(template, parentModelId: "gpt-5.6-luna");
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "gpt-5.6-luna");
+
+        receivedCharacteristics!.ModelId.Should().Be("gpt-5.6-luna");
+        receivedCharacteristics.IsModelExplicitlySelected.Should().BeTrue();
+
+        manager.ListAgents().Should().ContainSingle().Subject.ModelSelectionSource.Should().Be("spawn-model");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ExplicitModelCaseVariantOfParentWithTier_StillNormalizes()
+    {
+        // Model ids are compared case-insensitively, matching the tolerant handling already used
+        // elsewhere in this manager, so a differently-cased restatement of the parent's own model must
+        // normalize exactly like an exact-case one.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "gpt-5.6-luna",
+            tierModelResolver: tier => tier == 5 ? "gpt-5.6-sol" : null
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "GPT-5.6-LUNA", modelIntelligence: 5);
+
+        receivedCharacteristics!
+            .ModelId.Should()
+            .Be("gpt-5.6-sol", "a case-variant restatement of the parent model is still redundant filler");
+
+        manager.ListAgents().Should().ContainSingle().Subject.ModelSelectionSource.Should().Be("spawn-tier");
+    }
+
     private SubAgentManager CreateManager(
         SubAgentTemplate template,
         string? parentModelId = null,
