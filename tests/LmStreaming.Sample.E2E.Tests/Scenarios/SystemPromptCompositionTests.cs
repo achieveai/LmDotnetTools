@@ -3,10 +3,13 @@ using System.Net;
 using System.Net.Http.Json;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using FluentAssertions;
 using LmStreaming.Sample.E2E.Tests.Infrastructure;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Services;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -283,8 +286,12 @@ public sealed class SystemPromptCompositionTests
     /// id (see <c>Program.cs</c>), so the copy takes the sandbox branch exactly like the original —
     /// proving the call site is reachable for any sandbox-capable mode, not merely a hard-coded id.
     /// </remarks>
-    [Fact]
-    public async Task SandboxCapableModeCopy_StillReceivesTheWorkspaceSuffix_ThroughTheRealAgentFactory()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SandboxCapableModeCopy_StillReceivesTheWorkspaceSuffix_ThroughTheRealAgentFactory(
+        bool restrictSandboxTools
+    )
     {
         // Isolated user-mode store so CopyModeAsync's write does not touch the shared production
         // chat-modes.json path (see ModeCapabilitiesCloneTests for the same precedent).
@@ -293,6 +300,9 @@ public sealed class SystemPromptCompositionTests
             Path.GetTempPath(),
             "lmstreaming-f004-secrets-" + Guid.NewGuid().ToString("N")
         );
+        // Started inside the try below and torn down in the outer finally; declared out here (nullable,
+        // disposed-guarded) because a WebApplicationFactory/WebSocket failure must still tear this down.
+        WebApplication? mcpApp = null;
         try
         {
             string? promptTheModelReceived = null;
@@ -315,10 +325,34 @@ public sealed class SystemPromptCompositionTests
                 "F-004 sandbox-capable copy"
             );
             copiedMode.Id.Should().NotBe(LmStreaming.Sample.Persistence.SystemChatModes.CodeReviewDaemonModeId);
+            if (restrictSandboxTools)
+            {
+                copiedMode = await chatModeStore.UpdateModeAsync(
+                    copiedMode.Id,
+                    new ChatModeCreateUpdate
+                    {
+                        Name = copiedMode.Name,
+                        Description = copiedMode.Description,
+                        SystemPrompt = copiedMode.SystemPrompt,
+                        EnabledTools = copiedMode.EnabledTools,
+                        EnabledBuiltInTools = copiedMode.EnabledBuiltInTools,
+                        EnabledCapabilityTools =
+                        [
+                            .. copiedMode.EnabledCapabilityTools!.Where(tool =>
+                                tool != ToolGroups.Wildcard(ToolGroups.Sandbox)
+                            ),
+                            ToolGroups.Qualify(ToolGroups.Sandbox, "Read"),
+                        ],
+                        SubAgentPrompt = copiedMode.SubAgentPrompt,
+                        SubAgentPromptPlacement = copiedMode.SubAgentPromptPlacement,
+                        SubAgentRequiredTools = copiedMode.SubAgentRequiredTools,
+                    }
+                );
+            }
 
             var gatewayOptions = new SandboxGatewayOptions
             {
-                BaseUrl = "http://127.0.0.1:3000",
+                BaseUrl = "http://127.0.0.1:39917",
                 WorkspaceBasePath = null,
                 Workspace = "default-leaf",
             };
@@ -356,6 +390,19 @@ public sealed class SystemPromptCompositionTests
             // (or both) having run.
             var catalogClient = new StubMarketplaceCatalogClient();
 
+            // The real agent factory's sandbox branch also opens a SEPARATE real TCP connection for
+            // the MCP TOOL transport (Program.ConnectHttpMcpClient/ConnectFilteredHttpMcpClient,
+            // `{GatewayBaseUrl}/mcp`) — independent of the lifecycle HTTP surface stubbed above via
+            // StubSandboxGatewayHandler. A real gateway is exactly what CI does not have, so without a
+            // seam here the connector fails, sandboxClients.Count is 0, and Program.cs's degraded-mode
+            // branch overwrites the workspace suffix — the exact non-hermetic failure this test exists
+            // to avoid. Host a REAL, spec-compliant, zero-function-provider MCP server on
+            // Microsoft.AspNetCore.TestHost (genuinely zero sockets, not a real loopback port) and wire
+            // its in-memory HttpMessageHandler through Program.SandboxMcpTransportHandlerKey — an
+            // inert-by-default keyed-DI seam (see its doc comment in Program.cs) that only this test
+            // activates.
+            (mcpApp, var mcpTransportHandler) = await StartInMemoryMcpServerAsync();
+
             var builder = new ScriptedBuilder(responder.AsAnthropicHandler());
             using var factory = new E2EWebAppFactory(
                 "test-anthropic",
@@ -370,6 +417,10 @@ public sealed class SystemPromptCompositionTests
                     services.AddSingleton(sandboxRegistry);
                     services.RemoveAll<IMarketplaceCatalogClient>();
                     services.AddSingleton<IMarketplaceCatalogClient>(catalogClient);
+                    services.AddKeyedSingleton<HttpMessageHandler>(
+                        Program.SandboxMcpTransportHandlerKey,
+                        mcpTransportHandler
+                    );
                 }
             );
 
@@ -420,6 +471,14 @@ public sealed class SystemPromptCompositionTests
         }
         finally
         {
+            // The E2EWebAppFactory (and its WebSocket client) are `using`-scoped inside the try above,
+            // so they are already torn down by the time this runs — safe to stop the in-memory MCP
+            // server after them.
+            if (mcpApp is not null)
+            {
+                await mcpApp.DisposeAsync();
+            }
+
             // Best-effort temp cleanup (same idiom as ModeCapabilitiesCloneTests.Dispose) — a leftover
             // temp directory must never mask whatever the assertions above already reported.
             foreach (var dir in new[] { modeStoreDir, secretStoreDir })
@@ -437,6 +496,38 @@ public sealed class SystemPromptCompositionTests
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Boots a REAL, spec-compliant MCP server (<c>ModelContextProtocol.AspNetCore</c> via
+    /// <c>AchieveAi.LmDotnetTools.McpServer.AspNetCore</c>'s <c>AddMcpServerFromFunctionProviders</c> +
+    /// <c>MapMcpFunctionProviders</c>) on <see cref="Microsoft.AspNetCore.TestHost.TestServer"/> instead
+    /// of Kestrel — genuinely zero sockets, satisfying "in-memory/stubbed MCP endpoint (no real TCP)"
+    /// while still exercising the real MCP SDK handshake (<c>initialize</c> + <c>tools/list</c>), not a
+    /// hand-rolled fake. Zero <c>IFunctionProvider</c>s are registered: confirmed (via
+    /// <c>FunctionProviderMcpAdapter.AddMcpServerHandlers</c>) that this yields a valid, spec-compliant
+    /// empty <c>ListToolsResult</c> rather than an error — this test only needs the transport to
+    /// complete a real handshake, not to expose any sandbox tool.
+    /// </summary>
+    /// <returns>
+    /// The started <see cref="WebApplication"/> (caller must <c>DisposeAsync</c> it) and an
+    /// <see cref="HttpMessageHandler"/> that routes directly into it in-memory — register this under
+    /// <c>Program.SandboxMcpTransportHandlerKey</c> for <c>ConnectHttpMcpClient</c>/
+    /// <c>ConnectFilteredHttpMcpClient</c> to pick up instead of opening a real socket.
+    /// </returns>
+    private static async Task<(WebApplication App, HttpMessageHandler Handler)> StartInMemoryMcpServerAsync()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Logging.ClearProviders();
+        builder.Services.AddMcpServerFromFunctionProviders();
+
+        var app = builder.Build();
+        app.MapMcpFunctionProviders();
+        await app.StartAsync();
+
+        var testServer = (TestServer)app.Services.GetRequiredService<Microsoft.AspNetCore.Hosting.Server.IServer>();
+        return (app, testServer.CreateHandler());
     }
 
     /// <summary>

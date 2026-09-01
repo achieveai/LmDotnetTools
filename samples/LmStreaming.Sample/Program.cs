@@ -1382,6 +1382,11 @@ try
                     // A null allow-list means the mode took the whole surface (sandbox:*) and must keep
                     // taking it, including tools a marketplace plugin adds later; a non-null one is an
                     // explicit subset and goes through the filtering connector.
+                    //
+                    // sandboxTransportHandler is the test seam (see SandboxMcpTransportHandlerKey): null
+                    // in every production run (nothing registers this key), so both connectors fall
+                    // through to their real-HttpClient path exactly as before the seam existed.
+                    var sandboxTransportHandler = sp.GetKeyedService<HttpMessageHandler>(SandboxMcpTransportHandlerKey);
                     var sandboxClients = caps.SandboxToolAllowList is { } sandboxAllowList
                         ? ConnectFilteredHttpMcpClient(
                             filteredRegistry,
@@ -1391,7 +1396,8 @@ try
                             loggerFactory,
                             toolNames: sandboxAllowList,
                             omitServerPrefix: true,
-                            handlerDecorator: SandboxToolHealth.Wrap
+                            handlerDecorator: SandboxToolHealth.Wrap,
+                            transportHandler: sandboxTransportHandler
                         )
                         : ConnectHttpMcpClient(
                             filteredRegistry,
@@ -1400,7 +1406,8 @@ try
                             sandboxMcpHeaders,
                             loggerFactory,
                             omitServerPrefix: true,
-                            handlerDecorator: SandboxToolHealth.Wrap
+                            handlerDecorator: SandboxToolHealth.Wrap,
+                            transportHandler: sandboxTransportHandler
                         );
 
                     if (sandboxClients.Count > 0)
@@ -4352,12 +4359,36 @@ public partial class Program
     }
 
     /// <summary>
+    ///     Keyed-DI slot for a caller-supplied <see cref="HttpMessageHandler"/> that
+    ///     <see cref="ConnectHttpMcpClient"/>/<see cref="ConnectFilteredHttpMcpClient"/> use for the
+    ///     "sandbox" MCP transport instead of letting the MCP SDK open its own real socket. Production
+    ///     never registers this key, so <c>sp.GetKeyedService&lt;HttpMessageHandler&gt;(...)</c> resolves
+    ///     to null and behavior is byte-identical to before this seam existed. Tests register an
+    ///     in-memory (e.g. <c>TestServer</c>-backed) handler under this key to reach a real, spec-compliant
+    ///     MCP endpoint without a real TCP connection — see
+    ///     <c>SystemPromptCompositionTests.SandboxCapableModeCopy_StillReceivesTheWorkspaceSuffix_ThroughTheRealAgentFactory</c>.
+    /// </summary>
+    internal const string SandboxMcpTransportHandlerKey = "sandbox-mcp-transport";
+
+    /// <summary>
     ///     Connects to an HTTP MCP server and adds its tools to the FunctionRegistry.
     ///     Used by middleware-pipeline providers (Anthropic/OpenAI) which route tool calls through
     ///     the registry. Returns the created McpClient instances for proper disposal by the caller.
     ///     On failure the warning is logged and an empty list is returned so the agent still runs
     ///     (without the MCP tools), mirroring <see cref="ConnectLlmQueryMcpClients"/>.
     /// </summary>
+    /// <param name="registry">The FunctionRegistry to add discovered tools to.</param>
+    /// <param name="name">The MCP server's logical name (used for prefixing/logging).</param>
+    /// <param name="endpoint">The MCP server's HTTP endpoint URL.</param>
+    /// <param name="headers">Additional headers to send on every request to the endpoint.</param>
+    /// <param name="loggerFactory">Used to log connection success/failure.</param>
+    /// <param name="omitServerPrefix">When true, tool names are not prefixed with the server name.</param>
+    /// <param name="handlerDecorator">Optional wrapper applied to each discovered tool's handler.</param>
+    /// <param name="transportHandler">
+    ///     Optional test seam (see <see cref="SandboxMcpTransportHandlerKey"/>): when supplied, the MCP
+    ///     transport sends over this handler instead of opening its own real <see cref="HttpClient"/>.
+    ///     Null in every production call.
+    /// </param>
     private static List<McpClient> ConnectHttpMcpClient(
         FunctionRegistry registry,
         string name,
@@ -4365,22 +4396,32 @@ public partial class Program
         IReadOnlyDictionary<string, string> headers,
         ILoggerFactory loggerFactory,
         bool omitServerPrefix = false,
-        Func<ToolHandler, ToolHandler>? handlerDecorator = null
+        Func<ToolHandler, ToolHandler>? handlerDecorator = null,
+        HttpMessageHandler? transportHandler = null
     )
     {
         var createdClients = new List<McpClient>();
         var logger = loggerFactory.CreateLogger<Program>();
         try
         {
-            var transport = new HttpClientTransport(
-                new HttpClientTransportOptions
-                {
-                    Name = name,
-                    Endpoint = new Uri(endpoint),
-                    // AdditionalHeaders is IDictionary; copy the read-only input into a mutable map.
-                    AdditionalHeaders = new Dictionary<string, string>(headers),
-                }
-            );
+            var transportOptions = new HttpClientTransportOptions
+            {
+                Name = name,
+                Endpoint = new Uri(endpoint),
+                // AdditionalHeaders is IDictionary; copy the read-only input into a mutable map.
+                AdditionalHeaders = new Dictionary<string, string>(headers),
+            };
+
+            // transportHandler is null in every production path (see SandboxMcpTransportHandlerKey) —
+            // the SDK opens its own real HttpClient exactly as before this seam existed.
+            var transport = transportHandler is null
+                ? new HttpClientTransport(transportOptions)
+                : new HttpClientTransport(
+                    transportOptions,
+                    new HttpClient(transportHandler, disposeHandler: false),
+                    loggerFactory: null,
+                    ownsHttpClient: true
+                );
 
             // Sync-over-async: acceptable in sample app (no SynchronizationContext)
             var client = McpClient.CreateAsync(transport).GetAwaiter().GetResult();
@@ -4442,6 +4483,19 @@ public partial class Program
     ///     Workspace Agent mode gets. On failure the warning is logged and an empty list is returned so
     ///     the agent still runs (without the MCP tools), mirroring <see cref="ConnectHttpMcpClient"/>.
     /// </summary>
+    /// <param name="registry">The FunctionRegistry to add the filtered tool(s) to.</param>
+    /// <param name="name">The MCP server's logical name (used for prefixing/logging).</param>
+    /// <param name="endpoint">The MCP server's HTTP endpoint URL.</param>
+    /// <param name="headers">Additional headers to send on every request to the endpoint.</param>
+    /// <param name="loggerFactory">Used to log connection success/failure.</param>
+    /// <param name="toolNames">The subset of discovered tool names to expose on <paramref name="registry"/>.</param>
+    /// <param name="omitServerPrefix">When true, tool names are not prefixed with the server name.</param>
+    /// <param name="handlerDecorator">Wrapper applied to each exposed tool's handler.</param>
+    /// <param name="transportHandler">
+    ///     Optional test seam (see <see cref="SandboxMcpTransportHandlerKey"/>): when supplied, the MCP
+    ///     transport sends over this handler instead of opening its own real <see cref="HttpClient"/>.
+    ///     Null in every production call.
+    /// </param>
     private static List<McpClient> ConnectFilteredHttpMcpClient(
         FunctionRegistry registry,
         string name,
@@ -4450,21 +4504,31 @@ public partial class Program
         ILoggerFactory loggerFactory,
         IReadOnlySet<string> toolNames,
         bool omitServerPrefix,
-        Func<ToolHandler, ToolHandler> handlerDecorator
+        Func<ToolHandler, ToolHandler> handlerDecorator,
+        HttpMessageHandler? transportHandler = null
     )
     {
         var createdClients = new List<McpClient>();
         var logger = loggerFactory.CreateLogger<Program>();
         try
         {
-            var transport = new HttpClientTransport(
-                new HttpClientTransportOptions
-                {
-                    Name = name,
-                    Endpoint = new Uri(endpoint),
-                    AdditionalHeaders = new Dictionary<string, string>(headers),
-                }
-            );
+            var transportOptions = new HttpClientTransportOptions
+            {
+                Name = name,
+                Endpoint = new Uri(endpoint),
+                AdditionalHeaders = new Dictionary<string, string>(headers),
+            };
+
+            // transportHandler is null in every production path (see SandboxMcpTransportHandlerKey) —
+            // the SDK opens its own real HttpClient exactly as before this seam existed.
+            var transport = transportHandler is null
+                ? new HttpClientTransport(transportOptions)
+                : new HttpClientTransport(
+                    transportOptions,
+                    new HttpClient(transportHandler, disposeHandler: false),
+                    loggerFactory: null,
+                    ownsHttpClient: true
+                );
 
             // Sync-over-async: acceptable in sample app (no SynchronizationContext)
             var client = McpClient.CreateAsync(transport).GetAwaiter().GetResult();
