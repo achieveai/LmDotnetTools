@@ -252,6 +252,26 @@ internal static class MessageMapper
                 );
                 break;
 
+            case AgentMessage agentMessage:
+                // Typed agent-to-agent message: the envelope is the model-facing text. Falling through to
+                // the default arm dropped it silently (#688).
+                inputItems.Add(
+                    new ResponseInputItem
+                    {
+                        Type = "message",
+                        Role = MapRole(agentMessage.Role),
+                        Content =
+                        [
+                            new ResponseInputContent
+                            {
+                                Type = agentMessage.Role == Role.Assistant ? "output_text" : "input_text",
+                                Text = agentMessage.Text,
+                            },
+                        ],
+                    }
+                );
+                break;
+
             default:
                 // Unsupported message types (e.g. UsageMessage on the input side) have no Responses
                 // input-side analog and are intentionally dropped.
