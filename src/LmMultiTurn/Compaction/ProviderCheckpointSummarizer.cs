@@ -74,7 +74,7 @@ public sealed class ProviderCheckpointSummarizer(IAgent providerAgent, string? d
         var usage = reply.OfType<UsageMessage>().LastOrDefault();
         var text = string.Concat(
             reply
-                .Where(m => m is not UsageMessage && m is not TextMessage { IsThinking: true })
+                .Where(m => m is not (UsageMessage or TextMessage { IsThinking: true }))
                 .OfType<ICanGetText>()
                 .Select(m => m.GetText())
         );

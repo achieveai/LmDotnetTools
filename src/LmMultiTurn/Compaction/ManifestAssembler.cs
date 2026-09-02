@@ -139,12 +139,7 @@ internal static class ManifestAssembler
         var result = new List<ArtifactRef>();
         foreach (var row in covered)
         {
-            IEnumerable<ToolCall> calls = row.Message switch
-            {
-                ToolCallMessage single => [single],
-                ICanGetToolCalls many => many.GetToolCalls() ?? [],
-                _ => [],
-            };
+            var calls = ToolCallsOf(row.Message);
 
             foreach (var call in calls)
             {
@@ -294,4 +289,12 @@ internal static class ManifestAssembler
 
         return entries;
     }
+
+    private static IEnumerable<ToolCall> ToolCallsOf(IMessage message) =>
+        message switch
+        {
+            ToolCallMessage single => [single],
+            ICanGetToolCalls many => many.GetToolCalls() ?? [],
+            _ => [],
+        };
 }
